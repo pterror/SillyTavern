@@ -384,7 +384,6 @@ const toShallow = (character) => {
             name: _.get(character, 'data.name', ''),
             character_version: _.get(character, 'data.character_version', ''),
             creator: _.get(character, 'data.creator', ''),
-            creator_notes: _.get(character, 'data.creator_notes', ''),
             tags: _.get(character, 'data.tags', []),
             extensions: {
                 fav: _.get(character, 'data.extensions.fav', false),
