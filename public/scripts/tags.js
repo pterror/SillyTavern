@@ -672,17 +672,17 @@ function loadTagsSettings(settings) {
 }
 
 function renameTagKey(oldKey, newKey) {
-    const value = tag_map[oldKey];
-    tag_map[newKey] = value || [];
-    delete tag_map[oldKey];
-    invalidateAssignedTagIdsCache();
+    tagMapStore.renameKey(oldKey, newKey);
+    invalidateCharactersFuseIndex();
+    invalidateGroupsFuseIndex();
     saveSettingsDebounced();
 }
 
 function createTagMapFromList(listElement, key) {
     const tagIds = [...($(listElement).find('.tag').map((_, el) => $(el).attr('id')))];
-    tag_map[key] = tagIds;
-    invalidateAssignedTagIdsCache();
+    tagMapStore.setKey(key, tagIds);
+    invalidateCharactersFuseIndex();
+    invalidateGroupsFuseIndex();
     saveSettingsDebounced();
 }
 
@@ -1015,19 +1015,12 @@ function addTagToMap(tagId, characterId = null) {
         return false;
     }
 
-    if (!Array.isArray(tag_map[key])) {
-        tag_map[key] = [tagId];
-        invalidateAssignedTagIdsCache();
-        return true;
-    } else {
-        if (tag_map[key].includes(tagId))
-            return false;
-
-        tag_map[key].push(tagId);
-        tag_map[key] = tag_map[key].filter(onlyUnique);
-        invalidateAssignedTagIdsCache();
-        return true;
+    const change = tagMapStore.assign(key, tagId);
+    if (change) {
+        invalidateCharactersFuseIndex();
+        invalidateGroupsFuseIndex();
     }
+    return !!change;
 }
 
 /**
@@ -1043,18 +1036,12 @@ function removeTagFromMap(tagId, characterId = null) {
         return false;
     }
 
-    if (!Array.isArray(tag_map[key])) {
-        tag_map[key] = [];
-        return false;
-    } else {
-        const indexOf = tag_map[key].indexOf(tagId);
-        if (indexOf === -1) {
-            return false;
-        }
-        tag_map[key].splice(indexOf, 1);
-        invalidateAssignedTagIdsCache();
-        return true;
+    const change = tagMapStore.unassign(key, tagId);
+    if (change) {
+        invalidateCharactersFuseIndex();
+        invalidateGroupsFuseIndex();
     }
+    return !!change;
 }
 
 function findTag(request, resolve, listSelector) {
@@ -2589,10 +2576,9 @@ function onClearAllFiltersClick(filterHelper) {
  * @param {{oldAvatar: string, newAvatar: string}} data Event data
  */
 function copyTags(data) {
-    const prevTagMap = tag_map[data.oldAvatar] || [];
-    const newTagMap = tag_map[data.newAvatar] || [];
-    tag_map[data.newAvatar] = Array.from(new Set([...prevTagMap, ...newTagMap]));
-    invalidateAssignedTagIdsCache();
+    tagMapStore.copyKey(data.oldAvatar, data.newAvatar);
+    invalidateCharactersFuseIndex();
+    invalidateGroupsFuseIndex();
 }
 
 /**
