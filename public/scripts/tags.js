@@ -17,7 +17,7 @@ import { FILTER_TYPES, FILTER_STATES, DEFAULT_FILTER_STATE, isFilterState, Filte
 
 import { groupCandidatesFilter, groupMembersFilter, groups, selected_group } from './group-chats.js';
 import { download, onlyUnique, parseJsonFile, uuidv4, getSortableDelay, flashHighlight, equalsIgnoreCaseAndAccents, includesIgnoreCaseAndAccents, removeFromArray, getFreeName, debounce, findChar, escapeHtml } from './utils.js';
-import { power_user } from './power-user.js';
+import { power_user, invalidateCharactersFuseIndex, invalidateGroupsFuseIndex, invalidateTagsFuseIndex } from './power-user.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
 import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from './slash-commands/SlashCommandArgument.js';
@@ -385,9 +385,14 @@ function rebuildTagsById() {
 /**
  * Marks the assigned-tag-ids cache as stale. Must be called after any mutation of `tag_map` (adding/removing a tag_map key,
  * or changing the array of tag ids for a key), including from other modules that write into `tag_map` directly.
+ *
+ * Also invalidates the persistent character/group search indexes (power-user.js), since a `#tags` field
+ * (used by fuzzySearchCharacters/fuzzySearchGroups) depends on tag_map content.
  */
 function invalidateAssignedTagIdsCache() {
     assignedTagIdsCache = null;
+    invalidateCharactersFuseIndex();
+    invalidateGroupsFuseIndex();
 }
 
 /**
@@ -835,6 +840,10 @@ export function addTagsToEntity(tag, entityId, { tagListSelector = null, tagList
 
     /** @type {Set<string>} The resolved tag_map keys (avatar / group id) actually touched by this call */
     const affectedKeys = new Set();
+    // Snapshot which of these tags were already used somewhere in tag_map *before* this mutation, so we can
+    // tell afterward whether any tag actually appeared in / disappeared from the filter bar's tag set - most
+    // toggles assign/unassign a tag that's already used elsewhere, so this is usually "no change".
+    const wasAssigned = new Map(tags.map(t => [t.id, getAssignedTagIds().has(t.id)]));
 
     // Add tags to the map
     entityIds.forEach((id) => {
@@ -848,7 +857,7 @@ export function addTagsToEntity(tag, entityId, { tagListSelector = null, tagList
     // Save and redraw. A tag toggle only needs a full list re-render (getEntitiesList + rebuild of up to
     // hundreds of rows) if the current view could actually change as a result - otherwise just patch the
     // affected row(s) and the tag filter buttons in place.
-    redrawAfterTagChange(tags.map(t => t.id), affectedKeys);
+    redrawAfterTagChange(tags.map(t => t.id), affectedKeys, wasAssigned);
     saveSettingsDebounced();
 
     // We should manually add the selected tag to the print tag function, so we cover places where the tag list did not automatically include it
@@ -902,18 +911,27 @@ function tagChangeAffectsCurrentView(tagIds) {
  * See `tagChangeAffectsCurrentView` for what "needs a full re-render" means here.
  * @param {string[]} tagIds - The ids of the tags that were added/removed
  * @param {Set<string>} affectedKeys - The tag_map keys (avatar / group id) that were actually touched
+ * @param {Map<string, boolean>} [wasAssigned] - For each tag id, whether it was already used somewhere in
+ * tag_map before this mutation. Used to skip reprinting the tag filter buttons when a tag's overall
+ * used/unused status didn't actually change (the common case - toggling a tag that's already used elsewhere).
  */
-function redrawAfterTagChange(tagIds, affectedKeys) {
+function redrawAfterTagChange(tagIds, affectedKeys, wasAssigned = new Map()) {
     if (tagChangeAffectsCurrentView(tagIds)) {
         printCharactersDebounced();
         return;
     }
 
-    // Tag filter buttons are cheap to refresh now (id-indexed lookups), and a newly (un)used tag can
-    // change which ones should be shown - but we don't need to touch the (possibly huge) entity list itself.
-    printTagFilters(tag_filter_type.character);
-    printTagFilters(tag_filter_type.group_members_list);
-    printTagFilters(tag_filter_type.group_candidates_list);
+    // Tag filter buttons only need reprinting if a tag actually became used/unused as a whole (it's now the
+    // *only* place, or *no longer any* place, this tag is assigned) - not on every toggle of an already-shared tag.
+    // Reprinting is cheap now (id-indexed lookups), but still means rebuilding potentially thousands of tag
+    // pill DOM elements, so it's worth skipping when nothing in the filter bar would actually change.
+    const assignedTagIds = getAssignedTagIds();
+    const usageChanged = tagIds.some(id => (wasAssigned.get(id) ?? false) !== assignedTagIds.has(id));
+    if (usageChanged) {
+        printTagFilters(tag_filter_type.character);
+        printTagFilters(tag_filter_type.group_members_list);
+        printTagFilters(tag_filter_type.group_candidates_list);
+    }
 
     updateEntityRowTags(affectedKeys);
 }
@@ -953,6 +971,7 @@ export function removeTagFromEntity(tag, entityId, { tagListSelector = null, tag
 
     /** @type {Set<string>} The resolved tag_map keys (avatar / group id) actually touched by this call */
     const affectedKeys = new Set();
+    const wasAssigned = new Map([[tag.id, getAssignedTagIds().has(tag.id)]]);
 
     // Remove tag from the map
     entityIds.forEach((id) => {
@@ -962,7 +981,7 @@ export function removeTagFromEntity(tag, entityId, { tagListSelector = null, tag
     });
 
     // Save and redraw
-    redrawAfterTagChange([tag.id], affectedKeys);
+    redrawAfterTagChange([tag.id], affectedKeys, wasAssigned);
     saveSettingsDebounced();
 
     // We don't reprint the lists, we can just remove the html elements from them.
@@ -1272,6 +1291,7 @@ function createNewTag(tagName) {
     const tag = newTag(tagName);
     tags.push(tag);
     tagsById.set(tag.id, tag);
+    invalidateTagsFuseIndex();
     console.debug('Created new tag', tag.name, 'with id', tag.id);
     return tag;
 }
@@ -2059,6 +2079,7 @@ async function onTagRestoreFileSelect(e) {
 
     rebuildTagsById();
     invalidateAssignedTagIdsCache();
+    invalidateTagsFuseIndex();
 
     $('#tag_view_restore_input').val('');
     printCharactersDebounced();
@@ -2117,6 +2138,7 @@ async function onTagsPruneClick() {
     }
 
     invalidateAssignedTagIdsCache();
+    invalidateTagsFuseIndex();
     printCharactersDebounced();
     saveSettingsDebounced();
 
@@ -2301,6 +2323,7 @@ async function onTagDeleteClick() {
     tags.splice(index, 1);
     tagsById.delete(id);
     invalidateAssignedTagIdsCache();
+    invalidateTagsFuseIndex();
     $(`.tag[id="${id}"]`).remove();
     $(`.tag_view_item[id="${id}"]`).remove();
 
@@ -2317,6 +2340,9 @@ function onTagRenameInput() {
     const newName = $(this).text();
     const tag = tags.find(x => x.id === id);
     tag.name = newName;
+    invalidateTagsFuseIndex();
+    invalidateCharactersFuseIndex();
+    invalidateGroupsFuseIndex();
     $(this).attr('dirty', '');
     $(`.tag[id="${id}"] .tag_name`).text(newName);
     saveSettingsDebounced();
