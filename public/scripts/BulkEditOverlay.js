@@ -17,7 +17,7 @@ import { favsToHotswap } from './RossAscends-mods.js';
 import { loader } from './action-loader.js';
 import { convertCharacterToPersona } from './personas.js';
 import { callGenericPopup, POPUP_TYPE } from './popup.js';
-import { createTagInput, getTagKeyForEntity, getTagsList, printTagList, tag_map, compareTagsForSort, removeTagFromMap, importTags, tag_import_setting } from './tags.js';
+import { createTagInput, getTagKeyForEntity, getTagsList, printTagList, tag_map, compareTagsForSort, removeTagFromMap, importTags, tag_import_setting, invalidateAssignedTagIdsCache } from './tags.js';
 import { t } from './i18n.js';
 
 /**
@@ -329,6 +329,7 @@ class BulkTagPopupHandler {
             const key = getTagKeyForEntity(characterId);
             if (key) tag_map[key] = [];
         }
+        invalidateAssignedTagIdsCache();
 
         $('#bulkTagList').empty();
 
