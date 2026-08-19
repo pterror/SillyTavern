@@ -2114,6 +2114,17 @@ function compareTagsForSort(a, b, counts = null) {
     }
 }
 
+/**
+ * Deliberately still direct `tags`/`tag_map` mutations (tags.push/removeFromArray, tag_map[key]=...) rather than
+ * migrated to per-item tagsStore/tagMapStore ops, same reasoning as makeTagListDraggable's onTagsSort: this is a
+ * bulk, rare (user explicitly restoring a tags backup file), all-or-nothing operation with its own id-remapping
+ * logic (existing tags can get overwritten with a *different* id than the imported one, tracked via
+ * idToActualTagIdMap) - forcing that through per-item store calls would mean either replicating the remapping
+ * logic twice or risking getting it subtly wrong translating it, for an operation that already gets a single
+ * `tagsStore.reindex()` + `invalidateAssignedTagIdsCache()` (which itself does `tagMapStore.reindex()`) right
+ * after this whole function's mutations are done - the stores end up fully consistent either way, just via a
+ * single bulk resync instead of many individual op calls with no current consumer for the events they'd fire.
+ */
 async function onTagRestoreFileSelect(e) {
     const file = e.target.files[0];
 
