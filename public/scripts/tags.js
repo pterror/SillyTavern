@@ -1528,10 +1528,14 @@ function onTagFilterClick(listElement) {
 
     const filterHelper = getFilterHelper($(listElement));
 
-    // Update the tag's filter_state for the main character list (backward compatibility)
+    // Update the tag's filter_state for the main character list (backward compatibility).
+    // Deliberately NOT calling saveSettingsDebounced() here: the actual (accountStorage-backed) persistence for
+    // this is done a few lines below, and settings.json on this install is 11MB+ (tags + tag_map), so forcing a
+    // full settings resave on every single tag filter click was the actual freeze - not just tag_map/tags being
+    // large in memory, but re-serializing and re-uploading the whole blob per click. This field will still get
+    // flushed to disk the next time something else triggers a real settings save.
     if (existingTag && isMainCharacterList(filterHelper)) {
         existingTag.filter_state = state;
-        saveSettingsDebounced();
     }
 
     // Persist to storage for all contexts
@@ -1660,6 +1664,19 @@ function runTagFilters(listElement) {
     filterHelper.setFilterData(FILTER_TYPES.TAG, { excluded: excludedTagIds, selected: tagIds });
 }
 
+/**
+ * Cache of the last-rendered tag-pill signature per filter type, so printTagFilters() can skip rebuilding the
+ * (potentially thousands of, on this install - almost every one of ~9700 tags is assigned to something)
+ * tag filter pills via jQuery clone/append when the set of tags to display hasn't actually changed since the
+ * last render. printTagFilters() runs on *every* printCharacters() call - every search-bar keystroke, every
+ * tag filter chip click, every page nav - so without this, that whole pill list gets torn down and rebuilt from
+ * scratch every single time regardless of whether anything about it changed.
+ * Scoped to !power_user.bogus_folders (see call site) since the bogus-folder drilldown rendering piggybacks on
+ * this same function and isn't (yet) covered by the signature.
+ * @type {Map<string, string>}
+ */
+const tagFilterRenderCache = new Map();
+
 function printTagFilters(type = tag_filter_type.character) {
     removeMissingTagFilters();
 
@@ -1679,23 +1696,8 @@ function printTagFilters(type = tag_filter_type.character) {
             break;
     }
 
-    $(FILTER_SELECTOR).empty();
-
-    // Print all action tags. (Rework 'Folder' button to some kind of onboarding if no folders are enabled yet)
-    let actionTags = Object.values(ACTIONABLE_TAGS);
-    actionTags.find(x => x == ACTIONABLE_TAGS.FOLDER).name = power_user.bogus_folders ? 'Show only folders' : 'Enable \'Tags as Folder\'\n\nAllows characters to be grouped in folders by their assigned tags.\nTags have to be explicitly chosen as folder to show up.\n\nClick here to start';
-
-    // For group contexts, filter actionable tags to only show relevant ones
-    if (isGroupContext(type)) {
-        actionTags = filterActionableTagsForGroupContext(actionTags);
-    }
-
-    printTagList($(FILTER_SELECTOR), { empty: false, sort: false, tags: actionTags, tagActionSelector: tag => tag.action, tagOptions: { isGeneralList: true } });
-
-    const inListActionTags = Object.values(InListActionable);
-    printTagList($(FILTER_SELECTOR), { empty: false, sort: false, tags: inListActionTags, tagActionSelector: tag => tag.action, tagOptions: { isGeneralList: true } });
-
-    // Determine which character tags to display based on context
+    // Determine which character tags to display based on context. Done *before* touching the DOM, so we can bail
+    // out below without having already torn down the existing pills.
     let tagsToDisplay;
     let inactiveTags = [];
 
@@ -1731,6 +1733,35 @@ function printTagFilters(type = tag_filter_type.character) {
         tagsToDisplay = tags.filter(x => characterTagIds.has(x.id)).sort(compareTagsForSort);
     }
 
+    // Skip the (potentially huge) pill rebuild entirely if nothing about the displayed set changed since last
+    // time. Not applied under bogus_folders, since the drilldown rendering below isn't covered by this signature.
+    if (!power_user.bogus_folders) {
+        const signature = tagsToDisplay.map(t => t.id).join(',') + '|' + inactiveTags.join(',');
+        if (tagFilterRenderCache.get(type) === signature) {
+            updateTagFilterVisibility(type, FILTER_SELECTOR);
+            return;
+        }
+        tagFilterRenderCache.set(type, signature);
+    } else {
+        tagFilterRenderCache.delete(type);
+    }
+
+    $(FILTER_SELECTOR).empty();
+
+    // Print all action tags. (Rework 'Folder' button to some kind of onboarding if no folders are enabled yet)
+    let actionTags = Object.values(ACTIONABLE_TAGS);
+    actionTags.find(x => x == ACTIONABLE_TAGS.FOLDER).name = power_user.bogus_folders ? 'Show only folders' : 'Enable \'Tags as Folder\'\n\nAllows characters to be grouped in folders by their assigned tags.\nTags have to be explicitly chosen as folder to show up.\n\nClick here to start';
+
+    // For group contexts, filter actionable tags to only show relevant ones
+    if (isGroupContext(type)) {
+        actionTags = filterActionableTagsForGroupContext(actionTags);
+    }
+
+    printTagList($(FILTER_SELECTOR), { empty: false, sort: false, tags: actionTags, tagActionSelector: tag => tag.action, tagOptions: { isGeneralList: true } });
+
+    const inListActionTags = Object.values(InListActionable);
+    printTagList($(FILTER_SELECTOR), { empty: false, sort: false, tags: inListActionTags, tagActionSelector: tag => tag.action, tagOptions: { isGeneralList: true } });
+
     printTagList($(FILTER_SELECTOR), { empty: false, tags: tagsToDisplay, tagOptions: { isFilter: true, isGeneralList: true }, inactiveTags: inactiveTags });
 
 
@@ -1746,7 +1777,17 @@ function printTagFilters(type = tag_filter_type.character) {
     // The visual state (CSS classes) already matches the filter helper state set by loadFilterStatesForContext.
     // runTagFilters is only needed when user clicks a tag (handled in onTagFilterClick).
 
-    // Initialize the tag list visibility based on saved settings for this context
+    updateTagFilterVisibility(type, FILTER_SELECTOR);
+}
+
+/**
+ * Applies the saved tag-list-visibility setting for a filter context to its DOM (the "show tag list" toggle),
+ * and refreshes the filter indicator. Split out from printTagFilters() so the tagFilterRenderCache early-return
+ * can still keep this bit up to date without needing to rebuild any tag pills.
+ * @param {tag_filter_type} type - The filter type
+ * @param {string} FILTER_SELECTOR - The resolved selector for this filter type's tag list container
+ */
+function updateTagFilterVisibility(type, FILTER_SELECTOR) {
     const shouldShowTags = getTagFilterVisibility(type);
     const showTagListButton = $(FILTER_SELECTOR).closest('.rm_tag_controls').find('.showTagList');
 
