@@ -833,15 +833,22 @@ export function addTagsToEntity(tag, entityId, { tagListSelector = null, tagList
 
     let result = false;
 
+    /** @type {Set<string>} The resolved tag_map keys (avatar / group id) actually touched by this call */
+    const affectedKeys = new Set();
+
     // Add tags to the map
     entityIds.forEach((id) => {
+        const key = id !== null && id !== undefined ? getTagKeyForEntity(id) : getTagKey();
+        if (key) affectedKeys.add(key);
         tags.forEach((tag) => {
             result = addTagToMap(tag.id, id) || result;
         });
     });
 
-    // Save and redraw
-    printCharactersDebounced();
+    // Save and redraw. A tag toggle only needs a full list re-render (getEntitiesList + rebuild of up to
+    // hundreds of rows) if the current view could actually change as a result - otherwise just patch the
+    // affected row(s) and the tag filter buttons in place.
+    redrawAfterTagChange(tags.map(t => t.id), affectedKeys);
     saveSettingsDebounced();
 
     // We should manually add the selected tag to the print tag function, so we cover places where the tag list did not automatically include it
@@ -858,6 +865,80 @@ export function addTagsToEntity(tag, entityId, { tagListSelector = null, tagList
 }
 
 /**
+ * Checks whether a tag mutation (affecting the given tag ids) could change what the currently displayed
+ * character/group list looks like - i.e. whether a full `printCharactersDebounced()` re-render is actually
+ * needed, or whether it's enough to patch the affected row(s) in place.
+ *
+ * The current list view depends on tag content when:
+ * - "Tags as folders" is enabled, since folders are themselves derived from tags (a tag change can create,
+ *   empty, or change the contents of a folder, at any nesting level currently in view).
+ * - There's an active search term, since the Fuse index used for fuzzy search includes each entity's tag
+ *   names as a searchable field (see `getTagsList` usage in the `#tags` key getter for `fuzzySearchCharacters`).
+ * - There's an active tag filter (selected/excluded) that references one of the tags being changed.
+ *
+ * @param {string[]} tagIds - The ids of the tags being added/removed
+ * @returns {boolean} Whether the current view depends on this change
+ */
+function tagChangeAffectsCurrentView(tagIds) {
+    if (power_user.bogus_folders) {
+        return true;
+    }
+
+    if (entitiesFilter.getFilterData(FILTER_TYPES.SEARCH)) {
+        return true;
+    }
+
+    const tagFilter = entitiesFilter.getFilterData(FILTER_TYPES.TAG);
+    const relevantTagIds = [...(tagFilter?.selected ?? []), ...(tagFilter?.excluded ?? [])];
+    if (relevantTagIds.length && tagIds.some(id => relevantTagIds.includes(id))) {
+        return true;
+    }
+
+    return false;
+}
+
+/**
+ * Redraws whatever needs to be redrawn after a tag_map mutation for the given tag ids / entity keys.
+ * See `tagChangeAffectsCurrentView` for what "needs a full re-render" means here.
+ * @param {string[]} tagIds - The ids of the tags that were added/removed
+ * @param {Set<string>} affectedKeys - The tag_map keys (avatar / group id) that were actually touched
+ */
+function redrawAfterTagChange(tagIds, affectedKeys) {
+    if (tagChangeAffectsCurrentView(tagIds)) {
+        printCharactersDebounced();
+        return;
+    }
+
+    // Tag filter buttons are cheap to refresh now (id-indexed lookups), and a newly (un)used tag can
+    // change which ones should be shown - but we don't need to touch the (possibly huge) entity list itself.
+    printTagFilters(tag_filter_type.character);
+    printTagFilters(tag_filter_type.group_members_list);
+    printTagFilters(tag_filter_type.group_candidates_list);
+
+    updateEntityRowTags(affectedKeys);
+}
+
+/**
+ * Patches the tag pills of any currently-rendered character/group list rows for the given tag_map keys, without
+ * touching the rest of the list.
+ * @param {Iterable<string>} keys - tag_map keys (character avatar or group id)
+ */
+function updateEntityRowTags(keys) {
+    for (const key of keys) {
+        const charIndex = characters.findIndex(c => c.avatar === key);
+        const $row = charIndex !== -1
+            ? $(`#rm_print_characters_block .character_select[data-chid="${charIndex}"]`)
+            : $(`#rm_print_characters_block .group_select[data-grid="${CSS.escape(String(key))}"]`);
+
+        if (!$row.length) {
+            continue; // Row isn't currently rendered (different page, filtered out, etc) - nothing to patch.
+        }
+
+        printTagList($row.find('.tags'), { forEntityOrKey: key, tagOptions: { isCharacterList: true } });
+    }
+}
+
+/**
  * Removes a tag from a given entity
  * @param {Tag} tag - The tag to remove
  * @param {string|string[]} entityId - The entity to remove this tag from. Has to be the entity key (e.g. `addTagToEntity`). (Also allows multiple entities to be passed in)
@@ -868,15 +949,20 @@ export function addTagsToEntity(tag, entityId, { tagListSelector = null, tagList
  */
 export function removeTagFromEntity(tag, entityId, { tagListSelector = null, tagElement = null } = {}) {
     let result = false;
+    const entityIds = Array.isArray(entityId) ? entityId : [entityId];
+
+    /** @type {Set<string>} The resolved tag_map keys (avatar / group id) actually touched by this call */
+    const affectedKeys = new Set();
+
     // Remove tag from the map
-    if (Array.isArray(entityId)) {
-        entityId.forEach((id) => result = removeTagFromMap(tag.id, id) || result);
-    } else {
-        result = removeTagFromMap(tag.id, entityId);
-    }
+    entityIds.forEach((id) => {
+        const key = id !== null && id !== undefined ? getTagKeyForEntity(id) : getTagKey();
+        if (key) affectedKeys.add(key);
+        result = removeTagFromMap(tag.id, id) || result;
+    });
 
     // Save and redraw
-    printCharactersDebounced();
+    redrawAfterTagChange([tag.id], affectedKeys);
     saveSettingsDebounced();
 
     // We don't reprint the lists, we can just remove the html elements from them.
