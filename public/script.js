@@ -192,7 +192,6 @@ import { cancelDebouncedMetadataSave, doDailyExtensionUpdatesCheck, extension_se
 import { COMMENT_NAME_DEFAULT, CONNECT_API_MAP, executeSlashCommandsOnChatInput, initDefaultSlashCommands, initSlashCommandAutoComplete, isExecutingCommandsFromChatInput, pauseScriptExecution, stopScriptExecution, UNIQUE_APIS } from './scripts/slash-commands.js';
 import { initMacroAutoComplete } from './scripts/autocomplete/MacroAutoComplete.js';
 import {
-    tag_map,
     tags,
     filterByTagState,
     isBogusFolder,
@@ -213,7 +212,7 @@ import {
     applyTagsOnGroupSelect,
     tag_import_setting,
     applyCharacterTagsToMessageDivs,
-    invalidateAssignedTagIdsCache,
+    removeEntityTags,
 } from './scripts/tags.js';
 import { checkOpenRouterAuth, initSecrets, readSecretState } from './scripts/secrets.js';
 import { markdownExclusionExt } from './scripts/showdown-exclusion.js';
@@ -10885,8 +10884,7 @@ export async function deleteCharacter(characterKey, { deleteChats = true } = {})
         accountStorage.removeItem(`AlertWI_${character.avatar}`);
         accountStorage.removeItem(`AlertRegex_${character.avatar}`);
         accountStorage.removeItem(`mediaWarningShown:${character.avatar}`);
-        delete tag_map[character.avatar];
-        invalidateAssignedTagIdsCache();
+        removeEntityTags(character.avatar);
         select_rm_info('char_delete', character.name);
 
         if (deleteChats) {

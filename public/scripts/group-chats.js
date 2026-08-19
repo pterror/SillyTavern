@@ -80,7 +80,7 @@ import {
     chatElement,
     ensureMessageMediaIsArray,
 } from '../script.js';
-import { printTagList, createTagMapFromList, applyTagsOnCharacterSelect, tag_map, applyTagsOnGroupSelect, printTagFilters, tag_filter_type, invalidateAssignedTagIdsCache } from './tags.js';
+import { printTagList, createTagMapFromList, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, printTagFilters, tag_filter_type, removeEntityTags } from './tags.js';
 import { FILTER_TYPES, FilterHelper } from './filters.js';
 import { isExternalMediaAllowed } from './chats.js';
 import { POPUP_TYPE, Popup, callGenericPopup } from './popup.js';
@@ -1340,8 +1340,7 @@ async function deleteGroup(id) {
     if (response.ok) {
         await clearChat();
         selected_group = null;
-        delete tag_map[id];
-        invalidateAssignedTagIdsCache();
+        removeEntityTags(id);
         resetChatState();
         await printMessages();
         await getCharacters();

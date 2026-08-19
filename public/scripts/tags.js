@@ -2600,6 +2600,28 @@ function copyTags(data) {
 }
 
 /**
+ * Clears all tags assigned to a given entity key, without removing the tag_map entry itself.
+ * Exported so other modules (BulkEditOverlay.js) don't need to write into `tag_map` directly.
+ * @param {string} key - tag_map key (character avatar or group id)
+ */
+export function clearEntityTags(key) {
+    tagMapStore.setKey(key, []);
+    invalidateCharactersFuseIndex();
+    invalidateGroupsFuseIndex();
+}
+
+/**
+ * Removes a tag_map entry entirely for a given entity key (e.g. the character/group was deleted).
+ * Exported so other modules (group-chats.js, script.js) don't need to write into `tag_map` directly.
+ * @param {string} key - tag_map key (character avatar or group id)
+ */
+export function removeEntityTags(key) {
+    tagMapStore.removeKey(key);
+    invalidateCharactersFuseIndex();
+    invalidateGroupsFuseIndex();
+}
+
+/**
  * Prints the tag list in the view tags popup.
  * @param {JQuery<HTMLElement>} tagContainer Container element
  * @param {boolean} empty Whether to empty the container before printing
