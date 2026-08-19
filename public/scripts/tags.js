@@ -867,24 +867,28 @@ export function addTagsToEntity(tag, entityId, { tagListSelector = null, tagList
 
     /** @type {Set<string>} The resolved tag_map keys (avatar / group id) actually touched by this call */
     const affectedKeys = new Set();
-    // Snapshot which of these tags were already used somewhere in tag_map *before* this mutation, so we can
-    // tell afterward whether any tag actually appeared in / disappeared from the filter bar's tag set - most
-    // toggles assign/unassign a tag that's already used elsewhere, so this is usually "no change".
-    const wasAssigned = new Map(tags.map(t => [t.id, getAssignedTagIds().has(t.id)]));
+    /** @type {Map<string, boolean>} Per tag id, whether *any* assignment in this batch was that tag's first use
+     * anywhere - read directly off tagMapStore.assign()'s own return value, no before/after snapshot needed. */
+    const usageFlips = new Map();
 
     // Add tags to the map
     entityIds.forEach((id) => {
         const key = id !== null && id !== undefined ? getTagKeyForEntity(id) : getTagKey();
-        if (key) affectedKeys.add(key);
+        if (!key) return;
+        affectedKeys.add(key);
         tags.forEach((tag) => {
-            result = addTagToMap(tag.id, id) || result;
+            const change = tagMapStore.assign(key, tag.id);
+            if (change) {
+                result = true;
+                if (change.wasFirstUse) usageFlips.set(tag.id, true);
+            }
         });
     });
 
     // Save and redraw. A tag toggle only needs a full list re-render (getEntitiesList + rebuild of up to
     // hundreds of rows) if the current view could actually change as a result - otherwise just patch the
     // affected row(s) and the tag filter buttons in place.
-    redrawAfterTagChange(tags.map(t => t.id), affectedKeys, wasAssigned);
+    redrawAfterTagChange(tags.map(t => t.id), affectedKeys, usageFlips);
     saveSettingsDebounced();
 
     // We should manually add the selected tag to the print tag function, so we cover places where the tag list did not automatically include it
@@ -938,11 +942,12 @@ function tagChangeAffectsCurrentView(tagIds) {
  * See `tagChangeAffectsCurrentView` for what "needs a full re-render" means here.
  * @param {string[]} tagIds - The ids of the tags that were added/removed
  * @param {Set<string>} affectedKeys - The tag_map keys (avatar / group id) that were actually touched
- * @param {Map<string, boolean>} [wasAssigned] - For each tag id, whether it was already used somewhere in
- * tag_map before this mutation. Used to skip reprinting the tag filter buttons when a tag's overall
- * used/unused status didn't actually change (the common case - toggling a tag that's already used elsewhere).
+ * @param {Map<string, boolean>} [usageFlips] - For each tag id, whether this mutation flipped its overall
+ * used/unused status (read directly off tagMapStore.assign()/.unassign()'s wasFirstUse/wasLastUse - not
+ * re-derived by comparing before/after snapshots). Used to skip reprinting the tag filter buttons when a tag's
+ * overall status didn't actually change (the common case - toggling a tag that's already used elsewhere).
  */
-function redrawAfterTagChange(tagIds, affectedKeys, wasAssigned = new Map()) {
+function redrawAfterTagChange(tagIds, affectedKeys, usageFlips = new Map()) {
     if (tagChangeAffectsCurrentView(tagIds)) {
         printCharactersDebounced();
         return;
@@ -952,8 +957,7 @@ function redrawAfterTagChange(tagIds, affectedKeys, wasAssigned = new Map()) {
     // *only* place, or *no longer any* place, this tag is assigned) - not on every toggle of an already-shared tag.
     // Reprinting is cheap now (id-indexed lookups), but still means rebuilding potentially thousands of tag
     // pill DOM elements, so it's worth skipping when nothing in the filter bar would actually change.
-    const assignedTagIds = getAssignedTagIds();
-    const usageChanged = tagIds.some(id => (wasAssigned.get(id) ?? false) !== assignedTagIds.has(id));
+    const usageChanged = tagIds.some(id => usageFlips.get(id));
     if (usageChanged) {
         printTagFilters(tag_filter_type.character);
         printTagFilters(tag_filter_type.group_members_list);
@@ -998,17 +1002,24 @@ export function removeTagFromEntity(tag, entityId, { tagListSelector = null, tag
 
     /** @type {Set<string>} The resolved tag_map keys (avatar / group id) actually touched by this call */
     const affectedKeys = new Set();
-    const wasAssigned = new Map([[tag.id, getAssignedTagIds().has(tag.id)]]);
+    // Whether *any* removal in this batch was this tag's last use anywhere - read directly off
+    // tagMapStore.unassign()'s own return value, no before/after snapshot needed.
+    let wasLastUse = false;
 
     // Remove tag from the map
     entityIds.forEach((id) => {
         const key = id !== null && id !== undefined ? getTagKeyForEntity(id) : getTagKey();
-        if (key) affectedKeys.add(key);
-        result = removeTagFromMap(tag.id, id) || result;
+        if (!key) return;
+        affectedKeys.add(key);
+        const change = tagMapStore.unassign(key, tag.id);
+        if (change) {
+            result = true;
+            if (change.wasLastUse) wasLastUse = true;
+        }
     });
 
     // Save and redraw
-    redrawAfterTagChange([tag.id], affectedKeys, wasAssigned);
+    redrawAfterTagChange([tag.id], affectedKeys, new Map([[tag.id, wasLastUse]]));
     saveSettingsDebounced();
 
     // We don't reprint the lists, we can just remove the html elements from them.
@@ -1020,24 +1031,6 @@ export function removeTagFromEntity(tag, entityId, { tagListSelector = null, tag
     $(`${getInlineListSelector()} .tag[id="${tag.id}"]`).remove();
 
     return result;
-}
-
-/**
- * Adds a tag from a given character. If no character is provided, adds it from the currently active one.
- * @param {string} tagId - The id of the tag
- * @param {string} characterId - The id/key of the character or group
- * @returns {boolean} Whether the tag was added or not
- */
-function addTagToMap(tagId, characterId = null) {
-    const key = characterId !== null && characterId !== undefined ? getTagKeyForEntity(characterId) : getTagKey();
-
-    if (!key) {
-        return false;
-    }
-
-    // Fuse-index invalidation (only if this actually changed something) is handled by the tagMapStore.onChange
-    // subscriber (rebuildTagStores()).
-    return !!tagMapStore.assign(key, tagId);
 }
 
 /**
