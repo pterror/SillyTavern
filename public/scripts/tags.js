@@ -18,6 +18,7 @@ import { FILTER_TYPES, FILTER_STATES, DEFAULT_FILTER_STATE, isFilterState, Filte
 import { groupCandidatesFilter, groupMembersFilter, groups, selected_group } from './group-chats.js';
 import { download, onlyUnique, parseJsonFile, uuidv4, getSortableDelay, flashHighlight, equalsIgnoreCaseAndAccents, includesIgnoreCaseAndAccents, removeFromArray, getFreeName, debounce, findChar, escapeHtml } from './utils.js';
 import { power_user, invalidateCharactersFuseIndex, invalidateGroupsFuseIndex, invalidateTagsFuseIndex } from './power-user.js';
+import { EntityStore, RelationStore } from './entity-store.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
 import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from './slash-commands/SlashCommandArgument.js';
@@ -360,51 +361,52 @@ let tag_map = {};
 let expanded_tags_cache = [];
 
 /**
- * Id-indexed lookup of `tags`, kept in sync at every mutation site of `tags` (perf: avoids O(n) `tags.find()`/`tags.filter()`
- * scans on hot paths like getTagsList() and printTagFilters(), which used to run per-row / per-render over the full tag list).
- * @type {Map<string, Tag>}
+ * CHUNK A of the tags -> entity-store migration (see entity-store.js): these two stores now back `tags`/`tag_map`
+ * internally. They still wrap the *same* `tags` array / `tag_map` object in place, so every other read call site
+ * in this file (and in every other file that imports `tags`/`tag_map` directly) keeps working completely
+ * unchanged. Only the internal bookkeeping that used to be `tagsById`/`assignedTagIdsCache` is replaced here -
+ * mutation call sites (createNewTag, addTagToMap, etc) are migrated to call these stores' own ops in later,
+ * separate commits, one mutation-site-group at a time.
+ * @type {EntityStore<Tag>}
  */
-let tagsById = new Map();
+let tagsStore = new EntityStore(tags, tag => tag.id);
+
+/** @type {RelationStore} */
+let tagMapStore = new RelationStore(tag_map);
 
 /**
- * Cache of the set of all tag ids that are assigned to *some* entity in `tag_map` (i.e. `Object.values(tag_map).flat()`, deduped).
- * Invalidated (not incrementally maintained, since `tag_map` is also mutated directly from a few other modules) whenever a
- * `tag_map` mutation is known to have happened, and lazily rebuilt on next read. Rebuilding is O(tag_map size) which only
- * happens when the map actually changes, instead of on every render.
- * @type {Set<string>?}
+ * Reconstructs `tagsStore`/`tagMapStore` to wrap the current `tags`/`tag_map` references. Called from
+ * `loadTagsSettings` (which reassigns `tags`/`tag_map` themselves, e.g. to `settings.tags`), since a store
+ * constructed against the *old* array/object reference would otherwise keep indexing stale, orphaned data.
  */
-let assignedTagIdsCache = null;
-
-/**
- * Rebuilds the `tagsById` index from the current `tags` array. Called from `loadTagsSettings` and can be used as a fallback
- * whenever an id-based incremental update isn't practical.
- */
-function rebuildTagsById() {
-    tagsById = new Map(tags.map(tag => [tag.id, tag]));
+function rebuildTagStores() {
+    tagsStore = new EntityStore(tags, tag => tag.id);
+    tagMapStore = new RelationStore(tag_map);
 }
 
 /**
- * Marks the assigned-tag-ids cache as stale. Must be called after any mutation of `tag_map` (adding/removing a tag_map key,
- * or changing the array of tag ids for a key), including from other modules that write into `tag_map` directly.
- *
- * Also invalidates the persistent character/group search indexes (power-user.js), since a `#tags` field
- * (used by fuzzySearchCharacters/fuzzySearchGroups) depends on tag_map content.
+ * Forces `tagMapStore`'s usage-count index to be recomputed from the current contents of `tag_map`. Needed
+ * because a few other modules (BulkEditOverlay.js, group-chats.js, script.js) still write into `tag_map`
+ * directly rather than through `tagMapStore`'s own ops (that migration is still to come) - this is the bridge
+ * that keeps the store's incremental bookkeeping correct in the meantime. Also invalidates the persistent
+ * character/group search indexes (power-user.js), since their `#tags` field depends on tag_map content.
  */
 function invalidateAssignedTagIdsCache() {
-    assignedTagIdsCache = null;
+    tagMapStore.reindex();
     invalidateCharactersFuseIndex();
     invalidateGroupsFuseIndex();
 }
 
 /**
- * Gets the set of all tag ids that are currently assigned to at least one entity in `tag_map`. Cached; see `assignedTagIdsCache`.
- * @returns {Set<string>}
+ * Gets a `.has(id)`-checkable collection of all tag ids that are currently assigned to at least one entity in
+ * `tag_map`. Returns `tagMapStore`'s live usage-count Map directly (not a copy) - every current caller only
+ * needs `.has()`, which a Map supports natively, so there's no need to materialize a fresh Set on every call
+ * (that would turn an O(1) lookup back into an O(k) allocation each time this is called, which is often -
+ * multiple times per printTagFilters(), which itself runs on every render).
+ * @returns {{ has(id: string): boolean }}
  */
 function getAssignedTagIds() {
-    if (!assignedTagIdsCache) {
-        assignedTagIdsCache = new Set(Object.values(tag_map).flat());
-    }
-    return assignedTagIdsCache;
+    return tagMapStore.usageCounts;
 }
 
 /**
@@ -664,8 +666,9 @@ function filterByFolder(filterHelper) {
 function loadTagsSettings(settings) {
     tags = settings.tags !== undefined ? settings.tags : DEFAULT_TAGS;
     tag_map = settings.tag_map !== undefined ? settings.tag_map : Object.create(null);
-    rebuildTagsById();
-    invalidateAssignedTagIdsCache();
+    rebuildTagStores();
+    invalidateCharactersFuseIndex();
+    invalidateGroupsFuseIndex();
 }
 
 function renameTagKey(oldKey, newKey) {
@@ -702,7 +705,7 @@ function getTagsList(key, sort = true) {
     }
 
     const list = tag_map[key]
-        .map(x => tagsById.get(x))
+        .map(x => tagsStore.get(x))
         .filter(x => x);
     if (sort) list.sort(compareTagsForSort);
     return list;
@@ -1293,8 +1296,7 @@ function createNewTag(tagName) {
     }
 
     const tag = newTag(tagName);
-    tags.push(tag);
-    tagsById.set(tag.id, tag);
+    tagsStore.create(tag);
     invalidateTagsFuseIndex();
     console.debug('Created new tag', tag.name, 'with id', tag.id);
     return tag;
@@ -2227,7 +2229,7 @@ async function onTagRestoreFileSelect(e) {
         toastr.success('Tags restored successfully.', 'Tag Restore');
     }
 
-    rebuildTagsById();
+    tagsStore.reindex();
     invalidateAssignedTagIdsCache();
     invalidateTagsFuseIndex();
 
@@ -2279,8 +2281,7 @@ async function onTagsPruneClick() {
     }
 
     for (const tag of tagsToPrune) {
-        tags.splice(tags.indexOf(tag), 1);
-        tagsById.delete(tag.id);
+        tagsStore.remove(tag.id);
     }
 
     for (const key of tagMapsToPrune) {
@@ -2469,15 +2470,13 @@ async function onTagDeleteClick() {
         }
     }
 
-    const index = tags.findIndex(x => x.id === id);
-    tags.splice(index, 1);
-    tagsById.delete(id);
+    tagsStore.remove(id);
     invalidateAssignedTagIdsCache();
     invalidateTagsFuseIndex();
     $(`.tag[id="${id}"]`).remove();
     $(`.tag_view_item[id="${id}"]`).remove();
 
-    toastr.success(`'${tag.name}' deleted${mergeTagId ? ` and merged into '${tagsById.get(mergeTagId).name}'` : ''}`, 'Delete Tag');
+    toastr.success(`'${tag.name}' deleted${mergeTagId ? ` and merged into '${tagsStore.get(mergeTagId).name}'` : ''}`, 'Delete Tag');
 
     printCharactersDebounced();
     saveSettingsDebounced();
