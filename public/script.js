@@ -1245,6 +1245,7 @@ export async function getOneCharacter(avatarUrl) {
 
         if (indexOf !== -1) {
             characters[indexOf] = getData;
+            invalidateCharactersFuseIndex();
         } else {
             toastr.error(t`Character ${avatarUrl} not found in the list`, t`Error`, { timeOut: 5000, preventDuplicates: true });
         }
