@@ -2272,10 +2272,11 @@ async function onTagsPruneClick() {
     }
 
     for (const key of tagMapsToPrune) {
-        delete tag_map[key];
+        tagMapStore.removeKey(key);
     }
 
-    invalidateAssignedTagIdsCache();
+    invalidateCharactersFuseIndex();
+    invalidateGroupsFuseIndex();
     invalidateTagsFuseIndex();
     printCharactersDebounced();
     saveSettingsDebounced();
@@ -2448,17 +2449,12 @@ async function onTagDeleteClick() {
 
     const mergeTagId = $('#merge_tag_select').val() ? String($('#merge_tag_select').val()) : null;
 
-    // Remove the tag from all entities that use it
-    // If we have a replacement tag, add that one instead
-    for (const key of Object.keys(tag_map)) {
-        if (tag_map[key].includes(id)) {
-            tag_map[key] = tag_map[key].filter(x => x !== id);
-            if (mergeTagId) tag_map[key].push(mergeTagId);
-        }
-    }
+    // Remove the tag from all entities that use it. If we have a replacement tag, add that one instead.
+    tagMapStore.removeRelatedIdEverywhere(id, { replaceWithId: mergeTagId });
 
     tagsStore.remove(id);
-    invalidateAssignedTagIdsCache();
+    invalidateCharactersFuseIndex();
+    invalidateGroupsFuseIndex();
     invalidateTagsFuseIndex();
     $(`.tag[id="${id}"]`).remove();
     $(`.tag_view_item[id="${id}"]`).remove();
