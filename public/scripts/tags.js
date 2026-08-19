@@ -53,6 +53,7 @@ export {
     compareTagsForSort,
     removeTagFromMap,
     invalidateAssignedTagIdsCache,
+    getAssignedTagIds,
 };
 
 const CHARACTER_FILTER_SELECTOR = '#rm_characters_block .rm_tag_filter';
@@ -759,8 +760,11 @@ export function getTagKeyForEntity(entityOrKey) {
         x = character.avatar;
     }
 
-    // Uninitialized character tag map
-    if (character && !(x in tag_map)) {
+    // Uninitialized character tag map. Guard against `character.avatar` itself being falsy (seen on at least one
+    // malformed/legacy character on this install) - `tag_map[undefined] = []` silently creates a real,
+    // permanent `"undefined"` string key (JS coerces object keys to strings), which then shows up as a bogus
+    // entry in every "which tag_map keys point to real entities" scan.
+    if (character && x && !(x in tag_map)) {
         tag_map[x] = [];
         return x;
     }
@@ -1665,17 +1669,23 @@ function runTagFilters(listElement) {
 }
 
 /**
- * Cache of the last-rendered tag-pill signature per filter type, so printTagFilters() can skip rebuilding the
+ * Cache of the last-rendered tag-pill set per filter type, so printTagFilters() can skip rebuilding the
  * (potentially thousands of, on this install - almost every one of ~9700 tags is assigned to something)
  * tag filter pills via jQuery clone/append when the set of tags to display hasn't actually changed since the
- * last render. printTagFilters() runs on *every* printCharacters() call - every search-bar keystroke, every
- * tag filter chip click, every page nav - so without this, that whole pill list gets torn down and rebuilt from
- * scratch every single time regardless of whether anything about it changed.
- * Scoped to !power_user.bogus_folders (see call site) since the bogus-folder drilldown rendering piggybacks on
- * this same function and isn't (yet) covered by the signature.
- * @type {Map<string, string>}
+ * last render, and *patch just the delta* (add/remove/re-mark-inactive individual pills) when it has changed
+ * by a small amount - e.g. a single tag flipping from unused to used or vice versa. printTagFilters() runs on
+ * *every* printCharacters() call - every search-bar keystroke, every tag filter chip click, every page nav - so
+ * without this, that whole pill list gets torn down and rebuilt from scratch every single time.
+ * @type {Map<string, { ids: Set<string>, inactiveIds: Set<string> }>}
  */
 const tagFilterRenderCache = new Map();
+
+/**
+ * Above this many changed pills (added + removed + re-marked-inactive), just do the normal full rebuild instead
+ * of diff-patching - finding each new pill's sorted insertion point is a small linear scan per pill, fine for a
+ * handful of tags but not worth it (and not necessary - see below) for a big batch of changes.
+ */
+const TAG_FILTER_DIFF_PATCH_MAX_DELTA = 25;
 
 function printTagFilters(type = tag_filter_type.character) {
     removeMissingTagFilters();
@@ -1733,21 +1743,6 @@ function printTagFilters(type = tag_filter_type.character) {
         tagsToDisplay = tags.filter(x => characterTagIds.has(x.id)).sort(compareTagsForSort);
     }
 
-    // Skip the (potentially huge) pill rebuild entirely if nothing about the displayed set changed since last
-    // time. Not applied under bogus_folders, since the drilldown rendering below isn't covered by this signature.
-    if (!power_user.bogus_folders) {
-        const signature = tagsToDisplay.map(t => t.id).join(',') + '|' + inactiveTags.join(',');
-        if (tagFilterRenderCache.get(type) === signature) {
-            updateTagFilterVisibility(type, FILTER_SELECTOR);
-            return;
-        }
-        tagFilterRenderCache.set(type, signature);
-    } else {
-        tagFilterRenderCache.delete(type);
-    }
-
-    $(FILTER_SELECTOR).empty();
-
     // Print all action tags. (Rework 'Folder' button to some kind of onboarding if no folders are enabled yet)
     let actionTags = Object.values(ACTIONABLE_TAGS);
     actionTags.find(x => x == ACTIONABLE_TAGS.FOLDER).name = power_user.bogus_folders ? 'Show only folders' : 'Enable \'Tags as Folder\'\n\nAllows characters to be grouped in folders by their assigned tags.\nTags have to be explicitly chosen as folder to show up.\n\nClick here to start';
@@ -1757,13 +1752,29 @@ function printTagFilters(type = tag_filter_type.character) {
         actionTags = filterActionableTagsForGroupContext(actionTags);
     }
 
-    printTagList($(FILTER_SELECTOR), { empty: false, sort: false, tags: actionTags, tagActionSelector: tag => tag.action, tagOptions: { isGeneralList: true } });
-
     const inListActionTags = Object.values(InListActionable);
+
+    // Remove just the action/inList-action pills from any previous render (by their known, fixed ids) instead
+    // of the old unconditional $(FILTER_SELECTOR).empty() - that would also wipe out the (potentially huge) real
+    // tag pill list below, which is exactly the rebuild we're trying to avoid doing on every render.
+    const actionAndInListTags = [...actionTags, ...inListActionTags];
+    for (const tag of actionAndInListTags) {
+        $(FILTER_SELECTOR).find(`.tag[id="${tag.id}"]`).remove();
+    }
+
+    // Build them directly into the real (attached) container - appendTagToList/getFilterHelper resolve the
+    // correct FilterHelper (group members/candidates vs main list) by walking up from the element at build time,
+    // which only works if it's actually attached under its real ancestor when built, not a detached scratch div.
+    printTagList($(FILTER_SELECTOR), { empty: false, sort: false, tags: actionTags, tagActionSelector: tag => tag.action, tagOptions: { isGeneralList: true } });
     printTagList($(FILTER_SELECTOR), { empty: false, sort: false, tags: inListActionTags, tagActionSelector: tag => tag.action, tagOptions: { isGeneralList: true } });
 
-    printTagList($(FILTER_SELECTOR), { empty: false, tags: tagsToDisplay, tagOptions: { isFilter: true, isGeneralList: true }, inactiveTags: inactiveTags });
+    // They just got appended at the end (after whatever real tag pills are still there) - move them back to the
+    // front as a block, preserving their relative order, same position as the old always-rebuilt version had.
+    for (const tag of [...actionAndInListTags].reverse()) {
+        $(FILTER_SELECTOR).find(`.tag[id="${tag.id}"]`).prependTo($(FILTER_SELECTOR));
+    }
 
+    printBigTagFilterList(type, FILTER_SELECTOR, tagsToDisplay, inactiveTags);
 
     // Print bogus folder navigation
     const bogusDrilldown = $(FILTER_SELECTOR).siblings('.rm_tag_bogus_drilldown');
@@ -1778,6 +1789,104 @@ function printTagFilters(type = tag_filter_type.character) {
     // runTagFilters is only needed when user clicks a tag (handled in onTagFilterClick).
 
     updateTagFilterVisibility(type, FILTER_SELECTOR);
+}
+
+/**
+ * Prints (or incrementally patches) the "big" block of real tag filter pills within a tag filter bar - the part
+ * that's expensive at this install's scale (up to ~9700 pills once the "show more" cap has been expanded).
+ *
+ * Three cases:
+ * 1. Nothing changed since last render for this filter type -> no DOM work at all.
+ * 2. Something changed, but the container isn't currently expanded past the default 50-tag cap -> that cap means
+ *    there's at most ~50-60 pills to draw anyway, so just let printTagList() do its normal full (cheap at that
+ *    size) rebuild, including its own cap/placeholder/mandatory-tag logic.
+ * 3. Something changed, the container *is* expanded (so printTagList would otherwise redraw everything, cap
+ *    logic doesn't apply since it's disabled while expanded), and the change is small -> diff-patch just the
+ *    pills that actually differ (add/remove/re-mark-inactive), preserving sort order via insertion, instead of
+ *    tearing down and rebuilding the whole thing.
+ * Falls back to the normal full rebuild for any case not covered above (first render, big batches of changes,
+ * anything under bogus_folders since tag-as-folder pills interact with the drilldown in ways not modeled here).
+ *
+ * @param {tag_filter_type} type
+ * @param {string} FILTER_SELECTOR
+ * @param {Tag[]} tagsToDisplay - already sorted via compareTagsForSort
+ * @param {string[]} inactiveTags - ids of tags in tagsToDisplay that should be marked inactive
+ */
+function printBigTagFilterList(type, FILTER_SELECTOR, tagsToDisplay, inactiveTags) {
+    const newIds = new Set(tagsToDisplay.map(t => t.id));
+    const newInactiveIds = new Set(inactiveTags);
+    const cached = tagFilterRenderCache.get(type);
+
+    const fullRebuild = () => {
+        // There's no top-level $(FILTER_SELECTOR).empty() anymore (that would nuke the action tag pills too, see
+        // printTagFilters above), so any pills from a previous render need to be explicitly cleared here first -
+        // printTagList({empty: false, ...}) only appends, it never removes stale ones that dropped out of
+        // tagsToDisplay.
+        if (cached) {
+            for (const id of cached.ids) {
+                $(FILTER_SELECTOR).find(`.tag[id="${id}"]`).remove();
+            }
+        }
+        printTagList($(FILTER_SELECTOR), { empty: false, tags: tagsToDisplay, tagOptions: { isFilter: true, isGeneralList: true }, inactiveTags: inactiveTags });
+        tagFilterRenderCache.set(type, { ids: newIds, inactiveIds: newInactiveIds });
+    };
+
+    // Case 1: nothing changed. Bogus folders aren't covered by this cache (tag-as-folder pills can need
+    // re-rendering for reasons other than membership/inactive changes), so always fall through there.
+    if (cached && !power_user.bogus_folders) {
+        let sameInactive = cached.inactiveIds.size === newInactiveIds.size;
+        if (sameInactive) for (const id of newInactiveIds) if (!cached.inactiveIds.has(id)) { sameInactive = false; break; }
+        let sameIds = sameInactive && cached.ids.size === newIds.size;
+        if (sameIds) for (const id of newIds) if (!cached.ids.has(id)) { sameIds = false; break; }
+
+        if (sameIds && sameInactive) {
+            return;
+        }
+    }
+
+    const $container = $(FILTER_SELECTOR);
+    const isExpanded = $container.hasClass('tags-expanded');
+
+    // Case 2: capped, cheap regardless - let printTagList do its normal thing (also handles the mandatory-tag/
+    // placeholder bookkeeping we don't want to reimplement here).
+    if (!isExpanded || power_user.bogus_folders || !cached) {
+        fullRebuild();
+        return;
+    }
+
+    const toRemove = [...cached.ids].filter(id => !newIds.has(id));
+    const toAdd = tagsToDisplay.filter(t => !cached.ids.has(t.id));
+    const toToggleInactive = tagsToDisplay.filter(t => cached.ids.has(t.id) && cached.inactiveIds.has(t.id) !== newInactiveIds.has(t.id));
+
+    // Case 3 only for small deltas - see TAG_FILTER_DIFF_PATCH_MAX_DELTA doc.
+    if (toRemove.length + toAdd.length + toToggleInactive.length > TAG_FILTER_DIFF_PATCH_MAX_DELTA) {
+        fullRebuild();
+        return;
+    }
+
+    for (const id of toRemove) {
+        $container.find(`.tag[id="${id}"]`).remove();
+    }
+
+    for (const tag of toAdd) {
+        appendTagToList($container, tag, { isFilter: true, isGeneralList: true, isInactive: newInactiveIds.has(tag.id), skipExistsCheck: true });
+        // appendTagToList always appends at the end - move it to its correct sorted position by finding the
+        // next tag (in sort order) that's already present as a pill, and inserting just before that one.
+        const sortedIndex = tagsToDisplay.indexOf(tag);
+        for (let i = sortedIndex + 1; i < tagsToDisplay.length; i++) {
+            const $next = $container.find(`.tag[id="${tagsToDisplay[i].id}"]`);
+            if ($next.length) {
+                $container.find(`.tag[id="${tag.id}"]`).insertBefore($next);
+                break;
+            }
+        }
+    }
+
+    for (const tag of toToggleInactive) {
+        $container.find(`.tag[id="${tag.id}"]`).toggleClass('tag-absent', newInactiveIds.has(tag.id));
+    }
+
+    tagFilterRenderCache.set(type, { ids: newIds, inactiveIds: newInactiveIds });
 }
 
 /**

@@ -45,7 +45,7 @@ import {
     updateBindModelTemplatesState,
 } from './instruct-mode.js';
 
-import { getTagsList, tag_import_setting, tag_map, tag_sort_mode, tags } from './tags.js';
+import { getTagsList, tag_import_setting, tag_map, tag_sort_mode, tags, getAssignedTagIds } from './tags.js';
 import { tokenizers } from './tokenizers.js';
 import { BIAS_CACHE } from './logit-bias.js';
 import { renderTemplateAsync } from './templates.js';
@@ -4241,7 +4241,10 @@ jQuery(() => {
             SlashCommandArgument.fromProps({
                 description: 'optional tag name',
                 typeList: [ARGUMENT_TYPE.STRING],
-                enumProvider: () => tags.filter(tag => Object.values(tag_map).some(x => x.includes(tag.id))).map(tag => new SlashCommandEnumValue(tag.name, null, enumTypes.enum, enumIcons.tag)),
+                enumProvider: () => {
+                    const assignedTagIds = getAssignedTagIds();
+                    return tags.filter(tag => assignedTagIds.has(tag.id)).map(tag => new SlashCommandEnumValue(tag.name, null, enumTypes.enum, enumIcons.tag));
+                },
             }),
         ],
         helpString: 'Start a new chat with a random character. If an argument is provided, only considers characters that have the specified tag.',
