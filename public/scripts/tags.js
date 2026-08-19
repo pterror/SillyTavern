@@ -361,12 +361,12 @@ let tag_map = {};
 let expanded_tags_cache = [];
 
 /**
- * CHUNK A of the tags -> entity-store migration (see entity-store.js): these two stores now back `tags`/`tag_map`
- * internally. They still wrap the *same* `tags` array / `tag_map` object in place, so every other read call site
- * in this file (and in every other file that imports `tags`/`tag_map` directly) keeps working completely
- * unchanged. Only the internal bookkeeping that used to be `tagsById`/`assignedTagIdsCache` is replaced here -
- * mutation call sites (createNewTag, addTagToMap, etc) are migrated to call these stores' own ops in later,
- * separate commits, one mutation-site-group at a time.
+ * The tags -> entity-store migration (see entity-store.js): these two stores back `tags`/`tag_map` internally.
+ * They still wrap the *same* `tags` array / `tag_map` object in place, so every other read call site in this
+ * file (and in every other file that imports `tags`/`tag_map` directly) keeps working completely unchanged.
+ * Nearly every mutation site in this file now goes through these stores' own ops instead of touching `tags`/
+ * `tag_map` directly (a few genuinely-bulk, rare operations - the manual tag drag-reorder, the tags-backup
+ * restore flow - are deliberately still direct mutations followed by a bulk reindex, see their own comments).
  * @type {EntityStore<Tag>}
  */
 let tagsStore = new EntityStore(tags, tag => tag.id);
@@ -375,13 +375,35 @@ let tagsStore = new EntityStore(tags, tag => tag.id);
 let tagMapStore = new RelationStore(tag_map);
 
 /**
- * Reconstructs `tagsStore`/`tagMapStore` to wrap the current `tags`/`tag_map` references. Called from
- * `loadTagsSettings` (which reassigns `tags`/`tag_map` themselves, e.g. to `settings.tags`), since a store
- * constructed against the *old* array/object reference would otherwise keep indexing stale, orphaned data.
+ * Reconstructs `tagsStore`/`tagMapStore` to wrap the current `tags`/`tag_map` references, and (re)registers the
+ * search-index-invalidation subscribers on them. Called from `loadTagsSettings` (which reassigns `tags`/
+ * `tag_map` themselves, e.g. to `settings.tags`), since a store constructed against the *old* array/object
+ * reference would otherwise keep indexing stale, orphaned data - and since a new store instance has no
+ * listeners of its own, subscriptions on the previous instance don't carry over.
  */
 function rebuildTagStores() {
     tagsStore = new EntityStore(tags, tag => tag.id);
     tagMapStore = new RelationStore(tag_map);
+
+    // A tag's own identity changing (create/delete/rename, or any other field edit) can affect what a text
+    // search over tags should match, and - since a character/group's `#tags` search field is built from tag
+    // *names* - can also affect character/group search matches. Slightly conservative on purpose (e.g. this
+    // also fires for a folder_type-only change, which doesn't actually affect any indexed text) rather than
+    // trying to special-case exactly which field changed: the cost of an unnecessary index rebuild on the next
+    // search after a rare tag-management action is a single ~80ms rebuild, not the "every keystroke" cost this
+    // was originally built to eliminate - so being precise here isn't worth the risk of under-invalidating and
+    // serving stale search results instead.
+    tagsStore.onChange(() => {
+        invalidateTagsFuseIndex();
+        invalidateCharactersFuseIndex();
+        invalidateGroupsFuseIndex();
+    });
+
+    // Any tag_map change can affect a character/group's `#tags` search field content.
+    tagMapStore.onChange(() => {
+        invalidateCharactersFuseIndex();
+        invalidateGroupsFuseIndex();
+    });
 }
 
 /**
@@ -672,17 +694,15 @@ function loadTagsSettings(settings) {
 }
 
 function renameTagKey(oldKey, newKey) {
+    // Fuse-index invalidation is handled by the tagMapStore.onChange subscriber (rebuildTagStores()).
     tagMapStore.renameKey(oldKey, newKey);
-    invalidateCharactersFuseIndex();
-    invalidateGroupsFuseIndex();
     saveSettingsDebounced();
 }
 
 function createTagMapFromList(listElement, key) {
     const tagIds = [...($(listElement).find('.tag').map((_, el) => $(el).attr('id')))];
+    // Fuse-index invalidation is handled by the tagMapStore.onChange subscriber (rebuildTagStores()).
     tagMapStore.setKey(key, tagIds);
-    invalidateCharactersFuseIndex();
-    invalidateGroupsFuseIndex();
     saveSettingsDebounced();
 }
 
@@ -1015,12 +1035,9 @@ function addTagToMap(tagId, characterId = null) {
         return false;
     }
 
-    const change = tagMapStore.assign(key, tagId);
-    if (change) {
-        invalidateCharactersFuseIndex();
-        invalidateGroupsFuseIndex();
-    }
-    return !!change;
+    // Fuse-index invalidation (only if this actually changed something) is handled by the tagMapStore.onChange
+    // subscriber (rebuildTagStores()).
+    return !!tagMapStore.assign(key, tagId);
 }
 
 /**
@@ -1036,12 +1053,9 @@ function removeTagFromMap(tagId, characterId = null) {
         return false;
     }
 
-    const change = tagMapStore.unassign(key, tagId);
-    if (change) {
-        invalidateCharactersFuseIndex();
-        invalidateGroupsFuseIndex();
-    }
-    return !!change;
+    // Fuse-index invalidation (only if this actually changed something) is handled by the tagMapStore.onChange
+    // subscriber (rebuildTagStores()).
+    return !!tagMapStore.unassign(key, tagId);
 }
 
 function findTag(request, resolve, listSelector) {
@@ -1283,8 +1297,8 @@ function createNewTag(tagName) {
     }
 
     const tag = newTag(tagName);
+    // Fuse-index invalidation is handled by the tagsStore.onChange subscriber (rebuildTagStores()).
     tagsStore.create(tag);
-    invalidateTagsFuseIndex();
     console.debug('Created new tag', tag.name, 'with id', tag.id);
     return tag;
 }
@@ -2283,6 +2297,8 @@ async function onTagsPruneClick() {
         return;
     }
 
+    // Fuse-index invalidation (per removal) is handled by the tagsStore/tagMapStore.onChange subscribers
+    // (rebuildTagStores()) - firing once per pruned item here is fine, it's just setting dirty flags.
     for (const tag of tagsToPrune) {
         tagsStore.remove(tag.id);
     }
@@ -2291,9 +2307,6 @@ async function onTagsPruneClick() {
         tagMapStore.removeKey(key);
     }
 
-    invalidateCharactersFuseIndex();
-    invalidateGroupsFuseIndex();
-    invalidateTagsFuseIndex();
     printCharactersDebounced();
     saveSettingsDebounced();
 
@@ -2466,12 +2479,10 @@ async function onTagDeleteClick() {
     const mergeTagId = $('#merge_tag_select').val() ? String($('#merge_tag_select').val()) : null;
 
     // Remove the tag from all entities that use it. If we have a replacement tag, add that one instead.
+    // Fuse-index invalidation is handled by the tagsStore/tagMapStore.onChange subscribers (rebuildTagStores()).
     tagMapStore.removeRelatedIdEverywhere(id, { replaceWithId: mergeTagId });
 
     tagsStore.remove(id);
-    invalidateCharactersFuseIndex();
-    invalidateGroupsFuseIndex();
-    invalidateTagsFuseIndex();
     $(`.tag[id="${id}"]`).remove();
     $(`.tag_view_item[id="${id}"]`).remove();
 
@@ -2486,10 +2497,8 @@ async function onTagDeleteClick() {
 function onTagRenameInput() {
     const id = $(this).closest('.tag_view_item').attr('id');
     const newName = $(this).text();
+    // Fuse-index invalidation is handled by the tagsStore.onChange subscriber (rebuildTagStores()).
     tagsStore.update(id, { name: newName });
-    invalidateTagsFuseIndex();
-    invalidateCharactersFuseIndex();
-    invalidateGroupsFuseIndex();
     $(this).attr('dirty', '');
     $(`.tag[id="${id}"] .tag_name`).text(newName);
     saveSettingsDebounced();
@@ -2594,9 +2603,8 @@ function onClearAllFiltersClick(filterHelper) {
  * @param {{oldAvatar: string, newAvatar: string}} data Event data
  */
 function copyTags(data) {
+    // Fuse-index invalidation is handled by the tagMapStore.onChange subscriber (rebuildTagStores()).
     tagMapStore.copyKey(data.oldAvatar, data.newAvatar);
-    invalidateCharactersFuseIndex();
-    invalidateGroupsFuseIndex();
 }
 
 /**
@@ -2606,8 +2614,6 @@ function copyTags(data) {
  */
 export function clearEntityTags(key) {
     tagMapStore.setKey(key, []);
-    invalidateCharactersFuseIndex();
-    invalidateGroupsFuseIndex();
 }
 
 /**
@@ -2617,8 +2623,6 @@ export function clearEntityTags(key) {
  */
 export function removeEntityTags(key) {
     tagMapStore.removeKey(key);
-    invalidateCharactersFuseIndex();
-    invalidateGroupsFuseIndex();
 }
 
 /**
