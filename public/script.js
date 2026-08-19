@@ -1042,22 +1042,27 @@ export async function printCharacters(fullRefresh = false) {
                 const emptyBlock = await getEmptyBlock();
                 $(listId).append(emptyBlock);
             }
+            // Build all rows into a detached DocumentFragment first, and append it once. Appending elements
+            // one by one into the live (attached, display:flex) list forces a reflow per row; batching this
+            // way costs one reflow for the whole page instead of one per row (up to 500/page on this install).
+            const fragment = document.createDocumentFragment();
             let displayCount = 0;
             for (const i of data) {
                 switch (i.type) {
                     case 'character':
-                        $(listId).append(getCharacterBlock(i.item, i.id));
+                        fragment.appendChild(getCharacterBlock(i.item, i.id).get(0));
                         displayCount++;
                         break;
                     case 'group':
-                        $(listId).append(getGroupBlock(i.item));
+                        fragment.appendChild(getGroupBlock(i.item).get(0));
                         displayCount++;
                         break;
                     case 'tag':
-                        $(listId).append(getTagBlock(i.item, i.entities, i.hidden, i.isUseless));
+                        fragment.appendChild(getTagBlock(i.item, i.entities, i.hidden, i.isUseless).get(0));
                         break;
                 }
             }
+            $(listId).get(0).appendChild(fragment);
 
             const hidden = (characters.length + groups.length) - displayCount;
             if (hidden > 0 && entitiesFilter.hasAnyFilter()) {
