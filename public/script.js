@@ -212,6 +212,7 @@ import {
     applyTagsOnGroupSelect,
     tag_import_setting,
     applyCharacterTagsToMessageDivs,
+    invalidateAssignedTagIdsCache,
 } from './scripts/tags.js';
 import { checkOpenRouterAuth, initSecrets, readSecretState } from './scripts/secrets.js';
 import { markdownExclusionExt } from './scripts/showdown-exclusion.js';
@@ -10876,6 +10877,7 @@ export async function deleteCharacter(characterKey, { deleteChats = true } = {})
         accountStorage.removeItem(`AlertRegex_${character.avatar}`);
         accountStorage.removeItem(`mediaWarningShown:${character.avatar}`);
         delete tag_map[character.avatar];
+        invalidateAssignedTagIdsCache();
         select_rm_info('char_delete', character.name);
 
         if (deleteChats) {

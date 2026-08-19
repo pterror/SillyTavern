@@ -52,6 +52,7 @@ export {
     sortTags,
     compareTagsForSort,
     removeTagFromMap,
+    invalidateAssignedTagIdsCache,
 };
 
 const CHARACTER_FILTER_SELECTOR = '#rm_characters_block .rm_tag_filter';
@@ -358,6 +359,49 @@ let tag_map = {};
 let expanded_tags_cache = [];
 
 /**
+ * Id-indexed lookup of `tags`, kept in sync at every mutation site of `tags` (perf: avoids O(n) `tags.find()`/`tags.filter()`
+ * scans on hot paths like getTagsList() and printTagFilters(), which used to run per-row / per-render over the full tag list).
+ * @type {Map<string, Tag>}
+ */
+let tagsById = new Map();
+
+/**
+ * Cache of the set of all tag ids that are assigned to *some* entity in `tag_map` (i.e. `Object.values(tag_map).flat()`, deduped).
+ * Invalidated (not incrementally maintained, since `tag_map` is also mutated directly from a few other modules) whenever a
+ * `tag_map` mutation is known to have happened, and lazily rebuilt on next read. Rebuilding is O(tag_map size) which only
+ * happens when the map actually changes, instead of on every render.
+ * @type {Set<string>?}
+ */
+let assignedTagIdsCache = null;
+
+/**
+ * Rebuilds the `tagsById` index from the current `tags` array. Called from `loadTagsSettings` and can be used as a fallback
+ * whenever an id-based incremental update isn't practical.
+ */
+function rebuildTagsById() {
+    tagsById = new Map(tags.map(tag => [tag.id, tag]));
+}
+
+/**
+ * Marks the assigned-tag-ids cache as stale. Must be called after any mutation of `tag_map` (adding/removing a tag_map key,
+ * or changing the array of tag ids for a key), including from other modules that write into `tag_map` directly.
+ */
+function invalidateAssignedTagIdsCache() {
+    assignedTagIdsCache = null;
+}
+
+/**
+ * Gets the set of all tag ids that are currently assigned to at least one entity in `tag_map`. Cached; see `assignedTagIdsCache`.
+ * @returns {Set<string>}
+ */
+function getAssignedTagIds() {
+    if (!assignedTagIdsCache) {
+        assignedTagIdsCache = new Set(Object.values(tag_map).flat());
+    }
+    return assignedTagIdsCache;
+}
+
+/**
  * Applies the basic filter for the current state of the tags and their selection on an entity list.
  * @param {Array<Object>} entities List of entities for display, consisting of tags, characters and groups.
  * @param {Object} param1 Optional parameters, explained below.
@@ -614,18 +658,22 @@ function filterByFolder(filterHelper) {
 function loadTagsSettings(settings) {
     tags = settings.tags !== undefined ? settings.tags : DEFAULT_TAGS;
     tag_map = settings.tag_map !== undefined ? settings.tag_map : Object.create(null);
+    rebuildTagsById();
+    invalidateAssignedTagIdsCache();
 }
 
 function renameTagKey(oldKey, newKey) {
     const value = tag_map[oldKey];
     tag_map[newKey] = value || [];
     delete tag_map[oldKey];
+    invalidateAssignedTagIdsCache();
     saveSettingsDebounced();
 }
 
 function createTagMapFromList(listElement, key) {
     const tagIds = [...($(listElement).find('.tag').map((_, el) => $(el).attr('id')))];
     tag_map[key] = tagIds;
+    invalidateAssignedTagIdsCache();
     saveSettingsDebounced();
 }
 
@@ -648,7 +696,7 @@ function getTagsList(key, sort = true) {
     }
 
     const list = tag_map[key]
-        .map(x => tags.find(y => y.id === x))
+        .map(x => tagsById.get(x))
         .filter(x => x);
     if (sort) list.sort(compareTagsForSort);
     return list;
@@ -857,6 +905,7 @@ function addTagToMap(tagId, characterId = null) {
 
     if (!Array.isArray(tag_map[key])) {
         tag_map[key] = [tagId];
+        invalidateAssignedTagIdsCache();
         return true;
     } else {
         if (tag_map[key].includes(tagId))
@@ -864,6 +913,7 @@ function addTagToMap(tagId, characterId = null) {
 
         tag_map[key].push(tagId);
         tag_map[key] = tag_map[key].filter(onlyUnique);
+        invalidateAssignedTagIdsCache();
         return true;
     }
 }
@@ -886,8 +936,12 @@ function removeTagFromMap(tagId, characterId = null) {
         return false;
     } else {
         const indexOf = tag_map[key].indexOf(tagId);
+        if (indexOf === -1) {
+            return false;
+        }
         tag_map[key].splice(indexOf, 1);
-        return indexOf !== -1;
+        invalidateAssignedTagIdsCache();
+        return true;
     }
 }
 
@@ -1131,6 +1185,7 @@ function createNewTag(tagName) {
 
     const tag = newTag(tagName);
     tags.push(tag);
+    tagsById.set(tag.id, tag);
     console.debug('Created new tag', tag.name, 'with id', tag.id);
     return tag;
 }
@@ -1552,12 +1607,13 @@ function printTagFilters(type = tag_filter_type.character) {
                 .filter(onlyUnique);
 
             // Show all tags that exist in the tag_map
-            const allCharacterTagIds = Object.values(tag_map).flat().filter(onlyUnique);
-            tagsToDisplay = tags.filter(x => allCharacterTagIds.includes(x.id)).sort(compareTagsForSort);
+            const allCharacterTagIds = getAssignedTagIds();
+            const activeCharacterTagIdSet = new Set(activeCharacterTagIds);
+            tagsToDisplay = tags.filter(x => allCharacterTagIds.has(x.id)).sort(compareTagsForSort);
 
             // Mark tags that are not in the active set as inactive
             inactiveTags = tagsToDisplay
-                .filter(x => !activeCharacterTagIds.includes(x.id))
+                .filter(x => !activeCharacterTagIdSet.has(x.id))
                 .map(x => x.id);
         } else {
             // No group selected, show no tags
@@ -1565,8 +1621,8 @@ function printTagFilters(type = tag_filter_type.character) {
         }
     } else {
         // For main character list, show all tags as before
-        const characterTagIds = Object.values(tag_map).flat();
-        tagsToDisplay = tags.filter(x => characterTagIds.includes(x.id)).sort(compareTagsForSort);
+        const characterTagIds = getAssignedTagIds();
+        tagsToDisplay = tags.filter(x => characterTagIds.has(x.id)).sort(compareTagsForSort);
     }
 
     printTagList($(FILTER_SELECTOR), { empty: false, tags: tagsToDisplay, tagOptions: { isFilter: true, isGeneralList: true }, inactiveTags: inactiveTags });
@@ -1915,6 +1971,9 @@ async function onTagRestoreFileSelect(e) {
         toastr.success('Tags restored successfully.', 'Tag Restore');
     }
 
+    rebuildTagsById();
+    invalidateAssignedTagIdsCache();
+
     $('#tag_view_restore_input').val('');
     printCharactersDebounced();
     saveSettingsDebounced();
@@ -1944,7 +2003,7 @@ function onTagsBackupClick() {
 
 async function onTagsPruneClick() {
     // Get tags which have zero tag map entries
-    const allTagsInTagMaps = new Set(Object.values(tag_map).flat());
+    const allTagsInTagMaps = getAssignedTagIds();
     const tagsToPrune = tags.filter(tag => !allTagsInTagMaps.has(tag.id));
 
     // Get tag maps referring to deleted entities
@@ -1964,12 +2023,14 @@ async function onTagsPruneClick() {
 
     for (const tag of tagsToPrune) {
         tags.splice(tags.indexOf(tag), 1);
+        tagsById.delete(tag.id);
     }
 
     for (const key of tagMapsToPrune) {
         delete tag_map[key];
     }
 
+    invalidateAssignedTagIdsCache();
     printCharactersDebounced();
     saveSettingsDebounced();
 
@@ -2152,10 +2213,12 @@ async function onTagDeleteClick() {
 
     const index = tags.findIndex(x => x.id === id);
     tags.splice(index, 1);
+    tagsById.delete(id);
+    invalidateAssignedTagIdsCache();
     $(`.tag[id="${id}"]`).remove();
     $(`.tag_view_item[id="${id}"]`).remove();
 
-    toastr.success(`'${tag.name}' deleted${mergeTagId ? ` and merged into '${tags.find(x => x.id === mergeTagId).name}'` : ''}`, 'Delete Tag');
+    toastr.success(`'${tag.name}' deleted${mergeTagId ? ` and merged into '${tagsById.get(mergeTagId).name}'` : ''}`, 'Delete Tag');
 
     printCharactersDebounced();
     saveSettingsDebounced();
@@ -2268,6 +2331,7 @@ function copyTags(data) {
     const prevTagMap = tag_map[data.oldAvatar] || [];
     const newTagMap = tag_map[data.newAvatar] || [];
     tag_map[data.newAvatar] = Array.from(new Set([...prevTagMap, ...newTagMap]));
+    invalidateAssignedTagIdsCache();
 }
 
 /**
@@ -2277,8 +2341,10 @@ function copyTags(data) {
  */
 function printViewTagList(tagContainer, empty = true) {
     if (empty) tagContainer.empty();
-    const everything = Object.values(tag_map).flat();
-    const counts = new Map(tags.map(tag => [tag.id, everything.filter(x => x === tag.id).length]));
+    const counts = new Map(tags.map(tag => [tag.id, 0]));
+    for (const tagId of Object.values(tag_map).flat()) {
+        if (counts.has(tagId)) counts.set(tagId, counts.get(tagId) + 1);
+    }
     const sortedTags = sortTags(tags, counts);
     for (const tag of sortedTags) {
         const count = counts.get(tag.id) || 0;
@@ -2288,7 +2354,7 @@ function printViewTagList(tagContainer, empty = true) {
 
 function removeMissingTagFilters() {
     const tagIds = new Set(tags.map(tag => tag.id));
-    const assignedTagIds = new Set(Object.values(tag_map).flat());
+    const assignedTagIds = getAssignedTagIds();
     // Filter lists only print tags that are assigned to at least one entity. A filter on an unassigned
     // tag therefore has no element to toggle, and "Clear all filters" can't reset it either, because it
     // works by clicking the printed elements. Drop those filters instead of leaving them stuck.
