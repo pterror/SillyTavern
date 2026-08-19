@@ -2034,9 +2034,14 @@ async function onViewTagsListClick() {
 
 function makeTagListDraggable(tagContainer) {
     const onTagsSort = () => {
+        // Deliberately still a direct field mutation, not a tagsStore.update() per tag - this can touch every
+        // tag in the list (drag-reordering with ~9700 tags), and firing one store change event per tag here
+        // would be its own problem once something actually subscribes to those (a later chunk's concern - for
+        // now nothing does, and this doesn't affect tagsStore's id index since neither ids nor array positions
+        // change, just the sort_order field value on each existing tag object).
         tagContainer.find('.tag_view_item').each(function (i, tagElement) {
             const id = $(tagElement).attr('id');
-            const tag = tags.find(x => x.id === id);
+            const tag = tagsStore.get(id);
 
             // Update the sort order
             tag.sort_order = i;
@@ -2390,12 +2395,12 @@ function appendViewTagToList(list, tag, count) {
 function onTagAsFolderClick() {
     const element = $(this).closest('.tag_view_item');
     const id = element.attr('id');
-    const tag = tags.find(x => x.id === id);
+    const tag = tagsStore.get(id);
 
     // Cycle through folder types
     const types = Object.keys(TAG_FOLDER_TYPES);
     const currentTypeIndex = types.indexOf(tag.folder_type);
-    tag.folder_type = types[(currentTypeIndex + 1) % types.length];
+    tagsStore.update(id, { folder_type: types[(currentTypeIndex + 1) % types.length] });
 
     updateDrawTagFolder(element, tag);
 
@@ -2470,8 +2475,7 @@ async function onTagDeleteClick() {
 function onTagRenameInput() {
     const id = $(this).closest('.tag_view_item').attr('id');
     const newName = $(this).text();
-    const tag = tags.find(x => x.id === id);
-    tag.name = newName;
+    tagsStore.update(id, { name: newName });
     invalidateTagsFuseIndex();
     invalidateCharactersFuseIndex();
     invalidateGroupsFuseIndex();
@@ -2488,6 +2492,13 @@ function onTagRenameInput() {
  * @param {*} evt - The custom colorize event object
  * @param {(tag: Tag, val: string) => void} setColor - A function that sets the color of the tag
  * @param {string} cssProperty - The CSS property to apply the color to
+ *
+ * Deliberately still a direct `tags` array field mutation rather than routed through `tagsStore.update()` (unlike
+ * onTagRenameInput/onTagAsFolderClick) - `setColor` mutates the tag object in place via a generic callback shared
+ * by both color pickers, and restructuring that callback to return a patch object instead is scope for the
+ * "wire consumers onto tagsStore events" chunk, where it'll be clear whether recoloring actually needs to notify
+ * anything (no current consumer cares about tag color specifically). Same object reference either way, so this
+ * doesn't affect tagsStore's id index - purely a "no event fires" gap, not a correctness one.
  */
 function onTagColorize(evt, setColor, cssProperty) {
     const isDefaultColor = $(evt.target).data('default-color') === evt.detail.rgba;
