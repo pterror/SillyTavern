@@ -2125,12 +2125,79 @@ export function performFuzzySearch(type, data, keys, searchValue, fuzzySearchCac
 }
 
 /**
+ * Persistent Fuse indexes for the character/group/tag list search, keyed by fuzzySearchCategories.
+ * Rebuilding a Fuse index over the full character list (including heavy text fields like description,
+ * mes_example, etc, plus a per-character tag lookup) is expensive at scale - too expensive to redo on every
+ * keystroke. These are rebuilt lazily (on next search) only when marked dirty by an actual data change
+ * (character/group added/deleted/edited, or a tag mutation affecting an indexed field), via
+ * invalidateCharactersFuseIndex()/invalidateGroupsFuseIndex()/invalidateTagsFuseIndex().
+ * @type {{ characters: import('fuse.js').default?, groups: import('fuse.js').default?, tags: import('fuse.js').default? }}
+ */
+const persistentFuseIndexes = { characters: null, groups: null, tags: null };
+const persistentFuseIndexesDirty = { characters: true, groups: true, tags: true };
+
+/**
+ * Marks the persistent character search index as stale, so it gets rebuilt on the next search.
+ * Call after characters are added/removed/reloaded, or after a tag mutation that could affect a
+ * character's indexed `#tags` field.
+ */
+export function invalidateCharactersFuseIndex() {
+    persistentFuseIndexesDirty.characters = true;
+}
+
+/**
+ * Marks the persistent group search index as stale, so it gets rebuilt on the next search.
+ * Call after groups are added/removed/reloaded, or after a tag mutation that could affect a
+ * group's indexed `#tags` field.
+ */
+export function invalidateGroupsFuseIndex() {
+    persistentFuseIndexesDirty.groups = true;
+}
+
+/**
+ * Marks the persistent tag search index as stale, so it gets rebuilt on the next search.
+ * Call after tags are created/deleted/renamed.
+ */
+export function invalidateTagsFuseIndex() {
+    persistentFuseIndexesDirty.tags = true;
+}
+
+/**
+ * Gets (rebuilding if necessary) a persistent Fuse index for one of the character-list search categories.
+ * @param {'characters'|'groups'|'tags'} type - Which persistent index to get
+ * @param {any[]} data - The current data array to index if a rebuild is needed
+ * @param {Array<{name: string, weight: number, getFn?: (obj: any) => string}>} keys - Fuse.js keys configuration
+ * @returns {import('fuse.js').default} The (possibly freshly rebuilt) Fuse index
+ */
+function getPersistentFuseIndex(type, data, keys) {
+    if (!persistentFuseIndexes[type] || persistentFuseIndexesDirty[type]) {
+        persistentFuseIndexes[type] = new Fuse(data, {
+            keys: keys,
+            includeScore: true,
+            ignoreLocation: true,
+            useExtendedSearch: true,
+            threshold: 0.2,
+        });
+        persistentFuseIndexesDirty[type] = false;
+    }
+    return persistentFuseIndexes[type];
+}
+
+/**
  * Fuzzy search characters by a search term
  * @param {string} searchValue - The search term
  * @param {Object.<string, { resultMap: Map<string, any> }>} [fuzzySearchCaches=null] - Optional fuzzy search caches
  * @returns {import('fuse.js').FuseResult<any>[]} Results as items with their score
  */
 export function fuzzySearchCharacters(searchValue, fuzzySearchCaches = null) {
+    // Check cache if provided
+    if (fuzzySearchCaches) {
+        const cache = fuzzySearchCaches[fuzzySearchCategories.characters];
+        if (cache?.resultMap.has(searchValue)) {
+            return cache.resultMap.get(searchValue);
+        }
+    }
+
     const keys = [
         { name: 'data.name', weight: 20 },
         { name: '#tags', weight: 10, getFn: (character) => getTagsList(character.avatar).map(x => x.name).join('||') },
@@ -2145,7 +2212,13 @@ export function fuzzySearchCharacters(searchValue, fuzzySearchCaches = null) {
         { name: 'data.alternate_greetings', weight: 1 },
     ];
 
-    return performFuzzySearch(fuzzySearchCategories.characters, characters, keys, searchValue, fuzzySearchCaches);
+    const fuse = getPersistentFuseIndex(fuzzySearchCategories.characters, characters, keys);
+    const results = fuse.search(searchValue);
+
+    if (fuzzySearchCaches) {
+        fuzzySearchCaches[fuzzySearchCategories.characters].resultMap.set(searchValue, results);
+    }
+    return results;
 }
 
 /**
@@ -2198,11 +2271,24 @@ export function fuzzySearchPersonas(data, searchValue, fuzzySearchCaches = null)
  * @returns {import('fuse.js').FuseResult<any>[]} Results as items with their score
  */
 export function fuzzySearchTags(searchValue, fuzzySearchCaches = null) {
+    if (fuzzySearchCaches) {
+        const cache = fuzzySearchCaches[fuzzySearchCategories.tags];
+        if (cache?.resultMap.has(searchValue)) {
+            return cache.resultMap.get(searchValue);
+        }
+    }
+
     const keys = [
         { name: 'name', weight: 1 },
     ];
 
-    return performFuzzySearch(fuzzySearchCategories.tags, tags, keys, searchValue, fuzzySearchCaches);
+    const fuse = getPersistentFuseIndex(fuzzySearchCategories.tags, tags, keys);
+    const results = fuse.search(searchValue);
+
+    if (fuzzySearchCaches) {
+        fuzzySearchCaches[fuzzySearchCategories.tags].resultMap.set(searchValue, results);
+    }
+    return results;
 }
 
 /**
@@ -2212,6 +2298,13 @@ export function fuzzySearchTags(searchValue, fuzzySearchCaches = null) {
  * @returns {import('fuse.js').FuseResult<any>[]} Results as items with their score
  */
 export function fuzzySearchGroups(searchValue, fuzzySearchCaches = null) {
+    if (fuzzySearchCaches) {
+        const cache = fuzzySearchCaches[fuzzySearchCategories.groups];
+        if (cache?.resultMap.has(searchValue)) {
+            return cache.resultMap.get(searchValue);
+        }
+    }
+
     const keys = [
         { name: 'name', weight: 20 },
         { name: 'members', weight: 15 },
@@ -2219,7 +2312,13 @@ export function fuzzySearchGroups(searchValue, fuzzySearchCaches = null) {
         { name: 'id', weight: 1 },
     ];
 
-    return performFuzzySearch(fuzzySearchCategories.groups, groups, keys, searchValue, fuzzySearchCaches);
+    const fuse = getPersistentFuseIndex(fuzzySearchCategories.groups, groups, keys);
+    const results = fuse.search(searchValue);
+
+    if (fuzzySearchCaches) {
+        fuzzySearchCaches[fuzzySearchCategories.groups].resultMap.set(searchValue, results);
+    }
+    return results;
 }
 
 /**

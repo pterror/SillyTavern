@@ -94,6 +94,7 @@ import {
     applyPowerUserSettings,
     generatedTextFiltered,
     applyStylePins,
+    invalidateCharactersFuseIndex,
 } from './scripts/power-user.js';
 
 import {
@@ -1313,6 +1314,8 @@ export async function getCharacters() {
 
             characters[i].chat = String(characters[i].chat);
         }
+
+        invalidateCharactersFuseIndex();
 
         if (previousAvatar) {
             const newCharacterId = characters.findIndex(x => x.avatar === previousAvatar);
