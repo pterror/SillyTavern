@@ -1451,11 +1451,7 @@ export async function unshallowGroupMembers(groupId) {
         return;
     }
     for (const member of members) {
-        const index = characters.findIndex(x => x.avatar === member);
-        if (index === -1) {
-            continue;
-        }
-        await unshallowCharacter(String(index));
+        await unshallowCharacter(member);
     }
 }
 
@@ -2145,15 +2141,16 @@ async function openCharacterDefinition(characterSelect) {
     // Resolve by avatar (characterSelect.data('id'), the stable id already set in getGroupCharacterBlock)
     // rather than the row's data-chid, which is a positional index baked in at render time and can go stale
     // if the characters array reorders before this click.
-    const chid = characters.findIndex(c => c.avatar === characterSelect.data('id'));
+    const avatar = characterSelect.data('id');
+    const chid = characters.findIndex(c => c.avatar === avatar);
 
     if (chid === -1) {
         return;
     }
 
-    await unshallowCharacter(chid);
+    await unshallowCharacter(avatar);
     setCharacterId(chid);
-    select_selected_character(chid);
+    select_selected_character(avatar);
     // Gentle nudge to recalculate tokens
     RA_CountCharTokens();
     // Do a little tomfoolery to spoof the tag selector

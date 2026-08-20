@@ -255,12 +255,7 @@ export async function openWelcomeScreen({ force = false, expand = false } = {}) 
  */
 async function unshallowPermanentAssistant() {
     const assistantAvatar = getPermanentAssistantAvatar();
-    const characterId = characters.findIndex(x => x.avatar === assistantAvatar);
-    if (characterId === -1) {
-        return;
-    }
-
-    await unshallowCharacter(String(characterId));
+    await unshallowCharacter(assistantAvatar);
 }
 
 /**

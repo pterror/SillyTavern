@@ -976,8 +976,9 @@ export async function selectCharacterById(id, { switchMenu = true } = {}) {
     } else {
         //if clicked on character that was already selected
         switchMenu && (selected_button = 'character_edit');
-        await unshallowCharacter(this_chid);
-        select_selected_character(this_chid, { switchMenu });
+        const avatar = getCurrentCharacter()?.avatar;
+        await unshallowCharacter(avatar);
+        select_selected_character(avatar, { switchMenu });
     }
 }
 
@@ -1329,45 +1330,43 @@ export async function getOneCharacter(avatarUrl) {
     }
 }
 
-export function getCharacterSource(chId = this_chid) {
-    const character = characters[chId];
-
+export function getCharacterSource(character = getCurrentCharacter()) {
     if (!character) {
         return '';
     }
 
-    const chubId = characters[chId]?.data?.extensions?.chub?.full_path;
+    const chubId = character.data?.extensions?.chub?.full_path;
 
     if (chubId) {
         return `https://chub.ai/characters/${chubId}`;
     }
 
-    const pygmalionId = characters[chId]?.data?.extensions?.pygmalion_id;
+    const pygmalionId = character.data?.extensions?.pygmalion_id;
 
     if (pygmalionId) {
         return `https://pygmalion.chat/${pygmalionId}`;
     }
 
-    const githubRepo = characters[chId]?.data?.extensions?.github_repo;
+    const githubRepo = character.data?.extensions?.github_repo;
 
     if (githubRepo) {
         return `https://github.com/${githubRepo}`;
     }
 
-    const sourceUrl = characters[chId]?.data?.extensions?.source_url;
+    const sourceUrl = character.data?.extensions?.source_url;
 
     if (sourceUrl) {
         return sourceUrl;
     }
 
-    const risuId = characters[chId]?.data?.extensions?.risuai?.source;
+    const risuId = character.data?.extensions?.risuai?.source;
 
     if (Array.isArray(risuId) && risuId.length && typeof risuId[0] === 'string' && risuId[0].startsWith('risurealm:')) {
         const realmId = risuId[0].split(':')[1];
         return `https://realm.risuai.net/character/${realmId}`;
     }
 
-    const perchanceSlug = characters[chId]?.data?.extensions?.perchance_data?.slug;
+    const perchanceSlug = character.data?.extensions?.perchance_data?.slug;
 
     if (perchanceSlug) {
         return `https://perchance.org/ai-character-chat?data=${perchanceSlug}`;
@@ -1476,11 +1475,12 @@ async function delChat(chatfile) {
  * @returns {Promise<void>} A promise that resolves when the chat is deleted.
  */
 export async function deleteCharacterChatByName(characterId, fileName) {
-    // Make sure all the data is loaded.
-    await unshallowCharacter(characterId);
-
     /** @type {Character} */
     const character = characters[characterId];
+
+    // Make sure all the data is loaded.
+    await unshallowCharacter(character?.avatar);
+
     if (!character) {
         console.warn(`Character with ID ${characterId} not found.`);
         return;
@@ -4407,7 +4407,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     generation_started = new Date();
 
     // Prevent generation from shallow characters
-    await unshallowCharacter(this_chid);
+    await unshallowCharacter(getCurrentCharacter()?.avatar);
 
     // Occurs every time, even if the generation is aborted due to slash commands execution
     await eventSource.emit(event_types.GENERATION_STARTED, type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, signal, quietImage }, dryRun);
@@ -7735,19 +7735,19 @@ export function buildAvatarList(block, entities, { templateId = 'inline_avatar_t
 
 /**
  * Loads all the data of a shallow character.
- * @param {string|undefined} characterId Array index
+ * @param {string|undefined} avatar Character avatar filename
  * @returns {Promise<void>} Promise that resolves when the character is unshallowed
  */
-export async function unshallowCharacter(characterId) {
-    if (characterId === undefined) {
+export async function unshallowCharacter(avatar) {
+    if (avatar === undefined) {
         console.debug('Undefined character cannot be unshallowed');
         return;
     }
 
     /** @type {Character} */
-    const character = characters[characterId];
+    const character = characters.find((x) => x.avatar === avatar);
     if (!character) {
-        console.debug('Character not found:', characterId);
+        console.debug('Character not found:', avatar);
         return;
     }
 
@@ -7756,18 +7756,12 @@ export async function unshallowCharacter(characterId) {
         return;
     }
 
-    const avatar = character.avatar;
-    if (!avatar) {
-        console.debug('Character has no avatar field:', characterId);
-        return;
-    }
-
     await getOneCharacter(avatar);
 }
 
 export async function getChat() {
     try {
-        await unshallowCharacter(this_chid);
+        await unshallowCharacter(getCurrentCharacter()?.avatar);
 
         const response = await fetch('/api/chats/get', {
             method: 'POST',
@@ -7829,7 +7823,7 @@ async function getChatResult() {
     }
     await loadItemizedPrompts(getCurrentChatId());
     await printMessages();
-    select_selected_character(this_chid);
+    select_selected_character(getCurrentCharacter()?.avatar);
 
     await eventSource.emit(event_types.CHAT_CHANGED, (getCurrentChatId()));
     if (freshChat) await eventSource.emit(event_types.CHAT_CREATED);
@@ -8896,13 +8890,13 @@ export function select_rm_info(type, charId, previousCharId = null) {
 
 /**
  * Selects the right menu for displaying the character editor.
- * @param {string} chid Character array index
+ * @param {string} avatar Character avatar filename
  * @param {object} [param1] Options for the switch
  * @param {boolean} [param1.switchMenu=true] Whether to switch the menu
  */
-export function select_selected_character(chid, { switchMenu = true } = {}) {
+export function select_selected_character(avatar, { switchMenu = true } = {}) {
     //character select
-    //console.log('select_selected_character() -- starting with input of -- ' + chid + ' (name:' + characters[chid].name + ')');
+    const character = characters.find((x) => x.avatar === avatar);
     select_rm_create({ switchMenu });
     switchMenu && setMenuType('character_edit');
     $('#delete_button').css('display', 'flex');
@@ -8921,46 +8915,46 @@ export function select_selected_character(chid, { switchMenu = true } = {}) {
 
     // Don't update the navbar name if we're peeking the group member defs
     if (!selected_group) {
-        $('#rm_button_selected_ch').children('h2').text(characters[chid].name);
+        $('#rm_button_selected_ch').children('h2').text(character.name);
     }
 
     $('#add_avatar_button').val('');
 
-    $('#character_popup-button-h3').text(characters[chid].name);
-    $('#character_name_pole').val(characters[chid].name);
-    $('#description_textarea').val(characters[chid].description);
-    $('#character_world').val(characters[chid].data?.extensions?.world || '');
-    $('#creator_notes_textarea').val(characters[chid].data?.creator_notes || characters[chid].creatorcomment);
-    $('#creator_notes_spoiler').html(formatCreatorNotes(characters[chid].data?.creator_notes || characters[chid].creatorcomment, characters[chid].avatar));
-    $('#character_version_textarea').val(characters[chid].data?.character_version || '');
-    $('#system_prompt_textarea').val(characters[chid].data?.system_prompt || '');
-    $('#post_history_instructions_textarea').val(characters[chid].data?.post_history_instructions || '');
-    $('#tags_textarea').val(Array.isArray(characters[chid].data?.tags) ? characters[chid].data.tags.join(', ') : '');
-    $('#creator_textarea').val(characters[chid].data?.creator);
-    $('#character_version_textarea').val(characters[chid].data?.character_version || '');
-    $('#personality_textarea').val(characters[chid].personality);
-    $('#firstmessage_textarea').val(characters[chid].first_mes);
-    $('#scenario_pole').val(characters[chid].scenario);
-    $('#depth_prompt_prompt').val(characters[chid].data?.extensions?.depth_prompt?.prompt ?? '');
-    $('#depth_prompt_depth').val(characters[chid].data?.extensions?.depth_prompt?.depth ?? depth_prompt_depth_default);
-    $('#depth_prompt_role').val(characters[chid].data?.extensions?.depth_prompt?.role ?? depth_prompt_role_default);
-    $('#talkativeness_slider').val(characters[chid].talkativeness || talkativeness_default);
-    $('#mes_example_textarea').val(characters[chid].mes_example);
-    $('#selected_chat_pole').val(characters[chid].chat);
-    $('#create_date_pole').val(timestampToMoment(characters[chid].create_date).toISOString());
-    $('#avatar_url_pole').val(characters[chid].avatar);
-    $('#chat_import_avatar_url').val(characters[chid].avatar);
-    $('#chat_import_character_name').val(characters[chid].name);
-    $('#character_json_data').val(characters[chid].json_data);
+    $('#character_popup-button-h3').text(character.name);
+    $('#character_name_pole').val(character.name);
+    $('#description_textarea').val(character.description);
+    $('#character_world').val(character.data?.extensions?.world || '');
+    $('#creator_notes_textarea').val(character.data?.creator_notes || character.creatorcomment);
+    $('#creator_notes_spoiler').html(formatCreatorNotes(character.data?.creator_notes || character.creatorcomment, character.avatar));
+    $('#character_version_textarea').val(character.data?.character_version || '');
+    $('#system_prompt_textarea').val(character.data?.system_prompt || '');
+    $('#post_history_instructions_textarea').val(character.data?.post_history_instructions || '');
+    $('#tags_textarea').val(Array.isArray(character.data?.tags) ? character.data.tags.join(', ') : '');
+    $('#creator_textarea').val(character.data?.creator);
+    $('#character_version_textarea').val(character.data?.character_version || '');
+    $('#personality_textarea').val(character.personality);
+    $('#firstmessage_textarea').val(character.first_mes);
+    $('#scenario_pole').val(character.scenario);
+    $('#depth_prompt_prompt').val(character.data?.extensions?.depth_prompt?.prompt ?? '');
+    $('#depth_prompt_depth').val(character.data?.extensions?.depth_prompt?.depth ?? depth_prompt_depth_default);
+    $('#depth_prompt_role').val(character.data?.extensions?.depth_prompt?.role ?? depth_prompt_role_default);
+    $('#talkativeness_slider').val(character.talkativeness || talkativeness_default);
+    $('#mes_example_textarea').val(character.mes_example);
+    $('#selected_chat_pole').val(character.chat);
+    $('#create_date_pole').val(timestampToMoment(character.create_date).toISOString());
+    $('#avatar_url_pole').val(character.avatar);
+    $('#chat_import_avatar_url').val(character.avatar);
+    $('#chat_import_character_name').val(character.name);
+    $('#character_json_data').val(character.json_data);
 
-    updateFavButtonState(characters[chid].fav || characters[chid].fav == 'true');
+    updateFavButtonState(character.fav || character.fav == 'true');
 
-    const avatarUrl = characters[chid].avatar != 'none' ? getThumbnailUrl('avatar', characters[chid].avatar) : default_avatar;
+    const avatarUrl = character.avatar != 'none' ? getThumbnailUrl('avatar', character.avatar) : default_avatar;
     $('#avatar_load_preview').attr('src', avatarUrl);
-    $('.open_alternate_greetings').data('avatar', characters[chid]?.avatar ?? null);
-    $('#set_character_world').data('avatar', characters[chid]?.avatar ?? null);
-    setWorldInfoButtonClass(chid);
-    checkEmbeddedWorld(chid);
+    $('.open_alternate_greetings').data('avatar', character?.avatar ?? null);
+    $('#set_character_world').data('avatar', character?.avatar ?? null);
+    setWorldInfoButtonClass(avatar);
+    checkEmbeddedWorld(avatar);
 
     $('#name_div').removeClass('displayBlock');
     $('#name_div').addClass('displayNone');
@@ -8975,8 +8969,11 @@ export function select_selected_character(chid, { switchMenu = true } = {}) {
     $('#character_media_forbidden_icon').toggle(!externalMediaState);
 
     // Update some stuff about the char management dropdown
-    $('#character_source').attr('disabled', !getCharacterSource(chid) ? '' : null);
+    $('#character_source').attr('disabled', !getCharacterSource(character) ? '' : null);
 
+    // CHARACTER_EDITOR_OPENED is public extension API surface and documents its payload as a chid
+    // (array index), so keep emitting that even though this function is avatar-driven internally.
+    const chid = characters.findIndex((x) => x.avatar === avatar);
     eventSource.emit(event_types.CHARACTER_EDITOR_OPENED, chid);
 
     saveSettingsDebounced();
@@ -11340,7 +11337,7 @@ jQuery(async function () {
             select_group_chats(selected_group, false);
         } else {
             selected_button = 'character_edit';
-            select_selected_character(this_chid);
+            select_selected_character(getCurrentCharacter()?.avatar);
         }
         $('#character_search_bar').val('').trigger('input');
     });
@@ -12533,7 +12530,7 @@ jQuery(async function () {
                 saveCharacterDebounced();
                 break;
             case 'character_source': {
-                const source = getCharacterSource(this_chid);
+                const source = getCharacterSource(getCurrentCharacter());
                 if (source && isValidUrl(source)) {
                     const url = new URL(source);
                     const confirm = await Popup.show.confirm('Open Source', `<span>Do you want to open the link to ${url.hostname} in a new tab?</span><var>${url}</var>`);
@@ -12545,7 +12542,7 @@ jQuery(async function () {
                 }
             } break;
             case 'replace_update': {
-                let onlineUrl = getCharacterSource(this_chid);
+                let onlineUrl = getCharacterSource(getCurrentCharacter());
 
                 const POPUP_RESULT_URL = POPUP_RESULT.CUSTOM1, POPUP_RESULT_FILE = POPUP_RESULT.CUSTOM2;
                 const result = await Popup.show.confirm(t`Replace Character`,
