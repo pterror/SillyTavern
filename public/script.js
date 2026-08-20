@@ -1259,7 +1259,13 @@ export async function getOneCharacter(avatarUrl) {
         const indexOf = characters.findIndex(x => x.avatar === avatarUrl);
 
         if (indexOf !== -1) {
-            characters[indexOf] = getData;
+            // Was `characters[indexOf] = getData` (a full reference swap) - now goes through
+            // charactersStore.update(), which Object.assign()s getData's fields onto the *existing* entity
+            // object instead of replacing it. Since getData is a full character object, the end state is the
+            // same either way - the difference is that any other code holding a reference to the old character
+            // object (rather than re-reading `characters[indexOf]`) now sees the update too, instead of quietly
+            // going stale. No known caller relied on the old "distinct object after edit" behavior.
+            charactersStore.update(avatarUrl, getData);
             invalidateCharactersFuseIndex();
         } else {
             toastr.error(t`Character ${avatarUrl} not found in the list`, t`Error`, { timeOut: 5000, preventDuplicates: true });
@@ -1456,13 +1462,13 @@ export async function replaceCurrentChat() {
 
         if (chats.length && typeof chats[0] === 'object') {
             // pick existing chat
-            characters[this_chid].chat = chats[0].file_name.replace('.jsonl', '');
+            charactersStore.update(characters[this_chid].avatar, { chat: chats[0].file_name.replace('.jsonl', '') });
             $('#selected_chat_pole').val(characters[this_chid].chat);
             saveCharacterDebounced();
             await getChat();
         } else {
             // start new chat
-            characters[this_chid].chat = `${name2} - ${humanizedDateTime()}`;
+            charactersStore.update(characters[this_chid].avatar, { chat: `${name2} - ${humanizedDateTime()}` });
             $('#selected_chat_pole').val(characters[this_chid].chat);
             saveCharacterDebounced();
             await getChat();
@@ -7458,7 +7464,7 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
         return;
     }
 
-    characters[this_chid].date_last_chat = Date.now();
+    charactersStore.update(characters[this_chid].avatar, { date_last_chat: Date.now() });
 
     const trimmedChat = Array.isArray(chatData)
         ? chatData
@@ -7786,7 +7792,7 @@ function getFirstMessage() {
 export async function openCharacterChat(file_name) {
     await waitUntilCondition(() => !isChatSaving, debounce_timeout.extended, 10);
     await clearChat({ clearData: true });
-    characters[this_chid].chat = file_name;
+    charactersStore.update(characters[this_chid].avatar, { chat: file_name });
     chat_metadata = {};
     await getChat();
     $('#selected_chat_pole').val(file_name);
@@ -10681,7 +10687,7 @@ export async function doNewChat({ deleteCurrentChat = false } = {}) {
     } else {
         //RossAscends: added character name to new chat filenames and replaced Date.now() with humanizedDateTime;
         chat_metadata = {};
-        characters[this_chid].chat = `${name2} - ${humanizedDateTime()}`;
+        charactersStore.update(characters[this_chid].avatar, { chat: `${name2} - ${humanizedDateTime()}` });
         $('#selected_chat_pole').val(characters[this_chid].chat);
         await getChat();
         await createOrEditCharacter(new CustomEvent('newChat'));
@@ -10747,7 +10753,7 @@ export async function renameGroupOrCharacterChat({ characterId, groupId, oldFile
         if (groupId) {
             await renameGroupChat(groupId, oldFileName, newFileName);
         } else if (characterId !== undefined && String(characterId) === String(this_chid) && characters[characterId]?.chat === oldFileName) {
-            characters[characterId].chat = newFileName;
+            charactersStore.update(characters[characterId].avatar, { chat: newFileName });
             $('#selected_chat_pole').val(characters[characterId].chat);
             await createOrEditCharacter();
         }
