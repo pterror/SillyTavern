@@ -163,7 +163,7 @@ export const DEFAULT_AUTO_MODE_DELAY = 5;
 export const groupCandidatesFilter = new FilterHelper(debounce(printGroupCandidates, debounce_timeout.quick));
 export const groupMembersFilter = new FilterHelper(debounce(printGroupMembers, debounce_timeout.quick));
 let autoModeWorker = null;
-const saveGroupDebounced = debounce(async (group, reload) => await _save(group, reload), debounce_timeout.relaxed);
+const saveGroupDebounced = debounce(async (group, reload, options) => await _save(group, reload, options), debounce_timeout.relaxed);
 /** @type {Map<string, number>} */
 let groupChatQueueOrder = new Map();
 
@@ -177,15 +177,19 @@ function setAutoModeWorker() {
  * Saves a group to the server.
  * @param {Group} group Group object to save
  * @param {boolean} reload Whether to reload characters after saving
+ * @param {object} [options]
+ * @param {boolean} [options.silentGroups=false] - If true and `reload` is true, suppresses the reload's
+ * generic groupsStore.reset() - pass this when the caller already reported the specific field change itself
+ * via groupsStore.update() before calling save (see editGroup()).
  */
-async function _save(group, reload = true) {
+async function _save(group, reload = true, { silentGroups = false } = {}) {
     await fetch('/api/groups/edit', {
         method: 'POST',
         headers: getRequestHeaders(),
         body: JSON.stringify(group),
     });
     if (reload) {
-        await getCharacters();
+        await getCharacters({ silentGroups });
     }
 }
 
@@ -1399,9 +1403,12 @@ async function deleteGroup(id) {
  * @param {string} id Group ID to edit
  * @param {boolean} immediately Whether to save immediately
  * @param {boolean} reload Whether to reload the groups after saving
+ * @param {object} [options]
+ * @param {boolean} [options.silentGroups=false] - See _save() - pass true when the caller already reported
+ * the specific field change itself via groupsStore.update() before calling this.
  * @returns {Promise<void>} Promise that resolves when the group is edited
  */
-export async function editGroup(id, immediately, reload = true) {
+export async function editGroup(id, immediately, reload = true, { silentGroups = false } = {}) {
     let group = groups.find((x) => x.id === id);
 
     if (!group) {
@@ -1409,10 +1416,10 @@ export async function editGroup(id, immediately, reload = true) {
     }
 
     if (immediately) {
-        return await _save(group, reload);
+        return await _save(group, reload, { silentGroups });
     }
 
-    saveGroupDebounced(group, reload);
+    saveGroupDebounced(group, reload, { silentGroups });
 }
 
 /**
@@ -1535,26 +1542,23 @@ async function reorderGroupMember(groupId, groupMember, direction) {
 
 async function onGroupActivationStrategyInput(e) {
     if (openGroupId) {
-        let _thisGroup = groups.find((x) => x.id == openGroupId);
-        _thisGroup.activation_strategy = Number(e.target.value);
+        groupsStore.update(openGroupId, { activation_strategy: Number(e.target.value) });
         await editGroup(openGroupId, false, false);
     }
 }
 
 async function onGroupGenerationModeInput(e) {
     if (openGroupId) {
-        let _thisGroup = groups.find((x) => x.id == openGroupId);
-        _thisGroup.generation_mode = Number(e.target.value);
+        const change = groupsStore.update(openGroupId, { generation_mode: Number(e.target.value) });
         await editGroup(openGroupId, false, false);
 
-        toggleHiddenControls(_thisGroup);
+        toggleHiddenControls(change?.entity);
     }
 }
 
 async function onGroupAutoModeDelayInput(e) {
     if (openGroupId) {
-        let _thisGroup = groups.find((x) => x.id == openGroupId);
-        _thisGroup.auto_mode_delay = Number(e.target.value);
+        groupsStore.update(openGroupId, { auto_mode_delay: Number(e.target.value) });
         await editGroup(openGroupId, false, false);
         setAutoModeWorker();
     }
@@ -1562,19 +1566,17 @@ async function onGroupAutoModeDelayInput(e) {
 
 async function onGroupGenerationModeTemplateInput(e) {
     if (openGroupId) {
-        let _thisGroup = groups.find((x) => x.id == openGroupId);
         const prop = $(e.target).attr('setting');
-        _thisGroup[prop] = String(e.target.value);
+        groupsStore.update(openGroupId, { [prop]: String(e.target.value) });
         await editGroup(openGroupId, false, false);
     }
 }
 
 async function onGroupNameInput() {
     if (openGroupId) {
-        let _thisGroup = groups.find((x) => x.id == openGroupId);
-        _thisGroup.name = $(this).val();
-        $('#rm_button_selected_ch').children('h2').text(_thisGroup.name);
-        await editGroup(openGroupId, false);
+        const change = groupsStore.update(openGroupId, { name: $(this).val() });
+        $('#rm_button_selected_ch').children('h2').text(change?.entity?.name);
+        await editGroup(openGroupId, false, true, { silentGroups: true });
     }
 }
 
@@ -1797,8 +1799,7 @@ async function onDeleteGroupClick() {
 async function onFavoriteGroupClick() {
     updateFavButtonState(!fav_grp_checked);
     if (openGroupId) {
-        let _thisGroup = groups.find((x) => x.id == openGroupId);
-        _thisGroup.fav = fav_grp_checked;
+        groupsStore.update(openGroupId, { fav: fav_grp_checked });
         await editGroup(openGroupId, false, false);
         favsToHotswap();
     }
@@ -1806,18 +1807,16 @@ async function onFavoriteGroupClick() {
 
 async function onGroupSelfResponsesClick() {
     if (openGroupId) {
-        let _thisGroup = groups.find((x) => x.id == openGroupId);
         const value = $(this).prop('checked');
-        _thisGroup.allow_self_responses = value;
+        groupsStore.update(openGroupId, { allow_self_responses: value });
         await editGroup(openGroupId, false, false);
     }
 }
 
 async function onHideMutedSpritesClick(value) {
     if (openGroupId) {
-        let _thisGroup = groups.find((x) => x.id == openGroupId);
-        _thisGroup.hideMutedSprites = value;
-        console.log(`_thisGroup.hideMutedSprites = ${_thisGroup.hideMutedSprites}`);
+        groupsStore.update(openGroupId, { hideMutedSprites: value });
+        console.log(`hideMutedSprites = ${value}`);
         await editGroup(openGroupId, false, false);
         await eventSource.emit(event_types.GROUP_UPDATED);
     }
@@ -1973,10 +1972,10 @@ async function uploadGroupAvatar(event) {
         return;
     }
 
-    _thisGroup.avatar_url = thumbnailUrl;
+    groupsStore.update(openGroupId, { avatar_url: thumbnailUrl });
     $('#group_avatar_preview').empty().append(getGroupAvatar(_thisGroup));
     $('#rm_group_restore_avatar').show();
-    await editGroup(openGroupId, true, true);
+    await editGroup(openGroupId, true, true, { silentGroups: true });
 }
 
 async function restoreGroupAvatar() {
@@ -1992,10 +1991,10 @@ async function restoreGroupAvatar() {
     }
 
     let _thisGroup = groups.find((x) => x.id == openGroupId);
-    _thisGroup.avatar_url = '';
+    groupsStore.update(openGroupId, { avatar_url: '' });
     $('#group_avatar_preview').empty().append(getGroupAvatar(_thisGroup));
     $('#rm_group_restore_avatar').hide();
-    await editGroup(openGroupId, true, true);
+    await editGroup(openGroupId, true, true, { silentGroups: true });
 }
 
 async function onGroupActionClick(event) {
