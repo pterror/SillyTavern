@@ -4587,7 +4587,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 
     // Depth prompt (character-specific A/N)
     removeDepthPrompts();
-    const groupDepthPrompts = getGroupDepthPrompts(selected_group, Number(this_chid));
+    const groupDepthPrompts = getGroupDepthPrompts(selected_group, getCurrentCharacter()?.avatar);
 
     if (selected_group && Array.isArray(groupDepthPrompts) && groupDepthPrompts.length > 0) {
         groupDepthPrompts.forEach((value, index) => {
