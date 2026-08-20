@@ -724,6 +724,7 @@ export async function renameGroupMember(oldAvatar, newAvatar, newName) {
 
             // Replace group member avatar id and save the changes
             group.members[memberIndex] = newAvatar;
+            groupsStore.update(group.id, { members: group.members });
             await editGroup(group.id, true, false);
             console.log(`Renamed character ${newName} in group: ${group.name}`);
 
@@ -1486,6 +1487,12 @@ async function modifyGroupMember(groupId, groupMember, isDelete) {
         membersArray.unshift(id);
     }
 
+    if (thisGroup) {
+        // membersArray === thisGroup.members (already mutated above in place) - this is purely to report the
+        // change via groupsStore, not to actually change the value again.
+        groupsStore.update(groupId, { members: membersArray });
+    }
+
     if (openGroupId) {
         await unshallowGroupMembers(openGroupId);
         await editGroup(openGroupId, false, false);
@@ -1529,6 +1536,12 @@ async function reorderGroupMember(groupId, groupMember, direction) {
             memberArray[indexOf - 1] = memberArray[indexOf];
             memberArray[indexOf] = prev;
         }
+    }
+
+    if (thisGroup) {
+        // memberArray === thisGroup.members (already mutated above in place) - this is purely to report the
+        // change via groupsStore, not to actually change the value again.
+        groupsStore.update(groupId, { members: memberArray });
     }
 
     printGroupMembers();
@@ -2016,6 +2029,7 @@ async function onGroupActionClick(event) {
         const index = _thisGroup.disabled_members.indexOf(member.data('id'));
         if (index !== -1) {
             _thisGroup.disabled_members.splice(index, 1);
+            groupsStore.update(openGroupId, { disabled_members: _thisGroup.disabled_members });
             await editGroup(openGroupId, false, false);
         }
     }
@@ -2025,6 +2039,7 @@ async function onGroupActionClick(event) {
         const _thisGroup = groups.find(x => x.id === openGroupId);
         if (!_thisGroup.disabled_members.includes(member.data('id'))) {
             _thisGroup.disabled_members.push(member.data('id'));
+            groupsStore.update(openGroupId, { disabled_members: _thisGroup.disabled_members });
             await editGroup(openGroupId, false, false);
         }
     }
