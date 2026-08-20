@@ -481,7 +481,7 @@ export let this_chid;
  * @returns {Character|undefined}
  */
 export function getCurrentCharacter() {
-    return this_avatar !== undefined ? characters.find(c => c.avatar === this_avatar) : undefined;
+    return this_avatar !== undefined ? charactersStore.get(this_avatar) : undefined;
 }
 
 let saveCharactersPage = 0;
@@ -928,7 +928,12 @@ export function resultCheckStatus() {
  * @returns {Promise<void>} A promise that resolves when the character is switched.
  */
 export async function selectCharacterByAvatar(avatar, { switchMenu = true } = {}) {
-    const id = characters.findIndex(x => x.avatar === avatar);
+    // selectCharacterById() takes a numeric array position (see its own doc comment), not the avatar itself, so
+    // the entity still has to be resolved to a position here - but going through charactersStore.get() first
+    // turns this into an O(1) map lookup plus a single indexOf() on the matched reference, instead of a full
+    // linear scan comparing every character's avatar by value.
+    const entity = charactersStore.get(avatar);
+    const id = entity ? characters.indexOf(entity) : -1;
     if (id === -1) {
         return;
     }
@@ -1313,9 +1318,7 @@ export async function getOneCharacter(avatarUrl) {
         getData.name = DOMPurify.sanitize(getData.name);
         getData.chat = String(getData.chat);
 
-        const indexOf = characters.findIndex(x => x.avatar === avatarUrl);
-
-        if (indexOf !== -1) {
+        if (charactersStore.has(avatarUrl)) {
             // Was `characters[indexOf] = getData` (a full reference swap) - now goes through
             // charactersStore.update(), which Object.assign()s getData's fields onto the *existing* entity
             // object instead of replacing it. Since getData is a full character object, the end state is the
@@ -1427,7 +1430,8 @@ export async function getCharacters({ silent = false, silentGroups = false } = {
             // this_avatar is untouched by the splice()/reload above (it's a separate variable, not derived from
             // the array), so it's still exactly the avatar that was selected before this reload - no need to
             // snapshot it beforehand the way this_chid (a plain index) would have required.
-            const newCharacterId = characters.findIndex(x => x.avatar === this_avatar);
+            const reselectedEntity = charactersStore.get(this_avatar);
+            const newCharacterId = reselectedEntity ? characters.indexOf(reselectedEntity) : -1;
             if (newCharacterId >= 0) {
                 setCharacterId(newCharacterId);
                 await selectCharacterById(newCharacterId, { switchMenu: false });
@@ -3000,7 +3004,7 @@ export function substituteParamsLegacy(content, _name1, _name2, _original, _grou
             const disabledMembers = groups.find(x => x.id === selected_group)?.disabled_members ?? [];
             const isMuted = x => includeMuted ? true : !disabledMembers.includes(x);
             const names = Array.isArray(members)
-                ? members.filter(isMuted).map(m => characters.find(c => c.avatar === m)?.name).filter(Boolean).join(', ')
+                ? members.filter(isMuted).map(m => charactersStore.get(m)?.name).filter(Boolean).join(', ')
                 : '';
             return names;
         } else {
@@ -3025,7 +3029,7 @@ export function substituteParamsLegacy(content, _name1, _name2, _original, _grou
         }
 
         const memberNames = members
-            .map(m => characters.find(c => c.avatar === m)?.name)
+            .map(m => charactersStore.get(m)?.name)
             .filter(Boolean); // Filter out any null/undefined names
 
         // Filter out the current speaker and add the user
@@ -3161,7 +3165,7 @@ export function getStoppingStrings(isImpersonate, isContinue, api = main_api) {
 
             if (group && Array.isArray(group.members)) {
                 const names = group.members
-                    .map(x => characters.find(y => y.avatar == x))
+                    .map(x => charactersStore.get(x))
                     .filter(x => x && x.name && x.name !== name2)
                     .map(x => `\n${x.name}:`);
                 result.push(...names);
@@ -3291,7 +3295,7 @@ function cleanGroupMessage(getMessage) {
 
     if (group && Array.isArray(group.members) && group.members) {
         for (let member of group.members) {
-            const character = characters.find(x => x.avatar == member);
+            const character = charactersStore.get(member);
 
             if (!character) {
                 continue;
@@ -6150,7 +6154,7 @@ export async function duplicateCharacter({ avatar = null, silent = false } = {})
     // Determine the character to duplicate
     let targetAvatar;
     if (avatar) {
-        const character = characters.find(c => c.avatar === avatar);
+        const character = charactersStore.get(avatar);
         if (!character) {
             toastr.warning(t`Character not found: ${avatar}`);
             return '';
@@ -7256,7 +7260,8 @@ export function setCharacterId(value) {
             // Identify by avatar rather than by array reference - the object may be a fresh reload of the same
             // character (different reference, same avatar), which should still resolve.
             const avatar = value?.avatar;
-            const idx = avatar !== undefined ? characters.findIndex(c => c.avatar === avatar) : -1;
+            const matchedEntity = avatar !== undefined ? charactersStore.get(avatar) : undefined;
+            const idx = matchedEntity ? characters.indexOf(matchedEntity) : -1;
             this_chid = idx !== -1 ? String(idx) : undefined;
             this_avatar = idx !== -1 ? avatar : undefined;
             break;
@@ -7383,7 +7388,8 @@ export async function renameCharacter(name = null, { silent = false, renameChats
             charactersStore.reportRenamed(oldAvatar, newAvatar);
 
             // Find newly renamed character
-            const newChId = characters.findIndex(c => c.avatar == data.avatar);
+            const renamedEntity = charactersStore.get(data.avatar);
+            const newChId = renamedEntity ? characters.indexOf(renamedEntity) : -1;
 
             if (newChId !== -1) {
                 // Select the character after the renaming
@@ -8882,7 +8888,8 @@ export function select_rm_info(type, charId, previousCharId = null) {
     }, 250);
 
     if (previousCharId) {
-        const newId = characters.findIndex((x) => x.avatar == previousCharId);
+        const previousEntity = charactersStore.get(previousCharId);
+        const newId = previousEntity ? characters.indexOf(previousEntity) : -1;
         if (newId >= 0) {
             setCharacterId(newId);
         }
@@ -8974,7 +8981,8 @@ export function select_selected_character(avatar, { switchMenu = true } = {}) {
 
     // CHARACTER_EDITOR_OPENED is public extension API surface and documents its payload as a chid
     // (array index), so keep emitting that even though this function is avatar-driven internally.
-    const chid = characters.findIndex((x) => x.avatar === avatar);
+    const editedEntity = charactersStore.get(avatar);
+    const chid = editedEntity ? characters.indexOf(editedEntity) : -1;
     eventSource.emit(event_types.CHARACTER_EDITOR_OPENED, chid);
 
     saveSettingsDebounced();
@@ -9695,12 +9703,17 @@ async function openCharacterWorldPopup() {
         return;
     }
 
-    const chid = characters.findIndex(c => c.avatar === avatar);
+    // getCharaFilename(chid) with chid === -1 (not found) resolves to undefined (characters[-1] is undefined),
+    // distinct from its own "no chid given" fallback to the currently selected character - so chid still needs
+    // to be an honest array index (or -1) here, not skipped via manualAvatarKey, to keep that not-found case
+    // behaving the same as before.
+    const worldCharacter = charactersStore.get(avatar);
+    const chid = worldCharacter ? characters.indexOf(worldCharacter) : -1;
 
     // TODO: Maybe make this utility function not use the window context?
     const fileName = getCharaFilename(chid);
-    const charName = (menu_type == 'create' ? create_save.name : characters[chid]?.data?.name) || 'Nameless';
-    const worldId = (menu_type == 'create' ? create_save.world : characters[chid]?.data?.extensions?.world) || '';
+    const charName = (menu_type == 'create' ? create_save.name : worldCharacter?.data?.name) || 'Nameless';
+    const worldId = (menu_type == 'create' ? create_save.world : worldCharacter?.data?.extensions?.world) || '';
     const template = $('#character_world_template .character_world').clone();
     template.find('.character_name').text(charName);
 
@@ -9762,20 +9775,22 @@ async function openCharacterWorldPopup() {
 
 function openAlternateGreetings() {
     const avatar = $('.open_alternate_greetings').data('avatar');
-    const chid = characters.findIndex(c => c.avatar === avatar);
+    // Every use below is a read/mutation of this same character's own fields, never a positional array
+    // operation, so the resolved entity itself is all that's needed - no index required.
+    const greetingsCharacter = charactersStore.get(avatar);
 
     if (menu_type != 'create' && avatar === undefined) {
         toastr.error('Does not have an Id for this character in editor menu.');
         return;
     } else {
         // If the character does not have alternate greetings, create an empty array
-        if (characters[chid] && !Array.isArray(characters[chid].data.alternate_greetings)) {
-            characters[chid].data.alternate_greetings = [];
+        if (greetingsCharacter && !Array.isArray(greetingsCharacter.data.alternate_greetings)) {
+            greetingsCharacter.data.alternate_greetings = [];
         }
     }
 
     const template = $('#alternate_greetings_template .alternate_grettings').clone();
-    const getArray = () => menu_type == 'create' ? create_save.alternate_greetings : characters[chid].data.alternate_greetings;
+    const getArray = () => menu_type == 'create' ? create_save.alternate_greetings : greetingsCharacter.data.alternate_greetings;
     const popup = new Popup(template, POPUP_TYPE.TEXT, '', {
         wide: true,
         large: true,
@@ -10017,9 +10032,9 @@ export async function createOrEditCharacter(e) {
 
             formData.delete('alternate_greetings');
             const avatar = $('.open_alternate_greetings').data('avatar');
-            const chid = characters.findIndex(c => c.avatar === avatar);
-            if (characters[chid] && Array.isArray(characters[chid]?.data?.alternate_greetings)) {
-                for (const value of characters[chid].data.alternate_greetings) {
+            const editedGreetingsCharacter = charactersStore.get(avatar);
+            if (editedGreetingsCharacter && Array.isArray(editedGreetingsCharacter?.data?.alternate_greetings)) {
+                for (const value of editedGreetingsCharacter.data.alternate_greetings) {
                     formData.append('alternate_greetings', value);
                 }
             }
@@ -10645,7 +10660,7 @@ async function importCharactersTags(avatarFileNames) {
     await getCharacters();
     for (let i = 0; i < avatarFileNames.length; i++) {
         if (power_user.tag_import_setting !== tag_import_setting.NONE) {
-            const importedCharacter = characters.find(character => character.avatar === avatarFileNames[i]);
+            const importedCharacter = charactersStore.get(avatarFileNames[i]);
             await importTags(importedCharacter);
         }
     }
@@ -10682,7 +10697,7 @@ async function importCharacter(file, { preserveFileName = '', importTags = false
         return;
     }
 
-    const exists = preserveFileName ? characters.find(character => character.avatar === preserveFileName) : undefined;
+    const exists = preserveFileName ? charactersStore.get(preserveFileName) : undefined;
 
     const format = ext[1].toLowerCase();
     $('#character_import_file_type').val(format);
@@ -10995,7 +11010,7 @@ export async function deleteCharacter(characterKey, { deleteChats = true } = {})
     const removedCharacters = [];
 
     for (const key of characterKey) {
-        const character = characters.find(x => x.avatar == key);
+        const character = charactersStore.get(key);
         if (!character) {
             toastr.warning(t`Character ${key} not found. Skipping deletion.`);
             continue;
