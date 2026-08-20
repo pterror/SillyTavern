@@ -4987,10 +4987,11 @@ async function addGroupMemberCallback(_, name) {
     }
 
     group.members.push(avatar);
+    // group.members is already mutated in place above - this call is purely to report the change via
+    // groupsStore (same pattern as modifyGroupMember() in group-chats.js), so the member-list subscriber
+    // reprints #rm_group_candidates/#rm_group_members without us having to do it manually here.
+    groupsStore.update(selected_group, { members: group.members });
     await saveGroupChat(selected_group, true);
-
-    // Trigger to reload group UI
-    $('#rm_button_selected_ch').trigger('click');
     return character.name;
 }
 
