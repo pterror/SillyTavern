@@ -9,6 +9,7 @@ import {
     event_types,
     eventSource,
     getCharacters,
+    getCurrentCharacter,
     getCurrentChatId,
     getRequestHeaders,
     getSystemMessageByType,
@@ -25,7 +26,6 @@ import {
     setActiveGroup,
     system_avatar,
     system_message_types,
-    this_chid,
     unshallowCharacter,
     updateRemoteChatName,
 } from '../script.js';
@@ -889,14 +889,14 @@ export async function openPermanentAssistantCard() {
 
 /**
  * Assigns a character as the assistant.
- * @param {string?} characterId Character ID
+ * @param {string?} avatar Character avatar filename
  */
-export function assignCharacterAsAssistant(characterId) {
-    if (characterId === undefined) {
+export function assignCharacterAsAssistant(avatar) {
+    if (avatar === undefined) {
         return;
     }
     /** @type {Character} */
-    const character = characters[characterId];
+    const character = characters.find(x => x.avatar === avatar);
     if (!character) {
         return;
     }
@@ -930,7 +930,7 @@ export function initWelcomeScreen() {
         if (target !== 'set_as_assistant') {
             return;
         }
-        assignCharacterAsAssistant(this_chid);
+        assignCharacterAsAssistant(getCurrentCharacter()?.avatar);
     });
 
     // Was a raw CHARACTER_RENAMED listener - charactersStore's 'renamed' op carries the same oldId/newId a

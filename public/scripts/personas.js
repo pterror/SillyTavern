@@ -593,16 +593,18 @@ export async function initPersona(avatarId, personaName, personaDescription, per
  * @returns {Promise<boolean>} A promise that resolves to true if the character was converted, false otherwise.
  */
 export async function convertCharacterToPersona(characterId = null) {
-    if (null === characterId) characterId = Number(this_chid);
+    // characterId stays a positional index for explicit callers (e.g. BulkEditOverlay), but the
+    // "use the current character" default now resolves via avatar instead of this_chid.
+    const character = null === characterId ? getCurrentCharacter() : characters[characterId];
 
-    const avatarUrl = characters[characterId]?.avatar;
+    const avatarUrl = character?.avatar;
     if (!avatarUrl) {
         console.log('No avatar found for this character');
         return false;
     }
 
-    const name = characters[characterId]?.name;
-    let description = characters[characterId]?.description;
+    const name = character?.name;
+    let description = character?.description;
     const overwriteName = `${name} (Persona).png`;
 
     if (personaStore.has(overwriteName)) {
