@@ -1667,7 +1667,7 @@ async function loadPersonaForCurrentChat({ doRender = false } = {}) {
  */
 export function getConnectedPersonas(characterKey = undefined) {
     characterKey ??= selected_group || characters[Number(this_chid)]?.avatar;
-    const connectedPersonas = Object.entries(power_user.persona_descriptions)
+    const connectedPersonas = Object.entries(personaStore.getAll())
         .filter(([_, { connections }]) => connections?.some(conn => conn.id === characterKey))
         .map(([key, _]) => key);
     return connectedPersonas;
@@ -1692,18 +1692,20 @@ export async function showCharConnections() {
             const personaId = $(element).attr('data-pid');
 
             /** @type {PersonaConnection[]} */
-            const connections = power_user.persona_descriptions[personaId]?.connections;
+            const connections = personaStore.get(personaId)?.connections;
             if (connections) {
                 console.log(`Unlocking persona ${personaId} from current character ${name2}`);
-                power_user.persona_descriptions[personaId].connections = connections.filter(c => {
-                    if (menu_type == 'group_edit' && c.type == 'group' && c.id == selected_group) return false;
-                    else if (c.type == 'character' && c.id == characters[Number(this_chid)]?.avatar) return false;
-                    return true;
+                personaStore.update(personaId, {
+                    connections: connections.filter(c => {
+                        if (menu_type == 'group_edit' && c.type == 'group' && c.id == selected_group) return false;
+                        else if (c.type == 'character' && c.id == characters[Number(this_chid)]?.avatar) return false;
+                        return true;
+                    }),
                 });
                 saveSettingsDebounced();
                 updatePersonaConnectionsAvatarList();
                 if (power_user.persona_show_notifications) {
-                    toastr.info(t`User persona ${power_user.personas[personaId]} is now unlocked from the current character ${name2}.`, t`Persona unlocked`);
+                    toastr.info(t`User persona ${personaStore.get(personaId)?.name} is now unlocked from the current character ${name2}.`, t`Persona unlocked`);
                 }
 
                 isRemoving = true;
@@ -1716,7 +1718,7 @@ export async function showCharConnections() {
     if (!isRemoving && selectedPersona) {
         await setUserAvatar(selectedPersona, { toastPersonaNameChange: false });
         if (power_user.persona_show_notifications) {
-            toastr.success(t`Selected persona ${power_user.personas[selectedPersona]} for current chat.`, t`Connected Persona Selected`);
+            toastr.success(t`Selected persona ${personaStore.get(selectedPersona)?.name} for current chat.`, t`Connected Persona Selected`);
         }
     }
 }
@@ -2153,9 +2155,8 @@ async function updatePersonaCallback(args) {
     if (!persona) return '';
 
     const avatarId = persona.avatar;
-    const descriptor = power_user.persona_descriptions[avatarId];
 
-    if (!descriptor) {
+    if (!personaStore.has(avatarId)) {
         toastr.warning(t`Persona data not found for "${persona.name}"`);
         return '';
     }
@@ -2166,8 +2167,8 @@ async function updatePersonaCallback(args) {
     if (args.name !== undefined) {
         const newName = String(args.name).trim();
         if (newName) {
-            const oldName = power_user.personas[avatarId];
-            power_user.personas[avatarId] = newName;
+            const oldName = personaStore.get(avatarId).name;
+            personaStore.update(avatarId, { name: newName });
             if (avatarId === user_avatar) {
                 setUserName(newName);
             }
@@ -2178,7 +2179,7 @@ async function updatePersonaCallback(args) {
 
     // Update description
     if (args.description !== undefined) {
-        descriptor.description = args.description;
+        personaStore.update(avatarId, { description: args.description });
         if (avatarId === user_avatar) {
             power_user.persona_description = args.description;
         }
@@ -2187,7 +2188,7 @@ async function updatePersonaCallback(args) {
 
     // Update title
     if (args.title !== undefined) {
-        descriptor.title = args.title;
+        personaStore.update(avatarId, { title: args.title });
         hasUpdates = true;
     }
 
@@ -2195,7 +2196,7 @@ async function updatePersonaCallback(args) {
     if (args.descriptionPosition !== undefined) {
         const position = parsePersonaPosition(args.descriptionPosition);
         if (position !== null) {
-            descriptor.position = position;
+            personaStore.update(avatarId, { position });
             if (avatarId === user_avatar) {
                 power_user.persona_description_position = position;
             }
@@ -2207,7 +2208,7 @@ async function updatePersonaCallback(args) {
     if (args.descriptionDepth !== undefined) {
         const depth = Number(args.descriptionDepth);
         if (!isNaN(depth)) {
-            descriptor.depth = depth;
+            personaStore.update(avatarId, { depth });
             if (avatarId === user_avatar) {
                 power_user.persona_description_depth = depth;
             }
@@ -2219,7 +2220,7 @@ async function updatePersonaCallback(args) {
     if (args.descriptionRole !== undefined) {
         const role = parsePersonaRole(args.descriptionRole);
         if (role !== null) {
-            descriptor.role = role;
+            personaStore.update(avatarId, { role });
             if (avatarId === user_avatar) {
                 power_user.persona_description_role = role;
             }
@@ -2229,7 +2230,7 @@ async function updatePersonaCallback(args) {
 
     // Update lorebook
     if (args.lorebook !== undefined) {
-        descriptor.lorebook = args.lorebook;
+        personaStore.update(avatarId, { lorebook: args.lorebook });
         if (avatarId === user_avatar) {
             power_user.persona_description_lorebook = args.lorebook;
         }
@@ -2261,7 +2262,7 @@ async function updatePersonaCallback(args) {
     await getUserAvatars(true, avatarId);
     updatePersonaUIStates();
 
-    toastr.success(t`Persona "${power_user.personas[avatarId]}" updated successfully`);
+    toastr.success(t`Persona "${personaStore.get(avatarId)?.name}" updated successfully`);
     return avatarId;
 }
 
@@ -2275,12 +2276,12 @@ async function getPersonaDataCallback(args) {
     if (!persona) return '';
 
     const avatarId = persona.avatar;
-    const descriptor = power_user.persona_descriptions[avatarId] ?? {};
+    const descriptor = personaStore.get(avatarId) ?? {};
 
     if (args.field) {
         /** @type {Record<string, unknown>} */
         const fieldMap = {
-            name: power_user.personas[avatarId] ?? '',
+            name: descriptor.name ?? '',
             description: descriptor.description ?? '',
             title: descriptor.title ?? '',
             position: descriptor.position ?? persona_description_positions.IN_PROMPT,
@@ -2307,7 +2308,7 @@ async function getPersonaDataCallback(args) {
     // Return full persona data
     const personaData = {
         avatar: avatarId,
-        name: power_user.personas[avatarId] ?? '',
+        name: descriptor.name ?? '',
         description: descriptor.description ?? '',
         title: descriptor.title ?? '',
         position: descriptor.position ?? persona_description_positions.IN_PROMPT,
@@ -2355,7 +2356,7 @@ async function duplicatePersonaCallback(args) {
         return '';
     }
 
-    toastr.success(t`Persona "${power_user.personas[newAvatarId]}" duplicated successfully`);
+    toastr.success(t`Persona "${personaStore.get(newAvatarId)?.name}" duplicated successfully`);
     return newAvatarId;
 }
 
