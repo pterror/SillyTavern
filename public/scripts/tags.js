@@ -13,7 +13,6 @@ import {
     eventSource,
     event_types,
     DEFAULT_PRINT_TIMEOUT,
-    DEFAULT_SAVE_EDIT_TIMEOUT,
     printCharacters,
     getRequestHeaders,
 } from '../script.js';
@@ -444,7 +443,7 @@ async function saveTagsNow() {
  * subscriber (rebuildTagStores()) - every mutation call site in this file keeps calling its store op exactly
  * as before and doesn't know this save exists.
  */
-const saveTagsDebounced = debounce(saveTagsNow, DEFAULT_SAVE_EDIT_TIMEOUT);
+const saveTagsDebounced = debounce(saveTagsNow, debounce_timeout.relaxed);
 
 /**
  * Forces `tagMapStore`'s usage-count index to be recomputed from the current contents of `tag_map`. Needed
