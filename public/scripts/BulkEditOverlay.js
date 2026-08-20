@@ -3,6 +3,7 @@
 import {
     characterGroupOverlay,
     characters,
+    charactersStore,
     event_types,
     eventSource,
     getCharacters,
@@ -657,7 +658,11 @@ class BulkEditOverlay {
     static #resolveCharacterId = (character) => {
         const avatar = character.getAttribute('data-avatar');
         if (avatar) {
-            const index = characters.findIndex(c => c.avatar === avatar);
+            // This function's whole job is the numeric array position (selectedCharacters, characters[id],
+            // data-chid all key off it - see the doc comment above), not the entity itself, so the store lookup
+            // only buys us O(1) existence-checking here - the position still has to come from characters.indexOf().
+            const entity = charactersStore.get(avatar);
+            const index = entity ? characters.indexOf(entity) : -1;
             if (index !== -1) {
                 return index;
             }
