@@ -442,6 +442,13 @@ export let characters = [];
  * @type {EntityStore<Character>}
  */
 export const charactersStore = new EntityStore(characters, c => c.avatar);
+// Consumer side of the characters migration (mutation side landed in the commits referenced above): the
+// persistent character search index (power-user.js) needs invalidating after any character data change, same
+// as tags.js already does for tagsStore/tagMapStore. One subscriber here replaces what used to be manual
+// invalidateCharactersFuseIndex() calls at each individual mutation site (getOneCharacter, getCharacters).
+// Deliberately not narrowed to specific ops/fields - invalidateCharactersFuseIndex() just sets a dirty flag,
+// the actual rebuild is lazy on next search, so over-invalidating on e.g. a `.chat`-only update() costs nothing.
+charactersStore.onChange(() => invalidateCharactersFuseIndex());
 /**
  * Stringified index of a currently chosen entity in the characters array.
  * @type {string|undefined} Yes, we hate it as much as you do.
@@ -1265,8 +1272,8 @@ export async function getOneCharacter(avatarUrl) {
             // same either way - the difference is that any other code holding a reference to the old character
             // object (rather than re-reading `characters[indexOf]`) now sees the update too, instead of quietly
             // going stale. No known caller relied on the old "distinct object after edit" behavior.
+            // Fuse-index invalidation is handled by the charactersStore.onChange subscriber above.
             charactersStore.update(avatarUrl, getData);
-            invalidateCharactersFuseIndex();
         } else {
             toastr.error(t`Character ${avatarUrl} not found in the list`, t`Error`, { timeOut: 5000, preventDuplicates: true });
         }
@@ -1360,13 +1367,14 @@ export async function getCharacters({ silent = false, silentGroups = false } = {
             characters[i].chat = String(characters[i].chat);
         }
 
+        // Fuse-index invalidation is handled by the charactersStore.onChange subscriber (see charactersStore's
+        // definition above) - reset() emits directly, and reindex()'s silent callers all follow up with a
+        // reportCreated()/reportRemoved()/reportRenamed() of their own right after this call returns.
         if (silent) {
             charactersStore.reindex();
         } else {
             charactersStore.reset();
         }
-
-        invalidateCharactersFuseIndex();
 
         if (previousAvatar) {
             const newCharacterId = characters.findIndex(x => x.avatar === previousAvatar);
