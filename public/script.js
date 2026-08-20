@@ -453,7 +453,18 @@ export const charactersStore = new EntityStore(characters, c => c.avatar);
 // the actual rebuild is lazy on next search, so over-invalidating on e.g. a `.chat`-only update() costs nothing.
 charactersStore.onChange(() => invalidateCharactersFuseIndex());
 /**
- * Stringified index of a currently chosen entity in the characters array.
+ * Avatar (stable id, see charactersStore) of the currently selected character. This is the source of truth for
+ * character selection - `this_chid` below is a cached/derived array index recomputed from this whenever it
+ * changes or the `characters` array is reloaded, kept around only because most call sites want O(1) array
+ * access. Never assign this directly - go through setCharacterId().
+ * @type {string|undefined}
+ */
+let this_avatar;
+
+/**
+ * Stringified index of a currently chosen entity in the characters array. Derived from `this_avatar` - see
+ * setCharacterId() (the only place that legitimately assigns either of these) and getCharacters()'s reload
+ * reconciliation. Never assign this directly.
  * @type {string|undefined} Yes, we hate it as much as you do.
  */
 export let this_chid;
@@ -1355,7 +1366,6 @@ export async function getCharacters({ silent = false, silentGroups = false } = {
         body: JSON.stringify({}),
     });
     if (response.ok) {
-        const previousAvatar = this_chid !== undefined ? characters[this_chid]?.avatar : null;
         characters.splice(0, characters.length);
         const getData = await response.json();
         for (let i = 0; i < getData.length; i++) {
@@ -1379,8 +1389,11 @@ export async function getCharacters({ silent = false, silentGroups = false } = {
             charactersStore.reset();
         }
 
-        if (previousAvatar) {
-            const newCharacterId = characters.findIndex(x => x.avatar === previousAvatar);
+        if (this_avatar) {
+            // this_avatar is untouched by the splice()/reload above (it's a separate variable, not derived from
+            // the array), so it's still exactly the avatar that was selected before this reload - no need to
+            // snapshot it beforehand the way this_chid (a plain index) would have required.
+            const newCharacterId = characters.findIndex(x => x.avatar === this_avatar);
             if (newCharacterId >= 0) {
                 setCharacterId(newCharacterId);
                 await selectCharacterById(newCharacterId, { switchMenu: false });
@@ -7183,23 +7196,38 @@ export function setExternalAbortController(controller) {
 }
 
 /**
- * Sets a character array index.
- * @param {number|string|undefined} value
+ * Sets the currently selected character, keyed by avatar (`this_avatar`, the source of truth) with `this_chid`
+ * (an array index) recomputed alongside it purely as a cache for call sites that want O(1) array access.
+ * Accepts the same overloads as before (index, numeric string, character object, or undefined to clear).
+ * @param {number|string|object|undefined} value
  */
 export function setCharacterId(value) {
     switch (typeof value) {
         case 'bigint':
         case 'number':
+            // Preserved as-is (not bounds-checked) for legacy behavior - this_avatar simply won't resolve for
+            // an out-of-range index, same as characters[this_chid] would already have been undefined before.
             this_chid = String(value);
+            this_avatar = characters[Number(value)]?.avatar;
             break;
-        case 'string':
-            this_chid = !isNaN(parseInt(value)) ? value : undefined;
+        case 'string': {
+            const idx = parseInt(value);
+            this_chid = !isNaN(idx) ? value : undefined;
+            this_avatar = !isNaN(idx) ? characters[idx]?.avatar : undefined;
             break;
-        case 'object':
-            this_chid = characters.indexOf(value) !== -1 ? String(characters.indexOf(value)) : undefined;
+        }
+        case 'object': {
+            // Identify by avatar rather than by array reference - the object may be a fresh reload of the same
+            // character (different reference, same avatar), which should still resolve.
+            const avatar = value?.avatar;
+            const idx = avatar !== undefined ? characters.findIndex(c => c.avatar === avatar) : -1;
+            this_chid = idx !== -1 ? String(idx) : undefined;
+            this_avatar = idx !== -1 ? avatar : undefined;
             break;
+        }
         case 'undefined':
             this_chid = undefined;
+            this_avatar = undefined;
             break;
         default:
             console.error('Invalid character ID type:', value);
