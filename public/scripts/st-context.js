@@ -88,7 +88,7 @@ import { loader } from './action-loader.js';
 import { MacrosParser } from './macros.js';
 import { getChatCompletionModel, oai_settings } from './openai.js';
 import { callGenericPopup, Popup, POPUP_RESULT, POPUP_TYPE } from './popup.js';
-import { power_user, registerDebugFunction } from './power-user.js';
+import { power_user, personaStore, registerDebugFunction } from './power-user.js';
 import { getPresetManager } from './preset-manager.js';
 import { humanizedDateTime, isMobile, shouldSendOnEnter } from './RossAscends-mods.js';
 import { ScraperManager } from './scrapers.js';
@@ -97,7 +97,7 @@ import { SlashCommand } from './slash-commands/SlashCommand.js';
 import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from './slash-commands/SlashCommandArgument.js';
 import { SlashCommandEnumValue } from './slash-commands/SlashCommandEnumValue.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
-import { tag_map, tags, importTags } from './tags.js';
+import { tag_map, tags, tagsStore, importTags } from './tags.js';
 import { getTextGenServer, textgenerationwebui_settings } from './textgen-settings.js';
 import { tokenizers, getTextTokens, getTokenCount, getTokenCountAsync, getTokenizerModel } from './tokenizers.js';
 import { ToolManager } from './tool-calling.js';
@@ -124,6 +124,34 @@ import { MessageFormatter } from './message-formatter.js';
  */
 function getGroupById(id) {
     return groupsStore.get(id);
+}
+
+/**
+ * Read-only O(1) lookup for a tag by id, backed by tagsStore's Map index - use this instead of
+ * `context.tags.find(x => x.id === id)` wherever the id is already known, since that scan is O(n) over
+ * every tag. `context.tags` (the raw array) stays available unchanged for anything that isn't a by-id
+ * lookup (iteration, filtering, etc.) or that hasn't been updated to use this yet.
+ * Deliberately exposes only the read (`.get()`), not the tagsStore instance itself, since that also has
+ * mutation methods (`.update()`/`.remove()`/etc.) that extensions shouldn't get write access to via a read path.
+ * @param {string} id - the tag's id
+ * @returns {object|undefined} the tag, or undefined if no tag with that id exists
+ */
+function getTagById(id) {
+    return tagsStore.get(id);
+}
+
+/**
+ * Read-only O(1) lookup for a persona by avatar id, backed by personaStore's Map index. Personas aren't
+ * exposed on `getContext()` at all otherwise (unlike `groups`/`tags`, there's no raw array/dict here to keep
+ * for backwards compat - `context.powerUserSettings.persona_data` is technically reachable but not a clean
+ * accessor), so this is the only path in.
+ * Deliberately exposes only the read (`.get()`), not the personaStore instance itself, since that also has
+ * mutation methods (`.update()`/`.remove()`/etc.) that extensions shouldn't get write access to via a read path.
+ * @param {string} avatar - the persona's avatar id
+ * @returns {object|undefined} the persona, or undefined if no persona with that avatar id exists
+ */
+function getPersonaById(avatar) {
+    return personaStore.get(avatar);
 }
 
 export function getContext() {
@@ -244,6 +272,7 @@ export function getContext() {
         addLocaleData,
         tags,
         tagMap: tag_map,
+        getTagById,
         menuType: menu_type,
         createCharacterData: create_save,
         /** @deprecated Legacy snake-case naming, compatibility with old extensions */
@@ -254,6 +283,7 @@ export function getContext() {
         chatCompletionSettings: oai_settings,
         textCompletionSettings: textgenerationwebui_settings,
         powerUserSettings: power_user,
+        getPersonaById,
         getCharacters,
         getOneCharacter,
         getCharacterCardFields,
