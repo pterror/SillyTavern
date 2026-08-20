@@ -1341,7 +1341,11 @@ export function getAudioDurationFromDataURL(dataUrl) {
  */
 export function getCharaFilename(chid = null, { manualAvatarKey = null } = {}) {
     const context = getContext();
-    const fileName = manualAvatarKey ?? context.characters[chid ?? context.characterId]?.avatar;
+    // chid, when explicitly given, is still an array index (callers that already have one on hand, e.g. from
+    // context.characters.indexOf()). The no-chid fallback used to go through context.characterId (this_chid),
+    // an index that can go stale across an await; it now resolves via context.characterAvatar (this_avatar)
+    // instead, which is kept in sync the same way and doesn't have that failure mode.
+    const fileName = manualAvatarKey ?? (chid !== null ? context.characters[chid]?.avatar : context.characterAvatar);
 
     return fileName?.replace(/\.[^/.]+$/, '') ?? null;
 }

@@ -122,6 +122,7 @@ export function getContext() {
         name1,
         name2,
         characterId: this_chid,
+        characterAvatar: getCurrentCharacter()?.avatar,
         groupId: selected_group,
         chatId: selected_group
             ? groups.find(x => x.id == selected_group)?.chat_id
