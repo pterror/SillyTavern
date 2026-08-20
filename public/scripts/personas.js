@@ -2,6 +2,7 @@ import {
     buildAvatarList,
     characterToEntity,
     characters,
+    getCurrentCharacter,
     chat,
     chat_metadata,
     createOrEditCharacter,
@@ -1005,7 +1006,7 @@ async function selectCurrentPersona({ toastPersonaNameChange = true } = {}) {
  * @returns {boolean} Whether the connection is locked
  */
 export function isPersonaConnectionLocked(connection) {
-    return (!selected_group && connection.type === 'character' && connection.id === characters[this_chid]?.avatar)
+    return (!selected_group && connection.type === 'character' && connection.id === getCurrentCharacter()?.avatar)
         || (selected_group && connection.type === 'group' && connection.id === selected_group);
 }
 
@@ -1455,7 +1456,7 @@ function getPersonaStates(avatarId) {
     /** @type {PersonaConnection[]} */
     const connections = personaStore.get(avatarId)?.connections;
     const hasCharLock = !!connections?.some(c =>
-        (!selected_group && c.type === 'character' && c.id === characters[Number(this_chid)]?.avatar)
+        (!selected_group && c.type === 'character' && c.id === getCurrentCharacter()?.avatar)
         || (selected_group && c.type === 'group' && c.id === selected_group));
 
     return {
@@ -1702,7 +1703,7 @@ async function loadPersonaForCurrentChat({ doRender = false } = {}) {
  * @returns {string[]} - An array of persona keys that are connected to the given character key
  */
 export function getConnectedPersonas(characterKey = undefined) {
-    characterKey ??= selected_group || characters[Number(this_chid)]?.avatar;
+    characterKey ??= selected_group || getCurrentCharacter()?.avatar;
     const connectedPersonas = Object.entries(personaStore.getAll())
         .filter(([_, { connections }]) => connections?.some(conn => conn.id === characterKey))
         .map(([key, _]) => key);
@@ -1734,7 +1735,7 @@ export async function showCharConnections() {
                 personaStore.update(personaId, {
                     connections: connections.filter(c => {
                         if (menu_type == 'group_edit' && c.type == 'group' && c.id == selected_group) return false;
-                        else if (c.type == 'character' && c.id == characters[Number(this_chid)]?.avatar) return false;
+                        else if (c.type == 'character' && c.id == getCurrentCharacter()?.avatar) return false;
                         return true;
                     }),
                 });
@@ -1767,8 +1768,8 @@ export async function showCharConnections() {
 export function getCurrentConnectionObj() {
     if (selected_group)
         return { type: 'group', id: selected_group };
-    if (characters[Number(this_chid)]?.avatar)
-        return { type: 'character', id: characters[Number(this_chid)]?.avatar };
+    if (getCurrentCharacter()?.avatar)
+        return { type: 'character', id: getCurrentCharacter()?.avatar };
     return null;
 }
 
