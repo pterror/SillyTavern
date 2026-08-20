@@ -7747,7 +7747,7 @@ export async function unshallowCharacter(avatar) {
     }
 
     /** @type {Character} */
-    const character = characters.find((x) => x.avatar === avatar);
+    const character = charactersStore.get(avatar);
     if (!character) {
         console.debug('Character not found:', avatar);
         return;
@@ -8898,7 +8898,7 @@ export function select_rm_info(type, charId, previousCharId = null) {
  */
 export function select_selected_character(avatar, { switchMenu = true } = {}) {
     //character select
-    const character = characters.find((x) => x.avatar === avatar);
+    const character = charactersStore.get(avatar);
     select_rm_create({ switchMenu });
     switchMenu && setMenuType('character_edit');
     $('#delete_button').css('display', 'flex');

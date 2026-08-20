@@ -896,7 +896,7 @@ export function assignCharacterAsAssistant(avatar) {
         return;
     }
     /** @type {Character} */
-    const character = characters.find(x => x.avatar === avatar);
+    const character = charactersStore.get(avatar);
     if (!character) {
         return;
     }

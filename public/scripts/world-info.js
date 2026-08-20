@@ -1,6 +1,6 @@
 import { Fuse } from '../lib.js';
 
-import { saveSettings, substituteParams, getRequestHeaders, chat_metadata, this_chid, characters, getCurrentCharacter, saveCharacterDebounced, menu_type, eventSource, event_types, getExtensionPromptByName, saveMetadata, getCurrentChatId, extension_prompt_roles, create_save, createOrEditCharacter, name1, getOneCharacter, select_selected_character } from '../script.js';
+import { saveSettings, substituteParams, getRequestHeaders, chat_metadata, this_chid, characters, charactersStore, getCurrentCharacter, saveCharacterDebounced, menu_type, eventSource, event_types, getExtensionPromptByName, saveMetadata, getCurrentChatId, extension_prompt_roles, create_save, createOrEditCharacter, name1, getOneCharacter, select_selected_character } from '../script.js';
 import { download, debounce, initScrollHeight, resetScrollHeight, parseJsonFile, extractDataFromPng, getFileBuffer, getCharaFilename, getSortableDelay, escapeRegex, PAGINATION_TEMPLATE, navigation_option, waitUntilCondition, isTrueBoolean, setValueByPath, flashHighlight, select2ModifyOptions, getSelect2OptionId, dynamicSelect2DataViaAjax, highlightRegex, select2ChoiceClickSubscribe, isFalseBoolean, getSanitizedFilename, checkOverwriteExistingData, getStringHash, parseStringArray, cancelDebounce, findChar, onlyUnique, equalsIgnoreCaseAndAccents, uuidv4, normalizeArray, getUniqueName, logSlashCommandWarn, addLongPressEvent, escapeHtml, setInfoBlock, clearInfoBlock } from './utils.js';
 import { extension_settings, getContext } from './extensions.js';
 import { NOTE_MODULE_NAME, metadata_keys, shouldWIAddPrompt } from './authors-note.js';
@@ -5681,7 +5681,7 @@ export function setWorldInfoButtonClass(avatar, forceValue = undefined) {
         return;
     }
 
-    const character = characters.find(c => c.avatar === avatar);
+    const character = charactersStore.get(avatar);
     const world = character?.data?.extensions?.world;
     const worldSet = Boolean(world && world_names.includes(world));
     $('#set_character_world, #world_button').toggleClass('world_set', worldSet);
@@ -5694,7 +5694,7 @@ export function checkEmbeddedWorld(avatar) {
         return false;
     }
 
-    const character = characters.find(c => c.avatar === avatar);
+    const character = charactersStore.get(avatar);
 
     if (character?.data?.character_book) {
         $('#import_character_info').data('avatar', character?.avatar ?? null).show();
@@ -5736,7 +5736,7 @@ export async function importEmbeddedWorldInfo(skipPopup = false) {
         return;
     }
 
-    const character = characters.find(c => c.avatar === avatar);
+    const character = charactersStore.get(avatar);
 
     if (!character) {
         return;
@@ -6328,7 +6328,7 @@ export function initWorldInfo() {
             return;
         }
 
-        const character = characters.find(c => c.avatar === avatar);
+        const character = charactersStore.get(avatar);
 
         const worldName = character?.data?.extensions?.world;
         const hasEmbed = checkEmbeddedWorld(avatar);
