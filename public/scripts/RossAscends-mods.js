@@ -13,7 +13,7 @@ import {
     setActiveCharacter,
     getEntitiesList,
     buildAvatarList,
-    selectCharacterById,
+    selectCharacterByAvatar,
     eventSource,
     menu_type,
     substituteParams,
@@ -272,11 +272,12 @@ export async function RA_CountCharTokens() {
 async function RA_autoloadchat() {
     // active character is the name, we should look it up in the character list and get the id
     if (active_character !== null && active_character !== undefined) {
-        const active_character_id = characters.findIndex(x => getTagKeyForEntity(x) === active_character);
-        if (active_character_id !== -1) {
-            await selectCharacterById(active_character_id);
+        const activeCharacterEntity = characters.find(x => getTagKeyForEntity(x) === active_character);
+        if (activeCharacterEntity) {
+            await selectCharacterByAvatar(activeCharacterEntity.avatar);
 
             // Do a little tomfoolery to spoof the tag selector
+            const active_character_id = characters.indexOf(activeCharacterEntity);
             const selectedCharElement = $(`#rm_print_characters_block .character_select[chid="${active_character_id}"]`);
             applyTagsOnCharacterSelect.call(selectedCharElement);
         } else {
