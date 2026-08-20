@@ -1051,12 +1051,21 @@ function removeTagFromMap(tagId, characterId = null) {
     return !!tagMapStore.unassign(key, tagId);
 }
 
+/**
+ * Above this many matches, jquery-ui's stock autocomplete `_renderMenu` (no cap of its own, and this app doesn't
+ * override it) builds one `<li>` per match - on this install, focusing the tag-add input triggers a search for
+ * '' (minLength: 0 + onTagInputFocus), which matches nearly every one of the ~9700 tags, so an uncapped result
+ * here means rendering thousands of DOM nodes on every single focus. The underlying filter itself isn't the slow
+ * part (sub-few-ms even over the full list) - it's specifically how many list items get built from the result.
+ */
+const FIND_TAG_RESULT_LIMIT = 50;
+
 function findTag(request, resolve, listSelector) {
     const skipIds = [...($(listSelector).find('.tag').map((_, el) => $(el).attr('id')))];
     const haystack = tags.filter(t => !skipIds.includes(t.id)).sort(compareTagsForSort).map(t => t.name);
     const needle = request.term;
     const hasExactMatch = haystack.findIndex(x => equalsIgnoreCaseAndAccents(x, needle)) !== -1;
-    const result = haystack.filter(x => includesIgnoreCaseAndAccents(x, needle));
+    const result = haystack.filter(x => includesIgnoreCaseAndAccents(x, needle)).slice(0, FIND_TAG_RESULT_LIMIT);
 
     if (request.term && !hasExactMatch) {
         result.unshift(request.term);
