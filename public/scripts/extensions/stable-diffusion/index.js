@@ -2,6 +2,7 @@ import { Popper } from '../../../lib.js';
 import {
     animation_duration,
     appendMediaToMessage,
+    charactersStore,
     event_types,
     eventSource,
     formatCharacterAvatar,
@@ -2947,7 +2948,7 @@ function getRawLastMessage() {
     const context = getContext();
     const lastMessage = getLastUsableMessage();
     const character = context.groupId
-        ? context.characters.find(c => c.avatar === lastMessage.original_avatar)
+        ? charactersStore.get(lastMessage.original_avatar)
         : context.characters[context.characterId];
 
     if (!character) {
