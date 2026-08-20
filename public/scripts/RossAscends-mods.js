@@ -275,11 +275,7 @@ async function RA_autoloadchat() {
         const activeCharacterEntity = characters.find(x => getTagKeyForEntity(x) === active_character);
         if (activeCharacterEntity) {
             await selectCharacterByAvatar(activeCharacterEntity.avatar);
-
-            // Do a little tomfoolery to spoof the tag selector
-            const active_character_id = characters.indexOf(activeCharacterEntity);
-            const selectedCharElement = $(`#rm_print_characters_block .character_select[chid="${active_character_id}"]`);
-            applyTagsOnCharacterSelect.call(selectedCharElement);
+            applyTagsOnCharacterSelect();
         } else {
             setActiveCharacter(null);
             saveSettingsDebounced();
