@@ -783,13 +783,12 @@ export async function askForPersonaSelection(title, text, personas, { okButton =
             text: t`Remove All Connections`,
             result: 2,
             action: () => {
-                for (const [personaId, description] of Object.entries(power_user.persona_descriptions)) {
+                for (const [personaId, record] of Object.entries(personaStore.getAll())) {
                     /** @type {PersonaConnection[]} */
-                    const connections = description.connections;
-                    if (connections) {
-                        power_user.persona_descriptions[personaId].connections = connections.filter(c => {
-                            if (targetedChar.type == c.type && targetedChar.id == c.id) return false;
-                            return true;
+                    const connections = record.connections;
+                    if (connections?.length) {
+                        personaStore.update(personaId, {
+                            connections: connections.filter(c => !(targetedChar.type == c.type && targetedChar.id == c.id)),
                         });
                     }
                 }
@@ -837,7 +836,7 @@ async function editPersonaTitle(popup, avatarId, currentTitle) {
         return;
     }
 
-    if (!power_user.persona_descriptions[avatarId]) {
+    if (!personaStore.has(avatarId)) {
         console.warn('Uninitialized persona descriptor for avatar:', avatarId);
         return;
     }
@@ -846,7 +845,7 @@ async function editPersonaTitle(popup, avatarId, currentTitle) {
 
     if (!newTitle && currentTitle) {
         console.log(`Removed persona title for ${avatarId}`);
-        delete power_user.persona_descriptions[avatarId].title;
+        personaStore.update(avatarId, { title: '' });
         await getUserAvatars(true, avatarId);
         saveSettingsDebounced();
         await eventSource.emit(event_types.PERSONA_UPDATED, avatarId);
@@ -854,7 +853,7 @@ async function editPersonaTitle(popup, avatarId, currentTitle) {
     }
 
     if (newTitle !== currentTitle) {
-        power_user.persona_descriptions[avatarId].title = newTitle;
+        personaStore.update(avatarId, { title: newTitle });
         console.log(`Updated persona title for ${avatarId} to ${newTitle}`);
         await getUserAvatars(true, avatarId);
         saveSettingsDebounced();
@@ -869,8 +868,8 @@ async function editPersonaTitle(popup, avatarId, currentTitle) {
  * @returns {Promise<boolean>} A promise that resolves to true if the persona was renamed, false otherwise
  */
 async function renamePersona(avatarId) {
-    const currentName = power_user.personas[avatarId];
-    const currentTitle = power_user.persona_descriptions[avatarId]?.title || '';
+    const currentName = personaStore.get(avatarId)?.name;
+    const currentTitle = personaStore.get(avatarId)?.title || '';
     const newName = await Popup.show.input(t`Rename Persona`, t`Enter a new name for this persona:`, currentName, {
         customInputs: [{
             id: 'persona_title',
@@ -886,7 +885,7 @@ async function renamePersona(avatarId) {
         return false;
     }
 
-    power_user.personas[avatarId] = newName;
+    personaStore.update(avatarId, { name: newName });
     console.log(`Renamed persona ${avatarId} to ${newName}`);
 
     if (avatarId === user_avatar) {
@@ -908,7 +907,7 @@ async function renamePersona(avatarId) {
  * @returns {Promise<void>}
  */
 async function selectCurrentPersona({ toastPersonaNameChange = true } = {}) {
-    const personaName = power_user.personas[user_avatar];
+    const personaName = personaStore.get(user_avatar)?.name;
     if (personaName) {
         const shouldAutoLock = power_user.persona_auto_lock && user_avatar !== chat_metadata.persona;
 
@@ -917,7 +916,7 @@ async function selectCurrentPersona({ toastPersonaNameChange = true } = {}) {
             setUserName(personaName, { toastPersonaNameChange: !shouldAutoLock && toastPersonaNameChange });
         }
 
-        const descriptor = power_user.persona_descriptions[user_avatar];
+        const descriptor = personaStore.get(user_avatar);
 
         if (descriptor) {
             power_user.persona_description = descriptor.description ?? '';
@@ -926,20 +925,14 @@ async function selectCurrentPersona({ toastPersonaNameChange = true } = {}) {
             power_user.persona_description_role = descriptor.role ?? DEFAULT_ROLE;
             power_user.persona_description_lorebook = descriptor.lorebook ?? '';
         } else {
+            // Can't actually happen anymore now that personaStore.get(user_avatar) truthy above guarantees a
+            // record exists (name and the rest of the record are always created together via
+            // personaStore.create() now) - kept as a defensive fallback rather than relying on that invariant.
             power_user.persona_description = '';
             power_user.persona_description_position = persona_description_positions.IN_PROMPT;
             power_user.persona_description_depth = DEFAULT_DEPTH;
             power_user.persona_description_role = DEFAULT_ROLE;
             power_user.persona_description_lorebook = '';
-            power_user.persona_descriptions[user_avatar] = {
-                description: '',
-                position: persona_description_positions.IN_PROMPT,
-                depth: DEFAULT_DEPTH,
-                role: DEFAULT_ROLE,
-                lorebook: '',
-                connections: [],
-                title: '',
-            };
         }
 
         setPersonaDescription();
@@ -992,7 +985,7 @@ export function isPersonaLocked(type = 'chat') {
         case 'chat':
             return chat_metadata.persona == user_avatar;
         case 'character': {
-            return !!power_user.persona_descriptions[user_avatar]?.connections?.some(isPersonaConnectionLocked);
+            return !!personaStore.get(user_avatar)?.connections?.some(isPersonaConnectionLocked);
         }
         default: throw new Error(`Unknown persona lock type: ${type}`);
     }
@@ -1048,10 +1041,10 @@ async function unlockPersona(type = 'chat') {
         }
         case 'character': {
             /** @type {PersonaConnection[]} */
-            const connections = power_user.persona_descriptions[user_avatar]?.connections;
+            const connections = personaStore.get(user_avatar)?.connections;
             if (connections) {
                 console.log(`Unlocking persona ${user_avatar} from this character ${name2}`);
-                power_user.persona_descriptions[user_avatar].connections = connections.filter(c => !isPersonaConnectionLocked(c));
+                personaStore.update(user_avatar, { connections: connections.filter(c => !isPersonaConnectionLocked(c)) });
                 saveSettingsDebounced();
                 updatePersonaConnectionsAvatarList();
                 if (power_user.persona_show_notifications && !isPersonaPanelOpen()) {
@@ -1073,13 +1066,13 @@ async function unlockPersona(type = 'chat') {
  */
 async function lockPersona(type = 'chat') {
     // First make sure that user_avatar is actually a persona
-    if (!(user_avatar in power_user.personas)) {
+    if (!personaStore.has(user_avatar)) {
         console.log(`Creating a new persona ${user_avatar}`);
         if (power_user.persona_show_notifications) {
             toastr.info(t`Creating a new persona for currently selected user name and avatar...`, t`Persona Not Found`);
         }
-        power_user.personas[user_avatar] = name1;
-        power_user.persona_descriptions[user_avatar] = {
+        personaStore.create(user_avatar, {
+            name: name1,
             description: '',
             position: persona_description_positions.IN_PROMPT,
             depth: DEFAULT_DEPTH,
@@ -1087,7 +1080,7 @@ async function lockPersona(type = 'chat') {
             lorebook: '',
             connections: [],
             title: '',
-        };
+        });
         await eventSource.emit(event_types.PERSONA_CREATED, { avatarId: user_avatar, name: name1, description: '', title: '' });
     }
 
@@ -1108,20 +1101,20 @@ async function lockPersona(type = 'chat') {
         case 'character': {
             const newConnection = getCurrentConnectionObj();
             /** @type {PersonaConnection[]} */
-            const connections = power_user.persona_descriptions[user_avatar].connections?.filter(c => !isPersonaConnectionLocked(c)) ?? [];
+            const connections = personaStore.get(user_avatar).connections?.filter(c => !isPersonaConnectionLocked(c)) ?? [];
             if (newConnection && newConnection.id) {
                 console.log(`Locking persona ${user_avatar} to this character ${name2}`);
-                power_user.persona_descriptions[user_avatar].connections = [...connections, newConnection];
+                personaStore.update(user_avatar, { connections: [...connections, newConnection] });
 
                 const unlinkedCharacters = [];
                 if (!power_user.persona_allow_multi_connections) {
-                    for (const [avatarId, description] of Object.entries(power_user.persona_descriptions)) {
+                    for (const [avatarId, record] of Object.entries(personaStore.getAll())) {
                         if (avatarId === user_avatar) continue;
 
-                        const filteredConnections = description.connections?.filter(c => !(c.type === newConnection.type && c.id === newConnection.id)) ?? [];
-                        if (filteredConnections.length !== description.connections?.length) {
-                            description.connections = filteredConnections;
-                            unlinkedCharacters.push(power_user.personas[avatarId]);
+                        const filteredConnections = record.connections?.filter(c => !(c.type === newConnection.type && c.id === newConnection.id)) ?? [];
+                        if (filteredConnections.length !== record.connections?.length) {
+                            personaStore.update(avatarId, { connections: filteredConnections });
+                            unlinkedCharacters.push(record.name);
                         }
                     }
                 }
