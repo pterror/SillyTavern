@@ -12,6 +12,7 @@ import {
 } from './lib.js';
 
 import { humanizedDateTime, favsToHotswap, getMessageTimeStamp, dragElement, isMobile, initRossMods } from './scripts/RossAscends-mods.js';
+import { EntityStore } from './scripts/entity-store.js';
 import { userStatsHandler, statMesProcess, initStats } from './scripts/stats.js';
 import {
     generateKoboldWithStreaming,
@@ -426,6 +427,21 @@ export let displayVersion = 'SillyTavern';
 let generation_started = new Date();
 /** @type {Character[]} */
 export let characters = [];
+/**
+ * Read-path backing store for `characters` (see entity-store.js) - wraps the same array in place, so every
+ * other read call site in this file (and every other file that imports `characters` directly) keeps working
+ * completely unchanged. `characters` itself is never reassigned to a new array reference (unlike `tags` during
+ * settings load), so this doesn't need a rebuild-on-reassignment hook the way tagsStore does.
+ *
+ * Unlike tags, character lifecycle mutations (create/delete/rename/duplicate) are not targeted array
+ * push/splice-by-id - they're all implemented (server-side and client-side) as a full array replace via
+ * getCharacters(). getCharacters() itself keeps doing that replace and calls charactersStore.reindex()/reset()
+ * as appropriate; callers that know a specific create/delete/rename happened report it via
+ * charactersStore.reportCreated()/.reportRemoved()/.reportRenamed() instead of the generic reset(), so
+ * consumers hear the specific thing that happened rather than "something changed, go re-scan".
+ * @type {EntityStore<Character>}
+ */
+export const charactersStore = new EntityStore(characters, c => c.avatar);
 /**
  * Stringified index of a currently chosen entity in the characters array.
  * @type {string|undefined} Yes, we hate it as much as you do.
@@ -1298,7 +1314,16 @@ export function getCharacterSource(chId = this_chid) {
     return '';
 }
 
-export async function getCharacters() {
+/**
+ * Refetches the full character list from the server and rebuilds `characters` in place.
+ * @param {object} [options]
+ * @param {boolean} [options.silent=false] - If true, skips charactersStore's generic reset() notification -
+ * pass this when the caller already knows the specific create/delete/rename that this reload happened for,
+ * and will report it itself via charactersStore.reportCreated()/.reportRemoved()/.reportRenamed() once this
+ * returns (which need the post-reload id index, so charactersStore.reindex() still runs either way - only
+ * the emitted change differs). Leave false for reloads with no more specific intent than "resync".
+ */
+export async function getCharacters({ silent = false } = {}) {
     const response = await fetch('/api/characters/all', {
         method: 'POST',
         headers: getRequestHeaders(),
@@ -1318,6 +1343,12 @@ export async function getCharacters() {
             }
 
             characters[i].chat = String(characters[i].chat);
+        }
+
+        if (silent) {
+            charactersStore.reindex();
+        } else {
+            charactersStore.reset();
         }
 
         invalidateCharactersFuseIndex();
