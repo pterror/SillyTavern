@@ -3520,8 +3520,7 @@ export function getCharacterCardFieldsLazy({ chid = undefined } = {}) {
 
     // For group chats, we need to check if group cards should be used
     const useGroupCards = selected_group && character;
-    const currentChid = chid !== undefined ? Number(chid) : characters.indexOf(character);
-    const groupCardsLazy = useGroupCards ? getGroupCharacterCardsLazy(selected_group, currentChid) : null;
+    const groupCardsLazy = useGroupCards ? getGroupCharacterCardsLazy(selected_group, character.avatar) : null;
 
     /** @type {Record<string, () => string|string[]>} */
     const resolvers = {
