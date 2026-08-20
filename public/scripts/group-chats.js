@@ -2212,6 +2212,10 @@ export async function createNewGroupChat(groupId) {
     group.chat_id = newChatName;
     updateChatMetadata({}, true);
 
+    // group.chats/chat_id already mutated above in place - this is purely to report the change via
+    // groupsStore, not to change the value again (same reference-passthrough pattern as chunk D).
+    groupsStore.update(group.id, { chats: group.chats, chat_id: group.chat_id });
+
     await editGroup(group.id, true, false);
     await getGroupChat(group.id);
 }
@@ -2267,6 +2271,8 @@ export async function openGroupChat(groupId, chatId) {
     group.date_last_chat = Date.now();
     updateChatMetadata({}, true);
 
+    groupsStore.update(group.id, { chat_id: group.chat_id, date_last_chat: group.date_last_chat });
+
     await editGroup(groupId, true, false);
     await getGroupChat(groupId);
 }
@@ -2292,7 +2298,9 @@ export async function renameGroupChat(groupId, oldChatId, newChatId) {
     group.chats.splice(group.chats.indexOf(oldChatId), 1);
     group.chats.push(newChatId);
 
-    await editGroup(groupId, true, true);
+    groupsStore.update(group.id, { chats: group.chats, chat_id: group.chat_id });
+
+    await editGroup(groupId, true, true, { silentGroups: true });
 }
 
 /**
@@ -2327,7 +2335,9 @@ export async function deleteGroupChatByName(groupId, chatName) {
         group.chat_id = newChatName;
     }
 
-    await editGroup(groupId, true, true);
+    groupsStore.update(group.id, { chats: group.chats, chat_id: group.chat_id });
+
+    await editGroup(groupId, true, true, { silentGroups: true });
     await eventSource.emit(event_types.GROUP_CHAT_DELETED, chatName);
 }
 
@@ -2351,6 +2361,12 @@ export async function deleteGroupChat(groupId, chatId, { jumpToNewChat = true } 
         group.chat_id = '';
         updateChatMetadata({}, true);
     }
+
+    // group.chats/chat_id already mutated above, regardless of how the delete fetch below turns out (matches
+    // the existing behavior of not rolling the local state back on failure - only a toastr warning). Reported
+    // here rather than after openGroupChat()/createNewGroupChat() below, since those aren't reached when
+    // jumpToNewChat is false, but this local mutation still happened either way.
+    groupsStore.update(group.id, { chats: group.chats, chat_id: group.chat_id });
 
     const response = await fetch('/api/chats/group/delete', {
         method: 'POST',
@@ -2394,7 +2410,8 @@ export async function importGroupChat(formData, { refresh = true } = {}) {
 
             if (group) {
                 group.chats.push(chatId);
-                await editGroup(selected_group, true, true);
+                groupsStore.update(group.id, { chats: group.chats });
+                await editGroup(selected_group, true, true, { silentGroups: true });
                 if (refresh) {
                     await displayPastChats();
                 }
@@ -2426,6 +2443,7 @@ export async function saveGroupBookmarkChat(groupId, name, metadata, mesId, chat
     }
 
     group.chats.push(name);
+    groupsStore.update(group.id, { chats: group.chats });
 
     /** @type {ChatHeader} */
     const chatHeader = {
