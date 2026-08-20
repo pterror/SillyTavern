@@ -1,7 +1,7 @@
 import { chat_metadata, characters, substituteParams, chat, extension_prompt_roles, extension_prompt_types, name2, neutralCharacterName } from '../../script.js';
 import { extension_settings } from '../extensions.js';
 import { getGroupMembers, groups } from '../group-chats.js';
-import { power_user } from '../power-user.js';
+import { power_user, personaStore } from '../power-user.js';
 import { searchCharByName, getTagsList, tags, tag_map } from '../tags.js';
 import { onlyUniqueJson, sortIgnoreCaseAndAccents } from '../utils.js';
 import { world_names } from '../world-info.js';
@@ -216,8 +216,9 @@ export const commonEnumProviders = {
      *
      * @returns {() => SlashCommandEnumValue[]}
      */
-    personas: ({ allowPersonaKey = false } = {}) => () => Object.entries(power_user.personas).map(([personaKey, personaName]) => {
-        const existsMultiple = Object.values(power_user.personas).filter(p => p === personaName).length > 1;
+    personas: ({ allowPersonaKey = false } = {}) => () => Object.entries(personaStore.getAll()).map(([personaKey, record]) => {
+        const personaName = record.name;
+        const existsMultiple = Object.values(personaStore.getAll()).filter(p => p.name === personaName).length > 1;
         const returnValue = allowPersonaKey && existsMultiple ? personaKey : personaName;
         return new SlashCommandEnumValue(returnValue, allowPersonaKey && existsMultiple ? personaName : null, enumTypes.name, enumIcons.persona);
     }),
