@@ -1,5 +1,5 @@
 import { name1, name2, charactersStore, getCharacterCardFieldsLazy, getGeneratingModel } from '../../../script.js';
-import { groups, selected_group } from '../../../scripts/group-chats.js';
+import { groupsStore, selected_group } from '../../../scripts/group-chats.js';
 import { logMacroGeneralError } from './MacroDiagnostics.js';
 import { getStringHash } from '/scripts/utils.js';
 /**
@@ -193,7 +193,7 @@ function getGroupValue(ctx, { currentChar = null, includeMuted = false, filterOu
 
     if (!selected_group) return filterOutChar ? (includeUser || '') : (currentChar ?? '');
 
-    const groupEntry = Array.isArray(groups) ? groups.find(x => x && x.id === selected_group) : null;
+    const groupEntry = groupsStore.get(selected_group);
     const members = /** @type {string[]} */ (groupEntry?.members ?? []);
     const disabledMembers = /** @type {string[]} */ (groupEntry?.disabled_members ?? []);
 

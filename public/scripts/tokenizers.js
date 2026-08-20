@@ -2,7 +2,7 @@ import { localforage } from '../lib.js';
 import { event_types, eventSource, getCurrentCharacter, main_api, nai_settings, online_status, this_chid } from '../script.js';
 import { power_user, registerDebugFunction } from './power-user.js';
 import { chat_completion_sources, model_list, oai_settings } from './openai.js';
-import { groups, selected_group } from './group-chats.js';
+import { groupsStore, selected_group } from './group-chats.js';
 import { getStringHash } from './utils.js';
 import { kai_flags, kai_settings } from './kai-settings.js';
 import { textgen_types, textgenerationwebui_settings as textgen_settings, getTextGenServer, getTextGenModel } from './textgen-settings.js';
@@ -895,7 +895,7 @@ function getTokenCacheObject() {
 
     try {
         if (selected_group) {
-            chatId = groups.find(x => x.id == selected_group)?.chat_id;
+            chatId = groupsStore.get(selected_group)?.chat_id;
         } else if (this_chid !== undefined) {
             chatId = getCurrentCharacter().chat;
         }

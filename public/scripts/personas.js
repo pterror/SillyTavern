@@ -54,7 +54,7 @@ import {
 } from './utils.js';
 import { debounce_timeout } from './constants.js';
 import { FILTER_TYPES, FilterHelper } from './filters.js';
-import { groups, selected_group } from './group-chats.js';
+import { groups, groupsStore, selected_group } from './group-chats.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup, callGenericPopup } from './popup.js';
 import { t } from './i18n.js';
 import { openWorldInfoEditor, world_names } from './world-info.js';
@@ -747,7 +747,7 @@ export function updatePersonaConnectionsAvatarList() {
             if (character) return characterToEntity(character, getCharIndex(character));
         }
         if (connection.type === 'group') {
-            const group = groups.find(g => g.id === connection.id);
+            const group = groupsStore.get(connection.id);
             if (group) return groupToEntity(group);
         }
         return undefined;

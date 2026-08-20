@@ -17,7 +17,7 @@ import {
     saveSettings,
     saveSettingsDebounced,
 } from '../script.js';
-import { groups, selected_group } from './group-chats.js';
+import { groupsStore, selected_group } from './group-chats.js';
 import { t } from './i18n.js';
 import { instruct_presets } from './instruct-mode.js';
 import { kai_settings } from './kai-settings.js';
@@ -53,7 +53,7 @@ function autoSelectPreset() {
         return;
     }
 
-    const name = selected_group ? groups.find(x => x.id == selected_group)?.name : getCurrentCharacter()?.name;
+    const name = selected_group ? groupsStore.get(selected_group)?.name : getCurrentCharacter()?.name;
 
     if (!name) {
         console.debug(`Preset candidate not found for API: ${main_api}`);

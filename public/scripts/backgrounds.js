@@ -7,7 +7,7 @@ import { createThumbnail, flashHighlight, getBase64Async, stringFormat, debounce
 import { debounce_timeout } from './constants.js';
 import { t } from './i18n.js';
 import { callGenericPopup, Popup, POPUP_TYPE } from './popup.js';
-import { groups, selected_group } from './group-chats.js';
+import { groupsStore, selected_group } from './group-chats.js';
 import { humanizedDateTime } from './RossAscends-mods.js';
 import { deleteMediaFromServer } from './chats.js';
 
@@ -1597,7 +1597,7 @@ async function uploadChatBackground(formData) {
         const base64Data = imageDataUri.split(',')[1];
         const extension = getFileExtension(file);
         const characterName = selected_group
-            ? groups.find(g => g.id === selected_group)?.id?.toString()
+            ? groupsStore.get(selected_group)?.id?.toString()
             : getCurrentCharacter()?.name;
         const filename = `${characterName}_${humanizedDateTime()}`;
         const imagePath = await saveBase64AsFile(base64Data, characterName, filename, extension);
