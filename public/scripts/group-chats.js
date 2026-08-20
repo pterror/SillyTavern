@@ -1768,7 +1768,9 @@ function getGroupCharacterBlock(character) {
     template.data('id', character.avatar);
     template.find('.avatar img').attr({ 'src': avatar, 'title': character.avatar });
     template.find('.ch_name').text(character.name);
-    template.attr('data-chid', characters.indexOf(character));
+    // data-avatar mirrors template.data('id') above as a real DOM attribute, so CSS-selector consumers
+    // (e.g. slash-commands.js performGroupMemberAction) can match this row by avatar too.
+    template.attr({ 'data-chid': characters.indexOf(character), 'data-avatar': character.avatar });
     template.find('.ch_fav').val(String(isFav));
     template.toggleClass('is_fav', isFav);
 
@@ -2072,8 +2074,11 @@ async function onGroupActionClick(event) {
     }
 
     if (action === 'speak') {
-        const chid = Number(member.attr('data-chid'));
-        if (Number.isInteger(chid)) {
+        // Resolve by avatar (member.data('id'), the stable id already set in getGroupCharacterBlock) rather
+        // than the row's data-chid, which is a positional index baked in at render time and can go stale if
+        // the characters array reorders before this click.
+        const chid = characters.findIndex(c => c.avatar === member.data('id'));
+        if (chid !== -1) {
             Generate('normal', { force_chid: chid });
         }
     }
@@ -2137,9 +2142,12 @@ async function openCharacterDefinition(characterSelect) {
         return;
     }
 
-    const chid = characterSelect.attr('data-chid');
+    // Resolve by avatar (characterSelect.data('id'), the stable id already set in getGroupCharacterBlock)
+    // rather than the row's data-chid, which is a positional index baked in at render time and can go stale
+    // if the characters array reorders before this click.
+    const chid = characters.findIndex(c => c.avatar === characterSelect.data('id'));
 
-    if (chid === null || chid === undefined) {
+    if (chid === -1) {
         return;
     }
 
