@@ -1,6 +1,6 @@
 // statsHelper.js
 import { moment } from '../lib.js';
-import { getRequestHeaders, characters, this_chid } from '../script.js';
+import { getRequestHeaders, getCurrentCharacter } from '../script.js';
 import { humanizeGenTime } from './RossAscends-mods.js';
 import { callGenericPopup, POPUP_TYPE } from './popup.js';
 import { registerDebugFunction } from './power-user.js';
@@ -146,26 +146,25 @@ async function userStatsHandler() {
 /**
  * Handles the character stats by getting them from the server and generating the HTML report.
  *
- * @param {Object} characters - Object containing character data.
- * @param {string} this_chid - The character id.
+ * @param {Character} character - The character to show stats for.
  */
-async function characterStatsHandler(characters, this_chid) {
+async function characterStatsHandler(character) {
     // Get stats from server
     await getStats();
     // Get character stats
-    let myStats = charStats[characters[this_chid].avatar];
+    let myStats = charStats[character.avatar];
     if (myStats === undefined) {
         myStats = {
             total_gen_time: 0,
             user_msg_count: 0,
             non_user_msg_count: 0,
             user_word_count: 0,
-            non_user_word_count: countWords(characters[this_chid].first_mes),
+            non_user_word_count: countWords(character.first_mes),
             total_swipe_count: 0,
             date_last_chat: 0,
             date_first_chat: new Date('9999-12-31T23:59:59.999Z').getTime(),
         };
-        charStats[characters[this_chid].avatar] = myStats;
+        charStats[character.avatar] = myStats;
         updateStats();
     }
     // Create HTML with stats
@@ -264,17 +263,16 @@ function countWords(str) {
  *
  * @param {Object} line - Object containing message data.
  * @param {string} type - The type of the message processing (e.g., 'append', 'continue', 'appendFinal', 'swipe').
- * @param {Object} characters - Object containing character data.
- * @param {string} this_chid - The character id.
+ * @param {Character} character - The character the message belongs to.
  * @param {string} oldMessage - The old message that's being processed.
  */
-async function statMesProcess(line, type, characters, this_chid, oldMessage) {
-    if (this_chid === undefined || characters[this_chid] === undefined) {
+async function statMesProcess(line, type, character, oldMessage) {
+    if (character === undefined) {
         return;
     }
     await getStats();
 
-    let stat = charStats[characters[this_chid].avatar];
+    let stat = charStats[character.avatar];
 
     if (!stat) {
         stat = {
@@ -325,7 +323,7 @@ async function statMesProcess(line, type, characters, this_chid, oldMessage) {
 
 export function initStats() {
     $('.rm_stats_button').on('click', function () {
-        characterStatsHandler(characters, this_chid);
+        characterStatsHandler(getCurrentCharacter());
     });
     // Wait for debug functions to load, then add the refresh stats function
     registerDebugFunction('refreshStats', 'Refresh Stat File', 'Recreates the stats file based on existing chat files', recreateStats);

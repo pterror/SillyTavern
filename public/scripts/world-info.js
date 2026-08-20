@@ -5693,7 +5693,7 @@ export function checkEmbeddedWorld(chid) {
     }
 
     if (characters[chid]?.data?.character_book) {
-        $('#import_character_info').data('chid', chid).show();
+        $('#import_character_info').data('avatar', characters[chid]?.avatar ?? null).show();
 
         // Only show the alert once per character
         const checkKey = `AlertWI_${characters[chid].avatar}`;
@@ -5726,9 +5726,15 @@ export function checkEmbeddedWorld(chid) {
 }
 
 export async function importEmbeddedWorldInfo(skipPopup = false) {
-    const chid = $('#import_character_info').data('chid');
+    const avatar = $('#import_character_info').data('avatar');
 
-    if (chid === undefined || chid === -1) {
+    if (avatar === undefined || avatar === null) {
+        return;
+    }
+
+    const chid = characters.findIndex(c => c.avatar === avatar);
+
+    if (chid === -1) {
         return;
     }
 
@@ -6311,12 +6317,14 @@ export function initWorldInfo() {
 
     $('#world_button').on('click', async function (event) {
         const openSetWorldMenu = () => $('#char-management-dropdown').val($('#set_character_world').val()).trigger('change');
-        const chid = $('#set_character_world').data('chid');
+        const avatar = $('#set_character_world').data('avatar');
 
-        if (chid === -1) {
+        if (avatar === null) {
             openSetWorldMenu();
             return;
         }
+
+        const chid = characters.findIndex(c => c.avatar === avatar);
 
         const worldName = characters[chid]?.data?.extensions?.world;
         const hasEmbed = checkEmbeddedWorld(chid);
