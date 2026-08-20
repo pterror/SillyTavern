@@ -1447,6 +1447,53 @@ router.post('/delete', validateAvatarUrlMiddleware, async function (request, res
 });
 
 /**
+ * Fields a shallow (and full) character carries that are cheap/stable enough to sort the list by
+ * without having to hydrate anything extra. Keys are the accepted `sortField` values.
+ * @type {{[sortField: string]: (character: object) => (string|number)}}
+ */
+const SORT_FIELD_GETTERS = {
+    name: (c) => (c.data?.name ?? c.name ?? '').toLowerCase(),
+    date_added: (c) => c.date_added ?? 0,
+    date_last_chat: (c) => c.date_last_chat ?? 0,
+    chat_size: (c) => c.chat_size ?? 0,
+};
+
+/**
+ * Applies optional sort/offset/limit to an already-fully-read character array. Every param is optional and
+ * defaults to "return everything, in on-disk order" - i.e. calling this with `{}` is a no-op, so existing callers
+ * that don't pass any of these params see byte-for-byte the same response shape/order as before this function
+ * existed.
+ * @param {object[]} data Full array of processed characters (already filtered to `c.name` truthy)
+ * @param {object} params
+ * @param {string} [params.sortField] One of SORT_FIELD_GETTERS' keys. Unknown/omitted -> no sort applied.
+ * @param {string} [params.sortOrder] 'asc' (default) or 'desc'.
+ * @param {number} [params.offset] Slice start. Omitted/NaN -> 0.
+ * @param {number} [params.limit] Slice length. Omitted/NaN -> no limit (rest of the array).
+ * @returns {{ items: object[], total: number }} `total` is the count *before* offset/limit is applied, so a
+ * paginating caller knows how many pages exist.
+ */
+function paginateCharacters(data, { sortField, sortOrder, offset, limit } = {}) {
+    const total = data.length;
+    const getter = SORT_FIELD_GETTERS[sortField];
+    if (getter) {
+        const direction = sortOrder === 'desc' ? -1 : 1;
+        // Stable sort (Array#sort is spec-guaranteed stable since ES2019) so same-key entries keep their
+        // on-disk relative order instead of shuffling between identical requests.
+        data = [...data].sort((a, b) => {
+            const av = getter(a), bv = getter(b);
+            if (av < bv) return -1 * direction;
+            if (av > bv) return 1 * direction;
+            return 0;
+        });
+    }
+
+    const start = Number.isFinite(offset) && offset > 0 ? offset : 0;
+    const end = Number.isFinite(limit) && limit >= 0 ? start + limit : undefined;
+    const items = (start > 0 || end !== undefined) ? data.slice(start, end) : data;
+    return { items, total };
+}
+
+/**
  * HTTP POST endpoint for the "/api/characters/all" route.
  *
  * This endpoint is responsible for reading character files from the `charactersPath` directory,
@@ -1455,6 +1502,16 @@ router.post('/delete', validateAvatarUrlMiddleware, async function (request, res
  * the `charStats` variable.
  * The stats are calculated by the `calculateStats` function.
  * The characters are processed by the `processCharacter` function.
+ *
+ * Accepts optional `sortField`/`sortOrder`/`offset`/`limit` in the request body to get a sorted page back
+ * instead of the full array - see paginateCharacters() above. None of these are required: a request with no
+ * body (or an empty one) behaves exactly as before, returning every character in on-disk order. This is
+ * deliberately just a slice of the already-fully-processed array, not a way to skip processing files outside
+ * the requested page - every character on disk still gets read once per request, same as before this endpoint
+ * accepted these params - so it does not reduce server-side I/O by itself, only response size/order and the
+ * amount of client-side work (Fuse search, tag filtering, sort, DOM render) done over the result. Full-index
+ * consumers (findChar() and friends, which need every character resolvable client-side, not just one page)
+ * should keep calling this with no pagination params, exactly as `getCharacters()` does today.
  *
  * @param  {import("express").Request} request The HTTP request object.
  * @param  {import("express").Response} response The HTTP response object.
@@ -1466,7 +1523,20 @@ router.post('/all', async function (request, response) {
         const pngFiles = files.filter(file => file.endsWith('.png'));
         const processingPromises = pngFiles.map(file => processCharacter(file, request.user.directories, { shallow: useShallowCharacters }));
         const data = (await Promise.all(processingPromises)).filter(c => c.name);
-        return response.send(data);
+
+        const { sortField, sortOrder, offset, limit } = request.body ?? {};
+        if (sortField === undefined && offset === undefined && limit === undefined) {
+            // No pagination params at all: preserve the exact pre-existing response shape (a bare array).
+            return response.send(data);
+        }
+
+        const { items, total } = paginateCharacters(data, {
+            sortField,
+            sortOrder,
+            offset: Number(offset),
+            limit: Number(limit),
+        });
+        return response.send({ items, total });
     } catch (err) {
         console.error(err);
         const isRangeError = err instanceof RangeError;
