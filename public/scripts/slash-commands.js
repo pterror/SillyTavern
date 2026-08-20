@@ -5273,7 +5273,9 @@ async function createCharacterCallback(args) {
         // Select the character if requested (default: true)
         const shouldSelect = !isFalseBoolean(args.select);
         if (shouldSelect) {
-            const characterIndex = characters.findIndex(c => c.avatar === avatarKey);
+            // selectCharacterById() needs the numeric position in `characters`, not the entity itself.
+            const newCharacter = charactersStore.get(avatarKey);
+            const characterIndex = newCharacter ? characters.indexOf(newCharacter) : -1;
             if (characterIndex !== -1) {
                 // selectCharacterById handles group reset and active character setting
                 await selectCharacterById(characterIndex);
@@ -5491,7 +5493,9 @@ async function duplicateCharacterCallback(args) {
     // Select the character if requested (default: false)
     const shouldSelect = isTrueBoolean(args.select);
     if (shouldSelect) {
-        const characterIndex = characters.findIndex(c => c.avatar === newAvatarKey);
+        // selectCharacterById() needs the numeric position in `characters`, not the entity itself.
+        const newCharacter = charactersStore.get(newAvatarKey);
+        const characterIndex = newCharacter ? characters.indexOf(newCharacter) : -1;
         if (characterIndex !== -1) {
             await selectCharacterById(characterIndex);
         }
