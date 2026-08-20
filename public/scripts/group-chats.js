@@ -1381,7 +1381,12 @@ async function deleteGroup(id) {
         removeEntityTags(id);
         resetChatState();
         await printMessages();
-        await getCharacters();
+        // `group` (captured above, before the delete fetch went out) is already in hand - report it
+        // specifically instead of the reload's generic reset(), same as characters' deleteCharacter.
+        await getCharacters({ silentGroups: true });
+        if (group) {
+            groupsStore.reportRemoved(id, group);
+        }
 
         select_rm_info('group_delete', id);
 
@@ -2167,7 +2172,10 @@ async function createGroup() {
         newGroupMembers = [];
         const data = await createGroupResponse.json();
         createTagMapFromList('#groupTagList', data.id);
-        await getCharacters();
+        // The new group's id is already known (data.id) - report it specifically instead of the reload's
+        // generic reset(), same as characters' duplicateCharacter/createOrEditCharacter create branch.
+        await getCharacters({ silentGroups: true });
+        groupsStore.reportCreated(String(data.id));
         select_rm_info('group_create', data.id);
     }
 }
