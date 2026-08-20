@@ -81,7 +81,7 @@ import {
     writeExtensionField,
     writeExtensionFieldBulk,
 } from './extensions.js';
-import { groups, openGroupChat, selected_group, unshallowGroupMembers } from './group-chats.js';
+import { groups, groupsStore, openGroupChat, selected_group, unshallowGroupMembers } from './group-chats.js';
 import { addLocaleData, getCurrentLocale, t, translate } from './i18n.js';
 import { hideLoader, showLoader } from './loader.js';
 import { loader } from './action-loader.js';
@@ -133,7 +133,7 @@ export function getContext() {
         characterAvatar: getCurrentCharacter()?.avatar,
         groupId: selected_group,
         chatId: selected_group
-            ? groups.find(x => x.id == selected_group)?.chat_id
+            ? groupsStore.get(selected_group)?.chat_id
             : (getCurrentCharacter()?.chat),
         getCurrentChatId,
         getRequestHeaders,

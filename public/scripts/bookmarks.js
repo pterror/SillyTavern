@@ -21,6 +21,7 @@ import {
     group_activation_strategy,
     group_generation_mode,
     groups,
+    groupsStore,
     openGroupById,
     openGroupChat,
     saveGroupBookmarkChat,
@@ -52,7 +53,7 @@ const bookmarkNameToken = 'Checkpoint #';
  */
 async function getExistingChatNames() {
     if (selected_group) {
-        const group = groups.find(x => x.id == selected_group);
+        const group = groupsStore.get(selected_group);
         if (group && Array.isArray(group.chats)) {
             return [...group.chats];
         }
@@ -279,7 +280,7 @@ export async function createNewBookmark(mesId, { forceName = null } = {}) {
         return null;
     }
 
-    const mainChat = selected_group ? groups?.find(x => x.id == selected_group)?.chat_id : getCurrentCharacter().chat;
+    const mainChat = selected_group ? groupsStore.get(selected_group)?.chat_id : getCurrentCharacter().chat;
     // Mint a fresh integrity slug so the checkpoint is distinguishable from its parent (#5942)
     const newMetadata = { main_chat: mainChat, integrity: uuidv4() };
     await saveItemizedPrompts(name);

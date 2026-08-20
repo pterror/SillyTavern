@@ -14,7 +14,7 @@ import { debounce_timeout } from './constants.js';
 import { Popup, POPUP_RESULT, POPUP_TYPE } from './popup.js';
 import { SlashCommandClosure } from './slash-commands/SlashCommandClosure.js';
 import { getTagsList } from './tags.js';
-import { groups, selected_group } from './group-chats.js';
+import { groupsStore, selected_group } from './group-chats.js';
 import { getCurrentLocale, t } from './i18n.js';
 import { importWorldInfo } from './world-info.js';
 
@@ -2724,7 +2724,7 @@ export function findChar({ name = null, allowAvatar = true, insensitive = true, 
     // Only use the O(1) store lookup when no tag filter narrowed filteredCharacters down - otherwise it could
     // return a character that tag filtering was supposed to exclude.
     /** @type {any[]} */
-    const currentChars = selected_group ? groups.find(group => group.id === selected_group)?.members.map(member => filteredByTags ? filteredCharacters.find(char => char.avatar === member) : charactersStore.get(member))
+    const currentChars = selected_group ? groupsStore.get(selected_group)?.members.map(member => filteredByTags ? filteredCharacters.find(char => char.avatar === member) : charactersStore.get(member))
         : filteredCharacters.filter(char => getCurrentCharacter()?.avatar === char.avatar);
 
     // If we have a current char and prefer it, return that if it matches
