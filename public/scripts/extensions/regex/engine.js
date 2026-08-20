@@ -1,4 +1,4 @@
-import { getCurrentCharacter, saveSettingsDebounced, substituteParams, substituteParamsExtended, this_chid } from '../../../script.js';
+import { getCurrentCharacter, saveSettingsDebounced, substituteParams, substituteParamsExtended } from '../../../script.js';
 import { extension_settings, writeExtensionField } from '../../extensions.js';
 import { getPresetManager } from '../../preset-manager.js';
 import { regexFromString } from '../../utils.js';
@@ -145,7 +145,7 @@ export async function saveScriptsByType(scripts, scriptType) {
             saveSettingsDebounced();
             break;
         case SCRIPT_TYPES.SCOPED:
-            await writeExtensionField(this_chid, 'regex_scripts', scripts);
+            await writeExtensionField(getCurrentCharacter()?.avatar, 'regex_scripts', scripts);
             break;
         case SCRIPT_TYPES.PRESET: {
             const presetManager = getPresetManager();

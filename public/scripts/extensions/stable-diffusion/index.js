@@ -917,7 +917,7 @@ async function onCharacterPromptInput() {
     const key = getCharaFilename(null, { manualAvatarKey: getCurrentCharacter()?.avatar });
     extension_settings.sd.character_prompts[key] = $('#sd_character_prompt').val();
     saveSettingsDebounced();
-    writePromptFieldsDebounced(this_chid);
+    writePromptFieldsDebounced(getCurrentCharacter()?.avatar);
     if (CSS.supports('field-sizing', 'content')) return;
     await resetScrollHeight($(this));
 }
@@ -926,7 +926,7 @@ async function onCharacterNegativePromptInput() {
     const key = getCharaFilename(null, { manualAvatarKey: getCurrentCharacter()?.avatar });
     extension_settings.sd.character_negative_prompts[key] = $('#sd_character_negative_prompt').val();
     saveSettingsDebounced();
-    writePromptFieldsDebounced(this_chid);
+    writePromptFieldsDebounced(getCurrentCharacter()?.avatar);
     if (CSS.supports('field-sizing', 'content')) return;
     await resetScrollHeight($(this));
 }
@@ -5242,21 +5242,21 @@ async function onCharacterPromptShareInput() {
     const shouldShare = !!$('#sd_character_prompt_share').prop('checked');
 
     if (shouldShare) {
-        await writePromptFields(this_chid);
+        await writePromptFields(getCurrentCharacter()?.avatar);
     } else {
-        await writeExtensionField(this_chid, 'sd_character_prompt', null);
+        await writeExtensionField(getCurrentCharacter()?.avatar, 'sd_character_prompt', null);
     }
 }
 
-async function writePromptFields(characterId) {
-    const key = getCharaFilename(characterId);
+async function writePromptFields(characterAvatar) {
+    const key = getCharaFilename(null, { manualAvatarKey: characterAvatar });
     const promptPrefix = key ? (extension_settings.sd.character_prompts[key] || '') : '';
     const negativePromptPrefix = key ? (extension_settings.sd.character_negative_prompts[key] || '') : '';
     const promptObject = {
         positive: promptPrefix,
         negative: negativePromptPrefix,
     };
-    await writeExtensionField(characterId, 'sd_character_prompt', promptObject);
+    await writeExtensionField(characterAvatar, 'sd_character_prompt', promptObject);
 }
 
 /**
