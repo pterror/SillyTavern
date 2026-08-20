@@ -10,6 +10,7 @@ import { SETTINGS_FILE } from '../constants.js';
 import { getConfigValue, generateTimestamp, removeOldBackups } from '../util.js';
 import { getAllUserHandles, getUserDirectories } from '../users.js';
 import { getFileNameValidationFunction } from '../middleware/validateFileName.js';
+import { backupUserTags, restoreUserTagsForSnapshot } from './tags.js';
 
 const ENABLE_EXTENSIONS = !!getConfigValue('extensions.enabled', true, 'boolean');
 const ENABLE_EXTENSIONS_AUTO_UPDATE = !!getConfigValue('extensions.autoUpdate', true, 'boolean');
@@ -128,7 +129,9 @@ async function backupSettings() {
 }
 
 /**
- * Makes a backup of the user's settings file.
+ * Makes a backup of the user's settings file, and - with the *same* timestamp - a paired backup of tags.json
+ * (see backupUserTags in tags.js), so a settings snapshot restore can always find and restore the tags data
+ * that goes with it rather than leaving tags.json on whatever it happened to be at restore time.
  * @param {string} handle User handle
  * @param {boolean} preventDuplicates Prevent duplicate backups
  * @returns {void}
@@ -140,7 +143,8 @@ function backupUserSettings(handle, preventDuplicates) {
         return;
     }
 
-    const backupFile = path.join(userDirectories.backups, `${getSettingsBackupFilePrefix(handle)}${generateTimestamp()}.json`);
+    const timestamp = generateTimestamp();
+    const backupFile = path.join(userDirectories.backups, `${getSettingsBackupFilePrefix(handle)}${timestamp}.json`);
     const sourceFile = path.join(userDirectories.root, SETTINGS_FILE);
 
     if (preventDuplicates && isDuplicateBackup(handle, sourceFile)) {
@@ -153,6 +157,7 @@ function backupUserSettings(handle, preventDuplicates) {
 
     fs.copyFileSync(sourceFile, backupFile);
     removeOldBackups(userDirectories.backups, `settings_${handle}`);
+    backupUserTags(handle, timestamp);
 }
 
 /**
@@ -363,8 +368,20 @@ router.post('/restore-snapshot', getFileNameValidationFunction('name'), async (r
         }
 
         const pathToSettings = path.join(request.user.directories.root, SETTINGS_FILE);
+        const snapshotContent = fs.readFileSync(snapshotPath, 'utf8');
+
         fs.rmSync(pathToSettings, { force: true });
         fs.copyFileSync(snapshotPath, pathToSettings);
+
+        // Keep tags.json in step with the settings.json snapshot just restored (paired backup if one exists,
+        // otherwise the snapshot's own embedded tags/tag_map fields) - see restoreUserTagsForSnapshot's own
+        // comment for why this matters: without it, restoring an old snapshot would silently orphan tags.
+        try {
+            const parsedSnapshot = JSON.parse(snapshotContent);
+            restoreUserTagsForSnapshot(request.user.profile.handle, snapshotName, parsedSnapshot);
+        } catch (tagsError) {
+            console.error('Could not reconcile tags.json with the restored settings snapshot', tagsError);
+        }
 
         response.sendStatus(204);
     } catch (error) {
