@@ -1,5 +1,5 @@
 import { Fuse, localforage } from '../lib.js';
-import { characters, chat_metadata, eventSource, event_types, generateQuietPrompt, getCurrentChatId, getRequestHeaders, getThumbnailUrl, saveMetadata, saveSettingsDebounced, this_chid } from '../script.js';
+import { chat_metadata, eventSource, event_types, generateQuietPrompt, getCurrentCharacter, getCurrentChatId, getRequestHeaders, getThumbnailUrl, saveMetadata, saveSettingsDebounced } from '../script.js';
 import { openThirdPartyExtensionMenu, saveMetadataDebounced } from './extensions.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
@@ -1598,7 +1598,7 @@ async function uploadChatBackground(formData) {
         const extension = getFileExtension(file);
         const characterName = selected_group
             ? groups.find(g => g.id === selected_group)?.id?.toString()
-            : characters[this_chid]?.name;
+            : getCurrentCharacter()?.name;
         const filename = `${characterName}_${humanizedDateTime()}`;
         const imagePath = await saveBase64AsFile(base64Data, characterName, filename, extension);
 

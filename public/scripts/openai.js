@@ -8,7 +8,7 @@ import { Fuse, DOMPurify } from '../lib.js';
 import {
     abortStatusCheck,
     cancelStatusCheck,
-    characters,
+    getCurrentCharacter,
     event_types,
     eventSource,
     extension_prompt_roles,
@@ -31,7 +31,6 @@ import {
     substituteParams,
     substituteParamsExtended,
     system_message_types,
-    this_chid,
 } from '../script.js';
 import { getGroupNames, selected_group } from './group-chats.js';
 
@@ -705,7 +704,7 @@ function setupChatCompletionPromptManager(openAiSettings) {
     };
 
     promptManager.tryGenerate = () => {
-        if (characters[this_chid]) {
+        if (getCurrentCharacter()) {
             return Generate('normal', {}, true);
         } else {
             return Promise.resolve();

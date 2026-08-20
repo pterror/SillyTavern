@@ -43,6 +43,7 @@ import {
     substituteParams,
     substituteParamsExtended,
     this_chid,
+    getCurrentCharacter,
     updateChatMetadata,
     updateMessageBlock,
     printMessages,
@@ -124,7 +125,7 @@ export function getContext() {
         groupId: selected_group,
         chatId: selected_group
             ? groups.find(x => x.id == selected_group)?.chat_id
-            : (characters[this_chid]?.chat),
+            : (getCurrentCharacter()?.chat),
         getCurrentChatId,
         getRequestHeaders,
         reloadCurrentChat,

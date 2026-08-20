@@ -2,6 +2,7 @@ import { DOMPurify } from '../lib.js';
 
 import {
     characters,
+    getCurrentCharacter,
     saveSettingsDebounced,
     this_chid,
     menu_type,
@@ -831,7 +832,7 @@ function getTagKey() {
     }
 
     if (this_chid !== undefined && menu_type === 'character_edit') {
-        return characters[this_chid].avatar;
+        return getCurrentCharacter().avatar;
     }
 
     return null;
@@ -923,7 +924,7 @@ export function getTagKeyForEntityElement(element) {
 export function searchCharByName(charName, { suppressLogging = false } = {}) {
     const entity = charName
         ? (findChar({ name: charName }) || groups.find(x => equalsIgnoreCaseAndAccents(x.name, charName)))
-        : (selected_group ? groups.find(x => x.id == selected_group) : characters[this_chid]);
+        : (selected_group ? groups.find(x => x.id == selected_group) : getCurrentCharacter());
     const key = getTagKeyForEntity(entity);
     if (!key) {
         if (!suppressLogging) toastr.warning(`Character ${charName} not found.`);

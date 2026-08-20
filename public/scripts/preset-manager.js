@@ -2,7 +2,7 @@ import { Fuse, lodash } from '../lib.js';
 
 import {
     amount_gen,
-    characters,
+    getCurrentCharacter,
     eventSource,
     event_types,
     getRequestHeaders,
@@ -16,7 +16,6 @@ import {
     online_status,
     saveSettings,
     saveSettingsDebounced,
-    this_chid,
 } from '../script.js';
 import { groups, selected_group } from './group-chats.js';
 import { t } from './i18n.js';
@@ -54,7 +53,7 @@ function autoSelectPreset() {
         return;
     }
 
-    const name = selected_group ? groups.find(x => x.id == selected_group)?.name : characters[this_chid]?.name;
+    const name = selected_group ? groups.find(x => x.id == selected_group)?.name : getCurrentCharacter()?.name;
 
     if (!name) {
         console.debug(`Preset candidate not found for API: ${main_api}`);
