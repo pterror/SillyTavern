@@ -917,41 +917,21 @@ export function resultCheckStatus() {
 }
 
 /**
- * Switches the currently selected character to the one with the given avatar (stable id). Prefer this over
- * selectCharacterById() when the caller only has an avatar handy (e.g. DOM data-avatar) - it resolves the
- * current array index itself at call time instead of trusting a possibly-stale index read earlier, which
- * matters for anything read from the DOM since the character list can reorder between a row being rendered
- * and the row being clicked.
+ * Switches the currently selected character to the one with the given avatar (stable id). This is the primary
+ * selection logic - prefer this over selectCharacterById() everywhere internally, since avatar is the source
+ * of truth (this_avatar - see setCharacterId()'s doc comment) and this needs no array-index lookup at all.
+ *
+ * If the character doesn't exist, if the chat is being saved, or if a group is being generated, this function
+ * does nothing. If the character is different from the currently selected one, it will clear the chat and
+ * reset any selected character or group.
  * @param {string} avatar The avatar (stable id) of the character to switch to.
  * @param {object} [options] Options for the switch.
  * @param {boolean} [options.switchMenu=true] Whether to switch the right menu to the character edit menu if the character is already selected.
  * @returns {Promise<void>} A promise that resolves when the character is switched.
  */
 export async function selectCharacterByAvatar(avatar, { switchMenu = true } = {}) {
-    // selectCharacterById() takes a numeric array position (see its own doc comment), not the avatar itself, so
-    // the entity still has to be resolved to a position here - but going through charactersStore.get() first
-    // turns this into an O(1) map lookup plus a single indexOf() on the matched reference, instead of a full
-    // linear scan comparing every character's avatar by value.
     const entity = charactersStore.get(avatar);
-    const id = entity ? characters.indexOf(entity) : -1;
-    if (id === -1) {
-        return;
-    }
-    await selectCharacterById(id, { switchMenu });
-}
-
-/**
- * Switches the currently selected character to the one with the given ID. (character index, not the character key!)
- *
- * If the character ID doesn't exist, if the chat is being saved, or if a group is being generated, this function does nothing.
- * If the character is different from the currently selected one, it will clear the chat and reset any selected character or group.
- * @param {number} id The ID of the character to switch to.
- * @param {object} [options] Options for the switch.
- * @param {boolean} [options.switchMenu=true] Whether to switch the right menu to the character edit menu if the character is already selected.
- * @returns {Promise<void>} A promise that resolves when the character is switched.
- */
-export async function selectCharacterById(id, { switchMenu = true } = {}) {
-    if (characters[id] === undefined) {
+    if (!entity) {
         return;
     }
 
@@ -964,7 +944,7 @@ export async function selectCharacterById(id, { switchMenu = true } = {}) {
         return;
     }
 
-    if (selected_group || String(this_chid) !== String(id)) {
+    if (selected_group || String(this_avatar) !== String(avatar)) {
         //if clicked on a different character from what was currently selected
         if (!is_send_press) {
             setCharacterId(undefined);
@@ -974,17 +954,34 @@ export async function selectCharacterById(id, { switchMenu = true } = {}) {
             cancelTtsPlay();
             this_edit_mes_id = undefined;
             selected_button = 'character_edit';
-            setCharacterId(id);
+            setCharacterId(entity);
             chat_metadata = {};
             await getChat();
         }
     } else {
         //if clicked on character that was already selected
         switchMenu && (selected_button = 'character_edit');
-        const avatar = getCurrentCharacter()?.avatar;
         await unshallowCharacter(avatar);
         select_selected_character(avatar, { switchMenu });
     }
+}
+
+/**
+ * Switches the currently selected character to the one with the given ID. (character index, not the character key!)
+ * Thin wrapper around selectCharacterByAvatar() for callers that only have an array index handy (e.g. a
+ * data-chid read off the DOM). Internal code that already has an avatar should call selectCharacterByAvatar()
+ * directly instead of manufacturing an index just to call this.
+ * @param {number} id The ID of the character to switch to.
+ * @param {object} [options] Options for the switch.
+ * @param {boolean} [options.switchMenu=true] Whether to switch the right menu to the character edit menu if the character is already selected.
+ * @returns {Promise<void>} A promise that resolves when the character is switched.
+ */
+export async function selectCharacterById(id, { switchMenu = true } = {}) {
+    const avatar = characters[id]?.avatar;
+    if (avatar === undefined) {
+        return;
+    }
+    await selectCharacterByAvatar(avatar, { switchMenu });
 }
 
 function getBackBlock() {
@@ -1428,13 +1425,10 @@ export async function getCharacters({ silent = false, silentGroups = false } = {
 
         if (this_avatar) {
             // this_avatar is untouched by the splice()/reload above (it's a separate variable, not derived from
-            // the array), so it's still exactly the avatar that was selected before this reload - no need to
-            // snapshot it beforehand the way this_chid (a plain index) would have required.
-            const reselectedEntity = charactersStore.get(this_avatar);
-            const newCharacterId = reselectedEntity ? characters.indexOf(reselectedEntity) : -1;
-            if (newCharacterId >= 0) {
-                setCharacterId(newCharacterId);
-                await selectCharacterById(newCharacterId, { switchMenu: false });
+            // the array), so it's still exactly the avatar that was selected before this reload - selecting by
+            // avatar directly needs no index lookup and no this_chid resync beforehand.
+            if (charactersStore.get(this_avatar)) {
+                await selectCharacterByAvatar(this_avatar, { switchMenu: false });
             } else {
                 await Popup.show.text(t`ERROR: The active character is no longer available.`, t`The page will be refreshed to prevent data loss. Press "OK" to continue.`);
                 return location.reload();
@@ -7389,11 +7383,10 @@ export async function renameCharacter(name = null, { silent = false, renameChats
 
             // Find newly renamed character
             const renamedEntity = charactersStore.get(data.avatar);
-            const newChId = renamedEntity ? characters.indexOf(renamedEntity) : -1;
 
-            if (newChId !== -1) {
+            if (renamedEntity) {
                 // Select the character after the renaming
-                await selectCharacterById(newChId);
+                await selectCharacterByAvatar(data.avatar);
 
                 // Async delay to update UI
                 await delay(1);
