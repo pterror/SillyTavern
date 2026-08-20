@@ -514,11 +514,11 @@ export function getGroupDepthPrompts(groupId, characterAvatar) {
 /**
  * Combines group members cards into a single string. Only for groups with generation mode set to APPEND or APPEND_DISABLED.
  * @param {string} groupId Group ID
- * @param {number} characterId Current Character ID
+ * @param {string} characterAvatar Avatar of the current character
  * @returns {{description: string, personality: string, scenario: string, mesExamples: string}} Group character cards combined
  */
-export function getGroupCharacterCards(groupId, characterId) {
-    const lazy = getGroupCharacterCardsLazy(groupId, characterId);
+export function getGroupCharacterCards(groupId, characterAvatar) {
+    const lazy = getGroupCharacterCardsLazy(groupId, characterAvatar);
     if (!lazy) return null;
 
     // Resolve all lazy fields into a plain object
@@ -534,10 +534,10 @@ export function getGroupCharacterCards(groupId, characterId) {
  * Returns group character cards with lazy evaluation.
  * Each field is only processed when first accessed.
  * @param {string} groupId Group ID
- * @param {number} characterId Current Character ID
+ * @param {string} characterAvatar Avatar of the current character
  * @returns {{description: string, personality: string, scenario: string, mesExamples: string}} Group character cards with lazy getters
  */
-export function getGroupCharacterCardsLazy(groupId, characterId) {
+export function getGroupCharacterCardsLazy(groupId, characterAvatar) {
     const group = groups.find(x => x.id === groupId);
 
     // If no group cards should be generated, return null so caller knows to fall back
@@ -593,7 +593,7 @@ export function getGroupCharacterCardsLazy(groupId, characterId) {
             const index = characters.findIndex(x => x.avatar === member);
             const character = characters[index];
             if (index === -1 || !character) continue;
-            if (group.disabled_members.includes(member) && characterId !== index && group.generation_mode !== group_generation_mode.APPEND_DISABLED) {
+            if (group.disabled_members.includes(member) && characterAvatar !== member && group.generation_mode !== group_generation_mode.APPEND_DISABLED) {
                 continue;
             }
             values.push(replaceAndPrepareForJoin(getter(character), character.name, fieldName, preprocess));
