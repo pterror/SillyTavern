@@ -645,6 +645,26 @@ class BulkEditOverlay {
 
     #getDisabledElements = () => [...this.container.getElementsByClassName(BulkEditOverlay.groupClass), ...this.container.getElementsByClassName(BulkEditOverlay.bogusFolderClass)];
 
+    /**
+     * Resolves the array index (the id type this class stores selections by, e.g. `characters[characterId]`,
+     * `CharID${characterId}` DOM ids) for a character row element, by avatar (the stable id) rather than
+     * trusting the row's data-chid, which can go stale between render and click if the characters array
+     * reorders in between - same fix as selectCharacterByAvatar() in script.js. Falls back to data-chid for
+     * any row that somehow lacks data-avatar (defensive only - all character_select rows set it).
+     * @param {Element} character - The html element of a character row
+     * @returns {number} The current array index of the character
+     */
+    static #resolveCharacterId = (character) => {
+        const avatar = character.getAttribute('data-avatar');
+        if (avatar) {
+            const index = characters.findIndex(c => c.avatar === avatar);
+            if (index !== -1) {
+                return index;
+            }
+        }
+        return Number(character.getAttribute('data-chid'));
+    };
+
     toggleCharacterSelected = event => {
         event.stopPropagation();
 
@@ -674,7 +694,7 @@ class BulkEditOverlay {
      * @param {HTMLElement} currentCharacter - The html element of the currently toggled character
      */
     handleShiftClick = (currentCharacter) => {
-        const characterId = Number(currentCharacter.getAttribute('data-chid'));
+        const characterId = BulkEditOverlay.#resolveCharacterId(currentCharacter);
         const select = !this.selectedCharacters.includes(characterId);
 
         if (this.lastSelected.characterId >= 0 && this.lastSelected.select !== undefined) {
@@ -693,7 +713,7 @@ class BulkEditOverlay {
      * @param {boolean} [param1.markState] - Whether the toggle of this character should be remembered as the last done toggle
      */
     toggleSingleCharacter = (character, { markState = true } = {}) => {
-        const characterId = Number(character.getAttribute('data-chid'));
+        const characterId = BulkEditOverlay.#resolveCharacterId(character);
 
         const select = !this.selectedCharacters.includes(characterId);
         const legacyBulkEditCheckbox = /** @type {HTMLInputElement} */ (character.querySelector('.' + BulkEditOverlay.legacySelectedClass));
@@ -734,15 +754,15 @@ class BulkEditOverlay {
      * @param {boolean} select - <c>true</c> if the characters in the range are to be selected, <c>false</c> if deselected
      */
     toggleCharactersInRange = (currentCharacter, select) => {
-        const currentCharacterId = Number(currentCharacter.getAttribute('data-chid'));
+        const currentCharacterId = BulkEditOverlay.#resolveCharacterId(currentCharacter);
         const characters = Array.from(document.querySelectorAll('#' + BulkEditOverlay.containerId + ' .' + BulkEditOverlay.characterClass));
 
-        const startIndex = characters.findIndex(c => Number(c.getAttribute('data-chid')) === Number(this.lastSelected.characterId));
-        const endIndex = characters.findIndex(c => Number(c.getAttribute('data-chid')) === currentCharacterId);
+        const startIndex = characters.findIndex(c => BulkEditOverlay.#resolveCharacterId(c) === Number(this.lastSelected.characterId));
+        const endIndex = characters.findIndex(c => BulkEditOverlay.#resolveCharacterId(c) === currentCharacterId);
 
         for (let i = Math.min(startIndex, endIndex); i <= Math.max(startIndex, endIndex); i++) {
             const character = characters[i];
-            const characterId = Number(character.getAttribute('data-chid'));
+            const characterId = BulkEditOverlay.#resolveCharacterId(character);
             const isCharacterSelected = this.selectedCharacters.includes(characterId);
 
             // Only toggle the character if it wasn't on the state we have are toggling towards.
