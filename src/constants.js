@@ -9,6 +9,14 @@ export const PUBLIC_DIRECTORIES = {
 export const SETTINGS_FILE = 'settings.json';
 
 /**
+ * Mirror of `tags`/`tag_map` written by the tagsStore/tagMapStore onChange subscriber (see tags.js chunk H),
+ * in addition to (not instead of) the copy that still lives in settings.json - the settings.json field, the
+ * client's load path, and the settings-save payload are all untouched for now, so this file is purely an
+ * additive mirror until a later chunk repoints the load side and removes the settings.json field.
+ */
+export const TAGS_FILE = 'tags.json';
+
+/**
  * @type {import('./users.js').UserDirectoryList}
  * @readonly
  * @enum {string}
