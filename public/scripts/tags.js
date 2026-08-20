@@ -2,6 +2,7 @@ import { DOMPurify } from '../lib.js';
 
 import {
     characters,
+    charactersStore,
     getCurrentCharacter,
     saveSettingsDebounced,
     this_chid,
@@ -857,7 +858,7 @@ export function getTagKeyForEntity(entityOrKey) {
     let character;
     if (!character && characters.indexOf(x) >= 0) character = x; // Check for char object
     if (!character && !isNaN(parseInt(entityOrKey))) character = characters[x]; // check if its a char id
-    if (!character) character = characters.find(y => y.avatar === x); // check if its a char key
+    if (!character) character = charactersStore.get(x); // check if its a char key
 
     if (character) {
         x = character.avatar;
