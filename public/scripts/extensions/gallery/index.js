@@ -322,7 +322,10 @@ async function showCharGallery(deleteModeState = false) {
 
     try {
         deleteModeActive = deleteModeState;
-        let url = selected_group || this_chid;
+        // this_chid never actually reaches the /api/images/list request as a folder name - when a character
+        // is selected the branch below always overwrites url with the avatar/name-derived gallery folder, so
+        // this is just a (falsy) placeholder for "no group, no character selected yet".
+        let url = selected_group;
         if (!selected_group && this_chid !== undefined) {
             url = getGalleryFolder(getCurrentCharacter());
         }
@@ -784,7 +787,10 @@ SlashCommandParser.addCommandObject(SlashCommand.fromProps({
 
 async function listGalleryCommand(args) {
     try {
-        let url = args.char ?? (args.group ? groups.find(it => it.name == args.group)?.id : null) ?? (selected_group || this_chid);
+        // Same as listGalleryCallback: this_chid never actually reaches the request as a folder name, since
+        // the branch below overwrites url with the avatar/name-derived gallery folder whenever a character
+        // is selected - it's just a (falsy) placeholder otherwise.
+        let url = args.char ?? (args.group ? groups.find(it => it.name == args.group)?.id : null) ?? selected_group;
         if (!args.char && !args.group && !selected_group && this_chid !== undefined) {
             url = getGalleryFolder(getCurrentCharacter());
         }
