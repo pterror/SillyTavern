@@ -23,11 +23,13 @@
 /**
  * @template T
  * @typedef {object} EntityChange
- * @property {'created'|'updated'|'removed'|'reordered'|'reset'} op
+ * @property {'created'|'updated'|'removed'|'renamed'|'reordered'|'reset'} op
  * @property {string} [id] - the entity id (for created/updated/removed)
- * @property {T} [entity] - the entity's current value (for created/updated/removed)
+ * @property {T} [entity] - the entity's current value (for created/updated/removed/renamed)
  * @property {Partial<T>} [patch] - the fields that were changed (for updated)
  * @property {string[]} [ids] - full id order (for reordered)
+ * @property {string} [oldId] - the entity's id before the rename (for renamed)
+ * @property {string} [newId] - the entity's id after the rename (for renamed)
  */
 
 /**
@@ -129,6 +131,62 @@ export class EntityStore {
      */
     reindex() {
         this.byId = new Map(this.array.map(e => [this.getId(e), e]));
+    }
+
+    /**
+     * Re-syncs the id index from the current contents of the backing array (see reindex()) and emits a single
+     * {op: 'reset'} change, for a bulk array replace where the caller has no more specific intent than "the
+     * whole collection may have changed" - e.g. a plain refetch-and-rebuild with no known created/removed/renamed
+     * entity (initial load, a manual refresh action). Callers that *do* know what specifically happened (a
+     * create/delete/rename that merely happens to be implemented as a full refetch server-side) should call
+     * reindex() themselves instead and follow it with reportCreated()/reportRemoved()/reportRenamed(), so
+     * consumers hear the specific thing that happened rather than a generic "something changed".
+     * @returns {EntityChange<T>}
+     */
+    reset() {
+        this.reindex();
+        return this._emit({ op: 'reset' });
+    }
+
+    /**
+     * Reports a specific entity as newly created, for the case where the backing array was already
+     * rebuilt/reindexed out from under this store (by reindex(), not reset()) by something other than this
+     * store's own create() - e.g. the entity's id isn't known client-side until a server response comes back,
+     * and the fully materialized entity is only available after a full refetch of the collection (rather than
+     * in the create response itself). Looks the entity up by id in the *current* index, so call reindex() first.
+     * @param {string} id
+     * @returns {EntityChange<T>?} null if no entity with that id exists in the current index
+     */
+    reportCreated(id) {
+        const entity = this.byId.get(id);
+        if (!entity) return null;
+        return this._emit({ op: 'created', id, entity });
+    }
+
+    /**
+     * Reports a specific entity as removed, for the same "backing array already rebuilt out from under this
+     * store" case as reportCreated() - the entity is gone from the current array/index by the time this is
+     * called, so the caller must supply the entity value it had in hand before the removal.
+     * @param {string} id
+     * @param {T} entity
+     * @returns {EntityChange<T>}
+     */
+    reportRemoved(id, entity) {
+        return this._emit({ op: 'removed', id, entity });
+    }
+
+    /**
+     * Reports a specific entity as renamed (its id-bearing field changed, e.g. a character's avatar filename) -
+     * same "backing array already rebuilt out from under this store" case as reportCreated()/reportRemoved().
+     * Looks the entity up by its *new* id in the current index, so call reindex() first.
+     * @param {string} oldId
+     * @param {string} newId
+     * @returns {EntityChange<T>?} null if no entity with the new id exists in the current index
+     */
+    reportRenamed(oldId, newId) {
+        const entity = this.byId.get(newId);
+        if (!entity) return null;
+        return this._emit({ op: 'renamed', oldId, newId, entity });
     }
 
     /**
