@@ -7,7 +7,7 @@ import {
 } from '../lib.js';
 
 import { getContext } from './extensions.js';
-import { animation_duration, characters, getCurrentCharacter, getRequestHeaders, processDroppedFiles, user_avatar } from '../script.js';
+import { animation_duration, characters, charactersStore, getCurrentCharacter, getRequestHeaders, processDroppedFiles, user_avatar } from '../script.js';
 import { isMobile } from './RossAscends-mods.js';
 import { collapseNewlines, power_user, personaStore } from './power-user.js';
 import { debounce_timeout } from './constants.js';
@@ -2721,8 +2721,10 @@ export function findChar({ name = null, allowAvatar = true, insensitive = true, 
     }
 
     // Get the current character(s)
+    // Only use the O(1) store lookup when no tag filter narrowed filteredCharacters down - otherwise it could
+    // return a character that tag filtering was supposed to exclude.
     /** @type {any[]} */
-    const currentChars = selected_group ? groups.find(group => group.id === selected_group)?.members.map(member => filteredCharacters.find(char => char.avatar === member))
+    const currentChars = selected_group ? groups.find(group => group.id === selected_group)?.members.map(member => filteredByTags ? filteredCharacters.find(char => char.avatar === member) : charactersStore.get(member))
         : filteredCharacters.filter(char => getCurrentCharacter()?.avatar === char.avatar);
 
     // If we have a current char and prefer it, return that if it matches
@@ -2738,8 +2740,11 @@ export function findChar({ name = null, allowAvatar = true, insensitive = true, 
     }
 
     // If allowAvatar is true, search by avatar first
+    // Same as above: only skip filteredCharacters (and use the store directly) when there's no tag filter to honor.
     if (allowAvatar && name) {
-        const characterByAvatar = filteredCharacters.find(char => char.avatar === name || (!name.endsWith('.png') && char.avatar === `${name}.png`));
+        const characterByAvatar = filteredByTags
+            ? filteredCharacters.find(char => char.avatar === name || (!name.endsWith('.png') && char.avatar === `${name}.png`))
+            : (charactersStore.get(name) || (!name.endsWith('.png') ? charactersStore.get(`${name}.png`) : undefined));
         if (characterByAvatar) {
             return characterByAvatar;
         }
@@ -2763,9 +2768,11 @@ export function findChar({ name = null, allowAvatar = true, insensitive = true, 
  */
 export function getCharIndex(char) {
     if (!char) throw new Error('Character is undefined');
-    const index = characters.findIndex(c => c.avatar === char.avatar);
-    if (index === -1) throw new Error(`Character not found: ${char.avatar}`);
-    return index;
+    const entity = charactersStore.get(char.avatar);
+    if (!entity) throw new Error(`Character not found: ${char.avatar}`);
+    // Callers need the numeric array position (splice/array-index consumers), not just the entity, so resolve
+    // via the store for O(1) existence lookup and then find the position in the backing array.
+    return characters.indexOf(entity);
 }
 
 /**
