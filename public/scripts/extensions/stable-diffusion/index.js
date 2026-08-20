@@ -7,6 +7,7 @@ import {
     formatCharacterAvatar,
     generateQuietPrompt,
     getCharacterAvatar,
+    getCurrentCharacter,
     getCurrentChatId,
     getRequestHeaders,
     getUserAvatar,
@@ -883,8 +884,7 @@ async function onChatChanged() {
     let characterPrompt = key ? (extension_settings.sd.character_prompts[key] || '') : '';
     let negativePrompt = key ? (extension_settings.sd.character_negative_prompts[key] || '') : '';
 
-    const context = getContext();
-    const sharedPromptData = context?.characters[this_chid]?.data?.extensions?.sd_character_prompt;
+    const sharedPromptData = getCurrentCharacter()?.data?.extensions?.sd_character_prompt;
     const hasSharedData = sharedPromptData && typeof sharedPromptData === 'object';
 
     if (typeof sharedPromptData?.positive === 'string' && !characterPrompt && sharedPromptData.positive) {
@@ -5961,8 +5961,7 @@ export async function init() {
         let characterPrompt = key ? (extension_settings.sd.character_prompts[key] || '') : '';
         let negativePrompt = key ? (extension_settings.sd.character_negative_prompts[key] || '') : '';
 
-        const context = getContext();
-        const sharedPromptData = context?.characters[this_chid]?.data?.extensions?.sd_character_prompt;
+        const sharedPromptData = getCurrentCharacter()?.data?.extensions?.sd_character_prompt;
 
         if (typeof sharedPromptData?.positive === 'string' && !characterPrompt && sharedPromptData.positive) {
             characterPrompt = sharedPromptData.positive || '';

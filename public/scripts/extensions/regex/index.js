@@ -1,4 +1,4 @@
-import { characters, eventSource, event_types, getCurrentChatId, messageFormatting, reloadCurrentChat, saveSettingsDebounced, this_chid } from '../../../script.js';
+import { eventSource, event_types, getCurrentCharacter, getCurrentChatId, messageFormatting, reloadCurrentChat, saveSettingsDebounced, this_chid } from '../../../script.js';
 import { extension_settings, renderExtensionTemplateAsync } from '../../extensions.js';
 import { selected_group } from '../../group-chats.js';
 import { callGenericPopup, Popup, POPUP_TYPE } from '../../popup.js';
@@ -542,7 +542,7 @@ async function saveRegexScript(regexScript, existingScriptIndex, scriptType, sav
 
     if (scriptType === SCRIPT_TYPES.SCOPED) {
         await saveScriptsByType(array, SCRIPT_TYPES.SCOPED);
-        allowScopedScripts(characters?.[this_chid]);
+        allowScopedScripts(getCurrentCharacter());
     }
 
     if (scriptType === SCRIPT_TYPES.PRESET) {
@@ -748,7 +748,7 @@ async function loadRegexScripts() {
     getScriptsByType(SCRIPT_TYPES.SCOPED).forEach((script, index) => renderScript('#saved_scoped_scripts', script, SCRIPT_TYPES.SCOPED, index));
     getScriptsByType(SCRIPT_TYPES.PRESET).forEach((script, index) => renderScript('#saved_preset_scripts', script, SCRIPT_TYPES.PRESET, index));
 
-    $('#regex_scoped_toggle').prop('checked', isScopedScriptsAllowed(characters?.[this_chid]));
+    $('#regex_scoped_toggle').prop('checked', isScopedScriptsAllowed(getCurrentCharacter()));
     $('#regex_preset_toggle').prop('checked', isPresetScriptsAllowed(getCurrentPresetAPI(), getCurrentPresetName()));
 
     setMoveButtonsVisibility();
@@ -1592,7 +1592,7 @@ function purgeEmbeddedRegexScripts({ character }) {
     if (accountStorage.getItem(checkKey)) {
         accountStorage.removeItem(checkKey);
     }
-    disallowScopedScripts(characters?.[this_chid]);
+    disallowScopedScripts(getCurrentCharacter());
 }
 
 function purgePresetEmbeddedRegexScripts({ apiId, name }) {
@@ -1607,7 +1607,7 @@ async function checkCharEmbeddedRegexScripts() {
     const chid = this_chid;
 
     if (chid !== undefined && !selected_group) {
-        const character = characters[chid];
+        const character = getCurrentCharacter();
         const scripts = getScriptsByType(SCRIPT_TYPES.SCOPED);
 
         if (Array.isArray(scripts) && scripts.length > 0) {
@@ -1964,7 +1964,7 @@ export async function init() {
         }
 
         const isEnable = !!$(this).prop('checked');
-        const character = characters[this_chid];
+        const character = getCurrentCharacter();
 
         if (isEnable) {
             allowScopedScripts(character);
