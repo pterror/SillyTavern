@@ -31,6 +31,7 @@ import {
     printMessages,
     substituteParams,
     characters,
+    charactersStore,
     default_avatar,
     addOneMessage,
     clearChat,
@@ -254,6 +255,17 @@ async function loadGroupChat(chatId) {
 }
 
 /**
+ * Resolves a group member entry to its character, by avatar (the normal case, O(1) via charactersStore) or -
+ * for legacy group data that stored members by display name instead of avatar - by name (O(n) fallback scan,
+ * only hit when the avatar lookup misses).
+ * @param {string} member Group member entry (usually an avatar, occasionally a legacy name)
+ * @returns {Character|undefined}
+ */
+function findGroupMemberCharacter(member) {
+    return charactersStore.get(member) ?? characters.find(x => x.name === member);
+}
+
+/**
  * Validates a group by checking if all members exist and removing duplicates.
  * @param {Group} group Group to validate
  * @returns {Promise<void>}
@@ -264,7 +276,7 @@ async function validateGroup(group) {
     // Validate that all members exist as characters
     let dirty = false;
     group.members = group.members.filter(member => {
-        const character = characters.find(x => x.avatar === member || x.name === member);
+        const character = findGroupMemberCharacter(member);
         if (!character) {
             const msg = t`Warning: Listed member ${member} does not exist as a character. It will be removed from the group.`;
             toastr.warning(msg, t`Group Validation`);
@@ -327,7 +339,7 @@ export async function getGroupChat(groupId, reload = false) {
         chat.splice(0, chat.length);
         chatElement.find('.mes').remove();
         for (let member of group.members) {
-            const character = characters.find(x => x.avatar === member || x.name === member);
+            const character = findGroupMemberCharacter(member);
             if (!character) {
                 continue;
             }
@@ -370,7 +382,7 @@ export async function getGroupChat(groupId, reload = false) {
  */
 export function getGroupMembers(groupId = selected_group) {
     const group = groups.find((x) => x.id === groupId);
-    return group?.members.map(member => characters.find(x => x.avatar === member)) ?? [];
+    return group?.members.map(member => charactersStore.get(member)) ?? [];
 }
 
 /**
@@ -383,7 +395,7 @@ export function getGroupNames() {
     }
     const groupMembers = groups.find(x => x.id == selected_group)?.members;
     return Array.isArray(groupMembers)
-        ? groupMembers.map(x => characters.find(y => y.avatar === x)?.name).filter(x => x)
+        ? groupMembers.map(x => charactersStore.get(x)?.name).filter(x => x)
         : [];
 }
 
@@ -412,11 +424,18 @@ export function findGroupMemberId(arg, full = false) {
     const searchByString = isNaN(index);
 
     if (searchByString) {
-        const memberNames = group.members.map(x => ({
-            avatar: x,
-            name: characters.find(y => y.avatar === x)?.name,
-            index: characters.findIndex(y => y.avatar === x),
-        }));
+        const memberNames = group.members.map(x => {
+            const entity = charactersStore.get(x);
+            return {
+                avatar: x,
+                name: entity?.name,
+                // index feeds a fuse search result straight back into selectGroupMember(id) (0-based character
+                // id), so it has to be the real array position, not just whether the character was found -
+                // characters.indexOf(entity) here still avoids the redundant second predicate-scan the old
+                // separate find()+findIndex() pair did.
+                index: entity ? characters.indexOf(entity) : -1,
+            };
+        });
         const fuse = new Fuse(memberNames, { keys: ['avatar', 'name'] });
         const result = fuse.search(arg);
 
@@ -443,7 +462,11 @@ export function findGroupMemberId(arg, full = false) {
             return;
         }
 
-        const chid = characters.findIndex(x => x.avatar === memberAvatar);
+        // chid feeds back into callers expecting a numeric character id (see findGroupMemberId's own doc
+        // comment), so it has to be the real array position - resolving the entity once via charactersStore
+        // still avoids the redundant separate find()+findIndex() scans the old code did for the same member.
+        const memberEntity = charactersStore.get(memberAvatar);
+        const chid = memberEntity ? characters.indexOf(memberEntity) : -1;
 
         if (chid === -1) {
             console.warn(`WARN: No character found for group member ${memberAvatar} at index ${index}`);
@@ -455,7 +478,7 @@ export function findGroupMemberId(arg, full = false) {
         return !full ? chid : {
             id: chid,
             avatar: memberAvatar,
-            name: characters.find(y => y.avatar === memberAvatar)?.name,
+            name: memberEntity?.name,
             index: index,
         };
     }
@@ -486,10 +509,9 @@ export function getGroupDepthPrompts(groupId, characterAvatar) {
     const depthPrompts = [];
 
     for (const member of group.members) {
-        const index = characters.findIndex(x => x.avatar === member);
-        const character = characters[index];
+        const character = charactersStore.get(member);
 
-        if (index === -1 || !character) {
+        if (!character) {
             console.debug(`Skipping missing member: ${member}`);
             continue;
         }
@@ -590,9 +612,8 @@ export function getGroupCharacterCardsLazy(groupId, characterAvatar) {
     function collectField(fieldName, getter, preprocess = null) {
         const values = [];
         for (const member of group.members) {
-            const index = characters.findIndex(x => x.avatar === member);
-            const character = characters[index];
-            if (index === -1 || !character) continue;
+            const character = charactersStore.get(member);
+            if (!character) continue;
             if (group.disabled_members.includes(member) && characterAvatar !== member && group.generation_mode !== group_generation_mode.APPEND_DISABLED) {
                 continue;
             }
@@ -862,7 +883,7 @@ export function getGroupBlock(group) {
     // Build inline name list
     if (Array.isArray(group.members) && group.members.length) {
         for (const member of group.members) {
-            const character = characters.find(x => x.avatar === member || x.name === member);
+            const character = findGroupMemberCharacter(member);
             if (character) {
                 namesList.push(character.name);
                 count++;
@@ -938,9 +959,9 @@ function getGroupAvatar(group) {
     const memberAvatars = [];
     if (group && Array.isArray(group.members) && group.members.length) {
         for (const member of group.members) {
-            const charIndex = characters.findIndex(x => x.avatar === member);
-            if (charIndex !== -1 && characters[charIndex].avatar !== 'none') {
-                const avatar = getThumbnailUrl('avatar', characters[charIndex].avatar);
+            const memberEntity = charactersStore.get(member);
+            if (memberEntity && memberEntity.avatar !== 'none') {
+                const avatar = getThumbnailUrl('avatar', memberEntity.avatar);
                 memberAvatars.push(avatar);
             }
             if (memberAvatars.length === 4) {
@@ -1085,7 +1106,13 @@ async function generateGroupWrapper(byAutoMode, type = null, params = {}) {
         } else if (activationStrategy === group_activation_strategy.POOLED) {
             activatedMembers = activatePooledOrder(enabledMembers, lastMessage, isUserInput);
         } else if (activationStrategy === group_activation_strategy.MANUAL && !isUserInput) {
-            activatedMembers = shuffle(enabledMembers).slice(0, 1).map(x => characters.findIndex(y => y.avatar === x)).filter(x => x !== -1);
+            // activatedMembers is a list of chids (array positions) fed straight into generation, so each entry
+            // still has to be a real characters.indexOf() - just resolved via charactersStore first instead of
+            // a raw findIndex() predicate scan.
+            activatedMembers = shuffle(enabledMembers).slice(0, 1)
+                .map(x => charactersStore.get(x))
+                .filter(Boolean)
+                .map(entity => characters.indexOf(entity));
         }
 
         if (activatedMembers.length === 0) {
@@ -1173,8 +1200,9 @@ function activateImpersonate(members) {
     const randomIndex = Math.floor(Math.random() * members.length);
     const activatedMembers = [members[randomIndex]];
     const memberIds = activatedMembers
-        .map((x) => characters.findIndex((y) => y.avatar === x))
-        .filter((x) => x !== -1);
+        .map((x) => charactersStore.get(x))
+        .filter(Boolean)
+        .map((entity) => characters.indexOf(entity));
     return memberIds;
 }
 
@@ -1225,8 +1253,9 @@ function activateSwipe(members, { allowSystem = false } = {}) {
     }
 
     const memberIds = activatedNames
-        .map((x) => characters.findIndex((y) => y.avatar === x))
-        .filter((x) => x !== -1);
+        .map((x) => charactersStore.get(x))
+        .filter(Boolean)
+        .map((entity) => characters.indexOf(entity));
     return memberIds;
 }
 
@@ -1240,8 +1269,9 @@ function activateListOrder(members) {
 
     // map to character ids
     const memberIds = activatedMembers
-        .map((x) => characters.findIndex((y) => y.avatar === x))
-        .filter((x) => x !== -1);
+        .map((x) => charactersStore.get(x))
+        .filter(Boolean)
+        .map((entity) => characters.indexOf(entity));
     return memberIds;
 }
 
@@ -1284,7 +1314,8 @@ function activatePooledOrder(members, lastMessage, isUserInput) {
         activatedMember = randomPool[Math.floor(Math.random() * randomPool.length)];
     }
 
-    const memberId = characters.findIndex(y => y.avatar === activatedMember);
+    const activatedEntity = charactersStore.get(activatedMember);
+    const memberId = activatedEntity ? characters.indexOf(activatedEntity) : -1;
     return memberId !== -1 ? [memberId] : [];
 }
 
@@ -1312,7 +1343,7 @@ function activateNaturalOrder(members, input, lastMessage, allowSelfResponses, i
     if (input && input.length) {
         for (let inputWord of extractAllWords(input)) {
             for (let member of members) {
-                const character = characters.find(x => x.avatar === member);
+                const character = charactersStore.get(member);
 
                 if (!character || character.name === bannedUser) {
                     continue;
@@ -1330,7 +1361,7 @@ function activateNaturalOrder(members, input, lastMessage, allowSelfResponses, i
     // activation by talkativeness (in shuffled order, except banned)
     const shuffledMembers = shuffle([...members]);
     for (let member of shuffledMembers) {
-        const character = characters.find((x) => x.avatar === member);
+        const character = charactersStore.get(member);
 
         if (!character || character.name === bannedUser) {
             continue;
@@ -1354,7 +1385,7 @@ function activateNaturalOrder(members, input, lastMessage, allowSelfResponses, i
     const randomPool = chattyMembers.length > 0 ? chattyMembers : members;
     while (activatedMembers.length === 0 && ++retries <= randomPool.length) {
         const randomIndex = Math.floor(Math.random() * randomPool.length);
-        const character = characters.find((x) => x.avatar === randomPool[randomIndex]);
+        const character = charactersStore.get(randomPool[randomIndex]);
 
         if (!character) {
             continue;
@@ -1368,8 +1399,9 @@ function activateNaturalOrder(members, input, lastMessage, allowSelfResponses, i
 
     // map to character ids
     const memberIds = activatedMembers
-        .map((x) => characters.findIndex((y) => y.avatar === x))
-        .filter((x) => x !== -1);
+        .map((x) => charactersStore.get(x))
+        .filter(Boolean)
+        .map((entity) => characters.indexOf(entity));
     return memberIds;
 }
 
@@ -2073,7 +2105,8 @@ async function onGroupActionClick(event) {
         // Resolve by avatar (member.data('id'), the stable id already set in getGroupCharacterBlock) rather
         // than the row's data-chid, which is a positional index baked in at render time and can go stale if
         // the characters array reorders before this click.
-        const chid = characters.findIndex(c => c.avatar === member.data('id'));
+        const speakEntity = charactersStore.get(member.data('id'));
+        const chid = speakEntity ? characters.indexOf(speakEntity) : -1;
         if (chid !== -1) {
             Generate('normal', { force_chid: chid });
         }
@@ -2142,7 +2175,8 @@ async function openCharacterDefinition(characterSelect) {
     // rather than the row's data-chid, which is a positional index baked in at render time and can go stale
     // if the characters array reorders before this click.
     const avatar = characterSelect.data('id');
-    const chid = characters.findIndex(c => c.avatar === avatar);
+    const definitionEntity = charactersStore.get(avatar);
+    const chid = definitionEntity ? characters.indexOf(definitionEntity) : -1;
 
     if (chid === -1) {
         return;
