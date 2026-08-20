@@ -416,15 +416,10 @@ function rebuildTagStores() {
 }
 
 /**
- * Debounced save of `{ tags, tag_map }` to the server's tags.json mirror (POST /api/tags/save). This is
- * additive, not a replacement: `saveSettingsDebounced()` call sites throughout this file are untouched and
- * settings.json still carries its own `tags`/`tag_map` fields (see the TAGS_FILE comment in constants.js) -
- * this only exists so the eventual load-side repoint has a real, continuously up-to-date file to read from.
- * Deliberately a plain debounce (not tied to loopCounter/retry logic like saveSettingsDebounced) since a lost
- * save here just means the mirror is briefly stale, not a risk to the settings.json copy that's still the
- * actual source of truth.
+ * POSTs the current `{ tags, tag_map }` to the server's tags.json (POST /api/tags/save). Shared by the
+ * debounced mutation-triggered save (saveTagsDebounced) and the one-shot seed save in loadTagsSettings.
  */
-const saveTagsDebounced = debounce(async () => {
+async function saveTagsNow() {
     try {
         const response = await fetch('/api/tags/save', {
             method: 'POST',
@@ -439,7 +434,14 @@ const saveTagsDebounced = debounce(async () => {
     } catch (error) {
         console.error('Error saving tags:', error);
     }
-}, DEFAULT_SAVE_EDIT_TIMEOUT);
+}
+
+/**
+ * Debounced save of `{ tags, tag_map }` to tags.json. Registered as the tagsStore/tagMapStore onChange
+ * subscriber (rebuildTagStores()) - every mutation call site in this file keeps calling its store op exactly
+ * as before and doesn't know this save exists.
+ */
+const saveTagsDebounced = debounce(saveTagsNow, DEFAULT_SAVE_EDIT_TIMEOUT);
 
 /**
  * Forces `tagMapStore`'s usage-count index to be recomputed from the current contents of `tag_map`. Needed
@@ -720,12 +722,54 @@ function filterByFolder(filterHelper) {
     applyActionableTagFilter.call(this, filterHelper, ACTIONABLE_TAGS.FOLDER, FILTER_TYPES.FOLDER, ACTIONABLE_FILTER_STORAGE_KEYS.FOLDER);
 }
 
-function loadTagsSettings(settings) {
-    tags = settings.tags !== undefined ? settings.tags : DEFAULT_TAGS;
-    tag_map = settings.tag_map !== undefined ? settings.tag_map : Object.create(null);
+/**
+ * Loads `tags`/`tag_map` from tags.json (the cutover target - see TAGS_FILE in constants.js), falling back to
+ * the `tags`/`tag_map` fields embedded in `settings` (the pre-cutover location) only if tags.json doesn't have
+ * them yet - a fresh install that's never had a tag mutation fire the save subscriber, or a settings.json
+ * snapshot restored from before the split that the server's restore-snapshot handler couldn't pair up with a
+ * matching tags backup (see restoreUserTagsForSnapshot in src/endpoints/tags.js, which backfills tags.json from
+ * the snapshot's embedded fields specifically to keep this fallback path rare).
+ *
+ * After loading, unconditionally seeds/refreshes tags.json with whatever ended up in `tags`/`tag_map` - this
+ * closes the gap between "tags.json doesn't exist yet" and "the next settings save, which no longer carries
+ * tags/tag_map, happens": without this, a page load that falls back to the settings.json copy but never
+ * triggers a tag mutation could otherwise end up with neither settings.json nor tags.json holding the data.
+ */
+async function loadTagsSettings(settings) {
+    let tagsFile = null;
+    try {
+        const response = await fetch('/api/tags/get', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({}),
+            cache: 'no-cache',
+        });
+        if (response.ok) {
+            const data = await response.json();
+            if (data && data.tags !== null && data.tags !== undefined) {
+                tagsFile = data;
+            }
+        } else {
+            console.error(`Failed to load tags: ${response.statusText}`);
+        }
+    } catch (error) {
+        console.error('Error loading tags:', error);
+    }
+
+    if (tagsFile) {
+        tags = tagsFile.tags !== undefined && tagsFile.tags !== null ? tagsFile.tags : DEFAULT_TAGS;
+        tag_map = tagsFile.tag_map !== undefined && tagsFile.tag_map !== null ? tagsFile.tag_map : Object.create(null);
+    } else {
+        tags = settings.tags !== undefined ? settings.tags : DEFAULT_TAGS;
+        tag_map = settings.tag_map !== undefined ? settings.tag_map : Object.create(null);
+    }
+
     rebuildTagStores();
     invalidateCharactersFuseIndex();
     invalidateGroupsFuseIndex();
+
+    // See the seeding note above - keep tags.json in sync with whatever just got loaded, regardless of source.
+    await saveTagsNow();
 }
 
 function renameTagKey(oldKey, newKey) {
