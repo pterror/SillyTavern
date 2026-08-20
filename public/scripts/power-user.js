@@ -2483,8 +2483,8 @@ export function fuzzySearchWorldInfo(data, searchValue, fuzzySearchCaches = null
 export function fuzzySearchPersonas(data, searchValue, fuzzySearchCaches = null) {
     const mappedData = data.map(x => ({
         key: x,
-        name: power_user.personas[x] ?? '',
-        description: power_user.persona_descriptions[x]?.description ?? '',
+        name: personaStore.get(x)?.name ?? '',
+        description: personaStore.get(x)?.description ?? '',
     }));
 
     const keys = [

@@ -9,7 +9,7 @@ import {
 import { getContext } from './extensions.js';
 import { animation_duration, characters, getRequestHeaders, processDroppedFiles, this_chid, user_avatar } from '../script.js';
 import { isMobile } from './RossAscends-mods.js';
-import { collapseNewlines, power_user } from './power-user.js';
+import { collapseNewlines, power_user, personaStore } from './power-user.js';
 import { debounce_timeout } from './constants.js';
 import { Popup, POPUP_RESULT, POPUP_TYPE } from './popup.js';
 import { SlashCommandClosure } from './slash-commands/SlashCommandClosure.js';
@@ -2666,7 +2666,7 @@ export async function showFontAwesomePicker(customList = null) {
  */
 export function findPersona({ name = null, allowAvatar = true, insensitive = true, preferCurrentPersona = true, quiet = false } = {}) {
     /** @type {PersonaViewModel[]} */
-    const personas = Object.entries(power_user.personas).map(([avatar, name]) => ({ avatar, name }));
+    const personas = Object.entries(personaStore.getAll()).map(([avatar, record]) => ({ avatar, name: record.name }));
     const matches = (/** @type {PersonaViewModel} */ persona) => !name || (allowAvatar && persona.avatar === name) || (insensitive ? equalsIgnoreCaseAndAccents(persona.name, name) : persona.name === name);
 
     // If we have a current persona and prefer it, return that if it matches

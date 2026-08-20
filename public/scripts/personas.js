@@ -194,8 +194,8 @@ function sortPersonas(personas) {
         });
     } else {
         personas.sort((a, b) => {
-            const aName = String(power_user.personas[a] || a);
-            const bName = String(power_user.personas[b] || b);
+            const aName = String(personaStore.get(a)?.name || a);
+            const bName = String(personaStore.get(b)?.name || b);
             return power_user.persona_sort_order === 'asc' ? aName.localeCompare(bName) : bName.localeCompare(aName);
         });
     }
@@ -230,9 +230,9 @@ function verifyPersonaSearchSortRule() {
  */
 function getUserAvatarBlock(avatarId) {
     const template = $('#user_avatar_template .avatar-container').clone();
-    const personaName = power_user.personas[avatarId];
-    const personaDescription = power_user.persona_descriptions[avatarId]?.description;
-    const personaTitle = power_user.persona_descriptions[avatarId]?.title;
+    const personaName = personaStore.get(avatarId)?.name;
+    const personaDescription = personaStore.get(avatarId)?.description;
+    const personaTitle = personaStore.get(avatarId)?.title;
 
     template.find('.ch_name').text(personaName || '[Unnamed Persona]');
     template.find('.ch_description').text(personaDescription || $('#user_avatar_block').attr('no_desc_text')).toggleClass('text_muted', !personaDescription);
@@ -685,8 +685,8 @@ export function buildPersonaAvatarList(block, personas, { empty = true, interact
         type: 'persona',
         id: avatar,
         item: {
-            name: power_user.personas[avatar],
-            description: power_user.persona_descriptions[avatar]?.description || '',
+            name: personaStore.get(avatar)?.name,
+            description: personaStore.get(avatar)?.description || '',
             avatar: avatar,
             fav: power_user.default_persona === avatar,
         },
@@ -701,7 +701,7 @@ export function buildPersonaAvatarList(block, personas, { empty = true, interact
  */
 export function updatePersonaConnectionsAvatarList() {
     /** @type {PersonaConnection[]} */
-    const connections = power_user.persona_descriptions[user_avatar]?.connections ?? [];
+    const connections = personaStore.get(user_avatar)?.connections ?? [];
     const entities = connections.map(connection => {
         if (connection.type === 'character') {
             const character = characters.find(c => c.avatar === connection.id);
@@ -1326,7 +1326,7 @@ async function onPersonaDescriptionPositionInput() {
 export function getOrCreatePersonaDescriptor() {
     if (!personaStore.has(user_avatar)) {
         // Only reachable if user_avatar isn't a real persona at all (name too) - every other call site here
-        // guards with personaStore.has(user_avatar)/power_user.personas[user_avatar] first, so this always
+        // guards with personaStore.has(user_avatar)/personaStore.get(user_avatar)?.name first, so this always
         // creates a nameless placeholder record in that edge case, same as the original code did (it never
         // set `name` here either - that came from power_user.personas separately, whenever it did).
         personaStore.create(user_avatar, {
@@ -1358,7 +1358,7 @@ async function toggleDefaultPersona(avatarId, { quiet = false } = {}) {
 
     const currentDefault = power_user.default_persona;
 
-    if (power_user.personas[avatarId] === undefined) {
+    if (personaStore.get(avatarId)?.name === undefined) {
         console.warn(`No persona name found for avatar ${avatarId}`);
         toastr.warning(t`You must bind a name to this persona before you can set it as the default.`, t`Persona Name Not Set`);
         return;
@@ -1367,7 +1367,7 @@ async function toggleDefaultPersona(avatarId, { quiet = false } = {}) {
 
     if (avatarId === currentDefault) {
         if (!quiet) {
-            const confirm = await Popup.show.confirm(t`Are you sure you want to remove the default persona?`, power_user.personas[avatarId]);
+            const confirm = await Popup.show.confirm(t`Are you sure you want to remove the default persona?`, personaStore.get(avatarId)?.name);
             if (!confirm) {
                 console.debug('User cancelled removing default persona');
                 return;
@@ -1382,7 +1382,7 @@ async function toggleDefaultPersona(avatarId, { quiet = false } = {}) {
     } else {
         if (!quiet) {
             const confirm = await Popup.show.confirm(t`Set Default Persona`,
-                t`Are you sure you want to set \"${power_user.personas[avatarId]}\" as the default persona?`
+                t`Are you sure you want to set \"${personaStore.get(avatarId)?.name}\" as the default persona?`
                 + '<br /><br />'
                 + t`This name and avatar will be used for all new chats, as well as existing chats where the user persona is not locked.`);
             if (!confirm) {
@@ -1393,7 +1393,7 @@ async function toggleDefaultPersona(avatarId, { quiet = false } = {}) {
 
         power_user.default_persona = avatarId;
         if (power_user.persona_show_notifications && !isPersonaPanelOpen()) {
-            toastr.success(t`Set to ${power_user.personas[avatarId]}.This persona will be used by default when you open a new chat.`, t`Default Persona`);
+            toastr.success(t`Set to ${personaStore.get(avatarId)?.name}.This persona will be used by default when you open a new chat.`, t`Default Persona`);
         }
     }
 
@@ -1417,7 +1417,7 @@ function getPersonaStates(avatarId) {
     const hasChatLock = chat_metadata.persona == avatarId;
 
     /** @type {PersonaConnection[]} */
-    const connections = power_user.persona_descriptions[avatarId]?.connections;
+    const connections = personaStore.get(avatarId)?.connections;
     const hasCharLock = !!connections?.some(c =>
         (!selected_group && c.type === 'character' && c.id === characters[Number(this_chid)]?.avatar)
         || (selected_group && c.type === 'group' && c.id === selected_group));
@@ -1515,9 +1515,9 @@ function getPersonaTemporaryLockInfo() {
     const isTemporary = hasDifferentChatLock || (!chat_metadata.persona && hasDifferentDefaultLock);
     const info = isTemporary ? t`A different persona is locked to this chat, or you have a different default persona set. The currently selected persona will only be temporary, and resets on reload. Consider locking this persona to the chat if you want to permanently use it.`
         + '\n\n'
-        + t`Current Persona: ${power_user.personas[user_avatar]}`
-        + (hasDifferentChatLock ? '\n' + t`Chat persona: ${power_user.personas[chat_metadata.persona]}` : '')
-        + (hasDifferentDefaultLock ? '\n' + t`Default persona: ${power_user.personas[power_user.default_persona]}` : '') : '';
+        + t`Current Persona: ${personaStore.get(user_avatar)?.name}`
+        + (hasDifferentChatLock ? '\n' + t`Chat persona: ${personaStore.get(chat_metadata.persona)?.name}` : '')
+        + (hasDifferentDefaultLock ? '\n' + t`Default persona: ${personaStore.get(power_user.default_persona)?.name}` : '') : '';
 
     return {
         isTemporary: isTemporary,
@@ -1581,7 +1581,7 @@ async function loadPersonaForCurrentChat({ doRender = false } = {}) {
             // Otherwise ask if we want to switch
             const autoLock = power_user.persona_auto_lock;
             const result = await Popup.show.confirm(t`Switch Persona?`,
-                t`You have a connected persona for the current chat (${power_user.personas[chatPersona]}). Do you want to stick to the current persona (${power_user.personas[user_avatar]}) ${(autoLock ? t`and lock that to the chat` : '')}, or switch to ${power_user.personas[chatPersona]} instead?`,
+                t`You have a connected persona for the current chat (${personaStore.get(chatPersona)?.name}). Do you want to stick to the current persona (${personaStore.get(user_avatar)?.name}) ${(autoLock ? t`and lock that to the chat` : '')}, or switch to ${personaStore.get(chatPersona)?.name} instead?`,
                 { okButton: autoLock ? t`Keep and Lock` : t`Keep`, cancelButton: t`Switch` });
             if (result === POPUP_RESULT.AFFIRMATIVE) {
                 if (autoLock) {
@@ -1643,7 +1643,7 @@ async function loadPersonaForCurrentChat({ doRender = false } = {}) {
         await setUserAvatar(chatPersona, { toastPersonaNameChange: false, navigateToCurrent: true });
 
         if (power_user.persona_show_notifications) {
-            let message = t`Auto-selected persona based on ${connectType} connection.<br />Your messages will now be sent as ${power_user.personas[chatPersona]}.`;
+            let message = t`Auto-selected persona based on ${connectType} connection.<br />Your messages will now be sent as ${personaStore.get(chatPersona)?.name}.`;
             if (willAutoLock) {
                 message += '<br /><br />' + t`Auto-locked this persona to current chat.`;
             }
