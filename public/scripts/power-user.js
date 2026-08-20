@@ -4,6 +4,7 @@ import {
     saveSettingsDebounced,
     scrollChatToBottom,
     characters,
+    charactersStore,
     reloadMarkdownProcessor,
     reloadCurrentChat,
     getRequestHeaders,
@@ -3099,9 +3100,12 @@ async function doRandomChat(_, tagName) {
         const taggedCharacters = Object.entries(tag_map)
             .filter(x => x[1].includes(tagId)) // Get only records that include the tag
             .map(x => x[0]) // Map the character avatar
-            .filter(x => characters.find(y => y.avatar === x)); // Filter out characters that don't exist
+            .filter(x => charactersStore.has(x)); // Filter out characters that don't exist
         const randomCharacter = taggedCharacters[Math.floor(Math.random() * taggedCharacters.length)];
-        const randomIndex = characters.findIndex(x => x.avatar === randomCharacter);
+        // setCharacterId()/characters[characterId] below need the numeric position (chid), not the entity, so
+        // resolve via the store first and then find that entity's position in the backing array.
+        const randomEntity = charactersStore.get(randomCharacter);
+        const randomIndex = randomEntity ? characters.indexOf(randomEntity) : -1;
         if (randomIndex === -1) {
             return;
         }
