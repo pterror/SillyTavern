@@ -4703,7 +4703,9 @@ async function askCharacter(args, text) {
         return '';
     }
 
-    const prevChId = this_chid;
+    // Captured by avatar, not this_chid: this_chid is an array index that can go stale by the time
+    // restoreCharacter runs, since it's only called back after the async Generate() below.
+    const prevAvatar = getCurrentCharacter()?.avatar;
 
     // Find the character
     const character = findChar({ name: args?.name });
@@ -4729,13 +4731,13 @@ async function askCharacter(args, text) {
     setCharacterName(name);
 
     const restoreCharacter = () => {
-        if (String(this_chid) !== String(chId)) {
+        if (getCurrentCharacter()?.avatar !== character.avatar) {
             return;
         }
 
-        if (prevChId !== undefined) {
-            setCharacterId(prevChId);
-            setCharacterName(characters[prevChId].name);
+        if (prevAvatar !== undefined) {
+            setCharacterId(charactersStore.get(prevAvatar));
+            setCharacterName(charactersStore.get(prevAvatar)?.name);
         } else {
             setCharacterId(undefined);
             setCharacterName(neutralCharacterName);
@@ -4761,7 +4763,7 @@ async function askCharacter(args, text) {
         restoreCharacter();
         console.error('Error running /ask command', error);
     } finally {
-        if (String(this_chid) === String(prevChId)) {
+        if (getCurrentCharacter()?.avatar === prevAvatar) {
             await saveChatConditional();
         } else {
             toastr.error(t`It is strongly recommended to reload the page.`, t`Something went wrong`);
