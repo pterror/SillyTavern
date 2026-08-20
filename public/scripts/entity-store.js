@@ -208,6 +208,158 @@ export class EntityStore {
 }
 
 /**
+ * A generic store for a flat collection of entities that's already naturally keyed by id - i.e. backed by an
+ * existing `{[id: string]: T}` object (mutated in place) rather than an array, the shape `power_user.personas`/
+ * `power_user.persona_descriptions` collectively have (and `tag_map` has, for the many-to-many case RelationStore
+ * covers instead).
+ *
+ * This is deliberately a separate class from `EntityStore` rather than a variant/option on it: `EntityStore`'s
+ * `create`/`remove`/`reorder` are written directly against array operations (push/splice/indexOf) and its
+ * `byId` map exists to make id lookup O(1) *despite* the backing being an unordered-by-id array - none of that
+ * indirection is needed here, since the backing object's own keys already are the id index. Forcing the dict
+ * shape through the array-shaped API would mean either wrapping/unwrapping between the two shapes on every
+ * call, or leaving half of `EntityStore`'s surface (`reorder` in particular - a dict has no reorderable
+ * position) meaningless for this case. `RelationStore` already made the same call for `tag_map`'s shape.
+ * @template T
+ */
+export class DictEntityStore {
+    /**
+     * @param {{[id: string]: T}} dict - the backing object. Mutated in place, never reassigned, so any other
+     * code holding a reference to this same object sees updates automatically.
+     */
+    constructor(dict) {
+        this.dict = dict;
+        /** @type {Set<(change: EntityChange<T>) => void>} */
+        this.listeners = new Set();
+    }
+
+    /** @param {string} id @returns {T|undefined} */
+    get(id) {
+        return this.dict[id];
+    }
+
+    /** @param {string} id @returns {boolean} */
+    has(id) {
+        return Object.hasOwn(this.dict, id);
+    }
+
+    /** @returns {{[id: string]: T}} */
+    getAll() {
+        return this.dict;
+    }
+
+    /**
+     * @param {string} id
+     * @returns {EntityChange<T>?} null if an entity with that id already exists (use update() to modify it)
+     */
+    create(id, entity) {
+        if (this.has(id)) return null;
+        this.dict[id] = entity;
+        return this._emit({ op: 'created', id, entity });
+    }
+
+    /**
+     * Applies a shallow patch of fields onto an existing entity (mutates the entity object in place, so any
+     * other reference to it sees the new values too).
+     * @param {string} id
+     * @param {Partial<T>} patch
+     * @returns {EntityChange<T>?} null if no entity with that id exists
+     */
+    update(id, patch) {
+        const entity = this.dict[id];
+        if (!entity) return null;
+        Object.assign(entity, patch);
+        return this._emit({ op: 'updated', id, entity, patch });
+    }
+
+    /**
+     * @param {string} id
+     * @returns {EntityChange<T>?} null if no entity with that id exists
+     */
+    remove(id) {
+        const entity = this.dict[id];
+        if (!entity) return null;
+        delete this.dict[id];
+        return this._emit({ op: 'removed', id, entity });
+    }
+
+    /**
+     * Moves an entity from one id/key to another (e.g. a persona's avatar filename changed).
+     * @param {string} oldId
+     * @param {string} newId
+     * @returns {EntityChange<T>?} null if no entity with oldId exists
+     */
+    rename(oldId, newId) {
+        const entity = this.dict[oldId];
+        if (!entity) return null;
+        delete this.dict[oldId];
+        this.dict[newId] = entity;
+        return this._emit({ op: 'renamed', oldId, newId, entity });
+    }
+
+    /**
+     * Full re-sync for a bulk operation (import, initial load) that would rather emit its own summary change
+     * than a flood of individual ones - the dict-backed equivalent of `EntityStore.reset()`. There's no
+     * separate index to rebuild here (the dict's own keys are the index), so this just emits.
+     * @returns {EntityChange<T>}
+     */
+    reset() {
+        return this._emit({ op: 'reset' });
+    }
+
+    /**
+     * Reports a specific entity as newly created, for the case where the backing dict was already
+     * populated out from under this store by something other than this store's own create().
+     * @param {string} id
+     * @returns {EntityChange<T>?} null if no entity with that id exists
+     */
+    reportCreated(id) {
+        const entity = this.dict[id];
+        if (!entity) return null;
+        return this._emit({ op: 'created', id, entity });
+    }
+
+    /**
+     * Reports a specific entity as removed after the fact - the caller must supply the entity value it had in
+     * hand before the removal, since it's already gone from the dict by the time this is called.
+     * @param {string} id
+     * @param {T} entity
+     * @returns {EntityChange<T>}
+     */
+    reportRemoved(id, entity) {
+        return this._emit({ op: 'removed', id, entity });
+    }
+
+    /**
+     * @param {string} oldId
+     * @param {string} newId
+     * @returns {EntityChange<T>?} null if no entity with the new id exists
+     */
+    reportRenamed(oldId, newId) {
+        const entity = this.dict[newId];
+        if (!entity) return null;
+        return this._emit({ op: 'renamed', oldId, newId, entity });
+    }
+
+    /**
+     * @param {(change: EntityChange<T>) => void} listener
+     * @returns {() => void} unsubscribe function
+     */
+    onChange(listener) {
+        this.listeners.add(listener);
+        return () => this.listeners.delete(listener);
+    }
+
+    /** @param {EntityChange<T>} change @returns {EntityChange<T>} */
+    _emit(change) {
+        for (const listener of this.listeners) {
+            listener(change);
+        }
+        return change;
+    }
+}
+
+/**
  * @typedef {object} RelationChange
  * @property {'assigned'|'unassigned'|'keySet'|'keyRenamed'|'keyCopied'|'keyRemoved'|'relatedRemoved'} op
  * @property {string} [key]
