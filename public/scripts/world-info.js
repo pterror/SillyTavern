@@ -7,7 +7,7 @@ import { NOTE_MODULE_NAME, metadata_keys, shouldWIAddPrompt } from './authors-no
 import { isMobile } from './RossAscends-mods.js';
 import { FILTER_TYPES, FilterHelper } from './filters.js';
 import { getTokenCountAsync } from './tokenizers.js';
-import { power_user } from './power-user.js';
+import { power_user, personaStore } from './power-user.js';
 import { getTagKeyForEntity } from './tags.js';
 import { debounce_timeout, GENERATION_TYPE_TRIGGERS } from './constants.js';
 import { getRegexedString, regex_placement } from './extensions/regex/engine.js';
@@ -4243,23 +4243,20 @@ async function updateWorldInfoLinks(oldName, newName, { retargetPersonaLore } = 
     // Update link for active persona
     if (retargetPersonaLore) {
         power_user.persona_description_lorebook = newName;
-        const object = getOrCreatePersonaDescriptor();
-        object.lorebook = newName;
+        getOrCreatePersonaDescriptor();
+        personaStore.update(user_avatar, { lorebook: newName });
         setPersonaDescription();
         saveSettingsDebounced();
     }
 
     // Update links for other personas
-    Object.keys(power_user.personas).forEach((persona) => {
+    Object.keys(personaStore.getAll()).forEach((persona) => {
         if (user_avatar === persona) {
             return;
         }
-        const descriptor = power_user.persona_descriptions[persona];
-        if (!descriptor) {
-            return;
-        }
-        if (descriptor.lorebook === oldName) {
-            descriptor.lorebook = newName;
+        const record = personaStore.get(persona);
+        if (record.lorebook === oldName) {
+            personaStore.update(persona, { lorebook: newName });
             saveSettingsDebounced();
         }
     });
@@ -4381,9 +4378,9 @@ export async function deleteWorldInfo(worldInfoName) {
 
     if (power_user.persona_description_lorebook === worldInfoName) {
         power_user.persona_description_lorebook = '';
-        if (power_user.personas[user_avatar]) {
-            const object = getOrCreatePersonaDescriptor();
-            object.lorebook = '';
+        if (personaStore.has(user_avatar)) {
+            getOrCreatePersonaDescriptor();
+            personaStore.update(user_avatar, { lorebook: '' });
         }
         $('#persona_lore_button').toggleClass('world_set', false);
         saveSettingsDebounced();
