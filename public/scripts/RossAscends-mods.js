@@ -847,7 +847,9 @@ export function initRossMods() {
 
     // when a char is selected from the list, save their name as the auto-load character for next page load
     $(document).on('click', '.character_select', function () {
-        const characterId = $(this).attr('data-chid');
+        // Resolve by avatar (the stable id) rather than data-chid (a positional index that can go stale
+        // between render and click) - getTagKeyForEntity() already resolves avatar strings directly.
+        const characterId = $(this).attr('data-avatar') ?? $(this).attr('data-chid');
         setActiveCharacter(characterId);
         setActiveGroup(null);
         saveSettingsDebounced();
