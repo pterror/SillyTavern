@@ -1,4 +1,4 @@
-import { name1, name2, characters, getCharacterCardFieldsLazy, getGeneratingModel } from '../../../script.js';
+import { name1, name2, charactersStore, getCharacterCardFieldsLazy, getGeneratingModel } from '../../../script.js';
 import { groups, selected_group } from '../../../scripts/group-chats.js';
 import { logMacroGeneralError } from './MacroDiagnostics.js';
 import { getStringHash } from '/scripts/utils.js';
@@ -200,7 +200,7 @@ function getGroupValue(ctx, { currentChar = null, includeMuted = false, filterOu
     const names = Array.isArray(members)
         ? members
             .filter(((id) => includeMuted ? true : !disabledMembers.includes(id)))
-            .map(m => Array.isArray(characters) ? characters.find(c => c && c.avatar === m) : null)
+            .map(m => charactersStore.get(m))
             .filter(c => !!c && typeof c.name === 'string')
             .filter(c => !filterOutChar || c.name !== currentChar)
             .map(c => c.name)
