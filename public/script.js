@@ -8634,19 +8634,19 @@ export async function getChatsFromFiles(data, isGroupChat) {
  * The function sends a POST request to the server to retrieve all chats for the character. It then
  * processes the received data, sorts it by the file name, and returns the sorted data.
  *
- * @param {null|number} [characterId=null] - When set, the function will use this character id instead of this_chid.
+ * @param {null|string} [characterAvatar=null] - When set, the function will use this character avatar instead of this_avatar.
  *
  * @returns {Promise<Array>} - An array containing metadata of all past chats of the character, sorted
  * in descending order by file name. Returns an empty array if the fetch request is unsuccessful or the
  * response is an object with an `error` property set to `true`.
  */
-export async function getPastCharacterChats(characterId = null) {
-    characterId = characterId ?? parseInt(this_chid);
-    if (!characters[characterId]) return [];
+export async function getPastCharacterChats(characterAvatar = null) {
+    characterAvatar = characterAvatar ?? this_avatar;
+    if (!charactersStore.get(characterAvatar)) return [];
 
     const response = await fetch('/api/characters/chats', {
         method: 'POST',
-        body: JSON.stringify({ avatar_url: characters[characterId].avatar }),
+        body: JSON.stringify({ avatar_url: characterAvatar }),
         headers: getRequestHeaders(),
     });
 
@@ -10794,17 +10794,17 @@ export async function doNewChat({ deleteCurrentChat = false } = {}) {
 /**
  * Renames a group or character chat.
  * @param {object} param Parameters for renaming chat
- * @param {string} [param.characterId] Character ID to rename chat for
+ * @param {string} [param.characterAvatar] Character avatar (identity) to rename chat for
  * @param {string} [param.groupId] Group ID to rename chat for
  * @param {string} param.oldFileName Old name of the chat (no JSONL extension)
  * @param {string} param.newFileName New name for the chat (no JSONL extension)
  * @param {boolean} [param.loader=true] Whether to show loader during the operation
  */
-export async function renameGroupOrCharacterChat({ characterId, groupId, oldFileName, newFileName, loader: showLoader }) {
+export async function renameGroupOrCharacterChat({ characterAvatar, groupId, oldFileName, newFileName, loader: showLoader }) {
     const currentChatId = getCurrentChatId();
     const body = {
         is_group: !!groupId,
-        avatar_url: characters[characterId]?.avatar,
+        avatar_url: characterAvatar,
         original_file: `${oldFileName}.jsonl`,
         renamed_file: `${newFileName.trim()}.jsonl`,
     };
@@ -10848,9 +10848,9 @@ export async function renameGroupOrCharacterChat({ characterId, groupId, oldFile
 
         if (groupId) {
             await renameGroupChat(groupId, oldFileName, newFileName);
-        } else if (characterId !== undefined && String(characterId) === String(this_chid) && characters[characterId]?.chat === oldFileName) {
-            charactersStore.update(characters[characterId].avatar, { chat: newFileName });
-            $('#selected_chat_pole').val(characters[characterId].chat);
+        } else if (characterAvatar !== undefined && characterAvatar === this_avatar && charactersStore.get(characterAvatar)?.chat === oldFileName) {
+            charactersStore.update(characterAvatar, { chat: newFileName });
+            $('#selected_chat_pole').val(charactersStore.get(characterAvatar).chat);
             await createOrEditCharacter();
         }
 
@@ -10875,7 +10875,7 @@ export async function renameGroupOrCharacterChat({ characterId, groupId, oldFile
  */
 export async function renameChat(oldFileName, newName) {
     return await renameGroupOrCharacterChat({
-        characterId: this_chid,
+        characterAvatar: this_avatar,
         groupId: selected_group,
         oldFileName: oldFileName,
         newFileName: newName,
@@ -11003,7 +11003,7 @@ export async function deleteCharacter(characterKey, { deleteChats = true } = {})
         }
 
         const chid = characters.indexOf(character);
-        const pastChats = await getPastCharacterChats(chid);
+        const pastChats = await getPastCharacterChats(character.avatar);
 
         const msg = { avatar_url: character.avatar, delete_chats: deleteChats };
 
