@@ -267,6 +267,42 @@ async function addMissingPersonas(avatarsList) {
 }
 
 /**
+ * Registers the personaStore.onChange subscriber that redraws the persona list after a title/name edit -
+ * consumer-side half of the personas migration (mutation side landed in fffdc22da..d04552a8c), same pattern as
+ * charactersStore's fuse-index subscriber (595d66e02) and groupsStore's member-list subscriber (cd6992095).
+ *
+ * Deliberately narrow: only fires on `updated` changes whose patch touches `title` or `name` - the two fields
+ * edited by editPersonaTitle() and renamePersona(), the only two call sites among the ~17 getUserAvatars()
+ * callers in this file that are a single personaStore mutation immediately followed by a single redraw, with
+ * no other mutation or redraw in between. Everywhere else was left on its manual call:
+ * - getUserAvatars() itself (via addMissingPersonas()) can call personaStore.create() mid-render for personas
+ *   missing a settings record - a `created`-filtered subscriber would refire while the outer call is still
+ *   running (addMissingPersonas() creates while getUserAvatars() is mid-fetch/render), a genuine re-entrant
+ *   mess. That rules out every create-then-redraw site here (convertCharacterToPersona, duplicatePersona,
+ *   createPersonaCallback, migrateNonPersonaUser, the ambiguous create-or-update branch in
+ *   convertCharacterToPersona) - not just the ones that are unambiguously `created`.
+ * - updatePersonaCallback (slash-command persona-update) and onPersonasRestoreInput (backup-restore import)
+ *   each do several personaStore mutations - some of which do touch `title`/`name` - before their own single
+ *   manual redraw at the end. This subscriber's field filter can't tell those mutations apart from
+ *   editPersonaTitle's/renamePersona's, so it *will* also fire mid-sequence there, on top of their existing
+ *   manual call. That's a known, accepted trade-off (a few redundant redraws, not incorrect data) rather than
+ *   the reentrancy risk above - flagging it here since it's a real interaction, not a hypothetical one.
+ * - toggleDefaultPersona's redraw follows a power_user.default_persona write, not a personaStore mutation, so
+ *   no personaStore change ever fires for it - nothing to subscribe to.
+ */
+function registerPersonaListRedraw() {
+    personaStore.onChange((change) => {
+        if (change.op !== 'updated') {
+            return;
+        }
+        if (!Object.hasOwn(change.patch, 'title') && !Object.hasOwn(change.patch, 'name')) {
+            return;
+        }
+        getUserAvatars(true, change.id).catch(err => console.error('Failed to redraw persona list after change:', err));
+    });
+}
+
+/**
  * Gets a list of user avatars.
  * @param {boolean} doRender Whether to render the list
  * @param {string} openPageAt Item to be opened at
@@ -845,17 +881,17 @@ async function editPersonaTitle(popup, avatarId, currentTitle) {
 
     if (!newTitle && currentTitle) {
         console.log(`Removed persona title for ${avatarId}`);
+        // List redraw is handled by the personaStore.onChange subscriber (see registerPersonaListRedraw()).
         personaStore.update(avatarId, { title: '' });
-        await getUserAvatars(true, avatarId);
         saveSettingsDebounced();
         await eventSource.emit(event_types.PERSONA_UPDATED, avatarId);
         return;
     }
 
     if (newTitle !== currentTitle) {
+        // List redraw is handled by the personaStore.onChange subscriber (see registerPersonaListRedraw()).
         personaStore.update(avatarId, { title: newTitle });
         console.log(`Updated persona title for ${avatarId} to ${newTitle}`);
-        await getUserAvatars(true, avatarId);
         saveSettingsDebounced();
         await eventSource.emit(event_types.PERSONA_UPDATED, avatarId);
         return;
@@ -885,6 +921,7 @@ async function renamePersona(avatarId) {
         return false;
     }
 
+    // List redraw is handled by the personaStore.onChange subscriber (see registerPersonaListRedraw()).
     personaStore.update(avatarId, { name: newName });
     console.log(`Renamed persona ${avatarId} to ${newName}`);
 
@@ -894,7 +931,6 @@ async function renamePersona(avatarId) {
 
     saveSettingsDebounced();
     await eventSource.emit(event_types.PERSONA_RENAMED, { avatarId, oldName: currentName, newName });
-    await getUserAvatars(true, avatarId);
     updatePersonaUIStates();
     setPersonaDescription();
     return true;
@@ -2936,6 +2972,7 @@ function registerPersonaSlashCommands() {
  * This is called during the initialization of the page.
  */
 export async function initPersonas() {
+    registerPersonaListRedraw();
     await migrateNonPersonaUser();
     registerPersonaSlashCommands();
     $('#persona_delete_button').on('click', deleteUserAvatar);
