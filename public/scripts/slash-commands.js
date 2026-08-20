@@ -4804,7 +4804,13 @@ async function unhideMessageCallback(args, value) {
  * @returns {void}
  */
 function performGroupMemberAction(chid, action) {
-    const memberSelector = `.group_member[data-chid="${chid}"]`;
+    // Resolve the row by avatar (the stable id) rather than data-chid - chid here is freshly resolved by
+    // findGroupMemberId() at call time, but the row's own data-chid attribute was baked in at whatever time
+    // the group member list last rendered, so the two can mismatch if the array reordered in between.
+    const avatar = characters[chid]?.avatar;
+    const memberSelector = avatar
+        ? `.group_member[data-avatar="${CSS.escape(avatar)}"]`
+        : `.group_member[data-chid="${chid}"]`;
     // Do not optimize. Paginator gets recreated on every action
     const paginationSelector = '#rm_group_members_pagination';
     const pageSizeSelector = '#rm_group_members_pagination select';
