@@ -8113,7 +8113,7 @@ export async function getSettings(initLoaderHandle = null) {
         applyPowerUserSettings();
 
         // Load character tags
-        loadTagsSettings(settings);
+        await loadTagsSettings(settings);
 
         // Load background
         loadBackgroundSettings(settings);
@@ -8226,8 +8226,6 @@ export async function saveSettings(loopCounter = 0) {
         horde_settings: horde_settings,
         power_user: power_user,
         extension_settings: extension_settings,
-        tags: tags,
-        tag_map: tag_map,
         nai_settings: nai_settings,
         kai_settings: kai_settings,
         oai_settings: oai_settings,
