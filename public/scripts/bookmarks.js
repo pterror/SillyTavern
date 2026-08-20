@@ -1,5 +1,5 @@
 import {
-    characters,
+    getCurrentCharacter,
     saveChat,
     system_message_types,
     syncSwipeToMes,
@@ -64,7 +64,7 @@ async function getExistingChatNames() {
         return [];
     }
 
-    const character = characters[this_chid];
+    const character = getCurrentCharacter();
     if (!character) {
         return [];
     }
@@ -117,9 +117,9 @@ function getMainChatName() {
         } else if (selected_group) {
             // groups didn't support bookmarks before chat metadata was introduced
             return null;
-        } else if (characters[this_chid].chat && characters[this_chid].chat.includes(bookmarkNameToken)) {
-            const tokenIndex = characters[this_chid].chat.lastIndexOf(bookmarkNameToken);
-            chat_metadata.main_chat = characters[this_chid].chat.substring(0, tokenIndex).trim();
+        } else if (getCurrentCharacter().chat && getCurrentCharacter().chat.includes(bookmarkNameToken)) {
+            const tokenIndex = getCurrentCharacter().chat.lastIndexOf(bookmarkNameToken);
+            chat_metadata.main_chat = getCurrentCharacter().chat.substring(0, tokenIndex).trim();
             return chat_metadata.main_chat;
         }
     }
@@ -138,7 +138,7 @@ export function showBookmarksButtons() {
             // In bookmark chat
             $('#option_back_to_main').show();
             $('#option_new_bookmark').show();
-        } else if (!selected_group && !characters[this_chid].chat) {
+        } else if (!selected_group && !getCurrentCharacter().chat) {
             // No chat recorded on character
             $('#option_back_to_main').hide();
             $('#option_new_bookmark').hide();
@@ -279,7 +279,7 @@ export async function createNewBookmark(mesId, { forceName = null } = {}) {
         return null;
     }
 
-    const mainChat = selected_group ? groups?.find(x => x.id == selected_group)?.chat_id : characters[this_chid].chat;
+    const mainChat = selected_group ? groups?.find(x => x.id == selected_group)?.chat_id : getCurrentCharacter().chat;
     // Mint a fresh integrity slug so the checkpoint is distinguishable from its parent (#5942)
     const newMetadata = { main_chat: mainChat, integrity: uuidv4() };
     await saveItemizedPrompts(name);
@@ -344,7 +344,7 @@ export async function convertSoloToGroupChat() {
         return;
     }
 
-    const character = characters[this_chid];
+    const character = getCurrentCharacter();
 
     // Populate group required fields
     const name = getUniqueName(`Group: ${character.name}`, y => groups.findIndex(x => x.name === y) !== -1);

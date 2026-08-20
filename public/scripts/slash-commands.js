@@ -61,6 +61,7 @@ import {
     system_avatar,
     system_message_types,
     this_chid,
+    getCurrentCharacter,
     updateMessageElement,
     updateSwipeCounter,
 } from '../script.js';
@@ -5303,11 +5304,11 @@ async function updateCharacterCallback(args) {
         characterIndex = String(characters.indexOf(character));
     } else {
         // Use currently selected character
-        if (this_chid === undefined || !characters[this_chid]) {
+        if (this_chid === undefined || !getCurrentCharacter()) {
             toastr.warning(t`No character selected and no char argument provided`);
             return '';
         }
-        character = characters[this_chid];
+        character = getCurrentCharacter();
         characterIndex = this_chid;
     }
 
@@ -5508,11 +5509,11 @@ async function getCharacterDataCallback(args) {
         }
     } else {
         // Use currently selected character
-        if (this_chid === undefined || !characters[this_chid]) {
+        if (this_chid === undefined || !getCurrentCharacter()) {
             toastr.warning(t`No character selected and no char argument provided`);
             return '';
         }
-        character = characters[this_chid];
+        character = getCurrentCharacter();
     }
 
     // If a specific field is requested
@@ -5580,11 +5581,11 @@ async function deleteCharacterCallback(args) {
         }
     } else {
         // Use currently selected character
-        if (this_chid === undefined || !characters[this_chid]) {
+        if (this_chid === undefined || !getCurrentCharacter()) {
             toastr.warning(t`No character selected and no char argument provided`);
             return 'false';
         }
-        character = characters[this_chid];
+        character = getCurrentCharacter();
     }
 
     const deleteChats = isTrueBoolean(args.deleteChats);
@@ -5797,7 +5798,7 @@ export function validateArrayArg(arg, name, { allowUndefined = true } = {}) {
  */
 export function getNameAndAvatarForMessage(character, name = null) {
     const isNeutralCharacter = !character && name2 === neutralCharacterName && name === neutralCharacterName;
-    const currentChar = characters[this_chid];
+    const currentChar = getCurrentCharacter();
 
     let force_avatar, original_avatar;
     if (character?.avatar === currentChar?.avatar || isNeutralCharacter) {
