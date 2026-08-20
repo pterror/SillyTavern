@@ -901,6 +901,25 @@ export function resultCheckStatus() {
 }
 
 /**
+ * Switches the currently selected character to the one with the given avatar (stable id). Prefer this over
+ * selectCharacterById() when the caller only has an avatar handy (e.g. DOM data-avatar) - it resolves the
+ * current array index itself at call time instead of trusting a possibly-stale index read earlier, which
+ * matters for anything read from the DOM since the character list can reorder between a row being rendered
+ * and the row being clicked.
+ * @param {string} avatar The avatar (stable id) of the character to switch to.
+ * @param {object} [options] Options for the switch.
+ * @param {boolean} [options.switchMenu=true] Whether to switch the right menu to the character edit menu if the character is already selected.
+ * @returns {Promise<void>} A promise that resolves when the character is switched.
+ */
+export async function selectCharacterByAvatar(avatar, { switchMenu = true } = {}) {
+    const id = characters.findIndex(x => x.avatar === avatar);
+    if (id === -1) {
+        return;
+    }
+    await selectCharacterById(id, { switchMenu });
+}
+
+/**
  * Switches the currently selected character to the one with the given ID. (character index, not the character key!)
  *
  * If the character ID doesn't exist, if the chat is being saved, or if a group is being generated, this function does nothing.
@@ -981,7 +1000,7 @@ function getCharacterBlock(item, id) {
     }
     // Populate the template
     const template = $('#character_template .character_select').clone();
-    template.attr({ 'data-chid': id, 'id': `CharID${id}` });
+    template.attr({ 'data-chid': id, 'data-avatar': item.avatar, 'id': `CharID${id}` });
     template.find('img').attr('src', this_avatar).attr('alt', item.name);
     template.find('.avatar').attr('title', `[Character] ${item.name}\nFile: ${item.avatar}`);
     template.find('.ch_name').text(item.name).attr('title', `[Character] ${item.name}`);
@@ -7663,6 +7682,9 @@ export function buildAvatarList(block, entities, { templateId = 'inline_avatar_t
 
         avatarTemplate.attr('data-type', entity.type);
         avatarTemplate.attr('data-chid', id);
+        if (entity.type === 'character') {
+            avatarTemplate.attr('data-avatar', entity.item.avatar);
+        }
         avatarTemplate.find('img').attr('src', this_avatar).attr('alt', entity.item.name);
         avatarTemplate.attr('title', `[Character] ${entity.item.name}\nFile: ${entity.item.avatar}`);
         if (highlightFavs) {
@@ -11306,8 +11328,17 @@ jQuery(async function () {
     });
 
     $(document).on('click', '.character_select', async function () {
-        const id = Number($(this).attr('data-chid'));
-        await selectCharacterById(id);
+        // Origin point of character selection - resolve by avatar (the stable id), not the data-chid index,
+        // since the index baked into this row at render time can be stale by the time it's clicked (the
+        // character list can reorder in between). Falls back to data-chid for any row that doesn't carry
+        // data-avatar (defensive only - all current character-row templates set it).
+        const avatar = $(this).attr('data-avatar');
+        if (avatar) {
+            await selectCharacterByAvatar(avatar);
+        } else {
+            const id = Number($(this).attr('data-chid'));
+            await selectCharacterById(id);
+        }
     });
 
     $(document).on('click', '.bogus_folder_select', function () {
