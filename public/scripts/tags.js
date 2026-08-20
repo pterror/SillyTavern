@@ -814,10 +814,14 @@ export function getTagKeyForEntityElement(element) {
     }
     // Start with the given element and traverse up the DOM tree
     while (element.length && element.parent().length) {
+        // Prefer data-avatar (the stable id) over data-chid (a positional index that can go stale between
+        // render and read) - getTagKeyForEntity() resolves avatar strings directly. Falls back to data-chid
+        // for any element that somehow lacks data-avatar (defensive only).
+        const avatar = element.attr('data-avatar');
         const grid = element.attr('data-grid');
         const chid = element.attr('data-chid');
-        if (grid || chid) {
-            const id = grid || chid;
+        if (avatar || grid || chid) {
+            const id = avatar || grid || chid;
             return getTagKeyForEntity(id);
         }
 
@@ -974,9 +978,12 @@ function redrawAfterTagChange(tagIds, affectedKeys, usageFlips = new Map()) {
  */
 function updateEntityRowTags(keys) {
     for (const key of keys) {
-        const charIndex = characters.findIndex(c => c.avatar === key);
-        const $row = charIndex !== -1
-            ? $(`#rm_print_characters_block .character_select[data-chid="${charIndex}"]`)
+        // Match character rows by data-avatar (the stable id) directly, rather than resolving a charIndex and
+        // matching data-chid - the row's data-chid was baked in at whatever time it last rendered, which can
+        // mismatch a freshly-computed index if the characters array reordered since.
+        const isCharacter = characters.some(c => c.avatar === key);
+        const $row = isCharacter
+            ? $(`#rm_print_characters_block .character_select[data-avatar="${CSS.escape(String(key))}"]`)
             : $(`#rm_print_characters_block .group_select[data-grid="${CSS.escape(String(key))}"]`);
 
         if (!$row.length) {
