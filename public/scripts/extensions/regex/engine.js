@@ -1,4 +1,4 @@
-import { characters, saveSettingsDebounced, substituteParams, substituteParamsExtended, this_chid } from '../../../script.js';
+import { getCurrentCharacter, saveSettingsDebounced, substituteParams, substituteParamsExtended, this_chid } from '../../../script.js';
 import { extension_settings, writeExtensionField } from '../../extensions.js';
 import { getPresetManager } from '../../preset-manager.js';
 import { regexFromString } from '../../utils.js';
@@ -112,10 +112,10 @@ export function getScriptsByType(scriptType, { allowedOnly } = DEFAULT_GET_REGEX
         case SCRIPT_TYPES.GLOBAL:
             return extension_settings.regex ?? [];
         case SCRIPT_TYPES.SCOPED: {
-            if (allowedOnly && !extension_settings?.character_allowed_regex?.includes(characters?.[this_chid]?.avatar)) {
+            if (allowedOnly && !extension_settings?.character_allowed_regex?.includes(getCurrentCharacter()?.avatar)) {
                 return [];
             }
-            const scopedScripts = characters[this_chid]?.data?.extensions?.regex_scripts;
+            const scopedScripts = getCurrentCharacter()?.data?.extensions?.regex_scripts;
             return Array.isArray(scopedScripts) ? scopedScripts : [];
         }
         case SCRIPT_TYPES.PRESET: {

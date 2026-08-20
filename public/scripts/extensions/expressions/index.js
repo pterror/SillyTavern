@@ -1,6 +1,6 @@
 import { Fuse } from '../../../lib.js';
 
-import { characters, eventSource, event_types, generateQuietPrompt, generateRaw, getRequestHeaders, online_status, saveSettingsDebounced, substituteParams, substituteParamsExtended, system_message_types, this_chid } from '../../../script.js';
+import { eventSource, event_types, generateQuietPrompt, generateRaw, getCurrentCharacter, getRequestHeaders, online_status, saveSettingsDebounced, substituteParams, substituteParamsExtended, system_message_types } from '../../../script.js';
 import { dragElement, isMobile } from '../../RossAscends-mods.js';
 import { getContext, getApiUrl, modules, extension_settings, ModuleWorkerWrapper, doExtrasFetch, renderExtensionTemplateAsync } from '../../extensions.js';
 import { loadMovingUIState, performFuzzySearch, power_user } from '../../power-user.js';
@@ -1532,7 +1532,7 @@ function getLastExpression({ characterName = '' } = {}) {
     if (typeof characterName !== 'string') throw new Error('Character name must be a string');
 
     if (!characterName) {
-        characterName = characters[this_chid]?.avatar || '';
+        characterName = getCurrentCharacter()?.avatar || '';
     }
 
     const char = findChar({ name: characterName, quiet: true });

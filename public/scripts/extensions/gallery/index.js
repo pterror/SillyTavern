@@ -1,7 +1,7 @@
 import {
     eventSource,
     this_chid,
-    characters,
+    getCurrentCharacter,
     getRequestHeaders,
     event_types,
     animation_duration,
@@ -324,7 +324,7 @@ async function showCharGallery(deleteModeState = false) {
         deleteModeActive = deleteModeState;
         let url = selected_group || this_chid;
         if (!selected_group && this_chid !== undefined) {
-            url = getGalleryFolder(characters[this_chid]);
+            url = getGalleryFolder(getCurrentCharacter());
         }
 
         const items = await getGalleryItems(url);
@@ -786,7 +786,7 @@ async function listGalleryCommand(args) {
     try {
         let url = args.char ?? (args.group ? groups.find(it => it.name == args.group)?.id : null) ?? (selected_group || this_chid);
         if (!args.char && !args.group && !selected_group && this_chid !== undefined) {
-            url = getGalleryFolder(characters[this_chid]);
+            url = getGalleryFolder(getCurrentCharacter());
         }
 
         const items = await getGalleryItems(url);

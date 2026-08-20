@@ -1,4 +1,4 @@
-import { chat, chat_metadata, eventSource, event_types, getRequestHeaders, this_chid, characters } from '../../../script.js';
+import { chat, chat_metadata, eventSource, event_types, getCurrentCharacter, getRequestHeaders, this_chid } from '../../../script.js';
 import { extension_settings } from '../../extensions.js';
 import { QuickReplyApi } from './api/QuickReplyApi.js';
 import { AutoExecuteHandler } from './src/AutoExecuteHandler.js';
@@ -149,7 +149,7 @@ const handleCharChange = () => {
 
     // If no character is loaded, there's nothing more to do.
     /** @type {Character} */
-    const character = characters[this_chid];
+    const character = getCurrentCharacter();
     if (!character || selected_group) {
         return;
     }
