@@ -9,10 +9,10 @@ export const PUBLIC_DIRECTORIES = {
 export const SETTINGS_FILE = 'settings.json';
 
 /**
- * Mirror of `tags`/`tag_map` written by the tagsStore/tagMapStore onChange subscriber (see tags.js chunk H),
- * in addition to (not instead of) the copy that still lives in settings.json - the settings.json field, the
- * client's load path, and the settings-save payload are all untouched for now, so this file is purely an
- * additive mirror until a later chunk repoints the load side and removes the settings.json field.
+ * Holds `tags`/`tag_map` - the source of truth as of the tags.js load/save cutover (loadTagsSettings/
+ * saveTagsDebounced). Written by the tagsStore/tagMapStore onChange subscriber and read on load; settings.json
+ * no longer carries these fields going forward (see restoreUserTagsForSnapshot in src/endpoints/tags.js for how
+ * an old settings.json snapshot that still has them embedded gets reconciled back into this file on restore).
  */
 export const TAGS_FILE = 'tags.json';
 
