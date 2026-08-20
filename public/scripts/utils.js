@@ -2669,25 +2669,33 @@ export async function showFontAwesomePicker(customList = null) {
  * @property {string} name - The name of the persona
  */
 export function findPersona({ name = null, allowAvatar = true, insensitive = true, preferCurrentPersona = true, quiet = false } = {}) {
-    /** @type {PersonaViewModel[]} */
-    const personas = Object.entries(personaStore.getAll()).map(([avatar, record]) => ({ avatar, name: record.name }));
+    /** @type {(avatar: string, record: { name: string }) => PersonaViewModel} */
+    const toViewModel = (avatar, record) => ({ avatar, name: record.name });
     const matches = (/** @type {PersonaViewModel} */ persona) => !name || (allowAvatar && persona.avatar === name) || (insensitive ? equalsIgnoreCaseAndAccents(persona.name, name) : persona.name === name);
 
     // If we have a current persona and prefer it, return that if it matches
-    const currentPersona = personas.find(a => a.avatar === user_avatar);
-    if (preferCurrentPersona && currentPersona && matches(currentPersona)) {
-        return currentPersona;
+    const currentRecord = personaStore.get(user_avatar);
+    if (preferCurrentPersona && currentRecord) {
+        const currentPersona = toViewModel(user_avatar, currentRecord);
+        if (matches(currentPersona)) {
+            return currentPersona;
+        }
     }
 
     // If allowAvatar is true, search by avatar first
     if (allowAvatar && name) {
-        const personaByAvatar = personas.find(a => a.avatar === name);
-        if (personaByAvatar && matches(personaByAvatar)) {
-            return personaByAvatar;
+        const recordByAvatar = personaStore.get(name);
+        if (recordByAvatar) {
+            const personaByAvatar = toViewModel(name, recordByAvatar);
+            if (matches(personaByAvatar)) {
+                return personaByAvatar;
+            }
         }
     }
 
-    // Search for matching personas by name
+    // Search for matching personas by name - the store is keyed by avatar id, not name, so this still needs a scan
+    /** @type {PersonaViewModel[]} */
+    const personas = Object.entries(personaStore.getAll()).map(([avatar, record]) => toViewModel(avatar, record));
     const matchingPersonas = personas.filter(a => matches(a));
     if (matchingPersonas.length > 1) {
         if (!quiet) toastr.warning(t`Multiple personas found for given conditions.`);
