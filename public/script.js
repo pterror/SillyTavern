@@ -6115,7 +6115,8 @@ export async function duplicateCharacter({ avatar = null, silent = false } = {})
     toastr.success(t`Character Duplicated`);
     const data = await response.json();
     await eventSource.emit(event_types.CHARACTER_DUPLICATED, { oldAvatar: targetAvatar, newAvatar: data.path });
-    await getCharacters();
+    await getCharacters({ silent: true });
+    charactersStore.reportCreated(data.path);
 
     return data.path;
 }
@@ -7288,7 +7289,8 @@ export async function renameCharacter(name = null, { silent = false, renameChats
             // Unload current character
             setCharacterId(undefined);
             // Reload characters list
-            await getCharacters();
+            await getCharacters({ silent: true });
+            charactersStore.reportRenamed(oldAvatar, newAvatar);
 
             // Find newly renamed character
             const newChId = characters.findIndex(c => c.avatar == data.avatar);
@@ -9895,7 +9897,8 @@ export async function createOrEditCharacter(e) {
 
             console.log(`new avatar id: ${avatarId}`);
             createTagMapFromList('#tagList', avatarId);
-            await getCharacters();
+            await getCharacters({ silent: true });
+            charactersStore.reportCreated(avatarId);
 
             select_rm_info('char_create', avatarId, oldSelectedChar);
 
@@ -10887,6 +10890,8 @@ export async function deleteCharacter(characterKey, { deleteChats = true } = {})
     }
 
     let deleted = false;
+    /** @type {{avatar: string, entity: object}[]} */
+    const removedCharacters = [];
 
     for (const key of characterKey) {
         const character = characters.find(x => x.avatar == key);
@@ -10926,10 +10931,11 @@ export async function deleteCharacter(characterKey, { deleteChats = true } = {})
         }
 
         await eventSource.emit(event_types.CHARACTER_DELETED, { id: chid, character: character });
+        removedCharacters.push({ avatar: character.avatar, entity: character });
         deleted = true;
     }
 
-    await removeCharacterFromUI();
+    await removeCharacterFromUI(removedCharacters);
     return deleted;
 }
 
@@ -10939,15 +10945,22 @@ export async function deleteCharacter(characterKey, { deleteChats = true } = {})
  * character ID, resetting characters array and chat metadata, deselecting character's tab
  * panel, removing character name from navigation tabs, clearing chat, fetching updated list of characters.
  * It also ensures to save the settings after all the operations.
+ * @param {{avatar: string, entity: object}[]} [removedCharacters] - the characters that were just deleted
+ * (avatar + the entity object as it existed before removal), so charactersStore can report exactly what
+ * happened instead of a generic reset. Empty/omitted when nothing was actually deleted (deleteCharacter's own
+ * "not found, skipping" case can reach here with zero successful deletions).
  */
-async function removeCharacterFromUI() {
+async function removeCharacterFromUI(removedCharacters = []) {
     preserveNeutralChat();
     await clearChat();
     $('#character_cross').trigger('click');
     resetChatState();
     $(document.getElementById('rm_button_selected_ch')).children('h2').text('');
     restoreNeutralChat();
-    await getCharacters();
+    await getCharacters({ silent: removedCharacters.length > 0 });
+    for (const { avatar, entity } of removedCharacters) {
+        charactersStore.reportRemoved(avatar, entity);
+    }
     await printMessages();
     saveSettingsDebounced();
     await eventSource.emit(event_types.CHAT_CHANGED, getCurrentChatId());
