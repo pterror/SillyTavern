@@ -125,10 +125,13 @@ let groups = [];
  * with `tags` during settings load - so a store built against the old array reference would silently go
  * stale. `rebuildGroupsStore()` reconstructs it (and re-registers the fuse-index-invalidation subscriber,
  * since a fresh store instance has no listeners of its own) every time getGroups() reassigns `groups`.
- * Not exported - purely internal to this file for now, same as tagsStore/tagMapStore in tags.js.
+ * Exported (unlike tagsStore/tagMapStore, which stay internal to tags.js) since call sites in other files
+ * (script.js, tags.js, welcome-screen.js, ...) need O(1) id lookups against groups too. `let` rather than
+ * `const` because rebuildGroupsStore() reassigns it to a fresh instance on every `groups` refetch - importers
+ * still see the current value since ESM bindings for exported `let`s are live, not a one-time copy.
  * @type {EntityStore<Group>}
  */
-let groupsStore = new EntityStore(groups, g => g.id);
+export let groupsStore = new EntityStore(groups, g => g.id);
 
 /**
  * Reconstructs `groupsStore` to wrap the current `groups` array reference, and (re)registers the
