@@ -1,6 +1,6 @@
 import { Fuse } from '../../../lib.js';
 
-import { eventSource, event_types, generateQuietPrompt, generateRaw, getCurrentCharacter, getRequestHeaders, online_status, saveSettingsDebounced, substituteParams, substituteParamsExtended, system_message_types } from '../../../script.js';
+import { charactersStore, eventSource, event_types, generateQuietPrompt, generateRaw, getCurrentCharacter, getRequestHeaders, online_status, saveSettingsDebounced, substituteParams, substituteParamsExtended, system_message_types } from '../../../script.js';
 import { dragElement, isMobile } from '../../RossAscends-mods.js';
 import { getContext, getApiUrl, modules, extension_settings, ModuleWorkerWrapper, doExtrasFetch, renderExtensionTemplateAsync } from '../../extensions.js';
 import { loadMovingUIState, performFuzzySearch, power_user } from '../../power-user.js';
@@ -214,7 +214,7 @@ async function visualNovelSetCharacterSprites(vnContainer, spriteFolderName, exp
             continue;
         }
 
-        const character = context.characters.find(x => x.avatar == avatar);
+        const character = charactersStore.get(avatar);
         if (!character) {
             continue;
         }
