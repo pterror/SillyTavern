@@ -13,11 +13,11 @@ export class MockServer {
      * Creates an instance of MockServer.
      * @param {object} [param] Options object.
      * @param {string} [param.host] The hostname or IP address to bind the server to.
-     * @param {number} [param.port] The port number to listen on.
+     * @param {number} [param.port] The port number to listen on. Defaults to 0 (OS-assigned free port).
      */
     constructor({ host, port } = {}) {
         this.host = host ?? '127.0.0.1';
-        this.port = port ?? 3000;
+        this.port = port ?? 0;
     }
 
     /**
@@ -75,6 +75,10 @@ export class MockServer {
             });
 
             this.server.listen(this.port, this.host, () => {
+                const address = this.server.address();
+                if (address && typeof address === 'object') {
+                    this.port = address.port;
+                }
                 resolve();
             });
         });
