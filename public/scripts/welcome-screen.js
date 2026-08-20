@@ -208,7 +208,7 @@ export function getPermanentAssistantAvatar() {
         return defaultAssistantAvatar;
     }
 
-    const character = characters.find(x => x.avatar === assistantAvatar);
+    const character = charactersStore.get(assistantAvatar);
     if (character === undefined) {
         accountStorage.removeItem(assistantAvatarKey);
         return defaultAssistantAvatar;
@@ -275,7 +275,7 @@ function getAssistantGreeting(character) {
 
 function sendAssistantMessage() {
     const currentAssistantAvatar = getPermanentAssistantAvatar();
-    const character = characters.find(x => x.avatar === currentAssistantAvatar);
+    const character = charactersStore.get(currentAssistantAvatar);
     const name = character ? character.name : neutralCharacterName;
     const avatar = character ? getThumbnailUrl('avatar', character.avatar) : system_avatar;
     const greeting = getAssistantGreeting(character);
@@ -472,7 +472,9 @@ async function sendWelcomePanel(chats, expand = false) {
  * @param {string} fileName Chat file name
  */
 async function openRecentCharacterChat(avatarId, fileName) {
-    const characterId = characters.findIndex(x => x.avatar === avatarId);
+    // selectCharacterById() needs the numeric position in `characters`, not the entity itself.
+    const character = charactersStore.get(avatarId);
+    const characterId = character ? characters.indexOf(character) : -1;
     if (characterId === -1) {
         console.error(`Character not found for avatar ID: ${avatarId}`);
         return;
@@ -528,7 +530,9 @@ async function openRecentGroupChat(groupId, fileName) {
  * @param {string} fileName Chat file name
  */
 async function renameRecentCharacterChat(avatarId, fileName) {
-    const characterId = characters.findIndex(x => x.avatar === avatarId);
+    // updateRemoteChatName() below indexes into `characters` by position, so we need the numeric id.
+    const character = charactersStore.get(avatarId);
+    const characterId = character ? characters.indexOf(character) : -1;
     if (characterId === -1) {
         console.error(`Character not found for avatar ID: ${avatarId}`);
         return;
@@ -593,7 +597,9 @@ async function renameRecentGroupChat(groupId, fileName) {
  * @param {string} fileName Chat file name
  */
 async function deleteRecentCharacterChat(avatarId, fileName) {
-    const characterId = characters.findIndex(x => x.avatar === avatarId);
+    // deleteCharacterChatByName() below indexes into `characters` by position, so we need the numeric id.
+    const character = charactersStore.get(avatarId);
+    const characterId = character ? characters.indexOf(character) : -1;
     if (characterId === -1) {
         console.error(`Character not found for avatar ID: ${avatarId}`);
         return;
@@ -778,7 +784,7 @@ async function getRecentChats() {
     }
 
     const dataWithEntities = data
-        .map(chat => ({ chat, character: characters.find(x => x.avatar === chat.avatar), group: groups.find(x => x.id === chat.group) }))
+        .map(chat => ({ chat, character: charactersStore.get(chat.avatar), group: groups.find(x => x.id === chat.group) }))
         .filter(t => t.character || t.group)
         .sort((a, b) => {
             const isAPinned = PinnedChatsManager.isPinned(a.chat);
@@ -814,7 +820,9 @@ async function getRecentChats() {
 
 export async function openPermanentAssistantChat({ tryCreate = true, created = false } = {}) {
     const avatar = getPermanentAssistantAvatar();
-    const characterId = characters.findIndex(x => x.avatar === avatar);
+    // selectCharacterById() below needs the numeric position in `characters`, not the entity itself.
+    const character = charactersStore.get(avatar);
+    const characterId = character ? characters.indexOf(character) : -1;
     if (characterId === -1) {
         if (!tryCreate) {
             console.error(`Character not found for avatar ID: ${avatar}. Cannot create.`);
@@ -878,7 +886,9 @@ async function createPermanentAssistant() {
 
 export async function openPermanentAssistantCard() {
     const avatar = getPermanentAssistantAvatar();
-    const characterId = characters.findIndex(x => x.avatar === avatar);
+    // selectCharacterById() below needs the numeric position in `characters`, not the entity itself.
+    const character = charactersStore.get(avatar);
+    const characterId = character ? characters.indexOf(character) : -1;
     if (characterId === -1) {
         toastr.info(t`Assistant not found. Try sending a chat message.`);
         return;
