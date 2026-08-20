@@ -21,7 +21,7 @@ import {
     printCharactersDebounced,
     renameGroupOrCharacterChat,
     saveSettingsDebounced,
-    selectCharacterById,
+    selectCharacterByAvatar,
     setActiveCharacter,
     setActiveGroup,
     system_avatar,
@@ -472,16 +472,14 @@ async function sendWelcomePanel(chats, expand = false) {
  * @param {string} fileName Chat file name
  */
 async function openRecentCharacterChat(avatarId, fileName) {
-    // selectCharacterById() needs the numeric position in `characters`, not the entity itself.
     const character = charactersStore.get(avatarId);
-    const characterId = character ? characters.indexOf(character) : -1;
-    if (characterId === -1) {
+    if (!character) {
         console.error(`Character not found for avatar ID: ${avatarId}`);
         return;
     }
 
     try {
-        await selectCharacterById(characterId);
+        await selectCharacterByAvatar(avatarId);
         setActiveCharacter(avatarId);
         saveSettingsDebounced();
         const currentChatId = getCurrentChatId();
@@ -820,10 +818,8 @@ async function getRecentChats() {
 
 export async function openPermanentAssistantChat({ tryCreate = true, created = false } = {}) {
     const avatar = getPermanentAssistantAvatar();
-    // selectCharacterById() below needs the numeric position in `characters`, not the entity itself.
     const character = charactersStore.get(avatar);
-    const characterId = character ? characters.indexOf(character) : -1;
-    if (characterId === -1) {
+    if (!character) {
         if (!tryCreate) {
             console.error(`Character not found for avatar ID: ${avatar}. Cannot create.`);
             return;
@@ -841,7 +837,7 @@ export async function openPermanentAssistantChat({ tryCreate = true, created = f
     }
 
     try {
-        await selectCharacterById(characterId);
+        await selectCharacterByAvatar(avatar);
         if (!created) {
             await doNewChat({ deleteCurrentChat: false });
         }
@@ -886,15 +882,13 @@ async function createPermanentAssistant() {
 
 export async function openPermanentAssistantCard() {
     const avatar = getPermanentAssistantAvatar();
-    // selectCharacterById() below needs the numeric position in `characters`, not the entity itself.
     const character = charactersStore.get(avatar);
-    const characterId = character ? characters.indexOf(character) : -1;
-    if (characterId === -1) {
+    if (!character) {
         toastr.info(t`Assistant not found. Try sending a chat message.`);
         return;
     }
 
-    await selectCharacterById(characterId);
+    await selectCharacterByAvatar(avatar);
 }
 
 /**
