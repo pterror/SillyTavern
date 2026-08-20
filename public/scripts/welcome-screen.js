@@ -541,7 +541,7 @@ async function renameRecentCharacterChat(avatarId, fileName) {
             return;
         }
         await renameGroupOrCharacterChat({
-            characterId: String(characterId),
+            characterAvatar: avatarId,
             oldFileName: fileName,
             newFileName: newName,
             loader: false,
