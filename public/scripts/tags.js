@@ -19,7 +19,7 @@ import {
 } from '../script.js';
 import { FILTER_TYPES, FILTER_STATES, DEFAULT_FILTER_STATE, isFilterState, FilterHelper } from './filters.js';
 
-import { groupCandidatesFilter, groupMembersFilter, groups, selected_group } from './group-chats.js';
+import { groupCandidatesFilter, groupMembersFilter, groups, groupsStore, selected_group } from './group-chats.js';
 import { download, onlyUnique, parseJsonFile, uuidv4, getSortableDelay, flashHighlight, equalsIgnoreCaseAndAccents, includesIgnoreCaseAndAccents, removeFromArray, getFreeName, debounce, findChar, escapeHtml } from './utils.js';
 import { power_user, invalidateCharactersFuseIndex, invalidateGroupsFuseIndex, invalidateTagsFuseIndex } from './power-user.js';
 import { EntityStore, RelationStore } from './entity-store.js';
@@ -568,7 +568,7 @@ function isBogusFolder(tag) {
  */
 function getOpenBogusFolders() {
     return entitiesFilter.getFilterData(FILTER_TYPES.TAG)?.selected
-        .map(tagId => tags.find(x => x.id === tagId))
+        .map(tagId => tagsStore.get(tagId))
         .filter(isBogusFolder) ?? [];
 }
 
@@ -925,7 +925,7 @@ export function getTagKeyForEntityElement(element) {
 export function searchCharByName(charName, { suppressLogging = false } = {}) {
     const entity = charName
         ? (findChar({ name: charName }) || groups.find(x => equalsIgnoreCaseAndAccents(x.name, charName)))
-        : (selected_group ? groups.find(x => x.id == selected_group) : getCurrentCharacter());
+        : (selected_group ? groupsStore.get(selected_group) : getCurrentCharacter());
     const key = getTagKeyForEntity(entity);
     if (!key) {
         if (!suppressLogging) toastr.warning(`Character ${charName} not found.`);
@@ -1618,7 +1618,7 @@ function appendTagToList(listElement, tag, { removable = false, isFilter = false
 
 function onTagFilterClick(listElement) {
     const tagId = $(this).attr('id');
-    const existingTag = tags.find((tag) => tag.id === tagId);
+    const existingTag = tagsStore.get(tagId);
     const parent = $(this).parents('.tags');
 
     let state = toggleTagThreeState($(this));
@@ -1807,7 +1807,7 @@ function printTagFilters(type = tag_filter_type.character) {
     if (isGroupContext(type)) {
         // For group contexts, show all tags but mark ones without presence in current context as inactive
         // CAUTION: when called by openGroupById, the selected_group variable might not yet be updated
-        const currentGroup = selected_group ? groups.find(x => x.id == selected_group) : null;
+        const currentGroup = selected_group ? groupsStore.get(selected_group) : null;
         const visibleAvatars = getVisibleAvatarsForGroupContext(type, currentGroup);
 
         if (visibleAvatars.length > 0) {
@@ -2035,7 +2035,7 @@ function onTagRemoveClick(event) {
         return;
     }
 
-    const tag = tags.find(t => t.id === tagId);
+    const tag = tagsStore.get(tagId);
 
     // Optional, check for multiple character ids being present.
     const characterData = event.target.closest('#bulk_tags_div')?.dataset.characters;
@@ -2271,7 +2271,7 @@ async function onTagRestoreFileSelect(e) {
         }
 
         // Check against both existing id (direct match) and tag with the same name, which is not allowed.
-        let existingTag = tags.find(x => x.id === tag.id);
+        let existingTag = tagsStore.get(tag.id);
         if (existingTag && !overwrite) {
             warnings.push(`Tag '${tag.name}' with id ${tag.id} already exists.`);
             continue;
@@ -2543,7 +2543,7 @@ function updateDrawTagFolder(element, tag) {
 
 async function onTagDeleteClick() {
     const id = $(this).closest('.tag_view_item').attr('id');
-    const tag = tags.find(x => x.id === id);
+    const tag = tagsStore.get(id);
     const otherTags = sortTags(tags.filter(x => x.id !== id).map(x => ({ id: x.id, name: x.name })));
 
     const popupContent = $(await renderTemplateAsync('deleteTag', { otherTags }));
@@ -2619,7 +2619,7 @@ function onTagColorize(evt, setColor, cssProperty) {
     if (isDefaultColor) newColor = '';
 
     $(evt.target).closest('.tag_view_item').find('.tag_view_name').css(cssProperty, newColor);
-    const tag = tags.find(x => x.id === id);
+    const tag = tagsStore.get(id);
     setColor(tag, newColor);
     saveSettingsDebounced();
 
