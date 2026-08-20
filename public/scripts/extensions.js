@@ -2062,16 +2062,16 @@ export const UNSET_VALUE = '__@@UNSET@@__';
 
 /**
  * Writes a field to the character's data extensions object.
- * @param {number|string} characterId Index in the character array
+ * @param {string} characterAvatar Avatar (identity) of the character
  * @param {string} key Field name
  * @param {any} value Field value
  * @returns {Promise<void>} When the field is written
  */
-export async function writeExtensionField(characterId, key, value) {
+export async function writeExtensionField(characterAvatar, key, value) {
     const context = getContext();
-    const character = context.characters[characterId];
+    const character = context.characters.find(c => c.avatar === characterAvatar);
     if (!character) {
-        console.warn('Character not found', characterId);
+        console.warn('Character not found', characterAvatar);
         return;
     }
     const extensionPath = `data.extensions.${key}`;
@@ -2094,7 +2094,7 @@ export async function writeExtensionField(characterId, key, value) {
         character.json_data = JSON.stringify(jsonData);
 
         // Make sure the data doesn't get lost when saving the current character
-        if (Number(characterId) === Number(context.characterId)) {
+        if (characterAvatar === context.characterAvatar) {
             $('#character_json_data').val(character.json_data);
         }
     }
