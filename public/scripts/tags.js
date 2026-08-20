@@ -11,7 +11,9 @@ import {
     eventSource,
     event_types,
     DEFAULT_PRINT_TIMEOUT,
+    DEFAULT_SAVE_EDIT_TIMEOUT,
     printCharacters,
+    getRequestHeaders,
 } from '../script.js';
 import { FILTER_TYPES, FILTER_STATES, DEFAULT_FILTER_STATE, isFilterState, FilterHelper } from './filters.js';
 
@@ -404,7 +406,40 @@ function rebuildTagStores() {
         invalidateCharactersFuseIndex();
         invalidateGroupsFuseIndex();
     });
+
+    // Same "one subscriber instead of scattered call sites" shape as the Fuse-invalidation subscribers above,
+    // for the tags.json mirror save (see saveTagsDebounced() / TAGS_FILE in constants.js): every mutation site
+    // in this file keeps calling its store op exactly as before and doesn't know this save exists. Registered
+    // on *both* stores since either one changing means the pair being persisted together is now stale.
+    tagsStore.onChange(saveTagsDebounced);
+    tagMapStore.onChange(saveTagsDebounced);
 }
+
+/**
+ * Debounced save of `{ tags, tag_map }` to the server's tags.json mirror (POST /api/tags/save). This is
+ * additive, not a replacement: `saveSettingsDebounced()` call sites throughout this file are untouched and
+ * settings.json still carries its own `tags`/`tag_map` fields (see the TAGS_FILE comment in constants.js) -
+ * this only exists so the eventual load-side repoint has a real, continuously up-to-date file to read from.
+ * Deliberately a plain debounce (not tied to loopCounter/retry logic like saveSettingsDebounced) since a lost
+ * save here just means the mirror is briefly stale, not a risk to the settings.json copy that's still the
+ * actual source of truth.
+ */
+const saveTagsDebounced = debounce(async () => {
+    try {
+        const response = await fetch('/api/tags/save', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ tags, tag_map }),
+            cache: 'no-cache',
+        });
+
+        if (!response.ok) {
+            throw new Error(`Failed to save tags: ${response.statusText}`);
+        }
+    } catch (error) {
+        console.error('Error saving tags:', error);
+    }
+}, DEFAULT_SAVE_EDIT_TIMEOUT);
 
 /**
  * Forces `tagMapStore`'s usage-count index to be recomputed from the current contents of `tag_map`. Needed
