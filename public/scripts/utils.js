@@ -7,7 +7,7 @@ import {
 } from '../lib.js';
 
 import { getContext } from './extensions.js';
-import { animation_duration, characters, getRequestHeaders, processDroppedFiles, this_chid, user_avatar } from '../script.js';
+import { animation_duration, characters, getCurrentCharacter, getRequestHeaders, processDroppedFiles, user_avatar } from '../script.js';
 import { isMobile } from './RossAscends-mods.js';
 import { collapseNewlines, power_user, personaStore } from './power-user.js';
 import { debounce_timeout } from './constants.js';
@@ -2719,7 +2719,7 @@ export function findChar({ name = null, allowAvatar = true, insensitive = true, 
     // Get the current character(s)
     /** @type {any[]} */
     const currentChars = selected_group ? groups.find(group => group.id === selected_group)?.members.map(member => filteredCharacters.find(char => char.avatar === member))
-        : filteredCharacters.filter(char => characters[this_chid]?.avatar === char.avatar);
+        : filteredCharacters.filter(char => getCurrentCharacter()?.avatar === char.avatar);
 
     // If we have a current char and prefer it, return that if it matches
     if (preferCurrentChar) {

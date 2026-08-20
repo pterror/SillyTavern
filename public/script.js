@@ -468,6 +468,22 @@ let this_avatar;
  * @type {string|undefined} Yes, we hate it as much as you do.
  */
 export let this_chid;
+
+/**
+ * Resolves the currently selected character by identity (this_avatar), not by array position. Behaves
+ * identically to `getCurrentCharacter()` today - this_chid is always kept in sync with this_avatar by
+ * setCharacterId(), so the two lookups return the same object right now. The point of routing through this
+ * instead of `getCurrentCharacter()` is forward-looking: once the `characters` array can stop being a full
+ * resident copy of every character (server-side list pagination), `this_chid` as a positional index stops being
+ * meaningful, but the *selected* character still needs to resolve correctly regardless of what page the list UI
+ * is showing. Call sites that migrate to this now get that guarantee for free later, with zero behavior change
+ * today. No pagination has landed yet, so `characters` is still the full array and this is a pure rename.
+ * @returns {Character|undefined}
+ */
+export function getCurrentCharacter() {
+    return this_avatar !== undefined ? characters.find(c => c.avatar === this_avatar) : undefined;
+}
+
 let saveCharactersPage = 0;
 export const default_avatar = 'img/ai4.png';
 export const system_avatar = 'img/five.png';
@@ -580,7 +596,7 @@ export function getCurrentChatId() {
     if (selected_group) {
         return groups.find(x => x.id == selected_group)?.chat_id;
     } else if (this_chid !== undefined) {
-        return characters[this_chid]?.chat;
+        return getCurrentCharacter()?.chat;
     }
 }
 
@@ -1439,13 +1455,13 @@ async function delChat(chatfile) {
         headers: getRequestHeaders(),
         body: JSON.stringify({
             chatfile: chatfile,
-            avatar_url: characters[this_chid].avatar,
+            avatar_url: getCurrentCharacter().avatar,
         }),
     });
     if (response.ok === true) {
         // choose another chat if current was deleted
         const name = chatfile.replace('.jsonl', '');
-        if (name === characters[this_chid].chat) {
+        if (name === getCurrentCharacter().chat) {
             chat_metadata = {};
             await replaceCurrentChat();
         }
@@ -1505,7 +1521,7 @@ export async function replaceCurrentChat() {
     const chatsResponse = await fetch('/api/characters/chats', {
         method: 'POST',
         headers: getRequestHeaders(),
-        body: JSON.stringify({ avatar_url: characters[this_chid].avatar }),
+        body: JSON.stringify({ avatar_url: getCurrentCharacter().avatar }),
     });
 
     if (chatsResponse.ok) {
@@ -1514,14 +1530,14 @@ export async function replaceCurrentChat() {
 
         if (chats.length && typeof chats[0] === 'object') {
             // pick existing chat
-            charactersStore.update(characters[this_chid].avatar, { chat: chats[0].file_name.replace('.jsonl', '') });
-            $('#selected_chat_pole').val(characters[this_chid].chat);
+            charactersStore.update(getCurrentCharacter().avatar, { chat: chats[0].file_name.replace('.jsonl', '') });
+            $('#selected_chat_pole').val(getCurrentCharacter().chat);
             saveCharacterDebounced();
             await getChat();
         } else {
             // start new chat
-            charactersStore.update(characters[this_chid].avatar, { chat: `${name2} - ${humanizedDateTime()}` });
-            $('#selected_chat_pole').val(characters[this_chid].chat);
+            charactersStore.update(getCurrentCharacter().avatar, { chat: `${name2} - ${humanizedDateTime()}` });
+            $('#selected_chat_pole').val(getCurrentCharacter().chat);
             saveCharacterDebounced();
             await getChat();
         }
@@ -2722,8 +2738,8 @@ export function updateMessageElement(mes, { messageId = chat.length - 1, message
             avatarImg = mes.force_avatar;
         } else if (this_chid === undefined) {
             avatarImg = system_avatar;
-        } else if (characters[this_chid] && characters[this_chid].avatar !== 'none') {
-            avatarImg = getThumbnailUrl('avatar', characters[this_chid].avatar);
+        } else if (getCurrentCharacter() && getCurrentCharacter().avatar !== 'none') {
+            avatarImg = getThumbnailUrl('avatar', getCurrentCharacter().avatar);
         } else {
             avatarImg = default_avatar;
         }
@@ -4578,8 +4594,8 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         });
     } else {
         const depthPromptText = charDepthPrompt || '';
-        const depthPromptDepth = characters[this_chid]?.data?.extensions?.depth_prompt?.depth ?? depth_prompt_depth_default;
-        const depthPromptRole = getExtensionPromptRoleByName(characters[this_chid]?.data?.extensions?.depth_prompt?.role ?? depth_prompt_role_default);
+        const depthPromptDepth = getCurrentCharacter()?.data?.extensions?.depth_prompt?.depth ?? depth_prompt_depth_default;
+        const depthPromptRole = getExtensionPromptRoleByName(getCurrentCharacter()?.data?.extensions?.depth_prompt?.role ?? depth_prompt_role_default);
         setExtensionPrompt(inject_ids.DEPTH_PROMPT, depthPromptText, extension_prompt_types.IN_CHAT, depthPromptDepth, extension_settings.note.allowWIScan, depthPromptRole);
     }
 
@@ -6140,11 +6156,11 @@ export async function duplicateCharacter({ avatar = null, silent = false } = {})
         }
         targetAvatar = avatar;
     } else {
-        if (this_chid === undefined || !characters[this_chid]) {
+        if (this_chid === undefined || !getCurrentCharacter()) {
             toastr.warning(t`You must first select a character to duplicate!`);
             return '';
         }
-        targetAvatar = characters[this_chid].avatar;
+        targetAvatar = getCurrentCharacter().avatar;
     }
 
     // Show confirmation unless silent
@@ -6866,11 +6882,11 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
         if (selected_group) {
             console.debug('entering chat update for groups');
             let avatarImg = 'img/ai4.png';
-            if (characters[this_chid].avatar != 'none') {
-                avatarImg = getThumbnailUrl('avatar', characters[this_chid].avatar);
+            if (getCurrentCharacter().avatar != 'none') {
+                avatarImg = getThumbnailUrl('avatar', getCurrentCharacter().avatar);
             }
             newMessage.force_avatar = avatarImg;
-            newMessage.original_avatar = characters[this_chid].avatar;
+            newMessage.original_avatar = getCurrentCharacter().avatar;
             newMessage.extra.gen_id = group_generation_id;
         }
 
@@ -7225,7 +7241,7 @@ export function setCharacterId(value) {
         case 'bigint':
         case 'number':
             // Preserved as-is (not bounds-checked) for legacy behavior - this_avatar simply won't resolve for
-            // an out-of-range index, same as characters[this_chid] would already have been undefined before.
+            // an out-of-range index, same as getCurrentCharacter() would already have been undefined before.
             this_chid = String(value);
             this_avatar = characters[Number(value)]?.avatar;
             break;
@@ -7306,14 +7322,14 @@ export async function renameCharacter(name = null, { silent = false, renameChats
         return false;
     }
 
-    const oldAvatar = characters[this_chid].avatar;
-    const newValue = name || await callGenericPopup('<h3>' + t`New name:` + '</h3>', POPUP_TYPE.INPUT, characters[this_chid].name);
+    const oldAvatar = getCurrentCharacter().avatar;
+    const newValue = name || await callGenericPopup('<h3>' + t`New name:` + '</h3>', POPUP_TYPE.INPUT, getCurrentCharacter().name);
 
     if (!newValue) {
         toastr.warning(t`No character name provided.`, t`Rename Character`);
         return false;
     }
-    if (newValue === characters[this_chid].name) {
+    if (newValue === getCurrentCharacter().name) {
         toastr.info(t`Same character name provided, so name did not change.`, t`Rename Character`);
         return false;
     }
@@ -7519,7 +7535,7 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
     }
 
     const metadata = { ...chat_metadata, ...(withMetadata || {}) };
-    const fileName = chatName ?? characters[this_chid]?.chat;
+    const fileName = chatName ?? getCurrentCharacter()?.chat;
 
     if (!fileName && name2 === neutralCharacterName) {
         // TODO: Do something for a temporary chat with no character.
@@ -7531,7 +7547,7 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
         return;
     }
 
-    charactersStore.update(characters[this_chid].avatar, { date_last_chat: Date.now() });
+    charactersStore.update(getCurrentCharacter().avatar, { date_last_chat: Date.now() });
 
     const trimmedChat = Array.isArray(chatData)
         ? chatData
@@ -7552,10 +7568,10 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
             cache: 'no-cache',
             headers: getRequestHeaders(),
             body: JSON.stringify({
-                ch_name: characters[this_chid].name,
+                ch_name: getCurrentCharacter().name,
                 file_name: fileName,
                 chat: [chatHeader, ...trimmedChat],
-                avatar_url: characters[this_chid].avatar,
+                avatar_url: getCurrentCharacter().avatar,
                 force: force,
             }),
         });
@@ -7758,9 +7774,9 @@ export async function getChat() {
             headers: getRequestHeaders(),
             cache: 'no-cache',
             body: JSON.stringify({
-                ch_name: characters[this_chid].name,
-                file_name: characters[this_chid].chat,
-                avatar_url: characters[this_chid].avatar,
+                ch_name: getCurrentCharacter().name,
+                file_name: getCurrentCharacter().chat,
+                avatar_url: getCurrentCharacter().avatar,
             }),
         });
 
@@ -7784,7 +7800,7 @@ export async function getChat() {
             chat_metadata.integrity = uuidv4();
         }
         await getChatResult();
-        eventSource.emit(event_types.CHAT_LOADED, { detail: { id: this_chid, character: characters[this_chid] } });
+        eventSource.emit(event_types.CHAT_LOADED, { detail: { id: this_chid, character: getCurrentCharacter() } });
 
         // Focus on the textarea if not already focused on a visible text input
         delay(debounce_timeout.short).then(() => {
@@ -7800,7 +7816,7 @@ export async function getChat() {
 }
 
 async function getChatResult() {
-    name2 = characters[this_chid].name;
+    name2 = getCurrentCharacter().name;
     let freshChat = false;
     if (chat.length === 0) {
         const message = getFirstMessage();
@@ -7826,8 +7842,8 @@ async function getChatResult() {
 }
 
 function getFirstMessage() {
-    const firstMes = characters[this_chid]?.first_mes || '';
-    const alternateGreetings = characters[this_chid]?.data?.alternate_greetings;
+    const firstMes = getCurrentCharacter()?.first_mes || '';
+    const alternateGreetings = getCurrentCharacter()?.data?.alternate_greetings;
 
     const message = {
         name: name2,
@@ -7862,7 +7878,7 @@ function getFirstMessage() {
 export async function openCharacterChat(file_name) {
     await waitUntilCondition(() => !isChatSaving, debounce_timeout.extended, 10);
     await clearChat({ clearData: true });
-    charactersStore.update(characters[this_chid].avatar, { chat: file_name });
+    charactersStore.update(getCurrentCharacter().avatar, { chat: file_name });
     chat_metadata = {};
     await getChat();
     $('#selected_chat_pole').val(file_name);
@@ -8657,14 +8673,14 @@ export async function getPastCharacterChats(characterId = null) {
  * Helper for `displayPastChats`, to make the same info consistently available for other functions
  */
 export function getCurrentChatDetails() {
-    if (!characters[this_chid] && !selected_group) {
+    if (!getCurrentCharacter() && !selected_group) {
         return { sessionName: '', group: null, characterName: '', avatarImgURL: '' };
     }
 
     const group = selected_group ? groups.find(x => x.id === selected_group) : null;
-    const currentChat = selected_group ? group?.chat_id : characters[this_chid].chat;
-    const displayName = selected_group ? group?.name : characters[this_chid].name;
-    const avatarImg = selected_group ? group?.avatar_url : getThumbnailUrl('avatar', characters[this_chid].avatar);
+    const currentChat = selected_group ? group?.chat_id : getCurrentCharacter().chat;
+    const displayName = selected_group ? group?.name : getCurrentCharacter().name;
+    const avatarImg = selected_group ? group?.avatar_url : getThumbnailUrl('avatar', getCurrentCharacter().avatar);
     return { sessionName: currentChat, group: group, characterName: displayName, avatarImgURL: avatarImg };
 }
 
@@ -8712,7 +8728,7 @@ async function displayChats(searchQuery, currentChat, displayName, avatarImg, se
             headers: getRequestHeaders(),
             body: JSON.stringify({
                 query: searchQuery,
-                avatar_url: selected_group ? null : characters[this_chid].avatar,
+                avatar_url: selected_group ? null : getCurrentCharacter().avatar,
                 group_id: selected_group || null,
             }),
         });
@@ -9121,7 +9137,7 @@ function updateFavButtonState(state) {
 }
 
 export async function setCharacterSettingsOverrides() {
-    if (!selected_group && (this_chid === undefined || !characters[this_chid])) {
+    if (!selected_group && (this_chid === undefined || !getCurrentCharacter())) {
         console.warn('setCharacterSettingsOverrides() -- no selected group or character');
         return;
     }
@@ -9977,7 +9993,7 @@ export async function createOrEditCharacter(e) {
 
             let oldSelectedChar = null;
             if (this_chid !== undefined) {
-                oldSelectedChar = characters[this_chid].avatar;
+                oldSelectedChar = getCurrentCharacter().avatar;
             }
 
             console.log(`new avatar id: ${avatarId}`);
@@ -10027,7 +10043,7 @@ export async function createOrEditCharacter(e) {
             );
             $('#create_button').attr('value', 'Save');
             crop_data = undefined;
-            await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { id: this_chid, character: characters[this_chid] } });
+            await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { id: this_chid, character: getCurrentCharacter() } });
 
             // Recreate the chat if it hasn't been used at least once (i.e. with continue).
             const message = getFirstMessage();
@@ -10642,7 +10658,7 @@ async function importCharactersTags(avatarFileNames) {
 function selectImportedChar(charId) {
     let oldSelectedChar = null;
     if (this_chid !== undefined) {
-        oldSelectedChar = characters[this_chid].avatar;
+        oldSelectedChar = getCurrentCharacter().avatar;
     }
     select_rm_info('char_import_no_toast', charId, oldSelectedChar);
 }
@@ -10766,8 +10782,8 @@ export async function doNewChat({ deleteCurrentChat = false } = {}) {
     } else {
         //RossAscends: added character name to new chat filenames and replaced Date.now() with humanizedDateTime;
         chat_metadata = {};
-        charactersStore.update(characters[this_chid].avatar, { chat: `${name2} - ${humanizedDateTime()}` });
-        $('#selected_chat_pole').val(characters[this_chid].chat);
+        charactersStore.update(getCurrentCharacter().avatar, { chat: `${name2} - ${humanizedDateTime()}` });
+        $('#selected_chat_pole').val(getCurrentCharacter().chat);
         await getChat();
         await createOrEditCharacter(new CustomEvent('newChat'));
         if (deleteCurrentChat) await delChat(chat_file_for_del + '.jsonl');
@@ -10938,11 +10954,11 @@ function doCharListDisplaySwitch() {
  * @param {boolean} delete_chats - Whether to delete chats or not.
  */
 export async function handleDeleteCharacter(this_chid, delete_chats) {
-    if (!characters[this_chid]) {
+    if (!getCurrentCharacter()) {
         return;
     }
 
-    await deleteCharacter(characters[this_chid].avatar, { deleteChats: delete_chats });
+    await deleteCharacter(getCurrentCharacter().avatar, { deleteChats: delete_chats });
 }
 
 /**
@@ -11558,7 +11574,7 @@ jQuery(async function () {
     $('#form_create').on('submit', (e) => createOrEditCharacter(e.originalEvent));
 
     $('#delete_button').on('click', async function () {
-        if (this_chid === undefined || !characters[this_chid]) {
+        if (this_chid === undefined || !getCurrentCharacter()) {
             toastr.warning('No character selected.');
             return;
         }
@@ -11572,7 +11588,7 @@ jQuery(async function () {
             return;
         }
 
-        await deleteCharacter(characters[this_chid].avatar, { deleteChats: deleteChats });
+        await deleteCharacter(getCurrentCharacter().avatar, { deleteChats: deleteChats });
     });
 
     //////// OPTIMIZED ALL CHAR CREATION/EDITING TEXTAREA LISTENERS ///////////////
@@ -11613,7 +11629,7 @@ jQuery(async function () {
 
     $('#creator_notes_textarea').on('input', function () {
         const notes = String($('#creator_notes_textarea').val());
-        const avatar = menu_type === 'create' ? '' : characters[this_chid]?.avatar;
+        const avatar = menu_type === 'create' ? '' : getCurrentCharacter()?.avatar;
         $('#creator_notes_spoiler').html(formatCreatorNotes(notes, avatar));
     });
 
@@ -11654,7 +11670,7 @@ jQuery(async function () {
 
         const body = {
             is_group: !!selected_group,
-            avatar_url: characters[this_chid]?.avatar,
+            avatar_url: getCurrentCharacter()?.avatar,
             file: `${filename}.jsonl`,
             exportfilename: `${filename}.${format}`,
             format: format,
@@ -12195,7 +12211,7 @@ jQuery(async function () {
 
         // Save before exporting
         await createOrEditCharacter();
-        const body = { format, avatar_url: characters[this_chid].avatar };
+        const body = { format, avatar_url: getCurrentCharacter().avatar };
 
         const response = await fetch('/api/characters/export', {
             method: 'POST',
@@ -12204,7 +12220,7 @@ jQuery(async function () {
         });
 
         if (response.ok) {
-            const filename = characters[this_chid].avatar.replace('.png', `.${format}`);
+            const filename = getCurrentCharacter().avatar.replace('.png', `.${format}`);
             const blob = await response.blob();
             const a = document.createElement('a');
             a.href = URL.createObjectURL(blob);
@@ -12549,7 +12565,7 @@ jQuery(async function () {
                     });
 
                 // Remember the chat currently selected, so we can reload it after the replacement
-                const currentChatFile = characters[this_chid].chat;
+                const currentChatFile = getCurrentCharacter().chat;
                 async function postReplace() {
                     await openCharacterChat(currentChatFile);
                 }
@@ -12564,7 +12580,7 @@ jQuery(async function () {
 
                             try {
                                 const data = new Map();
-                                data.set(file, characters[this_chid].avatar);
+                                data.set(file, getCurrentCharacter().avatar);
                                 await processDroppedFiles([file], data);
                                 await postReplace();
                             } catch {
@@ -12583,14 +12599,14 @@ jQuery(async function () {
                             break;
                         }
                         onlineUrl = inputUrl;
-                        await importFromExternalUrl(onlineUrl, { preserveFileName: characters[this_chid].avatar });
+                        await importFromExternalUrl(onlineUrl, { preserveFileName: getCurrentCharacter().avatar });
                         await postReplace();
                         break;
                     }
                 }
             } break;
             case 'import_tags': {
-                await importTags(characters[this_chid], { importSetting: tag_import_setting.ASK });
+                await importTags(getCurrentCharacter(), { importSetting: tag_import_setting.ASK });
             } break;
             /*case 'delete_button':
                 popup_type = "del_ch";
