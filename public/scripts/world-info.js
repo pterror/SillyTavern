@@ -4822,7 +4822,7 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
             }
 
             if (entry.characterFilter && entry.characterFilter?.tags?.length > 0) {
-                const tagKey = getTagKeyForEntity(this_chid);
+                const tagKey = getTagKeyForEntity(getCurrentCharacter()?.avatar);
 
                 if (tagKey) {
                     const tagMapEntry = context.tagMap[tagKey];
