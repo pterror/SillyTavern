@@ -1321,15 +1321,24 @@ export function getCharacterSource(chId = this_chid) {
 }
 
 /**
- * Refetches the full character list from the server and rebuilds `characters` in place.
+ * Refetches the full character list from the server and rebuilds `characters` in place. Also refetches the
+ * full group list (getGroups()) as a side effect, since the character/group lists are shown as one combined
+ * UI list and several group-mutation call sites in group-chats.js piggyback on this function to also trigger
+ * their reload/re-render, rather than calling getGroups() directly.
  * @param {object} [options]
  * @param {boolean} [options.silent=false] - If true, skips charactersStore's generic reset() notification -
  * pass this when the caller already knows the specific create/delete/rename that this reload happened for,
  * and will report it itself via charactersStore.reportCreated()/.reportRemoved()/.reportRenamed() once this
  * returns (which need the post-reload id index, so charactersStore.reindex() still runs either way - only
  * the emitted change differs). Leave false for reloads with no more specific intent than "resync".
+ * @param {boolean} [options.silentGroups=false] - Same as `silent`, but for the internal getGroups() reload's
+ * groupsStore notification - independent of `silent`, since a reload can know the specific thing that
+ * happened to *one* of the two collections without knowing anything specific about the other (e.g. a pure
+ * group edit doesn't want charactersStore to fire a redundant reset(), and a character delete doesn't
+ * necessarily know whether server-side cleanup removed that character from any group's member list, so it
+ * should NOT default to silencing groupsStore just because it's silencing charactersStore).
  */
-export async function getCharacters({ silent = false } = {}) {
+export async function getCharacters({ silent = false, silentGroups = false } = {}) {
     const response = await fetch('/api/characters/all', {
         method: 'POST',
         headers: getRequestHeaders(),
@@ -1370,7 +1379,7 @@ export async function getCharacters({ silent = false } = {}) {
             }
         }
 
-        await getGroups();
+        await getGroups({ silent: silentGroups });
         await printCharacters(true);
     } else {
         console.error('Failed to fetch characters:', response.statusText);
