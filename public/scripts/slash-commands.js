@@ -46,7 +46,7 @@ import {
     saveChatConditional,
     saveSettings,
     saveSettingsDebounced,
-    selectCharacterById,
+    selectCharacterByAvatar,
     select_selected_character,
     sendMessageAsUser,
     sendSystemMessage,
@@ -5273,12 +5273,10 @@ async function createCharacterCallback(args) {
         // Select the character if requested (default: true)
         const shouldSelect = !isFalseBoolean(args.select);
         if (shouldSelect) {
-            // selectCharacterById() needs the numeric position in `characters`, not the entity itself.
             const newCharacter = charactersStore.get(avatarKey);
-            const characterIndex = newCharacter ? characters.indexOf(newCharacter) : -1;
-            if (characterIndex !== -1) {
-                // selectCharacterById handles group reset and active character setting
-                await selectCharacterById(characterIndex);
+            if (newCharacter) {
+                // selectCharacterByAvatar handles group reset and active character setting
+                await selectCharacterByAvatar(avatarKey);
             }
         }
 
@@ -5493,11 +5491,9 @@ async function duplicateCharacterCallback(args) {
     // Select the character if requested (default: false)
     const shouldSelect = isTrueBoolean(args.select);
     if (shouldSelect) {
-        // selectCharacterById() needs the numeric position in `characters`, not the entity itself.
         const newCharacter = charactersStore.get(newAvatarKey);
-        const characterIndex = newCharacter ? characters.indexOf(newCharacter) : -1;
-        if (characterIndex !== -1) {
-            await selectCharacterById(characterIndex);
+        if (newCharacter) {
+            await selectCharacterByAvatar(newAvatarKey);
         }
     }
 
