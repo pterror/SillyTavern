@@ -6,6 +6,7 @@ import {
     event_types,
     saveSettingsDebounced,
     animation_duration,
+    getCurrentCharacter,
 } from '../script.js';
 import { extension_settings, saveMetadataDebounced } from './extensions.js';
 import { selected_group } from './group-chats.js';
@@ -404,7 +405,7 @@ export function getGuidanceScale() {
         return;
     }
 
-    const charaCfg = extension_settings.cfg.chara?.find((e) => e.name === getCharaFilename(this_chid));
+    const charaCfg = extension_settings.cfg.chara?.find((e) => e.name === getCharaFilename(null, { manualAvatarKey: getCurrentCharacter()?.avatar }));
     const chatGuidanceScale = chat_metadata[metadataKeys.guidance_scale];
     const groupchatCharOverride = chat_metadata[metadataKeys.groupchat_individual_chars] ?? false;
 
@@ -468,7 +469,7 @@ export function getCfgPrompt(guidanceScale, isNegative, quiet = false) {
         );
     }
 
-    const charaCfg = extension_settings.cfg.chara?.find((e) => e.name === getCharaFilename(this_chid));
+    const charaCfg = extension_settings.cfg.chara?.find((e) => e.name === getCharaFilename(null, { manualAvatarKey: getCurrentCharacter()?.avatar }));
     if (guidanceScale.type === cfgType.chara || cfgPromptCombine.includes(cfgType.chara)) {
         splitCfgPrompt.unshift(
             substituteParams(

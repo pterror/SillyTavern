@@ -4482,7 +4482,7 @@ async function getCharacterLore() {
     }
 
     // TODO: Maybe make the utility function not use the window context?
-    const fileName = getCharaFilename(this_chid);
+    const fileName = getCharaFilename(null, { manualAvatarKey: character?.avatar });
     const extraCharLore = world_info.charLore?.find((e) => e.name === fileName);
     if (extraCharLore) {
         worldsToSearch = new Set([...worldsToSearch, ...extraCharLore.extraBooks]);
