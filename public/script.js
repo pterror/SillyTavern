@@ -8957,8 +8957,8 @@ export function select_selected_character(chid, { switchMenu = true } = {}) {
 
     const avatarUrl = characters[chid].avatar != 'none' ? getThumbnailUrl('avatar', characters[chid].avatar) : default_avatar;
     $('#avatar_load_preview').attr('src', avatarUrl);
-    $('.open_alternate_greetings').data('chid', chid);
-    $('#set_character_world').data('chid', chid);
+    $('.open_alternate_greetings').data('avatar', characters[chid]?.avatar ?? null);
+    $('#set_character_world').data('avatar', characters[chid]?.avatar ?? null);
     setWorldInfoButtonClass(chid);
     checkEmbeddedWorld(chid);
 
@@ -9036,8 +9036,8 @@ function select_rm_create({ switchMenu = true } = {}) {
     $('#renameCharButton').css('display', 'none');
     $('#name_div').removeClass('displayNone');
     $('#name_div').addClass('displayBlock');
-    $('.open_alternate_greetings').data('chid', -1);
-    $('#set_character_world').data('chid', -1);
+    $('.open_alternate_greetings').data('avatar', null);
+    $('#set_character_world').data('avatar', null);
     setWorldInfoButtonClass(undefined, !!create_save.world);
     updateFavButtonState(false);
     checkEmbeddedWorld();
@@ -9691,11 +9691,13 @@ function updateAlternateGreetingsHintVisibility(root) {
 }
 
 async function openCharacterWorldPopup() {
-    const chid = $('#set_character_world').data('chid');
-    if (menu_type != 'create' && chid === undefined) {
+    const avatar = $('#set_character_world').data('avatar');
+    if (menu_type != 'create' && avatar === undefined) {
         toastr.error('Does not have an Id for this character in world select menu.');
         return;
     }
+
+    const chid = characters.findIndex(c => c.avatar === avatar);
 
     // TODO: Maybe make this utility function not use the window context?
     const fileName = getCharaFilename(chid);
@@ -9761,9 +9763,10 @@ async function openCharacterWorldPopup() {
 }
 
 function openAlternateGreetings() {
-    const chid = $('.open_alternate_greetings').data('chid');
+    const avatar = $('.open_alternate_greetings').data('avatar');
+    const chid = characters.findIndex(c => c.avatar === avatar);
 
-    if (menu_type != 'create' && chid === undefined) {
+    if (menu_type != 'create' && avatar === undefined) {
         toastr.error('Does not have an Id for this character in editor menu.');
         return;
     } else {
@@ -10015,7 +10018,8 @@ export async function createOrEditCharacter(e) {
             }
 
             formData.delete('alternate_greetings');
-            const chid = $('.open_alternate_greetings').data('chid');
+            const avatar = $('.open_alternate_greetings').data('avatar');
+            const chid = characters.findIndex(c => c.avatar === avatar);
             if (characters[chid] && Array.isArray(characters[chid]?.data?.alternate_greetings)) {
                 for (const value of characters[chid].data.alternate_greetings) {
                     formData.append('alternate_greetings', value);
