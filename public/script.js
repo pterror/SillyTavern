@@ -82,6 +82,7 @@ import {
     fixMarkdown,
     power_user,
     persona_description_positions,
+    personaStore,
     loadMovingUIState,
     getCustomStoppingStrings,
     MAX_CONTEXT_DEFAULT,
@@ -244,6 +245,8 @@ import {
     initUserAvatar,
     updatePersonaConnectionsAvatarList,
     isPersonaPanelOpen,
+    DEFAULT_DEPTH as PERSONA_DEFAULT_DEPTH,
+    DEFAULT_ROLE as PERSONA_DEFAULT_ROLE,
 } from './scripts/personas.js';
 import { getBackgrounds, initBackgrounds, loadBackgroundSettings, background_settings } from './scripts/backgrounds.js';
 import { loader } from './scripts/action-loader.js';
@@ -5953,7 +5956,7 @@ export async function sendMessageAsUser(messageText, messageBias, insertAt = nul
     }
 
     // Lock user avatar to a persona.
-    if (avatar in power_user.personas) {
+    if (personaStore.has(avatar)) {
         message.force_avatar = getThumbnailUrl('persona', avatar);
     }
 
@@ -7955,11 +7958,20 @@ async function doOnboarding(avatarId) {
         userName = String(userName).replace('\n', ' ');
         setUserName(userName);
         console.log(`Binding persona ${avatarId} to name ${userName}`);
-        power_user.personas[avatarId] = userName;
-        power_user.persona_descriptions[avatarId] = {
+        // Was previously two hand-written statements (power_user.personas[avatarId] = ...; power_user
+        // .persona_descriptions[avatarId] = {...}) that only set `description`/`position`, leaving
+        // depth/role/lorebook/title/connections undefined instead of the defaults every other persona-creation
+        // path (initPersona()) uses - now goes through the same merged record shape as everywhere else.
+        personaStore.create(avatarId, {
+            name: userName,
             description: '',
             position: persona_description_positions.IN_PROMPT,
-        };
+            depth: PERSONA_DEFAULT_DEPTH,
+            role: PERSONA_DEFAULT_ROLE,
+            lorebook: '',
+            title: '',
+            connections: [],
+        });
     }
 }
 
@@ -12339,7 +12351,7 @@ jQuery(async function () {
             const zoomedAvatarImgElement = $(`.zoomed_avatar[forChar="${charname}"] img`);
             if (messageElement.attr('is_user') == 'true' || (messageElement.attr('is_system') == 'true' && !isValidCharacter)) {
                 //handle user and system avatars
-                const isValidPersona = decodeURIComponent(targetAvatarImg) in power_user.personas;
+                const isValidPersona = personaStore.has(decodeURIComponent(targetAvatarImg));
                 if (isValidPersona) {
                     const personaSrc = getUserAvatar(targetAvatarImg);
                     zoomedAvatarImgElement.attr('src', personaSrc);
