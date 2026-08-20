@@ -1144,7 +1144,7 @@ function registerWorldInfoSlashCommands() {
                 await charUpdatePrimaryWorld(newName);
             }
             // Refresh UI, if needed
-            setWorldInfoButtonClass(this_chid);
+            setWorldInfoButtonClass(getCurrentCharacter()?.avatar);
             books.push(newName);
         }
 
@@ -4328,8 +4328,9 @@ async function updateWorldInfoLinks(oldName, newName, { retargetPersonaLore } = 
         // update the UI fields
         // only required if the currently selected character was changed
         if (activeCharacterUpdated) {
-            select_selected_character(this_chid, { switchMenu: false });
-            setWorldInfoButtonClass(this_chid, true);
+            const avatar = getCurrentCharacter()?.avatar;
+            select_selected_character(avatar, { switchMenu: false });
+            setWorldInfoButtonClass(avatar, true);
         }
     }
 }
@@ -5670,34 +5671,37 @@ export function convertCharacterBook(characterBook) {
     return result;
 }
 
-export function setWorldInfoButtonClass(chid, forceValue = undefined) {
+export function setWorldInfoButtonClass(avatar, forceValue = undefined) {
     if (forceValue !== undefined) {
         $('#set_character_world, #world_button').toggleClass('world_set', forceValue);
         return;
     }
 
-    if (chid === undefined) {
+    if (avatar === undefined) {
         return;
     }
 
-    const world = characters[chid]?.data?.extensions?.world;
+    const character = characters.find(c => c.avatar === avatar);
+    const world = character?.data?.extensions?.world;
     const worldSet = Boolean(world && world_names.includes(world));
     $('#set_character_world, #world_button').toggleClass('world_set', worldSet);
 }
 
-export function checkEmbeddedWorld(chid) {
+export function checkEmbeddedWorld(avatar) {
     $('#import_character_info').hide();
 
-    if (chid === undefined) {
+    if (avatar === undefined) {
         return false;
     }
 
-    if (characters[chid]?.data?.character_book) {
-        $('#import_character_info').data('avatar', characters[chid]?.avatar ?? null).show();
+    const character = characters.find(c => c.avatar === avatar);
+
+    if (character?.data?.character_book) {
+        $('#import_character_info').data('avatar', character?.avatar ?? null).show();
 
         // Only show the alert once per character
-        const checkKey = `AlertWI_${characters[chid].avatar}`;
-        const worldName = characters[chid]?.data?.extensions?.world;
+        const checkKey = `AlertWI_${character.avatar}`;
+        const worldName = character?.data?.extensions?.world;
         if (!accountStorage.getItem(checkKey) && (!worldName || !world_names.includes(worldName))) {
             accountStorage.setItem(checkKey, 'true');
 
@@ -5714,7 +5718,7 @@ export function checkEmbeddedWorld(chid) {
             } else {
                 toastr.info(
                     'To import and use it, select "Import Card Lore" in the "More..." dropdown menu on the character panel.',
-                    `${characters[chid].name} has an embedded World/Lorebook`,
+                    `${character.name} has an embedded World/Lorebook`,
                     { timeOut: 5000, extendedTimeOut: 10000 },
                 );
             }
@@ -5732,19 +5736,19 @@ export async function importEmbeddedWorldInfo(skipPopup = false) {
         return;
     }
 
-    const chid = characters.findIndex(c => c.avatar === avatar);
+    const character = characters.find(c => c.avatar === avatar);
 
-    if (chid === -1) {
+    if (!character) {
         return;
     }
 
-    const hasEmbed = checkEmbeddedWorld(chid);
+    const hasEmbed = checkEmbeddedWorld(avatar);
 
     if (!hasEmbed) {
         return;
     }
 
-    const bookName = characters[chid]?.data?.character_book?.name || `${characters[chid]?.name}'s Lorebook`;
+    const bookName = character.data?.character_book?.name || `${character.name}'s Lorebook`;
 
     if (!skipPopup) {
         const confirmation = await Popup.show.confirm(t`Are you sure you want to import '${bookName}'?`, world_names.includes(bookName) ? t`It will overwrite the World/Lorebook with the same name.` : '');
@@ -5753,7 +5757,7 @@ export async function importEmbeddedWorldInfo(skipPopup = false) {
         }
     }
 
-    const convertedBook = convertCharacterBook(characters[chid].data.character_book);
+    const convertedBook = convertCharacterBook(character.data.character_book);
 
     await saveWorldInfo(bookName, convertedBook, true);
     await updateWorldInfoList();
@@ -5769,7 +5773,7 @@ export async function importEmbeddedWorldInfo(skipPopup = false) {
         $('#world_editor_select').val(newIndex).trigger('change');
     }
 
-    setWorldInfoButtonClass(chid, true);
+    setWorldInfoButtonClass(avatar, true);
 }
 
 export function onWorldInfoChange(args, text) {
@@ -6324,10 +6328,10 @@ export function initWorldInfo() {
             return;
         }
 
-        const chid = characters.findIndex(c => c.avatar === avatar);
+        const character = characters.find(c => c.avatar === avatar);
 
-        const worldName = characters[chid]?.data?.extensions?.world;
-        const hasEmbed = checkEmbeddedWorld(chid);
+        const worldName = character?.data?.extensions?.world;
+        const hasEmbed = checkEmbeddedWorld(avatar);
         if (worldName && world_names.includes(worldName) && !event.shiftKey && !event.altKey) {
             openWorldInfoEditor(worldName);
         } else if (hasEmbed && !event.shiftKey && !event.altKey) {

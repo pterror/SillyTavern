@@ -5445,7 +5445,7 @@ async function updateCharacterCallback(args) {
 
         // Update the side panel if this is the currently selected character
         if (characterIndex === this_chid) {
-            select_selected_character(this_chid, { switchMenu: false });
+            select_selected_character(character.avatar, { switchMenu: false });
         }
 
         toastr.success(t`Character "${character.name}" updated successfully`);
