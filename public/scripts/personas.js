@@ -1739,6 +1739,10 @@ export function getCurrentConnectionObj() {
 function onBackupPersonas() {
     const timestamp = new Date().toISOString().split('T')[0].replace(/-/g, '');
     const filename = `personas_${timestamp}.json`;
+    // Deliberately still reading power_user.personas/persona_descriptions (not personaStore) - this is the
+    // backup file's own external shape, which stays the old two-dict split on purpose (see power-user.js's
+    // compat-proxy comments) so a backup taken now can still be understood by onPersonasRestoreInput() (or a
+    // human reading the file) without needing to know about persona_data at all.
     const data = JSON.stringify({
         'personas': power_user.personas,
         'persona_descriptions': power_user.persona_descriptions,
@@ -1774,39 +1778,55 @@ async function onPersonasRestoreInput(e) {
     const avatarsList = await getUserAvatars(false);
     const warnings = [];
 
-    // Merge personas with existing ones
-    for (const [key, value] of Object.entries(data.personas)) {
-        if (key in power_user.personas) {
-            warnings.push(`Persona "${key}" (${value}) already exists, skipping`);
+    // The backup file's own shape is (deliberately) still the old two-dict split - `data.personas`/
+    // `data.persona_descriptions` - independent of how personas are stored internally now; a backup taken
+    // before this migration, or one taken after via onBackupPersonas() (which - being a read-only view over
+    // personaStore - still serializes to exactly this shape), both look the same here. What changed is *how*
+    // this merges them: originally this ran as two independent passes, each checking/writing its own separate
+    // dict. With personaStore merging both into one record, doing that as two passes would misfire - the first
+    // pass creating a persona (via just its name) would make the second pass's "does this id already exist"
+    // check for *descriptions* immediately true for that same id, so real description data from the backup
+    // would be silently skipped as "already exists" right after being created. So this now merges each
+    // backup id's name + description into one record in a single pass instead, against a snapshot of what
+    // existed *before* this restore started.
+    const alreadyExisted = new Set(Object.keys(personaStore.getAll()));
+
+    for (const [key, name] of Object.entries(data.personas)) {
+        if (alreadyExisted.has(key)) {
+            warnings.push(`Persona "${key}" (${name}) already exists, skipping`);
             continue;
         }
 
-        power_user.personas[key] = value;
+        const description = data.persona_descriptions[key];
+        personaStore.create(key, {
+            name,
+            description: description?.description ?? '',
+            position: description?.position ?? persona_description_positions.IN_PROMPT,
+            depth: description?.depth ?? DEFAULT_DEPTH,
+            role: description?.role ?? DEFAULT_ROLE,
+            lorebook: description?.lorebook ?? '',
+            title: description?.title ?? '',
+            connections: description?.connections ?? [],
+        });
 
         // If the avatar is missing, upload it
         if (!avatarsList.includes(key)) {
-            warnings.push(`Persona image "${key}" (${value}) is missing, uploading default avatar`);
+            warnings.push(`Persona image "${key}" (${name}) is missing, uploading default avatar`);
             await uploadUserAvatar(default_user_avatar, key);
         }
     }
 
-    // Merge persona descriptions with existing ones
-    for (const [key, value] of Object.entries(data.persona_descriptions)) {
-        if (key in power_user.persona_descriptions) {
-            warnings.push(`Persona description for "${key}" (${power_user.personas[key]}) already exists, skipping`);
-            continue;
-        }
-
-        if (!power_user.personas[key]) {
+    // A persona_descriptions entry with no matching data.personas entry - same drift case
+    // migrateLegacyPersonaDicts() guards against on settings load - can't be imported (no name to import it
+    // under), same as the original two-pass version's behavior.
+    for (const key of Object.keys(data.persona_descriptions)) {
+        if (!(key in data.personas)) {
             warnings.push(`Persona for "${key}" does not exist, skipping`);
-            continue;
         }
-
-        power_user.persona_descriptions[key] = value;
     }
 
     if (data.default_persona) {
-        if (data.default_persona in power_user.personas) {
+        if (personaStore.has(data.default_persona)) {
             power_user.default_persona = data.default_persona;
         } else {
             warnings.push(`Default persona "${data.default_persona}" does not exist, skipping`);
