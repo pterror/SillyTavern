@@ -6,85 +6,63 @@ import { sync as writeFileAtomicSync } from 'write-file-atomic';
 
 import { TAGS_FILE } from '../constants.js';
 import { getUserDirectories } from '../users.js';
-import { removeOldBackups } from '../util.js';
 
 export const router = express.Router();
 
 /**
- * Gets backup file prefix for a user's tags.json snapshots. Mirrors getSettingsBackupFilePrefix in settings.js -
- * kept as its own prefix (not reusing the settings one) so tags snapshots list/prune independently, but see
- * backupUserTags()/restoreUserTagsForSnapshot() for how the two are paired up by timestamp.
+ * Returns a copy of `settingsContent` (parsed settings.json) with its `tags`/`tag_map` fields set to the
+ * user's live tags.json content, if that file exists. Used when writing a settings snapshot so each snapshot
+ * stays a single file that fully captures state - same shape as before the tags.json split - rather than
+ * needing a second paired backup file that has to be kept in sync by timestamp.
  * @param {string} handle User handle
- * @returns {string} File prefix
+ * @param {object} settingsContent Parsed settings.json content
+ * @returns {object} settingsContent with tags/tag_map merged in from tags.json, if present
  */
-export function getTagsBackupFilePrefix(handle) {
-    return `tags_${handle}_`;
-}
-
-/**
- * Makes a backup of the user's tags.json, using a `timestamp` supplied by the caller (settings.js's
- * backupUserSettings) rather than generating its own - the two backups need the *same* timestamp suffix so
- * restoreUserTagsForSnapshot() can find the tags snapshot that goes with a given settings snapshot. No-ops if
- * tags.json doesn't exist yet (fresh install, or no tag mutation has fired the save subscriber yet).
- * @param {string} handle User handle
- * @param {string} timestamp Same timestamp used for the paired settings.json backup (see generateTimestamp())
- * @returns {void}
- */
-export function backupUserTags(handle, timestamp) {
+export function mergeTagsIntoSnapshot(handle, settingsContent) {
     const userDirectories = getUserDirectories(handle);
-    const sourceFile = path.join(userDirectories.root, TAGS_FILE);
-
-    if (!fs.existsSync(sourceFile)) {
-        return;
-    }
-
-    const backupFile = path.join(userDirectories.backups, `${getTagsBackupFilePrefix(handle)}${timestamp}.json`);
-    fs.copyFileSync(sourceFile, backupFile);
-    removeOldBackups(userDirectories.backups, `tags_${handle}`);
-}
-
-/**
- * Restores tags.json to match a settings.json snapshot being restored (see restore-snapshot below), so
- * restoring an old settings snapshot never orphans the live tags data:
- * - If a tags backup with the same timestamp exists (the snapshot postdates the tags.json split), restores it.
- * - Otherwise (the snapshot predates the split, so there's no paired tags backup) falls back to whatever
- *   `tags`/`tag_map` fields are embedded in the settings snapshot itself and writes those to tags.json instead.
- * @param {string} handle User handle
- * @param {string} settingsSnapshotName e.g. `settings_{handle}_{timestamp}.json`, as passed to /restore-snapshot
- * @param {object} parsedSnapshotSettings Parsed contents of the settings snapshot being restored
- * @returns {void}
- */
-export function restoreUserTagsForSnapshot(handle, settingsSnapshotName, parsedSnapshotSettings) {
-    const userDirectories = getUserDirectories(handle);
-    const settingsPrefix = `settings_${handle}_`;
-    const timestamp = settingsSnapshotName.startsWith(settingsPrefix) && settingsSnapshotName.endsWith('.json')
-        ? settingsSnapshotName.slice(settingsPrefix.length, -'.json'.length)
-        : null;
     const pathToTags = path.join(userDirectories.root, TAGS_FILE);
 
-    if (timestamp) {
-        const pairedBackup = path.join(userDirectories.backups, `${getTagsBackupFilePrefix(handle)}${timestamp}.json`);
-        if (fs.existsSync(pairedBackup)) {
-            fs.rmSync(pathToTags, { force: true });
-            fs.copyFileSync(pairedBackup, pathToTags);
-            return;
-        }
+    if (!fs.existsSync(pathToTags)) {
+        return settingsContent;
     }
 
-    if (parsedSnapshotSettings && (parsedSnapshotSettings.tags !== undefined || parsedSnapshotSettings.tag_map !== undefined)) {
-        const payload = {
-            tags: parsedSnapshotSettings.tags ?? [],
-            tag_map: parsedSnapshotSettings.tag_map ?? {},
-        };
+    try {
+        const parsed = JSON.parse(fs.readFileSync(pathToTags, 'utf8'));
+        return { ...settingsContent, tags: parsed.tags, tag_map: parsed.tag_map };
+    } catch (err) {
+        console.error('Could not merge tags.json into settings snapshot', err);
+        return settingsContent;
+    }
+}
+
+/**
+ * The inverse of mergeTagsIntoSnapshot(): given a parsed settings snapshot being restored, writes its
+ * `tags`/`tag_map` fields out to tags.json and returns the remaining settings content with those fields
+ * stripped (matching the post-cutover settings.json shape, where tags live only in tags.json). Works the same
+ * whether the snapshot predates or postdates the tags.json split - either way, whatever tags/tag_map ends up
+ * embedded in the snapshot is what tags.json gets restored to, so a restore never orphans tags.
+ * @param {string} handle User handle
+ * @param {object} settingsContent Parsed contents of the settings snapshot being restored
+ * @returns {object} settingsContent with tags/tag_map removed
+ */
+export function splitTagsFromSnapshot(handle, settingsContent) {
+    const { tags, tag_map, ...rest } = settingsContent;
+
+    if (tags !== undefined || tag_map !== undefined) {
+        const userDirectories = getUserDirectories(handle);
+        const pathToTags = path.join(userDirectories.root, TAGS_FILE);
+        const payload = { tags: tags ?? [], tag_map: tag_map ?? {} };
         writeFileAtomicSync(pathToTags, JSON.stringify(payload, null, 4), 'utf8');
     }
+
+    return rest;
 }
 
 /**
  * Writes `{ tags, tag_map }` to the user's tags.json - the source of truth for tags/tag_map as of the load-side
  * cutover in tags.js (loadTagsSettings/saveTagsDebounced). settings.json no longer carries these fields going
- * forward; see restoreUserTagsForSnapshot() above for how an old settings.json snapshot (which may still have
- * them embedded) gets reconciled back into this file on restore.
+ * forward; see mergeTagsIntoSnapshot()/splitTagsFromSnapshot() above for how they still travel with a settings
+ * snapshot as a single file for backup/restore.
  */
 router.post('/save', function (request, response) {
     try {
