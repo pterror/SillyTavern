@@ -880,7 +880,7 @@ async function onChatChanged() {
 
     $('#sd_character_prompt_block').show();
 
-    const key = getCharaFilename(this_chid);
+    const key = getCharaFilename(null, { manualAvatarKey: getCurrentCharacter()?.avatar });
     let characterPrompt = key ? (extension_settings.sd.character_prompts[key] || '') : '';
     let negativePrompt = key ? (extension_settings.sd.character_negative_prompts[key] || '') : '';
 
@@ -914,7 +914,7 @@ async function adjustElementScrollHeight() {
 }
 
 async function onCharacterPromptInput() {
-    const key = getCharaFilename(this_chid);
+    const key = getCharaFilename(null, { manualAvatarKey: getCurrentCharacter()?.avatar });
     extension_settings.sd.character_prompts[key] = $('#sd_character_prompt').val();
     saveSettingsDebounced();
     writePromptFieldsDebounced(this_chid);
@@ -923,7 +923,7 @@ async function onCharacterPromptInput() {
 }
 
 async function onCharacterNegativePromptInput() {
-    const key = getCharaFilename(this_chid);
+    const key = getCharaFilename(null, { manualAvatarKey: getCurrentCharacter()?.avatar });
     extension_settings.sd.character_negative_prompts[key] = $('#sd_character_negative_prompt').val();
     saveSettingsDebounced();
     writePromptFieldsDebounced(this_chid);
@@ -936,7 +936,7 @@ function getCharacterPrefix() {
         return '';
     }
 
-    const key = getCharaFilename(this_chid);
+    const key = getCharaFilename(null, { manualAvatarKey: getCurrentCharacter()?.avatar });
 
     if (key) {
         return extension_settings.sd.character_prompts[key] || '';
@@ -950,7 +950,7 @@ function getCharacterNegativePrefix() {
         return '';
     }
 
-    const key = getCharaFilename(this_chid);
+    const key = getCharaFilename(null, { manualAvatarKey: getCurrentCharacter()?.avatar });
 
     if (key) {
         return extension_settings.sd.character_negative_prompts[key] || '';
@@ -3204,7 +3204,7 @@ function generateFreeModePrompt(trigger, combineNegatives) {
         .replace(/^char(\s|,)|{{charPrefix}}/gi, (_, suffix) => {
             const getLastCharacterKey = () => {
                 if (typeof this_chid !== 'undefined') {
-                    return getCharaFilename(this_chid);
+                    return getCharaFilename(null, { manualAvatarKey: getCurrentCharacter()?.avatar });
                 }
                 const context = getContext();
                 for (let i = context.chat.length - 1; i >= 0; i--) {
@@ -5957,7 +5957,7 @@ export async function init() {
             return '';
         }
 
-        const key = getCharaFilename(this_chid);
+        const key = getCharaFilename(null, { manualAvatarKey: getCurrentCharacter()?.avatar });
         let characterPrompt = key ? (extension_settings.sd.character_prompts[key] || '') : '';
         let negativePrompt = key ? (extension_settings.sd.character_negative_prompts[key] || '') : '';
 
