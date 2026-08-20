@@ -2075,7 +2075,7 @@ export function applyTagsOnCharacterSelect(chid = null) {
         return;
     }
 
-    chid = chid ?? (this_chid !== undefined ? Number(this_chid) : undefined);
+    chid = chid ?? getCurrentCharacter()?.avatar;
     printTagList($('#tagList'), { forEntityOrKey: chid, tagOptions: { removable: true } });
 }
 
