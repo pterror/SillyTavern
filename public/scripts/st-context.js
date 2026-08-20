@@ -42,7 +42,6 @@ import {
     streamingProcessor,
     substituteParams,
     substituteParamsExtended,
-    this_chid,
     getCurrentCharacter,
     updateChatMetadata,
     updateMessageBlock,
@@ -121,7 +120,16 @@ export function getContext() {
         groups,
         name1,
         name2,
-        characterId: this_chid,
+        // Lazy getter (not a snapshot like this_chid used to be here) so extensions that read
+        // context.characterId later - after an await, from a closure, etc. - get an index recomputed
+        // fresh from the live characters array/current avatar, instead of one that can go stale if the
+        // array reorders or reloads in the meantime. Matches setCharacterId()'s own idx !== -1 ? String(idx)
+        // : undefined convention, since this_chid itself is always a numeric string or undefined.
+        get characterId() {
+            const avatar = getCurrentCharacter()?.avatar;
+            const index = avatar !== undefined ? characters.findIndex(x => x.avatar === avatar) : -1;
+            return index !== -1 ? String(index) : undefined;
+        },
         characterAvatar: getCurrentCharacter()?.avatar,
         groupId: selected_group,
         chatId: selected_group
