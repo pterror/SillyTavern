@@ -106,12 +106,35 @@ export {
     executeSlashCommands, executeSlashCommandsWithOptions, getSlashCommandsHelp, registerSlashCommand,
 };
 
-export const parser = new SlashCommandParser();
+let parserInstance;
+/**
+ * Returns the shared SlashCommandParser singleton, constructing it on first use instead of at
+ * module load. This file sits in a wide import cycle back into SlashCommandParser.js (e.g.
+ * SlashCommandParser.js -> SlashCommandCommonEnumsProvider.js -> world-info.js -> authors-note.js
+ * -> macros.js -> variables.js -> slash-commands.js, plus other paths through extensions.js /
+ * st-context.js), so slash-commands.js can start evaluating while SlashCommandParser.js is still
+ * mid-evaluation and its class binding is still in its temporal dead zone. Constructing eagerly
+ * at the top level (`new SlashCommandParser()`) threw "Cannot access 'SlashCommandParser' before
+ * initialization" depending on which path first pulled this module in. Deferring construction
+ * until something actually needs the parser sidesteps the load-order dependency entirely, since
+ * by the time any command runs the whole module graph has finished loading.
+ * @returns {SlashCommandParser}
+ */
+function getParser() {
+    if (!parserInstance) {
+        parserInstance = new SlashCommandParser();
+    }
+    return parserInstance;
+}
 /**
  * @deprecated Use SlashCommandParser.addCommandObject() instead
  */
-const registerSlashCommand = SlashCommandParser.addCommand.bind(SlashCommandParser);
-const getSlashCommandsHelp = parser.getHelpString.bind(parser);
+function registerSlashCommand(...args) {
+    return SlashCommandParser.addCommand(...args);
+}
+function getSlashCommandsHelp(...args) {
+    return getParser().getHelpString(...args);
+}
 
 /**
  * Converts a SlashCommandClosure to a filter function that returns a boolean.
@@ -7017,7 +7040,7 @@ async function executeSlashCommandsWithOptions(text, options = {}) {
 
     let closure;
     try {
-        closure = parser.parse(text, true, options.parserFlags, options.abortController ?? new SlashCommandAbortController());
+        closure = getParser().parse(text, true, options.parserFlags, options.abortController ?? new SlashCommandAbortController());
         closure.scope.parent = options.scope;
         closure.onProgress = options.onProgress;
         closure.debugController = options.debugController;
