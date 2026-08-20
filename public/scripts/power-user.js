@@ -68,7 +68,12 @@ import { bindModelTemplates } from './chat-templates.js';
 import { IMAGE_OVERSWIPE, MEDIA_DISPLAY } from './constants.js';
 import { t } from './i18n.js';
 import { getBackgroundPath, isCustomBackgroundUrl } from './backgrounds.js';
-import { persona_description_positions as _persona_description_positions } from './personas.js';
+import {
+    persona_description_positions as _persona_description_positions,
+    DEFAULT_DEPTH as PERSONA_DEFAULT_DEPTH,
+    DEFAULT_ROLE as PERSONA_DEFAULT_ROLE,
+} from './personas.js';
+import { DictEntityStore } from './entity-store.js';
 
 export const toastPositionClasses = [
     'toast-top-left',
@@ -283,9 +288,15 @@ export const power_user = {
         max_additions: 1,
     },
 
+    // personas/persona_descriptions below are compat views over persona_data (see installPersonaCompatProxies()
+    // near the bottom of this file) - persona_data is the real, merged, avatar-id-keyed store; personas/
+    // persona_descriptions are Proxy objects that read/write through to it in the old two-dict shape, for
+    // outside code (third-party extensions, settings.json's on-disk shape for downgrade/backup-restore
+    // compat) that still expects that shape. In-repo code should use personaStore, not these two fields.
     personas: {},
     default_persona: null,
     persona_descriptions: {},
+    persona_data: {},
 
     persona_description: '',
     persona_description_position: persona_description_positions.IN_PROMPT,
@@ -341,6 +352,218 @@ export const power_user = {
     media_display: MEDIA_DISPLAY.LIST,
     image_overswipe: IMAGE_OVERSWIPE.GENERATE,
 };
+
+// #region Persona store (persona_data + power_user.personas/persona_descriptions compat views)
+
+/**
+ * @typedef {object} PersonaRecord The merged, canonical shape of one persona - avatarId (the persona's user
+ * avatar filename) is its key in power_user.persona_data, not a field on the record itself.
+ * @property {string} name
+ * @property {string} description
+ * @property {number} position - one of persona_description_positions
+ * @property {number} depth
+ * @property {number} role
+ * @property {string} lorebook
+ * @property {string} title
+ * @property {import('./personas.js').PersonaConnection[]} connections
+ */
+
+/**
+ * @returns {PersonaRecord} A freshly-defaulted persona record, matching what personas.js's initPersona() has
+ * always defaulted a persona to when given nothing but a name.
+ */
+function defaultPersonaRecord() {
+    return {
+        name: '',
+        description: '',
+        position: persona_description_positions.IN_PROMPT,
+        depth: PERSONA_DEFAULT_DEPTH,
+        role: PERSONA_DEFAULT_ROLE,
+        lorebook: '',
+        title: '',
+        connections: [],
+    };
+}
+
+/**
+ * The real, canonical persona store - avatarId-keyed, backed by power_user.persona_data. This is what in-repo
+ * code should use going forward; power_user.personas/persona_descriptions (below) are compat views over it for
+ * outside code only.
+ * @type {DictEntityStore<PersonaRecord>}
+ */
+export let personaStore = new DictEntityStore(power_user.persona_data);
+
+/**
+ * Merges power_user.personas (avatarId -> name string) and power_user.persona_descriptions (avatarId -> the
+ * rest of the fields) - as freshly loaded from settings.json, i.e. before installPersonaCompatProxies() below
+ * replaces them with live views - into power_user.persona_data, the new merged/canonical shape. Upgrade-safe:
+ * never drops a persona that exists in either legacy dict, even if the two disagree (same "don't silently
+ * orphan existing user data on upgrade" concern as the this_chid->avatar legacyId migration in PromptManager).
+ * Idempotent and safe to call on every load (skips ids already present in persona_data), so it also picks up
+ * personas that predate this migration but only surface later (e.g. restored from an older backup file).
+ * @param {{[avatarId: string]: string}} legacyPersonas
+ * @param {{[avatarId: string]: Partial<PersonaRecord>}} legacyDescriptions
+ */
+export function migrateLegacyPersonaDicts(legacyPersonas, legacyDescriptions) {
+    const ids = new Set([...Object.keys(legacyPersonas ?? {}), ...Object.keys(legacyDescriptions ?? {})]);
+    for (const avatarId of ids) {
+        if (personaStore.has(avatarId)) continue;
+        const legacyDescription = legacyDescriptions?.[avatarId];
+        personaStore.create(avatarId, {
+            ...defaultPersonaRecord(),
+            ...legacyDescription,
+            name: legacyPersonas?.[avatarId] ?? legacyDescription?.name ?? '',
+            connections: legacyDescription?.connections ?? [],
+        });
+    }
+}
+
+/**
+ * Builds the read-through/write-through Proxy that makes personaStore look like the old
+ * `power_user.personas` (avatarId -> name string) shape to code that hasn't migrated onto personaStore -
+ * currently at least one third-party extension (SillyTavern-Smart-Dialogue-Colorizer) reads this directly, and
+ * `power_user` as a whole gets JSON.stringify'd straight into settings.json on every save, so this shape also
+ * needs to keep showing up there for downgrade/backup-restore compat. The proxy has no state of its own (empty
+ * target, everything virtualized through traps) - every read is computed live from personaStore, so there's no
+ * second copy that can drift out of sync the way the original personas/persona_descriptions split could.
+ *
+ * Writes are two-way: `power_user.personas[id] = name` on an existing persona is a plain rename
+ * (personaStore.update); on an unknown id it creates a new persona defaulted the same way initPersona() always
+ * has when given only a name, and replicates the same side effects a real create call site would
+ * (saveSettingsDebounced + PERSONA_CREATED). `delete power_user.personas[id]` removes the persona entirely
+ * (mirrors deletePersona() deleting both legacy dicts' entries together) and emits PERSONA_DELETED.
+ * @returns {{[avatarId: string]: string}}
+ */
+function makePersonasCompatProxy() {
+    return new Proxy(/** @type {any} */ ({}), {
+        get(target, prop, receiver) {
+            if (typeof prop === 'symbol') return Reflect.get(target, prop, receiver);
+            return personaStore.get(prop)?.name;
+        },
+        has(target, prop) {
+            if (typeof prop === 'symbol') return Reflect.has(target, prop);
+            return personaStore.has(prop);
+        },
+        ownKeys() {
+            return Object.keys(personaStore.getAll());
+        },
+        getOwnPropertyDescriptor(target, prop) {
+            if (typeof prop === 'symbol' || !personaStore.has(prop)) return undefined;
+            return { value: personaStore.get(prop).name, writable: true, enumerable: true, configurable: true };
+        },
+        set(target, prop, value) {
+            if (typeof prop === 'symbol') { target[prop] = value; return true; }
+            const name = String(value);
+            if (personaStore.has(prop)) {
+                personaStore.update(prop, { name });
+            } else {
+                personaStore.create(prop, { ...defaultPersonaRecord(), name });
+                eventSource.emit(event_types.PERSONA_CREATED, { avatarId: prop, name, description: '', title: '' })
+                    .catch(err => console.error('PERSONA_CREATED listener failed', err));
+            }
+            saveSettingsDebounced();
+            return true;
+        },
+        deleteProperty(target, prop) {
+            if (typeof prop === 'symbol') { delete target[prop]; return true; }
+            const entity = personaStore.get(prop);
+            if (entity) {
+                personaStore.remove(prop);
+                saveSettingsDebounced();
+                eventSource.emit(event_types.PERSONA_DELETED, { avatarId: prop, name: entity.name })
+                    .catch(err => console.error('PERSONA_DELETED listener failed', err));
+            }
+            return true;
+        },
+    });
+}
+
+/**
+ * Same idea as makePersonasCompatProxy(), for the old `power_user.persona_descriptions` (avatarId -> {
+ * description, position, depth, role, lorebook, title, connections }) shape. Unlike the personas proxy, this
+ * one's get() returns the *live* PersonaRecord itself rather than a projected copy (it does carry a `name`
+ * field the old shape never had, which nothing reads for the absence of) - the old descriptions dict was
+ * always mutated in place by callers (`power_user.persona_descriptions[id].title = x`, `.connections = [...]`,
+ * etc, each followed by its own explicit saveSettingsDebounced()), and a copy would silently discard those
+ * writes since they'd land on a throwaway object instead of the store. Returning the live record instead means
+ * nested in-place mutation keeps working exactly as it always did (still requires the caller to save/emit
+ * itself, same as before - this proxy doesn't add auto-save on nested mutation, since it has no way to observe
+ * it), which matters while any old-style nested-mutation call sites haven't been migrated onto personaStore yet.
+ * @returns {{[avatarId: string]: Partial<PersonaRecord>}}
+ */
+function makePersonaDescriptionsCompatProxy() {
+    return new Proxy(/** @type {any} */ ({}), {
+        get(target, prop, receiver) {
+            if (typeof prop === 'symbol') return Reflect.get(target, prop, receiver);
+            return personaStore.get(prop);
+        },
+        has(target, prop) {
+            if (typeof prop === 'symbol') return Reflect.has(target, prop);
+            return personaStore.has(prop);
+        },
+        ownKeys() {
+            return Object.keys(personaStore.getAll());
+        },
+        getOwnPropertyDescriptor(target, prop) {
+            if (typeof prop === 'symbol' || !personaStore.has(prop)) return undefined;
+            return { value: personaStore.get(prop), writable: true, enumerable: true, configurable: true };
+        },
+        set(target, prop, value) {
+            if (typeof prop === 'symbol') { target[prop] = value; return true; }
+            if (personaStore.has(prop)) {
+                const patch = { ...value };
+                delete patch.name; // the personas proxy owns the name field, never let a descriptions write clobber it
+                personaStore.update(prop, patch);
+            } else {
+                personaStore.create(prop, { ...defaultPersonaRecord(), ...value, name: '' });
+                eventSource.emit(event_types.PERSONA_CREATED, {
+                    avatarId: prop, name: '', description: value?.description ?? '', title: value?.title ?? '',
+                }).catch(err => console.error('PERSONA_CREATED listener failed', err));
+            }
+            saveSettingsDebounced();
+            return true;
+        },
+        deleteProperty(target, prop) {
+            // The old code never deleted a whole persona_descriptions[id] entry directly (only sub-fields on
+            // it, e.g. `delete power_user.persona_descriptions[id].title`, which the live-reference get()
+            // above already handles correctly) - but if anything does, treat it the same as deletePersona()
+            // deleting both legacy dicts' entries together, rather than leaving personas/persona_data out of
+            // sync with an orphaned name and no description.
+            if (typeof prop === 'symbol') { delete target[prop]; return true; }
+            const entity = personaStore.get(prop);
+            if (entity) {
+                personaStore.remove(prop);
+                saveSettingsDebounced();
+                eventSource.emit(event_types.PERSONA_DELETED, { avatarId: prop, name: entity.name })
+                    .catch(err => console.error('PERSONA_DELETED listener failed', err));
+            }
+            return true;
+        },
+    });
+}
+
+/**
+ * (Re)builds personaStore to wrap the current power_user.persona_data reference, migrates any not-yet-merged
+ * legacy persona data found on power_user.personas/persona_descriptions into it, and installs fresh compat
+ * proxies over power_user.personas/persona_descriptions. Called once at module load (so personaStore/the
+ * proxies exist even before settings finish loading) and again from loadPowerUserSettings() after
+ * Object.assign(power_user, settings.power_user) - which replaces persona_data/personas/persona_descriptions
+ * with whatever was actually saved, so the store and proxies need to be rebuilt against those, same reasoning
+ * as tags.js's rebuildTagStores().
+ */
+export function installPersonaCompatProxies() {
+    if (!power_user.persona_data || typeof power_user.persona_data !== 'object') {
+        power_user.persona_data = {};
+    }
+    personaStore = new DictEntityStore(power_user.persona_data);
+    migrateLegacyPersonaDicts(power_user.personas, power_user.persona_descriptions);
+    power_user.personas = makePersonasCompatProxy();
+    power_user.persona_descriptions = makePersonaDescriptionsCompatProxy();
+}
+
+installPersonaCompatProxies();
+
+// #endregion
 
 let themes = [];
 let movingUIPresets = [];
@@ -1565,6 +1788,14 @@ export async function loadPowerUserSettings(settings, data) {
         }
         Object.assign(power_user, settings.power_user);
     }
+
+    // Rebuild personaStore (and power_user.personas/persona_descriptions' compat proxies) against whatever
+    // persona_data/personas/persona_descriptions actually came back from settings.json - a store/proxy built
+    // against the pre-load defaults would otherwise keep pointing at stale, orphaned objects. Also migrates
+    // any pre-existing personas/persona_descriptions data (from a settings.json saved before this migration)
+    // into persona_data the first time it's seen; safe to call unconditionally since it's a no-op for ids
+    // already present in persona_data.
+    installPersonaCompatProxies();
 
     if (power_user.stscript === undefined) {
         power_user.stscript = defaultStscript;
