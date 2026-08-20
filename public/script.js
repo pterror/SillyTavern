@@ -6016,7 +6016,7 @@ export async function sendMessageAsUser(messageText, messageBias, insertAt = nul
     }
 
     await populateFileAttachment(message);
-    statMesProcess(message, 'user', characters, this_chid, '');
+    statMesProcess(message, 'user', getCurrentCharacter(), '');
 
     chat_metadata.tainted = true;
 
@@ -6942,7 +6942,7 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
         item.swipe_info.push(...swipeInfoArray);
     }
 
-    statMesProcess(item, type, characters, this_chid, oldMessage);
+    statMesProcess(item, type, getCurrentCharacter(), oldMessage);
     return { type, getMessage };
 }
 
