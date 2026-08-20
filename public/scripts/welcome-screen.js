@@ -1,6 +1,7 @@
 import {
     addOneMessage,
     characters,
+    charactersStore,
     chat,
     deleteCharacterChatByName,
     displayVersion,
@@ -937,9 +938,12 @@ export function initWelcomeScreen() {
         assignCharacterAsAssistant(this_chid);
     });
 
-    eventSource.on(event_types.CHARACTER_RENAMED, (oldAvatar, newAvatar) => {
-        if (oldAvatar === getPermanentAssistantAvatar()) {
-            accountStorage.setItem(assistantAvatarKey, newAvatar);
+    // Was a raw CHARACTER_RENAMED listener - charactersStore's 'renamed' op carries the same oldId/newId a
+    // rename report gives (see script.js's renameCharacter -> charactersStore.reportRenamed()), so this is a
+    // direct port onto the store, same identity space (avatar-keyed) both before and after.
+    charactersStore.onChange((change) => {
+        if (change.op === 'renamed' && change.oldId === getPermanentAssistantAvatar()) {
+            accountStorage.setItem(assistantAvatarKey, change.newId);
         }
     });
 
