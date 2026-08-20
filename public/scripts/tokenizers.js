@@ -1,5 +1,5 @@
 import { localforage } from '../lib.js';
-import { characters, event_types, eventSource, main_api, nai_settings, online_status, this_chid } from '../script.js';
+import { event_types, eventSource, getCurrentCharacter, main_api, nai_settings, online_status, this_chid } from '../script.js';
 import { power_user, registerDebugFunction } from './power-user.js';
 import { chat_completion_sources, model_list, oai_settings } from './openai.js';
 import { groups, selected_group } from './group-chats.js';
@@ -897,7 +897,7 @@ function getTokenCacheObject() {
         if (selected_group) {
             chatId = groups.find(x => x.id == selected_group)?.chat_id;
         } else if (this_chid !== undefined) {
-            chatId = characters[this_chid].chat;
+            chatId = getCurrentCharacter().chat;
         }
     } catch {
         console.log('No character / group selected. Using default cache item');
