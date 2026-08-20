@@ -22,7 +22,7 @@ import {
     setUserName,
     this_chid,
 } from '../script.js';
-import { power_user } from './power-user.js';
+import { power_user, personaStore } from './power-user.js';
 import { getTokenCountAsync } from './tokenizers.js';
 import {
     PAGINATION_TEMPLATE,
@@ -260,7 +260,7 @@ function getUserAvatarBlock(avatarId) {
  */
 async function addMissingPersonas(avatarsList) {
     for (const persona of avatarsList) {
-        if (!power_user.personas[persona]) {
+        if (!personaStore.has(persona)) {
             await initPersona(persona, '[Unnamed Persona]', '', '', { silent: true });
         }
     }
@@ -519,15 +519,22 @@ export async function initPersona(avatarId, personaName, personaDescription, per
     role = DEFAULT_ROLE,
     lorebook = '',
 } = {}) {
-    power_user.personas[avatarId] = personaName;
-    power_user.persona_descriptions[avatarId] = {
+    /** @type {import('./power-user.js').PersonaRecord} */
+    const record = {
+        name: personaName,
         description: personaDescription || '',
         position: position,
         depth: depth,
         role: role,
         lorebook: lorebook,
         title: personaTitle || '',
+        connections: [],
     };
+    if (personaStore.has(avatarId)) {
+        personaStore.update(avatarId, record);
+    } else {
+        personaStore.create(avatarId, record);
+    }
 
     saveSettingsDebounced();
 
@@ -561,7 +568,7 @@ export async function convertCharacterToPersona(characterId = null) {
     let description = characters[characterId]?.description;
     const overwriteName = `${name} (Persona).png`;
 
-    if (overwriteName in power_user.personas) {
+    if (personaStore.has(overwriteName)) {
         const confirm = await Popup.show.confirm(t`Overwrite Existing Persona`, t`This character exists as a persona already. Do you want to overwrite it?`);
         if (!confirm) {
             console.log('User cancelled the overwrite of the persona');
@@ -580,15 +587,21 @@ export async function convertCharacterToPersona(characterId = null) {
     const thumbnailAvatar = getThumbnailUrl('avatar', avatarUrl);
     await uploadUserAvatar(thumbnailAvatar, overwriteName);
 
-    power_user.personas[overwriteName] = name;
-    power_user.persona_descriptions[overwriteName] = {
+    const record = {
+        name: name,
         description: description,
         position: persona_description_positions.IN_PROMPT,
         depth: DEFAULT_DEPTH,
         role: DEFAULT_ROLE,
         lorebook: '',
         title: '',
+        connections: [],
     };
+    if (personaStore.has(overwriteName)) {
+        personaStore.update(overwriteName, record);
+    } else {
+        personaStore.create(overwriteName, record);
+    }
 
     // If the user is currently using this persona, update the description
     if (user_avatar === overwriteName) {
@@ -1154,7 +1167,7 @@ async function deletePersona(avatarId, { silent = false } = {}) {
         return false;
     }
 
-    const name = power_user.personas[avatarId] || '';
+    const name = personaStore.get(avatarId)?.name || '';
 
     if (!silent) {
         const confirm = await Popup.show.confirm(
@@ -1177,8 +1190,7 @@ async function deletePersona(avatarId, { silent = false } = {}) {
 
     if (request.ok) {
         console.log(`Deleted avatar ${avatarId}`);
-        delete power_user.personas[avatarId];
-        delete power_user.persona_descriptions[avatarId];
+        personaStore.remove(avatarId);
 
         if (avatarId === power_user.default_persona) {
             if (!silent) toastr.warning(t`The default persona was deleted. You will need to set a new default persona.`, t`Default Persona Deleted`);
@@ -1893,7 +1905,7 @@ export async function retriggerFirstMessageOnEmptyChat() {
  * @returns {Promise<string>} The avatar id of the new persona, or empty string on failure/cancellation
  */
 async function duplicatePersona(avatarId, { silent = false, select = false } = {}) {
-    const personaName = power_user.personas[avatarId];
+    const personaName = personaStore.get(avatarId)?.name;
 
     if (!personaName) {
         toastr.warning(t`Chosen avatar is not a persona`, t`Persona Management`);
@@ -1910,17 +1922,21 @@ async function duplicatePersona(avatarId, { silent = false, select = false } = {
     }
 
     const newAvatarId = `${Date.now()}-${personaName.replace(/[^a-zA-Z0-9]/g, '')}.png`;
-    const descriptor = power_user.persona_descriptions[avatarId];
+    const descriptor = personaStore.get(avatarId);
 
-    power_user.personas[newAvatarId] = personaName;
-    power_user.persona_descriptions[newAvatarId] = {
+    personaStore.create(newAvatarId, {
+        name: personaName,
         description: descriptor?.description ?? '',
         position: descriptor?.position ?? persona_description_positions.IN_PROMPT,
         depth: descriptor?.depth ?? DEFAULT_DEPTH,
         role: descriptor?.role ?? DEFAULT_ROLE,
         lorebook: descriptor?.lorebook ?? '',
         title: descriptor?.title ?? '',
-    };
+        // Deliberately not copying `connections` - a duplicated persona isn't connected to whatever
+        // character/group the source persona was locked to, same as before this migration (the original
+        // object literal here never included a connections field either).
+        connections: [],
+    });
 
     await uploadUserAvatar(getUserAvatar(avatarId), newAvatarId);
 
@@ -1947,7 +1963,7 @@ async function duplicatePersona(avatarId, { silent = false, select = false } = {
  * If a current user avatar is not bound to persona, bind it.
  */
 async function migrateNonPersonaUser() {
-    if (user_avatar in power_user.personas) {
+    if (personaStore.has(user_avatar)) {
         return;
     }
 
