@@ -1,6 +1,6 @@
 import { Popper } from '../lib.js';
 
-import { eventSource, event_types, saveSettings, saveSettingsDebounced, getRequestHeaders, animation_duration, CLIENT_VERSION } from '../script.js';
+import { eventSource, event_types, saveSettings, saveSettingsDebounced, getRequestHeaders, animation_duration, CLIENT_VERSION, charactersStore } from '../script.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup } from './popup.js';
 import { renderTemplate, renderTemplateAsync } from './templates.js';
 import { delay, deleteValueByPath, equalsIgnoreCaseAndAccents, escapeHtml, isSubsetOf, sanitizeSelector, setValueByPath, versionCompare } from './utils.js';
@@ -2069,7 +2069,7 @@ export const UNSET_VALUE = '__@@UNSET@@__';
  */
 export async function writeExtensionField(characterAvatar, key, value) {
     const context = getContext();
-    const character = context.characters.find(c => c.avatar === characterAvatar);
+    const character = charactersStore.get(characterAvatar);
     if (!character) {
         console.warn('Character not found', characterAvatar);
         return;
