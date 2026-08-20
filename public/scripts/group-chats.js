@@ -137,6 +137,19 @@ let groupsStore = new EntityStore(groups, g => g.id);
 function rebuildGroupsStore() {
     groupsStore = new EntityStore(groups, g => g.id);
     groupsStore.onChange(() => invalidateGroupsFuseIndex());
+
+    // The open group's member/candidate lists (`#rm_group_members`/`#rm_group_add_members`) are built from
+    // `group.members` (see getGroupCharacters()), so they only need to be reprinted when `members` itself
+    // changed - not on every groupsStore change (e.g. a name/fav/generation_mode edit), since a full reprint
+    // resets each list's pagination state. This replaces the printGroupCandidates()+printGroupMembers() pair
+    // that used to be called directly from modifyGroupMember()/reorderGroupMember() right after their own
+    // groupsStore.update({ members }) call.
+    groupsStore.onChange(change => {
+        if (change.op === 'updated' && change.patch && 'members' in change.patch) {
+            printGroupCandidates();
+            printGroupMembers();
+        }
+    });
 }
 /** @type {string|null} */
 let selected_group = null;
@@ -1491,6 +1504,12 @@ async function modifyGroupMember(groupId, groupMember, isDelete) {
         // membersArray === thisGroup.members (already mutated above in place) - this is purely to report the
         // change via groupsStore, not to actually change the value again.
         groupsStore.update(groupId, { members: membersArray });
+    } else {
+        // No existing group yet (still on the "create new group" screen, mutating newGroupMembers directly) -
+        // there's no groupsStore entity to update/report, so the groupsStore.onChange subscriber
+        // (rebuildGroupsStore()) that normally reprints these lists won't fire. Reprint directly.
+        printGroupCandidates();
+        printGroupMembers();
     }
 
     if (openGroupId) {
@@ -1498,9 +1517,6 @@ async function modifyGroupMember(groupId, groupMember, isDelete) {
         await editGroup(openGroupId, false, false);
         updateGroupAvatar(thisGroup);
     }
-
-    printGroupCandidates();
-    printGroupMembers();
 
     // Refresh the tag filters for both lists to reflect any new tags
     printTagFilters(tag_filter_type.group_candidates_list);
@@ -1540,11 +1556,14 @@ async function reorderGroupMember(groupId, groupMember, direction) {
 
     if (thisGroup) {
         // memberArray === thisGroup.members (already mutated above in place) - this is purely to report the
-        // change via groupsStore, not to actually change the value again.
+        // change via groupsStore, not to actually change the value again. printGroupMembers() is handled by
+        // the groupsStore.onChange subscriber (rebuildGroupsStore()), triggered by this call.
         groupsStore.update(groupId, { members: memberArray });
+    } else {
+        // No existing group yet (still on the "create new group" screen, mutating newGroupMembers directly) -
+        // there's no groupsStore entity to update/report, so the subscriber above won't fire. Reprint directly.
+        printGroupMembers();
     }
-
-    printGroupMembers();
 
     // Existing groups need to modify members list
     if (openGroupId) {
