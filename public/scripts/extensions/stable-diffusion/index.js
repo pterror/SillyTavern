@@ -3271,7 +3271,7 @@ function getCharacterAvatarUrl() {
     const context = getContext();
 
     if (context.groupId) {
-        const groupMembers = context.groups.find(x => x.id === context.groupId)?.members;
+        const groupMembers = context.getGroupById(context.groupId)?.members;
         const lastMessageAvatar = context.chat?.filter(x => !x.is_system && !x.is_user)?.slice(-1)[0]?.original_avatar;
         const randomMemberAvatar = Array.isArray(groupMembers) ? groupMembers[Math.floor(Math.random() * groupMembers.length)] : null;
         const avatarToUse = lastMessageAvatar || randomMemberAvatar;

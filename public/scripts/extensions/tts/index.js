@@ -1312,7 +1312,7 @@ export function getCharacters(unrestricted) {
         // Group chat
         characters.push(DEFAULT_VOICE_MARKER);
         characters.push(context.name1);
-        const group = context.groups.find(group => context.groupId == group.id);
+        const group = context.getGroupById(context.groupId);
         for (let member of group.members) {
             const character = charactersStore.get(member);
             if (character) {

@@ -2,6 +2,7 @@ import {
     buildAvatarList,
     characterToEntity,
     characters,
+    charactersStore,
     getCurrentCharacter,
     chat,
     chat_metadata,
@@ -743,7 +744,7 @@ export function updatePersonaConnectionsAvatarList() {
     const connections = personaStore.get(user_avatar)?.connections ?? [];
     const entities = connections.map(connection => {
         if (connection.type === 'character') {
-            const character = characters.find(c => c.avatar === connection.id);
+            const character = charactersStore.get(connection.id);
             if (character) return characterToEntity(character, getCharIndex(character));
         }
         if (connection.type === 'group') {

@@ -1,7 +1,7 @@
 import { DOMPurify, Bowser } from '../lib.js';
 
 import {
-    characters,
+    charactersStore,
     online_status,
     main_api,
     is_send_press,
@@ -28,7 +28,7 @@ import {
 } from './power-user.js';
 
 import { selected_group, is_group_generating, openGroupById } from './group-chats.js';
-import { getTagKeyForEntity, applyTagsOnCharacterSelect } from './tags.js';
+import { applyTagsOnCharacterSelect } from './tags.js';
 import {
     SECRET_KEYS,
     secret_state,
@@ -272,7 +272,10 @@ export async function RA_CountCharTokens() {
 async function RA_autoloadchat() {
     // active character is the name, we should look it up in the character list and get the id
     if (active_character !== null && active_character !== undefined) {
-        const activeCharacterEntity = characters.find(x => getTagKeyForEntity(x) === active_character);
+        // active_character is stored as the character's avatar filename (see setActiveCharacter() callers),
+        // so this is equivalent to the old `characters.find(x => getTagKeyForEntity(x) === active_character)` -
+        // getTagKeyForEntity() resolves any character object in `characters` to its own `.avatar`.
+        const activeCharacterEntity = charactersStore.get(active_character);
         if (activeCharacterEntity) {
             await selectCharacterByAvatar(activeCharacterEntity.avatar);
             applyTagsOnCharacterSelect();

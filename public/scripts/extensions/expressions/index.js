@@ -167,7 +167,7 @@ async function updateVisualNovelMode(spriteFolderName, expression) {
 
 async function visualNovelRemoveInactive(container) {
     const context = getContext();
-    const group = context.groups.find(x => x.id == context.groupId);
+    const group = context.getGroupById(context.groupId);
     const removeInactiveCharactersPromises = [];
 
     // remove inactive characters after 1 second
@@ -203,7 +203,7 @@ async function visualNovelRemoveInactive(container) {
 async function visualNovelSetCharacterSprites(vnContainer, spriteFolderName, expression) {
     const originalExpression = expression;
     const context = getContext();
-    const group = context.groups.find(x => x.id == context.groupId);
+    const group = context.getGroupById(context.groupId);
 
     const setSpritePromises = [];
 
@@ -298,7 +298,7 @@ async function getLastMessageSprite(avatar) {
 
 export async function visualNovelUpdateLayers(container) {
     const context = getContext();
-    const group = context.groups.find(x => x.id == context.groupId);
+    const group = context.getGroupById(context.groupId);
     const recentMessages = context.chat.map(x => x.original_avatar).filter(x => x).reverse().filter(onlyUnique);
     const filteredMembers = group.members.filter(x => !group.disabled_members.includes(x));
     const layerIndices = filteredMembers.slice().sort((a, b) => {
@@ -1610,13 +1610,13 @@ async function setExpression(spriteFolderName, expression, { force = false, over
     if (spriteFile) {
         if (force && isVisualNovelMode()) {
             const context = getContext();
-            const group = context.groups.find(x => x.id === context.groupId);
+            const group = context.getGroupById(context.groupId);
 
             // If it's a folder, make sure we find the group member based on the actual name
             const memberName = spriteFolderName.split('/')[0] ?? spriteFolderName;
 
             const groupMember = group.members
-                .map(member => context.characters.find(x => x.avatar === member))
+                .map(member => context.getCharacterByAvatar(member))
                 .find(groupMember => groupMember && groupMember.name === memberName);
             if (groupMember) {
                 await setImage($(`.expression-holder[data-avatar="${groupMember.avatar}"] img`), spriteFile.imageSrc);

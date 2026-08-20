@@ -4,6 +4,7 @@ import {
     appendMediaToMessage,
     callPopup,
     characters,
+    charactersStore,
     chat,
     chat_metadata,
     CONNECT_API_MAP,
@@ -127,6 +128,17 @@ function getGroupById(id) {
 }
 
 /**
+ * Read-only O(1) lookup for a character by avatar filename (the character id), backed by charactersStore's
+ * Map index - use this instead of `context.characters.find(x => x.avatar === avatar)` wherever the avatar is
+ * already known. Same rationale as getGroupById above - deliberately exposes only the read.
+ * @param {string} avatar - the character's avatar filename (its id)
+ * @returns {object|undefined} the character, or undefined if no character with that avatar exists
+ */
+function getCharacterByAvatar(avatar) {
+    return charactersStore.get(avatar);
+}
+
+/**
  * Read-only O(1) lookup for a tag by id, backed by tagsStore's Map index - use this instead of
  * `context.tags.find(x => x.id === id)` wherever the id is already known, since that scan is O(n) over
  * every tag. `context.tags` (the raw array) stays available unchanged for anything that isn't a by-id
@@ -158,7 +170,10 @@ export function getContext() {
     return {
         accountStorage,
         chat,
+        // Raw array - unchanged, O(n) `.find()` for by-id lookups. Kept exactly as-is for backwards
+        // compatibility with existing extensions. Prefer getCharacterByAvatar(avatar) below for O(1) lookups.
         characters,
+        getCharacterByAvatar,
         // Raw array - unchanged, O(n) `.find()` for by-id lookups. Kept exactly as-is for backwards
         // compatibility with existing extensions. Prefer getGroupById(id) below for O(1) by-id lookups.
         groups,
