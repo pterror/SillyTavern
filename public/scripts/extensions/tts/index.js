@@ -1,4 +1,4 @@
-import { cancelTtsPlay, eventSource, event_types, getCurrentChatId, isStreamingEnabled, name2, saveSettingsDebounced, substituteParams } from '../../../script.js';
+import { cancelTtsPlay, charactersStore, eventSource, event_types, getCurrentChatId, isStreamingEnabled, name2, saveSettingsDebounced, substituteParams } from '../../../script.js';
 import { ModuleWorkerWrapper, extension_settings, getContext, renderExtensionTemplateAsync } from '../../extensions.js';
 import { delay, escapeRegex, getBase64Async, getStringHash, onlyUnique, regexFromString } from '../../utils.js';
 import { accountStorage } from '../../util/AccountStorage.js';
@@ -1314,7 +1314,7 @@ export function getCharacters(unrestricted) {
         characters.push(context.name1);
         const group = context.groups.find(group => context.groupId == group.id);
         for (let member of group.members) {
-            const character = context.characters.find(char => char.avatar == member);
+            const character = charactersStore.get(member);
             if (character) {
                 characters.push(character.name);
             }
