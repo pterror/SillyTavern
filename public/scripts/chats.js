@@ -4,11 +4,11 @@ import { Popper, css, DOMPurify } from '../lib.js';
 import {
     addCopyToCodeBlocks,
     appendMediaToMessage,
-    characters,
     chat,
     eventSource,
     event_types,
     getCurrentChatId,
+    getCurrentCharacter,
     getRequestHeaders,
     name2,
     reloadCurrentChat,
@@ -748,8 +748,8 @@ async function checkForCreatorNotesStyles() {
         return;
     }
 
-    const notes = characters[this_chid].data?.creator_notes || characters[this_chid].creatorcomment;
-    const avatarId = characters[this_chid].avatar;
+    const notes = getCurrentCharacter().data?.creator_notes || getCurrentCharacter().creatorcomment;
+    const avatarId = getCurrentCharacter().avatar;
     const styleContents = getStyleContentsFromMarkdown(notes);
 
     if (!styleContents) {
@@ -846,7 +846,7 @@ export function getCurrentEntityId() {
         return String(selected_group);
     }
 
-    return characters[this_chid]?.avatar ?? null;
+    return getCurrentCharacter()?.avatar ?? null;
 }
 
 export function isExternalMediaAllowed() {
@@ -1305,7 +1305,7 @@ export async function deleteAttachment(attachment, source, callback, confirm = t
             saveMetadataDebounced();
             break;
         case 'character':
-            extension_settings.character_attachments[characters[this_chid]?.avatar] = extension_settings.character_attachments[characters[this_chid]?.avatar].filter((a) => a.url !== attachment.url);
+            extension_settings.character_attachments[getCurrentCharacter()?.avatar] = extension_settings.character_attachments[getCurrentCharacter()?.avatar].filter((a) => a.url !== attachment.url);
             break;
     }
 
@@ -1489,7 +1489,7 @@ async function openAttachmentManager() {
         /** @type {FileAttachment[]} */
         const chatAttachments = chat_metadata.attachments ?? [];
         /** @type {FileAttachment[]} */
-        const characterAttachments = extension_settings.character_attachments?.[characters[this_chid]?.avatar] ?? [];
+        const characterAttachments = extension_settings.character_attachments?.[getCurrentCharacter()?.avatar] ?? [];
 
         await renderList(globalAttachments, ATTACHMENT_SOURCE.GLOBAL);
         await renderList(chatAttachments, ATTACHMENT_SOURCE.CHAT);
@@ -1500,7 +1500,7 @@ async function openAttachmentManager() {
         template.find('.characterAttachmentsBlock').toggle(!isNotCharacter);
         template.find('.chatAttachmentsBlock').toggle(!isNotInChat);
 
-        const characterName = characters[this_chid]?.name || 'Anonymous';
+        const characterName = getCurrentCharacter()?.name || 'Anonymous';
         template.find('.characterAttachmentsName').text(characterName);
 
         const chatName = getCurrentChatId() || 'Unnamed chat';
@@ -1739,7 +1739,7 @@ export async function uploadFileAttachmentToServer(file, target) {
             saveMetadataDebounced();
             break;
         case ATTACHMENT_SOURCE.CHARACTER:
-            extension_settings.character_attachments[characters[this_chid]?.avatar].push(attachment);
+            extension_settings.character_attachments[getCurrentCharacter()?.avatar].push(attachment);
             saveSettingsDebounced();
             break;
     }
@@ -1760,13 +1760,13 @@ function ensureAttachmentsExist() {
         chat_metadata.attachments = [];
     }
 
-    if (this_chid !== undefined && characters[this_chid]) {
+    if (this_chid !== undefined && getCurrentCharacter()) {
         if (!extension_settings.character_attachments) {
             extension_settings.character_attachments = {};
         }
 
-        if (!Array.isArray(extension_settings.character_attachments[characters[this_chid].avatar])) {
-            extension_settings.character_attachments[characters[this_chid].avatar] = [];
+        if (!Array.isArray(extension_settings.character_attachments[getCurrentCharacter().avatar])) {
+            extension_settings.character_attachments[getCurrentCharacter().avatar] = [];
         }
     }
 }
@@ -1780,7 +1780,7 @@ export function getDataBankAttachments(includeDisabled = false) {
     ensureAttachmentsExist();
     const globalAttachments = extension_settings.attachments ?? [];
     const chatAttachments = chat_metadata.attachments ?? [];
-    const characterAttachments = extension_settings.character_attachments?.[characters[this_chid]?.avatar] ?? [];
+    const characterAttachments = extension_settings.character_attachments?.[getCurrentCharacter()?.avatar] ?? [];
 
     return [...globalAttachments, ...chatAttachments, ...characterAttachments].filter(x => includeDisabled || !isAttachmentDisabled(x));
 }
@@ -1801,7 +1801,7 @@ export function getDataBankAttachmentsForSource(source, includeDisabled = true) 
             case ATTACHMENT_SOURCE.CHAT:
                 return chat_metadata.attachments ?? [];
             case ATTACHMENT_SOURCE.CHARACTER:
-                return extension_settings.character_attachments?.[characters[this_chid]?.avatar] ?? [];
+                return extension_settings.character_attachments?.[getCurrentCharacter()?.avatar] ?? [];
         }
 
         return [];
