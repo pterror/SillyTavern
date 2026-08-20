@@ -186,7 +186,7 @@ let groupChatQueueOrder = new Map();
 
 function setAutoModeWorker() {
     clearInterval(autoModeWorker);
-    const autoModeDelay = groups.find(x => x.id === selected_group)?.auto_mode_delay ?? DEFAULT_AUTO_MODE_DELAY;
+    const autoModeDelay = groupsStore.get(selected_group)?.auto_mode_delay ?? DEFAULT_AUTO_MODE_DELAY;
     autoModeWorker = setInterval(groupChatAutoModeWorker, autoModeDelay * 1000);
 }
 
@@ -311,7 +311,7 @@ async function validateGroup(group) {
  * @returns {Promise<void>} A promise that resolves when the chat messages have been loaded.
  */
 export async function getGroupChat(groupId, reload = false) {
-    const group = groups.find((x) => x.id === groupId);
+    const group = groupsStore.get(groupId);
     if (!group) {
         console.warn('Group not found', groupId);
         return;
@@ -384,7 +384,7 @@ export async function getGroupChat(groupId, reload = false) {
  * @returns {Character[]} An array of character objects representing the members of the group. If the group is not found, an empty array is returned.
  */
 export function getGroupMembers(groupId = selected_group) {
-    const group = groups.find((x) => x.id === groupId);
+    const group = groupsStore.get(groupId);
     return group?.members.map(member => charactersStore.get(member)) ?? [];
 }
 
@@ -396,7 +396,7 @@ export function getGroupNames() {
     if (!selected_group) {
         return [];
     }
-    const groupMembers = groups.find(x => x.id == selected_group)?.members;
+    const groupMembers = groupsStore.get(selected_group)?.members;
     return Array.isArray(groupMembers)
         ? groupMembers.map(x => charactersStore.get(x)?.name).filter(x => x)
         : [];
@@ -416,7 +416,7 @@ export function findGroupMemberId(arg, full = false) {
         return;
     }
 
-    const group = groups.find(x => x.id == selected_group);
+    const group = groupsStore.get(selected_group);
 
     if (!group || !Array.isArray(group.members)) {
         console.warn('WARN: No group found for selected group ID');
@@ -499,7 +499,7 @@ export function getGroupDepthPrompts(groupId, characterAvatar) {
     }
 
     console.debug('getGroupDepthPrompts entered for group: ', groupId);
-    const group = groups.find(x => x.id === groupId);
+    const group = groupsStore.get(groupId);
 
     if (!group || !Array.isArray(group.members) || !group.members.length) {
         return [];
@@ -563,7 +563,7 @@ export function getGroupCharacterCards(groupId, characterAvatar) {
  * @returns {{description: string, personality: string, scenario: string, mesExamples: string}} Group character cards with lazy getters
  */
 export function getGroupCharacterCardsLazy(groupId, characterAvatar) {
-    const group = groups.find(x => x.id === groupId);
+    const group = groupsStore.get(groupId);
 
     // If no group cards should be generated, return null so caller knows to fall back
     if (!group || !group?.generation_mode || !Array.isArray(group.members) || !group.members.length) {
@@ -688,7 +688,7 @@ function resetSelectedGroup() {
  * @returns {Promise<void>} A promise that resolves when the group chat has been saved.
  */
 async function saveGroupChat(groupId, shouldSaveGroup, force = false) {
-    const group = groups.find(x => x.id == groupId);
+    const group = groupsStore.get(groupId);
     if (!group) {
         console.warn('Group not found', groupId);
         return;
@@ -1004,7 +1004,7 @@ function getGroupAvatar(group) {
  * @returns {string[]} Array of chat IDs
  */
 function getGroupChatNames(groupId) {
-    const group = groups.find(x => x.id === groupId);
+    const group = groupsStore.get(groupId);
 
     if (!group) {
         return [];
@@ -1049,7 +1049,7 @@ async function generateGroupWrapper(byAutoMode, type = null, params = {}) {
 
     /** @type {any} Caution: JS war crimes ahead */
     let textResult = '';
-    const group = groups.find((x) => x.id === selected_group);
+    const group = groupsStore.get(selected_group);
 
     if (!group || !Array.isArray(group.members) || !group.members.length) {
         sendSystemMessage(system_message_types.EMPTY, '', { isSmallSys: true });
@@ -1414,7 +1414,7 @@ function activateNaturalOrder(members, input, lastMessage, allowSelfResponses, i
  * @returns {Promise<void>} Promise that resolves when the group is deleted
  */
 async function deleteGroup(id) {
-    const group = groups.find((x) => x.id === id);
+    const group = groupsStore.get(id);
 
     const response = await fetch('/api/groups/delete', {
         method: 'POST',
@@ -1458,7 +1458,7 @@ async function deleteGroup(id) {
  * @returns {Promise<void>} Promise that resolves when the group is edited
  */
 export async function editGroup(id, immediately, reload = true, { silentGroups = false } = {}) {
-    let group = groups.find((x) => x.id === id);
+    let group = groupsStore.get(id);
 
     if (!group) {
         return;
@@ -1477,7 +1477,7 @@ export async function editGroup(id, immediately, reload = true, { silentGroups =
  * @returns {Promise<void>} Promise that resolves when all group members are unshallowed
  */
 export async function unshallowGroupMembers(groupId) {
-    const group = groups.find(x => x.id == groupId);
+    const group = groupsStore.get(groupId);
     if (!group) {
         return;
     }
@@ -1501,7 +1501,7 @@ async function groupChatAutoModeWorker() {
         return;
     }
 
-    const group = groups.find((x) => x.id === selected_group);
+    const group = groupsStore.get(selected_group);
 
     if (!group || !Array.isArray(group.members) || !group.members.length) {
         return;
@@ -1519,7 +1519,7 @@ async function groupChatAutoModeWorker() {
  */
 async function modifyGroupMember(groupId, groupMember, isDelete) {
     const id = groupMember.data('id');
-    const thisGroup = groups.find((x) => x.id == groupId);
+    const thisGroup = groupsStore.get(groupId);
     const membersArray = thisGroup?.members ?? newGroupMembers;
 
     if (isDelete) {
@@ -1566,7 +1566,7 @@ async function modifyGroupMember(groupId, groupMember, isDelete) {
  */
 async function reorderGroupMember(groupId, groupMember, direction) {
     const id = groupMember.data('id');
-    const thisGroup = groups.find((x) => x.id == groupId);
+    const thisGroup = groupsStore.get(groupId);
     const memberArray = thisGroup?.members ?? newGroupMembers;
 
     const indexOf = memberArray.indexOf(id);
@@ -1705,7 +1705,7 @@ function getGroupCharacters({ doFilter = false, onlyMembers = false } = {}) {
         return filtered;
     }
 
-    const thisGroup = openGroupId && groups.find((x) => x.id == openGroupId);
+    const thisGroup = openGroupId && groupsStore.get(openGroupId);
 
     // Create index map for O(1) lookups when mapping characters to their array indices
     // (separate from memberIndexMap used later for sorting members by their group order)
@@ -1841,7 +1841,7 @@ function getGroupCharacterBlock(character) {
  * @returns {boolean} True if the group member is disabled, false otherwise
  */
 function isGroupMemberDisabled(avatarId) {
-    const thisGroup = openGroupId && groups.find((x) => x.id == openGroupId);
+    const thisGroup = openGroupId && groupsStore.get(openGroupId);
     return Boolean(thisGroup && thisGroup.disabled_members.includes(avatarId));
 }
 
@@ -1911,7 +1911,7 @@ function toggleHiddenControls(group, generationMode = null) {
 function select_group_chats(groupId, skipAnimation) {
     openGroupId = groupId;
     newGroupMembers = [];
-    const group = openGroupId && groups.find((x) => x.id == openGroupId);
+    const group = openGroupId && groupsStore.get(openGroupId);
     const groupName = group?.name ?? '';
     const replyStrategy = Number(group?.activation_strategy ?? group_activation_strategy.NATURAL);
     const generationMode = Number(group?.generation_mode ?? group_generation_mode.SWAP);
@@ -2027,7 +2027,7 @@ async function uploadGroupAvatar(event) {
     let thumbnail = await createThumbnail(String(croppedImage), 300, 300);
     //remove data:image/whatever;base64
     thumbnail = thumbnail.replace(/^data:image\/[a-z]+;base64,/, '');
-    let _thisGroup = groups.find((x) => x.id == openGroupId);
+    let _thisGroup = groupsStore.get(openGroupId);
     // filename should be group id + human readable timestamp
     const filename = _thisGroup ? `${_thisGroup.id}_${humanizedDateTime()}` : humanizedDateTime();
     let thumbnailUrl = await saveBase64AsFile(thumbnail, String(openGroupId ?? ''), filename, 'jpg');
@@ -2055,7 +2055,7 @@ async function restoreGroupAvatar() {
         return;
     }
 
-    let _thisGroup = groups.find((x) => x.id == openGroupId);
+    let _thisGroup = groupsStore.get(openGroupId);
     groupsStore.update(openGroupId, { avatar_url: '' });
     $('#group_avatar_preview').empty().append(getGroupAvatar(_thisGroup));
     $('#rm_group_restore_avatar').hide();
@@ -2077,7 +2077,7 @@ async function onGroupActionClick(event) {
 
     if (action === 'enable') {
         member.removeClass('disabled');
-        const _thisGroup = groups.find(x => x.id === openGroupId);
+        const _thisGroup = groupsStore.get(openGroupId);
         const index = _thisGroup.disabled_members.indexOf(member.data('id'));
         if (index !== -1) {
             _thisGroup.disabled_members.splice(index, 1);
@@ -2088,7 +2088,7 @@ async function onGroupActionClick(event) {
 
     if (action === 'disable') {
         member.addClass('disabled');
-        const _thisGroup = groups.find(x => x.id === openGroupId);
+        const _thisGroup = groupsStore.get(openGroupId);
         if (!_thisGroup.disabled_members.includes(member.data('id'))) {
             _thisGroup.disabled_members.push(member.data('id'));
             groupsStore.update(openGroupId, { disabled_members: _thisGroup.disabled_members });
@@ -2136,7 +2136,7 @@ export async function openGroupById(groupId) {
         return false;
     }
 
-    if (!groups.find(x => x.id === groupId)) {
+    if (!groupsStore.get(groupId)) {
         console.log('Group not found', groupId);
         return false;
     }
@@ -2260,7 +2260,7 @@ async function createGroup() {
  * @returns {Promise<void>} Promise that resolves when the new group chat is created
  */
 export async function createNewGroupChat(groupId) {
-    const group = groups.find(x => x.id === groupId);
+    const group = groupsStore.get(groupId);
 
     if (!group) {
         return;
@@ -2286,7 +2286,7 @@ export async function createNewGroupChat(groupId) {
  * @returns {Promise<Array<import('../../src/endpoints/chats.js').ChatInfo>>} Array of past chats
  */
 export async function getGroupPastChats(groupId) {
-    const group = groups.find(x => x.id === groupId);
+    const group = groupsStore.get(groupId);
 
     if (!group) {
         return [];
@@ -2320,7 +2320,7 @@ export async function getGroupPastChats(groupId) {
  */
 export async function openGroupChat(groupId, chatId) {
     await waitUntilCondition(() => !isChatSaving, debounce_timeout.extended, 10);
-    const group = groups.find(x => x.id === groupId);
+    const group = groupsStore.get(groupId);
 
     if (!group || !group.chats.includes(chatId)) {
         return;
@@ -2345,7 +2345,7 @@ export async function openGroupChat(groupId, chatId) {
  * @returns {Promise<void>} Promise that resolves when the group chat is renamed
  */
 export async function renameGroupChat(groupId, oldChatId, newChatId) {
-    const group = groups.find(x => x.id === groupId);
+    const group = groupsStore.get(groupId);
 
     if (!group || !group.chats.includes(oldChatId)) {
         return;
@@ -2370,7 +2370,7 @@ export async function renameGroupChat(groupId, oldChatId, newChatId) {
  * @returns {Promise<void>}
  */
 export async function deleteGroupChatByName(groupId, chatName) {
-    const group = groups.find(x => x.id === groupId);
+    const group = groupsStore.get(groupId);
     if (!group || !group.chats.includes(chatName)) {
         return;
     }
@@ -2409,7 +2409,7 @@ export async function deleteGroupChatByName(groupId, chatName) {
  * @param {boolean} [options.jumpToNewChat=true] Whether to jump to a new chat after deletion (existing one, or create a new one if none exists)
  */
 export async function deleteGroupChat(groupId, chatId, { jumpToNewChat = true } = {}) {
-    const group = groups.find(x => x.id === groupId);
+    const group = groupsStore.get(groupId);
 
     if (!group || !group.chats.includes(chatId)) {
         return;
@@ -2466,7 +2466,7 @@ export async function importGroupChat(formData, { refresh = true } = {}) {
         const data = await fetchResult.json();
         if (data.res) {
             const chatId = data.res;
-            const group = groups.find(x => x.id == selected_group);
+            const group = groupsStore.get(selected_group);
 
             if (group) {
                 group.chats.push(chatId);
@@ -2496,7 +2496,7 @@ export async function importGroupChat(formData, { refresh = true } = {}) {
  * @returns {Promise<void>} Promise that resolves when the group chat is saved
  */
 export async function saveGroupBookmarkChat(groupId, name, metadata, mesId, chatData = undefined) {
-    const group = groups.find(x => x.id === groupId);
+    const group = groupsStore.get(groupId);
 
     if (!group) {
         return;
