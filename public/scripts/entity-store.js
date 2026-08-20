@@ -386,6 +386,15 @@ export class DictEntityStore {
  * (the `getAssignedIds()`/tag-filter-bar-membership question) is O(1) instead of a full `Object.values(map).flat()`
  * scan - and so mutating ops can report `wasFirstUse`/`wasLastUse` for free, letting consumers add/remove exactly
  * one UI element instead of diffing a full before/after snapshot to figure out what changed.
+ *
+ * Deliberately not sharing a base/interface with EntityStore/DictEntityStore, and not worth introducing one:
+ * this store's whole shape is a two-id relation (key, relatedId), not a single collection of identified entities,
+ * so its natural operations (assign/unassign/setKey/removeRelatedIdEverywhere) don't correspond to
+ * create/update/remove on anything here - there's no single "entity" being CRUD'd. The only overlap with the
+ * other two stores is incidental (get/has/onChange exist on all three, but even `get` returns a different shape -
+ * an array of ids here vs. a single entity there). A shared interface across all three would only be able to
+ * promise that sliver, which isn't enough surface to save call sites anything - every consumer already needs to
+ * know which concrete store it's holding to call the operation it actually wants.
  */
 export class RelationStore {
     /**
