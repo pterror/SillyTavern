@@ -112,12 +112,29 @@ import { IGNORE_SYMBOL } from './constants.js';
 import { macros } from './macros/macro-system.js';
 import { MessageFormatter } from './message-formatter.js';
 
+/**
+ * Read-only O(1) lookup for a group by id, backed by groupsStore's Map index - use this instead of
+ * `context.groups.find(x => x.id === id)` wherever the id is already known, since that scan is O(n) over
+ * every group. `context.groups` (the raw array) stays available unchanged for anything that isn't a by-id
+ * lookup (iteration, filtering, etc.) or that hasn't been updated to use this yet.
+ * Deliberately exposes only the read (`.get()`), not the groupsStore instance itself, since that also has
+ * mutation methods (`.update()`/`.remove()`/etc.) that extensions shouldn't get write access to via a read path.
+ * @param {string} id - the group's id
+ * @returns {object|undefined} the group, or undefined if no group with that id exists
+ */
+function getGroupById(id) {
+    return groupsStore.get(id);
+}
+
 export function getContext() {
     return {
         accountStorage,
         chat,
         characters,
+        // Raw array - unchanged, O(n) `.find()` for by-id lookups. Kept exactly as-is for backwards
+        // compatibility with existing extensions. Prefer getGroupById(id) below for O(1) by-id lookups.
         groups,
+        getGroupById,
         name1,
         name2,
         // Lazy getter (not a snapshot like this_chid used to be here) so extensions that read
