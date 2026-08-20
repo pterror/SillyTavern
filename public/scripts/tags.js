@@ -2138,11 +2138,13 @@ async function onViewTagsListClick() {
 
 function makeTagListDraggable(tagContainer) {
     const onTagsSort = () => {
-        // Deliberately still a direct field mutation, not a tagsStore.update() per tag - this can touch every
-        // tag in the list (drag-reordering with ~9700 tags), and firing one store change event per tag here
-        // would be its own problem once something actually subscribes to those (a later chunk's concern - for
-        // now nothing does, and this doesn't affect tagsStore's id index since neither ids nor array positions
-        // change, just the sort_order field value on each existing tag object).
+        // Still a direct field mutation per tag, not a tagsStore.update() per tag - this can touch every tag in
+        // the list (drag-reordering with ~9700 tags), and firing one store change event per tag here would be
+        // wasteful, and doesn't affect tagsStore's id index since neither ids nor array positions change, just
+        // the sort_order field value on each existing tag object. What was missing (the "later chunk" this
+        // comment used to point at) was any event firing at all - now emits a single tagsStore.reset() after
+        // the loop, so the existing tagsStore.onChange subscribers (fuse-index invalidation, saveTagsDebounced)
+        // fire exactly once for the whole drag instead of not knowing sort_order changed.
         tagContainer.find('.tag_view_item').each(function (i, tagElement) {
             const id = $(tagElement).attr('id');
             const tag = tagsStore.get(id);
@@ -2150,6 +2152,7 @@ function makeTagListDraggable(tagContainer) {
             // Update the sort order
             tag.sort_order = i;
         });
+        tagsStore.reset();
 
         // If tags were dragged manually, we have to disable auto sorting
         if (power_user.tag_sort_mode !== tag_sort_mode.MANUAL) {
@@ -2461,8 +2464,8 @@ function appendViewTagToList(list, tag, count) {
 
     template.find('.tag_as_folder').attr('id', tagAsFolderId);
 
-    primaryColorPicker.on('change', (evt) => onTagColorize(evt, (tag, color) => tag.color = color, 'background-color'));
-    secondaryColorPicker.on('change', (evt) => onTagColorize(evt, (tag, color) => tag.color2 = color, 'color'));
+    primaryColorPicker.on('change', (evt) => onTagColorize(evt, 'color', 'background-color'));
+    secondaryColorPicker.on('change', (evt) => onTagColorize(evt, 'color2', 'color'));
     template.find('.tag_view_color_picker .link_icon').on('click', (evt) => {
         const colorPicker = $(evt.target).closest('.tag_view_color_picker').find('toolcool-color-picker');
         const defaultColor = colorPicker.attr('data-default-color');
@@ -2600,17 +2603,18 @@ function onTagRenameInput() {
  * Handles the colorization of a tag when the user interacts with the color picker
  *
  * @param {*} evt - The custom colorize event object
- * @param {(tag: Tag, val: string) => void} setColor - A function that sets the color of the tag
+ * @param {'color'|'color2'} colorField - Which field on the tag object this picker controls
  * @param {string} cssProperty - The CSS property to apply the color to
  *
- * Deliberately still a direct `tags` array field mutation rather than routed through `tagsStore.update()` (unlike
- * onTagRenameInput/onTagAsFolderClick) - `setColor` mutates the tag object in place via a generic callback shared
- * by both color pickers, and restructuring that callback to return a patch object instead is scope for the
- * "wire consumers onto tagsStore events" chunk, where it'll be clear whether recoloring actually needs to notify
- * anything (no current consumer cares about tag color specifically). Same object reference either way, so this
- * doesn't affect tagsStore's id index - purely a "no event fires" gap, not a correctness one.
+ * Now routed through tagsStore.update() (previously a direct field mutation, since the old shared callback
+ * mutated the tag object in place rather than returning a patch) - the two picker call sites now pass the
+ * field name directly instead of a mutator function, so this can build a `{[colorField]: newColor}` patch and
+ * go through the store like onTagRenameInput/onTagAsFolderClick already do. Picks up the existing
+ * tagsStore.onChange subscribers (fuse-index invalidation, saveTagsDebounced) for free - color changes weren't
+ * persisted to tags.json promptly before this, only via the manual saveSettingsDebounced() call below (which
+ * saves settings.json, not tags.json).
  */
-function onTagColorize(evt, setColor, cssProperty) {
+function onTagColorize(evt, colorField, cssProperty) {
     const isDefaultColor = $(evt.target).data('default-color') === evt.detail.rgba;
     $(evt.target).closest('.tag_view_color_picker').find('.link_icon').toggle(!isDefaultColor);
 
@@ -2619,12 +2623,11 @@ function onTagColorize(evt, setColor, cssProperty) {
     if (isDefaultColor) newColor = '';
 
     $(evt.target).closest('.tag_view_item').find('.tag_view_name').css(cssProperty, newColor);
-    const tag = tagsStore.get(id);
-    setColor(tag, newColor);
+    tagsStore.update(id, { [colorField]: newColor });
     saveSettingsDebounced();
 
     // Debounce redrawing color of the tag in other elements
-    debouncedTagColoring(tag.id, cssProperty, newColor);
+    debouncedTagColoring(id, cssProperty, newColor);
 }
 
 const debouncedTagColoring = debounce((tagId, cssProperty, newColor) => {
