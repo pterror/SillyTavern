@@ -1,5 +1,7 @@
 import { Fuse } from '../lib.js';
 
+import { EntityStore } from './entity-store.js';
+
 import {
     shuffle,
     onlyUnique,
@@ -112,6 +114,30 @@ let is_group_automode_enabled = false;
 let hideMutedSprites = false;
 /** @type {Group[]} */
 let groups = [];
+/**
+ * The groups -> entity-store migration (see entity-store.js): backs `groups` internally, wrapping the same
+ * array in place, so every read call site in this file (and every other file that imports `groups` directly)
+ * keeps working completely unchanged.
+ *
+ * Unlike `characters`/`tags`, `groups` itself is reassigned to a brand-new array reference on every
+ * getGroups() refetch (`groups = data.slice()`), rather than spliced in place - same situation tags.js has
+ * with `tags` during settings load - so a store built against the old array reference would silently go
+ * stale. `rebuildGroupsStore()` reconstructs it (and re-registers the fuse-index-invalidation subscriber,
+ * since a fresh store instance has no listeners of its own) every time getGroups() reassigns `groups`.
+ * Not exported - purely internal to this file for now, same as tagsStore/tagMapStore in tags.js.
+ * @type {EntityStore<Group>}
+ */
+let groupsStore = new EntityStore(groups, g => g.id);
+
+/**
+ * Reconstructs `groupsStore` to wrap the current `groups` array reference, and (re)registers the
+ * search-index-invalidation subscriber on it. See the comment on `groupsStore` above for why this is needed
+ * (unlike charactersStore, `groups` is reassigned to a new array on every reload, not spliced in place).
+ */
+function rebuildGroupsStore() {
+    groupsStore = new EntityStore(groups, g => g.id);
+    groupsStore.onChange(() => invalidateGroupsFuseIndex());
+}
 /** @type {string|null} */
 let selected_group = null;
 let group_generation_id = null;
@@ -754,8 +780,14 @@ export async function renameGroupMember(oldAvatar, newAvatar, newName) {
 
 /**
  * Fetches all groups from the server and processes them.
+ * @param {object} [options]
+ * @param {boolean} [options.silent=false] - If true, skips groupsStore's generic reset() notification - pass
+ * this when the caller already knows the specific create/delete/rename that this reload happened for, and
+ * will report it itself via groupsStore.reportCreated()/.reportRemoved()/.reportRenamed() once this returns
+ * (which need the post-reload id index, so groupsStore is rebuilt either way - only the emitted change
+ * differs). Leave false for reloads with no more specific intent than "resync" (initial load, manual refresh).
  */
-async function getGroups() {
+async function getGroups({ silent = false } = {}) {
     const response = await fetch('/api/groups/all', {
         method: 'POST',
         headers: getRequestHeaders({ omitContentType: true }),
@@ -790,7 +822,13 @@ async function getGroups() {
             }
         }
 
-        invalidateGroupsFuseIndex();
+        rebuildGroupsStore();
+        if (!silent) {
+            // Caller has no more specific intent than "resync" - generic "the collection may have changed"
+            // notification. Callers with specific intent pass {silent: true} and report it themselves via
+            // groupsStore.reportCreated()/.reportRemoved()/.reportRenamed() once this returns.
+            groupsStore.reset();
+        }
     }
 }
 
