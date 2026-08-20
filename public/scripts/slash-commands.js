@@ -6,6 +6,7 @@ import {
     activateSendButtons,
     addOneMessage,
     characters,
+    charactersStore,
     chat,
     chatElement,
     chat_metadata,
@@ -5441,10 +5442,14 @@ async function updateCharacterCallback(args) {
         // Refresh the character data
         await getOneCharacter(character.avatar);
 
-        await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { id: characterIndex, character: characters[characterIndex] } });
+        // characterIndex is kept only as the legacy `id` on the event payload (see PromptManager's
+        // handleCharacterUpdated/legacyId handling) - the character itself is looked up fresh by avatar
+        // (stable identity) rather than via characters[characterIndex], since characterIndex can go stale
+        // across the awaits above (avatar upload, getOneCharacter refresh).
+        await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { id: characterIndex, character: charactersStore.get(character.avatar) } });
 
         // Update the side panel if this is the currently selected character
-        if (characterIndex === this_chid) {
+        if (character.avatar === getCurrentCharacter()?.avatar) {
             select_selected_character(character.avatar, { switchMenu: false });
         }
 
