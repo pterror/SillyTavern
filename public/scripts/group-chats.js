@@ -464,10 +464,10 @@ export function findGroupMemberId(arg, full = false) {
 /**
  * Gets depth prompts for group members.
  * @param {string} groupId Group ID
- * @param {number} characterId Current Character ID
+ * @param {string} characterAvatar Avatar of the current character
  * @returns {{depth: number, text: string, role: string}[]} Array of depth prompts
  */
-export function getGroupDepthPrompts(groupId, characterId) {
+export function getGroupDepthPrompts(groupId, characterAvatar) {
     if (!groupId) {
         return [];
     }
@@ -494,7 +494,7 @@ export function getGroupDepthPrompts(groupId, characterId) {
             continue;
         }
 
-        if (group.disabled_members.includes(member) && characterId !== index) {
+        if (group.disabled_members.includes(member) && characterAvatar !== member) {
             console.debug(`Skipping disabled group member: ${member}`);
             continue;
         }
