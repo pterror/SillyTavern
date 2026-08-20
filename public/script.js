@@ -3514,12 +3514,14 @@ export function createLazyFields(resolvers) {
  * @returns {CharacterCardFields} Character card fields with lazy evaluation
  */
 export function getCharacterCardFieldsLazy({ chid = undefined } = {}) {
-    const currentChid = chid ?? this_chid;
-    const character = characters[currentChid];
+    // chid is public getContext() API surface (see st-context.js) - callers may still pass an
+    // explicit array index. Only fall back to the current character (by avatar) when omitted.
+    const character = chid !== undefined ? characters[chid] : getCurrentCharacter();
 
     // For group chats, we need to check if group cards should be used
     const useGroupCards = selected_group && character;
-    const groupCardsLazy = useGroupCards ? getGroupCharacterCardsLazy(selected_group, Number(currentChid)) : null;
+    const currentChid = chid !== undefined ? Number(chid) : characters.indexOf(character);
+    const groupCardsLazy = useGroupCards ? getGroupCharacterCardsLazy(selected_group, currentChid) : null;
 
     /** @type {Record<string, () => string|string[]>} */
     const resolvers = {
