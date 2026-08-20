@@ -1212,22 +1212,9 @@ async function onPersonaDescriptionInput() {
     power_user.persona_description = String($('#persona_description').val());
     countPersonaDescriptionTokens();
 
-    if (power_user.personas[user_avatar]) {
-        let object = power_user.persona_descriptions[user_avatar];
-
-        if (!object) {
-            object = {
-                description: power_user.persona_description,
-                position: Number($('#persona_description_position').find(':selected').val()),
-                depth: Number($('#persona_depth_value').val()),
-                role: Number($('#persona_depth_role').find(':selected').val()),
-                lorebook: '',
-                title: '',
-            };
-            power_user.persona_descriptions[user_avatar] = object;
-        }
-
-        object.description = power_user.persona_description;
+    if (personaStore.has(user_avatar)) {
+        getOrCreatePersonaDescriptor(); // ensures a record exists (it always does now, kept for clarity)
+        personaStore.update(user_avatar, { description: power_user.persona_description });
     }
 
     $(`.avatar-container[data-avatar-id="${user_avatar}"] .ch_description`)
@@ -1235,7 +1222,7 @@ async function onPersonaDescriptionInput() {
         .toggleClass('text_muted', !power_user.persona_description);
     saveSettingsDebounced();
 
-    if (power_user.personas[user_avatar]) {
+    if (personaStore.has(user_avatar)) {
         await eventSource.emit(event_types.PERSONA_UPDATED, user_avatar);
     }
 }
@@ -1243,9 +1230,9 @@ async function onPersonaDescriptionInput() {
 async function onPersonaDescriptionDepthValueInput() {
     power_user.persona_description_depth = Number($('#persona_depth_value').val());
 
-    if (power_user.personas[user_avatar]) {
-        const object = getOrCreatePersonaDescriptor();
-        object.depth = power_user.persona_description_depth;
+    if (personaStore.has(user_avatar)) {
+        getOrCreatePersonaDescriptor();
+        personaStore.update(user_avatar, { depth: power_user.persona_description_depth });
         saveSettingsDebounced();
         await eventSource.emit(event_types.PERSONA_UPDATED, user_avatar);
         return;
@@ -1257,9 +1244,9 @@ async function onPersonaDescriptionDepthValueInput() {
 async function onPersonaDescriptionDepthRoleInput() {
     power_user.persona_description_role = Number($('#persona_depth_role').find(':selected').val());
 
-    if (power_user.personas[user_avatar]) {
-        const object = getOrCreatePersonaDescriptor();
-        object.role = power_user.persona_description_role;
+    if (personaStore.has(user_avatar)) {
+        getOrCreatePersonaDescriptor();
+        personaStore.update(user_avatar, { role: power_user.persona_description_role });
         saveSettingsDebounced();
         await eventSource.emit(event_types.PERSONA_UPDATED, user_avatar);
         return;
@@ -1273,7 +1260,7 @@ async function onPersonaDescriptionDepthRoleInput() {
  * @param {Pick<JQuery.ClickEvent, 'shiftKey' | 'altKey'>} event Click event
  */
 async function onPersonaLoreButtonClick({ shiftKey, altKey }) {
-    const personaName = power_user.personas[user_avatar];
+    const personaName = personaStore.get(user_avatar)?.name;
     const selectedLorebook = power_user.persona_description_lorebook;
 
     if (!personaName) {
@@ -1302,15 +1289,15 @@ async function onPersonaLoreButtonClick({ shiftKey, altKey }) {
     worldSelect.on('change', async function () {
         power_user.persona_description_lorebook = String($(this).val());
 
-        if (power_user.personas[user_avatar]) {
-            const object = getOrCreatePersonaDescriptor();
-            object.lorebook = power_user.persona_description_lorebook;
+        if (personaStore.has(user_avatar)) {
+            getOrCreatePersonaDescriptor();
+            personaStore.update(user_avatar, { lorebook: power_user.persona_description_lorebook });
         }
 
         $('#persona_lore_button').toggleClass('world_set', !!power_user.persona_description_lorebook);
         saveSettingsDebounced();
 
-        if (power_user.personas[user_avatar]) {
+        if (personaStore.has(user_avatar)) {
             await eventSource.emit(event_types.PERSONA_UPDATED, user_avatar);
         }
     });
@@ -1323,9 +1310,9 @@ async function onPersonaDescriptionPositionInput() {
         $('#persona_description_position').find(':selected').val(),
     );
 
-    if (power_user.personas[user_avatar]) {
-        const object = getOrCreatePersonaDescriptor();
-        object.position = power_user.persona_description_position;
+    if (personaStore.has(user_avatar)) {
+        getOrCreatePersonaDescriptor();
+        personaStore.update(user_avatar, { position: power_user.persona_description_position });
         saveSettingsDebounced();
         await eventSource.emit(event_types.PERSONA_UPDATED, user_avatar);
         $('#persona_depth_position_settings').toggle(power_user.persona_description_position === persona_description_positions.AT_DEPTH);
@@ -1337,10 +1324,13 @@ async function onPersonaDescriptionPositionInput() {
 }
 
 export function getOrCreatePersonaDescriptor() {
-    let object = power_user.persona_descriptions[user_avatar];
-
-    if (!object) {
-        object = {
+    if (!personaStore.has(user_avatar)) {
+        // Only reachable if user_avatar isn't a real persona at all (name too) - every other call site here
+        // guards with personaStore.has(user_avatar)/power_user.personas[user_avatar] first, so this always
+        // creates a nameless placeholder record in that edge case, same as the original code did (it never
+        // set `name` here either - that came from power_user.personas separately, whenever it did).
+        personaStore.create(user_avatar, {
+            name: '',
             description: power_user.persona_description,
             position: power_user.persona_description_position,
             depth: power_user.persona_description_depth,
@@ -1348,10 +1338,9 @@ export function getOrCreatePersonaDescriptor() {
             lorebook: power_user.persona_description_lorebook,
             connections: [],
             title: '',
-        };
-        power_user.persona_descriptions[user_avatar] = object;
+        });
     }
-    return object;
+    return personaStore.get(user_avatar);
 }
 
 /**
