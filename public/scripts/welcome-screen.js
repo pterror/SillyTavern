@@ -30,7 +30,7 @@ import {
     updateRemoteChatName,
 } from '../script.js';
 import { getRegexedString, regex_placement } from './extensions/regex/engine.js';
-import { deleteGroupChatByName, getGroupAvatar, groups, is_group_generating, openGroupById, openGroupChat } from './group-chats.js';
+import { deleteGroupChatByName, getGroupAvatar, groupsStore, is_group_generating, openGroupById, openGroupChat } from './group-chats.js';
 import { t } from './i18n.js';
 import { callGenericPopup, POPUP_TYPE } from './popup.js';
 import { getMessageTimeStamp } from './RossAscends-mods.js';
@@ -387,7 +387,7 @@ async function sendWelcomePanel(chats, expand = false) {
         });
         fragment.querySelectorAll('.recentChat.group').forEach((groupChat) => {
             const groupId = groupChat.getAttribute('data-group');
-            const group = groups.find(x => x.id === groupId);
+            const group = groupsStore.get(groupId);
             if (group) {
                 const avatar = groupChat.querySelector('.avatar');
                 if (!avatar) {
@@ -500,7 +500,7 @@ async function openRecentCharacterChat(avatarId, fileName) {
  * @param {string} fileName Chat file name
  */
 async function openRecentGroupChat(groupId, fileName) {
-    const group = groups.find(x => x.id === groupId);
+    const group = groupsStore.get(groupId);
     if (!group) {
         console.error(`Group not found for ID: ${groupId}`);
         return;
@@ -563,7 +563,7 @@ async function renameRecentCharacterChat(avatarId, fileName) {
  * @param {string} fileName Chat file name
  */
 async function renameRecentGroupChat(groupId, fileName) {
-    const group = groups.find(x => x.id === groupId);
+    const group = groupsStore.get(groupId);
     if (!group) {
         console.error(`Group not found for ID: ${groupId}`);
         return;
@@ -623,7 +623,7 @@ async function deleteRecentCharacterChat(avatarId, fileName) {
  * @param {string} fileName Chat file name
  */
 async function deleteRecentGroupChat(groupId, fileName) {
-    const group = groups.find(x => x.id === groupId);
+    const group = groupsStore.get(groupId);
     if (!group) {
         console.error(`Group not found for ID: ${groupId}`);
         return;
@@ -782,7 +782,7 @@ async function getRecentChats() {
     }
 
     const dataWithEntities = data
-        .map(chat => ({ chat, character: charactersStore.get(chat.avatar), group: groups.find(x => x.id === chat.group) }))
+        .map(chat => ({ chat, character: charactersStore.get(chat.avatar), group: groupsStore.get(chat.group) }))
         .filter(t => t.character || t.group)
         .sort((a, b) => {
             const isAPinned = PinnedChatsManager.isPinned(a.chat);
