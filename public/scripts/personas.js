@@ -101,8 +101,8 @@ const USER_AVATAR_PATH = 'User Avatars/';
 
 let savePersonasPage = 0;
 const GRID_STORAGE_KEY = 'Personas_GridView';
-const DEFAULT_DEPTH = 2;
-const DEFAULT_ROLE = 0;
+export const DEFAULT_DEPTH = 2;
+export const DEFAULT_ROLE = 0;
 
 /** @type {string} The currently selected persona (identified by its avatar) */
 export let user_avatar = '';
