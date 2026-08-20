@@ -54,6 +54,7 @@ import {
 
 import {
     groups,
+    groupsStore,
     selected_group,
     saveGroupChat,
     getGroups,
@@ -594,7 +595,7 @@ export function reloadMarkdownProcessor() {
 
 export function getCurrentChatId() {
     if (selected_group) {
-        return groups.find(x => x.id == selected_group)?.chat_id;
+        return groupsStore.get(selected_group)?.chat_id;
     } else if (this_chid !== undefined) {
         return getCurrentCharacter()?.chat;
     }
@@ -2993,9 +2994,9 @@ export function substituteParamsLegacy(content, _name1, _name2, _original, _grou
         }
 
         if (selected_group) {
-            const members = groups.find(x => x.id === selected_group)?.members;
+            const members = groupsStore.get(selected_group)?.members;
             /** @type {string[]} */
-            const disabledMembers = groups.find(x => x.id === selected_group)?.disabled_members ?? [];
+            const disabledMembers = groupsStore.get(selected_group)?.disabled_members ?? [];
             const isMuted = x => includeMuted ? true : !disabledMembers.includes(x);
             const names = Array.isArray(members)
                 ? members.filter(isMuted).map(m => charactersStore.get(m)?.name).filter(Boolean).join(', ')
@@ -3016,7 +3017,7 @@ export function substituteParamsLegacy(content, _name1, _name2, _original, _grou
         }
 
         // Group chat
-        const members = groups.find(x => x.id === selected_group)?.members;
+        const members = groupsStore.get(selected_group)?.members;
 
         if (!Array.isArray(members)) {
             return currentUser;
@@ -3155,7 +3156,7 @@ export function getStoppingStrings(isImpersonate, isContinue, api = main_api) {
 
         // Add group members as stopping strings if generating for a specific group member or user. (Allow slash commands to work around name stopping string restrictions)
         if (selected_group && (name2 || isImpersonate)) {
-            const group = groups.find(x => x.id === selected_group);
+            const group = groupsStore.get(selected_group);
 
             if (group && Array.isArray(group.members)) {
                 const names = group.members
@@ -3285,7 +3286,7 @@ function cleanGroupMessage(getMessage) {
         return getMessage;
     }
 
-    const group = groups.find((x) => x.id == selected_group);
+    const group = groupsStore.get(selected_group);
 
     if (group && Array.isArray(group.members) && group.members) {
         for (let member of group.members) {
@@ -4467,7 +4468,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         }
 
         const characterIndexMap = new Map(characters.map((char, index) => [char.avatar, index]));
-        const group = groups.find((x) => x.id === selected_group);
+        const group = groupsStore.get(selected_group);
 
         const enabledMembers = group.members.reduce((acc, member) => {
             if (!group.disabled_members.includes(member) && !acc.includes(member)) {
@@ -8669,7 +8670,7 @@ export function getCurrentChatDetails() {
         return { sessionName: '', group: null, characterName: '', avatarImgURL: '' };
     }
 
-    const group = selected_group ? groups.find(x => x.id === selected_group) : null;
+    const group = selected_group ? groupsStore.get(selected_group) : null;
     const currentChat = selected_group ? group?.chat_id : getCurrentCharacter().chat;
     const displayName = selected_group ? group?.name : getCurrentCharacter().name;
     const avatarImg = selected_group ? group?.avatar_url : getThumbnailUrl('avatar', getCurrentCharacter().avatar);
