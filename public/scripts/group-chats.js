@@ -2187,8 +2187,7 @@ async function openCharacterDefinition(characterSelect) {
     select_selected_character(avatar);
     // Gentle nudge to recalculate tokens
     RA_CountCharTokens();
-    // Do a little tomfoolery to spoof the tag selector
-    applyTagsOnCharacterSelect.call(characterSelect);
+    applyTagsOnCharacterSelect();
 }
 
 function filterGroupMembers() {
