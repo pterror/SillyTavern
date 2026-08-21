@@ -103,3 +103,28 @@ router.post('/get', (request, response) => {
         response.sendStatus(500);
     }
 });
+
+/**
+ * Lightweight freshness check for the client's tags cache (see loadTagsSettings() in tags.js): tags.json is a
+ * single file with no per-tag identity that would make a manifest like characters/manifest's meaningful, and
+ * tag edits are expected to be far less frequent/voluminous than character edits, so a single whole-file mtime
+ * is an acceptable "invalidate everything on any change" granularity here - unlike the per-character case,
+ * where that same coarseness was the exact problem this whole change was scoped to fix.
+ *
+ * Returns `{ mtime: null }` if tags.json doesn't exist yet (matches `/get`'s `{ tags: null, tag_map: null }`).
+ */
+router.post('/manifest', (request, response) => {
+    try {
+        const pathToTags = path.join(request.user.directories.root, TAGS_FILE);
+
+        if (!fs.existsSync(pathToTags)) {
+            return response.send({ mtime: null });
+        }
+
+        const stat = fs.statSync(pathToTags);
+        response.send({ mtime: stat.mtimeMs });
+    } catch (err) {
+        console.error('Could not stat tags file', err);
+        response.sendStatus(500);
+    }
+});
