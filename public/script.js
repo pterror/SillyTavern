@@ -257,6 +257,7 @@ import { appendFileContent, hasPendingFileAttachment, populateFileAttachment, de
 import { getPresetManager, initPresetManager } from './scripts/preset-manager.js';
 import { evaluateMacros, getLastMessageId, initMacros } from './scripts/macros.js';
 import { currentUser, setUserControls } from './scripts/user.js';
+import { diffCharacterManifest, saveCachedCharacters, pruneCharacterCache } from './scripts/character-cache.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup, callGenericPopup, fixToastrForDialogs } from './scripts/popup.js';
 import { renderTemplate, renderTemplateAsync } from './scripts/templates.js';
 import { initScrapers } from './scripts/scrapers.js';
@@ -1394,57 +1395,173 @@ export function getCharacterSource(character = getCurrentCharacter()) {
  * necessarily know whether server-side cleanup removed that character from any group's member list, so it
  * should NOT default to silencing groupsStore just because it's silencing charactersStore).
  */
-export async function getCharacters({ silent = false, silentGroups = false } = {}) {
+// A single /api/characters/batch request is kept bounded to this many avatars, same motivation as
+// DEFAULT_PAGE_LIMIT server-side (characters.js) - a boot where most/all of a very large library changed at
+// once (e.g. first-ever boot, nothing cached yet) shouldn't turn into one giant response any more than a
+// paginated search should.
+const CHARACTER_BATCH_CHUNK_SIZE = 500;
+
+/**
+ * Sanitizes/defaults a single character object exactly as getCharacters() has always done to every character in
+ * the response, in place. Only meant to be called on freshly-fetched data - a cache hit already has this
+ * applied (see character-cache.js), applying it twice would be harmless but wasted work.
+ * @param {object} character
+ */
+function finalizeFetchedCharacter(character) {
+    character.name = DOMPurify.sanitize(character.name);
+
+    // For dropped-in cards
+    if (!character.chat) {
+        character.chat = `${character.name} - ${humanizedDateTime()}`;
+    }
+
+    character.chat = String(character.chat);
+}
+
+/**
+ * Fetches the current character list via the manifest/delta-cache path: `/api/characters/manifest` for a cheap
+ * `[{ avatar, mtime }, ...]` of the whole library, diffed against character-cache.js's IndexedDB cache so only
+ * characters that are new or whose mtime changed get fetched (via `/api/characters/batch`) and re-processed
+ * (DOMPurify/chat-default) - unchanged characters are reused from cache as-is, both their data and that
+ * processing. Throws on any failure (network, non-OK response, etc.) - callers should fall back to the
+ * unconditional full-fetch path (fetchAllCharacters()) rather than partially apply a broken delta.
+ * @returns {Promise<object[]>} The full, in-manifest-order character list.
+ */
+async function fetchCharactersDelta() {
+    const manifestResponse = await fetch('/api/characters/manifest', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({}),
+    });
+
+    if (!manifestResponse.ok) {
+        throw new Error(`Failed to fetch character manifest: ${manifestResponse.statusText}`);
+    }
+
+    /** @type {{avatar: string, mtime: number}[]} */
+    const manifest = await manifestResponse.json();
+    const { toFetch, cached } = await diffCharacterManifest(manifest);
+
+    /** @type {Map<string, object>} */
+    const fresh = new Map();
+
+    for (let i = 0; i < toFetch.length; i += CHARACTER_BATCH_CHUNK_SIZE) {
+        const chunk = toFetch.slice(i, i + CHARACTER_BATCH_CHUNK_SIZE);
+        const batchResponse = await fetch('/api/characters/batch', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ avatars: chunk }),
+        });
+
+        if (!batchResponse.ok) {
+            throw new Error(`Failed to fetch character batch: ${batchResponse.statusText}`);
+        }
+
+        const batchData = await batchResponse.json();
+        for (const character of batchData) {
+            finalizeFetchedCharacter(character);
+            fresh.set(character.avatar, character);
+        }
+    }
+
+    const mtimeByAvatar = new Map(manifest.map(entry => [entry.avatar, entry.mtime]));
+    const finalCharacters = [];
+    for (const { avatar } of manifest) {
+        const character = fresh.get(avatar) ?? cached.get(avatar);
+        // A missing character here means it failed processCharacter() server-side (corrupt file etc.) and got
+        // filtered out of the batch response - matches /all's own `.filter(c => c.name)` behavior, just applied
+        // per-entry instead of over a bulk array.
+        if (character) {
+            finalCharacters.push(character);
+        }
+    }
+
+    if (fresh.size > 0) {
+        await saveCachedCharacters(Array.from(fresh.values(), character => ({
+            avatar: character.avatar,
+            mtime: mtimeByAvatar.get(character.avatar),
+            character,
+        })));
+    }
+
+    // Deleted/renamed characters shouldn't linger in the cache forever - safe to do unconditionally since the
+    // returned list above is already derived solely from the current manifest, not from whatever's cached.
+    await pruneCharacterCache(new Set(manifest.map(entry => entry.avatar)));
+
+    return finalCharacters;
+}
+
+/**
+ * Fetches the full character list unconditionally via `/api/characters/all`, with no caching involved. This is
+ * the pre-delta-cache behavior, kept as-is as the fallback path for when fetchCharactersDelta() fails for any
+ * reason (e.g. the manifest/batch endpoints being unreachable) - always correct, just without the bandwidth
+ * savings.
+ * @returns {Promise<object[]|undefined>} The full character list, or undefined if the fetch failed (in which
+ * case this function has already reported the failure itself, same as the old inline getCharacters() body did).
+ */
+async function fetchAllCharacters() {
     const response = await fetch('/api/characters/all', {
         method: 'POST',
         headers: getRequestHeaders(),
         body: JSON.stringify({}),
     });
-    if (response.ok) {
-        characters.splice(0, characters.length);
-        const getData = await response.json();
-        for (let i = 0; i < getData.length; i++) {
-            characters[i] = getData[i];
-            characters[i].name = DOMPurify.sanitize(characters[i].name);
 
-            // For dropped-in cards
-            if (!characters[i].chat) {
-                characters[i].chat = `${characters[i].name} - ${humanizedDateTime()}`;
-            }
-
-            characters[i].chat = String(characters[i].chat);
-        }
-
-        // Fuse-index invalidation is handled by the charactersStore.onChange subscriber (see charactersStore's
-        // definition above) - reset() emits directly, and reindex()'s silent callers all follow up with a
-        // reportCreated()/reportRemoved()/reportRenamed() of their own right after this call returns.
-        if (silent) {
-            charactersStore.reindex();
-        } else {
-            charactersStore.reset();
-        }
-
-        if (this_avatar) {
-            // this_avatar is untouched by the splice()/reload above (it's a separate variable, not derived from
-            // the array), so it's still exactly the avatar that was selected before this reload - selecting by
-            // avatar directly needs no index lookup and no this_chid resync beforehand.
-            if (charactersStore.get(this_avatar)) {
-                await selectCharacterByAvatar(this_avatar, { switchMenu: false });
-            } else {
-                await Popup.show.text(t`ERROR: The active character is no longer available.`, t`The page will be refreshed to prevent data loss. Press "OK" to continue.`);
-                return location.reload();
-            }
-        }
-
-        await getGroups({ silent: silentGroups });
-        await printCharacters(true);
-    } else {
+    if (!response.ok) {
         console.error('Failed to fetch characters:', response.statusText);
         const errorData = await response.json();
         if (errorData?.overflow) {
             await Popup.show.text(t`Character data length limit reached`, t`To resolve this, set "performance.lazyLoadCharacters" to "true" in config.yaml and restart the server.`);
         }
+        return undefined;
     }
+
+    const getData = await response.json();
+    for (const character of getData) {
+        finalizeFetchedCharacter(character);
+    }
+    return getData;
+}
+
+export async function getCharacters({ silent = false, silentGroups = false } = {}) {
+    let newCharacters;
+    try {
+        newCharacters = await fetchCharactersDelta();
+    } catch (error) {
+        console.error('Character manifest/delta fetch failed, falling back to a full character list fetch:', error);
+        newCharacters = await fetchAllCharacters();
+    }
+
+    if (newCharacters === undefined) {
+        // Both paths already reported the failure (fetchAllCharacters shows the overflow popup itself); nothing
+        // further to do - same as the old code's implicit no-op on a failed response.
+        return;
+    }
+
+    characters.splice(0, characters.length, ...newCharacters);
+
+    // Fuse-index invalidation is handled by the charactersStore.onChange subscriber (see charactersStore's
+    // definition above) - reset() emits directly, and reindex()'s silent callers all follow up with a
+    // reportCreated()/reportRemoved()/reportRenamed() of their own right after this call returns.
+    if (silent) {
+        charactersStore.reindex();
+    } else {
+        charactersStore.reset();
+    }
+
+    if (this_avatar) {
+        // this_avatar is untouched by the splice()/reload above (it's a separate variable, not derived from
+        // the array), so it's still exactly the avatar that was selected before this reload - selecting by
+        // avatar directly needs no index lookup and no this_chid resync beforehand.
+        if (charactersStore.get(this_avatar)) {
+            await selectCharacterByAvatar(this_avatar, { switchMenu: false });
+        } else {
+            await Popup.show.text(t`ERROR: The active character is no longer available.`, t`The page will be refreshed to prevent data loss. Press "OK" to continue.`);
+            return location.reload();
+        }
+    }
+
+    await getGroups({ silent: silentGroups });
+    await printCharacters(true);
 }
 
 async function delChat(chatfile) {
