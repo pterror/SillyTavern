@@ -3228,6 +3228,13 @@ select option[disabled]:not(:checked) {
     margin-bottom: 0;
 }
 
+#character_search_backend_indicator {
+    display: flex;
+    align-items: center;
+    font-size: 1.1em;
+    cursor: help;
+}
+
 #rm_button_search {
     font-size: 1.1em;
     margin: 0 2px;

@@ -11228,6 +11228,16 @@ API Settings: ${JSON.stringify(getSettingsContents[getSettingsContents.main_api 
 }
 
 /**
+ * Tracks whether the most recent server-side search response reported running on the slower Fuse.js fallback
+ * (see native-sqlite.js/characters-search-index.js) instead of the fast SQLite FTS5 backend, so
+ * fetchServerCharacterSearchResults() only pops the "search is running in fallback mode" toast on the
+ * transition into that state rather than on every debounced keystroke while it stays that way - the persistent
+ * `#character_search_backend_indicator` icon (toggled below) is what stays visible for the rest of the time.
+ * @type {boolean}
+ */
+let lastKnownSearchBackendWasFuse = false;
+
+/**
  * Fetches full-content character/group search results from the server's fast index and stores them on
  * entitiesFilter for searchFilter() (filters.js) to use instead of its client-side pass - see
  * FilterHelper.setServerSearchResults()'s JSDoc for why this isn't just a speed optimization.
@@ -11236,6 +11246,14 @@ API Settings: ${JSON.stringify(getSettingsContents[getSettingsContents.main_api 
  * this assigns each match a synthetic ascending-is-better score by its position in that order - the endpoint
  * doesn't expose the underlying bm25/Fuse score directly, and rank alone is enough for both consumers:
  * searchFilter()'s membership check (does a cached score exist at all) and sortEntitiesList()'s ascending sort.
+ *
+ * The response also carries `searchBackend`/`labelSyntaxUnsupported` (see the /api/characters/all handler in
+ * src/endpoints/characters.js) - when better-sqlite3 isn't usable on this install, search silently degrades to
+ * the old slower in-process Fuse.js index with different (worse) ranking and no `label:query` support, and
+ * previously nothing surfaced that to the user, only a one-time server console warning. This surfaces it as a
+ * persistent icon (toggled here) plus a one-time toast on the transition into fallback mode, and - since
+ * silently treating `tag:vampire` as a literal fuzzy search for the string "tag:vampire" would be actively
+ * misleading, not just slower - a separate toast when a `label:query` filter went unhonored because of it.
  * @param {string} searchQuery The current search box value
  * @returns {Promise<void>}
  */
@@ -11258,7 +11276,7 @@ async function fetchServerCharacterSearchResults(searchQuery) {
             return;
         }
 
-        const { items } = await response.json();
+        const { items, searchBackend, labelSyntaxUnsupported } = await response.json();
         const characterScores = new Map();
         const groupScores = new Map();
 
@@ -11274,6 +11292,25 @@ async function fetchServerCharacterSearchResults(searchQuery) {
         });
 
         entitiesFilter.setServerSearchResults({ searchValue: searchQuery, characterScores, groupScores });
+
+        const isFuseFallback = searchBackend === 'fuse';
+        $('#character_search_backend_indicator').toggle(isFuseFallback);
+        if (isFuseFallback && !lastKnownSearchBackendWasFuse) {
+            toastr.warning(
+                t`Character search is running in slower fallback mode because the fast search backend failed to load - results may rank differently, and 'label:query' search filters aren't available. See the server console for details.`,
+                t`Search running in fallback mode`,
+                { timeOut: 0, extendedTimeOut: 0 },
+            );
+        }
+        lastKnownSearchBackendWasFuse = isFuseFallback;
+
+        if (labelSyntaxUnsupported) {
+            toastr.warning(
+                t`'label:query' search filters (like 'tag:foo') aren't available while search is running in fallback mode - showing no results for this query instead of an incorrect literal search.`,
+                t`Search filter unavailable`,
+                { preventDuplicates: true },
+            );
+        }
     } catch (error) {
         console.error('Server-side character search failed, falling back to client-side search', error);
         entitiesFilter.setServerSearchResults(null);
