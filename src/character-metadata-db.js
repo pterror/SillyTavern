@@ -390,6 +390,14 @@ export async function deleteCharacterRow(directories, avatar) {
  * one being added (see this module's header on date_added), so this function's only job is to correct that -
  * copy date_added over from the old row, then remove the old row entirely. It does not rebuild or re-derive
  * anything else about the row; that's already correct from the generic hook.
+ *
+ * BOTH the `date_added` column AND `shallow_json`'s own embedded `date_added` field get corrected here, not just
+ * the column - found by phase 2's own tests (tests/characters-query.test.js), which read rows back through
+ * `shallow_json` (that's what `/query` actually ships - see queryCharacters()) rather than the raw columns.
+ * `shallow_json` is a point-in-time snapshot taken at upsert time (buildRow()); patching only the column and
+ * leaving the blob's own copy stale would mean every *reader* of this table's shallow projection - not just this
+ * phase's endpoint - sees the wrong date_added after any rename, which is exactly the kind of silently-wrong
+ * result this design keeps calling out as worse than an explicit failure.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} oldAvatar
  * @param {string} newAvatar
@@ -408,12 +416,36 @@ export async function renameCharacterRow(directories, oldAvatar, newAvatar) {
         const pending = entry.batch?.pending.get(newAvatar);
         if (pending) {
             pending.row.date_added = dateAdded;
+            pending.row.shallow_json = withPatchedDateAdded(pending.row.shallow_json, dateAdded);
         } else {
-            entry.db.run('UPDATE characters SET date_added = @dateAdded WHERE id = @id', { dateAdded, id: newAvatar });
+            const newRow = entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: newAvatar });
+            if (newRow) {
+                const shallowJson = withPatchedDateAdded(newRow.shallow_json, dateAdded);
+                entry.db.run('UPDATE characters SET date_added = @dateAdded, shallow_json = @shallowJson WHERE id = @id', { dateAdded, shallowJson, id: newAvatar });
+            } else {
+                entry.db.run('UPDATE characters SET date_added = @dateAdded WHERE id = @id', { dateAdded, id: newAvatar });
+            }
         }
     }
 
     entry.db.transaction(() => deleteRowSync(entry.db, oldAvatar));
+}
+
+/**
+ * @param {string} shallowJson
+ * @param {number} dateAdded
+ * @returns {string} `shallowJson` with its `date_added` field overwritten - unmodified if it doesn't parse (this
+ * module always writes valid JSON into this column itself, so a parse failure here would mean something else
+ * corrupted the row; falling back to the unmodified string rather than throwing keeps this a non-fatal repair).
+ */
+function withPatchedDateAdded(shallowJson, dateAdded) {
+    try {
+        const parsed = JSON.parse(shallowJson);
+        parsed.date_added = dateAdded;
+        return JSON.stringify(parsed);
+    } catch {
+        return shallowJson;
+    }
 }
 
 /**
@@ -830,4 +862,270 @@ export async function getTagUsageCount(directories, tagId) {
     if (!entry) return 0;
     const row = entry.db.get('SELECT count FROM tag_usage WHERE tag_id = @tagId', { tagId });
     return row ? Number(row.count) : 0;
+}
+
+/**
+ * Phase 2 (design doc §5): the columns queryCharacters() below is allowed to sort by, mapped to the actual SQLite
+ * column each one sorts on. Deliberately NOT including 'random' or 'search' - both are real values in the doc's
+ * `sort.field` union, but neither belongs to this module: 'random' is the seeded-hash comparator design doc §5.3
+ * scopes to phase 5b (it needs the client-owned seed plumbing that phase adds), and 'search' means routing
+ * through the tantivy/FTS5 index (characters-search-index.js) rather than this table, which is explicitly out of
+ * scope for this pass - see the caller (characters.js's /query route) for why it 400s on both instead of
+ * silently falling back to name order the way the pre-phase-2 `/all` endpoint's `sortOrder=random` bug did (doc
+ * §5.3: "silent wrong result, not a failure" is exactly the failure mode being avoided here).
+ */
+const QUERYABLE_SORT_COLUMNS = {
+    name: 'name_fold',
+    date_added: 'date_added',
+    date_last_chat: 'date_last_chat',
+    chat_size: 'chat_size',
+    fav: 'fav',
+};
+
+/**
+ * Builds a `WHERE ...` clause (or '' if no filter applies) plus its positional-`?` bind values, from the same
+ * filter shape the design doc's §5 query contract defines (minus `search`, handled by the caller - see this
+ * module's header comment on QUERYABLE_SORT_COLUMNS for why full-text search doesn't route through this table).
+ *
+ * `ids: []` (an explicit, present-but-empty array) is handled specially by the caller (queryCharacters()) rather
+ * than here: "resolve exactly these ids" over zero ids is trivially "match nothing", which is a different
+ * question from "no id filter was requested at all" (an absent `ids` key). This function only ever sees a
+ * non-empty `ids` array, or none.
+ * @param {object} filter
+ * @param {{ include?: string[], exclude?: string[], mode?: 'and'|'or' }} [filter.tags]
+ * @param {boolean} [filter.fav]
+ * @param {string} [filter.world]
+ * @param {string[]} [filter.excludeIds]
+ * @param {string[]} [filter.ids]
+ * @returns {{ where: string, args: any[] }}
+ */
+function buildWhereClause({ tags, fav, world, excludeIds, ids } = {}) {
+    const clauses = [];
+    const args = [];
+
+    if (Array.isArray(ids) && ids.length > 0) {
+        clauses.push(`id IN (${ids.map(() => '?').join(', ')})`);
+        args.push(...ids);
+    }
+    if (Array.isArray(excludeIds) && excludeIds.length > 0) {
+        clauses.push(`id NOT IN (${excludeIds.map(() => '?').join(', ')})`);
+        args.push(...excludeIds);
+    }
+    if (typeof fav === 'boolean') {
+        clauses.push('fav = ?');
+        args.push(fav ? 1 : 0);
+    }
+    if (typeof world === 'string' && world) {
+        clauses.push('world = ?');
+        args.push(world);
+    }
+    if (tags) {
+        const include = Array.isArray(tags.include) ? tags.include.filter(Boolean) : [];
+        const exclude = Array.isArray(tags.exclude) ? tags.exclude.filter(Boolean) : [];
+        const mode = tags.mode === 'or' ? 'or' : 'and'; // doc §5: 'and'|'or', defaulting to 'and'
+        if (include.length > 0) {
+            if (mode === 'and') {
+                // A character must carry every included tag - COUNT(DISTINCT tag_id) over the IN-filtered rows
+                // equalling include.length is the standard "all of these" pattern for a many-to-many table.
+                clauses.push(`id IN (SELECT character_id FROM character_tags WHERE tag_id IN (${include.map(() => '?').join(', ')}) GROUP BY character_id HAVING COUNT(DISTINCT tag_id) = ?)`);
+                args.push(...include, include.length);
+            } else {
+                clauses.push(`id IN (SELECT character_id FROM character_tags WHERE tag_id IN (${include.map(() => '?').join(', ')}))`);
+                args.push(...include);
+            }
+        }
+        if (exclude.length > 0) {
+            clauses.push(`id NOT IN (SELECT character_id FROM character_tags WHERE tag_id IN (${exclude.map(() => '?').join(', ')}))`);
+            args.push(...exclude);
+        }
+    }
+
+    return { where: clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '', args };
+}
+
+/**
+ * Phase 2's query endpoint (design doc §5), minus full-text search - the browse/sort/filter half of
+ * `POST /api/characters/query`, backed entirely by SQLite reads against this table: zero PNG parses, zero
+ * `statSync` calls, regardless of library size. This is what makes plain browse pagination "real" rather than
+ * fs.readdirSync()+PNG-parse-everything+slice-in-JS the way the pre-phase-2 `/all` endpoint's non-search path
+ * still works (see design doc §1.2/§3.3).
+ *
+ * `total` is always an EXACT `COUNT(*)` over the same WHERE clause as the row query - never capped, matching the
+ * doc's explicit "approximate is fine, capped is not" rule (§5's `total` notes) by construction, since an exact
+ * count can't ever be a truncated one. The doc also permits (and, at genuinely broad filters and 10M+ rows,
+ * eventually prefers) a maintained counter or a SQLite-estimate for the unfiltered/broad case - deliberately not
+ * implemented here: the doc's own guidance throughout is "start with the simple correct thing, measure before
+ * optimizing", and an index-backed exact COUNT(*) is that simple correct thing, not a placeholder that silently
+ * lies. Revisit only if profiling this against a real large library shows it's the bottleneck.
+ *
+ * Pagination is offset/limit here (page/pageSize -> offset/limit translation is the /query route's job in
+ * characters.js, matching how paginateCharacters()/paginateEntities() already take offset/limit) - kept internal
+ * to this module rather than exposed at the SQL layer as anything fancier (keyset pagination, say), since the
+ * doc's own contract is page-number-based, not cursor-based.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {object} params
+ * @param {{ include?: string[], exclude?: string[], mode?: 'and'|'or' }} [params.tags]
+ * @param {boolean} [params.fav]
+ * @param {string} [params.world]
+ * @param {string[]} [params.excludeIds]
+ * @param {string[]} [params.ids] Present-but-empty means "resolve nothing" (short-circuits to an empty result,
+ * no query run) - see buildWhereClause()'s doc comment.
+ * @param {string} [params.sortField] One of QUERYABLE_SORT_COLUMNS' keys. Anything else (including 'random'/
+ * 'search') is the caller's responsibility to have already rejected - this function just no-ops it into "no
+ * primary sort", which would silently misbehave as a *pagination* endpoint (same items could reappear or vanish
+ * across pages), so the caller must not let that happen. Omitted -> id order only (still fully deterministic,
+ * just not meaningful).
+ * @param {string} [params.sortOrder] 'asc' (default) or 'desc'.
+ * @param {number} [params.offset]
+ * @param {number} [params.limit]
+ * @param {boolean} [params.wantRows] Default true.
+ * @param {boolean} [params.wantTotal] Default true.
+ * @returns {Promise<{ rows: object[] | undefined, total: number | undefined, rev: number } | null>} `rows` are
+ * already-parsed `toShallow()` projections, ready to ship as-is. `rev` is the change log's current high-water
+ * mark (doc §5's "`rev` lets the client detect that its cache is stale relative to what it just rendered"), always
+ * present regardless of `want`. `null` means the metadata store itself is unavailable on this install (no usable
+ * SQLite backend) - callers must treat that as a hard "can't serve this endpoint right now", not silently fall
+ * back to a live filesystem scan (see this module's `getEntry()` for the one place that's already logged).
+ */
+export async function queryCharacters(directories, params = {}) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    const {
+        tags, fav, world, excludeIds, ids,
+        sortField, sortOrder,
+        offset, limit,
+        wantRows = true, wantTotal = true,
+    } = params;
+
+    const revRow = entry.db.get('SELECT COALESCE(MAX(rev), 0) as rev FROM changes');
+    const rev = Number(revRow?.rev ?? 0);
+
+    if (Array.isArray(ids) && ids.length === 0) {
+        // "Resolve exactly these ids" over zero ids - trivially empty, and worth short-circuiting rather than
+        // building `id IN ()` (invalid SQL) or `id IN (NULL)` (a footgun that means something else entirely).
+        return { rows: wantRows ? [] : undefined, total: wantTotal ? 0 : undefined, rev };
+    }
+
+    const { where, args } = buildWhereClause({ tags, fav, world, excludeIds, ids });
+
+    let total;
+    if (wantTotal) {
+        const countRow = entry.db.get(`SELECT COUNT(*) as total FROM characters ${where}`, args);
+        total = Number(countRow?.total ?? 0);
+    }
+
+    let rows;
+    if (wantRows) {
+        const column = QUERYABLE_SORT_COLUMNS[sortField];
+        const direction = sortOrder === 'desc' ? 'DESC' : 'ASC';
+        const orderParts = [];
+        if (column) {
+            orderParts.push(`${column} ${direction}`);
+            // fav is boolean-valued, so a great many rows tie on it - name_fold is the natural secondary key
+            // (this is exactly what the schema's idx_characters_fav_name_fold composite index exists for, per
+            // design doc §3.1).
+            if (sortField === 'fav') {
+                orderParts.push('name_fold ASC');
+            }
+        }
+        // Always-present final tie-break: without one, rows tying on the primary key have no guaranteed stable
+        // order across two separate SQL queries (unlike JS's spec-guaranteed-stable Array#sort, which is what
+        // the pre-phase-2 paginateCharacters()/paginateEntities() relied on for this same guarantee) - and an
+        // unstable order across page 1 and page 2's separate queries means a row can silently appear on both or
+        // neither page. `id` is unique, so this always fully disambiguates.
+        orderParts.push('id ASC');
+        const orderBy = `ORDER BY ${orderParts.join(', ')}`;
+
+        const numericOffset = Number.isFinite(offset) && offset > 0 ? Math.trunc(offset) : 0;
+        const numericLimit = Number.isFinite(limit) && limit >= 0 ? Math.trunc(limit) : DEFAULT_QUERY_LIMIT;
+
+        const rawRows = entry.db.all(`SELECT shallow_json FROM characters ${where} ${orderBy} LIMIT ? OFFSET ?`, [...args, numericLimit, numericOffset]);
+        rows = rawRows.map(r => JSON.parse(r.shallow_json));
+    }
+
+    return { rows, total, rev };
+}
+
+// Mirrors characters.js's own DEFAULT_PAGE_LIMIT - a caller genuinely omitting `limit` (rather than the /query
+// route, which always computes one from page/pageSize) still gets a bounded result instead of the entire table.
+const DEFAULT_QUERY_LIMIT = 500;
+
+/**
+ * `POST /api/characters/exists` (design doc §4.2): chunked existence-by-primary-key, answered straight from this
+ * table's index rather than the filesystem. Every requested id is a key in the returned object - `true` if a row
+ * exists for it, `false` otherwise - so a caller never has to distinguish "false" from "key absent".
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string[]} ids
+ * @returns {Promise<Record<string, boolean> | null>} `null` if the metadata store is unavailable - see
+ * queryCharacters()'s doc comment on why callers must treat that as a hard failure, not a silent "assume it
+ * exists" (doc §4.2: "a failed or partial existence check must abort the mutation, never fall through to
+ * 'delete it'").
+ */
+export async function checkCharactersExist(directories, ids) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    /** @type {Record<string, boolean>} */
+    const result = {};
+    for (const id of ids) {
+        result[id] = false;
+    }
+
+    // Chunked to stay well clear of SQLite's bound-parameter ceiling (SQLITE_MAX_VARIABLE_NUMBER, historically as
+    // low as 999 on some builds) at the input sizes §4.2's callers actually use (chunked by the caller's input,
+    // not the library size, per the doc) - BATCH_FLUSH_SIZE is reused here purely because it's already a
+    // known-reasonable chunk size in this module, not because the two operations are otherwise related.
+    for (let i = 0; i < ids.length; i += BATCH_FLUSH_SIZE) {
+        const chunk = ids.slice(i, i + BATCH_FLUSH_SIZE).filter(id => typeof id === 'string' && id.length > 0);
+        if (chunk.length === 0) continue;
+        const rows = entry.db.all(`SELECT id FROM characters WHERE id IN (${chunk.map(() => '?').join(', ')})`, chunk);
+        for (const row of rows) {
+            result[row.id] = true;
+        }
+    }
+
+    return result;
+}
+
+/**
+ * `POST /api/characters/changes` (design doc §5.2): the change-feed replacement for a whole-library manifest scan.
+ * Not yet wired to replace `/api/characters/manifest` in characters.js - the doc scopes that client-side switch to
+ * a later phase (§5.2's own framing: "once browse is server-paginated" client-side, which is phase 5, not this
+ * one) - this only adds the server-side capability.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {number} sinceRev
+ * @returns {Promise<{ rev: number, changes: { id: string, op: 'upsert'|'delete' }[], truncated: boolean } | null>}
+ * `truncated: true` means `sinceRev` predates the oldest change-log row this table still has (nothing prunes the
+ * log yet - see this module's header on phase 1's freshness mechanisms - so today this can only trigger for a
+ * `sinceRev` that was never valid for this table to begin with, e.g. a cache built against a different user's
+ * store; it's still computed for real rather than hardcoded `false`, since a pruning job is explicitly a future
+ * addition this response shape already has to be correct against). `null` if the metadata store is unavailable.
+ */
+export async function getChangesSince(directories, sinceRev) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    const numericSince = Number.isFinite(sinceRev) && sinceRev >= 0 ? Math.trunc(sinceRev) : 0;
+    const bounds = entry.db.get('SELECT MIN(rev) as minRev, MAX(rev) as maxRev FROM changes');
+    const minRev = bounds?.minRev != null ? Number(bounds.minRev) : undefined;
+    const maxRev = bounds?.maxRev != null ? Number(bounds.maxRev) : 0;
+
+    const truncated = minRev !== undefined && numericSince < minRev - 1;
+    if (truncated) {
+        return { rev: maxRev, changes: [], truncated: true };
+    }
+
+    const rawChanges = entry.db.all('SELECT rev, id, op FROM changes WHERE rev > ? ORDER BY rev ASC', [numericSince]);
+    // Collapse to one entry per id (keeping the latest op for that id in this window) - a client only cares
+    // "what do I need to refetch/drop", not how many times it changed in between, and this keeps a busy id from
+    // inflating the response with redundant entries. Safe because rawChanges is already rev-ascending, so a
+    // later Map.set() for the same id always overwrites with the more recent op.
+    const latestOpById = new Map();
+    for (const row of rawChanges) {
+        latestOpById.set(row.id, row.op);
+    }
+    const changes = [...latestOpById.entries()].map(([id, op]) => ({ id, op }));
+
+    return { rev: maxRev, changes, truncated: false };
 }
