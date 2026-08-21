@@ -3289,6 +3289,13 @@ select option[disabled]:not(:checked) {
     color: #ff3b3b;
 }
 
+#character_search_result_count {
+    display: flex;
+    align-items: center;
+    opacity: 0.7;
+    white-space: nowrap;
+}
+
 #rm_button_search {
     font-size: 1.1em;
     margin: 0 2px;

@@ -11409,8 +11409,11 @@ let lastKnownSearchBackend = null;
  * @returns {Promise<void>}
  */
 async function fetchServerCharacterSearchResults(searchQuery) {
+    const resultCount = $('#character_search_result_count');
+
     if (!searchQuery) {
         entitiesFilter.setServerSearchResults(null);
+        resultCount.hide();
         return;
     }
 
@@ -11424,10 +11427,11 @@ async function fetchServerCharacterSearchResults(searchQuery) {
         if (!response.ok) {
             console.error('Server-side character search request failed', response.status);
             entitiesFilter.setServerSearchResults(null);
+            resultCount.hide();
             return;
         }
 
-        const { items, searchBackend } = await response.json();
+        const { items, total, searchBackend } = await response.json();
         const characterScores = new Map();
         const groupScores = new Map();
 
@@ -11443,6 +11447,17 @@ async function fetchServerCharacterSearchResults(searchQuery) {
         });
 
         entitiesFilter.setServerSearchResults({ searchValue: searchQuery, characterScores, groupScores });
+
+        // The client's own list/grid pagination (printCharacters(), Characters_PerPage) already shows a
+        // "rangeStart-rangeEnd .. N" navigator, but N there is just `items.length` - at most `total` capped
+        // at the server's page-fetch limit (see paginateSearchResults()'s JSDoc in characters.js), not the real
+        // match count. Without this, a broad query that matches more than that limit looks like it matched
+        // *exactly* the limit, with no indication anything was left out.
+        if (total > items.length) {
+            resultCount.text(t`Showing ${items.length} of ${total} matches`).show();
+        } else {
+            resultCount.text(t`${total} ${total === 1 ? 'match' : 'matches'}`).show();
+        }
 
         const indicatorInfo = SEARCH_BACKEND_INDICATOR[searchBackend] ?? null;
         const indicator = $('#character_search_backend_indicator');
@@ -11460,6 +11475,7 @@ async function fetchServerCharacterSearchResults(searchQuery) {
     } catch (error) {
         console.error('Server-side character search failed, falling back to client-side search', error);
         entitiesFilter.setServerSearchResults(null);
+        resultCount.hide();
     }
 }
 
