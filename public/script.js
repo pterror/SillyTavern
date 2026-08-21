@@ -11227,8 +11227,62 @@ API Settings: ${JSON.stringify(getSettingsContents[getSettingsContents.main_api 
     });
 }
 
+/**
+ * Fetches full-content character/group search results from the server's fast index and stores them on
+ * entitiesFilter for searchFilter() (filters.js) to use instead of its client-side pass - see
+ * FilterHelper.setServerSearchResults()'s JSDoc for why this isn't just a speed optimization.
+ *
+ * Results come back already best-first sorted (see paginateSearchResults() in src/endpoints/characters.js), so
+ * this assigns each match a synthetic ascending-is-better score by its position in that order - the endpoint
+ * doesn't expose the underlying bm25/Fuse score directly, and rank alone is enough for both consumers:
+ * searchFilter()'s membership check (does a cached score exist at all) and sortEntitiesList()'s ascending sort.
+ * @param {string} searchQuery The current search box value
+ * @returns {Promise<void>}
+ */
+async function fetchServerCharacterSearchResults(searchQuery) {
+    if (!searchQuery) {
+        entitiesFilter.setServerSearchResults(null);
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/characters/all', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ search: searchQuery, includeGroups: true }),
+        });
+
+        if (!response.ok) {
+            console.error('Server-side character search request failed', response.status);
+            entitiesFilter.setServerSearchResults(null);
+            return;
+        }
+
+        const { items } = await response.json();
+        const characterScores = new Map();
+        const groupScores = new Map();
+
+        items.forEach(({ type, item }, rank) => {
+            if (type === 'character') {
+                const index = characters.findIndex(c => c.avatar === item.avatar);
+                if (index !== -1) {
+                    characterScores.set(index, rank);
+                }
+            } else if (type === 'group') {
+                groupScores.set(item.id, rank);
+            }
+        });
+
+        entitiesFilter.setServerSearchResults({ searchValue: searchQuery, characterScores, groupScores });
+    } catch (error) {
+        console.error('Server-side character search failed, falling back to client-side search', error);
+        entitiesFilter.setServerSearchResults(null);
+    }
+}
+
 function initCharacterSearch() {
-    const debouncedCharacterSearch = debounce((searchQuery) => {
+    const debouncedCharacterSearch = debounce(async (searchQuery) => {
+        await fetchServerCharacterSearchResults(searchQuery);
         entitiesFilter.setFilterData(FILTER_TYPES.SEARCH, searchQuery);
     });
 
