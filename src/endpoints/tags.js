@@ -6,6 +6,7 @@ import { sync as writeFileAtomicSync } from 'write-file-atomic';
 
 import { TAGS_FILE } from '../constants.js';
 import { getUserDirectories } from '../users.js';
+import { readTagsData } from './tags-data.js';
 
 export const router = express.Router();
 
@@ -76,6 +77,10 @@ router.post('/save', function (request, response) {
             tag_map: request.body.tag_map,
         };
         writeFileAtomicSync(pathToTags, JSON.stringify(payload, null, 4), 'utf8');
+        // A tag rename/delete/reassignment can change what the `#tags` field of any character or group search
+        // index entry resolves to. No explicit invalidation call needed here - the character/group search
+        // indexes (characters-search-index.js/groups-search-index.js) check tags.json's own mtime as part of
+        // their freshness signature on every search, so this write is picked up automatically.
         response.send({ result: 'ok' });
     } catch (err) {
         console.error('Could not save tags file', err);
@@ -91,9 +96,8 @@ router.post('/get', (request, response) => {
             return response.send({ tags: null, tag_map: null });
         }
 
-        const content = fs.readFileSync(pathToTags, 'utf8');
-        const parsed = JSON.parse(content);
-        response.send({ tags: parsed.tags ?? null, tag_map: parsed.tag_map ?? null });
+        const { tags, tag_map } = readTagsData(request.user.directories);
+        response.send({ tags, tag_map });
     } catch (err) {
         console.error('Could not read tags file', err);
         response.sendStatus(500);
