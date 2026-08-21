@@ -1599,6 +1599,22 @@ function paginateSearchResults(characterResults, groupResults, { offset, limit }
  * @param  {import("express").Response} response The HTTP response object.
  * @return {void}
  */
+// Real-world crash (see git history): fetchServerCharacterSearchResults() (script.js) calls this endpoint with
+// `{ search, includeGroups: true }` on every keystroke and never sends `limit` - it only needs enough top
+// matches to usefully re-rank the already-resident character list, not literally every match. Below, once any
+// pagination-shaped param puts a request into one of the paginate*() branches, an omitted `limit` used to mean
+// "unbounded" (Number.isFinite(Number(undefined)) is false, so paginateSearchResults()/paginateEntities()/
+// paginateCharacters() would slice(start, undefined) - i.e. not slice at all). FTS5 prefix-matches each
+// whitespace token against 11 text columns per character, so a short/common search-as-you-type term (or an
+// in-progress `label:query` pill) routinely matches most of a large library - confirmed against this install's
+// real 24,171-character library, a one-letter query matched effectively the entire set. That produced one
+// `response.send()` (JSON.stringify) call over tens of thousands of full result objects at once, which is what
+// took the process's heap to ~4GB and crashed it with a JS heap OOM. A "page" endpoint silently returning the
+// whole unbounded set just because `limit` was omitted - while `search`/`includeGroups` themselves were
+// present, i.e. very much a paginated request - was the actual bug; this default closes it for all three
+// paginate*() branches below, not just the search one that happened to crash first.
+const DEFAULT_PAGE_LIMIT = 500;
+
 router.post('/all', async function (request, response) {
     try {
         const { sortField, sortOrder, offset, limit, search, includeGroups } = request.body ?? {};
@@ -1612,12 +1628,20 @@ router.post('/all', async function (request, response) {
             return response.send(data);
         }
 
+        const numericOffset = Number.isFinite(Number(offset)) ? Number(offset) : 0;
+        const numericLimit = Number.isFinite(Number(limit)) ? Number(limit) : DEFAULT_PAGE_LIMIT;
+
         if (search) {
             const handle = request.user.profile.handle;
             const emptySearch = { results: [], backend: 'native' };
+            // Each source only needs to fetch its own top (offset + limit) rows to guarantee a correct merged
+            // page - paginateSearchResults() below still does the real character/group interleave-by-score and
+            // final slice, this just stops each individual FTS5 query (and the JSON.parse() of every one of its
+            // rows - see querySqliteIndex()) from doing that work across the *entire* matching set first.
+            const searchFetchLimit = numericOffset + numericLimit;
             const [characterSearch, groupSearch] = await Promise.all([
-                searchCharacters(handle, request.user.directories, search),
-                includeGroups ? searchGroups(handle, request.user.directories, search) : emptySearch,
+                searchCharacters(handle, request.user.directories, search, searchFetchLimit),
+                includeGroups ? searchGroups(handle, request.user.directories, search, searchFetchLimit) : emptySearch,
             ]);
             // The search index is always built from *full* character data (see characters-search-index.js) -
             // trim results down to shallow fields here to match this server's normal list-response shape
@@ -1628,7 +1652,7 @@ router.post('/all', async function (request, response) {
                 : characterSearch.results;
 
             const { items, total } = paginateSearchResults(finalCharacterResults, groupSearch.results, {
-                offset: Number(offset), limit: Number(limit),
+                offset: numericOffset, limit: numericLimit,
             });
             // searchBackend lets the client (fetchServerCharacterSearchResults(), script.js) show a visible
             // indicator when search is running on anything other than the fast native engine (see
@@ -1653,7 +1677,7 @@ router.post('/all', async function (request, response) {
         if (includeGroups) {
             const groupsData = getGroupsData(request.user.directories);
             const { items, total } = paginateEntities(data, groupsData, {
-                sortField, sortOrder, offset: Number(offset), limit: Number(limit),
+                sortField, sortOrder, offset: numericOffset, limit: numericLimit,
             });
             return response.send({ items, total });
         }
@@ -1661,14 +1685,80 @@ router.post('/all', async function (request, response) {
         const { items, total } = paginateCharacters(data, {
             sortField,
             sortOrder,
-            offset: Number(offset),
-            limit: Number(limit),
+            offset: numericOffset,
+            limit: numericLimit,
         });
         return response.send({ items, total });
     } catch (err) {
         console.error(err);
         const isRangeError = err instanceof RangeError;
         response.status(500).send({ overflow: isRangeError, error: true });
+    }
+});
+
+/**
+ * HTTP POST endpoint for the "/api/characters/manifest" route.
+ *
+ * Lightweight companion to `/all`: returns just `[{ avatar, mtime }, ...]` for every character PNG in the
+ * user's library, one entry per file, with no PNG tEXt-chunk read, no JSON parse, and no chat-size calculation
+ * (the expensive parts of processCharacter()). This is meant to be fetched on every boot so the client can diff
+ * it against what it already has cached (see character-cache.js) and only request full data for characters
+ * that are new or whose mtime changed, instead of always re-fetching the entire library via `/all`.
+ *
+ * mtimeMs (last content modification), not ctimeMs (metadata/inode change time, which is what processCharacter()
+ * uses for date_added) - a real edit to the character's data is what should invalidate a client's cached copy.
+ *
+ * @param  {import("express").Request} request The HTTP request object.
+ * @param  {import("express").Response} response The HTTP response object.
+ * @return {void}
+ */
+router.post('/manifest', function (request, response) {
+    try {
+        const files = fs.readdirSync(request.user.directories.characters);
+        const pngFiles = files.filter(file => file.endsWith('.png'));
+        const manifest = pngFiles.map(file => {
+            const stat = fs.statSync(path.join(request.user.directories.characters, file));
+            return { avatar: file, mtime: stat.mtimeMs };
+        });
+        return response.send(manifest);
+    } catch (err) {
+        console.error(err);
+        response.status(500).send({ error: true });
+    }
+});
+
+/**
+ * HTTP POST endpoint for the "/api/characters/batch" route.
+ *
+ * Fetches full (or shallow, per `performance.lazyLoadCharacters`) character data for a specific list of
+ * avatars, via the same processCharacter() every other character-reading endpoint uses. This is the other half
+ * of the `/manifest` delta-caching flow: after diffing `/manifest` against its cache, the client calls this
+ * with only the avatars that are new or changed, instead of re-fetching every character via `/all`.
+ *
+ * Each requested avatar is validated with the same forbidden-character check `validateAvatarUrlMiddleware`
+ * applies to a single `avatar_url` field - done manually here rather than via that middleware since this
+ * endpoint takes an array, not a single field.
+ *
+ * @param  {import("express").Request} request The HTTP request object.
+ * @param  {import("express").Response} response The HTTP response object.
+ * @return {void}
+ */
+router.post('/batch', async function (request, response) {
+    try {
+        const avatars = Array.isArray(request.body?.avatars) ? request.body.avatars : [];
+
+        for (const avatar of avatars) {
+            if (typeof avatar !== 'string' || forbiddenRegExp.test(avatar)) {
+                return response.sendStatus(400);
+            }
+        }
+
+        const processingPromises = avatars.map(avatar => processCharacter(avatar, request.user.directories, { shallow: useShallowCharacters }));
+        const data = (await Promise.all(processingPromises)).filter(c => c.name);
+        return response.send(data);
+    } catch (err) {
+        console.error(err);
+        response.status(500).send({ error: true });
     }
 });
 
