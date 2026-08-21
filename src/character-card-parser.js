@@ -79,6 +79,13 @@ export const read = (image) => {
 
 /**
  * Parses a card image and returns the character metadata.
+ *
+ * Reads via fs.promises (real async I/O), not fs.readFileSync: this is the function readCharacterData()
+ * (characters.js) calls once per character file, and a synchronous read here means every "concurrent" caller
+ * (e.g. characters-search-index.js's readCharacterBatches(), which processes a batch via Promise.all()) was
+ * never actually overlapping disk I/O - each read blocked the whole event loop in turn, one file at a time, no
+ * matter how many promises were nominally in flight. Switching to a real async read lets those Promise.all()
+ * batches genuinely overlap I/O instead of just deferring execution of blocking calls.
  * @param {string} cardUrl Path to the card image
  * @param {string} format File format
  * @returns {Promise<string>} Character data
@@ -88,7 +95,7 @@ export const parse = async (cardUrl, format) => {
 
     switch (fileFormat) {
         case 'png': {
-            const buffer = fs.readFileSync(cardUrl);
+            const buffer = await fs.promises.readFile(cardUrl);
             return read(buffer);
         }
     }
