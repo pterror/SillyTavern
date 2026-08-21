@@ -951,12 +951,15 @@ function isValidImageUrl(url) {
  * @returns {JQuery<HTMLElement>} Group avatar element
  */
 function getGroupAvatar(group) {
+    // loading="lazy" throughout this function - same request-storm risk as getCharacterBlock() in script.js
+    // (which has the full explanation): a broad search/list render can produce hundreds of group cards at
+    // once, each firing up to 4 avatar thumbnail requests immediately without this.
     if (!group) {
-        return $(`<div class="avatar"><img src="${default_avatar}"></div>`);
+        return $(`<div class="avatar"><img src="${default_avatar}" loading="lazy"></div>`);
     }
     // if isDataURL or if it's a valid local file url
     if (isValidImageUrl(group.avatar_url)) {
-        return $(`<div class="avatar" title="[Group] ${group.name}"><img src="${group.avatar_url}"></div>`);
+        return $(`<div class="avatar" title="[Group] ${group.name}"><img src="${group.avatar_url}" loading="lazy"></div>`);
     }
 
     const memberAvatars = [];
@@ -979,7 +982,7 @@ function getGroupAvatar(group) {
         const groupAvatar = $(`#group_avatars_template .collage_${avatarCount}`).clone();
 
         for (let i = 0; i < avatarCount; i++) {
-            groupAvatar.find(`.img_${i + 1}`).attr('src', memberAvatars[i]);
+            groupAvatar.find(`.img_${i + 1}`).attr('src', memberAvatars[i]).attr('loading', 'lazy');
         }
 
         groupAvatar.attr('title', `[Group] ${group.name}`);
@@ -993,7 +996,7 @@ function getGroupAvatar(group) {
 
     // default avatar
     const groupAvatar = $('#group_avatars_template .collage_1').clone();
-    groupAvatar.find('.img_1').attr('src', group.avatar_url || system_avatar);
+    groupAvatar.find('.img_1').attr('src', group.avatar_url || system_avatar).attr('loading', 'lazy');
     groupAvatar.attr('title', `[Group] ${group.name}`);
     return groupAvatar;
 }
