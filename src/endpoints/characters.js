@@ -1614,22 +1614,33 @@ router.post('/all', async function (request, response) {
 
         if (search) {
             const handle = request.user.profile.handle;
-            const [characterResults, groupResults] = await Promise.all([
+            const emptySearch = { results: [], backend: 'sqlite', labelSyntaxUnsupported: false };
+            const [characterSearch, groupSearch] = await Promise.all([
                 searchCharacters(handle, request.user.directories, search),
-                includeGroups ? searchGroups(handle, request.user.directories, search) : [],
+                includeGroups ? searchGroups(handle, request.user.directories, search) : emptySearch,
             ]);
             // The search index is always built from *full* character data (see characters-search-index.js) -
             // trim results down to shallow fields here to match this server's normal list-response shape
             // (`performance.lazyLoadCharacters`), same as the non-search path does via processCharacter()'s own
             // `shallow` option.
             const finalCharacterResults = useShallowCharacters
-                ? characterResults.map(r => ({ ...r, item: toShallow(r.item) }))
-                : characterResults;
+                ? characterSearch.results.map(r => ({ ...r, item: toShallow(r.item) }))
+                : characterSearch.results;
 
-            const { items, total } = paginateSearchResults(finalCharacterResults, groupResults, {
+            const { items, total } = paginateSearchResults(finalCharacterResults, groupSearch.results, {
                 offset: Number(offset), limit: Number(limit),
             });
-            return response.send(includeGroups ? { items, total } : { items: items.map(x => x.item), total });
+            // searchBackend/labelSyntaxUnsupported let the client (fetchServerCharacterSearchResults(),
+            // script.js) show a visible indicator when search silently degraded to the slower Fuse.js fallback
+            // (see native-sqlite.js) instead of that only ever showing up as a server console warning - and let
+            // it warn explicitly when a `label:value` filter (search-query.js) went unhonored because of it,
+            // rather than that filter silently doing a literal fuzzy search of "label:value" against everything.
+            const searchBackend = (characterSearch.backend === 'fuse' || groupSearch.backend === 'fuse') ? 'fuse' : 'sqlite';
+            const labelSyntaxUnsupported = characterSearch.labelSyntaxUnsupported || groupSearch.labelSyntaxUnsupported;
+            const payload = includeGroups ? { items, total } : { items: items.map(x => x.item), total };
+            payload.searchBackend = searchBackend;
+            payload.labelSyntaxUnsupported = labelSyntaxUnsupported;
+            return response.send(payload);
         }
 
         const files = fs.readdirSync(request.user.directories.characters);
