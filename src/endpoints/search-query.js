@@ -23,6 +23,12 @@
  * This module has no per-index behavior baked in on purpose - callers (characters-search-index.js,
  * groups-search-index.js) each pass their own label -> column-filter-expression map, since the set of valid
  * labels differs (characters have creator/scenario/personality/etc, groups only have name/tag/member/id).
+ *
+ * tokenize()/parseLabeledToken()/unquote() are also exported (as tokenizeSearchQuery()/parseLabeledToken()/
+ * unquoteSearchTerm()) for tantivy-search.js to reuse directly, rather than re-deriving the same tokenization
+ * and label-parsing rules against the tantivy Query API - see that module's header for why the tantivy query
+ * path needs the same tokens/labels but can't reuse buildFtsQuery() itself (it needs real Query objects, not an
+ * FTS5 match-string).
  */
 
 /**
@@ -31,7 +37,7 @@
  * @param {string} searchTerm Raw user input
  * @returns {string[]}
  */
-function tokenize(searchTerm) {
+export function tokenizeSearchQuery(searchTerm) {
     return searchTerm.trim().match(/[^\s"]*"[^"]*"|\S+/g) ?? [];
 }
 
@@ -39,7 +45,7 @@ function tokenize(searchTerm) {
  * @param {string} value
  * @returns {string} `value` with a single pair of surrounding double quotes stripped, if present
  */
-function unquote(value) {
+export function unquoteSearchTerm(value) {
     return value.startsWith('"') && value.endsWith('"') && value.length >= 2
         ? value.slice(1, -1)
         : value;
@@ -54,14 +60,16 @@ function escapeFtsQuotes(value) {
 }
 
 /**
- * @param {string} token One token from tokenize()
- * @param {Record<string, string>} fieldLabels Map of recognized lowercase label -> FTS5 column-filter
- * expression (a plain column name, or a `{col1 col2}` group)
- * @returns {{ column: string, value: string } | null} The resolved column-filter expression and this token's
- * (still possibly quoted) value, or null if `token` isn't a `label:value` filter for a label the caller
+ * @param {string} token One token from tokenizeSearchQuery()
+ * @param {Record<string, string | string[]>} fieldLabels Map of recognized lowercase label -> whatever shape
+ * the caller uses to represent "which field(s) this label targets" (an FTS5 column name/`{col1 col2}` group
+ * string for buildFtsQuery() callers, or a field-name array for tantivy-search.js callers) - this function is
+ * agnostic to that shape, it just looks the label up and hands the value back untouched.
+ * @returns {{ column: string | string[], value: string } | null} The resolved column-filter expression and this
+ * token's (still possibly quoted) value, or null if `token` isn't a `label:value` filter for a label the caller
  * recognizes.
  */
-function parseLabeledToken(token, fieldLabels) {
+export function parseLabeledToken(token, fieldLabels) {
     const match = token.match(/^([A-Za-z][A-Za-z0-9_]*):(.+)$/);
     if (!match) {
         return null;
@@ -84,15 +92,15 @@ function parseLabeledToken(token, fieldLabels) {
  * @returns {string | null} An FTS5 MATCH query string, or null if there's nothing to search for
  */
 export function buildFtsQuery(searchTerm, fieldLabels) {
-    const tokens = tokenize(searchTerm);
+    const tokens = tokenizeSearchQuery(searchTerm);
     if (tokens.length === 0) {
         return null;
     }
     return tokens.map(token => {
         const labeled = parseLabeledToken(token, fieldLabels);
         if (labeled) {
-            return `${labeled.column}:"${escapeFtsQuotes(unquote(labeled.value))}"*`;
+            return `${labeled.column}:"${escapeFtsQuotes(unquoteSearchTerm(labeled.value))}"*`;
         }
-        return `"${escapeFtsQuotes(unquote(token))}"*`;
+        return `"${escapeFtsQuotes(unquoteSearchTerm(token))}"*`;
     }).join(' AND ');
 }

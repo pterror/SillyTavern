@@ -4,8 +4,9 @@ import path from 'node:path';
 import { TAGS_FILE } from '../constants.js';
 import { readTagsData } from './tags-data.js';
 import { processCharacter } from './characters.js';
-import { getSqliteEngine } from './sqlite-engine.js';
 import { buildFtsQuery } from './search-query.js';
+import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD } from './tantivy-search.js';
+import { resolveSearchEngine } from './search-engine.js';
 import { createIndexCoordinator } from './search-index-coordinator.js';
 import { getConfigValue } from '../util.js';
 
@@ -34,12 +35,16 @@ import { getConfigValue } from '../util.js';
  * in SQLite's own file and page cache, not V8's heap. That's what makes this viable at library sizes an
  * in-memory JS index can't reach at all, not just "a bit better."
  *
- * The engine actually used (native better-sqlite3 vs the WebAssembly node-sqlite3-wasm fallback) is resolved by
- * sqlite-engine.js - see that module's header for the full native-vs-wasm rationale, and native-sqlite.js's own
- * header for why the native binding specifically can fail on some installs. Both engines run the exact same
- * SQLite/FTS5 code and produce identical ranking and `label:query` behavior (search-query.js); the wasm tier is
- * just slower, not different. If neither engine is usable at all, searchCharacters() below reports search as
- * unavailable rather than silently degrading to a different, worse search algorithm.
+ * TANTIVY IS NOW THE PRIMARY ENGINE, SQLITE FTS5 A FALLBACK TIER: FTS5's MATCH cost scales with a term's
+ * posting-list size, not result-set size - measured a single common word ("the") at ~78ms against this install's
+ * real library, and getting *worse*, not staying flat, as the library grows. Tantivy (see tantivy-engine.js,
+ * tantivy-search.js) measured a flat 0-1ms for the same shape of query regardless of term commonality - a real
+ * inverted-index search engine rather than a general relational engine with FTS bolted on. search-engine.js
+ * resolves the actual tier used (tantivy first, then this module's native/wasm SQLite chain, matching this
+ * header's original native-vs-wasm reasoning below) - see that module's header for the tantivy-not-usable
+ * fallback story (its own platform coverage is narrower than SQLite's, so this fallback exists for real, not
+ * hypothetically). Both this file's own two SQLite tiers still run the exact same SQLite/FTS5 code and produce
+ * identical ranking and `label:query` behavior (search-query.js) when they're the tier in use.
  *
  * Freshness (for both backends) is checked cheaply (two stat() calls - the characters directory and tags.json)
  * on every search rather than via push-based invalidation hooks on every character-mutating route:
@@ -89,6 +94,28 @@ const FIELD_LABELS = {
     alternate: 'alternate_greetings',
 };
 
+// tantivy-search.js's field-name-array equivalent of FIELD_LABELS above - same labels, same target fields, just
+// expressed as arrays of tantivy field names instead of FTS5 column-filter expression strings (tantivy-search.js
+// is agnostic to which shape parseLabeledToken()'s `fieldLabels` map uses, so these are just a different view of
+// the same mapping, not a second source of truth to keep in sync by hand-checking - a mismatch here would only
+// ever change which fields a `label:` filter searches, not break anything silently).
+const TANTIVY_FIELD_WEIGHTS = Object.fromEntries(BM25_INDEXED_COLUMNS.map((name, i) => [name, BM25_WEIGHTS[i]]));
+const TANTIVY_FIELD_LABELS = {
+    name: ['name'],
+    tag: ['resolved_tags', 'tags'],
+    tags: ['resolved_tags', 'tags'],
+    desc: ['description'],
+    description: ['description'],
+    example: ['mes_example'],
+    scenario: ['scenario'],
+    personality: ['personality'],
+    greeting: ['first_mes'],
+    notes: ['creator_notes'],
+    creator: ['creator'],
+    alt: ['alternate_greetings'],
+    alternate: ['alternate_greetings'],
+};
+
 /** @type {ReturnType<typeof createIndexCoordinator<import('./sqlite-engine.js').SqliteEngineHandle>>} */
 const indexCoordinator = createIndexCoordinator();
 
@@ -115,6 +142,13 @@ function getFreshnessSignature(directories) {
 // averaging tens of KB of text - see the json_data comment below) is a rounding error against any reasonable
 // heap size.
 const INDEX_BUILD_BATCH_SIZE = 500;
+
+// Fallback cap on the tantivy tier's maxRows when a caller genuinely omits it - mirrors characters.js's own
+// DEFAULT_PAGE_LIMIT. querySqliteIndex()'s doc comment explains why an unbounded fetch is a real OOM risk (a
+// short/broad query prefix-matching most of a large library, each match then JSON.parse()'d in full); that risk
+// applies identically to runTantivySearch()'s per-hit JSON.parse() of the stored `data` field, tantivy's raw
+// per-query speed doesn't change how many full character objects an unbounded result set would parse.
+const DEFAULT_TANTIVY_MAX_ROWS = 500;
 
 // How many batches to insert before folding the WAL back into the main db file (native engine only - see
 // buildSqliteIndex()'s checkpoint comment for why this matters and why the wasm engine's checkpoint is a
@@ -283,6 +317,67 @@ async function buildSqliteIndex(directories, engine) {
 }
 
 /**
+ * (Re)builds the persistent on-disk tantivy index for a user's characters - the tantivy-tier equivalent of
+ * buildSqliteIndex() above, reusing the exact same batched-read discipline (readCharacterBatches(),
+ * INDEX_BUILD_BATCH_SIZE/INDEX_BUILD_READ_CONCURRENCY/CHECKPOINT_EVERY_N_BATCHES) for the same OOM-avoidance
+ * reasons documented on those constants - a tantivy IndexWriter can still accumulate an unbounded amount of
+ * unflushed state if fed the entire library in one go, so periodic writer.commit() calls here play the same role
+ * periodic db.checkpoint() calls do for the SQLite tier.
+ * @param {import('../users.js').UserDirectoryList} directories User directories
+ * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy The resolved tantivy module (tantivy-engine.js)
+ * @returns {Promise<{ index: import('@oxdev03/node-tantivy-binding').Index, schema: import('@oxdev03/node-tantivy-binding').Schema, close: () => void }>}
+ * The freshly built, open index handle - `close()` is a no-op (this binding has no explicit index-handle-close
+ * API; the coordinator's swap-and-close still calls it via optional chaining, this just makes the no-op explicit
+ * instead of relying on that chaining silently skipping a missing method).
+ */
+async function buildTantivyIndex(directories, tantivy) {
+    const dbDir = path.join(directories.root, 'search-index');
+    if (!fs.existsSync(dbDir)) {
+        fs.mkdirSync(dbDir, { recursive: true });
+    }
+    const indexDir = path.join(dbDir, 'characters-tantivy');
+    fs.rmSync(indexDir, { recursive: true, force: true });
+    fs.mkdirSync(indexDir, { recursive: true });
+
+    const schema = buildTantivySchema(tantivy, BM25_INDEXED_COLUMNS);
+    const index = new tantivy.Index(schema, indexDir, false);
+    const writer = index.writer();
+
+    const tagNamesFor = makeTagNamesResolver(directories);
+
+    let batchIndex = 0;
+    for await (const batch of readCharacterBatches(directories)) {
+        for (const character of batch) {
+            const doc = tantivy.Document.fromDict({
+                name: character.data?.name ?? '',
+                resolved_tags: tagNamesFor(character.avatar),
+                description: character.data?.description ?? '',
+                mes_example: character.data?.mes_example ?? '',
+                scenario: character.data?.scenario ?? '',
+                personality: character.data?.personality ?? '',
+                first_mes: character.data?.first_mes ?? '',
+                creator_notes: character.data?.creator_notes ?? '',
+                creator: character.data?.creator ?? '',
+                tags: Array.isArray(character.data?.tags) ? character.data.tags.join(' ') : '',
+                alternate_greetings: Array.isArray(character.data?.alternate_greetings) ? character.data.alternate_greetings.join(' ') : '',
+                [DATA_FIELD]: JSON.stringify(character),
+            }, schema);
+            writer.addDocument(doc);
+        }
+
+        batchIndex++;
+        if (batchIndex % CHECKPOINT_EVERY_N_BATCHES === 0) {
+            writer.commit();
+        }
+    }
+
+    writer.commit();
+    index.reload();
+
+    return { index, schema, close: () => { /* no explicit close API on this binding's Index - see doc comment above */ } };
+}
+
+/**
  * The AND-by-default rationale for multi-word queries is documented in search-query.js; the specific numbers it
  * was measured against: a search for "vampire romance" OR-combined matched 11,101 of 24,171 cards (worthless as
  * a filter), AND-combined matched 315 (a result set someone could actually use). Known tradeoff: FTS5 prefix
@@ -334,37 +429,53 @@ function countSqliteIndexMatches(db, searchTerm) {
 
 /**
  * Fuzzy-searches a user's characters, rebuilding the persistent index first if it's missing or stale. Resolves
- * a SQLite FTS5 engine via getSqliteEngine() (sqlite-engine.js) - native better-sqlite3 first, falling back to
- * the WebAssembly node-sqlite3-wasm build if the native binding isn't usable on this install.
+ * the full search engine chain via resolveSearchEngine() (search-engine.js) - tantivy first, falling back to
+ * SQLite FTS5 (native better-sqlite3, then WebAssembly node-sqlite3-wasm) if tantivy's native binding isn't
+ * usable on this install.
  *
  * The returned `backend` field lets callers (see the /api/characters/all handler in characters.js) tell the
- * client which engine actually served a given search - the client surfaces that as a visible indicator when
- * it's not 'native', since the wasm tier is measurably slower (though behaviorally identical - same ranking,
- * same `label:query` support), and 'unavailable' means search produced no results because nothing usable could
- * be loaded, not because the query didn't match anything. Nothing about a degraded-but-still-200-OK response
- * would otherwise reveal any of that to whoever's looking at an empty or slow result list.
+ * client which engine actually served a given search - the client surfaces that as a visible indicator whenever
+ * it's not the best available tier ('tantivy'), since every fallback tier below it is measurably slower (the
+ * SQLite tiers are otherwise behaviorally identical to each other - same ranking, same `label:query` support -
+ * see sqlite-engine.js), and 'unavailable' means search produced no results because nothing usable could be
+ * loaded, not because the query didn't match anything. Nothing about a degraded-but-still-200-OK response would
+ * otherwise reveal any of that to whoever's looking at an empty or slow result list.
  * @param {string} handle User handle
  * @param {import('../users.js').UserDirectoryList} directories User directories
  * @param {string} searchTerm Search term
- * @param {number} [maxRows] Forwarded to querySqliteIndex() - see that function's doc comment. Callers should
- * always pass this (the /api/characters/all handler in characters.js passes offset+limit, sized to cover
- * whatever page it's about to slice out of the merged character+group results).
- * @returns {Promise<{ results: { item: object, score: number }[], total: number, backend: 'native' | 'wasm' | 'unavailable' }>}
- * Results sorted best-first (ascending score), the true total match count (independent of `maxRows` - see
- * countSqliteIndexMatches()), and which engine produced them.
+ * @param {number} [maxRows] Caps how many matching rows/docs get fetched and JSON.parse()'d - see
+ * querySqliteIndex()'s doc comment for the full rationale (the OOM this guards against is real, not
+ * hypothetical, and applies just as much to the tantivy tier's per-hit JSON.parse() of the stored `data` field).
+ * Callers should always pass this (the /api/characters/all handler in characters.js passes offset+limit, sized
+ * to cover whatever page it's about to slice out of the merged character+group results).
+ * @returns {Promise<{ results: { item: object, score: number }[], total: number, backend: 'tantivy' | 'native' | 'wasm' | 'unavailable' }>}
+ * Results sorted best-first (ascending score - see tantivy-search.js's runSearch() for why the tantivy tier's
+ * naturally-higher-is-better score gets negated to match this convention), the true total match count
+ * (independent of `maxRows`), and which engine tier produced them.
  */
 export async function searchCharacters(handle, directories, searchTerm, maxRows) {
     const signature = getFreshnessSignature(directories);
-    const engine = await getSqliteEngine();
+    const engine = await resolveSearchEngine();
 
-    if (!engine) {
+    if (engine.tier === 'unavailable') {
         return { results: [], total: 0, backend: 'unavailable' };
     }
 
-    const db = await indexCoordinator.getIndex(handle, signature, () => buildSqliteIndex(directories, engine));
+    if (engine.tier === 'tantivy') {
+        const tantivyIndex = await indexCoordinator.getIndex(handle, signature, () => buildTantivyIndex(directories, engine.tantivy));
+        const query = buildTantivyQuery(engine.tantivy, tantivyIndex.schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS);
+        if (!query) {
+            return { results: [], total: 0, backend: 'tantivy' };
+        }
+        const boundedMaxRows = Number.isFinite(maxRows) ? maxRows : DEFAULT_TANTIVY_MAX_ROWS;
+        const { results, total } = runTantivySearch(tantivyIndex.index, query, boundedMaxRows);
+        return { results, total, backend: 'tantivy' };
+    }
+
+    const db = await indexCoordinator.getIndex(handle, signature, () => buildSqliteIndex(directories, engine.sqlite));
     return {
         results: querySqliteIndex(db, searchTerm, maxRows),
         total: countSqliteIndexMatches(db, searchTerm),
-        backend: engine.kind,
+        backend: engine.sqlite.kind,
     };
 }

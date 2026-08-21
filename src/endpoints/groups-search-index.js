@@ -4,18 +4,20 @@ import path from 'node:path';
 import { TAGS_FILE } from '../constants.js';
 import { readTagsData } from './tags-data.js';
 import { getGroupsData } from './groups.js';
-import { getSqliteEngine } from './sqlite-engine.js';
 import { buildFtsQuery } from './search-query.js';
+import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD } from './tantivy-search.js';
+import { resolveSearchEngine } from './search-engine.js';
 import { createIndexCoordinator } from './search-index-coordinator.js';
 
 /**
  * Fast full-content group search, mirroring characters-search-index.js but for groups - see that module's
- * header comment for the full rationale (why SQLite FTS5 over an in-memory JS index, how the native/wasm engine
- * fallback in sqlite-engine.js works, why freshness is a cheap stat-based check rather than push invalidation
- * from groups.js's own mutation routes - same import-cycle concern applies here, since this module needs
- * getGroupsData() *from* groups.js). Rebuild coordination (no blocking on a stale-but-usable index, no racing
- * rebuilds from concurrent requests) is shared with characters-search-index.js via search-index-coordinator.js -
- * see that module's header for the full rationale and the production incident that motivated it.
+ * header comment for the full rationale (why tantivy is the primary engine and SQLite FTS5 a fallback chain, how
+ * the tantivy/native/wasm resolution in search-engine.js works, why freshness is a cheap stat-based check rather
+ * than push invalidation from groups.js's own mutation routes - same import-cycle concern applies here, since
+ * this module needs getGroupsData() *from* groups.js). Rebuild coordination (no blocking on a stale-but-usable
+ * index, no racing rebuilds from concurrent requests) is shared with characters-search-index.js via
+ * search-index-coordinator.js - see that module's header for the full rationale and the production incident
+ * that motivated it.
  */
 
 // Column order/weights mirror fuzzySearchGroups() in public/scripts/power-user.js (and this file's original
@@ -33,6 +35,23 @@ const FIELD_LABELS = {
     members: 'members',
     id: 'id',
 };
+
+// tantivy-search.js's field-name-array equivalent of FIELD_LABELS/BM25_WEIGHTS above - see
+// characters-search-index.js's TANTIVY_FIELD_WEIGHTS/TANTIVY_FIELD_LABELS for the full rationale (identical here,
+// just the smaller groups field set).
+const TANTIVY_FIELD_WEIGHTS = Object.fromEntries(BM25_INDEXED_COLUMNS.map((name, i) => [name, BM25_WEIGHTS[i]]));
+const TANTIVY_FIELD_LABELS = {
+    name: ['name'],
+    tag: ['resolved_tags'],
+    tags: ['resolved_tags'],
+    member: ['members'],
+    members: ['members'],
+    id: ['id'],
+};
+
+// Fallback cap on the tantivy tier's maxRows when a caller genuinely omits it - see
+// characters-search-index.js's DEFAULT_TANTIVY_MAX_ROWS for the full rationale.
+const DEFAULT_TANTIVY_MAX_ROWS = 500;
 
 /** @type {ReturnType<typeof createIndexCoordinator<import('./sqlite-engine.js').SqliteEngineHandle>>} */
 const indexCoordinator = createIndexCoordinator();
@@ -133,6 +152,60 @@ function buildSqliteIndex(directories, engine) {
 }
 
 /**
+ * (Re)builds the persistent on-disk tantivy index for a user's groups - the tantivy-tier equivalent of
+ * buildSqliteIndex() above. See characters-search-index.js's buildTantivyIndex() for the full rationale (same
+ * batching/commit discipline applies, even though groups come from one already-in-memory array rather than
+ * per-file reads - see this file's own INDEX_BUILD_BATCH_SIZE comment for why the insert side still gets
+ * batched).
+ * @param {import('../users.js').UserDirectoryList} directories User directories
+ * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy The resolved tantivy module (tantivy-engine.js)
+ * @returns {{ index: import('@oxdev03/node-tantivy-binding').Index, schema: import('@oxdev03/node-tantivy-binding').Schema, close: () => void }}
+ * The freshly built, open index handle - `close()` is a no-op, see characters-search-index.js's
+ * buildTantivyIndex() for why.
+ */
+function buildTantivyIndex(directories, tantivy) {
+    const dbDir = path.join(directories.root, 'search-index');
+    if (!fs.existsSync(dbDir)) {
+        fs.mkdirSync(dbDir, { recursive: true });
+    }
+    const indexDir = path.join(dbDir, 'groups-tantivy');
+    fs.rmSync(indexDir, { recursive: true, force: true });
+    fs.mkdirSync(indexDir, { recursive: true });
+
+    const schema = buildTantivySchema(tantivy, BM25_INDEXED_COLUMNS);
+    const index = new tantivy.Index(schema, indexDir, false);
+    const writer = index.writer();
+
+    const groups = getGroupsData(directories);
+    const tagNamesFor = makeTagNamesResolver(directories);
+
+    let batchIndex = 0;
+    for (let i = 0; i < groups.length; i += INDEX_BUILD_BATCH_SIZE) {
+        const batch = groups.slice(i, i + INDEX_BUILD_BATCH_SIZE);
+        for (const group of batch) {
+            const doc = tantivy.Document.fromDict({
+                name: group.name ?? '',
+                resolved_tags: tagNamesFor(group.id),
+                members: Array.isArray(group.members) ? group.members.join(' ') : '',
+                id: group.id ?? '',
+                [DATA_FIELD]: JSON.stringify(group),
+            }, schema);
+            writer.addDocument(doc);
+        }
+
+        batchIndex++;
+        if (batchIndex % CHECKPOINT_EVERY_N_BATCHES === 0) {
+            writer.commit();
+        }
+    }
+
+    writer.commit();
+    index.reload();
+
+    return { index, schema, close: () => { /* no explicit close API on this binding's Index */ } };
+}
+
+/**
  * @param {import('./sqlite-engine.js').SqliteEngineHandle} db
  * @param {string} searchTerm
  * @param {number} [maxRows] Caps how many matching rows get fetched and JSON.parse()'d - see
@@ -171,27 +244,39 @@ function countSqliteIndexMatches(db, searchTerm) {
 
 /**
  * Fuzzy-searches a user's groups, rebuilding the persistent index first if it's missing or stale. See
- * characters-search-index.js's searchCharacters() for the full rationale behind the `backend` field - identical
- * reasoning applies here.
+ * characters-search-index.js's searchCharacters() for the full rationale behind the `backend` field and the
+ * tantivy-first engine resolution - identical reasoning applies here.
  * @param {string} handle User handle
  * @param {import('../users.js').UserDirectoryList} directories User directories
  * @param {string} searchTerm Search term
- * @param {number} [maxRows] Forwarded to querySqliteIndex() - see that function's doc comment.
- * @returns {Promise<{ results: { item: object, score: number }[], total: number, backend: 'native' | 'wasm' | 'unavailable' }>}
- * `total` is the true match count, independent of `maxRows` - see countSqliteIndexMatches().
+ * @param {number} [maxRows] Forwarded to querySqliteIndex()/runTantivySearch() - see those functions' doc
+ * comments.
+ * @returns {Promise<{ results: { item: object, score: number }[], total: number, backend: 'tantivy' | 'native' | 'wasm' | 'unavailable' }>}
+ * `total` is the true match count, independent of `maxRows`.
  */
 export async function searchGroups(handle, directories, searchTerm, maxRows) {
     const signature = getFreshnessSignature(directories);
-    const engine = await getSqliteEngine();
+    const engine = await resolveSearchEngine();
 
-    if (!engine) {
+    if (engine.tier === 'unavailable') {
         return { results: [], total: 0, backend: 'unavailable' };
     }
 
-    const db = await indexCoordinator.getIndex(handle, signature, () => buildSqliteIndex(directories, engine));
+    if (engine.tier === 'tantivy') {
+        const tantivyIndex = await indexCoordinator.getIndex(handle, signature, () => buildTantivyIndex(directories, engine.tantivy));
+        const query = buildTantivyQuery(engine.tantivy, tantivyIndex.schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS);
+        if (!query) {
+            return { results: [], total: 0, backend: 'tantivy' };
+        }
+        const boundedMaxRows = Number.isFinite(maxRows) ? maxRows : DEFAULT_TANTIVY_MAX_ROWS;
+        const { results, total } = runTantivySearch(tantivyIndex.index, query, boundedMaxRows);
+        return { results, total, backend: 'tantivy' };
+    }
+
+    const db = await indexCoordinator.getIndex(handle, signature, () => buildSqliteIndex(directories, engine.sqlite));
     return {
         results: querySqliteIndex(db, searchTerm, maxRows),
         total: countSqliteIndexMatches(db, searchTerm),
-        backend: engine.kind,
+        backend: engine.sqlite.kind,
     };
 }
