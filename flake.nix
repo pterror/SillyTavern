@@ -13,7 +13,7 @@
           let pkgs = nixpkgs.legacyPackages.${system}; in
           pkgs.mkShell rec {
             packages = with pkgs; [
-	      nodejs-18_x
+	      nodejs_22
             ];
           });
     };
