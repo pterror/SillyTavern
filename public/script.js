@@ -11228,14 +11228,38 @@ API Settings: ${JSON.stringify(getSettingsContents[getSettingsContents.main_api 
 }
 
 /**
- * Tracks whether the most recent server-side search response reported running on the slower Fuse.js fallback
- * (see native-sqlite.js/characters-search-index.js) instead of the fast SQLite FTS5 backend, so
- * fetchServerCharacterSearchResults() only pops the "search is running in fallback mode" toast on the
- * transition into that state rather than on every debounced keystroke while it stays that way - the persistent
- * `#character_search_backend_indicator` icon (toggled below) is what stays visible for the rest of the time.
- * @type {boolean}
+ * Per-backend UI info for the persistent `#character_search_backend_indicator` icon - null means "hide it, this
+ * backend is fully healthy." See sqlite-engine.js for what each backend actually means; this only decides how
+ * loudly to say so. 'wasm' is a much lighter warning than 'unavailable': same ranking, same `label:query`
+ * support as native, just slower - not a "something is broken" state the way 'unavailable' is.
+ * @type {Record<string, { icon: string, tone: 'warning' | 'error', tooltip: string } | null>}
  */
-let lastKnownSearchBackendWasFuse = false;
+const SEARCH_BACKEND_INDICATOR = {
+    native: null,
+    get wasm() {
+        return {
+            icon: 'fa-triangle-exclamation',
+            tone: 'warning',
+            tooltip: t`Character search is running on the WebAssembly SQLite engine because the native search backend isn't available on this install - same ranking and 'label:query' filter support as usual, just slower. See the server console for details.`,
+        };
+    },
+    get unavailable() {
+        return {
+            icon: 'fa-circle-exclamation',
+            tone: 'error',
+            tooltip: t`Character search is unavailable - neither the native nor the WebAssembly SQLite search backend could be loaded on this install. See the server console for details.`,
+        };
+    },
+};
+
+/**
+ * Tracks the most recent server-side search response's backend, so fetchServerCharacterSearchResults() only
+ * pops a transition toast when the backend actually changes rather than on every debounced keystroke while it
+ * stays degraded - the persistent `#character_search_backend_indicator` icon (toggled below) is what stays
+ * visible for the rest of the time.
+ * @type {string | null}
+ */
+let lastKnownSearchBackend = null;
 
 /**
  * Fetches full-content character/group search results from the server's fast index and stores them on
@@ -11244,16 +11268,13 @@ let lastKnownSearchBackendWasFuse = false;
  *
  * Results come back already best-first sorted (see paginateSearchResults() in src/endpoints/characters.js), so
  * this assigns each match a synthetic ascending-is-better score by its position in that order - the endpoint
- * doesn't expose the underlying bm25/Fuse score directly, and rank alone is enough for both consumers:
+ * doesn't expose the underlying bm25 score directly, and rank alone is enough for both consumers:
  * searchFilter()'s membership check (does a cached score exist at all) and sortEntitiesList()'s ascending sort.
  *
- * The response also carries `searchBackend`/`labelSyntaxUnsupported` (see the /api/characters/all handler in
- * src/endpoints/characters.js) - when better-sqlite3 isn't usable on this install, search silently degrades to
- * the old slower in-process Fuse.js index with different (worse) ranking and no `label:query` support, and
- * previously nothing surfaced that to the user, only a one-time server console warning. This surfaces it as a
- * persistent icon (toggled here) plus a one-time toast on the transition into fallback mode, and - since
- * silently treating `tag:vampire` as a literal fuzzy search for the string "tag:vampire" would be actively
- * misleading, not just slower - a separate toast when a `label:query` filter went unhonored because of it.
+ * The response also carries `searchBackend` (see the /api/characters/all handler in src/endpoints/characters.js
+ * and sqlite-engine.js) - 'native', 'wasm', or 'unavailable'. Previously a degraded backend only ever showed up
+ * as a server console warning; this surfaces it as a persistent icon (toggled here, see
+ * SEARCH_BACKEND_INDICATOR) plus a one-time toast on the transition into a worse state.
  * @param {string} searchQuery The current search box value
  * @returns {Promise<void>}
  */
@@ -11276,7 +11297,7 @@ async function fetchServerCharacterSearchResults(searchQuery) {
             return;
         }
 
-        const { items, searchBackend, labelSyntaxUnsupported } = await response.json();
+        const { items, searchBackend } = await response.json();
         const characterScores = new Map();
         const groupScores = new Map();
 
@@ -11293,31 +11314,48 @@ async function fetchServerCharacterSearchResults(searchQuery) {
 
         entitiesFilter.setServerSearchResults({ searchValue: searchQuery, characterScores, groupScores });
 
-        const isFuseFallback = searchBackend === 'fuse';
-        $('#character_search_backend_indicator').toggle(isFuseFallback);
-        if (isFuseFallback && !lastKnownSearchBackendWasFuse) {
-            toastr.warning(
-                t`Character search is running in slower fallback mode because the fast search backend failed to load - results may rank differently, and 'label:query' search filters aren't available. See the server console for details.`,
-                t`Search running in fallback mode`,
-                { timeOut: 0, extendedTimeOut: 0 },
-            );
+        const indicatorInfo = SEARCH_BACKEND_INDICATOR[searchBackend] ?? null;
+        const indicator = $('#character_search_backend_indicator');
+        indicator.toggle(Boolean(indicatorInfo));
+        if (indicatorInfo) {
+            indicator
+                .attr('class', `fa-solid ${indicatorInfo.icon} ${indicatorInfo.tone}`)
+                .attr('title', indicatorInfo.tooltip);
         }
-        lastKnownSearchBackendWasFuse = isFuseFallback;
-
-        if (labelSyntaxUnsupported) {
-            toastr.warning(
-                t`'label:query' search filters (like 'tag:foo') aren't available while search is running in fallback mode - showing no results for this query instead of an incorrect literal search.`,
-                t`Search filter unavailable`,
-                { preventDuplicates: true },
-            );
+        if (searchBackend !== lastKnownSearchBackend && indicatorInfo) {
+            const toastFn = indicatorInfo.tone === 'error' ? toastr.error : toastr.warning;
+            toastFn(indicatorInfo.tooltip, t`Search backend changed`, { timeOut: 0, extendedTimeOut: 0 });
         }
+        lastKnownSearchBackend = searchBackend;
     } catch (error) {
         console.error('Server-side character search failed, falling back to client-side search', error);
         entitiesFilter.setServerSearchResults(null);
     }
 }
 
+/**
+ * `label:value` labels recognized purely for turning a completed token into a visual pill in the search box
+ * (see initCharacterSearch()) - mirrors the label sets characters-search-index.js's and groups-search-index.js's
+ * `FIELD_LABELS` actually accept server-side, so a token only becomes a pill when the server will really treat
+ * it as a filter, not for an arbitrary `word:value` (a URL, say) that would just be searched as a literal string
+ * either way.
+ * @type {Set<string>}
+ */
+const SEARCH_PILL_LABELS = new Set([
+    'name', 'tag', 'tags', 'desc', 'description', 'example', 'scenario', 'personality',
+    'greeting', 'notes', 'creator', 'alt', 'alternate', 'member', 'members', 'id',
+]);
+
 function initCharacterSearch() {
+    /**
+     * Completed `label:value` tokens already promoted out of the free-text input into a removable pill -
+     * Discord's `from:`/`in:`/`has:` filter-chip interaction. Purely a display/editing convenience: pills are
+     * reassembled back into the identical `label:value` text (currentSearchQuery() below) before being sent
+     * anywhere, so the server-side parser (search-query.js) never needs to know pills exist.
+     * @type {{ label: string, value: string }[]}
+     */
+    let searchPills = [];
+
     const debouncedCharacterSearch = debounce(async (searchQuery) => {
         await fetchServerCharacterSearchResults(searchQuery);
         entitiesFilter.setFilterData(FILTER_TYPES.SEARCH, searchQuery);
@@ -11326,12 +11364,60 @@ function initCharacterSearch() {
     const searchForm = $('#form_character_search_form');
     const searchInput = $('#character_search_bar');
     const searchButton = $('#rm_button_search');
+    const pillsContainer = $('#character_search_pills');
 
     const storageKey = 'characterSearchFormVisible';
 
+    /** @returns {string} The full reconstructed `label:value ... freetext` search string. */
+    function currentSearchQuery() {
+        const pillText = searchPills.map(pill => `${pill.label}:${pill.value}`).join(' ');
+        const freeText = String(searchInput.val());
+        return [pillText, freeText].filter(Boolean).join(' ');
+    }
+
+    function renderPills() {
+        pillsContainer.empty();
+        searchPills.forEach((pill, index) => {
+            const removeIcon = $('<i>').addClass('fa-solid fa-xmark search_pill_remove').attr('title', t`Remove filter`);
+            removeIcon.on('click', function (event) {
+                event.stopPropagation();
+                searchPills.splice(index, 1);
+                renderPills();
+                debouncedCharacterSearch(currentSearchQuery());
+            });
+            const pillEl = $('<span>').addClass('search_pill')
+                .append($('<span>').addClass('search_pill_label').text(`${pill.label}:`))
+                .append($('<span>').addClass('search_pill_value').text(pill.value))
+                .append(removeIcon);
+            pillsContainer.append(pillEl);
+        });
+    }
+
     searchInput.on('input', function () {
-        const searchQuery = String($(this).val());
-        debouncedCharacterSearch(searchQuery);
+        const raw = String($(this).val());
+        // A trailing space means the token right before it is "completed" - if it's a recognized label:value,
+        // promote it to a pill and strip it out of the input, same as Discord's filter-chip typing UX.
+        if (raw.endsWith(' ')) {
+            const trimmed = raw.slice(0, -1);
+            const lastSpaceIndex = trimmed.lastIndexOf(' ');
+            const lastToken = lastSpaceIndex === -1 ? trimmed : trimmed.slice(lastSpaceIndex + 1);
+            const match = lastToken.match(/^([A-Za-z][A-Za-z0-9_]*):(.+)$/);
+            if (match && SEARCH_PILL_LABELS.has(match[1].toLowerCase())) {
+                searchPills.push({ label: match[1].toLowerCase(), value: match[2] });
+                renderPills();
+                searchInput.val(lastSpaceIndex === -1 ? '' : trimmed.slice(0, lastSpaceIndex + 1));
+            }
+        }
+        debouncedCharacterSearch(currentSearchQuery());
+    });
+
+    // Backspacing from an empty input removes the last pill as a unit, same as Discord's filter chips.
+    searchInput.on('keydown', function (event) {
+        if (event.key === 'Backspace' && searchInput.val() === '' && searchPills.length > 0) {
+            searchPills.pop();
+            renderPills();
+            debouncedCharacterSearch(currentSearchQuery());
+        }
     });
 
     searchButton.on('click', function () {

@@ -6387,8 +6387,11 @@
                                 <div id="rm_button_search" class="right_menu_button fa-fw fa-solid fa-search" title="Toggle search bar" data-i18n="[title]Toggle search bar"></div>
                             </div>
                             <div id="form_character_search_form">
-                                <input id="character_search_bar" class="text_pole textarea_compact width100p" type="search" data-i18n="[placeholder]Search..." placeholder="Search..." />
-                                <i id="character_search_backend_indicator" class="fa-solid fa-triangle-exclamation warning" style="display: none;" title="Character search is running in slower fallback mode - results may rank differently, and 'label:query' search filters aren't available. See the server console for details." data-i18n="[title]Character search is running in slower fallback mode - results may rank differently, and 'label:query' search filters aren't available. See the server console for details."></i>
+                                <div id="character_search_bar_wrapper" class="text_pole textarea_compact width100p">
+                                    <div id="character_search_pills"></div>
+                                    <input id="character_search_bar" type="search" data-i18n="[placeholder]Search... (try tag:foo)" placeholder="Search... (try tag:foo)" />
+                                </div>
+                                <i id="character_search_backend_indicator" class="fa-solid fa-triangle-exclamation warning" style="display: none;"></i>
                             </div>
                             <div class="rm_tag_controls">
                                 <div class="tags rm_tag_filter"></div>
