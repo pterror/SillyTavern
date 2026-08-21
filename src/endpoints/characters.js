@@ -1549,15 +1549,26 @@ function paginateEntities(characters, groups, { sortField, sortOrder, offset, li
  * @param {object} params
  * @param {number} [params.offset]
  * @param {number} [params.limit]
+ * @param {number} [params.trueTotal] The real total match count (characters-search-index.js/
+ * groups-search-index.js's own `total`, summed by the caller) - NOT the same as `combined.length` below.
+ * `characterResults`/`groupResults` are each already capped at `offset + limit` rows before this function ever
+ * sees them (see the `/all` handler's `searchFetchLimit`, sized only to cover the page being sliced out) - so
+ * `combined.length` silently equals `min(realMatchCount, offset + limit)` and previously got reported to the
+ * client as `total` outright. That's correct only by coincidence when the true match count is small; on a
+ * broad query it just reports back the fetch cap it was given (confirmed against this install's real
+ * 24,171-character library: a single-word query legitimately matched more than the default page limit, and the
+ * old `total` silently read exactly as that limit, not the real match count) - which is exactly the number a
+ * "showing X of Y" UI needs to be honest about. Falls back to `combined.length` if the caller doesn't have a
+ * real total handy (keeps this function usable standalone).
  * @returns {{ items: {type: 'character'|'group', item: object}[], total: number }}
  */
-function paginateSearchResults(characterResults, groupResults, { offset, limit } = {}) {
+function paginateSearchResults(characterResults, groupResults, { offset, limit, trueTotal } = {}) {
     const combined = [
         ...characterResults.map(r => ({ type: 'character', item: r.item, score: r.score })),
         ...groupResults.map(r => ({ type: 'group', item: r.item, score: r.score })),
     ].sort((a, b) => a.score - b.score);
 
-    const total = combined.length;
+    const total = Number.isFinite(trueTotal) ? trueTotal : combined.length;
     const start = Number.isFinite(offset) && offset > 0 ? offset : 0;
     const end = Number.isFinite(limit) && limit >= 0 ? start + limit : undefined;
     const sliced = (start > 0 || end !== undefined) ? combined.slice(start, end) : combined;
@@ -1633,7 +1644,7 @@ router.post('/all', async function (request, response) {
 
         if (search) {
             const handle = request.user.profile.handle;
-            const emptySearch = { results: [], backend: 'native' };
+            const emptySearch = { results: [], total: 0, backend: 'native' };
             // Each source only needs to fetch its own top (offset + limit) rows to guarantee a correct merged
             // page - paginateSearchResults() below still does the real character/group interleave-by-score and
             // final slice, this just stops each individual FTS5 query (and the JSON.parse() of every one of its
@@ -1653,6 +1664,7 @@ router.post('/all', async function (request, response) {
 
             const { items, total } = paginateSearchResults(finalCharacterResults, groupSearch.results, {
                 offset: numericOffset, limit: numericLimit,
+                trueTotal: characterSearch.total + groupSearch.total,
             });
             // searchBackend lets the client (fetchServerCharacterSearchResults(), script.js) show a visible
             // indicator when search is running on anything other than the fast native engine (see
