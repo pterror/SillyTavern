@@ -295,8 +295,28 @@ publicRouter.get('/', async function (request, response) {
         }
 
         if (fs.existsSync(pathToCachedFile)) {
-            invalidateFirefoxCache(pathToCachedFile, request, response);
-            return response.sendFile(file, { root: thumbnailFolder, dotfiles: 'allow' });
+            const stat = fs.statSync(pathToCachedFile);
+            const version = String(Math.round(stat.mtimeMs));
+
+            // The cache key is otherwise just type+file, with no hash or mtime, so a bare `immutable` would
+            // pin a stale avatar forever the moment a character's image is edited. So: long-lived immutable
+            // caching is only handed out to a request that already names the current version; anything else
+            // gets redirected to the versioned URL. invalidateThumbnail() deletes this file (and its mtime
+            // with it) whenever the source image changes, so the version is self-correcting - a request for
+            // a missing, stale, or forged version always lands on the freshest one.
+            if (request.query.v === version) {
+                response.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+                return response.sendFile(file, { root: thumbnailFolder, dotfiles: 'allow' });
+            }
+
+            // The redirect itself must never be cached long-term, so it deliberately skips
+            // invalidateFirefoxCache()'s `no-store` header in favor of a plain `no-cache`: that header exists
+            // to work around Firefox not picking up a changed image at a fixed URL, which is exactly the
+            // problem the versioned URL above already solves for the response that actually matters.
+            response.setHeader('Cache-Control', 'no-cache');
+            const query = new URLSearchParams({ type, file, v: version });
+            if (typeof animated === 'string') query.set('animated', animated);
+            return response.redirect(302, `/thumbnail?${query.toString()}`);
         }
 
         // Send a 404 so the frontend can display a placeholder

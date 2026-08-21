@@ -67,7 +67,6 @@ import { SlashCommandNamedArgument, ARGUMENT_TYPE, SlashCommandArgument } from '
 import { commonEnumMatchProviders, commonEnumProviders, enumIcons } from './slash-commands/SlashCommandCommonEnumsProvider.js';
 import { SlashCommandEnumValue, enumTypes } from './slash-commands/SlashCommandEnumValue.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
-import { isFirefox } from './browser-fixes.js';
 import { slashCommandReturnHelper } from './slash-commands/SlashCommandReturnHelper.js';
 
 /**
@@ -242,7 +241,10 @@ function getUserAvatarBlock(avatarId) {
     template.attr('data-avatar-id', avatarId);
     template.find('.avatar').attr('data-avatar-id', avatarId).attr('title', avatarId);
     template.toggleClass('default_persona', avatarId === power_user.default_persona);
-    const avatarUrl = getThumbnailUrl('persona', avatarId, isFirefox());
+    // No longer forcing a `t=` cache-bust for Firefox here: the thumbnail route now serves versioned,
+    // self-correcting URLs (src/endpoints/thumbnails.js), which fixes the "Firefox won't refresh a changed
+    // avatar" problem this used to work around at the source instead of per call site.
+    const avatarUrl = getThumbnailUrl('persona', avatarId);
     template.find('img').attr('src', avatarUrl);
 
     // Make sure description block has at least three rows. Otherwise height looks inconsistent. I don't have a better idea for this.
