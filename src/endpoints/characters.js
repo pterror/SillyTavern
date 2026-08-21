@@ -36,6 +36,8 @@ const memoryCache = new MemoryLimitedMap(memoryCacheCapacity);
 const isAndroid = process.platform === 'android';
 // Use shallow character data for the character list
 const useShallowCharacters = !!getConfigValue('performance.lazyLoadCharacters', false, 'boolean');
+// Whether the shallow character response includes creator_notes (matches upstream SillyTavern's shallow response)
+const shallowCharactersIncludeCreatorNotes = !!getConfigValue('performance.shallowCharactersIncludeCreatorNotes', false, 'boolean');
 const useDiskCache = !!getConfigValue('performance.useDiskCache', true, 'boolean');
 
 class DiskCache {
@@ -388,6 +390,7 @@ const toShallow = (character) => {
             character_version: _.get(character, 'data.character_version', ''),
             creator: _.get(character, 'data.creator', ''),
             tags: _.get(character, 'data.tags', []),
+            ...(shallowCharactersIncludeCreatorNotes && { creator_notes: _.get(character, 'data.creator_notes', '') }),
             extensions: {
                 fav: _.get(character, 'data.extensions.fav', false),
                 world: _.get(character, 'data.extensions.world', ''),
