@@ -148,6 +148,7 @@ export const power_user = {
     chat_display: chat_styles.DEFAULT,
     toastr_position: defaultToastPosition,
     chat_width: 50,
+    chat_width_max: 120,
     never_resize_avatars: false,
     show_card_avatar_urls: false,
     play_message_sound: false,
@@ -1305,11 +1306,18 @@ function applyToastrPosition() {
     $(`#toastr_position option[value="${power_user.toastr_position}"]`).prop('selected', true);
 }
 
+function getChatWidthValue() {
+    // The rendered width is whichever is smaller: the % of viewport width, or the ch-based cap.
+    // This keeps the chat readable on ultrawide monitors without affecting narrower screens.
+    return `min(${power_user.chat_width}vw, ${power_user.chat_width_max}ch)`;
+}
+
 function applyChatWidth(type) {
     if (type === 'forced') {
         let r = document.documentElement;
-        r.style.setProperty('--sheldWidth', `${power_user.chat_width}vw`);
+        r.style.setProperty('--sheldWidth', getChatWidthValue());
         $('#chat_width_slider').val(power_user.chat_width);
+        $('#chat_width_max').val(power_user.chat_width_max);
         //document.documentElement.style.setProperty('--sheldWidth', power_user.chat_width);
     } else {
         //this is to prevent the slider from updating page in real time
@@ -1317,7 +1325,7 @@ function applyChatWidth(type) {
             // This is a hack for Firefox to let it render before applying the block width.
             // Otherwise it takes the incorrect slider position with the new value AFTER the resizing.
             await delay(1);
-            document.documentElement.style.setProperty('--sheldWidth', `${power_user.chat_width}vw`);
+            document.documentElement.style.setProperty('--sheldWidth', getChatWidthValue());
             await delay(1);
         });
     }
@@ -1532,6 +1540,16 @@ function applyTheme(name) {
                 // If chat width is not set, set it to 50
                 if (!power_user.chat_width) {
                     power_user.chat_width = 50;
+                }
+                applyChatWidth('forced');
+            },
+        },
+        {
+            key: 'chat_width_max',
+            action: () => {
+                // If chat width max is not set, set it to 120
+                if (!power_user.chat_width_max) {
+                    power_user.chat_width_max = 120;
                 }
                 applyChatWidth('forced');
             },
@@ -1858,6 +1876,10 @@ export async function loadPowerUserSettings(settings, data) {
         power_user.chat_width = 50;
     }
 
+    if (typeof power_user.chat_width_max !== 'number') {
+        power_user.chat_width_max = 120;
+    }
+
     if (power_user.tokenizer === tokenizers.LEGACY) {
         power_user.tokenizer = tokenizers.GPT2;
     }
@@ -1953,6 +1975,7 @@ export async function loadPowerUserSettings(settings, data) {
     $(`#chat_display option[value=${power_user.chat_display}]`).prop('selected', true).trigger('change');
     $(`#toastr_position option[value=${power_user.toastr_position}]`).prop('selected', true).trigger('change');
     $('#chat_width_slider').val(power_user.chat_width);
+    $('#chat_width_max').val(power_user.chat_width_max);
     $('#token_padding').val(power_user.token_padding);
     $('#aux_field').val(power_user.aux_field);
     $('#tag_import_setting').val(power_user.tag_import_setting);
@@ -2886,6 +2909,7 @@ export function getThemeObject(name) {
         toastr_position: power_user.toastr_position,
         noShadows: power_user.noShadows,
         chat_width: power_user.chat_width,
+        chat_width_max: power_user.chat_width_max,
         timer_enabled: power_user.timer_enabled,
         timestamps_enabled: power_user.timestamps_enabled,
         timestamp_model_icon: power_user.timestamp_model_icon,
@@ -3727,6 +3751,13 @@ jQuery(() => {
         const applyMode = data?.forced ? 'forced' : 'normal';
         power_user.chat_width = Number($(this).val());
         applyChatWidth(applyMode);
+        saveSettingsDebounced();
+        setHotswapsDebounced();
+    });
+
+    $('#chat_width_max').on('input', function () {
+        power_user.chat_width_max = Number($(this).val());
+        applyChatWidth('forced');
         saveSettingsDebounced();
         setHotswapsDebounced();
     });
