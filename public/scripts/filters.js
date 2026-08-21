@@ -104,6 +104,33 @@ export class FilterHelper {
             [fuzzySearchCategories.tags]: { resultMap: new Map() },
             [fuzzySearchCategories.groups]: { resultMap: new Map() },
         };
+        /**
+         * Pre-computed character/group search results from the server's fast full-content index (see
+         * setServerSearchResults() below), or null if none are available for the current search value yet.
+         * @type {{ searchValue: string, characterScores: Map<number, number>, groupScores: Map<string, number> } | null}
+         */
+        this.serverSearchResults = null;
+    }
+
+    /**
+     * Supplies pre-computed character/group search scores from the server's fast full-content search (POST
+     * /api/characters/all with `search`), so searchFilter() can use those instead of the client-side
+     * fuzzySearchCharacters()/fuzzySearchGroups() pass.
+     *
+     * This matters beyond speed: when `performance.lazyLoadCharacters` is on, the client's resident `characters`
+     * array only has description/mes_example/scenario/personality/first_mes/creator_notes/alternate_greetings
+     * populated for characters that have been individually opened this session - so the client-side fuzzy pass
+     * silently only ever searches name/tags for the rest of the library. The server always indexes full
+     * character data regardless of that setting, so routing through it here closes that gap, not just the
+     * multi-second-per-keystroke slowness the fast server index was originally built to fix.
+     *
+     * Call with `searchValue` not matching the current search box value has no effect (searchFilter() only uses
+     * a cache entry when its searchValue matches exactly); call with `null` to clear a stale/failed result and
+     * let searchFilter() fall back to the client-side pass for this search.
+     * @param {{ searchValue: string, characterScores: Map<number, number>, groupScores: Map<string, number> } | null} results
+     */
+    setServerSearchResults(results) {
+        this.serverSearchResults = results;
     }
 
     /**
@@ -324,12 +351,22 @@ export class FilterHelper {
 
         // Save fuzzy search results and scores if enabled
         if (power_user.fuzzy_search) {
-            const fuzzySearchCharactersResults = fuzzySearchCharacters(searchValue, this.fuzzySearchCaches);
-            const fuzzySearchGroupsResults = fuzzySearchGroups(searchValue, this.fuzzySearchCaches);
+            // Tags are always fully resident client-side (a small, cheap dataset), so there's no shallow-data
+            // gap for them and no reason to route them through the server - only characters/groups need that.
             const fuzzySearchTagsResult = fuzzySearchTags(searchValue, this.fuzzySearchCaches);
-            this.cacheScores(FILTER_TYPES.SEARCH, new Map(fuzzySearchCharactersResults.map(i => [`character.${i.refIndex}`, i.score])));
-            this.cacheScores(FILTER_TYPES.SEARCH, new Map(fuzzySearchGroupsResults.map(i => [`group.${i.item.id}`, i.score])));
             this.cacheScores(FILTER_TYPES.SEARCH, new Map(fuzzySearchTagsResult.map(i => [`tag.${i.item.id}`, i.score])));
+
+            if (this.serverSearchResults?.searchValue === searchValue) {
+                this.cacheScores(FILTER_TYPES.SEARCH, new Map([...this.serverSearchResults.characterScores].map(([index, score]) => [`character.${index}`, score])));
+                this.cacheScores(FILTER_TYPES.SEARCH, new Map([...this.serverSearchResults.groupScores].map(([id, score]) => [`group.${id}`, score])));
+            } else {
+                // Server results for this exact search string aren't in yet (still in flight, or the request
+                // failed) - fall back to the client-side pass so search still returns something meanwhile.
+                const fuzzySearchCharactersResults = fuzzySearchCharacters(searchValue, this.fuzzySearchCaches);
+                const fuzzySearchGroupsResults = fuzzySearchGroups(searchValue, this.fuzzySearchCaches);
+                this.cacheScores(FILTER_TYPES.SEARCH, new Map(fuzzySearchCharactersResults.map(i => [`character.${i.refIndex}`, i.score])));
+                this.cacheScores(FILTER_TYPES.SEARCH, new Map(fuzzySearchGroupsResults.map(i => [`group.${i.item.id}`, i.score])));
+            }
         }
 
         const _this = this;
