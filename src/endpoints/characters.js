@@ -25,6 +25,9 @@ import { getChatInfo } from './chats.js';
 import { ByafParser } from '../byaf.js';
 import { CharXParser, persistCharXAssets } from '../charx.js';
 import cacheBuster from '../middleware/cacheBuster.js';
+import { searchCharacters } from './characters-search-index.js';
+import { searchGroups } from './groups-search-index.js';
+import { getGroupsData } from './groups.js';
 
 // With 100 MB limit it would take roughly 3000 characters to reach this limit
 const memoryCacheCapacity = getConfigValue('performance.memoryCacheCapacity', '100mb');
@@ -402,7 +405,7 @@ const toShallow = (character) => {
  * @param  {boolean} options.shallow If true, only return the core character's metadata
  * @return {Promise<object>}     A Promise that resolves when the character processing is done.
  */
-const processCharacter = async (item, directories, { shallow }) => {
+export const processCharacter = async (item, directories, { shallow }) => {
     try {
         const imgFile = path.join(directories.characters, item);
         const imgData = await readCharacterData(imgFile);
@@ -1494,6 +1497,74 @@ function paginateCharacters(data, { sortField, sortOrder, offset, limit } = {}) 
 }
 
 /**
+ * Like paginateCharacters(), but merges in a groups array before sorting/slicing, so the list-view "one sorted
+ * list of characters and groups together" ordering (see sortEntitiesList() in public/scripts/power-user.js) can
+ * be produced server-side instead of requiring every character to be resident client-side first.
+ *
+ * SORT_FIELD_GETTERS' getters work unmodified on group objects: the `name` getter falls through to a group's
+ * plain `.name` field (groups have no `.data`), and date_added/date_last_chat/chat_size are the exact field
+ * names getGroupsData() (groups.js) already computes for groups, the same way processCharacter() computes them
+ * for characters.
+ * @param {object[]} characters
+ * @param {object[]} groups
+ * @param {object} params Same shape as paginateCharacters()'s params
+ * @param {string} [params.sortField]
+ * @param {string} [params.sortOrder]
+ * @param {number} [params.offset]
+ * @param {number} [params.limit]
+ * @returns {{ items: {type: 'character'|'group', item: object}[], total: number }}
+ */
+function paginateEntities(characters, groups, { sortField, sortOrder, offset, limit } = {}) {
+    let combined = [
+        ...characters.map(item => ({ type: 'character', item })),
+        ...groups.map(item => ({ type: 'group', item })),
+    ];
+
+    const getter = SORT_FIELD_GETTERS[sortField];
+    if (getter) {
+        const direction = sortOrder === 'desc' ? -1 : 1;
+        combined = combined.sort((a, b) => {
+            const av = getter(a.item), bv = getter(b.item);
+            if (av < bv) return -1 * direction;
+            if (av > bv) return 1 * direction;
+            return 0;
+        });
+    }
+
+    const total = combined.length;
+    const start = Number.isFinite(offset) && offset > 0 ? offset : 0;
+    const end = Number.isFinite(limit) && limit >= 0 ? start + limit : undefined;
+    const items = (start > 0 || end !== undefined) ? combined.slice(start, end) : combined;
+    return { items, total };
+}
+
+/**
+ * Merges pre-scored character/group Fuse search results (best-first, ascending score - the Fuse.js convention)
+ * into one paginated, still best-first result. Comparing scores from the two independent Fuse indexes directly
+ * isn't a new assumption - the client's own sortEntitiesList() "search" sort mode already does the same thing,
+ * merging fuzzySearchCharacters()/fuzzySearchGroups()/fuzzySearchTags() (three separate Fuse instances) purely
+ * by comparing their scores.
+ * @param {import('fuse.js').FuseResult<object>[]} characterResults
+ * @param {import('fuse.js').FuseResult<object>[]} groupResults
+ * @param {object} params
+ * @param {number} [params.offset]
+ * @param {number} [params.limit]
+ * @returns {{ items: {type: 'character'|'group', item: object}[], total: number }}
+ */
+function paginateSearchResults(characterResults, groupResults, { offset, limit } = {}) {
+    const combined = [
+        ...characterResults.map(r => ({ type: 'character', item: r.item, score: r.score })),
+        ...groupResults.map(r => ({ type: 'group', item: r.item, score: r.score })),
+    ].sort((a, b) => a.score - b.score);
+
+    const total = combined.length;
+    const start = Number.isFinite(offset) && offset > 0 ? offset : 0;
+    const end = Number.isFinite(limit) && limit >= 0 ? start + limit : undefined;
+    const sliced = (start > 0 || end !== undefined) ? combined.slice(start, end) : combined;
+    return { items: sliced.map(({ type, item }) => ({ type, item })), total };
+}
+
+/**
  * HTTP POST endpoint for the "/api/characters/all" route.
  *
  * This endpoint is responsible for reading character files from the `charactersPath` directory,
@@ -1503,15 +1574,26 @@ function paginateCharacters(data, { sortField, sortOrder, offset, limit } = {}) 
  * The stats are calculated by the `calculateStats` function.
  * The characters are processed by the `processCharacter` function.
  *
- * Accepts optional `sortField`/`sortOrder`/`offset`/`limit` in the request body to get a sorted page back
- * instead of the full array - see paginateCharacters() above. None of these are required: a request with no
- * body (or an empty one) behaves exactly as before, returning every character in on-disk order. This is
- * deliberately just a slice of the already-fully-processed array, not a way to skip processing files outside
- * the requested page - every character on disk still gets read once per request, same as before this endpoint
- * accepted these params - so it does not reduce server-side I/O by itself, only response size/order and the
- * amount of client-side work (Fuse search, tag filtering, sort, DOM render) done over the result. Full-index
- * consumers (findChar() and friends, which need every character resolvable client-side, not just one page)
- * should keep calling this with no pagination params, exactly as `getCharacters()` does today.
+ * Accepts optional `sortField`/`sortOrder`/`offset`/`limit`/`search`/`includeGroups` in the request body to get
+ * a sorted (or fuzzy-searched) page back instead of the full array - see paginateCharacters()/paginateEntities()/
+ * paginateSearchResults() above. None of these are required: a request with no body (or an empty one) behaves
+ * exactly as before, returning every character in on-disk order. Passing sort/offset/limit alone is deliberately
+ * just a slice of the already-fully-processed array, not a way to skip processing files outside the requested
+ * page - every character on disk still gets read once per request, same as before this endpoint accepted these
+ * params - so it does not reduce server-side I/O by itself, only response size/order and the amount of
+ * client-side work (Fuse search, tag filtering, sort, DOM render) done over the result. Full-index consumers
+ * (findChar() and friends, which need every character resolvable client-side, not just one page) should keep
+ * calling this with no pagination params, exactly as `getCharacters()` does today.
+ *
+ * `search` runs the query against a persistent server-side Fuse index (see characters-search-index.js) built
+ * from full (non-shallow) character data and the user's tags.json, using the exact same keys/weights/options as
+ * the client's own fuzzySearchCharacters() - so results rank identically to what the same term would produce
+ * client-side, just without needing every character resident first. When `search` is present, `sortField`/
+ * `sortOrder` are ignored (mirrors sortEntitiesList()'s isSearch branch, which always sorts by score).
+ *
+ * `includeGroups: true` merges the user's groups into the same sorted-or-searched, paginated result (see
+ * paginateEntities()/paginateSearchResults()). This changes `items` to an array of `{ type, item }` instead of
+ * bare character objects, since an item may now be a character *or* a group.
  *
  * @param  {import("express").Request} request The HTTP request object.
  * @param  {import("express").Response} response The HTTP response object.
@@ -1519,15 +1601,48 @@ function paginateCharacters(data, { sortField, sortOrder, offset, limit } = {}) 
  */
 router.post('/all', async function (request, response) {
     try {
+        const { sortField, sortOrder, offset, limit, search, includeGroups } = request.body ?? {};
+
+        if (sortField === undefined && offset === undefined && limit === undefined && !search && !includeGroups) {
+            const files = fs.readdirSync(request.user.directories.characters);
+            const pngFiles = files.filter(file => file.endsWith('.png'));
+            const processingPromises = pngFiles.map(file => processCharacter(file, request.user.directories, { shallow: useShallowCharacters }));
+            const data = (await Promise.all(processingPromises)).filter(c => c.name);
+            // No pagination params at all: preserve the exact pre-existing response shape (a bare array).
+            return response.send(data);
+        }
+
+        if (search) {
+            const handle = request.user.profile.handle;
+            const [characterResults, groupResults] = await Promise.all([
+                searchCharacters(handle, request.user.directories, search),
+                includeGroups ? searchGroups(handle, request.user.directories, search) : [],
+            ]);
+            // The search index is always built from *full* character data (see characters-search-index.js) -
+            // trim results down to shallow fields here to match this server's normal list-response shape
+            // (`performance.lazyLoadCharacters`), same as the non-search path does via processCharacter()'s own
+            // `shallow` option.
+            const finalCharacterResults = useShallowCharacters
+                ? characterResults.map(r => ({ ...r, item: toShallow(r.item) }))
+                : characterResults;
+
+            const { items, total } = paginateSearchResults(finalCharacterResults, groupResults, {
+                offset: Number(offset), limit: Number(limit),
+            });
+            return response.send(includeGroups ? { items, total } : { items: items.map(x => x.item), total });
+        }
+
         const files = fs.readdirSync(request.user.directories.characters);
         const pngFiles = files.filter(file => file.endsWith('.png'));
         const processingPromises = pngFiles.map(file => processCharacter(file, request.user.directories, { shallow: useShallowCharacters }));
         const data = (await Promise.all(processingPromises)).filter(c => c.name);
 
-        const { sortField, sortOrder, offset, limit } = request.body ?? {};
-        if (sortField === undefined && offset === undefined && limit === undefined) {
-            // No pagination params at all: preserve the exact pre-existing response shape (a bare array).
-            return response.send(data);
+        if (includeGroups) {
+            const groupsData = getGroupsData(request.user.directories);
+            const { items, total } = paginateEntities(data, groupsData, {
+                sortField, sortOrder, offset: Number(offset), limit: Number(limit),
+            });
+            return response.send({ items, total });
         }
 
         const { items, total } = paginateCharacters(data, {
