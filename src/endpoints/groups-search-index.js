@@ -7,6 +7,7 @@ import { TAGS_FILE } from '../constants.js';
 import { readTagsData } from './tags-data.js';
 import { getGroupsData } from './groups.js';
 import { getBetterSqlite3 } from './native-sqlite.js';
+import { buildFtsQuery, hasLabelSyntax } from './search-query.js';
 
 /**
  * Fast full-content group search, mirroring characters-search-index.js but for groups - see that module's
@@ -20,6 +21,17 @@ import { getBetterSqlite3 } from './native-sqlite.js';
 // Fuse-based version) exactly.
 const BM25_INDEXED_COLUMNS = ['name', 'resolved_tags', 'members', 'id'];
 const BM25_WEIGHTS = [20, 10, 15, 1];
+
+// `label:value` search syntax - see search-query.js and characters-search-index.js's FIELD_LABELS for the full
+// rationale. Groups only have this smaller set of indexed columns.
+const FIELD_LABELS = {
+    name: 'name',
+    tag: 'resolved_tags',
+    tags: 'resolved_tags',
+    member: 'members',
+    members: 'members',
+    id: 'id',
+};
 
 /** @type {Map<string, { db: import('better-sqlite3').Database, signature: string }>} */
 const sqliteIndexes = new Map();
@@ -108,25 +120,12 @@ function buildSqliteIndex(directories, DatabaseCtor) {
 }
 
 /**
- * See characters-search-index.js's buildFtsQuery() for the AND-by-default rationale - identical here.
- * @param {string} searchTerm Raw user input
- * @returns {string | null} An FTS5 MATCH query string, or null if there's nothing to search for
- */
-function buildFtsQuery(searchTerm) {
-    const tokens = searchTerm.trim().split(/\s+/).filter(Boolean);
-    if (tokens.length === 0) {
-        return null;
-    }
-    return tokens.map(token => `"${token.replace(/"/g, '""')}"*`).join(' AND ');
-}
-
-/**
  * @param {import('better-sqlite3').Database} db
  * @param {string} searchTerm
  * @returns {{ item: object, score: number }[]} Results sorted best-first (ascending bm25 score)
  */
 function querySqliteIndex(db, searchTerm) {
-    const ftsQuery = buildFtsQuery(searchTerm);
+    const ftsQuery = buildFtsQuery(searchTerm, FIELD_LABELS);
     if (!ftsQuery) {
         return [];
     }
@@ -164,10 +163,12 @@ function buildFuseFallbackIndex(directories) {
 /**
  * Fuzzy-searches a user's groups, rebuilding the persistent index first if it's missing or stale. Tries the
  * fast SQLite FTS5 backend first, falling back to Fuse.js if better-sqlite3 isn't usable on this install.
+ * See characters-search-index.js's searchCharacters() for the full rationale behind the `backend` and
+ * `labelSyntaxUnsupported` fields - identical reasoning applies here.
  * @param {string} handle User handle
  * @param {import('../users.js').UserDirectoryList} directories User directories
  * @param {string} searchTerm Search term
- * @returns {Promise<{ item: object, score: number }[]>} Results sorted best-first (ascending score)
+ * @returns {Promise<{ results: { item: object, score: number }[], backend: 'sqlite' | 'fuse', labelSyntaxUnsupported: boolean }>}
  */
 export async function searchGroups(handle, directories, searchTerm) {
     const signature = getFreshnessSignature(directories);
@@ -181,7 +182,11 @@ export async function searchGroups(handle, directories, searchTerm) {
             entry = { db, signature };
             sqliteIndexes.set(handle, entry);
         }
-        return querySqliteIndex(entry.db, searchTerm);
+        return { results: querySqliteIndex(entry.db, searchTerm), backend: 'sqlite', labelSyntaxUnsupported: false };
+    }
+
+    if (hasLabelSyntax(searchTerm, FIELD_LABELS)) {
+        return { results: [], backend: 'fuse', labelSyntaxUnsupported: true };
     }
 
     let entry = fuseIndexes.get(handle);
@@ -190,5 +195,5 @@ export async function searchGroups(handle, directories, searchTerm) {
         entry = { fuse, signature };
         fuseIndexes.set(handle, entry);
     }
-    return entry.fuse.search(searchTerm);
+    return { results: entry.fuse.search(searchTerm), backend: 'fuse', labelSyntaxUnsupported: false };
 }

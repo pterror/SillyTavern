@@ -7,6 +7,7 @@ import { TAGS_FILE } from '../constants.js';
 import { readTagsData } from './tags-data.js';
 import { processCharacter } from './characters.js';
 import { getBetterSqlite3 } from './native-sqlite.js';
+import { buildFtsQuery, hasLabelSyntax } from './search-query.js';
 
 /**
  * Fast full-content character search, backed by a persistent per-user SQLite FTS5 index (better-sqlite3) built
@@ -65,6 +66,26 @@ import { getBetterSqlite3 } from './native-sqlite.js';
 // original Fuse-based version) so a result ranks similarly to what the same term produced there.
 const BM25_INDEXED_COLUMNS = ['name', 'resolved_tags', 'description', 'mes_example', 'scenario', 'personality', 'first_mes', 'creator_notes', 'creator', 'tags', 'alternate_greetings'];
 const BM25_WEIGHTS = [20, 10, 3, 3, 2, 2, 2, 2, 1, 1, 1];
+
+// `label:value` search syntax (see search-query.js) - maps a friendly label to the real FTS5 column-filter
+// expression it becomes. `tag:`/`tags:` searches BOTH tag-ish columns via FTS5's `{col1 col2}:` group syntax,
+// since BM25_WEIGHTS above already treats resolved_tags (tags.json names) and tags (raw embedded card data) as
+// the same "does this character have this tag" concept - a label filter should honor that, not just pick one.
+const FIELD_LABELS = {
+    name: 'name',
+    tag: '{resolved_tags tags}',
+    tags: '{resolved_tags tags}',
+    desc: 'description',
+    description: 'description',
+    example: 'mes_example',
+    scenario: 'scenario',
+    personality: 'personality',
+    greeting: 'first_mes',
+    notes: 'creator_notes',
+    creator: 'creator',
+    alt: 'alternate_greetings',
+    alternate: 'alternate_greetings',
+};
 
 /** @type {Map<string, { db: import('better-sqlite3').Database, signature: string }>} */
 const sqliteIndexes = new Map();
@@ -177,37 +198,18 @@ async function buildSqliteIndex(directories, DatabaseCtor) {
 }
 
 /**
- * Turns a raw user search string into an FTS5 MATCH query: each whitespace-separated word becomes a
- * prefix-matched term (so "vamp" matches "vampire" while typing), and multiple words are combined with an
- * explicit AND.
- *
- * AND (not OR) was chosen deliberately for the multi-word case: a search for "vampire romance" over character
- * cards reads as "a vampire character that's also a romance", a specific compound description, not "anything
- * about vampires OR anything about romance". Measured against the real dataset this index was designed for,
- * OR-combining "vampire romance" matched 11,101 of 24,171 cards (worthless as a filter - it matches almost the
- * whole library), while AND-combining matched 315 - a result set someone typing that phrase could actually use.
- *
- * Known tradeoff: FTS5 prefix matching handles partial words (typing-in-progress) but not misspellings - it
- * doesn't have Fuse's fuzzy/typo tolerance. The Fuse.js fallback path below still has that if it's ever active.
- * @param {string} searchTerm Raw user input
- * @returns {string | null} An FTS5 MATCH query string, or null if there's nothing to search for
- */
-function buildFtsQuery(searchTerm) {
-    const tokens = searchTerm.trim().split(/\s+/).filter(Boolean);
-    if (tokens.length === 0) {
-        return null;
-    }
-    return tokens.map(token => `"${token.replace(/"/g, '""')}"*`).join(' AND ');
-}
-
-/**
+ * Known tradeoff of the FTS5 backend vs the Fuse.js fallback below: FTS5 prefix matching (via buildFtsQuery(),
+ * search-query.js) handles partial words (typing-in-progress) but not misspellings - it doesn't have Fuse's
+ * fuzzy/typo tolerance. The AND-by-default rationale for multi-word queries is documented in search-query.js;
+ * the specific numbers it was measured against: a search for "vampire romance" OR-combined matched 11,101 of
+ * 24,171 cards (worthless as a filter), AND-combined matched 315 (a result set someone could actually use).
  * @param {import('better-sqlite3').Database} db
  * @param {string} searchTerm
  * @returns {{ item: object, score: number }[]} Results sorted best-first (ascending bm25 score - lower is
  * better, same convention Fuse.js and the rest of this codebase's search results already use)
  */
 function querySqliteIndex(db, searchTerm) {
-    const ftsQuery = buildFtsQuery(searchTerm);
+    const ftsQuery = buildFtsQuery(searchTerm, FIELD_LABELS);
     if (!ftsQuery) {
         return [];
     }
@@ -253,10 +255,24 @@ async function buildFuseFallbackIndex(directories) {
 /**
  * Fuzzy-searches a user's characters, rebuilding the persistent index first if it's missing or stale. Tries
  * the fast SQLite FTS5 backend first, falling back to Fuse.js if better-sqlite3 isn't usable on this install.
+ *
+ * The returned `backend` field lets callers (see the /api/characters/all handler in characters.js) tell the
+ * client which backend actually served a given search - the client surfaces that as a visible indicator when
+ * it's 'fuse', since that mode is measurably slower (seconds/query vs 1-5ms) and silently ranks differently
+ * from the FTS5 path, and nothing about a degraded-but-still-200-OK response would otherwise reveal that.
+ *
+ * `label:value` filters (search-query.js) have no Fuse.js equivalent, and silently degrading `tag:vampire` into
+ * a literal fuzzy search for the string "tag:vampire" across every column would be actively misleading - it
+ * looks like it did something targeted and didn't. So when the fallback is active and the query uses label
+ * syntax, this deliberately returns zero results with `labelSyntaxUnsupported: true` instead of running Fuse at
+ * all, so the caller can surface an explicit "not supported right now" notice rather than a wrong-looking result
+ * set.
  * @param {string} handle User handle
  * @param {import('../users.js').UserDirectoryList} directories User directories
  * @param {string} searchTerm Search term
- * @returns {Promise<{ item: object, score: number }[]>} Results sorted best-first (ascending score)
+ * @returns {Promise<{ results: { item: object, score: number }[], backend: 'sqlite' | 'fuse', labelSyntaxUnsupported: boolean }>}
+ * Results sorted best-first (ascending score), which backend produced them, and whether label syntax in the
+ * query went unhonored because the fallback was active.
  */
 export async function searchCharacters(handle, directories, searchTerm) {
     const signature = getFreshnessSignature(directories);
@@ -270,7 +286,11 @@ export async function searchCharacters(handle, directories, searchTerm) {
             entry = { db, signature };
             sqliteIndexes.set(handle, entry);
         }
-        return querySqliteIndex(entry.db, searchTerm);
+        return { results: querySqliteIndex(entry.db, searchTerm), backend: 'sqlite', labelSyntaxUnsupported: false };
+    }
+
+    if (hasLabelSyntax(searchTerm, FIELD_LABELS)) {
+        return { results: [], backend: 'fuse', labelSyntaxUnsupported: true };
     }
 
     let entry = fuseIndexes.get(handle);
@@ -279,5 +299,5 @@ export async function searchCharacters(handle, directories, searchTerm) {
         entry = { fuse, signature };
         fuseIndexes.set(handle, entry);
     }
-    return entry.fuse.search(searchTerm);
+    return { results: entry.fuse.search(searchTerm), backend: 'fuse', labelSyntaxUnsupported: false };
 }
