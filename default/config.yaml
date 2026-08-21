@@ -247,6 +247,10 @@ performance:
   # Enables lazy loading of character cards. Improves performances with large card libraries.
   # May have compatibility issues with some extensions.
   lazyLoadCharacters: false
+  # When lazyLoadCharacters is enabled, the shallow character list normally omits creator_notes
+  # (unlike upstream SillyTavern's shallow response, which includes it). Set to true to include
+  # creator_notes in the shallow response for compatibility with upstream/extensions that expect it.
+  shallowCharactersIncludeCreatorNotes: false
   # The maximum amount of memory that parsed character cards can use. Set to 0 to disable memory caching.
   memoryCacheCapacity: '100mb'
   # Enables disk caching for character cards. Improves performances with large card libraries.
