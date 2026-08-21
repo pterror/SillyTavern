@@ -6,13 +6,16 @@ import { readTagsData } from './tags-data.js';
 import { getGroupsData } from './groups.js';
 import { getSqliteEngine } from './sqlite-engine.js';
 import { buildFtsQuery } from './search-query.js';
+import { createIndexCoordinator } from './search-index-coordinator.js';
 
 /**
  * Fast full-content group search, mirroring characters-search-index.js but for groups - see that module's
  * header comment for the full rationale (why SQLite FTS5 over an in-memory JS index, how the native/wasm engine
  * fallback in sqlite-engine.js works, why freshness is a cheap stat-based check rather than push invalidation
  * from groups.js's own mutation routes - same import-cycle concern applies here, since this module needs
- * getGroupsData() *from* groups.js).
+ * getGroupsData() *from* groups.js). Rebuild coordination (no blocking on a stale-but-usable index, no racing
+ * rebuilds from concurrent requests) is shared with characters-search-index.js via search-index-coordinator.js -
+ * see that module's header for the full rationale and the production incident that motivated it.
  */
 
 // Column order/weights mirror fuzzySearchGroups() in public/scripts/power-user.js (and this file's original
@@ -31,8 +34,8 @@ const FIELD_LABELS = {
     id: 'id',
 };
 
-/** @type {Map<string, { db: import('./sqlite-engine.js').SqliteEngineHandle, signature: string }>} */
-const sqliteIndexes = new Map();
+/** @type {ReturnType<typeof createIndexCoordinator<import('./sqlite-engine.js').SqliteEngineHandle>>} */
+const indexCoordinator = createIndexCoordinator();
 
 /**
  * @param {import('../users.js').UserDirectoryList} directories User directories
@@ -57,6 +60,17 @@ function makeTagNamesResolver(directories) {
         .filter(Boolean)
         .join(' ');
 }
+
+// Groups (unlike characters) come from getGroupsData() as one already-in-memory array - a group is a curated
+// multi-character chat setup, not something that realistically scales into the millions the way a character
+// library can, so there's no equivalent of characters-search-index.js's readCharacterBatches() here reading
+// files in bounded chunks. What's still worth batching is the *insert* side: building one giant second array of
+// JSON.stringify()'d rows (the old `groups.map(...)`) held `groups` and its full stringified duplicate in
+// memory at once, the same doubling that (compounded by an equivalent `json_data`-sized field on the character
+// side) actually OOM'd this server's characters index build on a real install. Batching the insert avoids ever
+// holding more than one batch's worth of stringified rows alongside `groups`.
+const INDEX_BUILD_BATCH_SIZE = 500;
+const CHECKPOINT_EVERY_N_BATCHES = 20;
 
 /**
  * (Re)builds the persistent on-disk SQLite FTS5 index for a user's groups.
@@ -90,21 +104,29 @@ function buildSqliteIndex(directories, engine) {
 
     const groups = getGroupsData(directories);
     const tagNamesFor = makeTagNamesResolver(directories);
+    const insertSql = `INSERT INTO groups (groupId, data, ${BM25_INDEXED_COLUMNS.join(', ')})
+         VALUES (@groupId, @data, @name, @resolved_tags, @members, @id)`;
 
-    db.insertMany(
-        `INSERT INTO groups (groupId, data, ${BM25_INDEXED_COLUMNS.join(', ')})
-         VALUES (@groupId, @data, @name, @resolved_tags, @members, @id)`,
-        groups.map(group => ({
+    let batchIndex = 0;
+    for (let i = 0; i < groups.length; i += INDEX_BUILD_BATCH_SIZE) {
+        const rows = groups.slice(i, i + INDEX_BUILD_BATCH_SIZE).map(group => ({
             groupId: group.id,
             data: JSON.stringify(group),
             name: group.name ?? '',
             resolved_tags: tagNamesFor(group.id),
             members: Array.isArray(group.members) ? group.members.join(' ') : '',
             id: group.id ?? '',
-        })),
-    );
+        }));
+        db.insertMany(insertSql, rows);
 
-    // See characters-search-index.js's buildSqliteIndex() for why this checkpoint matters - same reasoning.
+        batchIndex++;
+        if (batchIndex % CHECKPOINT_EVERY_N_BATCHES === 0) {
+            db.checkpoint();
+        }
+    }
+
+    // Final checkpoint (native engine only) - see characters-search-index.js's buildSqliteIndex() for why this
+    // matters, same reasoning.
     db.checkpoint();
 
     return db;
@@ -113,16 +135,38 @@ function buildSqliteIndex(directories, engine) {
 /**
  * @param {import('./sqlite-engine.js').SqliteEngineHandle} db
  * @param {string} searchTerm
+ * @param {number} [maxRows] Caps how many matching rows get fetched and JSON.parse()'d - see
+ * characters-search-index.js's querySqliteIndex() for the full rationale (that module's version of this same
+ * unbounded fetch is what actually OOM'd this server on a real install).
  * @returns {{ item: object, score: number }[]} Results sorted best-first (ascending bm25 score)
  */
-function querySqliteIndex(db, searchTerm) {
+function querySqliteIndex(db, searchTerm, maxRows) {
     const ftsQuery = buildFtsQuery(searchTerm, FIELD_LABELS);
     if (!ftsQuery) {
         return [];
     }
     const weightsArg = BM25_WEIGHTS.join(', ');
-    return db.query(`SELECT groupId, data, bm25(groups, ${weightsArg}) as score FROM groups WHERE groups MATCH ? ORDER BY score`, ftsQuery)
+    // maxRows is always a value this module computed via Number.isFinite + Math.trunc (see searchGroups()),
+    // never raw request input, so interpolating it directly is safe - it can only ever be digits/a minus sign.
+    const limitClause = Number.isFinite(maxRows) ? ` LIMIT ${Math.max(0, Math.trunc(maxRows))}` : '';
+    return db.query(`SELECT groupId, data, bm25(groups, ${weightsArg}) as score FROM groups WHERE groups MATCH ? ORDER BY score${limitClause}`, ftsQuery)
         .map(row => ({ item: JSON.parse(row.data), score: row.score }));
+}
+
+/**
+ * Counts how many rows match a query, independent of `maxRows` - see characters-search-index.js's
+ * countSqliteIndexMatches() for the full rationale (identical reasoning applies here).
+ * @param {import('./sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} searchTerm
+ * @returns {number} Total number of matching rows
+ */
+function countSqliteIndexMatches(db, searchTerm) {
+    const ftsQuery = buildFtsQuery(searchTerm, FIELD_LABELS);
+    if (!ftsQuery) {
+        return 0;
+    }
+    const [row] = db.query('SELECT COUNT(*) as total FROM groups WHERE groups MATCH ?', ftsQuery);
+    return row ? Number(row.total) : 0;
 }
 
 /**
@@ -132,22 +176,22 @@ function querySqliteIndex(db, searchTerm) {
  * @param {string} handle User handle
  * @param {import('../users.js').UserDirectoryList} directories User directories
  * @param {string} searchTerm Search term
- * @returns {Promise<{ results: { item: object, score: number }[], backend: 'native' | 'wasm' | 'unavailable' }>}
+ * @param {number} [maxRows] Forwarded to querySqliteIndex() - see that function's doc comment.
+ * @returns {Promise<{ results: { item: object, score: number }[], total: number, backend: 'native' | 'wasm' | 'unavailable' }>}
+ * `total` is the true match count, independent of `maxRows` - see countSqliteIndexMatches().
  */
-export async function searchGroups(handle, directories, searchTerm) {
+export async function searchGroups(handle, directories, searchTerm, maxRows) {
     const signature = getFreshnessSignature(directories);
     const engine = await getSqliteEngine();
 
     if (!engine) {
-        return { results: [], backend: 'unavailable' };
+        return { results: [], total: 0, backend: 'unavailable' };
     }
 
-    let entry = sqliteIndexes.get(handle);
-    if (!entry || entry.signature !== signature) {
-        entry?.db?.close();
-        const db = buildSqliteIndex(directories, engine);
-        entry = { db, signature };
-        sqliteIndexes.set(handle, entry);
-    }
-    return { results: querySqliteIndex(entry.db, searchTerm), backend: engine.kind };
+    const db = await indexCoordinator.getIndex(handle, signature, () => buildSqliteIndex(directories, engine));
+    return {
+        results: querySqliteIndex(db, searchTerm, maxRows),
+        total: countSqliteIndexMatches(db, searchTerm),
+        backend: engine.kind,
+    };
 }
