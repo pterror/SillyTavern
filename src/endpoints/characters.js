@@ -1644,7 +1644,11 @@ router.post('/all', async function (request, response) {
 
         if (search) {
             const handle = request.user.profile.handle;
-            const emptySearch = { results: [], total: 0, backend: 'native' };
+            // 'tantivy' (not 'native') on purpose: this is a placeholder for "groups weren't searched at all"
+            // (includeGroups: false), and BACKEND_SEVERITY below reports whichever of the two is *worse* - it has
+            // to be the best possible tier so it never wins that comparison and misreports a real tantivy-backed
+            // characterSearch result as running on a lesser tier it never touched.
+            const emptySearch = { results: [], total: 0, backend: 'tantivy' };
             // Each source only needs to fetch its own top (offset + limit) rows to guarantee a correct merged
             // page - paginateSearchResults() below still does the real character/group interleave-by-score and
             // final slice, this just stops each individual FTS5 query (and the JSON.parse() of every one of its
@@ -1667,12 +1671,12 @@ router.post('/all', async function (request, response) {
                 trueTotal: characterSearch.total + groupSearch.total,
             });
             // searchBackend lets the client (fetchServerCharacterSearchResults(), script.js) show a visible
-            // indicator when search is running on anything other than the fast native engine (see
-            // sqlite-engine.js) instead of that only ever showing up as a server console warning. Character and
+            // indicator when search is running on anything other than the fastest engine tier (see
+            // search-engine.js) instead of that only ever showing up as a server console warning. Character and
             // group search resolve the engine independently but always agree in practice (both go through the
-            // same process-wide getSqliteEngine() cache) - this just reports whichever is worse, in case they
+            // same process-wide resolveSearchEngine() cache) - this just reports whichever is worse, in case they
             // ever don't.
-            const BACKEND_SEVERITY = { native: 0, wasm: 1, unavailable: 2 };
+            const BACKEND_SEVERITY = { tantivy: 0, native: 1, wasm: 2, unavailable: 3 };
             const searchBackend = BACKEND_SEVERITY[groupSearch.backend] > BACKEND_SEVERITY[characterSearch.backend]
                 ? groupSearch.backend
                 : characterSearch.backend;
