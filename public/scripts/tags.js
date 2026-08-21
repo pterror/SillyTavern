@@ -34,6 +34,7 @@ import { renderTemplateAsync } from './templates.js';
 import { t, translate } from './i18n.js';
 import { accountStorage } from './util/AccountStorage.js';
 import { enumTypes, SlashCommandEnumValue } from './slash-commands/SlashCommandEnumValue.js';
+import { getCachedTags, setCachedTags } from './tags-cache.js';
 
 export {
     TAG_FOLDER_TYPES,
@@ -433,6 +434,25 @@ async function saveTagsNow() {
         if (!response.ok) {
             throw new Error(`Failed to save tags: ${response.statusText}`);
         }
+
+        // Keep the client's tags cache (tags-cache.js, consulted by loadTagsSettings() on the next boot) in sync
+        // with what's now actually on disk. Re-stat rather than guess at the new mtime - write-file-atomic
+        // doesn't report it back, and any drift here is correctness-safe either way (it would just cost one
+        // extra full /api/tags/get fetch next boot instead of a cache hit, not stale data).
+        const manifestResponse = await fetch('/api/tags/manifest', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({}),
+            cache: 'no-cache',
+        });
+        if (manifestResponse.ok) {
+            const { mtime } = await manifestResponse.json();
+            if (mtime !== null && mtime !== undefined) {
+                await setCachedTags(mtime, tags, tag_map);
+            }
+        } else {
+            console.error(`Failed to refresh tags manifest after save: ${manifestResponse.statusText}`);
+        }
     } catch (error) {
         console.error('Error saving tags:', error);
     }
@@ -739,6 +759,38 @@ function filterByFolder(filterHelper) {
  */
 async function loadTagsSettings(settings) {
     let tagsFile = null;
+
+    // Cheap freshness check before paying for the full (potentially very large) /api/tags/get response: if
+    // tags.json's mtime matches what's cached, reuse the cached tags/tag_map and skip the fetch (and the
+    // seed/normalize save below) entirely. A `null` mtime means tags.json doesn't exist yet (fresh install) -
+    // nothing to be cache-fresh against, so that always falls through to the full path.
+    try {
+        const manifestResponse = await fetch('/api/tags/manifest', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({}),
+            cache: 'no-cache',
+        });
+        if (manifestResponse.ok) {
+            const { mtime } = await manifestResponse.json();
+            if (mtime !== null && mtime !== undefined) {
+                const cached = await getCachedTags();
+                if (cached && cached.mtime === mtime) {
+                    tags = cached.tags;
+                    tag_map = cached.tag_map;
+                    rebuildTagStores();
+                    invalidateCharactersFuseIndex();
+                    invalidateGroupsFuseIndex();
+                    return;
+                }
+            }
+        } else {
+            console.error(`Failed to load tags manifest: ${manifestResponse.statusText}`);
+        }
+    } catch (error) {
+        console.error('Error loading tags manifest:', error);
+    }
+
     try {
         const response = await fetch('/api/tags/get', {
             method: 'POST',
