@@ -1014,13 +1014,19 @@ async function getHiddenBlock(hidden) {
     return $(hiddenBlock);
 }
 
-function getCharacterBlock(item, id) {
+/**
+ * Populates a `.character_select` template (freshly cloned, or an existing row being reused across a
+ * re-render - see `printCharacters`'s keyed diff) with a character's current data.
+ * @param {JQuery<HTMLElement>} template The `.character_select` element to populate, already in the DOM tree
+ * or detached
+ * @param {object} item Character entity data
+ * @param {number} id Character id (index into `characters`)
+ */
+function renderCharacterBlock(template, item, id) {
     let this_avatar = default_avatar;
     if (item.avatar != 'none') {
         this_avatar = getThumbnailUrl('avatar', item.avatar);
     }
-    // Populate the template
-    const template = $('#character_template .character_select').clone();
     template.attr({ 'data-chid': id, 'data-avatar': item.avatar, 'id': `CharID${id}` });
     // loading="lazy": without this, every rendered card's <img> starts fetching its thumbnail immediately -
     // on an install with Characters_PerPage bumped up (the size-changer dropdown goes up to 1000) or a broad
@@ -1036,39 +1042,46 @@ function getCharacterBlock(item, id) {
     template.find('img').attr('src', this_avatar).attr('loading', 'lazy').attr('alt', item.name);
     template.find('.avatar').attr('title', `[Character] ${item.name}\nFile: ${item.avatar}`);
     template.find('.ch_name').text(item.name).attr('title', `[Character] ${item.name}`);
-    if (power_user.show_card_avatar_urls) {
-        template.find('.ch_avatar_url').text(item.avatar);
-    }
+    template.find('.ch_avatar_url').text(power_user.show_card_avatar_urls ? item.avatar : '');
     template.find('.ch_fav_icon').css('display', 'none');
     template.toggleClass('is_fav', item.fav || item.fav == 'true');
     template.find('.ch_fav').val(item.fav);
 
+    // .toggle() rather than the original one-shot .remove(), so this stays correct when re-run against a
+    // row that's being reused in place instead of freshly cloned (see printCharacters).
     const isAssistant = item.avatar === getPermanentAssistantAvatar();
-    if (!isAssistant) {
-        template.find('.ch_assistant').remove();
-    }
+    template.find('.ch_assistant').toggle(isAssistant);
 
     const description = item.data?.creator_notes || '';
-    if (description) {
-        template.find('.ch_description').text(description);
-    } else {
-        template.find('.ch_description').hide();
-    }
+    template.find('.ch_description').text(description).toggle(Boolean(description));
 
     const auxFieldName = power_user.aux_field || 'character_version';
     const auxFieldValue = (item.data && item.data[auxFieldName]) || '';
-    if (auxFieldValue) {
-        template.find('.character_version').text(auxFieldValue);
-    } else {
-        template.find('.character_version').hide();
-    }
+    template.find('.character_version').text(auxFieldValue).toggle(Boolean(auxFieldValue));
 
-    // Display inline tags
+    // Display inline tags. printTagList() clears and rebuilds this container itself, so it's already
+    // safe to call against a reused row.
     const tagsElement = template.find('.tags');
     printTagList(tagsElement, { forEntityOrKey: id, tagOptions: { isCharacterList: true } });
+}
 
-    // Add to the list
+function getCharacterBlock(item, id) {
+    const template = $('#character_template .character_select').clone();
+    renderCharacterBlock(template, item, id);
     return template;
+}
+
+/**
+ * Updates an existing character row in place with fresh data, instead of tearing it down and rebuilding
+ * it from the template. Used by printCharacters's keyed diff for rows whose avatar is still on the page.
+ * @param {HTMLElement} node The existing `.character_select` element for this avatar
+ * @param {object} item Character entity data
+ * @param {number} id Character id (index into `characters`)
+ * @returns {HTMLElement} The same node, updated
+ */
+function updateCharacterBlock(node, item, id) {
+    renderCharacterBlock($(node), item, id);
+    return node;
 }
 
 /**
@@ -1121,25 +1134,44 @@ export async function printCharacters(fullRefresh = false) {
         formatSizeChanger: renderPaginationDropdown(pageSize, sizeChangerOptions),
         showNavigator: true,
         callback: async function (/** @type {Entity[]} */ data) {
-            $(listId).empty();
-            if (power_user.bogus_folders && isBogusFolderOpen()) {
-                $(listId).append(getBackBlock());
+            const list = $(listId).get(0);
+
+            // Keyed diff for character rows: index the currently-rendered rows by avatar *before* touching
+            // the DOM. A row whose avatar is still present on the new page gets moved into the new fragment
+            // and updated in place (updateCharacterBlock) instead of being torn down and rebuilt from the
+            // template - this used to happen to every visible card on every debounced search keystroke, even
+            // though most of the time the underlying character list hadn't actually changed, only the
+            // filter/sort/page had. Groups and tags aren't keyed here (out of scope for this pass;
+            // they're far fewer per page than character rows) and keep being rebuilt every render, same as
+            // before.
+            const existingCharacterRows = new Map();
+            for (const child of list.children) {
+                if (child instanceof HTMLElement && child.hasAttribute('data-avatar')) {
+                    existingCharacterRows.set(child.getAttribute('data-avatar'), child);
+                }
             }
-            if (!data.length) {
-                const emptyBlock = await getEmptyBlock();
-                $(listId).append(emptyBlock);
-            }
+
             // Build all rows into a detached DocumentFragment first, and append it once. Appending elements
             // one by one into the live (attached, display:flex) list forces a reflow per row; batching this
             // way costs one reflow for the whole page instead of one per row (up to 500/page on this install).
+            // Moving a still-attached node into this fragment (fragment.appendChild) detaches it from `list`
+            // automatically, which is what makes the plain `list.replaceChildren()` below safe: by the time
+            // it runs, every row worth keeping has already been moved out into the fragment.
             const fragment = document.createDocumentFragment();
             let displayCount = 0;
             for (const i of data) {
                 switch (i.type) {
-                    case 'character':
-                        fragment.appendChild(getCharacterBlock(i.item, i.id).get(0));
+                    case 'character': {
                         displayCount++;
+                        const existingRow = existingCharacterRows.get(i.item.avatar);
+                        if (existingRow) {
+                            existingCharacterRows.delete(i.item.avatar);
+                            fragment.appendChild(updateCharacterBlock(existingRow, i.item, i.id));
+                        } else {
+                            fragment.appendChild(getCharacterBlock(i.item, i.id).get(0));
+                        }
                         break;
+                    }
                     case 'group':
                         fragment.appendChild(getGroupBlock(i.item).get(0));
                         displayCount++;
@@ -1149,7 +1181,19 @@ export async function printCharacters(fullRefresh = false) {
                         break;
                 }
             }
-            $(listId).get(0).appendChild(fragment);
+
+            // Whatever's left in `list` now is either a structural row from the previous render (back-block
+            // /empty-block/hidden-block) or a character row that fell off this page (filtered out, or paged
+            // away) - none of it survives into the new render, so a full clear here is correct, not wasteful.
+            list.replaceChildren();
+            if (power_user.bogus_folders && isBogusFolderOpen()) {
+                $(list).append(getBackBlock());
+            }
+            if (!data.length) {
+                const emptyBlock = await getEmptyBlock();
+                $(list).append(emptyBlock);
+            }
+            list.appendChild(fragment);
 
             const hidden = (characters.length + groups.length) - displayCount;
             if (hidden > 0 && entitiesFilter.hasAnyFilter()) {
