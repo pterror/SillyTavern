@@ -11359,25 +11359,34 @@ API Settings: ${JSON.stringify(getSettingsContents[getSettingsContents.main_api 
 
 /**
  * Per-backend UI info for the persistent `#character_search_backend_indicator` icon - null means "hide it, this
- * backend is fully healthy." See sqlite-engine.js for what each backend actually means; this only decides how
- * loudly to say so. 'wasm' is a much lighter warning than 'unavailable': same ranking, same `label:query`
- * support as native, just slower - not a "something is broken" state the way 'unavailable' is.
+ * backend is fully healthy." See search-engine.js for what each backend actually means; this only decides how
+ * loudly to say so. 'tantivy' is the fastest tier (no indicator). 'native'/'wasm' are the SQLite FTS5 fallback
+ * chain used when tantivy's native binding isn't usable on this install (see tantivy-engine.js) - same ranking
+ * and 'label:query' support as each other, 'wasm' just slower than 'native'; both are a real, if mild, warning
+ * now that they're fallback tiers rather than the primary engine. 'unavailable' means the whole chain failed.
  * @type {Record<string, { icon: string, tone: 'warning' | 'error', tooltip: string } | null>}
  */
 const SEARCH_BACKEND_INDICATOR = {
-    native: null,
+    tantivy: null,
+    get native() {
+        return {
+            icon: 'fa-triangle-exclamation',
+            tone: 'warning',
+            tooltip: t`Character search is running on the SQLite fallback engine because the faster tantivy search backend isn't available on this install - same ranking and 'label:query' filter support as usual, just slower. See the server console for details.`,
+        };
+    },
     get wasm() {
         return {
             icon: 'fa-triangle-exclamation',
             tone: 'warning',
-            tooltip: t`Character search is running on the WebAssembly SQLite engine because the native search backend isn't available on this install - same ranking and 'label:query' filter support as usual, just slower. See the server console for details.`,
+            tooltip: t`Character search is running on the WebAssembly SQLite engine, two fallback tiers below the primary tantivy backend - same ranking and 'label:query' filter support as usual, just slower. See the server console for details.`,
         };
     },
     get unavailable() {
         return {
             icon: 'fa-circle-exclamation',
             tone: 'error',
-            tooltip: t`Character search is unavailable - neither the native nor the WebAssembly SQLite search backend could be loaded on this install. See the server console for details.`,
+            tooltip: t`Character search is unavailable - none of the tantivy, native SQLite, or WebAssembly SQLite search backends could be loaded on this install. See the server console for details.`,
         };
     },
 };
@@ -11402,7 +11411,7 @@ let lastKnownSearchBackend = null;
  * searchFilter()'s membership check (does a cached score exist at all) and sortEntitiesList()'s ascending sort.
  *
  * The response also carries `searchBackend` (see the /api/characters/all handler in src/endpoints/characters.js
- * and sqlite-engine.js) - 'native', 'wasm', or 'unavailable'. Previously a degraded backend only ever showed up
+ * and search-engine.js) - 'tantivy', 'native', 'wasm', or 'unavailable'. Previously a degraded backend only ever showed up
  * as a server console warning; this surfaces it as a persistent icon (toggled here, see
  * SEARCH_BACKEND_INDICATOR) plus a one-time toast on the transition into a worse state.
  * @param {string} searchQuery The current search box value
