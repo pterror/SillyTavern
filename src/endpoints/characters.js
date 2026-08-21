@@ -29,7 +29,7 @@ import cacheBuster from '../middleware/cacheBuster.js';
 import { searchCharacters } from './characters-search-index.js';
 import { searchGroups } from './groups-search-index.js';
 import { getGroupsData } from './groups.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, renameCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, renameCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, checkCharactersExist, getChangesSince } from '../character-metadata-db.js';
 
 // With 100 MB limit it would take roughly 3000 characters to reach this limit
 const memoryCacheCapacity = getConfigValue('performance.memoryCacheCapacity', '100mb');
@@ -1489,6 +1489,160 @@ router.post('/metadata/batch-import/end', async function (request, response) {
         return response.sendStatus(204);
     } catch (err) {
         console.error('[character-metadata] Failed to end batch-import mode:', err);
+        return response.status(500).send({ error: true });
+    }
+});
+
+// Phase 2's sortable fields (design doc §5's `sort.field` union, minus 'random' and 'search' - see
+// character-metadata-db.js's QUERYABLE_SORT_COLUMNS for why those two are deliberately not handled by this
+// endpoint yet). Kept here (not imported from character-metadata-db.js) because this is specifically the set of
+// values this HTTP layer accepts as *valid input* before ever calling into the metadata module - a distinct
+// concern from that module's own "which SQL column does this map to".
+const QUERY_SORT_FIELDS = new Set(['name', 'date_added', 'date_last_chat', 'chat_size', 'fav']);
+
+// page/pageSize bounds for "/query" - page/pageSize is the doc's §5 contract shape (not offset/limit, which is
+// queryCharacters()'s own internal shape - this route is where the translation happens). The upper bound on
+// pageSize is a defensive cap, not something the doc mandates: an unbounded client-supplied page size would let
+// a single request force an unbounded LIMIT, defeating the entire point of paginating in the first place.
+const DEFAULT_QUERY_PAGE_SIZE = 500;
+const MAX_QUERY_PAGE_SIZE = 2000;
+
+/**
+ * HTTP POST endpoint for the "/api/characters/query" route (design doc §5): the phase-2 replacement for the
+ * fs.readdirSync()+PNG-parse-everything+slice-in-JS shape of a plain (no search term) `/all` browse request -
+ * this endpoint never touches the filesystem or parses a PNG; every field it can return already lives in the
+ * phase-1 SQLite metadata table (character-metadata-db.js), kept fresh by that module's write hooks/watcher/
+ * reconciler independent of this request.
+ *
+ * NOT YET WIRED TO ANY CLIENT CODE. Per the design doc's own phase table, inverting `getEntitiesList()`/
+ * `printCharacters()` (public/script.js) to actually call this instead of the old fully-resident-array path is
+ * phase 5's job, not phase 2's - this endpoint exists and is correct, but the browse UI still goes through the
+ * pre-existing `/all` handler above until that phase lands. This mirrors how `/metadata/rescan` and the
+ * batch-import endpoints above landed in phase 1 unwired, for the same reason.
+ *
+ * Two things the doc's full `sort`/`filter` union allows that this endpoint deliberately rejects (400, not a
+ * silent fallback) rather than half-implementing:
+ *   - `sort.field: 'random'` - the seeded-hash comparator and its client-owned-seed wire shape belong to phase
+ *     5b (design doc §5.3), which hasn't landed. Falling back to name order the way the pre-phase-2 `/all`
+ *     handler's `sortOrder=random` bug silently did is exactly the "silent wrong result" failure the doc calls
+ *     out by name - this 400s instead.
+ *   - `sort.field: 'search'` / `filter.search` - full-text search stays on the existing tantivy/FTS5 path
+ *     (characters-search-index.js) for this dispatch; wiring the two together (doc §5's "push the FTS hit-id set
+ *     into SQLite as a temporary table" plan) is real, separate work this pass does not attempt.
+ * @param  {import("express").Request} request The HTTP request object.
+ * @param  {import("express").Response} response The HTTP response object.
+ * @return {void}
+ */
+router.post('/query', async function (request, response) {
+    try {
+        const body = request.body ?? {};
+        const filter = body.filter ?? {};
+        const sort = body.sort ?? {};
+        const want = Array.isArray(body.want) ? body.want : ['rows', 'total'];
+
+        if (filter.search) {
+            return response.status(400).send({ error: true, reason: 'search-not-supported', message: 'filter.search is not handled by /query yet - use the existing /all endpoint\'s search param.' });
+        }
+        if (sort.field === 'random') {
+            return response.status(400).send({ error: true, reason: 'random-sort-not-supported', message: 'sort.field "random" is phase 5b work (seeded-hash comparator) and is not implemented yet.' });
+        }
+        if (sort.field === 'search') {
+            return response.status(400).send({ error: true, reason: 'search-sort-not-supported', message: 'sort.field "search" requires filter.search, which /query does not handle yet.' });
+        }
+        if (sort.field !== undefined && !QUERY_SORT_FIELDS.has(sort.field)) {
+            return response.status(400).send({ error: true, reason: 'invalid-sort-field' });
+        }
+        for (const w of want) {
+            if (w !== 'rows' && w !== 'total') {
+                return response.status(400).send({ error: true, reason: 'want-not-supported', message: `want: "${w}" is not implemented yet.` });
+            }
+        }
+
+        const page = Number.isFinite(Number(body.page)) && Number(body.page) >= 1 ? Math.trunc(Number(body.page)) : 1;
+        const pageSize = Number.isFinite(Number(body.pageSize)) && Number(body.pageSize) > 0
+            ? Math.min(Math.trunc(Number(body.pageSize)), MAX_QUERY_PAGE_SIZE)
+            : DEFAULT_QUERY_PAGE_SIZE;
+
+        const result = await queryCharacters(request.user.directories, {
+            tags: filter.tags,
+            fav: filter.fav,
+            world: filter.world,
+            excludeIds: filter.excludeIds,
+            ids: filter.ids,
+            sortField: sort.field,
+            sortOrder: sort.order,
+            offset: (page - 1) * pageSize,
+            limit: pageSize,
+            wantRows: want.includes('rows'),
+            wantTotal: want.includes('total'),
+        });
+
+        if (result === null) {
+            return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
+        }
+
+        const payload = { rev: result.rev };
+        if (want.includes('rows')) payload.rows = result.rows;
+        if (want.includes('total')) payload.total = result.total;
+        return response.send(payload);
+    } catch (err) {
+        console.error('[characters/query] Query failed:', err);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/**
+ * HTTP POST endpoint for the "/api/characters/exists" route (design doc §4.2): chunked existence-by-id, answered
+ * from the phase-1 metadata table's primary key rather than the filesystem. Not yet wired to any client
+ * call site - the destructive-existence sites this backs (group-chats.js's validateGroup, world-info.js's binding
+ * cleanup, tags.js's backup-restore/prune) are phase 5 client work; this lands the server capability first, same
+ * reasoning as `/query` above.
+ * @param  {import("express").Request} request The HTTP request object.
+ * @param  {import("express").Response} response The HTTP response object.
+ * @return {void}
+ */
+router.post('/exists', async function (request, response) {
+    try {
+        const ids = Array.isArray(request.body?.ids) ? request.body.ids : null;
+        if (!ids || ids.some(id => typeof id !== 'string')) {
+            return response.sendStatus(400);
+        }
+
+        const result = await checkCharactersExist(request.user.directories, ids);
+        if (result === null) {
+            return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
+        }
+        return response.send(result);
+    } catch (err) {
+        console.error('[characters/exists] Existence check failed:', err);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/**
+ * HTTP POST endpoint for the "/api/characters/changes" route (design doc §5.2): a change feed over the phase-1
+ * metadata store's change log, meant to eventually replace `/api/characters/manifest`'s readdir+stat-everything
+ * boot scan. NOT wired to replace `/manifest` yet - the doc scopes that client-side cutover ("once browse is
+ * server-paginated") to phase 5/6, alongside character-cache.js's own IndexedDB rework; `/manifest` keeps serving
+ * the existing boot-diff flow unchanged. This only adds the endpoint.
+ * @param  {import("express").Request} request The HTTP request object.
+ * @param  {import("express").Response} response The HTTP response object.
+ * @return {void}
+ */
+router.post('/changes', async function (request, response) {
+    try {
+        const sinceRev = Number(request.body?.sinceRev);
+        if (!Number.isFinite(sinceRev) || sinceRev < 0) {
+            return response.sendStatus(400);
+        }
+
+        const result = await getChangesSince(request.user.directories, sinceRev);
+        if (result === null) {
+            return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
+        }
+        return response.send(result);
+    } catch (err) {
+        console.error('[characters/changes] Change-feed query failed:', err);
         return response.status(500).send({ error: true });
     }
 });

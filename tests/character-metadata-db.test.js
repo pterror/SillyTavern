@@ -155,6 +155,22 @@ describe('renameCharacterRow', () => {
         expect(newRow.name).toBe('Robert');
         expect(newRow.date_added).toBe(oldRow.date_added);
     });
+
+    test('also carries date_added into shallow_json\'s own embedded copy, not just the column', async () => {
+        // Regression test: shallow_json is a point-in-time JSON snapshot taken at upsert (buildRow()) - a caller
+        // reading date_added through the shallow projection (as /query does - see characters.js) rather than the
+        // raw column would otherwise see the wrong value after a rename, even though the column itself was
+        // correctly patched.
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        const oldRow = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+
+        await new Promise(resolve => setTimeout(resolve, 5));
+        await metadataDb.upsertCharacterFromWrite(directories, 'Robert.png', cardJson({ name: 'Robert', data: { name: 'Robert', tags: [], creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } }), 3000);
+        await metadataDb.renameCharacterRow(directories, 'Bob.png', 'Robert.png');
+
+        const newRow = await metadataDb.getCharacterMetadataRow(directories, 'Robert.png');
+        expect(JSON.parse(newRow.shallow_json).date_added).toBe(oldRow.date_added);
+    });
 });
 
 describe('bootstrapIfNeeded', () => {
