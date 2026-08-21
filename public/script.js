@@ -1022,7 +1022,18 @@ function getCharacterBlock(item, id) {
     // Populate the template
     const template = $('#character_template .character_select').clone();
     template.attr({ 'data-chid': id, 'data-avatar': item.avatar, 'id': `CharID${id}` });
-    template.find('img').attr('src', this_avatar).attr('alt', item.name);
+    // loading="lazy": without this, every rendered card's <img> starts fetching its thumbnail immediately -
+    // on an install with Characters_PerPage bumped up (the size-changer dropdown goes up to 1000) or a broad
+    // search match, that's hundreds of simultaneous GET requests firing the instant the list re-renders. HTTP/1.1
+    // caps this browser to ~6 concurrent connections per origin (see server-startup.js - this server is plain
+    // http.createServer(), not http2), so the excess queues - and *any other request issued during that window*
+    // (including the very next debounced search-as-you-type fetch) queues right behind them, showing up in
+    // devtools as many seconds of "Blocked" even though the server itself answered in tens of milliseconds.
+    // Native lazy loading defers off-screen images until they're about to scroll into view, so only the
+    // actually-visible rows fire immediately - confirmed via CDP repro against this install's real 24,171-
+    // character library: a broad search rendered 500 cards and 500 concurrent thumbnail requests, which is
+    // exactly the request-storm this fixes.
+    template.find('img').attr('src', this_avatar).attr('loading', 'lazy').attr('alt', item.name);
     template.find('.avatar').attr('title', `[Character] ${item.name}\nFile: ${item.avatar}`);
     template.find('.ch_name').text(item.name).attr('title', `[Character] ${item.name}`);
     if (power_user.show_card_avatar_urls) {
@@ -7819,7 +7830,9 @@ export function buildAvatarList(block, entities, { templateId = 'inline_avatar_t
         if (entity.type === 'character') {
             avatarTemplate.attr('data-avatar', entity.item.avatar);
         }
-        avatarTemplate.find('img').attr('src', this_avatar).attr('alt', entity.item.name);
+        // loading="lazy" - see the matching comment in getCharacterBlock() above; same request-storm risk
+        // applies here (group member/candidate pickers can list the whole library).
+        avatarTemplate.find('img').attr('src', this_avatar).attr('loading', 'lazy').attr('alt', entity.item.name);
         avatarTemplate.attr('title', `[Character] ${entity.item.name}\nFile: ${entity.item.avatar}`);
         if (highlightFavs) {
             avatarTemplate.toggleClass('is_fav', entity.item.fav || entity.item.fav == 'true');
