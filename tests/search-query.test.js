@@ -1,6 +1,6 @@
 import { describe, test, expect } from '@jest/globals';
 
-import { buildFtsQuery, hasLabelSyntax } from '../src/endpoints/search-query.js';
+import { buildFtsQuery } from '../src/endpoints/search-query.js';
 
 const CHARACTER_FIELD_LABELS = {
     name: 'name',
@@ -66,25 +66,5 @@ describe('buildFtsQuery()', () => {
 
     test('label matching is case-insensitive', () => {
         expect(buildFtsQuery('TAG:vampire', CHARACTER_FIELD_LABELS)).toBe('{resolved_tags tags}:"vampire"*');
-    });
-});
-
-describe('hasLabelSyntax()', () => {
-    test('is false for a bare query with no recognized label', () => {
-        expect(hasLabelSyntax('vampire romance', CHARACTER_FIELD_LABELS)).toBe(false);
-    });
-
-    test('is false when the query merely contains a colon but not a recognized label', () => {
-        expect(hasLabelSyntax('http://example.com', CHARACTER_FIELD_LABELS)).toBe(false);
-        expect(hasLabelSyntax('unknownlabel:foo', CHARACTER_FIELD_LABELS)).toBe(false);
-    });
-
-    test('is true when any token uses a recognized label:value filter', () => {
-        expect(hasLabelSyntax('tag:vampire', CHARACTER_FIELD_LABELS)).toBe(true);
-        expect(hasLabelSyntax('vampire creator:someone', CHARACTER_FIELD_LABELS)).toBe(true);
-    });
-
-    test('is false for a recognized label with no value attached', () => {
-        expect(hasLabelSyntax('name:', CHARACTER_FIELD_LABELS)).toBe(false);
     });
 });

@@ -1614,7 +1614,7 @@ router.post('/all', async function (request, response) {
 
         if (search) {
             const handle = request.user.profile.handle;
-            const emptySearch = { results: [], backend: 'sqlite', labelSyntaxUnsupported: false };
+            const emptySearch = { results: [], backend: 'native' };
             const [characterSearch, groupSearch] = await Promise.all([
                 searchCharacters(handle, request.user.directories, search),
                 includeGroups ? searchGroups(handle, request.user.directories, search) : emptySearch,
@@ -1630,16 +1630,18 @@ router.post('/all', async function (request, response) {
             const { items, total } = paginateSearchResults(finalCharacterResults, groupSearch.results, {
                 offset: Number(offset), limit: Number(limit),
             });
-            // searchBackend/labelSyntaxUnsupported let the client (fetchServerCharacterSearchResults(),
-            // script.js) show a visible indicator when search silently degraded to the slower Fuse.js fallback
-            // (see native-sqlite.js) instead of that only ever showing up as a server console warning - and let
-            // it warn explicitly when a `label:value` filter (search-query.js) went unhonored because of it,
-            // rather than that filter silently doing a literal fuzzy search of "label:value" against everything.
-            const searchBackend = (characterSearch.backend === 'fuse' || groupSearch.backend === 'fuse') ? 'fuse' : 'sqlite';
-            const labelSyntaxUnsupported = characterSearch.labelSyntaxUnsupported || groupSearch.labelSyntaxUnsupported;
+            // searchBackend lets the client (fetchServerCharacterSearchResults(), script.js) show a visible
+            // indicator when search is running on anything other than the fast native engine (see
+            // sqlite-engine.js) instead of that only ever showing up as a server console warning. Character and
+            // group search resolve the engine independently but always agree in practice (both go through the
+            // same process-wide getSqliteEngine() cache) - this just reports whichever is worse, in case they
+            // ever don't.
+            const BACKEND_SEVERITY = { native: 0, wasm: 1, unavailable: 2 };
+            const searchBackend = BACKEND_SEVERITY[groupSearch.backend] > BACKEND_SEVERITY[characterSearch.backend]
+                ? groupSearch.backend
+                : characterSearch.backend;
             const payload = includeGroups ? { items, total } : { items: items.map(x => x.item), total };
             payload.searchBackend = searchBackend;
-            payload.labelSyntaxUnsupported = labelSyntaxUnsupported;
             return response.send(payload);
         }
 

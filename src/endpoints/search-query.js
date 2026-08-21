@@ -74,16 +74,6 @@ function parseLabeledToken(token, fieldLabels) {
 }
 
 /**
- * @param {string} searchTerm Raw user input
- * @param {Record<string, string>} fieldLabels Map of recognized lowercase label -> FTS5 column-filter expression
- * @returns {boolean} True if `searchTerm` uses `label:value` syntax the FTS5-backed buildFtsQuery() below
- * understands. Used to detect queries the Fuse.js fallback (which has no equivalent) can't honor correctly.
- */
-export function hasLabelSyntax(searchTerm, fieldLabels) {
-    return tokenize(searchTerm).some(token => parseLabeledToken(token, fieldLabels) !== null);
-}
-
-/**
  * Turns a raw user search string into an FTS5 MATCH query: each whitespace-separated word becomes a
  * prefix-matched term (so "vamp" matches "vampire" while typing), multiple words are combined with an explicit
  * AND (see characters-search-index.js's original header comment for the measured rationale - unchanged here),
