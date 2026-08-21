@@ -3223,9 +3223,55 @@ select option[disabled]:not(:checked) {
     min-width: 75px;
 }
 
+#character_search_bar_wrapper {
+    flex: 1;
+    margin: 5px 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+    /* text_pole already sets margin: 5px 0, which would double up with this wrapper's own margin above. */
+    margin-top: 0;
+    margin-bottom: 0;
+}
+
+#character_search_pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.search_pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background-color: var(--SmartThemeQuoteColor, rgba(255, 255, 255, 0.1));
+    border-radius: 4px;
+    padding: 1px 4px;
+    font-size: 0.9em;
+    white-space: nowrap;
+}
+
+.search_pill_label {
+    opacity: 0.7;
+}
+
+.search_pill_remove {
+    cursor: pointer;
+    opacity: 0.7;
+}
+
+.search_pill_remove:hover {
+    opacity: 1;
+}
+
 #character_search_bar {
     flex: 1;
-    margin-bottom: 0;
+    min-width: 60px;
+    margin: 0;
+    padding: 0;
+    border: none;
+    background: transparent;
 }
 
 #character_search_backend_indicator {
@@ -3233,6 +3279,14 @@ select option[disabled]:not(:checked) {
     align-items: center;
     font-size: 1.1em;
     cursor: help;
+}
+
+/* Two distinct tones for the search-backend indicator (script.js's SEARCH_BACKEND_INDICATOR): 'warning' for the
+   slower-but-behaviorally-identical wasm engine, 'error' for the no-usable-backend-at-all state - deliberately
+   more alarming than .warning's existing (quite red) --warning color, since one is "fine, just slower" and the
+   other is "search doesn't work right now." */
+#character_search_backend_indicator.error {
+    color: #ff3b3b;
 }
 
 #rm_button_search {
