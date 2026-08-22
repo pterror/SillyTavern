@@ -98,7 +98,7 @@ class BackupsBrowser {
         const formData = new FormData();
         formData.set('file_type', extension);
         formData.set('avatar', file);
-        formData.set('avatar_url', context.characters[context.characterId]?.avatar || '');
+        formData.set('avatar_url', context.characterAvatar || '');
         formData.set('user_name', context.name1);
         formData.set('character_name', context.name2);
 

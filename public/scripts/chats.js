@@ -9,11 +9,11 @@ import {
     event_types,
     getCurrentChatId,
     getCurrentCharacter,
+    getSelectionState,
     getRequestHeaders,
     name2,
     reloadCurrentChat,
     saveSettingsDebounced,
-    this_chid,
     saveChatConditional,
     chat_metadata,
     neutralCharacterName,
@@ -744,7 +744,7 @@ async function openGlobalStylesPreferenceDialog() {
 
 async function checkForCreatorNotesStyles() {
     // Don't do anything if in group chat or not in a chat
-    if (selected_group || this_chid === undefined) {
+    if (getSelectionState().type !== 'character') {
         return;
     }
 
@@ -1495,7 +1495,7 @@ async function openAttachmentManager() {
         await renderList(chatAttachments, ATTACHMENT_SOURCE.CHAT);
         await renderList(characterAttachments, ATTACHMENT_SOURCE.CHARACTER);
 
-        const isNotCharacter = this_chid === undefined || selected_group;
+        const isNotCharacter = getSelectionState().type !== 'character';
         const isNotInChat = getCurrentChatId() === undefined;
         template.find('.characterAttachmentsBlock').toggle(!isNotCharacter);
         template.find('.chatAttachmentsBlock').toggle(!isNotInChat);
@@ -1633,7 +1633,7 @@ async function openAttachmentManager() {
 function getAvailableTargets() {
     const targets = Object.values(ATTACHMENT_SOURCE);
 
-    const isNotCharacter = this_chid === undefined || selected_group;
+    const isNotCharacter = getSelectionState().type !== 'character';
     const isNotInChat = getCurrentChatId() === undefined;
 
     if (isNotCharacter) {
@@ -1760,7 +1760,7 @@ function ensureAttachmentsExist() {
         chat_metadata.attachments = [];
     }
 
-    if (this_chid !== undefined && getCurrentCharacter()) {
+    if (getCurrentCharacter()) {
         if (!extension_settings.character_attachments) {
             extension_settings.character_attachments = {};
         }
@@ -1855,7 +1855,7 @@ async function verifyAttachmentsForSource(source) {
 const NEUTRAL_CHAT_KEY = 'neutralChat';
 
 export function preserveNeutralChat() {
-    if (this_chid !== undefined || selected_group || name2 !== neutralCharacterName) {
+    if (getSelectionState().type !== 'none' || name2 !== neutralCharacterName) {
         return;
     }
 
@@ -1863,7 +1863,7 @@ export function preserveNeutralChat() {
 }
 
 export function restoreNeutralChat() {
-    if (this_chid !== undefined || selected_group || name2 !== neutralCharacterName) {
+    if (getSelectionState().type !== 'none' || name2 !== neutralCharacterName) {
         return;
     }
 
