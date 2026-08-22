@@ -573,6 +573,37 @@ export function uuidv4() {
     });
 }
 
+const UUID_LIKE_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Mints a time-ordered UUIDv7 (RFC 9562): a 48-bit big-endian Unix-ms timestamp in the first 6 bytes, the 4-bit
+ * version and 2-bit variant fields set per spec, and the rest filled with cryptographically random bytes. Used as
+ * the immutable character id minted at create/import time (design doc `character-data-residency-redesign.md`
+ * §2.2/§9 phase 4d) - the id's own time-ordering makes it a stable tiebreaker for rows sharing a `date_added`.
+ * @returns {string} A UUIDv7 string
+ */
+export function uuidv7() {
+    const bytes = crypto.randomBytes(16);
+    const unixMs = BigInt(Date.now());
+    for (let i = 0; i < 6; i++) {
+        bytes[i] = Number((unixMs >> BigInt(40 - i * 8)) & 0xffn);
+    }
+    bytes[6] = (bytes[6] & 0x0f) | 0x70; // version
+    bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant
+    const hex = bytes.toString('hex');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/**
+ * @param {string} value A candidate character id / filename stem
+ * @returns {boolean} True if `value` is shaped like a UUID (any version, case-insensitive) - the discriminator the
+ * phase 4d filename migration uses to tell an already-minted id apart from a legacy human-readable filename stem:
+ * "is it a valid uuid, not just does it look like a plausible name" (design doc §9, phase 4d).
+ */
+export function isUuidLike(value) {
+    return typeof value === 'string' && UUID_LIKE_REGEX.test(value);
+}
+
 /**
  * Gets a humanized date time string from a given timestamp.
  * @param {number} timestamp Timestamp in milliseconds
