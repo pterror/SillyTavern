@@ -43,9 +43,15 @@ import { tokenizeSearchQuery, parseLabeledToken, unquoteSearchTerm } from './sea
  * still works, just don't try to enumerate its keys).
  */
 
-/** The stored-only field name every tantivy-backed index (characters, groups) uses for the full JSON payload -
- * see buildSchema()'s doc comment for why this field is `raw`-tokenized + `basic`-indexed rather than a real
- * searchable text field. */
+/** The stored, `raw`-tokenized field every tantivy-backed index (characters, groups) uses for its per-document
+ * payload - see buildSchema()'s doc comment for why this field is `raw`-tokenized + `basic`-indexed rather than a
+ * real searchable text field, and why that's also exactly what qualifies it as the delete-by-term key (design doc
+ * §3: "the delete key must be a `tokenizerName: 'raw'` field"). What a caller actually stores in it is caller-
+ * defined and NOT parsed here (see runSearch()'s doc comment): groups-search-index.js stores the full group JSON
+ * (unchanged, full-rebuild-only - no incremental maintenance for groups yet), characters-search-index.js stores
+ * just the character id (design doc §5.1's payload shrink - "the tantivy schema needs the `stored: true` payload
+ * changed from the full character JSON to just the id, since rows now come from SQLite"), which is also exactly
+ * the value deleteDocumentsByTerm(DATA_FIELD, id) needs to delete that one document without collateral damage. */
 export const DATA_FIELD = 'data';
 
 /** The indexed (not stored, not full-text) boolean field every tantivy-backed index (characters, groups) uses to
@@ -237,10 +243,15 @@ export function buildSearchQuery(tantivy, schema, searchTerm, fieldWeights, fiel
  * consistent "lower is better" convention regardless of which engine actually produced a given result.
  * @param {import('@oxdev03/node-tantivy-binding').Index} index
  * @param {import('@oxdev03/node-tantivy-binding').Query} query
- * @param {number} maxRows Caps how many matching docs get fetched and JSON.parse()'d - same unbounded-fetch OOM
- * concern as querySqliteIndex() (see that function's doc comment in characters-search-index.js), so this is
- * required, not optional, here.
- * @returns {{ results: { item: object, score: number }[], total: number }}
+ * @param {number} maxRows Caps how many matching docs get fetched - same unbounded-fetch-cost concern
+ * querySqliteIndex() documents (characters-search-index.js), though what exactly is unbounded here depends on
+ * what the caller stores in DATA_FIELD: a full-JSON payload (groups) still pays a per-hit JSON.parse, while an
+ * id-only payload (characters, since design doc §5.1's payload shrink) makes this cap purely about avoiding a
+ * pathologically large hit list, not about parse cost.
+ * @returns {{ results: { raw: string, score: number }[], total: number }} `raw` is DATA_FIELD's stored value
+ * exactly as indexed, UN-parsed - the caller decides what it means (JSON.parse for a full-payload index,
+ * used as-is for an id-only one). Deliberately not parsed here so this one function serves both shapes without
+ * a mode flag - see DATA_FIELD's doc comment.
  */
 export function runSearch(index, query, maxRows) {
     const searcher = index.searcher();
@@ -249,7 +260,7 @@ export function runSearch(index, query, maxRows) {
     const results = result.hits.map(hit => {
         const doc = searcher.doc(hit.docAddress);
         const raw = doc.getFirst(DATA_FIELD);
-        return { item: JSON.parse(raw), score: -(hit.score ?? 0) };
+        return { raw, score: -(hit.score ?? 0) };
     });
     return { results, total: result.count ?? results.length };
 }
