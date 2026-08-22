@@ -220,6 +220,27 @@ const SCHEMA_SQL = `
         id   TEXT PRIMARY KEY,
         data TEXT NOT NULL
     );
+
+    -- PHASE 4D (design doc §2.2/§9): durable bookkeeping for the one-time filename-migration script that moves
+    -- every existing character off a name-derived filename onto a minted UUIDv7 id. Deliberately its own indexed
+    -- SQL table rather than a single JSON blob in the meta table - a growing "map of every migrated id so far"
+    -- stuffed into one meta row would mean re-parsing and re-serializing the WHOLE map on every single character
+    -- (O(n) per row, O(n^2) over a 300k-character run), which is exactly the "rewrite the whole blob on every
+    -- mutation" antipattern the rest of this redesign exists to retire (see tags.json in this module's own
+    -- header). Each row is its own cheap indexed write instead.
+    -- completed = 0 means "this old_id/new_id pair has been minted (so a resumed run must reuse the same
+    -- new_id rather than minting a second one) but the per-character move (PNG rename, metadata row, chats
+    -- directory) may not have finished" - the discriminator the migration script's resume logic queries on.
+    -- completed = 1 is also the gate the script's cross-cutting sweep (groups/world_info/note.chara/
+    -- active_character rewrites) uses: those rewrites only apply once the underlying identity move for a row is
+    -- durably done, never while it's still in flight.
+    CREATE TABLE IF NOT EXISTS id_migration (
+        old_id    TEXT PRIMARY KEY,
+        new_id    TEXT NOT NULL,
+        completed INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_id_migration_new ON id_migration(new_id);
+    CREATE INDEX IF NOT EXISTS idx_id_migration_completed ON id_migration(completed);
 `;
 
 const UPSERT_SQL = `
@@ -1130,6 +1151,85 @@ export async function getAllTaggedCharacterIds(directories) {
     if (!entry) return null;
     const rows = entry.db.all('SELECT DISTINCT character_id FROM character_tags');
     return rows.map(row => row.character_id);
+}
+
+/**
+ * Records that `oldId` is to become `newId` under the phase 4d filename migration (design doc §9) - `INSERT OR
+ * IGNORE`, so calling this twice for the same `oldId` is a no-op that keeps whichever `newId` was minted first,
+ * which is exactly what makes a resumed run reuse the same id rather than minting a fresh one every restart.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} oldId
+ * @param {string} newId
+ * @returns {Promise<void>} No-ops if the metadata store is unavailable.
+ */
+export async function recordIdMigrationMapping(directories, oldId, newId) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+    entry.db.run('INSERT OR IGNORE INTO id_migration (old_id, new_id, completed) VALUES (@oldId, @newId, 0)', { oldId, newId });
+}
+
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} oldId
+ * @returns {Promise<string | null>} The `newId` already recorded for `oldId`, or `null` if none exists yet /
+ * the metadata store is unavailable.
+ */
+export async function getIdMigrationMapping(directories, oldId) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    const row = entry.db.get('SELECT new_id FROM id_migration WHERE old_id = @oldId', { oldId });
+    return row ? String(row.new_id) : null;
+}
+
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} newId A candidate id about to be minted
+ * @returns {Promise<boolean>} True if `newId` is already claimed by an in-flight or completed migration row -
+ * checked alongside the filesystem so the migration script's collision check covers both "already on disk" and
+ * "already promised to a different old_id but not yet renamed onto disk".
+ */
+export async function isIdMigrationTargetTaken(directories, newId) {
+    const entry = await getEntry(directories);
+    if (!entry) return false;
+    return !!entry.db.get('SELECT 1 FROM id_migration WHERE new_id = @newId', { newId });
+}
+
+/**
+ * Marks an `id_migration` row's underlying identity move (PNG rename, metadata row, chats directory) as done.
+ * This is the gate the migration script's cross-cutting sweep (groups/world_info/note.chara/active_character
+ * rewrites) checks before touching a given old_id/new_id pair - see this table's own schema comment.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} oldId
+ * @returns {Promise<void>} No-ops if the metadata store is unavailable.
+ */
+export async function markIdMigrationComplete(directories, oldId) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+    entry.db.run('UPDATE id_migration SET completed = 1 WHERE old_id = @oldId', { oldId });
+}
+
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<Array<{old_id: string, new_id: string}>>} Every row not yet marked complete - what a
+ * (re)started migration run resumes from, in addition to newly discovered non-uuid filenames.
+ */
+export async function getPendingIdMigrations(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return [];
+    return entry.db.all('SELECT old_id, new_id FROM id_migration WHERE completed = 0');
+}
+
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<Array<{old_id: string, new_id: string}>>} Every completed row - the full old-id-to-new-id
+ * table the migration script's cross-cutting sweep (groups/world_info/note.chara/active_character) rewrites
+ * against. Safe to call repeatedly; the sweep itself is idempotent (see this module's header comment on the
+ * `id_migration` table).
+ */
+export async function getCompletedIdMigrations(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return [];
+    return entry.db.all('SELECT old_id, new_id FROM id_migration WHERE completed = 1');
 }
 
 /**
