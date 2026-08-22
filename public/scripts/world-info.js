@@ -23,6 +23,8 @@ import { renderTemplateAsync } from './templates.js';
 import { t } from './i18n.js';
 import { accountStorage } from './util/AccountStorage.js';
 import { getOrCreatePersonaDescriptor, setPersonaDescription, user_avatar } from './personas.js';
+import { characterRepository } from './character-repository.js';
+import { checkCharactersExistOrNull } from './character-existence-check.js';
 
 export const world_info_insertion_strategy = {
     evenly: 0,
@@ -3648,10 +3650,17 @@ export async function getWorldEntry(name, data, entry) {
                 Object.assign(data.entries[uid], { characterFilter: { isExclude: true, names: [], tags: [] } });
             }
             if (data.entries[uid]?.characterFilter?.names?.length > 0) {
-                for (const name of [...data.entries[uid].characterFilter.names]) {
-                    if (!getContext().characters.find(x => x.avatar.replace(/\.[^/.]+$/, '') === name)) {
-                        data.entries[uid].characterFilter.names = data.entries[uid].characterFilter.names.filter(x => x !== name);
-                    }
+                // Names here are bare avatar ids (extension already stripped below) - design doc §4.2:
+                // converts the old `getContext().characters.find(...)` resident-array scan to the
+                // authoritative existence check, batched for every bound name in one call.
+                const namesToCheck = data.entries[uid].characterFilter.names;
+                const existence = await checkCharactersExistOrNull(namesToCheck);
+                if (existence === null) {
+                    // A failed/partial check must abort the mutation, never fall through to "treat it as
+                    // gone" - leave the bound names untouched rather than silently dropping them.
+                    console.warn('World Info: skipping character-filter existence prune this run (check failed).');
+                } else {
+                    data.entries[uid].characterFilter.names = namesToCheck.filter(name => existence[name]);
                 }
             }
             setWIOriginalDataValue(data, uid, 'character_filter', data.entries[uid].characterFilter);
@@ -4267,10 +4276,10 @@ async function updateWorldInfoLinks(oldName, newName, { retargetPersonaLore } = 
         await saveMetadata();
     }
 
-    // find all characters using the old lorebook name as their primary world
-    const linkedAvatars = characters
-        .filter(character => character.data?.extensions?.world === oldName)
-        .map(character => character.avatar);
+    // find all characters using the old lorebook name as their primary world (design doc §4.3: reverse-index
+    // question, served by the `world` column's index via a query instead of a resident-array scan).
+    const linkedCharacters = await characterRepository.queryAll({ world: oldName });
+    const linkedAvatars = linkedCharacters.map(character => character.avatar);
 
     if (!linkedAvatars.length) {
         return;
