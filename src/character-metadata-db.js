@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import _ from 'lodash';
 
 import { color, getConfigValue, mapWithConcurrency } from './util.js';
-import { parse as parseCharacterCard } from './character-card-parser.js';
+import { parse as parseCharacterCard, parsePristine as parseCharacterCardPristine } from './character-card-parser.js';
 import { getCharaCardV2, stripInstallLocalFields } from './character-card-normalize.js';
 import { calculateChatSize, calculateDataSize, calculateGroupChatStats, toShallow } from './character-shallow.js';
 import { readTagsData } from './endpoints/tags-data.js';
@@ -93,15 +93,20 @@ const BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS = 5000;
 // need to be aggressive - it exists to catch what the other two mechanisms missed.
 const RECONCILE_INTERVAL_MS = getConfigValue('performance.characterMetadataReconcileIntervalMs', 5 * 60 * 1000, 'number');
 
-// Forward-looking groundwork for a not-yet-built library-wide duplicate scan: whether such a scan is allowed to
-// fall back to the expensive normalized parse-and-compare path (open both files, strip install-local fields,
-// deep-compare) for a character whose `import_poisoned` flag is set - see this module's header comment on
-// content_identity_hash/import_poisoned for why a poisoned row's cheap indexed hash can't be trusted alone. At
-// 24k+ poisoned rows on an install that predates the import-mutation fix, that fallback is O(n) per comparison
-// and could make a scan slow; this lets an install opt out of paying that cost (a scan would then just skip
-// poisoned characters rather than fully resolving whether they're duplicates). No scan feature reads this yet -
-// it exists so the day one is built, the "should this even be attempted" question already has a documented,
-// per-install answer instead of being decided ad hoc inside that feature.
+// Gates two consumers, both added alongside backfillContentIdentityHashes()/findCharacterIdByContentIdentityHash()
+// below: this module's own one-time backfill pass (which pays the cost described below ONCE per poisoned row,
+// not per comparison - see backfillContentIdentityHashes()'s own header) and local-import-scan.js's processFile()
+// duplicate check (which, once a row is backfilled, is an O(1) indexed lookup, not the expensive path itself).
+// The "expensive" part this flag is actually about is the backfill: reading every poisoned row's PNG off disk
+// and computing a hash from its pristine 'chara' chunk (character-card-parser.js's readCharaChunkPristine()) - at
+// 24k+ poisoned rows on an install that predates the import-mutation fix, that's real I/O + parse work this lets
+// an install opt out of (poisoned characters then simply never participate in the identity-hash dedup fallback,
+// same as before this flag had any consumer).
+//
+// Deliberately read fresh via getConfigValue() at each call site below (backfillContentIdentityHashes(),
+// local-import-scan.js's processFile()) rather than through this cached module-load-time export - this export
+// itself is left in place as the original groundwork/documentation anchor, but a cached boolean can't be toggled
+// mid-process the way tests (and, in principle, a config reload) need to.
 export const allowExpensiveDuplicateFallback = !!getConfigValue('performance.allowExpensiveDuplicateFallback', true, 'boolean');
 
 // Debounce window for the fs.watch handler (see startWatcher() below) - editors and this app's own
@@ -183,6 +188,17 @@ const SCHEMA_SQL = `
     -- how poisoned the row was before. Only upsertCharacterFromWrite() ever clears it - the reconciler/watcher/
     -- bootstrap paths (which discover files, they don't write them) leave both columns exactly as they found
     -- them, same as they already leave date_added alone (see this module's header).
+    --
+    -- backfillContentIdentityHashes() (below) is a THIRD way content_identity_hash gets populated, and it
+    -- deliberately does NOT clear import_poisoned when it does. It recovers a poisoned row's pristine
+    -- pre-mutation content straight from the PNG's 'chara' tEXt chunk (character-card-parser.js's
+    -- readCharaChunkPristine()/parsePristine() - see write()'s own header for why that chunk is trustworthy even
+    -- on a poisoned row) and hashes THAT, so the resulting hash is genuinely comparable to one computed via
+    -- today's write path - but import_poisoned's broader meaning is "this row's FILE may still carry other
+    -- old-write-path artifacts" (the forced ccv3 upgrade, the old unconditional Jimp re-encode of the avatar
+    -- image, fav/chat written into the card instead of omitted), which stays true regardless of whether its hash
+    -- is now trustworthy. Only an actual write through the current path (upsertCharacterFromWrite()) proves the
+    -- file itself has been brought current, which is the only thing that legitimately clears the flag.
 
     CREATE TABLE IF NOT EXISTS character_tags (
         character_id TEXT NOT NULL,
@@ -444,7 +460,18 @@ function canonicalStringify(value) {
         return `[${value.map(canonicalStringify).join(',')}]`;
     }
     if (value !== null && typeof value === 'object') {
-        const keys = Object.keys(value).sort();
+        // Skips undefined-VALUED own keys (not just absent ones) - matching JSON.stringify()'s own semantics
+        // (which silently omits them from object output), rather than serializing the literal word `undefined`
+        // for one. Without this, an object that still carries an own key set to undefined (e.g.
+        // character-card-normalize.js's readFromV2() - see its fieldMappings loop's talkativeness fallback,
+        // which sets a default and then unconditionally overwrites it back to `undefined` when the source has
+        // no explicit value) would hash differently depending on whether it happened to have already been
+        // round-tripped through JSON.stringify/JSON.parse before reaching here - a real footgun for exactly one
+        // of this function's two callers (backfillContentIdentityHashes() below feeds it a freshly-normalized,
+        // never-round-tripped object; upsertCharacterFromWrite() always feeds it `JSON.parse(cardJson)`, which
+        // can never have an undefined-valued key in the first place) rather than a difference in the character's
+        // actual semantic content.
+        const keys = Object.keys(value).filter(k => value[k] !== undefined).sort();
         return `{${keys.map(k => `${JSON.stringify(k)}:${canonicalStringify(value[k])}`).join(',')}}`;
     }
     return JSON.stringify(value);
@@ -1011,6 +1038,108 @@ export async function bootstrapIfNeeded(directories) {
 }
 
 /**
+ * One-time-per-boot backfill (NOT one-time-ever - see below) that makes a poisoned row's content_identity_hash
+ * trustworthy, turning findCharacterIdByContentIdentityHash() into a real O(1) indexed duplicate check against
+ * this install's entire poisoned library, not just the (empty, on a preexisting install) set of rows that have
+ * already been re-touched by the fixed write path.
+ *
+ * THE TRICK: a poisoned row's PNG 'chara' tEXt chunk is pristine (see character-card-parser.js's write() header
+ * and readCharaChunkPristine()'s own doc comment for the full mechanism) - the old write() unconditionally wrote
+ * 'chara' holding the source `data` verbatim, and only SEPARATELY wrote a 'ccv3' chunk with a locally spec-bumped
+ * copy, so the object serialized into 'chara' was never touched by that bump. Reading 'chara' specifically
+ * (readCharaChunkPristine()/parsePristine(), not the standard ccv3-preferring read()/parse()) recovers exactly
+ * what write() would have received had it gone through today's fixed logic - so hashing that, the same way
+ * computeContentIdentityHash() always has, produces a hash that is genuinely comparable to one computed from a
+ * fresh import of the same original card.
+ *
+ * Deliberately does NOT clear `import_poisoned` - see that column's own SCHEMA_SQL comment for why the flag's
+ * broader meaning ("this row's file may still carry other old-write-path artifacts") stays true regardless of
+ * whether its hash is now trustworthy.
+ *
+ * IDEMPOTENT/RESUMABLE WITHOUT A `meta` COMPLETION FLAG, unlike bootstrapIfNeeded(): every call re-queries
+ * `WHERE import_poisoned = 1 AND content_identity_hash IS NULL` fresh, so a row this pass successfully hashed
+ * simply stops matching that WHERE clause and is never re-visited; a row that failed (a missing/corrupt file,
+ * logged and skipped) naturally gets retried on the NEXT call (the next server boot) since it's still poisoned
+ * with a NULL hash. No separate "backfill complete" bookkeeping needed or wanted - see this function's own
+ * caller in initializeMetadataStores() for why running it every boot (not gated on a one-time flag) is exactly
+ * the resumability this needs.
+ *
+ * Same batching/concurrency/progress-logging shape as bootstrapIfNeeded() (BATCH_FLUSH_SIZE-sized chunks,
+ * BOOTSTRAP_READ_CONCURRENCY-bounded concurrent reads, a throttled progress log, an event-loop yield between
+ * chunks) - this is the same shape of work (stat/read/parse a PNG off disk) at the same potential scale (24k+
+ * rows on the owner's real library), so there's no reason for it to behave differently.
+ *
+ * Gated behind `performance.allowExpensiveDuplicateFallback`, read FRESH via getConfigValue() (not the cached
+ * `allowExpensiveDuplicateFallback` export above) so a config/env change takes effect on the very next call
+ * without requiring a process restart to be observed - see that export's own updated header comment.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<void>}
+ */
+export async function backfillContentIdentityHashes(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+
+    if (!getConfigValue('performance.allowExpensiveDuplicateFallback', true, 'boolean')) return;
+
+    if (!fs.existsSync(directories.characters)) return;
+
+    // A static snapshot of ids to process THIS call, not a live re-query inside the loop below - re-querying the
+    // same WHERE clause without an OFFSET would return the exact same rows again for any that failed to hash
+    // this pass (they're still poisoned with a NULL hash), looping forever on a persistently-broken row instead
+    // of moving on. Taking the list once up front bounds this call's work to "however many rows were poisoned
+    // and hashless when it started", matching bootstrapIfNeeded()'s own fixed-file-list shape.
+    const poisonedIds = entry.db.all('SELECT id FROM characters WHERE import_poisoned = 1 AND content_identity_hash IS NULL').map(r => r.id);
+    if (poisonedIds.length === 0) return;
+
+    const backfillStart = Date.now();
+    let lastProgressLog = backfillStart;
+    let processedRows = 0;
+
+    for (let i = 0; i < poisonedIds.length; i += BATCH_FLUSH_SIZE) {
+        const chunkIds = poisonedIds.slice(i, i + BATCH_FLUSH_SIZE);
+        const chunkResults = await mapWithConcurrency(chunkIds, BOOTSTRAP_READ_CONCURRENCY, async (id) => {
+            try {
+                const filePath = path.join(directories.characters, id);
+                const pristine = await parseCharacterCardPristine(filePath);
+                const character = getCharaCardV2(JSON.parse(pristine), directories, false);
+                return { id, hash: computeContentIdentityHash(character) };
+            } catch (err) {
+                console.error(`[character-metadata] Content-identity backfill failed to process ${id}, leaving it poisoned (will retry next boot):`, err.message);
+                return null;
+            }
+        });
+
+        const updates = chunkResults.filter(Boolean);
+        if (updates.length > 0) {
+            entry.db.transaction(() => {
+                for (const { id, hash } of updates) {
+                    entry.db.run('UPDATE characters SET content_identity_hash = @hash WHERE id = @id', { hash, id });
+                }
+            });
+        }
+
+        processedRows += chunkIds.length;
+
+        const now = Date.now();
+        if (now - lastProgressLog >= BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS) {
+            const elapsedSec = (now - backfillStart) / 1000;
+            const rate = processedRows / elapsedSec;
+            const remaining = poisonedIds.length - processedRows;
+            const etaSec = rate > 0 ? Math.round(remaining / rate) : null;
+            console.log(color.cyan(`[character-metadata] Content-identity backfill progress: ${processedRows}/${poisonedIds.length} (${rate.toFixed(1)} cards/sec, ETA ${etaSec === null ? 'unknown' : `${etaSec}s`})`));
+            lastProgressLog = now;
+        }
+
+        // Same reasoning as bootstrapIfNeeded()'s own per-chunk yield: a 24k+-row backfill pass must not hog the
+        // event loop for its entire duration.
+        await new Promise(resolve => setImmediate(resolve));
+    }
+
+    const totalSec = (Date.now() - backfillStart) / 1000;
+    console.log(color.cyan(`[character-metadata] Content-identity backfill complete: processed ${poisonedIds.length} poisoned row(s) in ${totalSec.toFixed(1)}s (${(poisonedIds.length / totalSec).toFixed(1)} cards/sec).`));
+}
+
+/**
  * Diffs tags.json's tag_map against the character_tags table and applies only the delta, rather than a full
  * delete-everything-reinsert-everything pass - at 300k+ characters with an already-populated table, most rows
  * agree between passes, so this keeps a routine reconcile cheap. tags.json stays the write source of truth in
@@ -1254,6 +1383,12 @@ export async function initializeMetadataStores(directoriesList) {
             .then(() => bootstrapGroupsIfNeeded(directories))
             .then(() => migrateTagsJsonIfNeeded(directories))
             .then(() => reconcile(directories))
+            // Runs LAST in the chain, after reconcile() - so this pass sees the maximal set of poisoned rows a
+            // single boot can discover (reconcile() may itself have just poisoned-inserted rows for files
+            // dropped in while the server was down). Non-blocking in the same sense as the rest of this chain:
+            // entry.bootstrapPromise is awaited by the periodic reconcile interval (see below) so THAT stays
+            // sequenced correctly, but server startup itself (server-main.js) never awaits this promise at all.
+            .then(() => backfillContentIdentityHashes(directories))
             .catch(err => console.error(`[character-metadata] Bootstrap failed for ${directories.root}:`, err));
     }
 }
@@ -1328,6 +1463,43 @@ export async function findCharacterIdByContentHash(directories, hash) {
     }
 
     const row = entry.db.get('SELECT id FROM characters WHERE content_hash = @hash', { hash });
+    return row ? row.id : null;
+}
+
+/**
+ * Semantic-duplicate lookup, mirroring findCharacterIdByContentHash()'s exact shape (same two places checked, same
+ * fail-open-to-null posture, same reasoning for checking the batch-import pending buffer too) but against
+ * `content_identity_hash` instead of `content_hash`. Where content_hash only ever matches a byte-identical
+ * re-upload, content_identity_hash matches a character whose semantic content (fav/chat/create_date stripped) is
+ * the same, even if its stored bytes differ - which is what makes this the O(1)-indexed replacement for an
+ * O(m)-over-poisoned-rows expensive fallback (see this module's header on allowExpensiveDuplicateFallback and
+ * backfillContentIdentityHashes() below, which is what makes a poisoned row's hash trustworthy enough to be in
+ * this index at all).
+ *
+ * No `import_poisoned` filter here, and deliberately so: a row's content_identity_hash column, whenever it is
+ * non-NULL, was always computed the identical way regardless of which of the three producers set it
+ * (upsertCharacterFromWrite(), which also clears poison; or backfillContentIdentityHashes(), which doesn't) - see
+ * that column's own SCHEMA_SQL comment. Both are equally comparable, so a plain indexed lookup on the column is
+ * already correct without needing to know or care which producer set it.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} hash sha256 hex digest to look up (computeContentIdentityHash()'s output)
+ * @returns {Promise<string | null>} The existing character's id if a match was found, else `null`. Also `null`
+ * (fail-open) if the metadata store itself is unavailable.
+ */
+export async function findCharacterIdByContentIdentityHash(directories, hash) {
+    if (!hash) return null;
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    if (entry.batch) {
+        for (const pending of entry.batch.pending.values()) {
+            if (pending.row.content_identity_hash === hash) {
+                return pending.row.id;
+            }
+        }
+    }
+
+    const row = entry.db.get('SELECT id FROM characters WHERE content_identity_hash = @hash', { hash });
     return row ? row.id : null;
 }
 
