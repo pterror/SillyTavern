@@ -226,7 +226,7 @@ import { registerPromptManagerMigration } from './scripts/PromptManager.js';
 import { getRegexedString, regex_placement } from './scripts/extensions/regex/engine.js';
 import { initLogprobs, saveLogprobsForActiveMessage } from './scripts/logprobs.js';
 import { FILTER_STATES, FILTER_TYPES, FilterHelper, isFilterState } from './scripts/filters.js';
-import { characterRepository, buildCharacterQuery, isServerQueryableSort } from './scripts/character-repository.js';
+import { characterRepository, buildCharacterQuery, isServerQueryableSort, normalizeQueryRow } from './scripts/character-repository.js';
 import { getRandomSortSeed } from './scripts/random-sort.js';
 import { getCfgPrompt, getGuidanceScale, initCfg } from './scripts/cfg-scale.js';
 import {
@@ -1116,6 +1116,18 @@ function updateCharacterBlock(node, item, id) {
  *
  * @param {boolean} fullRefresh - If true, the list is fully refreshed and the navigation is being reset
  */
+/**
+ * The `dataSource`+`ajaxFunction` combination is what actually gets a real per-page server request out of
+ * pagination.js (`public/lib/pagination.js`), not its literal "dataSource as a function" form - that form
+ * (`parseDataSource`) only defers the *initial* fetch by one tick and then re-enters the plain-array branch, so
+ * every later page turn still slices a fully materialized local array. `dataSource` as a *string* instead flips
+ * the plugin into `isAsync` mode, and every `go()` (page turn, size-changer change, `.pagination('go', n)`) then
+ * calls `ajaxFunction` fresh with that page's `pageNumber`/`pageSize` - a real request per page turn, which is
+ * what design doc §6 ("printCharacters()'s pagination becomes a controller... instead of a slicer") asks for.
+ * The string value itself is never fetched (see below); it only has to be a string to select this code path.
+ */
+const SERVER_PAGINATED_DATA_SOURCE = '/api/characters/query';
+
 export async function printCharacters(fullRefresh = false) {
     const storageKey = 'Characters_PerPage';
     const listId = '#rm_print_characters_block';
@@ -1140,24 +1152,18 @@ export async function printCharacters(fullRefresh = false) {
     applyTagsOnCharacterSelect();
     applyTagsOnGroupSelect();
 
-    const entities = await getEntitiesList({ doFilter: true });
-
     const pageSize = Number(accountStorage.getItem(storageKey)) || per_page_default;
     const sizeChangerOptions = [10, 25, 50, 100, 250, 500, 1000];
-    $('#rm_print_characters_pagination').pagination({
-        dataSource: entities,
-        pageSize,
-        pageRange: 1,
-        pageNumber: saveCharactersPage || 1,
-        position: 'top',
-        showPageNumbers: false,
-        showSizeChanger: true,
-        prevText: '<',
-        nextText: '>',
-        formatNavigator: PAGINATION_TEMPLATE,
-        formatSizeChanger: renderPaginationDropdown(pageSize, sizeChangerOptions),
-        showNavigator: true,
-        callback: async function (/** @type {Entity[]} */ data) {
+
+    /**
+     * Shared page-render callback, parameterized over how the caller knows the current match-count-for-the-
+     * "N hidden"-badge (design doc §4.1) - the two `printCharacters()` paths below know that differently (one
+     * has the whole filtered array resident, the other only ever holds one page), but the DOM diff / back-block
+     * / empty-block / hidden-badge rendering itself must not drift between them.
+     * @param {() => number} getMatchTotal
+     */
+    function makePageCallback(getMatchTotal) {
+        return async function (/** @type {Entity[]} */ data) {
             const list = $(listId).get(0);
 
             // Keyed diff for character rows: index the currently-rendered rows by avatar *before* touching
@@ -1219,11 +1225,10 @@ export async function printCharacters(fullRefresh = false) {
             // design doc §4.1: this used to be `(characters.length + groups.length) - displayCount`, which
             // conflated "filtered out by the active filter" with "not on this page" - a multi-page result with
             // an active filter would show a nonsensical "N hidden" count that was really just every item on
-            // every *other* page. `entities` (this function's outer scope) is the already-filtered, unpaginated
-            // candidate set `data` was itself sliced from (the `pagination()` plugin's own dataSource), so
-            // `entities.length` is the real match count for the active filter, independent of which page is
-            // currently showing - the library-wide total minus that is the real "hidden by filter" count.
-            const hidden = (characters.length + groups.length) - entities.length;
+            // every *other* page. `getMatchTotal()` is the real match count for the active filter, independent
+            // of which page is currently showing - the library-wide total minus that is the real "hidden by
+            // filter" count.
+            const hidden = (characters.length + groups.length) - getMatchTotal();
             if (hidden > 0 && entitiesFilter.hasAnyFilter()) {
                 const hiddenBlock = await getHiddenBlock(hidden);
                 $(listId).append(hiddenBlock);
@@ -1231,7 +1236,21 @@ export async function printCharacters(fullRefresh = false) {
             localizePagination($('#rm_print_characters_pagination'));
 
             eventSource.emit(event_types.CHARACTER_PAGE_LOADED);
-        },
+        };
+    }
+
+    const sharedPaginationOptions = {
+        pageSize,
+        pageRange: 1,
+        pageNumber: saveCharactersPage || 1,
+        position: 'top',
+        showPageNumbers: false,
+        showSizeChanger: true,
+        prevText: '<',
+        nextText: '>',
+        formatNavigator: PAGINATION_TEMPLATE,
+        formatSizeChanger: renderPaginationDropdown(pageSize, sizeChangerOptions),
+        showNavigator: true,
         afterSizeSelectorChange: function (e, size) {
             accountStorage.setItem(storageKey, e.target.value);
             paginationDropdownChangeHandler(e, size);
@@ -1242,7 +1261,75 @@ export async function printCharacters(fullRefresh = false) {
         afterRender: function () {
             $(listId).scrollTop(currentScrollTop);
         },
-    });
+    };
+
+    if (canUseServerQueryForEntitiesList()) {
+        // Real server-side pagination (design doc §6/§9 phase 5): the character+group rows for the visible
+        // page come from one `/query` request per page turn, not from re-slicing a fully materialized array.
+        // Bogus-folder tag tiles are the one deliberate exception - they're computed locally, once per
+        // full render, and prepended only to page 1 rather than forced through the server query. Two reasons:
+        // folders are pinned to a fixed small prefix by `sortEntitiesList()` (never part of the sortable
+        // character+group continuum §5 describes, so there's no "page 2 of folders" to ask the server for),
+        // and their member counts/nesting already require the local tag-membership computation
+        // `getFolderTileEntities()` shares with `getEntitiesList()`. Net effect, disclosed rather than hidden:
+        // when folders are open, page 1 shows `pageSize` characters/groups *plus* however many folder tiles
+        // matched, i.e. folders no longer eat into the page-size budget the way the old static-array slice
+        // silently did (a folder tile used to occupy one of the `pageSize` slots on whichever page it landed
+        // on). "Open a folder" itself needs no special-casing here: an open bogus folder is just a selected tag
+        // in `entitiesFilter`'s TAG filter data, which `buildCharacterQueryFromCurrentFilterState()` already
+        // threads into `filter.tags.include` - so it composes with `includeGroups` and paginates for free,
+        // including group folder members (`group_tags`), instead of the old "dump every member of the open
+        // folder into the static dataSource regardless of the outer pagination" behavior.
+        const folderTiles = await getFolderTileEntities();
+        const { filter, sort } = buildCharacterQueryFromCurrentFilterState({ includeGroups: true });
+
+        // Server total for the character+group match set (may be an approximate `~`-prefixed count - design
+        // doc §5 decision 6 - which is fine for the "N hidden" badge and for pagination.js's own page-count
+        // math, both of which only need an honest approximation, never a bare-but-truncated number). Updated by
+        // `ajaxFunction` on every page fetch; read by the callback's `getMatchTotal` and by
+        // `totalNumberLocator`. Folder tiles are added back in because the pre-existing formula's `entities`
+        // array (see the fallback branch below) always included them too.
+        let matchTotal = 0;
+
+        $('#rm_print_characters_pagination').pagination({
+            ...sharedPaginationOptions,
+            dataSource: SERVER_PAGINATED_DATA_SOURCE,
+            locator: 'rows',
+            totalNumberLocator: function (/** @type {{total: number|string}} */ response) {
+                const parsed = Number(String(response.total).replace(/^~/, ''));
+                return Number.isFinite(parsed) ? parsed : 0;
+            },
+            ajaxFunction: function (ajaxParams) {
+                const page = ajaxParams.data.pageNumber;
+                const requestedPageSize = ajaxParams.data.pageSize;
+                characterRepository.query(filter, sort, page, requestedPageSize, ['rows', 'total'])
+                    .then(result => {
+                        const rows = Array.isArray(result.rows) ? result.rows : [];
+                        const pageEntities = rows.map(row => queryRowToEntity(row));
+                        const parsedTotal = Number(String(result.total ?? 0).replace(/^~/, ''));
+                        matchTotal = (Number.isFinite(parsedTotal) ? parsedTotal : 0) + folderTiles.length;
+                        const combined = page === 1 ? [...folderTiles, ...pageEntities] : pageEntities;
+                        ajaxParams.success({ rows: combined, total: result.total });
+                    })
+                    .catch(error => {
+                        console.error('[printCharacters] server-paginated /query failed:', error);
+                        ajaxParams.error(error);
+                    });
+            },
+            callback: makePageCallback(() => matchTotal),
+        });
+    } else {
+        // Pre-existing fully-local path, preserved exactly: an active search term, an unsupported sort field,
+        // or any other case `canUseServerQueryForEntitiesList()` declines - the whole filtered/sorted candidate
+        // set is materialized client-side and the plugin slices it in memory on page turn.
+        const entities = await getEntitiesList({ doFilter: true });
+
+        $('#rm_print_characters_pagination').pagination({
+            ...sharedPaginationOptions,
+            dataSource: entities,
+            callback: makePageCallback(() => entities.length),
+        });
+    }
 
     favsToHotswap();
     updatePersonaConnectionsAvatarList();
@@ -1324,9 +1411,14 @@ function isSearchSortSelected() {
 }
 
 /**
- * Whether `getEntitiesList()`'s character candidate set can be built from the server `/query` endpoint
- * (design doc §5/§6) instead of the fully-local `characters` array. Deliberately conservative - see the
- * doc comments below and character-repository.js's `QUERYABLE_CLIENT_SORT_FIELDS`/`isServerQueryableSort()`.
+ * Whether the character+group candidate set (`getEntitiesList()`) and the visible page
+ * (`printCharacters()`'s pagination controller) can be built from the server `/query` endpoint (design doc
+ * §5/§6, `filter.includeGroups: true`) instead of the fully-local `characters`/`groups` arrays. Deliberately
+ * conservative - see the doc comments below and character-repository.js's
+ * `QUERYABLE_CLIENT_SORT_FIELDS`/`isServerQueryableSort()`. Groups being queryable through the same endpoint
+ * (`includeGroups`) doesn't change *when* this returns true, only what the caller does with a `true` answer -
+ * the eligibility conditions below are about the sort/search state, which is orthogonal to whether groups are
+ * merged in.
  *
  * Excludes any active search term for a reason beyond "search isn't wired through /query here": this app
  * already has a *separate*, fully-working server search integration (`fetchServerCharacterSearchResults()` /
@@ -1354,9 +1446,17 @@ function canUseServerQueryForEntitiesList() {
  * input `buildCharacterQuery()` (character-repository.js) expects, and calls it. Kept as its own function so
  * the state-reading side (this) stays separate from the pure mapping (that), matching the pure/impure split the
  * design doc's client data model section (§6) asks for.
+ *
+ * `tagFilterData.selected` doubles as "which bogus folder is currently open" (`isBogusFolderOpen()`,
+ * `chooseBogusFolder()`/`toggleTagThreeState()` in tags.js just add/remove the folder's tag id from this same
+ * TAG filter selection) - so passing it through as `filter.tags.include` is *already* item 3's "open folder
+ * becomes a real /query-style paginated filter", no separate wiring needed at the folder-click site. A folder
+ * can contain groups too (`group_tags`), which is exactly what `includeGroups` composes with.
+ * @param {object} [param0]
+ * @param {boolean} [param0.includeGroups] - see `CharacterQueryFilter.includeGroups` (character-repository.js).
  * @returns {{filter: import('./scripts/character-repository.js').CharacterQueryFilter, sort: import('./scripts/character-repository.js').CharacterQuerySort|undefined}}
  */
-function buildCharacterQueryFromCurrentFilterState() {
+function buildCharacterQueryFromCurrentFilterState({ includeGroups = false } = {}) {
     const tagFilterData = entitiesFilter.getFilterData(FILTER_TYPES.TAG) ?? { selected: [], excluded: [] };
     const favState = entitiesFilter.getFilterData(FILTER_TYPES.FAV);
     let fav;
@@ -1371,56 +1471,42 @@ function buildCharacterQueryFromCurrentFilterState() {
         sortField: isRandom ? 'random' : power_user.sort_field,
         sortOrder: power_user.sort_order === 'desc' ? 'desc' : 'asc',
         randomSeed: isRandom ? getRandomSortSeed(accountStorage) : undefined,
+        includeGroups,
     });
 }
 
 /**
- * Builds the full list of all entities available
- *
- * They will be correctly marked and filtered.
- *
- * The character portion of the candidate set is built two ways depending on `doFilter` and the current
- * filter/sort state (design doc §6, phase 5):
- * - `doFilter: true` and `canUseServerQueryForEntitiesList()` says yes: the character candidate set comes from
- *   `characterRepository.queryAll()` - already narrowed by the active tag/fav filters and in the active sort
- *   order, straight from the server. The rest of this function's filter pipeline (tag/fav/folder filtering,
- *   the final sort) still runs over the result same as always; for the character subset that's a redundant but
- *   harmless second pass (server and client agree on tag/fav membership, since both read the same underlying
- *   tag_map/fav data), and it's the pass that does real work for groups and bogus-folder entities, which
- *   `/query` does not and cannot answer (characters-only contract, §5).
- * - Otherwise (an active search term, an unsupported sort field like `create_date`/`data_size`, or
- *   `doFilter: false`): the pre-existing fully-local path - `characters.map(...)` over the whole resident array,
- *   filtered/sorted entirely client-side exactly as before this change. This is the phase's documented gap:
- *   real per-page server-driven pagination is blocked on a group/folder interleave problem `/query`'s contract
- *   doesn't answer (no rank/cursor primitive over a mixed character+group+folder ordering) - see
- *   `CharacterRepository.queryAll()`'s doc comment (character-repository.js) and the design doc §5/§6.
- * @param {object} param0 - Optional parameters
- * @param {boolean} [param0.doFilter] - Whether this entity list should already be filtered based on the global filters
- * @param {boolean} [param0.doSort] - Whether the entity list should be sorted when returned
- * @returns {Promise<Entity[]>} All entities
+ * Maps one normalized `/query` row (design doc §5, `filter.includeGroups: true`) to its `Entity` form -
+ * `characterToEntity()` for a character row, `groupToEntity()` for a group row. The one place that combination
+ * happens, so `getEntitiesList()` and `printCharacters()`'s server-paginated controller can't drift apart on it.
+ * @param {Character|{type: 'character'|'group', item: Character|Group}} row
+ * @returns {Entity}
  */
-export async function getEntitiesList({ doFilter = false, doSort = true } = {}) {
-    const characterEntities = doFilter && canUseServerQueryForEntitiesList()
-        ? await (async () => {
-            const { filter, sort } = buildCharacterQueryFromCurrentFilterState();
-            const rows = await characterRepository.queryAll(filter, sort);
-            return rows.map(item => characterToEntity(item));
-        })()
-        : characters.map(item => characterToEntity(item));
+function queryRowToEntity(row) {
+    const { type, item } = normalizeQueryRow(row);
+    return type === 'group' ? groupToEntity(item) : characterToEntity(item);
+}
 
-    let entities = [
-        ...characterEntities,
-        ...groups.map(item => groupToEntity(item)),
-        ...(power_user.bogus_folders ? tags.filter(isBogusFolder).sort(compareTagsForSort).map(item => tagToEntity(item)) : []),
-    ];
-
-    // We need to do multiple filter runs in a specific order, otherwise different settings might override each other
-    // and screw up tags and search filter, sub lists or similar.
-    // The specific filters are written inside the "filterByTagState" method and its different parameters.
-    // Generally what we do is the following:
-    //   1. First swipe over the list to remove the most obvious things
-    //   2. Build sub entity lists for all folders, filtering them similarly to the second swipe
-    //   3. We do the last run, where global filters are applied, and the search filters last
+/**
+ * Runs the shared tag/fav/folder filter pipeline and the final sort over an already-assembled raw entity list
+ * (characters + groups + bogus-folder tag tiles, unfiltered). Factored out of `getEntitiesList()` so
+ * `getFolderTileEntities()` below can reuse the exact same filtering - including the closed-folder/empty-folder/
+ * "isUseless" logic - without a second, divergence-prone copy of it.
+ *
+ * We need to do multiple filter runs in a specific order, otherwise different settings might override each
+ * other and screw up tags and search filter, sub lists or similar. The specific filters are written inside the
+ * "filterByTagState" method and its different parameters. Generally what we do is the following:
+ *   1. First swipe over the list to remove the most obvious things
+ *   2. Build sub entity lists for all folders, filtering them similarly to the second swipe
+ *   3. We do the last run, where global filters are applied, and the search filters last
+ * @param {Entity[]} rawEntities
+ * @param {object} param1
+ * @param {boolean} [param1.doFilter]
+ * @param {boolean} [param1.doSort]
+ * @returns {Entity[]}
+ */
+function filterAndSortEntities(rawEntities, { doFilter = false, doSort = true } = {}) {
+    let entities = rawEntities;
 
     // First run filters, that will hide what should never be displayed
     if (doFilter) {
@@ -1472,6 +1558,78 @@ export async function getEntitiesList({ doFilter = false, doSort = true } = {}) 
     }
     entitiesFilter.clearFuzzySearchCaches();
     return entities;
+}
+
+/**
+ * Builds the full list of all entities available
+ *
+ * They will be correctly marked and filtered.
+ *
+ * The character+group portion of the candidate set is built two ways depending on `doFilter` and the current
+ * filter/sort state (design doc §6, phase 5):
+ * - `doFilter: true` and `canUseServerQueryForEntitiesList()` says yes: one merged call -
+ *   `characterRepository.queryAll(filter, sort)` with `filter.includeGroups: true` - already narrowed by the
+ *   active tag/fav filters (including an open bogus folder, since that's just a selected tag - see
+ *   `buildCharacterQueryFromCurrentFilterState()`'s doc comment) and in the active sort order, straight from the
+ *   server, characters and groups already merged and sorted together. The rest of this function's filter
+ *   pipeline (tag/fav/folder filtering, the final sort) still runs over the result same as always; that's a
+ *   redundant but harmless second pass (server and client agree on tag/fav membership, since both read the same
+ *   underlying tag_map/fav data), and it's the pass that does real work for the bogus-folder tag tiles, which
+ *   `/query` does not and cannot answer (design doc §5: folders aren't part of the sortable character+group
+ *   continuum at all - `sortEntitiesList()` always pins them to the top in their own order, independent of
+ *   `sort_field`/`sort_order`).
+ * - Otherwise (an active search term, an unsupported sort field like `create_date`/`data_size`, or
+ *   `doFilter: false`): the pre-existing fully-local path - `characters.map(...)` + `groups.map(...)` over the
+ *   whole resident arrays, filtered/sorted entirely client-side exactly as before this change.
+ * @param {object} param0 - Optional parameters
+ * @param {boolean} [param0.doFilter] - Whether this entity list should already be filtered based on the global filters
+ * @param {boolean} [param0.doSort] - Whether the entity list should be sorted when returned
+ * @returns {Promise<Entity[]>} All entities
+ */
+export async function getEntitiesList({ doFilter = false, doSort = true } = {}) {
+    const characterAndGroupEntities = doFilter && canUseServerQueryForEntitiesList()
+        ? await (async () => {
+            const { filter, sort } = buildCharacterQueryFromCurrentFilterState({ includeGroups: true });
+            const rows = await characterRepository.queryAll(filter, sort);
+            return rows.map(row => queryRowToEntity(row));
+        })()
+        : [
+            ...characters.map(item => characterToEntity(item)),
+            ...groups.map(item => groupToEntity(item)),
+        ];
+
+    const rawEntities = [
+        ...characterAndGroupEntities,
+        ...(power_user.bogus_folders ? tags.filter(isBogusFolder).sort(compareTagsForSort).map(item => tagToEntity(item)) : []),
+    ];
+
+    return filterAndSortEntities(rawEntities, { doFilter, doSort });
+}
+
+/**
+ * The bogus-folder tag tiles for the current filter state, fully filtered/annotated (`entity.entities`,
+ * `entity.hidden`, `entity.isUseless`) exactly as `getEntitiesList()` would compute them - via the same
+ * `filterAndSortEntities()` pipeline, just fed the fully-resident local candidate set (`characters`/`groups`
+ * arrays) rather than a server page, since folder tiles are pinned to a fixed small prefix (design doc §5,
+ * `sortEntitiesList()`) and are never part of what `printCharacters()`'s server-paginated controller pages
+ * through - see that function's doc comment for the "unpaginated addendum on page 1" call. `characters`/`groups`
+ * stay fully client-resident regardless of that controller (phase 5's residency bounding is a later phase, §9),
+ * so this costs exactly what the pre-existing fully-local `getEntitiesList()` path already cost whenever
+ * `power_user.bogus_folders` was on - not a new scan, just no longer gated behind the character/group portion
+ * of the same call.
+ * @returns {Promise<Entity[]>} tag-type entities only, in `sortEntitiesList()`'s pinned-folder order.
+ */
+async function getFolderTileEntities() {
+    if (!power_user.bogus_folders) return [];
+
+    const rawEntities = [
+        ...characters.map(item => characterToEntity(item)),
+        ...groups.map(item => groupToEntity(item)),
+        ...tags.filter(isBogusFolder).sort(compareTagsForSort).map(item => tagToEntity(item)),
+    ];
+
+    const entities = filterAndSortEntities(rawEntities, { doFilter: true, doSort: true });
+    return entities.filter(entity => entity.type === 'tag');
 }
 
 export async function getOneCharacter(avatarUrl) {

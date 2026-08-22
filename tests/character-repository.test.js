@@ -21,9 +21,11 @@ let CharacterRepository;
 let buildCharacterQuery;
 /** @type {typeof import('../public/scripts/character-repository.js').isServerQueryableSort} */
 let isServerQueryableSort;
+/** @type {typeof import('../public/scripts/character-repository.js').normalizeQueryRow} */
+let normalizeQueryRow;
 
 beforeAll(async () => {
-    ({ CharacterRepository, buildCharacterQuery, isServerQueryableSort } = await import('../public/scripts/character-repository.js'));
+    ({ CharacterRepository, buildCharacterQuery, isServerQueryableSort, normalizeQueryRow } = await import('../public/scripts/character-repository.js'));
 });
 
 /** Minimal fake of the EntityStore surface CharacterRepository actually uses. */
@@ -366,6 +368,86 @@ describe('buildCharacterQuery()', () => {
         });
         expect(filter).toEqual({ search: 'kobold', tags: { include: ['fantasy'], exclude: [], mode: 'and' }, fav: true });
         expect(sort).toEqual({ field: 'date_last_chat', order: 'desc' });
+    });
+});
+
+describe('buildCharacterQuery() includeGroups', () => {
+    test('omits filter.includeGroups by default - every pre-existing caller keeps working unmodified', () => {
+        const { filter } = buildCharacterQuery({ fav: true });
+        expect(filter).not.toHaveProperty('includeGroups');
+    });
+
+    test('sets filter.includeGroups: true only when explicitly requested', () => {
+        const { filter } = buildCharacterQuery({ includeGroups: true });
+        expect(filter.includeGroups).toBe(true);
+    });
+
+    test('composes with tag filters (folder-open + includeGroups, design doc §5 group_tags)', () => {
+        const { filter } = buildCharacterQuery({ tagsInclude: ['folder-1'], includeGroups: true });
+        expect(filter).toEqual({
+            tags: { include: ['folder-1'], exclude: [], mode: 'and' },
+            includeGroups: true,
+        });
+    });
+});
+
+describe('normalizeQueryRow()', () => {
+    test('wraps a bare Character row (the filter.includeGroups: false/omitted shape) as type "character"', () => {
+        const alice = { avatar: 'alice', name: 'Alice' };
+        expect(normalizeQueryRow(alice)).toEqual({ type: 'character', item: alice });
+    });
+
+    test('passes an already-tagged character row through unchanged', () => {
+        const row = { type: 'character', item: { avatar: 'alice' } };
+        expect(normalizeQueryRow(row)).toEqual(row);
+        expect(normalizeQueryRow(row)).toBe(row);
+    });
+
+    test('passes an already-tagged group row through unchanged', () => {
+        const row = { type: 'group', item: { id: 'group-1', name: 'The Party' } };
+        expect(normalizeQueryRow(row)).toEqual(row);
+        expect(normalizeQueryRow(row)).toBe(row);
+    });
+
+    test('does not mistake a bare Character that happens to have a "type" field for a tagged row (no "item" key)', () => {
+        const weirdCharacter = { avatar: 'alice', type: 'character' };
+        expect(normalizeQueryRow(weirdCharacter)).toEqual({ type: 'character', item: weirdCharacter });
+    });
+});
+
+describe('query()/queryAll() with includeGroups', () => {
+    test('query() forwards filter.includeGroups verbatim and returns the tagged-row response untouched', async () => {
+        const store = makeStore([]);
+        const repo = new CharacterRepository(store);
+        const responseBody = {
+            rows: [
+                { type: 'character', item: { avatar: 'alice' } },
+                { type: 'group', item: { id: 'group-1' } },
+            ],
+            total: 2,
+            rev: 1,
+        };
+        global.fetch.mockResolvedValue({ ok: true, json: async () => responseBody });
+
+        const result = await repo.query({ includeGroups: true }, { field: 'name', order: 'asc' }, 1, 50);
+
+        expect(result).toEqual(responseBody);
+        const body = JSON.parse(global.fetch.mock.calls[0][1].body);
+        expect(body.filter).toEqual({ includeGroups: true });
+    });
+
+    test('queryAll() loops the tagged-row shape the same way it loops bare Character[] pages', async () => {
+        const store = makeStore([]);
+        const repo = new CharacterRepository(store);
+        const rows = [
+            { type: 'character', item: { avatar: 'a' } },
+            { type: 'group', item: { id: 'g1' } },
+        ];
+        global.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ rows, rev: 1 }) });
+
+        const result = await repo.queryAll({ includeGroups: true }, { field: 'name' });
+
+        expect(result).toEqual(rows);
     });
 });
 
