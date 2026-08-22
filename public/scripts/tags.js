@@ -4,8 +4,8 @@ import {
     characters,
     charactersStore,
     getCurrentCharacter,
+    getSelectionState,
     saveSettingsDebounced,
-    this_chid,
     menu_type,
     entitiesFilter,
     printCharactersDebounced,
@@ -1083,8 +1083,8 @@ function getInlineListSelector() {
         return `.group_select[grid="${selected_group}"] .tags`;
     }
 
-    if (this_chid !== undefined && menu_type === 'character_edit') {
-        return `.character_select[chid="${this_chid}"] .tags`;
+    if (getSelectionState().type === 'character' && menu_type === 'character_edit') {
+        return `.character_select[data-avatar="${CSS.escape(getCurrentCharacter().avatar)}"] .tags`;
     }
 
     return null;
@@ -1098,7 +1098,7 @@ function getTagKey() {
         return selected_group;
     }
 
-    if (this_chid !== undefined && menu_type === 'character_edit') {
+    if (getSelectionState().type === 'character' && menu_type === 'character_edit') {
         return getCurrentCharacter().avatar;
     }
 
@@ -1161,14 +1161,10 @@ export function getTagKeyForEntityElement(element) {
     }
     // Start with the given element and traverse up the DOM tree
     while (element.length && element.parent().length) {
-        // Prefer data-avatar (the stable id) over data-chid (a positional index that can go stale between
-        // render and read) - getTagKeyForEntity() resolves avatar strings directly. Falls back to data-chid
-        // for any element that somehow lacks data-avatar (defensive only).
         const avatar = element.attr('data-avatar');
         const grid = element.attr('data-grid');
-        const chid = element.attr('data-chid');
-        if (avatar || grid || chid) {
-            const id = avatar || grid || chid;
+        if (avatar || grid) {
+            const id = avatar || grid;
             return getTagKeyForEntity(id);
         }
 

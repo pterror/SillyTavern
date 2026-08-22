@@ -108,7 +108,7 @@ export class FilterHelper {
          * Pre-computed character/group search results from the server's fast full-content index (see
          * setServerSearchResults() below), or null if none are available for the current search value/fav state
          * yet.
-         * @type {{ searchValue: string, favOnly: boolean, characterScores: Map<number, number>, groupScores: Map<string, number> } | null}
+         * @type {{ searchValue: string, favOnly: boolean, characterScores: Map<string, number>, groupScores: Map<string, number> } | null}
          */
         this.serverSearchResults = null;
     }
@@ -140,7 +140,7 @@ export class FilterHelper {
      * result and let searchFilter() fall back to the client-side pass for this search (that fallback runs over
      * every resident character/group, not a relevance-capped page, so it isn't subject to this same gap - just
      * slower, per this file's other perf notes).
-     * @param {{ searchValue: string, favOnly: boolean, characterScores: Map<number, number>, groupScores: Map<string, number> } | null} results
+     * @param {{ searchValue: string, favOnly: boolean, characterScores: Map<string, number>, groupScores: Map<string, number> } | null} results
      */
     setServerSearchResults(results) {
         this.serverSearchResults = results;
@@ -371,7 +371,7 @@ export class FilterHelper {
 
             const favOnly = isFilterState(this.filterData[FILTER_TYPES.FAV], FILTER_STATES.SELECTED);
             if (this.serverSearchResults?.searchValue === searchValue && this.serverSearchResults?.favOnly === favOnly) {
-                this.cacheScores(FILTER_TYPES.SEARCH, new Map([...this.serverSearchResults.characterScores].map(([index, score]) => [`character.${index}`, score])));
+                this.cacheScores(FILTER_TYPES.SEARCH, new Map([...this.serverSearchResults.characterScores].map(([avatar, score]) => [`character.${avatar}`, score])));
                 this.cacheScores(FILTER_TYPES.SEARCH, new Map([...this.serverSearchResults.groupScores].map(([id, score]) => [`group.${id}`, score])));
             } else {
                 // Server results for this exact search string + fav filter state aren't in yet (still in flight,
@@ -381,7 +381,7 @@ export class FilterHelper {
                 // the server results land - see setServerSearchResults()'s doc comment for the gap this avoids.
                 const fuzzySearchCharactersResults = fuzzySearchCharacters(searchValue, this.fuzzySearchCaches);
                 const fuzzySearchGroupsResults = fuzzySearchGroups(searchValue, this.fuzzySearchCaches);
-                this.cacheScores(FILTER_TYPES.SEARCH, new Map(fuzzySearchCharactersResults.map(i => [`character.${i.refIndex}`, i.score])));
+                this.cacheScores(FILTER_TYPES.SEARCH, new Map(fuzzySearchCharactersResults.map(i => [`character.${i.item.avatar}`, i.score])));
                 this.cacheScores(FILTER_TYPES.SEARCH, new Map(fuzzySearchGroupsResults.map(i => [`group.${i.item.id}`, i.score])));
             }
         }

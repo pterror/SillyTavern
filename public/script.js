@@ -457,34 +457,40 @@ export const charactersStore = new EntityStore(characters, c => c.avatar);
 charactersStore.onChange(() => invalidateCharactersFuseIndex());
 /**
  * Avatar (stable id, see charactersStore) of the currently selected character. This is the source of truth for
- * character selection - `this_chid` below is a cached/derived array index recomputed from this whenever it
- * changes or the `characters` array is reloaded, kept around only because most call sites want O(1) array
- * access. Never assign this directly - go through setCharacterId().
+ * character selection. Never assign this directly - go through setCharacterId().
  * @type {string|undefined}
  */
 let this_avatar;
 
 /**
- * Stringified index of a currently chosen entity in the characters array. Derived from `this_avatar` - see
- * setCharacterId() (the only place that legitimately assigns either of these) and getCharacters()'s reload
- * reconciliation. Never assign this directly.
- * @type {string|undefined} Yes, we hate it as much as you do.
- */
-export let this_chid;
-
-/**
- * Resolves the currently selected character by identity (this_avatar), not by array position. Behaves
- * identically to `getCurrentCharacter()` today - this_chid is always kept in sync with this_avatar by
- * setCharacterId(), so the two lookups return the same object right now. The point of routing through this
- * instead of `getCurrentCharacter()` is forward-looking: once the `characters` array can stop being a full
- * resident copy of every character (server-side list pagination), `this_chid` as a positional index stops being
- * meaningful, but the *selected* character still needs to resolve correctly regardless of what page the list UI
- * is showing. Call sites that migrate to this now get that guarantee for free later, with zero behavior change
- * today. No pagination has landed yet, so `characters` is still the full array and this is a pure rename.
+ * Resolves the currently selected character by identity (this_avatar), not by array position. Forward-looking:
+ * once the `characters` array can stop being a full resident copy of every character (server-side list
+ * pagination), the *selected* character still needs to resolve correctly regardless of what page the list UI
+ * is showing. No pagination has landed yet, so `characters` is still the full array.
  * @returns {Character|undefined}
  */
 export function getCurrentCharacter() {
     return this_avatar !== undefined ? charactersStore.get(this_avatar) : undefined;
+}
+
+/**
+ * Resolves what is currently selected: a character, a group, or neither (the neutral/temp-chat state,
+ * `name2 === neutralCharacterName`). Selection is a tristate, not a boolean - see
+ * docs/design/character-data-residency-redesign.md §2.3 - and this is the one place that classifies it,
+ * replacing the `this_chid === undefined && !selected_group` conjunction that used to be repeated at every
+ * call site needing to know which of the three states is live. Callers that also need to confirm the
+ * neutral-chat name2 invariant (rather than just "no character and no group") still check that themselves -
+ * it's an orthogonal signal, not folded in here.
+ * @returns {{ type: 'character', avatar: string } | { type: 'group', groupId: string } | { type: 'none' }}
+ */
+export function getSelectionState() {
+    if (selected_group) {
+        return { type: 'group', groupId: selected_group };
+    }
+    if (this_avatar !== undefined) {
+        return { type: 'character', avatar: this_avatar };
+    }
+    return { type: 'none' };
 }
 
 let saveCharactersPage = 0;
@@ -596,9 +602,10 @@ export function reloadMarkdownProcessor() {
 }
 
 export function getCurrentChatId() {
-    if (selected_group) {
-        return groupsStore.get(selected_group)?.chat_id;
-    } else if (this_chid !== undefined) {
+    const selection = getSelectionState();
+    if (selection.type === 'group') {
+        return groupsStore.get(selection.groupId)?.chat_id;
+    } else if (selection.type === 'character') {
         return getCurrentCharacter()?.chat;
     }
 }
@@ -976,9 +983,9 @@ export async function selectCharacterByAvatar(avatar, { switchMenu = true } = {}
 
 /**
  * Switches the currently selected character to the one with the given ID. (character index, not the character key!)
- * Thin wrapper around selectCharacterByAvatar() for callers that only have an array index handy (e.g. a
- * data-chid read off the DOM). Internal code that already has an avatar should call selectCharacterByAvatar()
- * directly instead of manufacturing an index just to call this.
+ * Thin wrapper around selectCharacterByAvatar() kept only for the public extension API
+ * (context.selectCharacterById, st-context.js) - the DOM no longer carries a data-chid to read an index from,
+ * and no internal caller uses this anymore. Internal code should call selectCharacterByAvatar() directly.
  * @param {number} id The ID of the character to switch to.
  * @param {object} [options] Options for the switch.
  * @param {boolean} [options.switchMenu=true] Whether to switch the right menu to the character edit menu if the character is already selected.
@@ -1026,14 +1033,14 @@ async function getHiddenBlock(hidden) {
  * @param {JQuery<HTMLElement>} template The `.character_select` element to populate, already in the DOM tree
  * or detached
  * @param {object} item Character entity data
- * @param {number} id Character id (index into `characters`)
+ * @param {string} id Character id (the avatar)
  */
 function renderCharacterBlock(template, item, id) {
     let this_avatar = default_avatar;
     if (item.avatar != 'none') {
         this_avatar = getThumbnailUrl('avatar', item.avatar);
     }
-    template.attr({ 'data-chid': id, 'data-avatar': item.avatar, 'id': `CharID${id}` });
+    template.attr({ 'data-avatar': item.avatar });
     // loading="lazy": without this, every rendered card's <img> starts fetching its thumbnail immediately -
     // on an install with Characters_PerPage bumped up (the size-changer dropdown goes up to 1000) or a broad
     // search match, that's hundreds of simultaneous GET requests firing the instant the list re-renders. HTTP/1.1
@@ -1082,7 +1089,7 @@ function getCharacterBlock(item, id) {
  * it from the template. Used by printCharacters's keyed diff for rows whose avatar is still on the page.
  * @param {HTMLElement} node The existing `.character_select` element for this avatar
  * @param {object} item Character entity data
- * @param {number} id Character id (index into `characters`)
+ * @param {string} id Character id (the avatar)
  * @returns {HTMLElement} The same node, updated
  */
 function updateCharacterBlock(node, item, id) {
@@ -1265,11 +1272,10 @@ function verifyCharactersSearchSortRule() {
  * Converts the given character to its entity representation
  *
  * @param {Character} character - The character
- * @param {string|number} id - The id of this character
  * @returns {Entity} The entity for this character
  */
-export function characterToEntity(character, id) {
-    return { item: character, id, type: 'character' };
+export function characterToEntity(character) {
+    return { item: character, id: character?.avatar, type: 'character' };
 }
 
 /**
@@ -1304,7 +1310,7 @@ export function tagToEntity(tag) {
  */
 export function getEntitiesList({ doFilter = false, doSort = true } = {}) {
     let entities = [
-        ...characters.map((item, index) => characterToEntity(item, index)),
+        ...characters.map(item => characterToEntity(item)),
         ...groups.map(item => groupToEntity(item)),
         ...(power_user.bogus_folders ? tags.filter(isBogusFolder).sort(compareTagsForSort).map(item => tagToEntity(item)) : []),
     ];
@@ -1624,7 +1630,7 @@ export async function getCharacters({ silent = false, silentGroups = false } = {
     if (this_avatar) {
         // this_avatar is untouched by the splice()/reload above (it's a separate variable, not derived from
         // the array), so it's still exactly the avatar that was selected before this reload - selecting by
-        // avatar directly needs no index lookup and no this_chid resync beforehand.
+        // avatar directly needs no index lookup.
         if (charactersStore.get(this_avatar)) {
             await selectCharacterByAvatar(this_avatar, { switchMenu: false });
         } else {
@@ -1659,19 +1665,19 @@ async function delChat(chatfile) {
 
 /**
  * Deletes a character chat by its name.
- * @param {string} characterId Character ID to delete chat for
+ * @param {string} avatar Character avatar to delete chat for
  * @param {string} fileName Name of the chat file to delete (without .jsonl extension)
  * @returns {Promise<void>} A promise that resolves when the chat is deleted.
  */
-export async function deleteCharacterChatByName(characterId, fileName) {
+export async function deleteCharacterChatByName(avatar, fileName) {
     /** @type {Character} */
-    const character = characters[characterId];
+    const character = charactersStore.get(avatar);
 
     // Make sure all the data is loaded.
     await unshallowCharacter(character?.avatar);
 
     if (!character) {
-        console.warn(`Character with ID ${characterId} not found.`);
+        console.warn(`Character with avatar ${avatar} not found.`);
         return;
     }
 
@@ -1698,7 +1704,7 @@ export async function deleteCharacterChatByName(characterId, fileName) {
         const chats = Object.values(await chatsResponse.json());
         chats.sort((a, b) => sortMoments(timestampToMoment(a.last_mes), timestampToMoment(b.last_mes)));
         const newChatName = chats.length && typeof chats[0] === 'object' ? chats[0].file_name.replace('.jsonl', '') : `${character.name} - ${humanizedDateTime()}`;
-        await updateRemoteChatName(characterId, newChatName);
+        await updateRemoteChatName(character.avatar, newChatName);
     }
 
     await eventSource.emit(event_types.CHAT_DELETED, fileName);
@@ -2014,9 +2020,10 @@ export async function reloadCurrentChatUnsafe() {
     preserveNeutralChat();
     await clearChat({ clearData: true });
 
-    if (selected_group) {
-        await getGroupChat(selected_group, true);
-    } else if (this_chid !== undefined) {
+    const selection = getSelectionState();
+    if (selection.type === 'group') {
+        await getGroupChat(selection.groupId, true);
+    } else if (selection.type === 'character') {
         await getChat();
     } else {
         resetChatState();
@@ -2060,7 +2067,7 @@ export async function sendTextareaMessage() {
         generateType = 'continue';
     }
 
-    if (textareaText && !selected_group && this_chid === undefined && name2 !== neutralCharacterName) {
+    if (textareaText && getSelectionState().type === 'none' && name2 !== neutralCharacterName) {
         await newAssistantChat({ temporary: false });
     }
 
@@ -2925,7 +2932,7 @@ export function updateMessageElement(mes, { messageId = chat.length - 1, message
     if (!mes.is_user) {
         if (mes.force_avatar) {
             avatarImg = mes.force_avatar;
-        } else if (this_chid === undefined) {
+        } else if (getSelectionState().type !== 'character') {
             avatarImg = system_avatar;
         } else if (getCurrentCharacter() && getCurrentCharacter().avatar !== 'none') {
             avatarImg = getThumbnailUrl('avatar', getCurrentCharacter().avatar);
@@ -3008,12 +3015,12 @@ export function updateMessageElement(mes, { messageId = chat.length - 1, message
 }
 
 /**
- * Returns the URL of the avatar for the given character Id.
- * @param {number|string} characterId Character Id
+ * Returns the URL of the avatar for the given character.
+ * @param {string} avatar Character avatar
  * @returns {string} Avatar URL
  */
-export function getCharacterAvatar(characterId) {
-    const character = characters[characterId];
+export function getCharacterAvatar(avatar) {
+    const character = charactersStore.get(avatar);
     const avatarImg = character?.avatar;
 
     if (!avatarImg || avatarImg === 'none') {
@@ -3401,7 +3408,10 @@ export async function generateQuietPrompt({ quietPrompt = '', quietToLoud = fals
             force_name2: true,
             quietImage: quietImage ?? null,
             quietName: quietName ?? null,
-            force_chid: forceChId ?? null,
+            // forceChId is the public compat surface (numeric legacy character id) - translated to an avatar
+            // right here, so everything downstream of this point (Generate(), generateGroupWrapper()) is
+            // avatar-shaped internally.
+            force_avatar: (forceChId !== null && forceChId !== undefined) ? characters[forceChId]?.avatar ?? null : null,
             jsonSchema: jsonSchema ?? null,
         };
         if (responseLengthCustomized) {
@@ -3699,13 +3709,11 @@ export function createLazyFields(resolvers) {
  * Returns the character card fields for the current character as lazy getters.
  * Each field is only processed (baseChatReplace) when first accessed.
  * @param {Object} [options={}]
- * @param {number} [options.chid] Optional character index
+ * @param {string} [options.avatar] Optional character avatar. Falls back to the current character when omitted.
  * @returns {CharacterCardFields} Character card fields with lazy evaluation
  */
-export function getCharacterCardFieldsLazy({ chid = undefined } = {}) {
-    // chid is public getContext() API surface (see st-context.js) - callers may still pass an
-    // explicit array index. Only fall back to the current character (by avatar) when omitted.
-    const character = chid !== undefined ? characters[chid] : getCurrentCharacter();
+export function getCharacterCardFieldsLazy({ avatar = undefined } = {}) {
+    const character = avatar !== undefined ? charactersStore.get(avatar) : getCurrentCharacter();
 
     // For group chats, we need to check if group cards should be used
     const useGroupCards = selected_group && character;
@@ -3774,11 +3782,11 @@ export function getCharacterCardFieldsLazy({ chid = undefined } = {}) {
 /**
  * Returns the character card fields for the current character.
  * @param {Object} [options={}]
- * @param {number} [options.chid] Optional character index
+ * @param {string} [options.avatar] Optional character avatar
  * @returns {CharacterCardFields} Character card fields
  */
-export function getCharacterCardFields({ chid = undefined } = {}) {
-    const lazy = getCharacterCardFieldsLazy({ chid });
+export function getCharacterCardFields({ avatar = undefined } = {}) {
+    const lazy = getCharacterCardFieldsLazy({ avatar });
 
     // Resolve all lazy fields into a plain object
     return {
@@ -4575,7 +4583,7 @@ function removeLastMessage() {
  * @property {string} [quiet_prompt] A system instruction to use for the quiet prompt.
  * @property {boolean} [quietToLoud] Whether the system instruction should be sent in background (quiet) or a foreground (loud) mode.
  * @property {boolean} [skipWIAN] Skip adding World Info and Author's Note to the prompt.
- * @property {number} [force_chid] Force character ID to use for the generation. Only works in groups.
+ * @property {string} [force_avatar] Force character (by avatar) to use for the generation. Only works in groups.
  * @property {AbortSignal} [signal] Abort signal to cancel the generation. If not provided, will create a new AbortController.
  * @property {string} [quietImage] Image URL to use for the quiet prompt (defaults to empty string)
  * @property {string} [quietName] Name to use for the quiet prompt (defaults to "System:")
@@ -4591,7 +4599,7 @@ function removeLastMessage() {
  * @param {boolean} dryRun Whether to actually generate a message or just assemble the prompt
  * @returns {Promise<any>} Returns a promise that resolves when the text is done generating.
  */
-export async function Generate(type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, signal, quietImage, quietName, jsonSchema = null, depth = 0 } = {}, dryRun = false) {
+export async function Generate(type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_avatar, signal, quietImage, quietName, jsonSchema = null, depth = 0 } = {}, dryRun = false) {
     console.log('Generate entered');
     setGenerationProgress(0);
     generation_started = new Date();
@@ -4600,7 +4608,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     await unshallowCharacter(getCurrentCharacter()?.avatar);
 
     // Occurs every time, even if the generation is aborted due to slash commands execution
-    await eventSource.emit(event_types.GENERATION_STARTED, type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, signal, quietImage }, dryRun);
+    await eventSource.emit(event_types.GENERATION_STARTED, type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_avatar, signal, quietImage }, dryRun);
 
     // Don't recreate abort controller if signal is passed
     if (!(abortController && signal)) {
@@ -4622,7 +4630,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     }
 
     // Occurs only if the generation is not aborted due to slash commands execution
-    await eventSource.emit(event_types.GENERATION_AFTER_COMMANDS, type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, signal, quietImage }, dryRun);
+    await eventSource.emit(event_types.GENERATION_AFTER_COMMANDS, type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_avatar, signal, quietImage }, dryRun);
 
     if (main_api == 'kobold' && kai_settings.streaming_kobold && !kai_flags.can_use_streaming) {
         toastr.error(t`Streaming is enabled, but the version of Kobold used does not support token streaming.`, undefined, { timeOut: 10000, preventDuplicates: true });
@@ -4654,10 +4662,9 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     if (selected_group && !is_group_generating) {
         if (!dryRun) {
             // Returns the promise that generateGroupWrapper returns; resolves when generation is done
-            return generateGroupWrapper(false, type, { quiet_prompt, force_chid, signal: abortController.signal, quietImage, jsonSchema });
+            return generateGroupWrapper(false, type, { quiet_prompt, force_avatar, signal: abortController.signal, quietImage, jsonSchema });
         }
 
-        const characterIndexMap = new Map(characters.map((char, index) => [char.avatar, index]));
         const group = groupsStore.get(selected_group);
 
         const enabledMembers = group.members.reduce((acc, member) => {
@@ -4667,12 +4674,8 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             return acc;
         }, []);
 
-        const memberIds = enabledMembers
-            .map((member) => characterIndexMap.get(member))
-            .filter((index) => index !== undefined && index !== null);
-
-        if (memberIds.length > 0) {
-            if (menu_type != 'character_edit') setCharacterId(memberIds[0]);
+        if (enabledMembers.length > 0) {
+            if (menu_type != 'character_edit') setCharacterId(enabledMembers[0]);
             setCharacterName('');
         } else {
             console.log('No enabled members found');
@@ -5736,7 +5739,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                     streamingProcessor = null;
                     depth = depth + 1;
                     await ToolManager.saveFunctionToolInvocations(invocationResult.invocations);
-                    return Generate('normal', { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, signal, quietImage, quietName, depth }, dryRun);
+                    return Generate('normal', { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_avatar, signal, quietImage, quietName, depth }, dryRun);
                 }
             }
 
@@ -5859,7 +5862,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 
                 depth = depth + 1;
                 await ToolManager.saveFunctionToolInvocations(invocationResult.invocations);
-                return Generate('normal', { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, signal, quietImage, quietName, depth }, dryRun);
+                return Generate('normal', { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_avatar, signal, quietImage, quietName, depth }, dryRun);
             }
         }
 
@@ -6346,7 +6349,7 @@ export async function duplicateCharacter({ avatar = null, silent = false } = {})
         }
         targetAvatar = avatar;
     } else {
-        if (this_chid === undefined || !getCurrentCharacter()) {
+        if (!getCurrentCharacter()) {
             toastr.warning(t`You must first select a character to duplicate!`);
             return '';
         }
@@ -7395,8 +7398,8 @@ export function deactivateSendButtons() {
 
 export function resetChatState() {
     // replaces deleted charcter name with system user since it will be displayed next.
-    name2 = (this_chid === undefined && neutralCharacterName) ? neutralCharacterName : systemUserName;
-    //unsets expected chid before reloading (related to getCharacters/printCharacters from using old arrays)
+    name2 = (getSelectionState().type !== 'character' && neutralCharacterName) ? neutralCharacterName : systemUserName;
+    //unsets the expected selection before reloading (related to getCharacters/printCharacters from using old arrays)
     setCharacterId(undefined);
     // sets up system user to tell user about having deleted a character
     chat.splice(0, chat.length, ...SAFETY_CHAT);
@@ -7421,38 +7424,22 @@ export function setExternalAbortController(controller) {
 }
 
 /**
- * Sets the currently selected character, keyed by avatar (`this_avatar`, the source of truth) with `this_chid`
- * (an array index) recomputed alongside it purely as a cache for call sites that want O(1) array access.
- * Accepts the same overloads as before (index, numeric string, character object, or undefined to clear).
- * @param {number|string|object|undefined} value
+ * Sets the currently selected character, keyed by avatar (`this_avatar`, the source of truth).
+ * @param {string|object|undefined} value A character avatar, a character object, or undefined to clear.
  */
 export function setCharacterId(value) {
     switch (typeof value) {
-        case 'bigint':
-        case 'number':
-            // Preserved as-is (not bounds-checked) for legacy behavior - this_avatar simply won't resolve for
-            // an out-of-range index, same as getCurrentCharacter() would already have been undefined before.
-            this_chid = String(value);
-            this_avatar = characters[Number(value)]?.avatar;
+        case 'string':
+            this_avatar = charactersStore.has(value) ? value : undefined;
             break;
-        case 'string': {
-            const idx = parseInt(value);
-            this_chid = !isNaN(idx) ? value : undefined;
-            this_avatar = !isNaN(idx) ? characters[idx]?.avatar : undefined;
-            break;
-        }
         case 'object': {
-            // Identify by avatar rather than by array reference - the object may be a fresh reload of the same
-            // character (different reference, same avatar), which should still resolve.
+            // Identify by avatar rather than by object reference - the object may be a fresh reload of the
+            // same character (different reference, same avatar), which should still resolve.
             const avatar = value?.avatar;
-            const matchedEntity = avatar !== undefined ? charactersStore.get(avatar) : undefined;
-            const idx = matchedEntity ? characters.indexOf(matchedEntity) : -1;
-            this_chid = idx !== -1 ? String(idx) : undefined;
-            this_avatar = idx !== -1 ? avatar : undefined;
+            this_avatar = (avatar !== undefined && charactersStore.has(avatar)) ? avatar : undefined;
             break;
         }
         case 'undefined':
-            this_chid = undefined;
             this_avatar = undefined;
             break;
         default:
@@ -7508,7 +7495,7 @@ export async function renameCharacter(name = null, { silent = false, renameChats
         toastr.warning(t`No character name provided.`, t`Rename Character`);
         return false;
     }
-    if (this_chid === undefined) {
+    if (getSelectionState().type !== 'character') {
         toastr.warning(t`No character selected.`, t`Rename Character`);
         return false;
     }
@@ -7582,7 +7569,7 @@ export async function renameCharacter(name = null, { silent = false, renameChats
                 // Async delay to update UI
                 await delay(1);
 
-                if (this_chid === undefined) {
+                if (getSelectionState().type !== 'character') {
                     throw new Error('New character not selected');
                 }
 
@@ -7681,7 +7668,7 @@ async function renamePastChats(oldAvatar, newAvatar, newName) {
 }
 
 export function saveChatDebounced() {
-    const chid = this_chid;
+    const avatar = this_avatar;
     const selectedGroup = selected_group;
 
     cancelDebouncedChatSave();
@@ -7692,8 +7679,8 @@ export function saveChatDebounced() {
             return;
         }
 
-        if (chid !== this_chid) {
-            console.warn('Chat save timeout triggered, but chid changed. Aborting.');
+        if (avatar !== this_avatar) {
+            console.warn('Chat save timeout triggered, but the selected character changed. Aborting.');
             return;
         }
 
@@ -7915,7 +7902,6 @@ export function buildAvatarList(block, entities, { templateId = 'inline_avatar_t
         }
 
         avatarTemplate.attr('data-type', entity.type);
-        avatarTemplate.attr('data-chid', id);
         if (entity.type === 'character') {
             avatarTemplate.attr('data-avatar', entity.item.avatar);
         }
@@ -7935,10 +7921,10 @@ export function buildAvatarList(block, entities, { templateId = 'inline_avatar_t
             avatarTemplate.addClass(grpTemplate.attr('class'));
             avatarTemplate.empty();
             avatarTemplate.append(grpTemplate.children());
-            avatarTemplate.attr({ 'data-grid': id, 'data-chid': null });
+            avatarTemplate.attr({ 'data-grid': id });
             avatarTemplate.attr('title', `[Group] ${entity.item.name}`);
         } else if (entity.type === 'persona') {
-            avatarTemplate.attr({ 'data-pid': id, 'data-chid': null });
+            avatarTemplate.attr({ 'data-pid': id });
             avatarTemplate.find('img').attr('src', getThumbnailUrl('persona', entity.item.avatar));
             avatarTemplate.attr('title', `[Persona] ${entity.item.name}\nFile: ${entity.item.avatar}`);
         }
@@ -8014,7 +8000,7 @@ export async function getChat() {
             chat_metadata.integrity = uuidv4();
         }
         await getChatResult();
-        eventSource.emit(event_types.CHAT_LOADED, { detail: { id: this_chid, character: getCurrentCharacter() } });
+        eventSource.emit(event_types.CHAT_LOADED, { detail: { character: getCurrentCharacter() } });
 
         // Focus on the textarea if not already focused on a visible text input
         delay(debounce_timeout.short).then(() => {
@@ -8560,7 +8546,7 @@ function openMessageDelete(fromSlashCommand, deleteToolCalls = true) {
     } else {
         console.debug(`
             ERR -- could not enter del mode
-            this_chid: ${this_chid}
+            this_avatar: ${this_avatar}
             is_send_press: ${is_send_press}
             selected_group: ${selected_group}
             is_group_generating: ${is_group_generating}`);
@@ -8800,7 +8786,6 @@ async function messageEditDone(div) {
  * corresponding chat content fetched from the server.
  */
 export async function getChatsFromFiles(data, isGroupChat) {
-    const context = getContext();
     let chat_dict = {};
     let chat_list = Object.values(data).sort((a, b) => a.file_name.localeCompare(b.file_name)).reverse();
 
@@ -8811,9 +8796,9 @@ export async function getChatsFromFiles(data, isGroupChat) {
                 const requestBody = isGroupChat
                     ? JSON.stringify({ id: file_name })
                     : JSON.stringify({
-                        ch_name: characters[context.characterId].name,
+                        ch_name: getCurrentCharacter().name,
                         file_name: file_name.replace('.jsonl', ''),
-                        avatar_url: characters[context.characterId].avatar,
+                        avatar_url: getCurrentCharacter().avatar,
                     });
 
                 const chatResponse = await fetch(endpoint, {
@@ -9100,12 +9085,8 @@ export function select_rm_info(type, charId, previousCharId = null) {
         }
     }, 250);
 
-    if (previousCharId) {
-        const previousEntity = charactersStore.get(previousCharId);
-        const newId = previousEntity ? characters.indexOf(previousEntity) : -1;
-        if (newId >= 0) {
-            setCharacterId(newId);
-        }
+    if (previousCharId && charactersStore.has(previousCharId)) {
+        setCharacterId(previousCharId);
     }
 }
 
@@ -9354,7 +9335,8 @@ function updateFavButtonState(state) {
 }
 
 export async function setCharacterSettingsOverrides() {
-    if (!selected_group && (this_chid === undefined || !getCurrentCharacter())) {
+    const selection = getSelectionState();
+    if (selection.type !== 'group' && (selection.type !== 'character' || !getCurrentCharacter())) {
         console.warn('setCharacterSettingsOverrides() -- no selected group or character');
         return;
     }
@@ -9916,15 +9898,13 @@ async function openCharacterWorldPopup() {
         return;
     }
 
-    // getCharaFilename(chid) with chid === -1 (not found) resolves to undefined (characters[-1] is undefined),
-    // distinct from its own "no chid given" fallback to the currently selected character - so chid still needs
-    // to be an honest array index (or -1) here, not skipped via manualAvatarKey, to keep that not-found case
-    // behaving the same as before.
     const worldCharacter = charactersStore.get(avatar);
-    const chid = worldCharacter ? characters.indexOf(worldCharacter) : -1;
 
+    // Explicit undefined when `avatar` doesn't resolve to a real character (including when it's undefined
+    // itself, e.g. menu_type === 'create' with no character bound yet) - distinct from getCharaFilename()'s
+    // own "no avatar given" fallback to the currently selected character, which isn't what's wanted here.
     // TODO: Maybe make this utility function not use the window context?
-    const fileName = getCharaFilename(chid);
+    const fileName = worldCharacter ? getCharaFilename(avatar) : undefined;
     const charName = (menu_type == 'create' ? create_save.name : worldCharacter?.data?.name) || 'Nameless';
     const worldId = (menu_type == 'create' ? create_save.world : worldCharacter?.data?.extensions?.world) || '';
     const template = $('#character_world_template .character_world').clone();
@@ -10219,7 +10199,7 @@ export async function createOrEditCharacter(e) {
             );
 
             let oldSelectedChar = null;
-            if (this_chid !== undefined) {
+            if (getSelectionState().type === 'character') {
                 oldSelectedChar = getCurrentCharacter().avatar;
             }
 
@@ -10271,7 +10251,7 @@ export async function createOrEditCharacter(e) {
             );
             $('#create_button').attr('value', 'Save');
             crop_data = undefined;
-            await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { id: this_chid, character: getCurrentCharacter() } });
+            await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character: getCurrentCharacter() } });
 
             // Recreate the chat if it hasn't been used at least once (i.e. with continue).
             const message = getFirstMessage();
@@ -10885,7 +10865,7 @@ async function importCharactersTags(avatarFileNames) {
  */
 function selectImportedChar(charId) {
     let oldSelectedChar = null;
-    if (this_chid !== undefined) {
+    if (getSelectionState().type === 'character') {
         oldSelectedChar = getCurrentCharacter().avatar;
     }
     select_rm_info('char_import_no_toast', charId, oldSelectedChar);
@@ -10942,7 +10922,7 @@ async function importCharacter(file, { preserveFileName = '', importTags = false
             let avatarFileName = `${data.file_name}.png`;
 
             // Refresh existing thumbnail
-            if (exists && this_chid !== undefined) {
+            if (exists && getSelectionState().type === 'character') {
                 await fetch(getThumbnailUrl('avatar', avatarFileName), { cache: 'reload' });
             }
 
@@ -10989,7 +10969,7 @@ async function importFromURL(items, files) {
 
 export async function doNewChat({ deleteCurrentChat = false } = {}) {
     //Make a new chat for selected character
-    if ((!selected_group && this_chid == undefined) || menu_type == 'create') {
+    if (getSelectionState().type === 'none' || menu_type == 'create') {
         return;
     }
 
@@ -11150,14 +11130,14 @@ export async function closeCurrentChat() {
 
 /**
  * Forces the update of the chat name for a remote character.
- * @param {string|number} characterId Character ID to update chat name for
+ * @param {string} avatar Character avatar to update chat name for
  * @param {string} newName New name for the chat
  * @returns {Promise<void>}
  */
-export async function updateRemoteChatName(characterId, newName) {
-    const character = characters[characterId];
+export async function updateRemoteChatName(avatar, newName) {
+    const character = charactersStore.get(avatar);
     if (!character) {
-        console.warn(`Character not found for ID: ${characterId}`);
+        console.warn(`Character not found for avatar: ${avatar}`);
         return;
     }
     character.chat = newName;
@@ -11189,10 +11169,10 @@ function doCharListDisplaySwitch() {
  * it proceeds to delete character from UI and saves settings.
  * In case of error during the fetch request, it logs the error details.
  *
- * @param {string} this_chid - The character ID to be deleted.
+ * @param {string} characterId - Unused; the current character (getCurrentCharacter()) is what actually gets deleted.
  * @param {boolean} delete_chats - Whether to delete chats or not.
  */
-export async function handleDeleteCharacter(this_chid, delete_chats) {
+export async function handleDeleteCharacter(characterId, delete_chats) {
     if (!getCurrentCharacter()) {
         return;
     }
@@ -11213,7 +11193,7 @@ export async function deleteCharacter(characterKey, { deleteChats = true } = {})
         characterKey = [characterKey];
     }
 
-    const inTempChat = this_chid === undefined && name2 === neutralCharacterName;
+    const inTempChat = getSelectionState().type === 'none' && name2 === neutralCharacterName;
     if (inTempChat) {
         const confirmClose = await Popup.show.confirm(
             t`You are currently in a temporary chat.`,
@@ -11240,7 +11220,6 @@ export async function deleteCharacter(characterKey, { deleteChats = true } = {})
             continue;
         }
 
-        const chid = characters.indexOf(character);
         const pastChats = await getPastCharacterChats(character.avatar);
 
         const msg = { avatar_url: character.avatar, delete_chats: deleteChats };
@@ -11270,7 +11249,7 @@ export async function deleteCharacter(characterKey, { deleteChats = true } = {})
             }
         }
 
-        await eventSource.emit(event_types.CHARACTER_DELETED, { id: chid, character: character });
+        await eventSource.emit(event_types.CHARACTER_DELETED, { character: character });
         removedCharacters.push({ avatar: character.avatar, entity: character });
         deleted = true;
     }
@@ -11555,10 +11534,7 @@ export async function fetchServerCharacterSearchResults(searchQuery) {
 
         items.forEach(({ type, item }, rank) => {
             if (type === 'character') {
-                const index = characters.findIndex(c => c.avatar === item.avatar);
-                if (index !== -1) {
-                    characterScores.set(index, rank);
-                }
+                characterScores.set(item.avatar, rank);
             } else if (type === 'group') {
                 groupScores.set(item.id, rank);
             }
@@ -11794,17 +11770,10 @@ jQuery(async function () {
     });
 
     $(document).on('click', '.character_select', async function () {
-        // Origin point of character selection - resolve by avatar (the stable id), not the data-chid index,
-        // since the index baked into this row at render time can be stale by the time it's clicked (the
-        // character list can reorder in between). Falls back to data-chid for any row that doesn't carry
-        // data-avatar (defensive only - all current character-row templates set it).
+        // Origin point of character selection - resolve by avatar (the stable id), the only identifier a
+        // character row carries.
         const avatar = $(this).attr('data-avatar');
-        if (avatar) {
-            await selectCharacterByAvatar(avatar);
-        } else {
-            const id = Number($(this).attr('data-chid'));
-            await selectCharacterById(id);
-        }
+        await selectCharacterByAvatar(avatar);
     });
 
     $(document).on('click', '.bogus_folder_select', function () {
@@ -12024,7 +11993,7 @@ jQuery(async function () {
     $('#form_create').on('submit', (e) => createOrEditCharacter(e.originalEvent));
 
     $('#delete_button').on('click', async function () {
-        if (this_chid === undefined || !getCurrentCharacter()) {
+        if (!getCurrentCharacter()) {
             toastr.warning('No character selected.');
             return;
         }
@@ -12205,10 +12174,11 @@ jQuery(async function () {
         });
 
         if (id == 'option_select_chat') {
-            if (this_chid === undefined && !is_send_press && !selected_group) {
+            if (getSelectionState().type === 'none' && !is_send_press) {
                 await openPermanentAssistantCard();
             }
-            if ((selected_group && !is_group_generating) || (this_chid !== undefined && !is_send_press) || fromSlashCommand) {
+            const selectionAfterAssistantCard = getSelectionState();
+            if ((selectionAfterAssistantCard.type === 'group' && !is_group_generating) || (selectionAfterAssistantCard.type === 'character' && !is_send_press) || fromSlashCommand) {
                 await displayPastChats();
                 //this is just to avoid the shadow for past chat view when using /delchat
                 //however, the dialog popup still gets one..
@@ -12224,7 +12194,7 @@ jQuery(async function () {
                 }
             }
         } else if (id == 'option_start_new_chat') {
-            if ((selected_group || this_chid !== undefined) && !is_send_press) {
+            if (getSelectionState().type !== 'none' && !is_send_press) {
                 let deleteCurrentChat = false;
                 const result = await Popup.show.confirm(t`Start new chat?`, await renderTemplateAsync('newChatConfirm'), {
                     onClose: () => { deleteCurrentChat = !!$('#del_chat_checkbox').prop('checked'); },
@@ -12235,8 +12205,8 @@ jQuery(async function () {
 
                 await doNewChat({ deleteCurrentChat: deleteCurrentChat });
             }
-            if (!selected_group && this_chid === undefined && !is_send_press) {
-                const alreadyInTempChat = this_chid === undefined && name2 === neutralCharacterName;
+            if (getSelectionState().type === 'none' && !is_send_press) {
+                const alreadyInTempChat = name2 === neutralCharacterName;
                 await newAssistantChat({ temporary: alreadyInTempChat });
             }
         } else if (id == 'option_regenerate') {
@@ -12425,7 +12395,7 @@ jQuery(async function () {
     });
 
     $(document).on('pointerup', '.mes_copy', async function () {
-        if (this_chid !== undefined || selected_group || name2 === neutralCharacterName) {
+        if (getSelectionState().type !== 'none' || name2 === neutralCharacterName) {
             try {
                 const messageId = $(this).closest('.mes').attr('mesid');
                 const text = chat[messageId].mes;
@@ -12443,7 +12413,7 @@ jQuery(async function () {
         if (is_delete_mode) {
             return;
         }
-        if (this_chid !== undefined || selected_group || name2 === neutralCharacterName) {
+        if (getSelectionState().type !== 'none' || name2 === neutralCharacterName) {
             // Previously system messages we're allowed to be edited
             /*const message = $(this).closest(".mes");
 
