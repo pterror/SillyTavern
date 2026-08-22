@@ -130,6 +130,7 @@
         "start:no-csrf": "node server.js --disableCsrf",
         "lint": "eslint \"src/**/*.js\" \"public/**/*.js\" ./*.js",
         "lint:fix": "eslint \"src/**/*.js\" \"public/**/*.js\" ./*.js --fix",
+        "typecheck:dangling-refs": "tsc -p tsconfig.precommit.json --noEmit",
         "plugins:update": "node plugins update",
         "plugins:install": "node plugins install"
     },

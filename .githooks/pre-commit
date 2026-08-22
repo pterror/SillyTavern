@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Blocks commits that introduce TS2304 ("Cannot find name") errors.
+#
+# This is deliberately narrow: a full type-check of this codebase produces
+# hundreds of errors (loose `{object}` JSDoc typing, etc.) that aren't worth
+# gating commits on. TS2304 specifically has caught real ReferenceError bugs
+# (dangling references from incomplete re-exports, calls to functions that
+# were never defined) with clean signal and no noise, so that's the one
+# class this hook enforces. See tsconfig.precommit.json for the check scope.
+#
+# Wiring (one-time, per clone):
+#   git config core.hooksPath .githooks
+
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+if ! command -v npx >/dev/null 2>&1; then
+    echo "pre-commit: npx not found on PATH -- enter the project dev shell (direnv/nix develop) first" >&2
+    exit 1
+fi
+
+output="$(npx tsc -p tsconfig.precommit.json --noEmit 2>&1 || true)"
+dangling="$(printf '%s\n' "$output" | grep -E 'error TS2304:' || true)"
+
+if [ -n "$dangling" ]; then
+    echo "pre-commit: blocked -- TS2304 (Cannot find name) errors found:" >&2
+    echo "" >&2
+    printf '%s\n' "$dangling" >&2
+    echo "" >&2
+    echo "These are dangling references (missing import, missing typedef, or a function/name that doesn't exist). Fix them or, if this is a false positive, adjust tsconfig.precommit.json." >&2
+    exit 1
+fi
+
+exit 0

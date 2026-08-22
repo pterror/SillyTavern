@@ -1,5 +1,6 @@
 import { escapeRegex } from '../utils.js';
 import { SlashCommandParser } from './SlashCommandParser.js';
+/** @typedef {import('./SlashCommand.js').SlashCommand} SlashCommand */
 
 export class SlashCommandBrowser {
     /**@type {SlashCommand[]}*/ cmdList;
