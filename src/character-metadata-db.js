@@ -75,6 +75,11 @@ const BATCH_FLUSH_SIZE = 500;
 // version of the same work would plateau anywhere different, so there is nothing for a separate knob to tune.
 const BOOTSTRAP_READ_CONCURRENCY = getConfigValue('performance.characterIndexBuildConcurrency', 64, 'number');
 
+// How often bootstrapIfNeeded() emits a progress line while backfilling a large library, in wall-clock ms
+// rather than a row/chunk count - a fixed row interval would either spam the log on a fast install or go quiet
+// for too long on a slow one, so this ties log frequency to actual elapsed time instead.
+const BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS = 5000;
+
 // How often the background reconciler re-walks a user's characters directory (see this module's header, freshness
 // mechanism 3). This is a backstop, not the primary freshness path (that's the write-path hooks), so it doesn't
 // need to be aggressive - it exists to catch what the other two mechanisms missed.
@@ -563,6 +568,16 @@ export async function bootstrapIfNeeded(directories) {
     // blocks the event loop for the length of the whole bootstrap pass.
     const { tag_map } = readTagsData(directories);
 
+    // Progress visibility for a cold-start bootstrap against a large library (24k+ cards has been measured
+    // taking a couple of minutes end to end): a completely silent multi-minute pass with no output on the way
+    // is indistinguishable from a hang. Neither this loop nor characters-search-index.js's equivalent
+    // index-build pass had any existing progress-log format to match, so this is a new (deliberately minimal)
+    // one: throttled to BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS of wall-clock time, never per-row or per-chunk, so it
+    // can't meaningfully add overhead regardless of library size.
+    const bootstrapStart = Date.now();
+    let lastProgressLog = bootstrapStart;
+    let processedFiles = 0;
+
     // Streamed in BATCH_FLUSH_SIZE-sized chunks, each chunk's file reads run with bounded concurrency (see
     // BOOTSTRAP_READ_CONCURRENCY above) instead of one file at a time - this loop used to `await` each file's
     // stat+parse sequentially, which is what made this pass I/O-bound on per-file round-trip latency rather than
@@ -597,10 +612,27 @@ export async function bootstrapIfNeeded(directories) {
             });
         }
 
+        processedFiles += chunkFiles.length;
+
+        const now = Date.now();
+        if (now - lastProgressLog >= BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS) {
+            const elapsedSec = (now - bootstrapStart) / 1000;
+            const rate = processedFiles / elapsedSec;
+            const remaining = files.length - processedFiles;
+            const etaSec = rate > 0 ? Math.round(remaining / rate) : null;
+            console.log(color.cyan(`[character-metadata] Bootstrap progress: ${processedFiles}/${files.length} (${rate.toFixed(1)} cards/sec, ETA ${etaSec === null ? 'unknown' : `${etaSec}s`})`));
+            lastProgressLog = now;
+        }
+
         // Yield the event loop between chunks, matching reconcile()'s own per-batch yield (see that function) -
         // a 24k+-card bootstrap pass must not hog the event loop for its entire duration any more than a
         // reconcile pass is allowed to.
         await new Promise(resolve => setImmediate(resolve));
+    }
+
+    if (files.length > 0) {
+        const totalSec = (Date.now() - bootstrapStart) / 1000;
+        console.log(color.cyan(`[character-metadata] Bootstrap complete: ${files.length} cards in ${totalSec.toFixed(1)}s (${(files.length / totalSec).toFixed(1)} cards/sec).`));
     }
 
     entry.db.run('INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value', { key: 'bootstrap_completed', value: String(Date.now()) });
