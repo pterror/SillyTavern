@@ -112,3 +112,65 @@ describe('copyCharacterFile', () => {
         expect(fs.readFileSync(targetPath, 'utf8')).toBe('already-here');
     });
 });
+
+describe('hardlinkOntoCanonical', () => {
+    let tempDir;
+    let sourcePath;
+    let targetPath;
+
+    beforeEach(() => {
+        tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-local-import-hardlink-'));
+        sourcePath = path.join(tempDir, 'source.png');
+        targetPath = path.join(tempDir, 'target.png');
+        fs.writeFileSync(sourcePath, 'duplicate-bytes');
+        fs.writeFileSync(targetPath, 'canonical-bytes');
+    });
+
+    afterEach(() => {
+        jest.restoreAllMocks();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    test('replaces sourcePath in place with a hardlink to targetPath', async () => {
+        await localImportCopy.hardlinkOntoCanonical(sourcePath, targetPath);
+
+        expect(fs.readFileSync(sourcePath, 'utf8')).toBe('canonical-bytes');
+        expect(fs.statSync(sourcePath).ino).toBe(fs.statSync(targetPath).ino);
+    });
+
+    test('never leaves a window where sourcePath is missing (temp-link-then-rename, not unlink-then-link)', async () => {
+        const unlinkSpy = jest.spyOn(fsPromises, 'unlink');
+        const renameSpy = jest.spyOn(fsPromises, 'rename');
+
+        await localImportCopy.hardlinkOntoCanonical(sourcePath, targetPath);
+
+        // unlink is only ever the crash-cleanup path (see the failure test below) - a successful run never
+        // calls it, since sourcePath is replaced via rename, never via a preceding delete.
+        expect(unlinkSpy).not.toHaveBeenCalled();
+        expect(renameSpy).toHaveBeenCalledTimes(1);
+    });
+
+    test('on a rename failure, leaves the original sourcePath untouched and cleans up the temp hardlink', async () => {
+        const renameError = new Error('simulated rename failure');
+        jest.spyOn(fsPromises, 'rename').mockRejectedValueOnce(renameError);
+
+        await expect(localImportCopy.hardlinkOntoCanonical(sourcePath, targetPath)).rejects.toBe(renameError);
+
+        // Original file untouched - still its own bytes/inode, not linked to targetPath.
+        expect(fs.readFileSync(sourcePath, 'utf8')).toBe('duplicate-bytes');
+        expect(fs.statSync(sourcePath).ino).not.toBe(fs.statSync(targetPath).ino);
+        // No leftover ".tmp" file abandoned in the directory.
+        const leftovers = fs.readdirSync(tempDir).filter(f => f.endsWith('.tmp'));
+        expect(leftovers).toEqual([]);
+    });
+
+    test('propagates an EXDEV from the initial link (cross-device) without attempting a rename', async () => {
+        const exdevError = Object.assign(new Error('cross-device link'), { code: 'EXDEV' });
+        jest.spyOn(fsPromises, 'link').mockRejectedValueOnce(exdevError);
+        const renameSpy = jest.spyOn(fsPromises, 'rename');
+
+        await expect(localImportCopy.hardlinkOntoCanonical(sourcePath, targetPath)).rejects.toBe(exdevError);
+        expect(renameSpy).not.toHaveBeenCalled();
+        expect(fs.readFileSync(sourcePath, 'utf8')).toBe('duplicate-bytes');
+    });
+});

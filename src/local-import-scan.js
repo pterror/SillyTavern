@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import { getConfigValue, color } from './util.js';
 import { DEFAULT_USER, UPLOADS_DIRECTORY } from './constants.js';
 import { getUserDirectories } from './users.js';
-import { copyCharacterFile } from './local-import-copy.js';
+import { copyCharacterFile, hardlinkOntoCanonical } from './local-import-copy.js';
 import { hashFileContents, importCharacterFileHeadless } from './endpoints/characters.js';
 import { beginBatchImport, endBatchImport, findCharacterIdByContentHash } from './character-metadata-db.js';
 
@@ -127,6 +127,73 @@ async function stageFile(sourcePath) {
 }
 
 /**
+ * When `localImport.hardlinkDuplicateSourceFiles` is enabled (default `false` - see that key's own doc
+ * comment in config.yaml), replaces a duplicate source file in place with a hardlink to the canonical
+ * already-imported character file, so the scanned source directory itself gets deduplicated on disk over
+ * time - not just avoided-as-a-redundant-character-record. A no-op whenever the toggle is off, so a
+ * directory the user only configured as an import SOURCE is never mutated without that explicit opt-in.
+ *
+ * Safety posture: `contentHash` is the exact same sha256 `processFile()` already used to confirm this file
+ * is a duplicate via `findCharacterIdByContentHash()`'s lookup against the `content_hash` column - that
+ * lookup already IS the byte-identity confirmation this feature relies on, and this function reuses it as
+ * given rather than re-deriving equality some other, looser way (e.g. comparing file size or mtime).
+ *
+ * Deliberately does NOT additionally re-hash `targetPath`'s current on-disk bytes and compare those to
+ * `contentHash` - the two are never expected to match even for a completely legitimate, correctly-detected
+ * duplicate: `content_hash` records the hash of the raw bytes as originally UPLOADED (see that column's own
+ * doc comment in character-metadata-db.js), while every importFromX() in characters.js writes fresh
+ * metadata into the stored character file as part of import (e.g. a freshly-generated `create_date`), so
+ * the canonical character file's current bytes differ from its own original upload's bytes too, by design -
+ * re-hashing `targetPath` and requiring a match would therefore reject every real duplicate, not catch bad
+ * ones. What this DOES still check below is that `targetPath` actually exists - a stale/inconsistent DB
+ * record (character row present, file since deleted by other means) is a real possibility this feature
+ * must not crash on, and is a different question from "is the match real."
+ * @param {string} sourcePath Absolute path to the duplicate source file (already confirmed to exist by the caller).
+ * @param {string} characterId The already-imported character's id, as returned by findCharacterIdByContentHash() -
+ * this is the character's full avatar FILENAME (e.g. `01a0....png`, already including the `.png` extension -
+ * see character-metadata-db.js's buildRow()/upsertCharacterFromWrite() doc comments on `id` being the avatar
+ * filename, not a bare id), so it is joined onto `directories.characters` as-is, not with another `.png` appended.
+ * @param {string} contentHash sha256 hex digest already computed for `sourcePath` by the caller - unused
+ * directly here (the match was already made by the caller's findCharacterIdByContentHash() lookup), kept as
+ * a parameter only so a future caller-side change to what identifies "the match" doesn't have to also touch
+ * this function's signature.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<void>} Never throws - every failure/inapplicable-case is logged and swallowed, since
+ * this is always a secondary disk-space optimization layered on top of an import that already succeeded.
+ */
+async function maybeHardlinkDuplicateSource(sourcePath, characterId, contentHash, directories) {
+    const hardlinkEnabled = getConfigValue('localImport.hardlinkDuplicateSourceFiles', false, 'boolean');
+    if (!hardlinkEnabled) return;
+
+    const targetPath = path.join(directories.characters, characterId);
+
+    let targetStat;
+    try {
+        targetStat = await fsPromises.stat(targetPath);
+    } catch (err) {
+        console.warn(`[local-import] Duplicate-source hardlink skipped for ${sourcePath}: canonical character file ${targetPath} does not exist (stale record?).`);
+        return;
+    }
+    if (!targetStat.isFile()) return;
+
+    try {
+        const sourceStat = await fsPromises.stat(sourcePath);
+        if (sourceStat.dev === targetStat.dev && sourceStat.ino === targetStat.ino) {
+            return; // Already the same inode (e.g. a prior pass already linked these) - nothing to do.
+        }
+
+        await hardlinkOntoCanonical(sourcePath, targetPath);
+        console.log(color.cyan(`[local-import] Deduplicated source file on disk: ${sourcePath} -> hardlinked to ${targetPath}.`));
+    } catch (err) {
+        if (err.code === 'EXDEV') {
+            console.debug(`[local-import] Duplicate-source hardlink skipped for ${sourcePath}: source directory and characters directory are on different filesystems.`);
+            return;
+        }
+        console.error(`[local-import] Failed to hardlink duplicate source ${sourcePath} onto ${targetPath}, leaving source file untouched:`, err.message);
+    }
+}
+
+/**
  * Discovers-and-imports one file if it looks new/changed and isn't already in the library (by content hash).
  * Shared by both the periodic scan and the (optional) fs.watch handler - see this module's header on why there
  * is only ever one such code path.
@@ -166,6 +233,7 @@ async function processFile(state, filename, directories) {
         // directory whose files are already all imported" case.
         const alreadyImported = await findCharacterIdByContentHash(directories, contentHash);
         if (alreadyImported) {
+            await maybeHardlinkDuplicateSource(sourcePath, alreadyImported, contentHash, directories);
             state.lastSeenMtimeMs.set(filename, stat.mtimeMs);
             return;
         }

@@ -300,6 +300,15 @@ localImport:
   # characters directory), and isn't available on every platform/filesystem either way - the periodic
   # scan above is what's actually relied on.
   watchEnabled: true
+  # When a scanned file turns out to be a byte-identical duplicate of an already-imported character
+  # (see the dedup note above), also replace the duplicate SOURCE file itself with a hardlink to the
+  # already-imported character file, so the scanned directory gets deduplicated on disk too, not just
+  # avoiding a redundant character record. Off by default: this mutates files inside a directory you
+  # configured as an import SOURCE (not this install's own data directory), so it should never happen
+  # without an explicit opt-in. Only ever applies when the source directory and this install's
+  # characters directory are on the same filesystem (hardlinks can't cross filesystems/devices) - when
+  # they aren't, the source file is simply left untouched, same as when this is off.
+  hardlinkDuplicateSourceFiles: false
 
 # CACHE BUSTER CONFIGURATION
 # IMPORTANT: Requires localhost or a domain with HTTPS, otherwise will not work!
