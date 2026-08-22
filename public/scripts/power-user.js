@@ -53,7 +53,8 @@ import { BIAS_CACHE } from './logit-bias.js';
 import { renderTemplateAsync } from './templates.js';
 
 import { countOccurrences, debounce, delay, download, getFileText, getSanitizedFilename, getStringHash, isOdd, isTrueBoolean, onlyUnique, resetScrollHeight, sortMoments, stringToRange, timestampToMoment } from './utils.js';
-import { compareByRandomSeed, getRandomSortSeed, rerollRandomSortSeed } from './random-sort.js';
+import { compareByRandomSeed, getRandomSortSeed, mintRandomSortSeed, rerollRandomSortSeed } from './random-sort.js';
+import { characterRepository, buildCharacterQuery } from './character-repository.js';
 import { FILTER_TYPES } from './filters.js';
 import { PARSER_FLAG, SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
@@ -3130,26 +3131,41 @@ function findTagIdByName(name) {
     }
 }
 
-async function doRandomChat(_, tagName) {
-    /**
-     * Gets the avatar of a random character.
-     * @returns {string|undefined} The avatar of the randomly selected character.
-     */
-    function getRandomCharacterAvatar() {
-        if (!tagName) {
-            return characters[Math.floor(Math.random() * characters.length)]?.avatar;
+/**
+ * Picks one random character, optionally tag-filtered, via the server's `ORDER BY RANDOM() LIMIT 1` (design doc
+ * §5.3): this is the one-shot `/random` pick, unrelated to the persisted seeded random-sort *list* ordering
+ * (random-sort.js, phase 5b) - no residency requirement, so it goes straight through
+ * `characterRepository.query()` instead of scanning `characters`/`tag_map`. The `/query` endpoint requires a
+ * finite `sort.seed` even for a one-row pick (src/endpoints/characters.js), so this mints one with the same
+ * helper random-sort.js uses - it just never persists it, since a one-shot pick has nothing to reroll.
+ * @param {string} [tagName] Optional tag name to filter the pick to.
+ * @returns {Promise<string|undefined>} The avatar of the randomly selected character, or undefined if none matched.
+ */
+async function getRandomCharacterAvatar(tagName) {
+    let tagId;
+    if (tagName) {
+        tagId = findTagIdByName(tagName);
+        if (!tagId) {
+            return undefined;
         }
-
-        const tagId = findTagIdByName(tagName);
-        const taggedCharacters = Object.entries(tag_map)
-            .filter(x => x[1].includes(tagId)) // Get only records that include the tag
-            .map(x => x[0]) // Map the character avatar
-            .filter(x => charactersStore.has(x)); // Filter out characters that don't exist
-        return taggedCharacters[Math.floor(Math.random() * taggedCharacters.length)];
     }
 
+    // Reuses buildCharacterQuery() (character-repository.js) - the same pure filter/sort builder
+    // getEntitiesList()/favsToHotswap()/getGroupCharacters() already go through - rather than hand-shaping the
+    // wire filter here, so this stays covered by its existing unit coverage (tests/character-repository.test.js)
+    // instead of needing its own.
+    const { filter, sort } = buildCharacterQuery({
+        tagsInclude: tagId ? [tagId] : [],
+        sortField: 'random',
+        randomSeed: mintRandomSortSeed(),
+    });
+    const { rows } = await characterRepository.query(filter, sort, 1, 1, ['rows']);
+    return rows?.[0]?.avatar;
+}
+
+async function doRandomChat(_, tagName) {
     resetSelectedGroup();
-    const avatar = getRandomCharacterAvatar();
+    const avatar = await getRandomCharacterAvatar(tagName);
     if (!avatar) {
         toastr.error('No characters found');
         return;
