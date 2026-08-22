@@ -9,6 +9,7 @@ import { sync as writeFileAtomicSync, default as writeFileAtomic } from 'write-f
 import { color, tryParse } from '../util.js';
 import { getFileNameValidationFunction } from '../middleware/validateFileName.js';
 import { upsertGroupRow, deleteGroupRow } from '../character-metadata-db.js';
+import { calculateGroupChatStats } from '../character-shallow.js';
 
 export const router = express.Router();
 
@@ -126,7 +127,6 @@ export function getGroupsData(directories) {
     }
 
     const files = fs.readdirSync(directories.groups).filter(x => path.extname(x) === '.json');
-    const chats = fs.readdirSync(directories.groupChats).filter(x => path.extname(x) === '.jsonl');
 
     files.forEach(function (file) {
         try {
@@ -137,21 +137,13 @@ export function getGroupsData(directories) {
             group.date_added = groupStat.birthtimeMs;
             group.create_date = new Date(groupStat.birthtimeMs).toISOString();
 
-            let chat_size = 0;
-            let date_last_chat = 0;
-
-            if (Array.isArray(group.chats) && Array.isArray(chats)) {
-                for (const chat of chats) {
-                    if (group.chats.includes(path.parse(chat).name)) {
-                        const chatStat = fs.statSync(path.join(directories.groupChats, chat));
-                        chat_size += chatStat.size;
-                        date_last_chat = Math.max(date_last_chat, chatStat.mtimeMs);
-                    }
-                }
-            }
-
-            group.date_last_chat = date_last_chat;
-            group.chat_size = chat_size;
+            // Shared with character-metadata-db.js's bumpGroupChatStats()/bootstrapGroupsIfNeeded() - see that
+            // function's own doc comment (character-shallow.js). Stats only this group's own chat ids by name,
+            // rather than the old inline version's readdir-then-filter-by-membership over the whole groupChats
+            // directory.
+            const { chatSize, dateLastChat } = calculateGroupChatStats(directories.groupChats, group.chats);
+            group.date_last_chat = dateLastChat;
+            group.chat_size = chatSize;
             groups.push(group);
         } catch (error) {
             console.error(error);
@@ -159,6 +151,36 @@ export function getGroupsData(directories) {
     });
 
     return groups;
+}
+
+/**
+ * Reads just the given group ids' JSON files off disk - the lean, bounded-by-`ids.length` counterpart to
+ * getGroupsData()'s full-directory listing, for hydrating one page of a merged characters+groups `/query` result
+ * (owner decision, extending the character-data-residency-redesign to groups) without a directory-wide read.
+ *
+ * Deliberately does NOT attach date_added/date_last_chat/chat_size/fav the way getGroupsData() does - those come
+ * from the SQLite metadata row that already decided the page's sort order (see character-metadata-db.js's
+ * queryEntities()), and re-deriving them here from a live stat would risk them disagreeing with the value the
+ * page was actually sorted by. The `/query` route stamps the metadata row's values onto the object this returns.
+ * @param {import('../users.js').UserDirectoryList} directories User directories
+ * @param {string[]} ids Group ids to read
+ * @returns {Record<string, object>} Keyed by group id - an id with no readable/parseable file is simply absent,
+ * not an error (same tolerance getGroupsData()'s per-file try/catch already has).
+ */
+export function getGroupsByIds(directories, ids) {
+    /** @type {Record<string, object>} */
+    const result = {};
+    for (const id of ids) {
+        try {
+            const filePath = path.join(directories.groups, sanitize(`${id}.json`));
+            if (!fs.existsSync(filePath)) continue;
+            const fileContents = fs.readFileSync(filePath, 'utf8');
+            result[id] = JSON.parse(fileContents);
+        } catch (error) {
+            console.error(error);
+        }
+    }
+    return result;
 }
 
 router.post('/all', (request, response) => {
@@ -202,7 +224,7 @@ router.post('/create', async (request, response) => {
     // existence against. Awaited but not fatal to the request if it fails - same tolerance characters.js's own
     // hooks use elsewhere (see e.g. its /rename route), since the metadata store is a derived index, not the
     // group's own source of truth (the JSON file just written is).
-    await upsertGroupRow(request.user.directories, groupMetadata.id, groupMetadata.name).catch(err =>
+    await upsertGroupRow(request.user.directories, groupMetadata.id, groupMetadata.name, { fav: groupMetadata.fav }).catch(err =>
         console.error(`Could not update group metadata store for ${groupMetadata.id}:`, err));
 
     return response.send(groupMetadata);
@@ -219,8 +241,8 @@ router.post('/edit', getFileNameValidationFunction('id'), async (request, respon
 
     writeFileAtomicSync(pathToFile, fileData);
 
-    // Same phase 3 write-path hook as /create above - a group's name can change here.
-    await upsertGroupRow(request.user.directories, id, request.body.name).catch(err =>
+    // Same phase 3 write-path hook as /create above - a group's name/fav can change here.
+    await upsertGroupRow(request.user.directories, id, request.body.name, { fav: request.body.fav }).catch(err =>
         console.error(`Could not update group metadata store for ${id}:`, err));
 
     return response.send({ ok: true });

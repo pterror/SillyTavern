@@ -7,7 +7,7 @@ import _ from 'lodash';
 import { color, getConfigValue, mapWithConcurrency } from './util.js';
 import { parse as parseCharacterCard } from './character-card-parser.js';
 import { getCharaCardV2 } from './character-card-normalize.js';
-import { calculateChatSize, calculateDataSize, toShallow } from './character-shallow.js';
+import { calculateChatSize, calculateDataSize, calculateGroupChatStats, toShallow } from './character-shallow.js';
 import { readTagsData } from './endpoints/tags-data.js';
 import { getSqliteEngine } from './endpoints/sqlite-engine.js';
 import { TAGS_FILE } from './constants.js';
@@ -186,16 +186,30 @@ const SCHEMA_SQL = `
         value TEXT
     );
 
-    -- PHASE 3 EXTENSION (owner decision, see this module's header on tags.json's removal): groups get the same
-    -- existence-tracking treatment characters already have, just minimal - groups aren't part of the character
-    -- residency redesign otherwise, this table exists ONLY so group<->tag assignments have something to check
-    -- existence against (assignEntityTag()) and something to cascade-delete against (deleteGroupRow()). Unlike
-    -- characters, a group's id is stable for its whole lifetime (see groups.js's /create - it's minted once and
-    -- never changes on rename), so there is no group equivalent of renameCharacterRow()/date_added carry-forward.
+    -- PHASE 3 EXTENSION (owner decision, see this module's header on tags.json's removal), FURTHER EXTENDED
+    -- (owner decision) to give groups the same fav/date_added/date_last_chat/chat_size/name_fold columns
+    -- characters already have, so a merged characters+groups browse/sort/paginate query (queryEntities() below)
+    -- can ORDER BY one shared column shape across both tables via a single UNION ALL. Unlike characters, a
+    -- group's id is stable for its whole lifetime (see groups.js's /create - it's minted once and never changes
+    -- on rename), so there is no group equivalent of renameCharacterRow()/date_added carry-forward - date_added
+    -- write-once still applies (see GROUP_UPSERT_SQL below), it just never needs a rename-time correction.
+    -- Groups have no 'world' (no lorebook binding concept) and no full-text index (see queryEntities()'s header
+    -- for why filter.search never reaches this table), so those two are simply absent here.
     CREATE TABLE IF NOT EXISTS groups (
-        id   TEXT PRIMARY KEY,
-        name TEXT NOT NULL
+        id             TEXT PRIMARY KEY,
+        name           TEXT NOT NULL,
+        name_fold      TEXT NOT NULL DEFAULT '',
+        fav            INTEGER NOT NULL DEFAULT 0,
+        date_added     INTEGER NOT NULL DEFAULT 0,
+        date_last_chat INTEGER NOT NULL DEFAULT 0,
+        chat_size      INTEGER NOT NULL DEFAULT 0
     );
+    -- Indexes for the groups table are deliberately NOT here (unlike every other CREATE INDEX in this schema) -
+    -- see migrateGroupsColumns() below, which creates them AFTER guaranteeing the columns they reference exist.
+    -- An unconditional CREATE INDEX here would run as part of this same db.exec() call, before
+    -- migrateGroupsColumns() ever gets a chance to ALTER a pre-existing (old id/name-only shape) groups table -
+    -- and SQLite has no lazy/deferred index creation, so CREATE INDEX ... ON groups(name_fold) against a table
+    -- that doesn't have that column yet fails outright, taking the whole schema-init call down with it.
 
     CREATE TABLE IF NOT EXISTS group_tags (
         group_id TEXT NOT NULL,
@@ -328,6 +342,69 @@ function migrateContentHashColumn(db) {
 }
 
 /**
+ * Adds `fav`/`date_added`/`date_last_chat`/`chat_size`/`name_fold` to an existing `groups` table that predates
+ * them (an install that only ever had the phase-3 minimal `id, name` shape) - same guarded-ALTER pattern as
+ * migrateContentHashColumn() above, for the same reason (SQLite has no `ADD COLUMN IF NOT EXISTS`, and
+ * SCHEMA_SQL's `CREATE TABLE IF NOT EXISTS` is a no-op against an existing table with an older column set). A
+ * brand-new install's first CREATE TABLE already has every column (they're in SCHEMA_SQL's groups definition
+ * now), so every ALTER below is a no-op there - one code path handles both "always ran on a fresh table" and
+ * "needs to catch up an existing one".
+ *
+ * UNLIKE migrateContentHashColumn(), this ALSO backfills real values into any row that already existed under the
+ * old 2-column shape - and it has to be done here, as a plain UPDATE, rather than by re-running
+ * bootstrapGroupsIfNeeded()'s normal upsert path. The reason is the write-once contract: GROUP_UPSERT_SQL's ON
+ * CONFLICT clause deliberately never overwrites an existing row's `date_added` (see that SQL's own comment), so
+ * a row that already exists (inserted back when the table only had `id`/`name`) would have its ALTER-added
+ * `date_added` default of 0 frozen forever - bootstrapGroupsIfNeeded() is separately gated by
+ * `groups_bootstrap_completed`, which is already set on such an install, so it would never even run again to
+ * try. This function's own ALTER-presence check is therefore the only gate this backfill needs: it only touches
+ * rows for a genuinely pre-existing table, and it only runs once (the next call finds every column already
+ * present and does nothing).
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {import('./users.js').UserDirectoryList} directories Needed to re-read each existing group's JSON file
+ * for the values ALTER's column defaults can't supply (name, fav, chat ids for stat'ing).
+ */
+function migrateGroupsColumns(db, directories) {
+    const columns = db.all('PRAGMA table_info(groups)');
+    const columnNames = new Set(columns.map(c => c.name));
+    const isPreExistingTable = columnNames.size > 0 && !columnNames.has('date_added');
+
+    if (!columnNames.has('name_fold')) db.exec("ALTER TABLE groups ADD COLUMN name_fold TEXT NOT NULL DEFAULT ''");
+    if (!columnNames.has('fav')) db.exec('ALTER TABLE groups ADD COLUMN fav INTEGER NOT NULL DEFAULT 0');
+    if (!columnNames.has('date_added')) db.exec('ALTER TABLE groups ADD COLUMN date_added INTEGER NOT NULL DEFAULT 0');
+    if (!columnNames.has('date_last_chat')) db.exec('ALTER TABLE groups ADD COLUMN date_last_chat INTEGER NOT NULL DEFAULT 0');
+    if (!columnNames.has('chat_size')) db.exec('ALTER TABLE groups ADD COLUMN chat_size INTEGER NOT NULL DEFAULT 0');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_groups_name_fold ON groups(name_fold)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_groups_date_added ON groups(date_added)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_groups_date_last_chat ON groups(date_last_chat)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_groups_chat_size ON groups(chat_size)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_groups_fav_name_fold ON groups(fav, name_fold)');
+
+    if (!isPreExistingTable) return;
+
+    const existingIds = db.all('SELECT id FROM groups').map(r => r.id);
+    if (existingIds.length === 0) return;
+
+    db.transaction(() => {
+        for (const id of existingIds) {
+            try {
+                const filePath = path.join(directories.groups, `${id}.json`);
+                const raw = fs.readFileSync(filePath, 'utf8');
+                const group = JSON.parse(raw);
+                const stat = fs.statSync(filePath);
+                const { chatSize, dateLastChat } = calculateGroupChatStats(directories.groupChats, group.chats);
+                db.run(
+                    'UPDATE groups SET name = @name, name_fold = @nameFold, fav = @fav, date_added = @dateAdded, date_last_chat = @dateLastChat, chat_size = @chatSize WHERE id = @id',
+                    { id, name: group.name ?? '', nameFold: foldName(group.name), fav: group.fav ? 1 : 0, dateAdded: Math.round(stat.birthtimeMs), dateLastChat, chatSize },
+                );
+            } catch (err) {
+                console.error(`[character-metadata] Column-migration backfill failed to process group ${id}, leaving it at its zeroed defaults:`, err.message);
+            }
+        }
+    });
+}
+
+/**
  * Resolves (creating on first use) the metadata DB entry for a user, including opening the SQLite file and
  * applying SCHEMA_SQL (idempotent - every statement is CREATE ... IF NOT EXISTS). Returns `null` if no SQLite
  * engine is usable on this install at all (see sqlite-engine.js) - callers must treat that as "the metadata
@@ -358,6 +435,7 @@ async function getEntry(directories) {
     const db = engine.openDatabase(getDbPath(directories));
     db.exec(SCHEMA_SQL);
     migrateContentHashColumn(db);
+    migrateGroupsColumns(db, directories);
     // Design doc §5.3, decisions 8/13: random-sort order is a per-query `ORDER BY <hash>(id, seed)`, never a
     // materialized column (a materialized seeded column is O(users × rerolls) to maintain - see the decision's
     // rationale). Registering the client's own cyrb53 as a real SQL function is what makes that expressible at
@@ -1437,23 +1515,138 @@ export async function getAllTagUsage(directories) {
     return result;
 }
 
+const GROUP_UPSERT_SQL = `
+    INSERT INTO groups (id, name, name_fold, fav, date_added, date_last_chat, chat_size)
+    VALUES (@id, @name, @nameFold, @fav, @dateAdded, @dateLastChat, @chatSize)
+    ON CONFLICT(id) DO UPDATE SET
+        name = excluded.name,
+        name_fold = excluded.name_fold,
+        fav = excluded.fav
+    -- date_added/date_last_chat/chat_size are deliberately absent from this SET list, for two different reasons:
+    --   - date_added is write-once, exactly mirroring characters' UPSERT_SQL (see this module's header on
+    --     "date_added IS RECORDED ONCE") - only a genuine first INSERT's VALUES candidate is ever used.
+    --   - date_last_chat/chat_size are owned by bumpGroupChatStats() (the /group/save write hook, below) and by
+    --     the backfill passes (bootstrapGroupsIfNeeded()/migrateGroupsColumns()), not by this function's own
+    --     callers (upsertGroupRow(), called from groups.js's /create and /edit) - an /edit request (renaming a
+    --     group, toggling fav) has no reason to know the group's current chat stats, and must not reset them to
+    --     whatever placeholder candidate it happens to be called with.
+`;
+
 /**
- * Write-path hook for groups.js's /create and /edit routes - upserts a group's id/name into the `groups` table
- * (see this module's header on why this table is minimal). Unlike upsertCharacterFromWrite(), there's no
- * date_added/rev/change-log bookkeeping here - nothing currently reads change history for groups, this table
- * exists purely so assignEntityTag()/unassignEntityTag() have something to resolve a group id against.
+ * Shared sync core for every place that writes a full groups row (upsertGroupRow() below,
+ * bootstrapGroupsIfNeeded()'s backfill loop) - computes name_fold from `name` and normalizes `fav` to 0/1, same
+ * shape buildRow()/writeRowSync() play for characters, just without a change-log entry (see upsertGroupRow()'s
+ * own doc comment on why groups don't get one).
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {object} row
+ * @param {string} row.id
+ * @param {string} row.name
+ * @param {boolean|undefined} row.fav
+ * @param {number} row.dateAdded Only used if this is a genuine insert - see GROUP_UPSERT_SQL's own comment.
+ * @param {number} row.dateLastChat Likewise.
+ * @param {number} row.chatSize Likewise.
+ */
+function upsertGroupRowSync(db, { id, name, fav, dateAdded, dateLastChat, chatSize }) {
+    db.run(GROUP_UPSERT_SQL, {
+        id,
+        name: name ?? '',
+        nameFold: foldName(name),
+        fav: fav ? 1 : 0,
+        dateAdded,
+        dateLastChat,
+        chatSize,
+    });
+}
+
+/**
+ * Write-path hook for groups.js's /create and /edit routes - upserts a group's id/name/fav into the `groups`
+ * table (see this module's header on why this table exists and what it now carries). Unlike
+ * upsertCharacterFromWrite(), there's still no rev/change-log bookkeeping here - nothing reads change history for
+ * groups (queryEntities() below reads `changes.MAX(rev)` for its own `rev` field, but that's the shared
+ * high-water mark already advanced by character writes; a groups-only change produces no new `changes` row and
+ * so does not advance it - acceptable since nothing depends on group mutations being visible through that
+ * specific signal today).
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} id
  * @param {string} name
+ * @param {object} [extra]
+ * @param {boolean} [extra.fav]
  * @returns {Promise<void>}
  */
-export async function upsertGroupRow(directories, id, name) {
+export async function upsertGroupRow(directories, id, name, { fav } = {}) {
     const entry = await getEntry(directories);
     if (!entry) return;
-    entry.db.run(
-        'INSERT INTO groups (id, name) VALUES (@id, @name) ON CONFLICT(id) DO UPDATE SET name = excluded.name',
-        { id, name: name ?? '' },
-    );
+    // dateAdded/dateLastChat/dateLastChat/chatSize candidates only matter on a genuine first insert (see
+    // GROUP_UPSERT_SQL) - Date.now()/0/0 are the right "just discovered this id" defaults, matching how
+    // upsertCharacterFromWrite() treats any non-bootstrap discovery.
+    upsertGroupRowSync(entry.db, { id, name, fav, dateAdded: Date.now(), dateLastChat: 0, chatSize: 0 });
+}
+
+/**
+ * Finds which group owns a given chat id, by scanning `directories.groups` for a group whose `chats` array
+ * contains it. Needed because chats.js's `/group/save` route only ever receives the *chat's* own id
+ * (group-chats.js's client-side saveGroupChat() posts `group.chat_id`, which is not the group's own persistent
+ * id - a group's active chat can be renamed/switched independently of the group id itself), so bumpGroupChatStats()
+ * below has no group id handed to it directly and has to resolve one.
+ *
+ * This IS a groups-directory-wide read, unlike everything else this extension adds for groups - deliberately, and
+ * safely: there is currently no chat-id -> group-id index anywhere (SQL or otherwise) to look this up in O(1),
+ * and building one is out of this extension's scope given there's no route that supplies a group id to key it
+ * from. The tradeoff doesn't face the scale this design otherwise guards against: characters are the
+ * 300k-then-10M target (design doc §1); groups are a user-curated set of characters, and this module's own header
+ * already scopes the whole `groups` table as "minimal... aren't part of the character residency redesign
+ * otherwise" - realistically nowhere near enough groups exist for a per-save directory scan to matter, and this
+ * only runs once per chat save, never on a per-request list-render path (the thing this whole design exists to
+ * eliminate for characters).
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} chatId
+ * @returns {{ id: string, chats: string[] } | null} The owning group's id and chat-id list, or `null` if no
+ * group's `chats` array contains this chat id (also covers an unreadable/missing groups directory).
+ */
+function resolveGroupForChat(directories, chatId) {
+    if (!fs.existsSync(directories.groups)) return null;
+    const files = fs.readdirSync(directories.groups).filter(f => f.endsWith('.json'));
+    for (const file of files) {
+        try {
+            const group = JSON.parse(fs.readFileSync(path.join(directories.groups, file), 'utf8'));
+            if (typeof group?.id === 'string' && Array.isArray(group.chats) && group.chats.includes(chatId)) {
+                return { id: group.id, chats: group.chats };
+            }
+        } catch {
+            // Skip an unreadable/corrupt group file - same tolerance bootstrapGroupsIfNeeded() already has for
+            // this exact directory.
+        }
+    }
+    return null;
+}
+
+/**
+ * Write-path hook for chats.js's `/group/save` route, called with the just-saved chat's own id after the write
+ * succeeds - keeps `date_last_chat`/`chat_size` fresh the same way character writes keep those columns fresh for
+ * characters (upsertCharacterFromWrite()'s own calculateChatSize() call). Resolves the owning group via
+ * resolveGroupForChat() (see that function's own doc comment for why a chat id, not a group id, is what this
+ * hook actually receives), then stats only that group's own chat files (calculateGroupChatStats(),
+ * character-shallow.js) - never the whole `groupChats` directory.
+ *
+ * A plain UPDATE, not an upsert - by the time a chat is ever saved for a group, /create's upsertGroupRow() call
+ * has necessarily already inserted the row (a group chat can't exist before its group does), so there is nothing
+ * here that needs insert-or-update semantics, and no candidate name/fav to supply. If the row is somehow missing
+ * (a pre-existing install's group whose bootstrapGroupsIfNeeded() pass hasn't completed yet), this silently
+ * affects zero rows rather than erroring - the next bootstrap/edit pass will populate it correctly instead.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} chatId The id of the chat that was just saved (NOT the group's own id - see
+ * resolveGroupForChat()'s doc comment).
+ * @returns {Promise<void>}
+ */
+export async function bumpGroupChatStats(directories, chatId) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+
+    const group = resolveGroupForChat(directories, chatId);
+    if (!group) return; // Not a group chat this store knows about - nothing to bump.
+
+    const { chatSize, dateLastChat } = calculateGroupChatStats(directories.groupChats, group.chats);
+    entry.db.run('UPDATE groups SET date_last_chat = @dateLastChat, chat_size = @chatSize WHERE id = @id', { dateLastChat, chatSize, id: group.id });
 }
 
 /**
@@ -1480,6 +1673,17 @@ export async function deleteGroupRow(directories, id) {
  * migrateTagsJsonIfNeeded() below could never resolve its tag_map entries as "a real group" and would silently
  * drop them. Gated by its own meta flag so it only ever runs once per user, same pattern as
  * bootstrap_completed.
+ *
+ * Computes the full row (fav/date_added/date_last_chat/chat_size/name_fold), not just id/name - date_added is
+ * seeded from the group file's `birthtimeMs`, the same "best available approximation for cards that predate the
+ * column" rule bootstrapIfNeeded() applies to characters; date_last_chat/chat_size come from
+ * calculateGroupChatStats() (character-shallow.js), the same shared computation bumpGroupChatStats() and
+ * getGroupsData() (groups.js) use, scoped to just this group's own `chats` ids.
+ *
+ * NOTE: this only covers a groups table that has never been bootstrapped at all. An install that already
+ * completed this pass under the old 2-column shape (this meta flag already set) gets its backfill from
+ * migrateGroupsColumns() instead - see that function's own doc comment for why the write-once date_added rule
+ * makes a second pass through this function's normal upsert path unsuitable for that case.
  * @param {import('./users.js').UserDirectoryList} directories
  * @returns {Promise<void>}
  */
@@ -1495,13 +1699,20 @@ export async function bootstrapGroupsIfNeeded(directories) {
         entry.db.transaction(() => {
             for (const file of files) {
                 try {
-                    const raw = fs.readFileSync(path.join(directories.groups, file), 'utf8');
+                    const filePath = path.join(directories.groups, file);
+                    const raw = fs.readFileSync(filePath, 'utf8');
                     const group = JSON.parse(raw);
                     if (group && typeof group.id === 'string' && group.id) {
-                        entry.db.run(
-                            'INSERT INTO groups (id, name) VALUES (@id, @name) ON CONFLICT(id) DO UPDATE SET name = excluded.name',
-                            { id: group.id, name: group.name ?? '' },
-                        );
+                        const stat = fs.statSync(filePath);
+                        const { chatSize, dateLastChat } = calculateGroupChatStats(directories.groupChats, group.chats);
+                        upsertGroupRowSync(entry.db, {
+                            id: group.id,
+                            name: group.name,
+                            fav: !!group.fav,
+                            dateAdded: Math.round(stat.birthtimeMs),
+                            dateLastChat,
+                            chatSize,
+                        });
                     }
                 } catch (err) {
                     console.error(`[character-metadata] Bootstrap failed to process group file ${file}, skipping it (group tags for it won't resolve until it's next created/edited):`, err.message);
@@ -1923,6 +2134,199 @@ export async function queryCharacters(directories, params = {}) {
 // Mirrors characters.js's own DEFAULT_PAGE_LIMIT - a caller genuinely omitting `limit` (rather than the /query
 // route, which always computes one from page/pageSize) still gets a bounded result instead of the entire table.
 const DEFAULT_QUERY_LIMIT = 500;
+
+/**
+ * The groups-side WHERE clause for queryEntities() below - the group equivalent of buildWhereClause(), restricted
+ * to what a group row actually has. Two filter keys buildWhereClause() accepts are deliberately absent here,
+ * both by owner decision (see the design doc extension this module's header references):
+ *   - `world`: groups have no lorebook binding, so a `filter.world` request simply never narrows the groups arm
+ *     of a merged query - a `{filter: {world: 'X', includeGroups: true}}` request matches world-X characters
+ *     PLUS every group that otherwise passes the rest of the filter, not "nothing, since no group has a world".
+ *   - `search`: queryEntities() is never called at all when `filter.search` is non-empty - see that function's
+ *     own header for why (the /query route in characters.js routes a search request through the pre-existing
+ *     queryCharacters() instead, characters-only, and only wraps the result in `{type, item}` shape).
+ * @param {object} filter
+ * @param {{ include?: string[], exclude?: string[], mode?: 'and'|'or' }} [filter.tags]
+ * @param {boolean} [filter.fav]
+ * @param {string[]} [filter.excludeIds]
+ * @param {string[]} [filter.ids]
+ * @returns {{ where: string, args: any[] }}
+ */
+function buildGroupWhereClause({ tags, fav, excludeIds, ids } = {}) {
+    const clauses = [];
+    const args = [];
+
+    if (Array.isArray(ids) && ids.length > 0) {
+        clauses.push(`id IN (${ids.map(() => '?').join(', ')})`);
+        args.push(...ids);
+    }
+    if (Array.isArray(excludeIds) && excludeIds.length > 0) {
+        clauses.push(`id NOT IN (${excludeIds.map(() => '?').join(', ')})`);
+        args.push(...excludeIds);
+    }
+    if (typeof fav === 'boolean') {
+        clauses.push('fav = ?');
+        args.push(fav ? 1 : 0);
+    }
+    if (tags) {
+        const include = Array.isArray(tags.include) ? tags.include.filter(Boolean) : [];
+        const exclude = Array.isArray(tags.exclude) ? tags.exclude.filter(Boolean) : [];
+        const mode = tags.mode === 'or' ? 'or' : 'and';
+        if (include.length > 0) {
+            if (mode === 'and') {
+                clauses.push(`id IN (SELECT group_id FROM group_tags WHERE tag_id IN (${include.map(() => '?').join(', ')}) GROUP BY group_id HAVING COUNT(DISTINCT tag_id) = ?)`);
+                args.push(...include, include.length);
+            } else {
+                clauses.push(`id IN (SELECT group_id FROM group_tags WHERE tag_id IN (${include.map(() => '?').join(', ')}))`);
+                args.push(...include);
+            }
+        }
+        if (exclude.length > 0) {
+            clauses.push(`id NOT IN (SELECT group_id FROM group_tags WHERE tag_id IN (${exclude.map(() => '?').join(', ')}))`);
+            args.push(...exclude);
+        }
+    }
+
+    return { where: clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '', args };
+}
+
+/**
+ * `filter.includeGroups: true` half of `POST /api/characters/query` (owner decision, extending the
+ * character-data-residency-redesign to groups - see this module's header and queryCharacters()'s own doc
+ * comment, which this function deliberately does NOT modify: every existing caller of queryCharacters() -
+ * favsToHotswap, CharacterRepository.queryAll, the whole of characters-query.test.js - keeps calling that
+ * function and seeing byte-for-byte the same behavior it always has. This is a genuinely separate function
+ * rather than an `includeGroups` branch threaded through queryCharacters() itself, both to keep that guarantee
+ * trivially true by construction and because the two queries are a different shape at the SQL level (a single
+ * table vs. a `UNION ALL` of two).
+ *
+ * Implementation: one `UNION ALL` between a characters-shaped subquery and a groups-shaped subquery, projecting
+ * the same column names on both sides (id, name_fold, fav, date_added, date_last_chat, chat_size) so a single
+ * `ORDER BY`/`LIMIT`/`OFFSET` can run over the combined result - the approach the design doc extension asks to
+ * try first. The compound SELECT is wrapped in an outer `SELECT * FROM (...)` rather than ordering the UNION ALL
+ * directly: confirmed by direct probe against better-sqlite3 that SQLite rejects `ORDER BY <expr>` on a compound
+ * SELECT when `<expr>` is anything other than a bare result-column reference (needed for
+ * `ORDER BY RANDHASH(id, ?)` - a plain `ORDER BY date_added` would have worked unwrapped, but `RANDHASH(id, ?)`
+ * would not, and this function needs one code path that works for both).
+ *
+ * NEVER called when `filter.search` is non-empty (see the /query route in characters.js) - groups have no
+ * full-text index and this extension does not add one (owner decision), so a search request is answered entirely
+ * by queryCharacters(), characters-only, with the result wrapped into `{type: 'character', item}` shape by the
+ * caller. That also means this function never needs an `idOrder`/`sortField === 'search'` branch the way
+ * queryCharacters() does.
+ *
+ * Characters are re-materialized from `shallow_json` exactly as queryCharacters() already does. Groups are NOT
+ * hydrated here at all - only `id`/`type` come back for a group row, bounded to this page's rows. The caller
+ * (the /query route) hydrates just those ids via groups.js's getGroupsByIds() (a lean few-id JSON read, not
+ * getGroupsData()'s whole-directory listing) and stamps this function's own fav/date_added/date_last_chat/
+ * chat_size onto each hydrated group object, so what's displayed always agrees with what was just sorted by.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {object} params
+ * @param {{ include?: string[], exclude?: string[], mode?: 'and'|'or' }} [params.tags]
+ * @param {boolean} [params.fav]
+ * @param {string} [params.world] Applies to the characters arm only - see buildGroupWhereClause()'s doc comment.
+ * @param {string[]} [params.excludeIds]
+ * @param {string[]} [params.ids] Present-but-empty means "resolve nothing" (short-circuits, no query run) - same
+ * rule as queryCharacters().
+ * @param {string} [params.sortField] One of QUERYABLE_SORT_COLUMNS' keys, or 'random' (needs `params.seed`).
+ * NEVER 'search' - see this function's header.
+ * @param {string} [params.sortOrder] 'asc' (default) or 'desc'.
+ * @param {number} [params.seed] Required (and validated finite by the route) when `sortField === 'random'`.
+ * @param {number} [params.offset]
+ * @param {number} [params.limit]
+ * @param {boolean} [params.wantRows] Default true.
+ * @param {boolean} [params.wantTotal] Default true.
+ * @returns {Promise<{ rows: {type: 'character'|'group', id: string, fav: boolean, date_added: number, date_last_chat: number, chat_size: number, item: object}[] | undefined, total: number | undefined, rev: number } | null>}
+ * `null` if the metadata store is unavailable, matching queryCharacters(). A group row's `item` is `null` here -
+ * see this function's own header on why hydration is the caller's job; a character row's `item` is already the
+ * full `toShallow()` projection.
+ */
+export async function queryEntities(directories, params = {}) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    const {
+        tags, fav, world, excludeIds, ids,
+        sortField, sortOrder, seed,
+        offset, limit,
+        wantRows = true, wantTotal = true,
+    } = params;
+
+    const revRow = entry.db.get('SELECT COALESCE(MAX(rev), 0) as rev FROM changes');
+    const rev = Number(revRow?.rev ?? 0);
+
+    if (Array.isArray(ids) && ids.length === 0) {
+        return { rows: wantRows ? [] : undefined, total: wantTotal ? 0 : undefined, rev };
+    }
+
+    const charWhere = buildWhereClause({ tags, fav, world, excludeIds, ids });
+    const groupWhere = buildGroupWhereClause({ tags, fav, excludeIds, ids });
+
+    let total;
+    if (wantTotal) {
+        const countRow = entry.db.get(
+            `SELECT COUNT(*) as total FROM (
+                SELECT id FROM characters ${charWhere.where}
+                UNION ALL
+                SELECT id FROM groups ${groupWhere.where}
+            )`,
+            [...charWhere.args, ...groupWhere.args],
+        );
+        total = Number(countRow?.total ?? 0);
+    }
+
+    let rows;
+    if (wantRows) {
+        const orderParts = [];
+        if (sortField === 'random') {
+            // See queryCharacters()'s identical branch - RANDHASH is the same registered SQL function, and
+            // works unmodified against this UNION (confirmed by the probe this function's header describes).
+            const direction = sortOrder === 'desc' ? 'DESC' : 'ASC';
+            orderParts.push(`RANDHASH(id, ?) ${direction}`);
+        } else {
+            const column = QUERYABLE_SORT_COLUMNS[sortField];
+            const direction = sortOrder === 'desc' ? 'DESC' : 'ASC';
+            if (column) {
+                orderParts.push(`${column} ${direction}`);
+                if (sortField === 'fav') {
+                    orderParts.push('name_fold ASC');
+                }
+            }
+        }
+        orderParts.push('id ASC');
+        const orderBy = `ORDER BY ${orderParts.join(', ')}`;
+
+        const numericOffset = Number.isFinite(offset) && offset > 0 ? Math.trunc(offset) : 0;
+        const numericLimit = Number.isFinite(limit) && limit >= 0 ? Math.trunc(limit) : DEFAULT_QUERY_LIMIT;
+        const orderArgs = sortField === 'random' ? [Number(seed) || 0] : [];
+
+        const unionArgs = [...charWhere.args, ...groupWhere.args, ...orderArgs, numericLimit, numericOffset];
+        const rawRows = entry.db.all(
+            `SELECT * FROM (
+                SELECT id, 'character' as type, name_fold, fav, date_added, date_last_chat, chat_size, shallow_json
+                FROM characters ${charWhere.where}
+                UNION ALL
+                SELECT id, 'group' as type, name_fold, fav, date_added, date_last_chat, chat_size, NULL as shallow_json
+                FROM groups ${groupWhere.where}
+            )
+            ${orderBy}
+            LIMIT ? OFFSET ?`,
+            unionArgs,
+        );
+
+        rows = rawRows.map(r => ({
+            type: r.type,
+            id: r.id,
+            fav: !!r.fav,
+            date_added: Number(r.date_added),
+            date_last_chat: Number(r.date_last_chat),
+            chat_size: Number(r.chat_size),
+            item: r.type === 'character' ? JSON.parse(r.shallow_json) : null,
+        }));
+    }
+
+    return { rows, total, rev };
+}
 
 /**
  * `POST /api/characters/exists` (design doc §4.2): chunked existence-by-primary-key, answered straight from this
