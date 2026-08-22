@@ -2,6 +2,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { promises as fsPromises } from 'node:fs';
 import { Buffer } from 'node:buffer';
+import crypto from 'node:crypto';
 
 import express from 'express';
 import sanitize from 'sanitize-filename';
@@ -29,7 +30,7 @@ import cacheBuster from '../middleware/cacheBuster.js';
 import { searchCharacters, searchCharacterIds, rebuildCharacterSearchIndex, SEARCH_ID_CAP } from './characters-search-index.js';
 import { searchGroups } from './groups-search-index.js';
 import { getGroupsData } from './groups.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, checkCharactersExist, getChangesSince } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, checkCharactersExist, getChangesSince, findCharacterIdByContentHash } from '../character-metadata-db.js';
 
 // With 100 MB limit it would take roughly 3000 characters to reach this limit
 const memoryCacheCapacity = getConfigValue('performance.memoryCacheCapacity', '100mb');
@@ -236,12 +237,14 @@ async function readCharacterData(inputFile, inputFormat = 'png', precomputedStat
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {string} avatar Filename (with .png) that was just written
  * @param {string} data The Spec-V2 JSON string that was just written
+ * @param {string|null} [contentHash] sha256 hex digest of the raw uploaded source-file bytes, when this write
+ * came from `/import` - see writeCharacterData()'s own param and upsertCharacterFromWrite()'s doc comment.
  * @returns {Promise<void>}
  */
-async function fireMetadataUpsertHook(directories, avatar, data) {
+async function fireMetadataUpsertHook(directories, avatar, data, contentHash = null) {
     try {
         const stat = await fsPromises.stat(path.join(directories.characters, avatar));
-        await upsertCharacterFromWrite(directories, avatar, data, stat.mtimeMs);
+        await upsertCharacterFromWrite(directories, avatar, data, stat.mtimeMs, contentHash);
     } catch (err) {
         console.error('[character-metadata] Failed to update metadata store after a character write (the reconciler will catch it):', err);
     }
@@ -254,9 +257,12 @@ async function fireMetadataUpsertHook(directories, avatar, data) {
  * @param {string} outputFile - Target image file name
  * @param {import('express').Request} request - Express request obejct
  * @param {Crop|undefined} crop - Crop parameters
+ * @param {string|null} [contentHash] - sha256 hex digest of the raw uploaded source-file bytes this write came
+ * from (bulk-import dedup) - only `/import`'s format importers have one of these to pass; every other caller
+ * omits it and the write proceeds exactly as before (see fireMetadataUpsertHook()'s doc comment).
  * @returns {Promise<boolean>} - True if the operation was successful
  */
-async function writeCharacterData(inputFile, data, outputFile, request, crop = undefined) {
+async function writeCharacterData(inputFile, data, outputFile, request, crop = undefined, contentHash = null) {
     try {
         // Reset the cache
         for (const key of memoryCache.keys()) {
@@ -304,7 +310,7 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
         // something different (the *same* character continuing to exist under a new id/filename, so date_added
         // must carry over rather than reset, and its chat-stats need recomputing once the chats folder has
         // actually been moved) - see that route for how it corrects this generic row afterward.
-        await fireMetadataUpsertHook(request.user.directories, `${outputFile}.png`, data);
+        await fireMetadataUpsertHook(request.user.directories, `${outputFile}.png`, data, contentHash);
 
         return true;
     } catch (err) {
@@ -440,7 +446,7 @@ export const processCharacter = async (item, directories, { shallow }) => {
 /**
  * Import a character from a YAML file.
  * @param {string} uploadPath Path to the uploaded file
- * @param {{ request: import('express').Request, response: import('express').Response }} context Express request and response objects
+ * @param {{ request: import('express').Request, response: import('express').Response, contentHash?: string|null }} context Express request/response objects plus the uploaded file's content hash (bulk-import dedup)
  * @param {string|undefined} preservedFileName Preserved file name
  * @returns {Promise<string>} Internal name of the character
  */
@@ -466,7 +472,7 @@ async function importFromYaml(uploadPath, context, preservedFileName) {
         'creator': '',
         'tags': '',
     }, context.request.user.directories);
-    const result = await writeCharacterData(DEFAULT_AVATAR_PATH, JSON.stringify(char), fileName, context.request);
+    const result = await writeCharacterData(DEFAULT_AVATAR_PATH, JSON.stringify(char), fileName, context.request, undefined, context.contentHash);
     return result ? fileName : '';
 }
 
@@ -475,10 +481,11 @@ async function importFromYaml(uploadPath, context, preservedFileName) {
  * @param {string} uploadPath
  * @param {object} params
  * @param {import('express').Request} params.request
+ * @param {string|null} [params.contentHash] sha256 hex digest of the uploaded .charx file's raw bytes (bulk-import dedup)
  * @param {string|undefined} preservedFileName Preserved file name
  * @returns {Promise<string>} Internal name of the character
  */
-async function importFromCharX(uploadPath, { request }, preservedFileName) {
+async function importFromCharX(uploadPath, { request, contentHash }, preservedFileName) {
     const fileBuffer = fs.readFileSync(uploadPath);
     // Create a properly-sized ArrayBuffer (Node's buffer pool can cause oversized .buffer)
     const data = getArrayBufferSlice(fileBuffer);
@@ -512,11 +519,19 @@ async function importFromCharX(uploadPath, { request }, preservedFileName) {
         }
     }
 
-    const result = await writeCharacterData(avatar, JSON.stringify(processedCard), fileName, request);
+    const result = await writeCharacterData(avatar, JSON.stringify(processedCard), fileName, request, undefined, contentHash);
     return result ? fileName : '';
 }
 
-async function importFromByaf(uploadPath, { request }, preservedFileName) {
+/**
+ * @param {string} uploadPath
+ * @param {object} params
+ * @param {import('express').Request} params.request
+ * @param {string|null} [params.contentHash] sha256 hex digest of the uploaded .byaf file's raw bytes (bulk-import dedup)
+ * @param {string|undefined} preservedFileName Preserved file name
+ * @returns {Promise<string>} Internal name of the character
+ */
+async function importFromByaf(uploadPath, { request, contentHash }, preservedFileName) {
     const data = getArrayBufferSlice(await fsPromises.readFile(uploadPath));
     await fsPromises.unlink(uploadPath);
     console.info('Importing from BYAF');
@@ -584,7 +599,7 @@ async function importFromByaf(uploadPath, { request }, preservedFileName) {
         }
     }
 
-    const result = await writeCharacterData(byafData.images[0].image, JSON.stringify(card), fileName, request);
+    const result = await writeCharacterData(byafData.images[0].image, JSON.stringify(card), fileName, request, undefined, contentHash);
 
     return result ? fileName : '';
 }
@@ -592,11 +607,11 @@ async function importFromByaf(uploadPath, { request }, preservedFileName) {
 /**
  * Import a character from a JSON file.
  * @param {string} uploadPath Path to the uploaded file
- * @param {{ request: import('express').Request, response: import('express').Response }} context Express request and response objects
+ * @param {{ request: import('express').Request, response: import('express').Response, contentHash?: string|null }} context Express request/response objects plus the uploaded file's content hash (bulk-import dedup)
  * @param {string|undefined} preservedFileName Preserved file name
  * @returns {Promise<string>} Internal name of the character
  */
-async function importFromJson(uploadPath, { request }, preservedFileName) {
+async function importFromJson(uploadPath, { request, contentHash }, preservedFileName) {
     const data = fs.readFileSync(uploadPath, 'utf8');
     fs.unlinkSync(uploadPath);
 
@@ -614,7 +629,7 @@ async function importFromJson(uploadPath, { request }, preservedFileName) {
         jsonData.create_date = new Date().toISOString();
         const pngName = preservedFileName || mintCharacterId(request.user.directories);
         const char = JSON.stringify(jsonData);
-        const result = await writeCharacterData(DEFAULT_AVATAR_PATH, char, pngName, request);
+        const result = await writeCharacterData(DEFAULT_AVATAR_PATH, char, pngName, request, undefined, contentHash);
         return result ? pngName : '';
     } else if (jsonData.name !== undefined) {
         console.info('Importing from v1 json');
@@ -640,7 +655,7 @@ async function importFromJson(uploadPath, { request }, preservedFileName) {
         };
         char = convertToV2(char, request.user.directories);
         let charJSON = JSON.stringify(char);
-        const result = await writeCharacterData(DEFAULT_AVATAR_PATH, charJSON, pngName, request);
+        const result = await writeCharacterData(DEFAULT_AVATAR_PATH, charJSON, pngName, request, undefined, contentHash);
         return result ? pngName : '';
     } else if (jsonData.char_name !== undefined) {
         //json Pygmalion notepad
@@ -667,7 +682,7 @@ async function importFromJson(uploadPath, { request }, preservedFileName) {
         };
         char = convertToV2(char, request.user.directories);
         const charJSON = JSON.stringify(char);
-        const result = await writeCharacterData(DEFAULT_AVATAR_PATH, charJSON, pngName, request);
+        const result = await writeCharacterData(DEFAULT_AVATAR_PATH, charJSON, pngName, request, undefined, contentHash);
         return result ? pngName : '';
     }
 
@@ -677,11 +692,11 @@ async function importFromJson(uploadPath, { request }, preservedFileName) {
 /**
  * Import a character from a PNG file.
  * @param {string} uploadPath Path to the uploaded file
- * @param {{ request: import('express').Request, response: import('express').Response }} context Express request and response objects
+ * @param {{ request: import('express').Request, response: import('express').Response, contentHash?: string|null }} context Express request/response objects plus the uploaded file's content hash (bulk-import dedup)
  * @param {string|undefined} preservedFileName Preserved file name
  * @returns {Promise<string>} Internal name of the character
  */
-async function importFromPng(uploadPath, { request }, preservedFileName) {
+async function importFromPng(uploadPath, { request, contentHash }, preservedFileName) {
     const imgData = await readCharacterData(uploadPath);
     if (imgData === undefined) throw new Error('Failed to read character data');
 
@@ -700,7 +715,7 @@ async function importFromPng(uploadPath, { request }, preservedFileName) {
         jsonData = readFromV2(jsonData);
         jsonData.create_date = new Date().toISOString();
         const char = JSON.stringify(jsonData);
-        const result = await writeCharacterData(uploadPath, char, pngName, request);
+        const result = await writeCharacterData(uploadPath, char, pngName, request, undefined, contentHash);
         fs.unlinkSync(uploadPath);
         return result ? pngName : '';
     } else if (jsonData.name !== undefined) {
@@ -727,7 +742,7 @@ async function importFromPng(uploadPath, { request }, preservedFileName) {
         };
         char = convertToV2(char, request.user.directories);
         const charJSON = JSON.stringify(char);
-        const result = await writeCharacterData(uploadPath, charJSON, pngName, request);
+        const result = await writeCharacterData(uploadPath, charJSON, pngName, request, undefined, contentHash);
         fs.unlinkSync(uploadPath);
         return result ? pngName : '';
     }
@@ -1886,6 +1901,24 @@ function getPreservedName(request) {
         : undefined;
 }
 
+/**
+ * sha256 hex digest of a file's raw bytes, streamed rather than read fully into memory first - the natural hash
+ * point for bulk-import dedup (see `/import` below): this runs on the multer-saved upload BEFORE any
+ * format-specific parsing touches it, so it's always hashing the exact bytes the user dropped, regardless of
+ * format.
+ * @param {string} filePath
+ * @returns {Promise<string>} lowercase hex digest
+ */
+function hashFileContents(filePath) {
+    return new Promise((resolve, reject) => {
+        const hash = crypto.createHash('sha256');
+        const stream = fs.createReadStream(filePath);
+        stream.on('error', reject);
+        stream.on('data', chunk => hash.update(chunk));
+        stream.on('end', () => resolve(hash.digest('hex')));
+    });
+}
+
 router.post('/import', async function (request, response) {
     if (!request.body || !request.file) return response.sendStatus(400);
 
@@ -1909,7 +1942,28 @@ router.post('/import', async function (request, response) {
             throw new Error(`Unsupported format: ${format}`);
         }
 
-        const fileName = await importFunction(uploadPath, { request, response }, preservedFileName);
+        // Exact-byte-identical dedup (owner-scoped: no near-duplicate/fuzzy matching - see
+        // findCharacterIdByContentHash()'s own doc comment for the in-batch case). Deliberately skipped when
+        // `preservedFileName` is set: that request is an explicit "replace THIS specific character" action from
+        // the caller, and silently no-op'ing it because its bytes happen to match some OTHER character would
+        // ignore that explicit target rather than honor it - a worse outcome than just letting the replace
+        // proceed. Dedup only ever BLOCKS a genuine new-character import, which is also the only case where
+        // "this exact content is already in the library" is an unambiguous reason to skip.
+        //
+        // The hash itself is still always computed and recorded (including for a preserved-name replace) -
+        // skipping that too would leave content_hash stale after a replace (still pointing at whatever bytes
+        // this id was FIRST imported with), which would then make a later genuine duplicate of the *new* content
+        // undetectable. Only the "skip the import" branch below is preservedFileName-gated, not the hash.
+        const contentHash = await hashFileContents(uploadPath);
+        if (!preservedFileName) {
+            const duplicateOf = await findCharacterIdByContentHash(request.user.directories, contentHash);
+            if (duplicateOf) {
+                await fsPromises.unlink(uploadPath).catch(() => {});
+                return response.send({ duplicate: true, duplicate_of: duplicateOf });
+            }
+        }
+
+        const fileName = await importFunction(uploadPath, { request, response, contentHash }, preservedFileName);
 
         if (!fileName) {
             console.warn('Failed to import character');
@@ -1920,7 +1974,14 @@ router.post('/import', async function (request, response) {
             invalidateThumbnail(request.user.directories, 'avatar', `${preservedFileName}.png`);
         }
 
-        response.send({ file_name: fileName });
+        // Hands the client the freshly-imported character's data in the same response, shaped by the identical
+        // processCharacter() /batch and /get already use - this is what lets the client (processDroppedFiles(),
+        // public/script.js) insert the new character straight into charactersStore and run its tag-import logic
+        // immediately, per-card, instead of a second full-library fetch afterward just to learn what it itself
+        // already just uploaded. One extra parse of the single file just written - not a library-wide cost.
+        const character = await processCharacter(`${fileName}.png`, request.user.directories, { shallow: useShallowCharacters });
+
+        response.send({ file_name: fileName, character });
     } catch (err) {
         console.error(err);
         response.send({ error: true });

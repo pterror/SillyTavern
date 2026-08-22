@@ -10806,6 +10806,13 @@ export async function swipe_right(event = null, { source, repeated, message } = 
 
 /**
  * Imports supported files dropped into the app window.
+ *
+ * Each file is imported, applied to charactersStore, and (per `power_user.tag_import_setting`) has its tags
+ * imported, all before moving on to the next file - see importCharacter()'s and applyImportedCharacter()'s own
+ * comments for why this no longer needs a second full-library-refetch pass afterward the way it used to.
+ * ASK-mode's popup (tags.js's showTagImportPopup(), reached through importTags() below) still runs once per
+ * character, still sequentially - that part is unchanged, it just now happens inline in this same loop instead
+ * of in a separate one.
  * @param {File[]} files Array of files to process
  * @param {Map<File, string>} [data] Extra data to pass to the import function
  * @returns {Promise<void>}
@@ -10825,37 +10832,140 @@ export async function processDroppedFiles(files, data = new Map()) {
         'byaf',
     ];
 
-    const avatarFileNames = [];
-    for (const file of files) {
+    const importable = files.filter(file => {
         const extension = file.name.split('.').pop().toLowerCase();
         if (allowedMimeTypes.some(x => file.type.startsWith(x)) || allowedExtensions.includes(extension)) {
+            return true;
+        }
+        toastr.warning(t`Unsupported file type: ` + file.name);
+        return false;
+    });
+
+    if (importable.length === 0) {
+        return;
+    }
+
+    // Explicit batch-import mode (character-metadata-db.js's begin/endBatchImport, wired here for the first
+    // time - see this repo's design doc §3.3 item 7) buffers metadata-store writes and suspends its directory
+    // watcher, built specifically for bringing in a large corpus without paying one SQLite transaction and one
+    // watcher event per file. Gated on more than one file, not every drop: a single-file drop already gets a
+    // small, cheap, unbuffered write (its own tiny transaction, one watcher event) - wrapping that in batch mode
+    // would only add two extra round trips (begin/end) plus force an end-of-batch reconcile pass, for no
+    // benefit, since the entire point of batch mode (avoiding N transactions/watcher events) only pays off once
+    // N is actually large. A multi-file drop is unambiguously the case the mechanism exists for.
+    const useBatchImportMode = importable.length > 1;
+    if (useBatchImportMode) {
+        await beginMetadataBatchImport();
+    }
+
+    const avatarFileNames = [];
+    let duplicateCount = 0;
+
+    try {
+        for (const file of importable) {
             const preservedName = data instanceof Map && data.get(file);
-            const avatarFileName = await importCharacter(file, { preserveFileName: preservedName });
-            if (avatarFileName !== undefined) {
-                avatarFileNames.push(avatarFileName);
+            const result = await importCharacter(file, { preserveFileName: preservedName });
+
+            if (!result) {
+                continue;
             }
-        } else {
-            toastr.warning(t`Unsupported file type: ` + file.name);
+
+            if (result.duplicate) {
+                duplicateCount++;
+                continue;
+            }
+
+            applyImportedCharacter(result.character);
+            avatarFileNames.push(result.avatarFileName);
+
+            if (power_user.tag_import_setting !== tag_import_setting.NONE) {
+                await importTags(result.character);
+            }
+        }
+    } finally {
+        // Always ends batch mode, even if an import threw mid-loop - an un-ended batch would leave every
+        // subsequent write for this user silently buffered (and the watcher silently suspended) well past this
+        // request, which is worse than any single failed import.
+        if (useBatchImportMode) {
+            await endMetadataBatchImport();
         }
     }
 
     if (avatarFileNames.length > 0) {
-        await importCharactersTags(avatarFileNames);
+        await printCharacters(true);
         selectImportedChar(avatarFileNames[avatarFileNames.length - 1]);
+    }
+
+    if (duplicateCount > 0) {
+        toastr.info(t`Skipped ${duplicateCount} duplicate character(s) already in your library.`, t`Import`);
     }
 }
 
 /**
- * Imports tags for the given characters
- * @param {string[]} avatarFileNames character avatar filenames whose tags are to import
+ * Starts the server's metadata-store batch-import mode (see processDroppedFiles()) for the duration of a bulk
+ * drop. Never throws - a failure here just means writes for this batch go through the normal unbuffered path
+ * instead (still correct, only slower), matching the metadata store's own "never let this block the actual
+ * character save" convention elsewhere.
+ * @returns {Promise<void>}
  */
-async function importCharactersTags(avatarFileNames) {
-    await getCharacters();
-    for (let i = 0; i < avatarFileNames.length; i++) {
-        if (power_user.tag_import_setting !== tag_import_setting.NONE) {
-            const importedCharacter = charactersStore.get(avatarFileNames[i]);
-            await importTags(importedCharacter);
+async function beginMetadataBatchImport() {
+    try {
+        const result = await fetch('/api/characters/metadata/batch-import/begin', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+        });
+        if (!result.ok) {
+            throw new Error(`Failed to begin batch-import mode: ${result.statusText}`);
         }
+    } catch (error) {
+        console.error('Error beginning metadata batch-import mode', error);
+    }
+}
+
+/**
+ * Ends the server's metadata-store batch-import mode (see beginMetadataBatchImport()). Never throws, for the
+ * same reason as beginMetadataBatchImport() - but importantly, this is still always called (from
+ * processDroppedFiles()'s `finally`) even after a begin failure, since the server itself treats begin/end as
+ * idempotent no-ops when batch mode was never actually entered.
+ * @returns {Promise<void>}
+ */
+async function endMetadataBatchImport() {
+    try {
+        const result = await fetch('/api/characters/metadata/batch-import/end', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+        });
+        if (!result.ok) {
+            throw new Error(`Failed to end batch-import mode: ${result.statusText}`);
+        }
+    } catch (error) {
+        console.error('Error ending metadata batch-import mode', error);
+    }
+}
+
+/**
+ * Inserts (brand-new avatar) or updates (a preserved-name replace) a just-imported character straight into
+ * charactersStore, using the `character` payload `/api/characters/import` now returns directly - the same shape
+ * `/batch`/`/all`/`/get` already produce (server-side processCharacter()), so this is exactly as correct as a
+ * refetch would have been, without the round trip.
+ *
+ * Inserting here (rather than deferring to some later printCharacters()/getCharacters() call) matters beyond
+ * just avoiding the refetch: tags.js's getTagKeyForEntity() - what addTagsToEntity()/importTags() below actually
+ * assigns tags through - only seeds a fresh tag_map entry for an avatar it can resolve via charactersStore (or
+ * one already present in tag_map). A character tag-imported before it's in charactersStore would silently fail
+ * to record any tag assignment at all. So this must run before importTags() is called for the same character -
+ * see processDroppedFiles()'s loop ordering.
+ * @param {object} [character] Shape from server processCharacter() - undefined if the import didn't return one
+ * @returns {void}
+ */
+function applyImportedCharacter(character) {
+    if (!character?.avatar) {
+        return;
+    }
+    if (charactersStore.has(character.avatar)) {
+        charactersStore.update(character.avatar, character);
+    } else {
+        charactersStore.create(character);
     }
 }
 
@@ -10876,10 +10986,12 @@ function selectImportedChar(charId) {
  * @param {File} file File to import
  * @param {object} [options] - Options
  * @param {string} [options.preserveFileName] Whether to preserve original file name
- * @param {Boolean} [options.importTags=false] Whether to import tags
- * @returns {Promise<string>}
+ * @returns {Promise<{ avatarFileName: string, character: object } | { duplicate: true } | undefined>}
+ * `undefined` for an unsupported extension or a hard failure (already toasted). `{ duplicate: true }` when the
+ * server recognized the upload's exact bytes as already present in the library (see characters.js's `/import` -
+ * exact byte-identical dedup only, no near-duplicate matching) and skipped importing it.
  */
-async function importCharacter(file, { preserveFileName = '', importTags = false } = {}) {
+async function importCharacter(file, { preserveFileName = '' } = {}) {
     if (is_group_generating || is_send_press) {
         toastr.error(t`Cannot import characters while generating. Stop the request and try again.`, t`Import aborted`);
         throw new Error('Cannot import character while generating');
@@ -10918,6 +11030,10 @@ async function importCharacter(file, { preserveFileName = '', importTags = false
             throw new Error(`Server returned an error: ${data.error}`);
         }
 
+        if (data.duplicate) {
+            return { duplicate: true };
+        }
+
         if (data.file_name !== undefined) {
             let avatarFileName = `${data.file_name}.png`;
 
@@ -10933,11 +11049,8 @@ async function importCharacter(file, { preserveFileName = '', importTags = false
             } else {
                 toastr.success(t`Character Created: ${String(data.file_name).replace('.png', '')}`);
             }
-            if (importTags) {
-                await importCharactersTags([avatarFileName]);
-                selectImportedChar(data.file_name);
-            }
-            return avatarFileName;
+
+            return { avatarFileName, character: data.character };
         }
     } catch (error) {
         console.error('Error importing character', error);
@@ -11852,12 +11965,51 @@ jQuery(async function () {
     /**
      * Handles the deletion of a chat file, including group chats.
      *
+     * Deleting a chat that isn't the one currently loaded doesn't change any other on-screen state - the
+     * modal's list is the only thing affected, so the deleted row is just removed from the already-open
+     * modal instead of tearing the whole thing down and refetching every chat again (that used to close the
+     * popup, wait out a flat 2s "edge case" delay, then rebuild the full list from scratch - painful with
+     * hundreds/thousands of chats on one character). Deleting the *active* chat is a real exception: the
+     * delete call itself swaps in a different chat (or a fresh one), so the main chat view and the modal's
+     * highlighted row both genuinely need to reflect that - hence the full-refresh path stays for that case.
+     *
      * @param {string} chatFile - The name of the chat file to delete.
      * @param {object} group - The group object if the chat is part of a group.
      * @param {boolean} [fromSlashCommand=false] - Whether the deletion was triggered from a slash command.
+     * @param {JQuery<HTMLElement>} [row] - The modal row element for this chat, if deleting from an open modal.
      * @returns {Promise<void>}
      */
-    async function handleDeleteChat(chatFile, group, fromSlashCommand = false) {
+    async function handleDeleteChat(chatFile, group, fromSlashCommand = false, row = null) {
+        const isActiveChat = group
+            ? groupsStore.get(group)?.chat_id === chatFile
+            : getCurrentCharacter()?.chat === chatFile;
+
+        // Local removal only applies when a modal row is on hand, the deleted chat isn't loaded anywhere
+        // else in the UI, and this isn't the slash-command path (which has its own no-modal handling).
+        if (row && row.length && !isActiveChat && !fromSlashCommand) {
+            const loaderHandle = loader.show({
+                slug: 'chat-delete',
+                title: t`Delete Chat`,
+                message: t`Deleting chat…`,
+                toastMode: loader.ToastMode.STATIC,
+            });
+
+            try {
+                if (group) {
+                    await deleteGroupChat(group, chatFile);
+                } else {
+                    await delChat(`${chatFile}.jsonl`);
+                }
+            } catch (error) {
+                loaderHandle.hide();
+                throw error;
+            }
+
+            row.remove();
+            await loaderHandle.hide();
+            return;
+        }
+
         // Close past chat popup.
         $('#select_chat_cross').trigger('click');
 
@@ -11894,6 +12046,7 @@ jQuery(async function () {
     $(document).on('click', '.PastChat_cross', async function (e, { fromSlashCommand = false } = {}) {
         e.stopPropagation();
         const deleteFileName = $(this).attr('file_name');
+        const row = $(this).closest('.select_chat_block_wrapper');
         console.debug('detected cross click for' + deleteFileName);
 
         // Skip confirmation if called from a slash command.
@@ -11904,7 +12057,7 @@ jQuery(async function () {
 
         const result = await callGenericPopup('<h3>' + t`Delete the Chat File?` + '</h3>', POPUP_TYPE.CONFIRM);
         if (result === POPUP_RESULT.AFFIRMATIVE) {
-            await handleDeleteChat(deleteFileName, selected_group, false);
+            await handleDeleteChat(deleteFileName, selected_group, false, row);
         }
     });
 
@@ -12595,18 +12748,11 @@ jQuery(async function () {
             return;
         }
 
-        const avatarFileNames = [];
-        for (const file of e.target.files) {
-            const avatarFileName = await importCharacter(file);
-            if (avatarFileName !== undefined) {
-                avatarFileNames.push(avatarFileName);
-            }
-        }
-
-        if (avatarFileNames.length > 0) {
-            await importCharactersTags(avatarFileNames);
-            selectImportedChar(avatarFileNames[avatarFileNames.length - 1]);
-        }
+        // Shares processDroppedFiles()'s per-card import+tag-interleave and batch-import-mode gating - this
+        // handler (the "Import Character" file-picker button) is the exact same bulk-import shape as a
+        // drag-and-drop, just with a different trigger, so it reuses that logic outright instead of keeping a
+        // second, independently-drifting copy of it.
+        await processDroppedFiles(Array.from(e.target.files));
 
         // Clear the file input value to allow re-uploading the same file
         e.target.value = '';
