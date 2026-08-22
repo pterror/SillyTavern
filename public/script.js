@@ -1388,6 +1388,16 @@ export async function getOneCharacter(avatarUrl) {
         const getData = await response.json();
         getData.name = DOMPurify.sanitize(getData.name);
         getData.chat = String(getData.chat);
+        // /api/characters/get always processes with `shallow: false` server-side (see characters.js), so this
+        // response is unconditionally full data - but processCharacter() only ever sets a `shallow: true` key
+        // on the *shallow* branch's output; the full-data branch never sets `shallow: false` explicitly, so
+        // getData here simply lacks a `shallow` key. Object.assign() below (via charactersStore.update()) only
+        // overwrites keys that are actually present in the patch, so without this explicit reset, an entity
+        // that started shallow (lazyLoadCharacters) keeps `shallow: true` forever, no matter how many times it
+        // gets unshallowed - making unshallowCharacter() (script.js) treat it as still-shallow and refetch (and
+        // Object.assign-clobber any pending in-memory edit, e.g. doNewChat()'s chat rename) on every single call
+        // instead of just the first.
+        getData.shallow = false;
 
         if (charactersStore.has(avatarUrl)) {
             // Was `characters[indexOf] = getData` (a full reference swap) - now goes through
