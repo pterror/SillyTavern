@@ -5468,10 +5468,10 @@ async function updateCharacterCallback(args) {
         // Refresh the character data
         await getOneCharacter(character.avatar);
 
-        // characterIndex is kept only as the legacy `id` on the event payload (see PromptManager's
-        // handleCharacterUpdated/legacyId handling) - the character itself is looked up fresh by avatar
-        // (stable identity) rather than via characters[characterIndex], since characterIndex can go stale
-        // across the awaits above (avatar upload, getOneCharacter refresh).
+        // The character itself is looked up fresh by avatar (stable identity) rather than via
+        // characters[characterIndex], since characterIndex can go stale across the awaits above
+        // (avatar upload, getOneCharacter refresh). characterIndex is still sent as the event payload's
+        // `id` field for other this_chid-based consumers.
         await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { id: characterIndex, character: charactersStore.get(character.avatar) } });
 
         // Update the side panel if this is the currently selected character

@@ -402,7 +402,7 @@ export let personaStore = new DictEntityStore(power_user.persona_data);
  * rest of the fields) - as freshly loaded from settings.json, i.e. before installPersonaCompatProxies() below
  * replaces them with live views - into power_user.persona_data, the new merged/canonical shape. Upgrade-safe:
  * never drops a persona that exists in either legacy dict, even if the two disagree (same "don't silently
- * orphan existing user data on upgrade" concern as the this_chid->avatar legacyId migration in PromptManager).
+ * orphan existing user data on upgrade" concern that applied to PromptManager's now-removed legacy chid path).
  * Idempotent and safe to call on every load (skips ids already present in persona_data), so it also picks up
  * personas that predate this migration but only surface later (e.g. restored from an older backup file).
  * @param {{[avatarId: string]: string}} legacyPersonas
