@@ -415,6 +415,105 @@ describe('content_hash / findCharacterIdByContentHash (bulk-import exact-duplica
     });
 });
 
+describe('content_identity_hash / import_poisoned (unfuck-the-import: cheap dedup groundwork)', () => {
+    test('upsertCharacterFromWrite always computes a content_identity_hash and clears import_poisoned', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+        expect(row.content_identity_hash).toEqual(expect.any(String));
+        expect(row.content_identity_hash.length).toBe(64); // sha256 hex digest
+        expect(row.import_poisoned).toBe(0);
+    });
+
+    test('two writes of semantically-identical content (fav/chat/create_date differ) hash the same', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', cardJson({ fav: true, create_date: '2020-01-01T00:00:00.000Z' }), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ fav: false, chat: 'some-other-chat', create_date: '2024-06-01T00:00:00.000Z' }), 1000);
+
+        const alice = await metadataDb.getCharacterMetadataRow(directories, 'Alice.png');
+        const bob = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+        expect(alice.content_identity_hash).toBe(bob.content_identity_hash);
+    });
+
+    test('a genuinely different character hashes differently', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', cardJson({ name: 'Alice' }), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ name: 'Bob' }), 1000);
+
+        const alice = await metadataDb.getCharacterMetadataRow(directories, 'Alice.png');
+        const bob = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+        expect(alice.content_identity_hash).not.toBe(bob.content_identity_hash);
+    });
+
+    test('a row discovered by reconcile/bootstrap (never written through this module) starts poisoned with no hash', async () => {
+        await writeCardFile('Discovered.png');
+        await metadataDb.reconcile(directories);
+
+        const row = await metadataDb.getCharacterMetadataRow(directories, 'Discovered.png');
+        expect(row.import_poisoned).toBe(1);
+        expect(row.content_identity_hash).toBeNull();
+    });
+
+    test('reconcile re-observing an already-written row leaves import_poisoned/content_identity_hash untouched', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        const before = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+        expect(before.import_poisoned).toBe(0);
+
+        // Simulate the reconciler independently re-discovering the same (unchanged) file on disk.
+        await writeCardFile('Bob.png', { name: 'Bob', data: { name: 'Bob', tags: [], creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } });
+        await metadataDb.reconcile(directories);
+
+        const after = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+        expect(after.import_poisoned).toBe(0);
+        expect(after.content_identity_hash).toBe(before.content_identity_hash);
+    });
+
+    test('a later write on a poisoned row clears poison and records a fresh hash', async () => {
+        await writeCardFile('Bob.png');
+        await metadataDb.reconcile(directories);
+        expect((await metadataDb.getCharacterMetadataRow(directories, 'Bob.png')).import_poisoned).toBe(1);
+
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 2000);
+        const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+        expect(row.import_poisoned).toBe(0);
+        expect(row.content_identity_hash).toEqual(expect.any(String));
+    });
+
+    test('migrates an existing (pre-content_identity_hash) database in place, defaulting preexisting rows to poisoned', async () => {
+        const { default: Database } = await import('better-sqlite3');
+        const dbPath = path.join(tempDir, 'character-metadata.sqlite');
+        const rawDb = new Database(dbPath);
+        rawDb.exec(`
+            CREATE TABLE characters (
+                id             TEXT PRIMARY KEY,
+                name           TEXT NOT NULL,
+                name_fold      TEXT NOT NULL,
+                fav            INTEGER NOT NULL,
+                date_added     INTEGER NOT NULL,
+                create_date    TEXT,
+                date_last_chat INTEGER NOT NULL,
+                chat_size      INTEGER NOT NULL,
+                data_size      INTEGER NOT NULL,
+                file_mtime     INTEGER NOT NULL,
+                world          TEXT,
+                creator        TEXT,
+                version        TEXT,
+                creator_notes  TEXT,
+                shallow_json   TEXT NOT NULL,
+                content_hash   TEXT,
+                rev            INTEGER NOT NULL
+            );
+        `);
+        rawDb.prepare(`
+            INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, content_hash, rev)
+            VALUES ('Preexisting.png', 'Preexisting', 'preexisting', 0, 500, NULL, 0, 0, 0, 500, NULL, NULL, NULL, NULL, '{}', NULL, 1)
+        `).run();
+        rawDb.close();
+
+        const preexisting = await metadataDb.getCharacterMetadataRow(directories, 'Preexisting.png');
+        expect(preexisting).toBeDefined();
+        expect(preexisting.import_poisoned).toBe(1);
+        expect(preexisting.content_identity_hash).toBeNull();
+    });
+});
+
 describe('phase 3: character_tags as source of truth (not a tags.json mirror)', () => {
     test('assignEntityTag/unassignEntityTag are single-row writes reflected by getCharacterTagIds and tag_usage', async () => {
         await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);

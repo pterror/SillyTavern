@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import process from 'node:process';
+import { Buffer } from 'node:buffer';
 
 // importFromJson()/importFromYaml() write through DEFAULT_AVATAR_PATH ('./public/img/...', repo-root-relative)
 // when no real uploaded image is being re-encoded - same fix byaf-import.test.js already needed for the same
@@ -225,6 +226,82 @@ describe('POST /api/characters/import', () => {
         const duplicateCheckData = await duplicateCheck.json();
         expect(duplicateCheckData.duplicate).toBe(true);
         expect(duplicateCheckData.duplicate_of).toBe(`${firstData.file_name}.png`);
+    });
+});
+
+describe('POST /api/characters/import - fav/chat no longer written to the card (metadata store is authoritative)', () => {
+    test('a v2-json import never writes fav/data.extensions.fav/chat into the stored card', async () => {
+        const body = JSON.stringify({
+            spec: 'chara_card_v2', spec_version: '2.0', name: 'Ghost',
+            fav: true, chat: 'some incoming chat pointer',
+            data: { name: 'Ghost', extensions: { fav: true } },
+        });
+        const formData = new FormData();
+        formData.append('avatar', new Blob([body], { type: 'application/json' }), 'ghost.json');
+        formData.append('file_type', 'json');
+        const response = await fetch(`${baseUrl}/api/characters/import`, { method: 'POST', body: formData });
+        const data = await response.json();
+
+        const { read } = await import('../src/character-card-parser.js');
+        const stored = fs.readFileSync(path.join(directories.characters, `${data.file_name}.png`));
+        const storedJson = JSON.parse(read(stored));
+
+        expect('fav' in storedJson).toBe(false);
+        expect('chat' in storedJson).toBe(false);
+        expect(storedJson.data && 'fav' in storedJson.data.extensions).toBe(false);
+    });
+
+    test('a v1-json import never writes fav/chat into the stored card', async () => {
+        const response = await importJsonCharacter({ name: 'V1 Ghost', fav: true });
+        const data = await response.json();
+
+        const { read } = await import('../src/character-card-parser.js');
+        const stored = fs.readFileSync(path.join(directories.characters, `${data.file_name}.png`));
+        const storedJson = JSON.parse(read(stored));
+
+        expect('fav' in storedJson).toBe(false);
+        expect('chat' in storedJson).toBe(false);
+        expect('fav' in storedJson.data.extensions).toBe(false);
+    });
+});
+
+describe('POST /api/characters/import - PNG import no longer re-encodes the avatar image', () => {
+    /** @type {typeof import('../src/character-card-parser.js').write} */
+    let writeCard;
+
+    // Same 1x1 PNG fixture characters-duplicate.test.js uses - just enough for png-chunks-extract to parse.
+    const BLANK_PNG = Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+        'base64',
+    );
+
+    beforeAll(async () => {
+        ({ write: writeCard } = await import('../src/character-card-parser.js'));
+    });
+
+    test('importing a PNG with no crop preserves the source image bytes exactly (chunks other than chara/ccv3 untouched)', async () => {
+        const { default: extract } = await import('png-chunks-extract');
+        const sourceCard = writeCard(BLANK_PNG, JSON.stringify({ spec: 'chara_card_v2', spec_version: '2.0', name: 'Ghost', data: { name: 'Ghost' } }));
+
+        const formData = new FormData();
+        formData.append('avatar', new Blob([sourceCard], { type: 'image/png' }), 'ghost.png');
+        formData.append('file_type', 'png');
+        const response = await fetch(`${baseUrl}/api/characters/import`, { method: 'POST', body: formData });
+        const data = await response.json();
+        expect(data.file_name).toEqual(expect.any(String));
+
+        const stored = fs.readFileSync(path.join(directories.characters, `${data.file_name}.png`));
+
+        // Compare every non-tEXt chunk (IHDR/IDAT/IEND/...) byte-for-byte - the Jimp decode/cover/re-encode
+        // round trip this used to always go through would produce a DIFFERENT IDAT (different compressor),
+        // even for a crop-less, format-preserving import. Only the chara tEXt chunk (and its length-prefix
+        // framing) is expected to change.
+        const sourceChunks = extract(new Uint8Array(sourceCard)).filter(c => c.name !== 'tEXt');
+        const storedChunks = extract(new Uint8Array(stored)).filter(c => c.name !== 'tEXt');
+        expect(storedChunks.map(c => c.name)).toEqual(sourceChunks.map(c => c.name));
+        for (let i = 0; i < sourceChunks.length; i++) {
+            expect(Buffer.from(storedChunks[i].data)).toEqual(Buffer.from(sourceChunks[i].data));
+        }
     });
 });
 

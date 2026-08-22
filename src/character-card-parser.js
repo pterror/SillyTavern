@@ -7,7 +7,16 @@ import PNGtext from 'png-chunk-text';
 
 /**
  * Writes Character metadata to a PNG image buffer.
- * Writes only 'chara', 'ccv3' is not supported and removed not to create a mismatch.
+ *
+ * Always writes a 'chara' chunk holding `data` verbatim (whatever spec level it's already at - no field
+ * mutation, no re-derivation). Only ALSO writes a 'ccv3' chunk when `data` itself already declares
+ * `spec: 'chara_card_v3'`, and even then the chunk holds `data` byte-for-byte, not a re-stringified copy - so a
+ * v2-sourced card never gets a synthesized v3 upgrade it didn't ask for, and a v3-sourced card doesn't pick up
+ * incidental key-order churn from a redundant parse/stringify round trip. This used to force-upgrade every card
+ * to v3 unconditionally (writing a 'ccv3' chunk with `spec`/`spec_version` overwritten to 3.0 regardless of
+ * source), which is exactly the kind of import-time mutation that makes a stored card's bytes diverge from the
+ * original even when nothing about the character actually changed - see the character-metadata-db.js
+ * `content_identity_hash`/`import_poisoned` columns this behavior undermines.
  * @param {Buffer} image PNG image buffer
  * @param {string} data Character data to write
  * @returns {Buffer} PNG image buffer with metadata
@@ -18,27 +27,26 @@ export const write = (image, data) => {
 
     // Remove existing tEXt chunks
     for (const tEXtChunk of tEXtChunks) {
-        const data = PNGtext.decode(tEXtChunk.data);
-        if (data.keyword.toLowerCase() === 'chara' || data.keyword.toLowerCase() === 'ccv3') {
+        const decoded = PNGtext.decode(tEXtChunk.data);
+        if (decoded.keyword.toLowerCase() === 'chara' || decoded.keyword.toLowerCase() === 'ccv3') {
             chunks.splice(chunks.indexOf(tEXtChunk), 1);
         }
     }
 
-    // Add new v2 chunk before the IEND chunk
+    // Add the chara (v2-or-whatever-the-source-was) chunk before the IEND chunk, holding `data` as-is.
     const base64EncodedData = Buffer.from(data, 'utf8').toString('base64');
     chunks.splice(-1, 0, PNGtext.encode('chara', base64EncodedData));
 
-    // Try adding v3 chunk before the IEND chunk
+    // Only mirror into a 'ccv3' chunk when the source already IS v3 - never synthesize one for a v2 (or
+    // undetermined-spec) source. The chunk holds `data` verbatim, not a re-parsed/re-stringified copy, so this
+    // never introduces its own formatting drift either.
     try {
-        //change v2 format to v3
-        const v3Data = JSON.parse(data);
-        v3Data.spec = 'chara_card_v3';
-        v3Data.spec_version = '3.0';
-
-        const base64EncodedData = Buffer.from(JSON.stringify(v3Data), 'utf8').toString('base64');
-        chunks.splice(-1, 0, PNGtext.encode('ccv3', base64EncodedData));
+        const parsed = JSON.parse(data);
+        if (parsed.spec === 'chara_card_v3') {
+            chunks.splice(-1, 0, PNGtext.encode('ccv3', base64EncodedData));
+        }
     } catch (error) {
-        // Ignore errors when adding v3 chunk
+        // Ignore errors when inspecting spec - if `data` isn't valid JSON, `chara` alone is written above.
     }
 
     const newBuffer = Buffer.from(encode(chunks));
