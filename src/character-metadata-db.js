@@ -147,6 +147,11 @@ const SCHEMA_SQL = `
     CREATE INDEX IF NOT EXISTS idx_characters_chat_size ON characters(chat_size);
     CREATE INDEX IF NOT EXISTS idx_characters_fav_name_fold ON characters(fav, name_fold);
     CREATE INDEX IF NOT EXISTS idx_characters_world ON characters(world);
+    -- Populated only via the import write path (bulk-dedup feature, see findCharacterIdByContentHash() below) -
+    -- a sha256 hex digest of the raw bytes of the uploaded source file an import came from. NULL for every
+    -- character that was never brought in through that path (created/edited in-app, or imported before this
+    -- column existed) - deliberately not backfilled for a preexisting library (see this column's own migration
+    -- note below), so a NULL/NULL pair never counts as a match: the lookup only ever compares real hash values.
 
     CREATE TABLE IF NOT EXISTS character_tags (
         character_id TEXT NOT NULL,
@@ -246,10 +251,10 @@ const SCHEMA_SQL = `
 const UPSERT_SQL = `
     INSERT INTO characters (
         id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size,
-        file_mtime, world, creator, version, creator_notes, shallow_json, rev
+        file_mtime, world, creator, version, creator_notes, shallow_json, content_hash, rev
     ) VALUES (
         @id, @name, @name_fold, @fav, @date_added, @create_date, @date_last_chat, @chat_size, @data_size,
-        @file_mtime, @world, @creator, @version, @creator_notes, @shallow_json, @rev
+        @file_mtime, @world, @creator, @version, @creator_notes, @shallow_json, @content_hash, @rev
     )
     ON CONFLICT(id) DO UPDATE SET
         name = excluded.name,
@@ -265,6 +270,13 @@ const UPSERT_SQL = `
         version = excluded.version,
         creator_notes = excluded.creator_notes,
         shallow_json = excluded.shallow_json,
+        -- COALESCE, not a plain overwrite: most writers of an already-existing row (ordinary edits, the
+        -- reconciler re-parsing an unchanged file, the watcher) have no content hash to offer at all (their
+        -- buildRow() call passes contentHash: undefined, see below), and a plain '= excluded.content_hash'
+        -- would clobber a hash recorded at import time back to NULL on the very next unrelated edit. Only a
+        -- write that actually carries a fresh hash (a re-import that reuses this same id, i.e. a preserved-name
+        -- replace) overwrites it; every other writer's NULL candidate falls through to keep whatever was there.
+        content_hash = COALESCE(excluded.content_hash, characters.content_hash),
         rev = excluded.rev
     -- date_added is deliberately absent from this SET list - see this module's header ("date_added IS RECORDED
     -- ONCE"). On a genuine insert the VALUES clause's candidate is used; on conflict SQLite leaves the existing
@@ -290,6 +302,29 @@ function foldName(name) {
  */
 function getDbPath(directories) {
     return path.join(directories.root, 'character-metadata.sqlite');
+}
+
+/**
+ * Adds the `content_hash` column (bulk-import exact-duplicate dedup, see findCharacterIdByContentHash() below)
+ * to an existing `characters` table that predates it. Not part of SCHEMA_SQL's `CREATE TABLE IF NOT EXISTS`
+ * because that statement is a no-op against a table that already exists with an older column set - SQLite (like
+ * most SQL engines) has no `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, so this checks `PRAGMA table_info` itself
+ * and only runs the ALTER once, on whichever call to getEntry() is the first to see the old shape. A brand-new
+ * install's very first CREATE TABLE never has the column either (it isn't in SCHEMA_SQL's column list), so this
+ * runs there too, unconditionally the first time - one code path handles both "always ran on a fresh table" and
+ * "needs to catch up an existing one", instead of duplicating the column in two places that could drift.
+ * Deliberately never backfills existing rows' hashes (they stay NULL) - see this module's header on why
+ * `content_hash` is populate-going-forward only, matching the "don't re-hash the whole library" instruction it
+ * exists to satisfy.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ */
+function migrateContentHashColumn(db) {
+    const columns = db.all('PRAGMA table_info(characters)');
+    const hasColumn = columns.some(c => c.name === 'content_hash');
+    if (!hasColumn) {
+        db.exec('ALTER TABLE characters ADD COLUMN content_hash TEXT');
+    }
+    db.exec('CREATE INDEX IF NOT EXISTS idx_characters_content_hash ON characters(content_hash)');
 }
 
 /**
@@ -322,6 +357,7 @@ async function getEntry(directories) {
     }
     const db = engine.openDatabase(getDbPath(directories));
     db.exec(SCHEMA_SQL);
+    migrateContentHashColumn(db);
     // Design doc §5.3, decisions 8/13: random-sort order is a per-query `ORDER BY <hash>(id, seed)`, never a
     // materialized column (a materialized seeded column is O(users × rerolls) to maintain - see the decision's
     // rationale). Registering the client's own cyrb53 as a real SQL function is what makes that expressible at
@@ -346,7 +382,7 @@ async function getEntry(directories) {
  * @param {number} extra.dateLastChat
  * @returns {object} Row fields (minus `rev`)
  */
-function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, dateLastChat }) {
+function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, dateLastChat, contentHash }) {
     const includeCreatorNotes = !!getConfigValue('performance.shallowCharactersIncludeCreatorNotes', false, 'boolean');
     const dataSize = calculateDataSize(character?.data);
     const shallowSource = {
@@ -373,6 +409,11 @@ function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, date
         version: _.get(character, 'data.character_version', '') || null,
         creator_notes: includeCreatorNotes ? (_.get(character, 'data.creator_notes', '') || null) : null,
         shallow_json: JSON.stringify(toShallow(shallowSource)),
+        // Undefined/omitted from every call site except the import write path (see upsertCharacterFromWrite()'s
+        // own contentHash param) - normalized to `null` here so UPSERT_SQL's bound parameter is always a real
+        // SQL value, never `undefined` (which better-sqlite3 rejects as a bind parameter). See UPSERT_SQL's
+        // ON CONFLICT clause for why a `null` candidate here never clobbers an existing hash on update.
+        content_hash: contentHash ?? null,
     };
 }
 
@@ -445,9 +486,14 @@ function getTagIdsFor(directories, avatar) {
  * @param {string} avatar Avatar filename (e.g. `Alice.png`)
  * @param {string} cardJson The Spec-V2-normalized character JSON that was just written to disk
  * @param {number} fileMtimeMs mtime of the file that was just written (caller already has this from the write)
+ * @param {string|null} [contentHash] sha256 hex digest of the raw uploaded source-file bytes this write came
+ * from (bulk-import dedup, see findCharacterIdByContentHash() below) - only the import route has one of these to
+ * offer; every other writer (create/edit/rename/etc.) omits it, which buildRow() normalizes to `null` and
+ * UPSERT_SQL's ON CONFLICT clause then treats as "don't touch whatever hash is already there" rather than a
+ * real candidate value - see that clause's own comment.
  * @returns {Promise<void>}
  */
-export async function upsertCharacterFromWrite(directories, avatar, cardJson, fileMtimeMs) {
+export async function upsertCharacterFromWrite(directories, avatar, cardJson, fileMtimeMs, contentHash = null) {
     const entry = await getEntry(directories);
     if (!entry) return;
 
@@ -460,7 +506,7 @@ export async function upsertCharacterFromWrite(directories, avatar, cardJson, fi
     }
 
     const { chatSize, dateLastChat } = calculateChatSize(path.join(directories.chats, avatar.replace(/\.png$/, '')));
-    const row = buildRow(avatar, character, { dateAddedCandidate: Date.now(), fileMtime: fileMtimeMs, chatSize, dateLastChat });
+    const row = buildRow(avatar, character, { dateAddedCandidate: Date.now(), fileMtime: fileMtimeMs, chatSize, dateLastChat, contentHash });
     const tagIds = getTagIdsFor(directories, avatar);
 
     applyOrBuffer(entry, row, tagIds);
@@ -1037,6 +1083,45 @@ export async function getCharacterMetadataRow(directories, avatar) {
     const entry = await getEntry(directories);
     if (!entry) return undefined;
     return entry.db.get('SELECT * FROM characters WHERE id = @id', { id: avatar });
+}
+
+/**
+ * Exact-duplicate lookup for the bulk-import dedup feature (characters.js's `/import` route): does any character
+ * already have this exact content hash, and if so which one. `hash` is the caller's sha256 hex digest of the raw
+ * bytes of an uploaded source file - this function does no hashing of its own, it's a pure indexed lookup.
+ *
+ * Checks TWO places, not just the SQL table, and this is deliberate rather than an oversight: while batch-import
+ * mode is active for this user (beginBatchImport()), writes sit buffered in `entry.batch.pending` (see
+ * applyOrBuffer()) for up to BATCH_FLUSH_SIZE rows before they ever reach a real SQL transaction. A bulk drop
+ * that hashes-and-checks-then-writes strictly sequentially (one `/import` request fully completing before the
+ * next one starts - true of the client's actual import loop) still needs in-batch duplicates (two identical
+ * files dropped in the same drop) to be caught the moment the first one lands, not only after the next flush -
+ * so the pending buffer has to be checked too, or a same-batch duplicate would silently slip through undetected
+ * until (if ever) a flush happened to fall between the two files. The pending buffer is small (at most
+ * BATCH_FLUSH_SIZE rows) and keyed by id, not hash, so this is a short linear scan, not an index lookup - fine
+ * at that bound.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} hash sha256 hex digest to look up
+ * @returns {Promise<string | null>} The existing character's id if a match was found, else `null`. Also `null`
+ * (fail-open, matching this module's "no usable SQLite backend" convention elsewhere) if the metadata store
+ * itself is unavailable - callers must treat that as "dedup can't be determined right now", not as "no
+ * duplicate exists".
+ */
+export async function findCharacterIdByContentHash(directories, hash) {
+    if (!hash) return null;
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    if (entry.batch) {
+        for (const pending of entry.batch.pending.values()) {
+            if (pending.row.content_hash === hash) {
+                return pending.row.id;
+            }
+        }
+    }
+
+    const row = entry.db.get('SELECT id FROM characters WHERE content_hash = @hash', { hash });
+    return row ? row.id : null;
 }
 
 /**

@@ -302,6 +302,116 @@ describe('batch import mode', () => {
     });
 });
 
+describe('content_hash / findCharacterIdByContentHash (bulk-import exact-duplicate dedup)', () => {
+    test('a write with no contentHash leaves content_hash NULL', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+        expect(row.content_hash).toBeNull();
+    });
+
+    test('a write with a contentHash records it, and findCharacterIdByContentHash finds it', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000, 'deadbeef');
+        const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+        expect(row.content_hash).toBe('deadbeef');
+
+        const found = await metadataDb.findCharacterIdByContentHash(directories, 'deadbeef');
+        expect(found).toBe('Bob.png');
+    });
+
+    test('an unknown hash resolves to null', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000, 'deadbeef');
+        const found = await metadataDb.findCharacterIdByContentHash(directories, 'not-a-real-hash');
+        expect(found).toBeNull();
+    });
+
+    test('a later ordinary write (no contentHash) does not clobber a previously-recorded hash', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000, 'deadbeef');
+        // Simulates an unrelated edit (e.g. /edit, /rename's generic hook) that has no source-file hash to offer.
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ name: 'Bob Renamed', data: { name: 'Bob Renamed', tags: [], creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } }), 2000);
+
+        const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+        expect(row.name).toBe('Bob Renamed');
+        expect(row.content_hash).toBe('deadbeef');
+    });
+
+    test('a write that reuses an id with a fresh hash (preserved-name replace) overwrites the old hash', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000, 'deadbeef');
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 2000, 'cafef00d');
+
+        const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+        expect(row.content_hash).toBe('cafef00d');
+        expect(await metadataDb.findCharacterIdByContentHash(directories, 'deadbeef')).toBeNull();
+        expect(await metadataDb.findCharacterIdByContentHash(directories, 'cafef00d')).toBe('Bob.png');
+    });
+
+    test('finds a hash still sitting in the batch-import pending buffer, not yet flushed to the table (in-batch dedup)', async () => {
+        await writeCardFile('Bob.png', { name: 'Bob', data: { name: 'Bob', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } });
+
+        await metadataDb.beginBatchImport(directories);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000, 'deadbeef');
+
+        // Not flushed to the SQL table yet - a lookup that only checked `characters` would miss this.
+        expect(await metadataDb.getCharacterMetadataRow(directories, 'Bob.png')).toBeUndefined();
+
+        const found = await metadataDb.findCharacterIdByContentHash(directories, 'deadbeef');
+        expect(found).toBe('Bob.png');
+
+        await metadataDb.endBatchImport(directories);
+        // Still findable after the flush moves it into the real table.
+        expect(await metadataDb.findCharacterIdByContentHash(directories, 'deadbeef')).toBe('Bob.png');
+    });
+
+    test('an empty/falsy hash never matches anything', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000, null);
+        expect(await metadataDb.findCharacterIdByContentHash(directories, '')).toBeNull();
+    });
+
+    test('migrates an existing (pre-content_hash) database in place without losing rows', async () => {
+        // Simulates an install that already has a character-metadata.sqlite from before this column existed:
+        // build the old-shaped table directly (no content_hash) and seed one row, bypassing this module
+        // entirely, then let a normal call (which always goes through getEntry() -> migrateContentHashColumn())
+        // pick it up.
+        const { default: Database } = await import('better-sqlite3');
+        const dbPath = path.join(tempDir, 'character-metadata.sqlite');
+        const rawDb = new Database(dbPath);
+        rawDb.exec(`
+            CREATE TABLE characters (
+                id             TEXT PRIMARY KEY,
+                name           TEXT NOT NULL,
+                name_fold      TEXT NOT NULL,
+                fav            INTEGER NOT NULL,
+                date_added     INTEGER NOT NULL,
+                create_date    TEXT,
+                date_last_chat INTEGER NOT NULL,
+                chat_size      INTEGER NOT NULL,
+                data_size      INTEGER NOT NULL,
+                file_mtime     INTEGER NOT NULL,
+                world          TEXT,
+                creator        TEXT,
+                version        TEXT,
+                creator_notes  TEXT,
+                shallow_json   TEXT NOT NULL,
+                rev            INTEGER NOT NULL
+            );
+        `);
+        rawDb.prepare(`
+            INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, rev)
+            VALUES ('Preexisting.png', 'Preexisting', 'preexisting', 0, 500, NULL, 0, 0, 0, 500, NULL, NULL, NULL, NULL, '{}', 1)
+        `).run();
+        rawDb.close();
+
+        // Any exported call routes through getEntry(), which runs the migration before returning.
+        const preexisting = await metadataDb.getCharacterMetadataRow(directories, 'Preexisting.png');
+        expect(preexisting).toBeDefined();
+        expect(preexisting.name).toBe('Preexisting');
+        expect(preexisting.content_hash).toBeNull();
+
+        // And the column is now usable for a subsequent write.
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000, 'deadbeef');
+        expect(await metadataDb.findCharacterIdByContentHash(directories, 'deadbeef')).toBe('Bob.png');
+    });
+});
+
 describe('phase 3: character_tags as source of truth (not a tags.json mirror)', () => {
     test('assignEntityTag/unassignEntityTag are single-row writes reflected by getCharacterTagIds and tag_usage', async () => {
         await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
