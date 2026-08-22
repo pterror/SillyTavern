@@ -1065,12 +1065,21 @@ function renderCharacterBlock(template, item, id) {
     const isAssistant = item.avatar === getPermanentAssistantAvatar();
     template.find('.ch_assistant').toggle(isAssistant);
 
+    // .toggleClass('displayNone', ...) rather than .toggle(bool): jQuery's .toggle()/.show() implement
+    // "visible" by writing an inline style="display: block" onto the element (not by clearing a class), which
+    // outranks any class-based CSS selector - including toggle-dependent.css's
+    // `body.charListGrid #rm_print_characters_block .ch_description`/`.character_version` grid-view-hide
+    // rules. Once a row's description/version had been shown at all, that inline style stuck around
+    // (persisting across grid<->list toggles and, with the keyed-diff reuse in printCharacters, across
+    // re-renders too) and permanently defeated the grid-view hide rule for that row. Toggling a class instead
+    // never writes an inline style, so the grid rule (and any future view mode) stays free to hide these
+    // purely through the cascade.
     const description = item.data?.creator_notes || '';
-    template.find('.ch_description').text(description).toggle(Boolean(description));
+    template.find('.ch_description').text(description).toggleClass('displayNone', !description);
 
     const auxFieldName = power_user.aux_field || 'character_version';
     const auxFieldValue = (item.data && item.data[auxFieldName]) || '';
-    template.find('.character_version').text(auxFieldValue).toggle(Boolean(auxFieldValue));
+    template.find('.character_version').text(auxFieldValue).toggleClass('displayNone', !auxFieldValue);
 
     // Display inline tags. printTagList() clears and rebuilds this container itself, so it's already
     // safe to call against a reused row.
