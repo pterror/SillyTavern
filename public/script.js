@@ -9296,13 +9296,17 @@ export function selectRightMenuWithAnimation(selectedMenuId) {
     });
 }
 
-export function select_rm_info(type, charId, previousCharId = null) {
+export function select_rm_info(type, charId, previousCharId = null, displayName = null) {
     if (!type) {
         toastr.error(t`Invalid process (no 'type')`);
         return;
     }
-    if (type !== 'group_create') {
-        var displayName = String(charId).replace('.png', '');
+    // charId is the avatar file name, needed below to locate/scroll to the character in the list - it's not a
+    // friendly display value (especially now that file names are moving to uuidv7). Callers that know the
+    // character's actual name should pass it separately via displayName; this only falls back to deriving one
+    // from charId for callers that don't.
+    if (type !== 'group_create' && displayName === null) {
+        displayName = String(charId).replace('.png', '');
     }
 
     if (type === 'char_delete') {
@@ -10407,6 +10411,9 @@ export async function createOrEditCharacter(e) {
     $('#rm_info_avatar').html('');
     const formData = new FormData(/** @type {HTMLFormElement} */($('#form_create').get(0)));
     formData.set('fav', String(fav_ch_checked));
+    // Captured now, before the post-save field-clearing loop below resets create_save.name to '' - this is the
+    // only point where the just-typed character name is still available for the "Character Created" toast.
+    const newCharacterName = String(formData.get('ch_name') || '');
     const isNewChat = e instanceof CustomEvent && e.type === 'newChat';
 
     const rawFile = formData.get('avatar');
@@ -10511,7 +10518,7 @@ export async function createOrEditCharacter(e) {
             await getCharacters({ silent: true });
             charactersStore.reportCreated(avatarId);
 
-            select_rm_info('char_create', avatarId, oldSelectedChar);
+            select_rm_info('char_create', avatarId, oldSelectedChar, newCharacterName);
 
             crop_data = undefined;
         } catch (error) {
@@ -11181,9 +11188,18 @@ export async function processDroppedFiles(files, data = new Map()) {
             applyImportedCharacter(result.character);
             avatarFileNames.push(result.avatarFileName);
 
+            let tagsAdded = false;
             if (power_user.tag_import_setting !== tag_import_setting.NONE) {
-                await importTags(result.character);
+                tagsAdded = await importTags(result.character, { suppressSuccessToast: true });
             }
+
+            // One toast per character for the whole create/replace + tag-import outcome, instead of a separate
+            // "Character Created"/"Importing Tags" popup for each - see this function's own doc comment.
+            const charName = result.character?.name || String(result.avatarFileName).replace('.png', '');
+            const toastMessage = result.replaced
+                ? (tagsAdded ? t`Replaced character '${charName}' (tags imported)` : t`Replaced character '${charName}'`)
+                : (tagsAdded ? t`Imported character '${charName}' (tags imported)` : t`Imported character '${charName}'`);
+            toastr.success(toastMessage);
         }
     } finally {
         // Always ends batch mode, even if an import threw mid-loop - an un-ended batch would leave every
@@ -11289,7 +11305,7 @@ function selectImportedChar(charId) {
  * @param {File} file File to import
  * @param {object} [options] - Options
  * @param {string} [options.preserveFileName] Whether to preserve original file name
- * @returns {Promise<{ avatarFileName: string, character: object } | { duplicate: true } | undefined>}
+ * @returns {Promise<{ avatarFileName: string, replaced: boolean, character: object } | { duplicate: true } | undefined>}
  * `undefined` for an unsupported extension or a hard failure (already toasted). `{ duplicate: true }` when the
  * server recognized the upload's exact bytes as already present in the library (see characters.js's `/import` -
  * exact byte-identical dedup only, no near-duplicate matching) and skipped importing it.
@@ -11347,13 +11363,9 @@ async function importCharacter(file, { preserveFileName = '' } = {}) {
 
             $('#character_search_bar').val('').trigger('input');
 
-            if (exists) {
-                toastr.success(t`Character Replaced: ${String(data.file_name).replace('.png', '')}`);
-            } else {
-                toastr.success(t`Character Created: ${String(data.file_name).replace('.png', '')}`);
-            }
-
-            return { avatarFileName, character: data.character };
+            // No toast here - processDroppedFiles() (this function's only caller) folds this result together
+            // with the tag-import outcome into a single combined notification per character.
+            return { avatarFileName, replaced: exists, character: data.character };
         }
     } catch (error) {
         console.error('Error importing character', error);

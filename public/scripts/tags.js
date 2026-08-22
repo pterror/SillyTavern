@@ -1501,9 +1501,13 @@ const ANTI_TROLL_MAX_TAGS = 50;
  * @param {Character} character - The character
  * @param {object} [options] - Options
  * @param {tag_import_setting} [options.importSetting=null] - Force a tag import setting
+ * @param {boolean} [options.suppressSuccessToast=false] - Skip this function's own success toast (used when a
+ * caller - e.g. the character-import flow - folds a successful result into a single combined notification
+ * instead). The error toast still fires on failure, since that's a real problem the combined notification
+ * doesn't otherwise surface.
  * @returns {Promise<boolean>} Boolean indicating whether any tag was imported
  */
-async function importTags(character, { importSetting = null } = {}) {
+async function importTags(character, { importSetting = null, suppressSuccessToast = false } = {}) {
     // Gather the tags to import based on the selected setting
     const tagNamesToImport = await handleTagImport(character, { importSetting });
     if (!tagNamesToImport?.length) {
@@ -1516,7 +1520,9 @@ async function importTags(character, { importSetting = null } = {}) {
     const tagNames = tagsToImport.map(x => escapeHtml(x.name)).join(', ');
 
     if (added) {
-        toastr.success(t`Imported tags:` + `<br />${tagNames}`, t`Importing Tags`, { escapeHtml: false });
+        if (!suppressSuccessToast) {
+            toastr.success(t`Imported tags:` + `<br />${tagNames}`, t`Importing Tags`, { escapeHtml: false });
+        }
     } else {
         toastr.error(t`Couldn't import tags:` + `<br />${tagNames}`, t`Importing Tags`, { escapeHtml: false });
     }
