@@ -14,7 +14,7 @@ import storage from 'node-persist';
 
 import { AVATAR_WIDTH, AVATAR_HEIGHT, DEFAULT_AVATAR_PATH } from '../constants.js';
 import { default as validateAvatarUrlMiddleware, getFileNameValidationFunction, forbiddenRegExp } from '../middleware/validateFileName.js';
-import { deepMerge, humanizedDateTime, tryParse, MemoryLimitedMap, getConfigValue, mutateJsonString, clientRelativePath, getUniqueName, sanitizeSafeCharacterReplacements, getArrayBufferSlice } from '../util.js';
+import { deepMerge, humanizedDateTime, tryParse, MemoryLimitedMap, getConfigValue, mutateJsonString, clientRelativePath, getUniqueName, sanitizeSafeCharacterReplacements, getArrayBufferSlice, uuidv7 } from '../util.js';
 import { TavernCardValidator } from '../validator/TavernCardValidator.js';
 import { parse, read, write } from '../character-card-parser.js';
 import { getCharaCardV2, convertToV2, readFromV2, charaFormatData, convertWorldInfoToCharacterBook } from '../character-card-normalize.js';
@@ -450,7 +450,7 @@ async function importFromYaml(uploadPath, context, preservedFileName) {
     const yamlData = yaml.parse(fileText);
     console.info('Importing from YAML');
     yamlData.name = sanitize(yamlData.name);
-    const fileName = preservedFileName || getPngName(yamlData.name, context.request.user.directories);
+    const fileName = preservedFileName || mintCharacterId(context.request.user.directories);
     let char = convertToV2({
         'name': yamlData.name,
         'description': yamlData.context ?? '',
@@ -496,7 +496,7 @@ async function importFromCharX(uploadPath, { request }, preservedFileName) {
     unsetPrivateFields(processedCard);
     processedCard.create_date = new Date().toISOString();
 
-    const fileName = preservedFileName || getPngName(processedCard.name, request.user.directories);
+    const fileName = preservedFileName || mintCharacterId(request.user.directories);
     // Use the actual character name for asset folders, not the unique filename
     // ST's sprite system looks up by character name, not PNG filename
     const characterFolder = processedCard.name;
@@ -523,7 +523,7 @@ async function importFromByaf(uploadPath, { request }, preservedFileName) {
 
     const byafData = await new ByafParser(data).parse();
     const card = readFromV2(byafData.card);
-    const fileName = preservedFileName || getPngName(sanitize(byafData.character.displayName || card.name, { replacement: sanitizeSafeCharacterReplacements }), request.user.directories);
+    const fileName = preservedFileName || mintCharacterId(request.user.directories);
 
     // Don't import chats and images if the character is being replaced or updated, instead of newly imported.
     if (!preservedFileName) {
@@ -612,7 +612,7 @@ async function importFromJson(uploadPath, { request }, preservedFileName) {
         jsonData.name = sanitize(jsonData.data?.name || jsonData.name);
         jsonData = readFromV2(jsonData);
         jsonData.create_date = new Date().toISOString();
-        const pngName = preservedFileName || getPngName(jsonData.name, request.user.directories);
+        const pngName = preservedFileName || mintCharacterId(request.user.directories);
         const char = JSON.stringify(jsonData);
         const result = await writeCharacterData(DEFAULT_AVATAR_PATH, char, pngName, request);
         return result ? pngName : '';
@@ -622,7 +622,7 @@ async function importFromJson(uploadPath, { request }, preservedFileName) {
         if (jsonData.creator_notes) {
             jsonData.creator_notes = jsonData.creator_notes.replace('Creator\'s notes go here.', '');
         }
-        const pngName = preservedFileName || getPngName(jsonData.name, request.user.directories);
+        const pngName = preservedFileName || mintCharacterId(request.user.directories);
         let char = {
             'name': jsonData.name,
             'description': jsonData.description ?? '',
@@ -649,7 +649,7 @@ async function importFromJson(uploadPath, { request }, preservedFileName) {
         if (jsonData.creator_notes) {
             jsonData.creator_notes = jsonData.creator_notes.replace('Creator\'s notes go here.', '');
         }
-        const pngName = preservedFileName || getPngName(jsonData.char_name, request.user.directories);
+        const pngName = preservedFileName || mintCharacterId(request.user.directories);
         let char = {
             'name': jsonData.char_name,
             'description': jsonData.char_persona ?? '',
@@ -691,7 +691,7 @@ async function importFromPng(uploadPath, { request }, preservedFileName) {
         jsonData.data.name = sanitize(jsonData.data.name);
     }
     jsonData.name = sanitize(jsonData.data?.name || jsonData.name);
-    const pngName = preservedFileName || getPngName(jsonData.name, request.user.directories);
+    const pngName = preservedFileName || mintCharacterId(request.user.directories);
 
     if (jsonData.spec !== undefined) {
         console.info(`Found a ${jsonData.spec} character file.`);
@@ -744,7 +744,7 @@ router.post('/create', getFileNameValidationFunction('file_name'), async functio
         request.body.ch_name = sanitize(request.body.ch_name);
 
         const char = JSON.stringify(charaFormatData(request.body, request.user.directories));
-        const internalName = request.body.file_name || getPngName(request.body.ch_name, request.user.directories);
+        const internalName = request.body.file_name || mintCharacterId(request.user.directories);
         const avatarName = `${internalName}.png`;
         const chatsPath = path.join(request.user.directories.chats, internalName);
 
@@ -1870,7 +1870,30 @@ router.post('/chats', validateAvatarUrlMiddleware, async function (request, resp
 });
 
 /**
- * Gets the name for the uploaded PNG file.
+ * Mints the immutable id a new character is created/imported under (design doc §2.2, SETTLED Option A): a
+ * UUIDv7, unrelated to the display name. Naming the PNG after this id rather than a sanitized display name is
+ * what makes `/rename` a pure card-data edit (§9 phase 4d) and retires the old `getPngName()`'s 10k-probe
+ * uniqueness dance and its overwrite-on-exhaustion fallback - a freshly minted UUIDv7 essentially cannot
+ * collide with an existing id, but per the doc's "correctness over cost" input (§0 decision 1) this still
+ * checks rather than assumes, and throws (never silently overwrites) if collisions persist past a handful of
+ * tries.
+ * @param {import('../users.js').UserDirectoryList} directories User directories
+ * @returns {string} A UUIDv7 string with no existing `<id>.png` in `directories.characters`
+ */
+function mintCharacterId(directories) {
+    for (let i = 0; i < 5; i++) {
+        const id = uuidv7();
+        if (!fs.existsSync(path.join(directories.characters, `${id}.png`))) {
+            return id;
+        }
+    }
+    throw new Error('Failed to mint a unique character id after 5 attempts');
+}
+
+/**
+ * Gets the name for the uploaded PNG file - still used by `/rename` only (design doc §9 phase 4d: `/rename`
+ * itself collapses to a card-data edit in a follow-up change, at which point this function and its callsite go
+ * away together).
  * @param {string} file File name
  * @param {import('../users.js').UserDirectoryList} directories User directories
  * @returns {string} - The name for the uploaded PNG file
