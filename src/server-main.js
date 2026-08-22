@@ -72,6 +72,7 @@ import { checkForNewContent } from './endpoints/content-manager.js';
 import { init as settingsInit } from './endpoints/settings.js';
 import { redirectDeprecatedEndpoints, ServerStartup, setupPrivateEndpoints } from './server-startup.js';
 import { diskCache } from './endpoints/characters.js';
+import { initializeMetadataStores, disposeMetadataStores } from './character-metadata-db.js';
 import { migrateFlatSecrets } from './endpoints/secrets.js';
 import { migrateGroupChatsMetadataFormat } from './endpoints/groups.js';
 
@@ -306,6 +307,13 @@ async function preSetupTasks() {
     cleanUploads();
     migrateAccessLog();
 
+    // Phase 1 of the character-data-residency redesign (docs/design/character-data-residency-redesign.md):
+    // opens/creates each user's character-metadata SQLite store, starts its directory watcher and reconcile
+    // interval, and kicks off the one-time bootstrap backfill in the background. Deliberately not awaited
+    // beyond schema creation (fast) - a large library's bootstrap backfill must never delay the server actually
+    // starting to listen, per the design doc's "Runs at boot (non-blocking)".
+    await initializeMetadataStores(directories);
+
     await settingsInit();
     await statsInit();
 
@@ -322,6 +330,7 @@ async function preSetupTasks() {
             await cleanupPlugins();
         }
         diskCache.dispose();
+        disposeMetadataStores();
         setWindowTitle(consoleTitle);
         process.exit();
     };
