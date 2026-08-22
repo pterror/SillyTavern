@@ -591,6 +591,39 @@ describe('POST /api/characters/query - filter.search (design doc §5.1/§5)', ()
         expect(typeof body.searchBackend).toBe('string');
     });
 
+    test('a fav toggle through setCharacterFav() (not the card file) is reflected by favorites-only search, caught up by incremental maintenance rather than the explicit full-rebuild endpoint', async () => {
+        await seedCharacterWithFile('Vampire.png', { name: 'Vampire Lord', data: { name: 'Vampire Lord', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+        await seedCharacterWithFile('Werewolf.png', { name: 'Werewolf', data: { name: 'Werewolf', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+
+        // Prime the search index against the pre-toggle state, same as a real server that already answered a
+        // search before the user ever favorited anything - this is the from-scratch build every handle's first
+        // search pays, not the incremental path this test is actually about.
+        await postJson('/api/characters/query', { filter: { search: 'vampire' }, page: 1, pageSize: 10 });
+
+        // The db-authoritative fav write path (character-metadata-db.js's setCharacterFav()) - deliberately never
+        // touches Vampire.png's card file, so a search index that (wrongly) rebuilt its `fav` field from the card
+        // would never see this, whether by a full rebuild or an incremental catch-up.
+        const updated = await metadataDb.setCharacterFav(directories, 'Vampire.png', true);
+        expect(updated).toBe(true);
+
+        // search-index-coordinator.js serves a stale-but-present index immediately on the request that first
+        // observes the new revision, kicking off the incremental catch-up in the background rather than blocking
+        // this request on it (that module's own header: "no request pays the rebuild cost except the
+        // unavoidable first one") - so the fix is verified by polling a few follow-up requests, the same way a
+        // real client's next render/search would eventually observe it, never by calling the explicit
+        // POST /api/characters/search-index/rebuild repair endpoint.
+        let body;
+        for (let attempt = 0; attempt < 20; attempt++) {
+            const response = await postJson('/api/characters/query', { filter: { search: 'vampire', fav: true }, page: 1, pageSize: 10 });
+            expect(response.status).toBe(200);
+            body = await response.json();
+            if (body.rows.length > 0) break;
+            await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        expect(body.rows.map(r => r.avatar)).toEqual(['Vampire.png']);
+        expect(body.total).toBe(1);
+    });
+
     test('a search term composes with an ordinary column sort, not just sort.field "search"', async () => {
         await seedCharacterWithFile('AVampire.png', { name: 'A Vampire', data: { name: 'A Vampire', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
         await seedCharacterWithFile('ZVampire.png', { name: 'Z Vampire', data: { name: 'Z Vampire', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });

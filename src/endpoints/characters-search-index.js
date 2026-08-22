@@ -4,6 +4,7 @@ import path from 'node:path';
 import {
     getTagDefinitions, getEntityTagIdsForMany, getTagsRevision,
     getChangesSince, getCurrentRev, getAllTaggedCharacterIds, getMetaValue, setMetaValue,
+    getCharacterFavsByIds,
 } from '../character-metadata-db.js';
 import { processCharacter } from './characters.js';
 import { buildFtsQuery } from './search-query.js';
@@ -293,6 +294,26 @@ async function makeTagNamesResolver(directories, avatars) {
 }
 
 /**
+ * Resolves the search-index-authoritative `fav` value for a character - the db's own `fav` column once a row is
+ * tracked (character-metadata-db.js's setCharacterFav()/writeRowSync() doc comments: `fav` is db-authoritative
+ * once a row exists, and the fav-toggle write path deliberately never touches the card file), falling back to
+ * the card's own embedded `data.extensions.fav` for a character the metadata store hasn't picked up yet - the
+ * same fallback characters.js's stampDbFav() uses for the live `/all` route. Without this, a full rebuild or an
+ * incremental catch-up would both keep baking in whatever the card file says forever, since fav toggles no
+ * longer touch that file at all.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {string[]} avatars Every character avatar about to be indexed - fetched once up front, one batched
+ * query rather than one per character (same rationale as makeTagNamesResolver() above).
+ * @returns {Promise<(character: object) => boolean>} A sync closure over the pre-fetched data.
+ */
+async function makeFavResolver(directories, avatars) {
+    const favById = await getCharacterFavsByIds(directories, avatars);
+    return (character) => Object.prototype.hasOwnProperty.call(favById, character.avatar)
+        ? favById[character.avatar]
+        : Boolean(character.data?.extensions?.fav);
+}
+
+/**
  * (Re)builds the persistent on-disk SQLite FTS5 index for a user's characters.
  * @param {import('../users.js').UserDirectoryList} directories User directories
  * @param {{ kind: 'native' | 'wasm', openDatabase: (path: string) => import('./sqlite-engine.js').SqliteEngineHandle }} engine
@@ -325,6 +346,7 @@ async function buildSqliteIndex(directories, engine) {
 
     const avatars = fs.readdirSync(directories.characters).filter(file => file.endsWith('.png'));
     const tagNamesFor = await makeTagNamesResolver(directories, avatars);
+    const favFor = await makeFavResolver(directories, avatars);
     const insertSql = `INSERT INTO cards (avatar, data, fav, ${BM25_INDEXED_COLUMNS.join(', ')})
          VALUES (@avatar, @data, @fav, @name, @resolved_tags, @description, @mes_example, @scenario, @personality, @first_mes, @creator_notes, @creator, @tags, @alternate_greetings)`;
 
@@ -337,10 +359,11 @@ async function buildSqliteIndex(directories, engine) {
         const rows = batch.map(character => ({
             avatar: character.avatar,
             data: JSON.stringify(character),
-            // Boolean, not the string this codebase's fav flag is sometimes coerced from elsewhere (see
-            // character-card-normalize.js) - SQLite has no real boolean type, so this stores 0/1 for the plain
-            // `AND fav = 1` predicate querySqliteIndex()/countSqliteIndexMatches() add when favOnly is set.
-            fav: character.data?.extensions?.fav ? 1 : 0,
+            // db-authoritative via favFor() (falls back to the card's own embedded fav only for an untracked
+            // character - see makeFavResolver()'s doc comment). SQLite has no real boolean type, so this stores
+            // 0/1 for the plain `AND fav = 1` predicate querySqliteIndex()/countSqliteIndexMatches() add when
+            // favOnly is set.
+            fav: favFor(character) ? 1 : 0,
             name: character.data?.name ?? '',
             resolved_tags: tagNamesFor(character.avatar),
             description: character.data?.description ?? '',
@@ -384,9 +407,11 @@ const NOOP_CLOSE = () => { /* no explicit close API on this binding's Index */ }
  * @param {import('@oxdev03/node-tantivy-binding').Schema} schema
  * @param {object} character A full (non-shallow) processed character (processCharacter()'s `shallow: false` shape)
  * @param {(avatar: string) => string} tagNamesFor
+ * @param {(character: object) => boolean} favFor Resolves the db-authoritative `fav` value - see
+ * makeFavResolver()'s doc comment on why this can't just read `character.data.extensions.fav` directly.
  * @returns {import('@oxdev03/node-tantivy-binding').Document}
  */
-function characterToTantivyDoc(tantivy, schema, character, tagNamesFor) {
+function characterToTantivyDoc(tantivy, schema, character, tagNamesFor, favFor) {
     return tantivy.Document.fromDict({
         name: character.data?.name ?? '',
         resolved_tags: tagNamesFor(character.avatar),
@@ -403,7 +428,7 @@ function characterToTantivyDoc(tantivy, schema, character, tagNamesFor) {
         // identity - design doc §2.2), not the full character JSON - see DATA_FIELD's doc comment
         // (tantivy-search.js) for why this is also exactly what qualifies as the delete-by-term key.
         [DATA_FIELD]: character.avatar,
-        [FAV_FIELD]: Boolean(character.data?.extensions?.fav),
+        [FAV_FIELD]: favFor(character),
     }, schema);
 }
 
@@ -453,11 +478,12 @@ async function buildTantivyIndex(directories, tantivy) {
 
     const avatars = fs.readdirSync(directories.characters).filter(file => file.endsWith('.png'));
     const tagNamesFor = await makeTagNamesResolver(directories, avatars);
+    const favFor = await makeFavResolver(directories, avatars);
 
     let batchIndex = 0;
     for await (const batch of readCharacterBatches(directories)) {
         for (const character of batch) {
-            writer.addDocument(characterToTantivyDoc(tantivy, schema, character, tagNamesFor));
+            writer.addDocument(characterToTantivyDoc(tantivy, schema, character, tagNamesFor, favFor));
         }
 
         batchIndex++;
@@ -468,6 +494,18 @@ async function buildTantivyIndex(directories, tantivy) {
 
     writer.commit();
     index.reload();
+    // Releases this writer's exclusive on-disk lock deterministically (see this module's header note above on
+    // why this matters). This binding's IndexWriter has no explicit close/drop - the underlying Rust lock guard
+    // only releases when the writer is actually dropped, which for a napi wrapper otherwise means "whenever V8
+    // happens to GC the JS object", not "when this function returns". `commit()` alone does NOT release it -
+    // confirmed by direct reproduction: a second `index.writer()` call on this same `index` object, immediately
+    // after a first commit with no `waitMergingThreads()` in between, reliably throws "Failed to acquire
+    // Lockfile: LockBusy" (the process's own prior writer still holds it) - which is exactly what
+    // applyIncrementalTantivyChanges() below does on every catch-up call against a `previous.index` handle this
+    // function (or an earlier catch-up) already wrote through. `waitMergingThreads()` takes tantivy's
+    // IndexWriter by value in the underlying Rust API (joins background merge threads, then drops it), so this
+    // is the one binding-exposed call that actually finalizes and releases the lock on a predictable schedule.
+    writer.waitMergingThreads();
 
     if (lastRev !== null) {
         await setMetaValue(directories, TANTIVY_INDEX_REV_META_KEY, String(lastRev));
@@ -527,6 +565,7 @@ async function applyIncrementalTantivyChanges(directories, tantivy, index, schem
         const writer = index.writer();
         const idsNeedingData = [...idsToReindex.entries()].filter(([, op]) => op !== 'delete').map(([id]) => id);
         const tagNamesFor = idsNeedingData.length > 0 ? await makeTagNamesResolver(directories, idsNeedingData) : () => '';
+        const favFor = idsNeedingData.length > 0 ? await makeFavResolver(directories, idsNeedingData) : () => false;
 
         for (const [id, op] of idsToReindex) {
             writer.deleteDocumentsByTerm(DATA_FIELD, id);
@@ -543,11 +582,16 @@ async function applyIncrementalTantivyChanges(directories, tantivy, index, schem
             if (!character?.name) {
                 continue;
             }
-            writer.addDocument(characterToTantivyDoc(tantivy, schema, character, tagNamesFor));
+            writer.addDocument(characterToTantivyDoc(tantivy, schema, character, tagNamesFor, favFor));
         }
 
         writer.commit();
         index.reload();
+        // Releases this writer's lock before it's possible for a later call (another incremental catch-up
+        // against this same long-lived `index` handle, or a background rebuild racing in - see
+        // search-index-coordinator.js) to request a new one - see buildTantivyIndex()'s matching comment for why
+        // `commit()` alone leaves the lock held.
+        writer.waitMergingThreads();
     }
 
     return { lastRev: currentRev, lastTagsRev: currentTagsRev ?? 0 };
