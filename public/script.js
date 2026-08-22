@@ -226,6 +226,8 @@ import { registerPromptManagerMigration } from './scripts/PromptManager.js';
 import { getRegexedString, regex_placement } from './scripts/extensions/regex/engine.js';
 import { initLogprobs, saveLogprobsForActiveMessage } from './scripts/logprobs.js';
 import { FILTER_STATES, FILTER_TYPES, FilterHelper, isFilterState } from './scripts/filters.js';
+import { characterRepository, buildCharacterQuery, isServerQueryableSort } from './scripts/character-repository.js';
+import { getRandomSortSeed } from './scripts/random-sort.js';
 import { getCfgPrompt, getGuidanceScale, initCfg } from './scripts/cfg-scale.js';
 import {
     force_output_sequence,
@@ -1138,7 +1140,7 @@ export async function printCharacters(fullRefresh = false) {
     applyTagsOnCharacterSelect();
     applyTagsOnGroupSelect();
 
-    const entities = getEntitiesList({ doFilter: true });
+    const entities = await getEntitiesList({ doFilter: true });
 
     const pageSize = Number(accountStorage.getItem(storageKey)) || per_page_default;
     const sizeChangerOptions = [10, 25, 50, 100, 250, 500, 1000];
@@ -1180,11 +1182,9 @@ export async function printCharacters(fullRefresh = false) {
             // automatically, which is what makes the plain `list.replaceChildren()` below safe: by the time
             // it runs, every row worth keeping has already been moved out into the fragment.
             const fragment = document.createDocumentFragment();
-            let displayCount = 0;
             for (const i of data) {
                 switch (i.type) {
                     case 'character': {
-                        displayCount++;
                         const existingRow = existingCharacterRows.get(i.item.avatar);
                         if (existingRow) {
                             existingCharacterRows.delete(i.item.avatar);
@@ -1196,7 +1196,6 @@ export async function printCharacters(fullRefresh = false) {
                     }
                     case 'group':
                         fragment.appendChild(getGroupBlock(i.item).get(0));
-                        displayCount++;
                         break;
                     case 'tag':
                         fragment.appendChild(getTagBlock(i.item, i.entities, i.hidden, i.isUseless).get(0));
@@ -1217,7 +1216,14 @@ export async function printCharacters(fullRefresh = false) {
             }
             list.appendChild(fragment);
 
-            const hidden = (characters.length + groups.length) - displayCount;
+            // design doc §4.1: this used to be `(characters.length + groups.length) - displayCount`, which
+            // conflated "filtered out by the active filter" with "not on this page" - a multi-page result with
+            // an active filter would show a nonsensical "N hidden" count that was really just every item on
+            // every *other* page. `entities` (this function's outer scope) is the already-filtered, unpaginated
+            // candidate set `data` was itself sliced from (the `pagination()` plugin's own dataSource), so
+            // `entities.length` is the real match count for the active filter, independent of which page is
+            // currently showing - the library-wide total minus that is the real "hidden by filter" count.
+            const hidden = (characters.length + groups.length) - entities.length;
             if (hidden > 0 && entitiesFilter.hasAnyFilter()) {
                 const hiddenBlock = await getHiddenBlock(hidden);
                 $(listId).append(hiddenBlock);
@@ -1308,18 +1314,102 @@ export function tagToEntity(tag) {
 }
 
 /**
+ * Whether the current sort selection is the "Search" relevance option (`#character_sort_order`'s hidden-unless-
+ * searching entry) - the one case `power_user.sort_field`/`sort_order` alone can't express, since that option
+ * overrides both while selected (mirrors sortEntitiesList()'s own `isSearch` check, power-user.js).
+ * @returns {boolean}
+ */
+function isSearchSortSelected() {
+    return $('#character_sort_order option[data-field="search"]').is(':selected');
+}
+
+/**
+ * Whether `getEntitiesList()`'s character candidate set can be built from the server `/query` endpoint
+ * (design doc §5/§6) instead of the fully-local `characters` array. Deliberately conservative - see the
+ * doc comments below and character-repository.js's `QUERYABLE_CLIENT_SORT_FIELDS`/`isServerQueryableSort()`.
+ *
+ * Excludes any active search term for a reason beyond "search isn't wired through /query here": this app
+ * already has a *separate*, fully-working server search integration (`fetchServerCharacterSearchResults()` /
+ * `entitiesFilter.serverSearchResults`, both in this file/filters.js) that scores characters AND groups
+ * together via `/api/characters/all` and feeds `entitiesFilter.searchFilter()`'s existing fuzzy/score-cache
+ * pipeline. If this function's server-query path also narrowed the candidate set by `filter.search` (via the
+ * *different* tantivy/FTS backend `/query` uses), the subsequent client-side `searchFilter()` pass would run
+ * its own fuzzy match against an already-narrowed set - and the two search engines do not necessarily agree on
+ * what matches, so a character the server's FTS matched but the client's Fuse pass would not could get silently
+ * dropped by that second pass. Leaving search entirely on the pre-existing path (full local candidate set,
+ * scored via the pre-existing mechanism) avoids that divergence risk. This is a deliberate, documented scope
+ * boundary, not an oversight - the design doc's "getEntitiesList inverts to ask repo.query()" applies to the
+ * plain browse/filter/sort case, not to search, which already had its own solved path before this change.
+ * @returns {boolean}
+ */
+function canUseServerQueryForEntitiesList() {
+    if (entitiesFilter.getFilterData(FILTER_TYPES.SEARCH)) return false;
+    if (isSearchSortSelected()) return false;
+    const sortField = power_user.sort_order === 'random' ? 'random' : power_user.sort_field;
+    return isServerQueryableSort(sortField);
+}
+
+/**
+ * Maps the current tag-filter/fav-filter/sort UI state (`entitiesFilter`, `power_user`) into the normalized
+ * input `buildCharacterQuery()` (character-repository.js) expects, and calls it. Kept as its own function so
+ * the state-reading side (this) stays separate from the pure mapping (that), matching the pure/impure split the
+ * design doc's client data model section (§6) asks for.
+ * @returns {{filter: import('./scripts/character-repository.js').CharacterQueryFilter, sort: import('./scripts/character-repository.js').CharacterQuerySort|undefined}}
+ */
+function buildCharacterQueryFromCurrentFilterState() {
+    const tagFilterData = entitiesFilter.getFilterData(FILTER_TYPES.TAG) ?? { selected: [], excluded: [] };
+    const favState = entitiesFilter.getFilterData(FILTER_TYPES.FAV);
+    let fav;
+    if (isFilterState(favState, FILTER_STATES.SELECTED)) fav = true;
+    else if (isFilterState(favState, FILTER_STATES.EXCLUDED)) fav = false;
+
+    const isRandom = power_user.sort_order === 'random';
+    return buildCharacterQuery({
+        tagsInclude: tagFilterData.selected ?? [],
+        tagsExclude: tagFilterData.excluded ?? [],
+        fav,
+        sortField: isRandom ? 'random' : power_user.sort_field,
+        sortOrder: power_user.sort_order === 'desc' ? 'desc' : 'asc',
+        randomSeed: isRandom ? getRandomSortSeed(accountStorage) : undefined,
+    });
+}
+
+/**
  * Builds the full list of all entities available
  *
  * They will be correctly marked and filtered.
  *
+ * The character portion of the candidate set is built two ways depending on `doFilter` and the current
+ * filter/sort state (design doc §6, phase 5):
+ * - `doFilter: true` and `canUseServerQueryForEntitiesList()` says yes: the character candidate set comes from
+ *   `characterRepository.queryAll()` - already narrowed by the active tag/fav filters and in the active sort
+ *   order, straight from the server. The rest of this function's filter pipeline (tag/fav/folder filtering,
+ *   the final sort) still runs over the result same as always; for the character subset that's a redundant but
+ *   harmless second pass (server and client agree on tag/fav membership, since both read the same underlying
+ *   tag_map/fav data), and it's the pass that does real work for groups and bogus-folder entities, which
+ *   `/query` does not and cannot answer (characters-only contract, §5).
+ * - Otherwise (an active search term, an unsupported sort field like `create_date`/`data_size`, or
+ *   `doFilter: false`): the pre-existing fully-local path - `characters.map(...)` over the whole resident array,
+ *   filtered/sorted entirely client-side exactly as before this change. This is the phase's documented gap:
+ *   real per-page server-driven pagination is blocked on a group/folder interleave problem `/query`'s contract
+ *   doesn't answer (no rank/cursor primitive over a mixed character+group+folder ordering) - see
+ *   `CharacterRepository.queryAll()`'s doc comment (character-repository.js) and the design doc §5/§6.
  * @param {object} param0 - Optional parameters
  * @param {boolean} [param0.doFilter] - Whether this entity list should already be filtered based on the global filters
  * @param {boolean} [param0.doSort] - Whether the entity list should be sorted when returned
- * @returns {Entity[]} All entities
+ * @returns {Promise<Entity[]>} All entities
  */
-export function getEntitiesList({ doFilter = false, doSort = true } = {}) {
+export async function getEntitiesList({ doFilter = false, doSort = true } = {}) {
+    const characterEntities = doFilter && canUseServerQueryForEntitiesList()
+        ? await (async () => {
+            const { filter, sort } = buildCharacterQueryFromCurrentFilterState();
+            const rows = await characterRepository.queryAll(filter, sort);
+            return rows.map(item => characterToEntity(item));
+        })()
+        : characters.map(item => characterToEntity(item));
+
     let entities = [
-        ...characters.map(item => characterToEntity(item)),
+        ...characterEntities,
         ...groups.map(item => groupToEntity(item)),
         ...(power_user.bogus_folders ? tags.filter(isBogusFolder).sort(compareTagsForSort).map(item => tagToEntity(item)) : []),
     ];
@@ -9055,11 +9145,11 @@ export function select_rm_info(type, charId, previousCharId = null) {
 
     // Set a timeout so multiple flashes don't overlap
     clearTimeout(importFlashTimeout);
-    importFlashTimeout = setTimeout(function () {
+    importFlashTimeout = setTimeout(async function () {
         if (type === 'char_import' || type === 'char_create' || type === 'char_import_no_toast') {
             // Find the page at which the character is located
             const avatarFileName = charId;
-            const charData = getEntitiesList({ doFilter: true });
+            const charData = await getEntitiesList({ doFilter: true });
             const charIndex = charData.findIndex((x) => x?.item?.avatar?.startsWith(avatarFileName));
 
             if (charIndex === -1) {
@@ -9092,7 +9182,7 @@ export function select_rm_info(type, charId, previousCharId = null) {
 
         if (type === 'group_create') {
             // Find the page at which the character is located
-            const charData = getEntitiesList({ doFilter: true });
+            const charData = await getEntitiesList({ doFilter: true });
             const charIndex = charData.findIndex((x) => String(x?.item?.id) === String(charId));
 
             if (charIndex === -1) {
