@@ -13240,8 +13240,17 @@ jQuery(async function () {
         // Pull the `file=` query param specifically, not "whatever's after the last =" - getThumbnailUrl()
         // can append a trailing `&v=<version>` or `&t=<timestamp>` after `file=`, and grabbing the last `=`
         // segment would then yield that cache-busting value instead of the avatar filename.
-        const fileParamMatch = thumbURL.match(/[?&]file=([^&]*)/);
-        const targetAvatarImg = fileParamMatch ? fileParamMatch[1] : thumbURL.substring(thumbURL.lastIndexOf('=') + 1);
+        // URL/URLSearchParams decodes the param value, so re-encode it to keep the same raw-encoded contract
+        // downstream code already relies on (decodeURIComponent(targetAvatarImg) calls, charsPath + targetAvatarImg
+        // used directly as an <img> src). Falls back to the old last-= slice for non-thumbnail src values
+        // (data URLs, plain paths without a file= param).
+        let targetAvatarImg;
+        try {
+            const fileParam = new URL(thumbURL, window.location.origin).searchParams.get('file');
+            targetAvatarImg = fileParam !== null ? encodeURIComponent(fileParam) : thumbURL.substring(thumbURL.lastIndexOf('=') + 1);
+        } catch {
+            targetAvatarImg = thumbURL.substring(thumbURL.lastIndexOf('=') + 1);
+        }
         const charname = targetAvatarImg.replace('.png', '');
         const isValidCharacter = characters.some(x => x.avatar === decodeURIComponent(targetAvatarImg));
 
