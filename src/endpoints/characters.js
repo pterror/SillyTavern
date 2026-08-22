@@ -653,10 +653,12 @@ async function importFromJson(uploadPath, { request, contentHash }, preservedFil
     if (jsonData.spec !== undefined) {
         console.info(`Importing from ${jsonData.spec} json`);
         importRisuSprites(request.user.directories, jsonData);
+        // Same pre-mutation snapshot as importFromPng() above, and for the same reason - see its comment.
+        const rawName = jsonData.data?.name || jsonData.name;
         if (jsonData.data?.name) {
             jsonData.data.name = sanitize(jsonData.data.name);
         }
-        jsonData.name = sanitize(jsonData.data?.name || jsonData.name);
+        jsonData.name = sanitize(String(rawName || ''));
         jsonData = readFromV2(jsonData);
         jsonData.create_date = new Date().toISOString();
         // Last mutation before stringify - see omitInstallLocalFields()'s own doc comment on why import no
@@ -739,10 +741,17 @@ async function importFromPng(uploadPath, { request, contentHash }, preservedFile
 
     let jsonData = JSON.parse(imgData);
 
+    // Read the pre-sanitize name once and reuse it for the fallback below - sanitize() below can turn a
+    // non-empty-but-all-illegal name (e.g. ".") into an empty string, and re-reading jsonData.data.name AFTER
+    // that mutation would then see that empty string as falsy and fall through to jsonData.name, which is
+    // `undefined` on essentially every v2/v3 card (they only ever carry data.name). sanitize(undefined) throws
+    // "Input must be string" - that's the exact crash this guarded against. Coercing through String(... || '')
+    // also makes this tolerant of a card with no name field anywhere, which previously crashed the same way.
+    const rawName = jsonData.data?.name || jsonData.name;
     if (jsonData.data?.name) {
         jsonData.data.name = sanitize(jsonData.data.name);
     }
-    jsonData.name = sanitize(jsonData.data?.name || jsonData.name);
+    jsonData.name = sanitize(String(rawName || ''));
     const pngName = preservedFileName || mintCharacterId(request.user.directories);
 
     if (jsonData.spec !== undefined) {
