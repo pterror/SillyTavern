@@ -3277,7 +3277,7 @@ function getCharacterAvatarUrl() {
         const avatarToUse = lastMessageAvatar || randomMemberAvatar;
         return formatCharacterAvatar(avatarToUse);
     } else {
-        return getCharacterAvatar(context.characterId);
+        return getCharacterAvatar(context.characterAvatar);
     }
 }
 

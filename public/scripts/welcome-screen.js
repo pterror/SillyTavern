@@ -1,6 +1,5 @@
 import {
     addOneMessage,
-    characters,
     charactersStore,
     chat,
     deleteCharacterChatByName,
@@ -528,10 +527,8 @@ async function openRecentGroupChat(groupId, fileName) {
  * @param {string} fileName Chat file name
  */
 async function renameRecentCharacterChat(avatarId, fileName) {
-    // updateRemoteChatName() below indexes into `characters` by position, so we need the numeric id.
     const character = charactersStore.get(avatarId);
-    const characterId = character ? characters.indexOf(character) : -1;
-    if (characterId === -1) {
+    if (!character) {
         console.error(`Character not found for avatar ID: ${avatarId}`);
         return;
     }
@@ -548,7 +545,7 @@ async function renameRecentCharacterChat(avatarId, fileName) {
             newFileName: newName,
             loader: false,
         });
-        await updateRemoteChatName(characterId, newName);
+        await updateRemoteChatName(avatarId, newName);
         await refreshWelcomeScreen();
         toastr.success(t`Chat renamed.`);
     } catch (error) {
@@ -595,10 +592,8 @@ async function renameRecentGroupChat(groupId, fileName) {
  * @param {string} fileName Chat file name
  */
 async function deleteRecentCharacterChat(avatarId, fileName) {
-    // deleteCharacterChatByName() below indexes into `characters` by position, so we need the numeric id.
     const character = charactersStore.get(avatarId);
-    const characterId = character ? characters.indexOf(character) : -1;
-    if (characterId === -1) {
+    if (!character) {
         console.error(`Character not found for avatar ID: ${avatarId}`);
         return;
     }
@@ -608,7 +603,7 @@ async function deleteRecentCharacterChat(avatarId, fileName) {
             console.log('Deletion cancelled by user');
             return;
         }
-        await deleteCharacterChatByName(String(characterId), fileName);
+        await deleteCharacterChatByName(avatarId, fileName);
         await refreshWelcomeScreen();
         toastr.success(t`Chat deleted.`);
     } catch (error) {

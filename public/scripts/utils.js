@@ -6,7 +6,6 @@ import {
     lodash,
 } from '../lib.js';
 
-import { getContext } from './extensions.js';
 import { animation_duration, characters, charactersStore, getCurrentCharacter, getRequestHeaders, processDroppedFiles, user_avatar } from '../script.js';
 import { isMobile } from './RossAscends-mods.js';
 import { collapseNewlines, power_user, personaStore } from './power-user.js';
@@ -1316,18 +1315,15 @@ export function getAudioDurationFromDataURL(dataUrl) {
 
 /**
  * Gets the filename of the character avatar without extension
- * @param {string|number?} [chid=null] - Character ID. If not provided, uses the current character ID
+ * @param {string?} [avatar=null] - Character avatar. If not provided, uses the currently selected character
  * @param {object} [options={}] - Options arguments
- * @param {string?} [options.manualAvatarKey=null] - Manually take the following avatar key, instead of using the chid to determine the name
- * @returns {string?} The filename of the character avatar without extension, or null if the character ID is invalid
+ * @param {string?} [options.manualAvatarKey=null] - Manually take the following avatar key, instead of using the avatar param to determine the name
+ * @returns {string?} The filename of the character avatar without extension, or null if the avatar doesn't resolve to a real character
  */
-export function getCharaFilename(chid = null, { manualAvatarKey = null } = {}) {
-    const context = getContext();
-    // chid, when explicitly given, is still an array index (callers that already have one on hand, e.g. from
-    // context.characters.indexOf()). The no-chid fallback used to go through context.characterId (this_chid),
-    // an index that can go stale across an await; it now resolves via context.characterAvatar (this_avatar)
-    // instead, which is kept in sync the same way and doesn't have that failure mode.
-    const fileName = manualAvatarKey ?? (chid !== null ? context.characters[chid]?.avatar : context.characterAvatar);
+export function getCharaFilename(avatar = null, { manualAvatarKey = null } = {}) {
+    // An explicitly-given avatar that doesn't resolve to a real character yields undefined - distinct from
+    // "no avatar given", which falls back to the currently selected character.
+    const fileName = manualAvatarKey ?? (avatar !== null ? (charactersStore.has(avatar) ? avatar : undefined) : getCurrentCharacter()?.avatar);
 
     return fileName?.replace(/\.[^/.]+$/, '') ?? null;
 }
@@ -2750,20 +2746,6 @@ export function findChar({ name = null, allowAvatar = true, insensitive = true, 
     return matchingCharacters[0] || null;
 }
 
-/**
- * Gets the index of a character based on the character object
- * @param {object} char - The character object to find the index for
- * @throws {Error} If the character is not found
- * @returns {number} The index of the character in the characters array
- */
-export function getCharIndex(char) {
-    if (!char) throw new Error('Character is undefined');
-    const entity = charactersStore.get(char.avatar);
-    if (!entity) throw new Error(`Character not found: ${char.avatar}`);
-    // Callers need the numeric array position (splice/array-index consumers), not just the entity, so resolve
-    // via the store for O(1) existence lookup and then find the position in the backing array.
-    return characters.indexOf(entity);
-}
 
 /**
  * Compares two arrays for equality

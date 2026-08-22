@@ -3132,12 +3132,12 @@ function findTagIdByName(name) {
 
 async function doRandomChat(_, tagName) {
     /**
-     * Gets the ID of a random character.
-     * @returns {string} The order index of the randomly selected character.
+     * Gets the avatar of a random character.
+     * @returns {string|undefined} The avatar of the randomly selected character.
      */
-    function getRandomCharacterId() {
+    function getRandomCharacterAvatar() {
         if (!tagName) {
-            return Math.floor(Math.random() * characters.length).toString();
+            return characters[Math.floor(Math.random() * characters.length)]?.avatar;
         }
 
         const tagId = findTagIdByName(tagName);
@@ -3145,29 +3145,21 @@ async function doRandomChat(_, tagName) {
             .filter(x => x[1].includes(tagId)) // Get only records that include the tag
             .map(x => x[0]) // Map the character avatar
             .filter(x => charactersStore.has(x)); // Filter out characters that don't exist
-        const randomCharacter = taggedCharacters[Math.floor(Math.random() * taggedCharacters.length)];
-        // setCharacterId()/characters[characterId] below need the numeric position (chid), not the entity, so
-        // resolve via the store first and then find that entity's position in the backing array.
-        const randomEntity = charactersStore.get(randomCharacter);
-        const randomIndex = randomEntity ? characters.indexOf(randomEntity) : -1;
-        if (randomIndex === -1) {
-            return;
-        }
-        return randomIndex.toString();
+        return taggedCharacters[Math.floor(Math.random() * taggedCharacters.length)];
     }
 
     resetSelectedGroup();
-    const characterId = getRandomCharacterId();
-    if (!characterId) {
+    const avatar = getRandomCharacterAvatar();
+    if (!avatar) {
         toastr.error('No characters found');
         return;
     }
-    setCharacterId(characterId);
-    setActiveCharacter(characters[characterId]?.avatar);
+    setCharacterId(avatar);
+    setActiveCharacter(avatar);
     setActiveGroup(null);
     await delay(1);
     await reloadCurrentChat();
-    return characters[characterId]?.name;
+    return charactersStore.get(avatar)?.name;
 }
 
 /**
