@@ -36,6 +36,7 @@ import { t, translate } from './i18n.js';
 import { accountStorage } from './util/AccountStorage.js';
 import { enumTypes, SlashCommandEnumValue } from './slash-commands/SlashCommandEnumValue.js';
 import { getCachedTags, setCachedTags } from './tags-cache.js';
+import { checkCharactersExistOrNull } from './character-existence-check.js';
 
 export {
     TAG_FOLDER_TYPES,
@@ -2578,7 +2579,17 @@ async function onTagRestoreFileSelect(e) {
     }
 
     // Import tag_map
-    for (const key of Object.keys(data.tag_map)) {
+    const tagMapKeys = Object.keys(data.tag_map);
+    // Batch every key's character-existence answer in one call rather than one `exists()` round-trip per key
+    // (design doc §4.2). `null` means the check itself failed - see checkCharactersExistOrNull()'s doc comment for
+    // why that must not be read as "none of these exist": this is a warn-and-skip flow, not a delete, so on a
+    // failed check we fail open (treat every key as possibly-a-character) rather than mass-warning below.
+    const characterKeyExistence = await checkCharactersExistOrNull(tagMapKeys);
+    if (characterKeyExistence === null) {
+        toastr.error(t`Could not verify character existence against the server. Tag map keys could not be validated this run.`, 'Tag Restore');
+    }
+
+    for (const key of tagMapKeys) {
         const tagIds = data.tag_map[key];
 
         if (!Array.isArray(tagIds)) {
@@ -2587,7 +2598,7 @@ async function onTagRestoreFileSelect(e) {
         }
 
         // Verify that the key points to a valid character or group.
-        const characterExists = characters.some(x => String(x.avatar) === String(key));
+        const characterExists = characterKeyExistence === null ? true : characterKeyExistence[key] === true;
         const groupExists = groups.some(x => String(x.id) === String(key));
 
         if (!characterExists && !groupExists) {
@@ -2653,9 +2664,22 @@ async function onTagsPruneClick() {
     const allTagsInTagMaps = getAssignedTagIds();
     const tagsToPrune = tags.filter(tag => !allTagsInTagMaps.has(tag.id));
 
-    // Get tag maps referring to deleted entities
-    const allEntityKeys = new Set([...characters.map(c => String(c.avatar)), ...groups.map(g => String(g.id))]);
-    const tagMapsToPrune = Object.keys(tag_map).filter(key => !allEntityKeys.has(key));
+    // Get tag maps referring to deleted entities. Group ids are always fully resident and cheap to check
+    // locally; character-shaped keys go through the authoritative `characterRepository.exists()` (design doc
+    // §4.2) instead of a resident-array scan, since this path actually deletes tag_map entries.
+    const groupEntityIds = new Set(groups.map(g => String(g.id)));
+    const candidateCharacterKeys = Object.keys(tag_map).filter(key => !groupEntityIds.has(key));
+    const characterKeyExistence = await checkCharactersExistOrNull(candidateCharacterKeys);
+
+    let tagMapsToPrune;
+    if (characterKeyExistence === null) {
+        // §4.2: a failed/partial existence check must abort the prune for the affected keys, never fall
+        // through to "prune it". Only the character-shaped candidates are affected; nothing here deletes yet.
+        toastr.error(t`Could not verify character existence against the server. Skipping pruning of stale character tag references this run.`, 'Prune Tags');
+        tagMapsToPrune = [];
+    } else {
+        tagMapsToPrune = candidateCharacterKeys.filter(key => !characterKeyExistence[key]);
+    }
 
     if (!tagsToPrune.length && !tagMapsToPrune.length) {
         toastr.info(t`No unused tags or references found.`);
