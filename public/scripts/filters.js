@@ -108,7 +108,7 @@ export class FilterHelper {
          * Pre-computed character/group search results from the server's fast full-content index (see
          * setServerSearchResults() below), or null if none are available for the current search value/fav state
          * yet.
-         * @type {{ searchValue: string, favOnly: boolean, characterScores: Map<string, number>, groupScores: Map<string, number> } | null}
+         * @type {{ searchValue: string, favOnly: boolean, characterScores: Map<string, number>, groupScores: Map<string, number>, total: number } | null}
          */
         this.serverSearchResults = null;
     }
@@ -140,7 +140,11 @@ export class FilterHelper {
      * result and let searchFilter() fall back to the client-side pass for this search (that fallback runs over
      * every resident character/group, not a relevance-capped page, so it isn't subject to this same gap - just
      * slower, per this file's other perf notes).
-     * @param {{ searchValue: string, favOnly: boolean, characterScores: Map<string, number>, groupScores: Map<string, number> } | null} results
+     * `total` is the server's real match count (POST /api/characters/all's own `total`, uncapped by its
+     * page-fetch limit - see paginateSearchResults()'s JSDoc in characters.js) - callers that only have the
+     * capped `characterScores`/`groupScores` map to derive a count from (e.g. printCharacters()'s local
+     * pagination navigator) can use this to show the true match count instead of the capped one.
+     * @param {{ searchValue: string, favOnly: boolean, characterScores: Map<string, number>, groupScores: Map<string, number>, total: number } | null} results
      */
     setServerSearchResults(results) {
         this.serverSearchResults = results;
