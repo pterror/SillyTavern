@@ -1867,9 +1867,19 @@ router.post('/duplicate', validateAvatarUrlMiddleware, async function (request, 
         // the first dupe silently produced `foo_NaN.png`, and the second dupe span forever in the loop below,
         // since `foo_NaN.png` always exists and `NaN++` stays `NaN` - a synchronous existsSync spin that
         // wedged the whole server on one request (docs/design/character-data-residency-redesign.md §1.3).
+        //
+        // That parse fix alone wasn't enough: `/^\d+$/` still accepts arbitrarily long digit strings, and
+        // once the parsed suffix exceeds Number.MAX_SAFE_INTEGER (16 digits), `suffix++` stops advancing in
+        // float precision (e.g. stuck at 1e22) - same synchronous existsSync wedge, just a longer digit-string
+        // trigger instead of the original one-character one. Two independent guards close this for good:
+        // capping the regex to safe-integer-length digit strings keeps `suffix` itself always a real,
+        // strictly-increasing integer, and the attempt counter below bounds the loop by iteration count
+        // (never by the numeric value of `suffix`), so it terminates even if some future change reintroduces
+        // a non-advancing suffix.
         const nameParts = path.basename(filename, path.extname(filename)).split('_');
         const lastPart = nameParts[nameParts.length - 1];
-        const isStrictInteger = /^\d+$/.test(lastPart);
+        // 15 digits is comfortably inside Number.MAX_SAFE_INTEGER (16 digits) even after +1.
+        const isStrictInteger = /^\d{1,15}$/.test(lastPart);
 
         let suffix = 1;
         let baseName;
@@ -1883,10 +1893,18 @@ router.post('/duplicate', validateAvatarUrlMiddleware, async function (request, 
 
         let newFilename = path.join(request.user.directories.characters, `${baseName}_${suffix}${path.extname(filename)}`);
 
-        // suffix is always a real, strictly increasing integer here, so this loop is guaranteed to terminate:
-        // there are only finitely many existing files it could collide with before it finds a free name.
+        // No legitimate library needs more than this many same-named duplicates in one chain; this also
+        // bounds the loop by iteration count rather than by the value of `suffix`, so it can't spin forever
+        // even if `suffix` were somehow to stop advancing.
+        const MAX_DUPLICATE_ATTEMPTS = 10000;
+        let attempts = 0;
         while (fs.existsSync(newFilename)) {
             suffix++;
+            attempts++;
+            if (attempts > MAX_DUPLICATE_ATTEMPTS) {
+                console.error(`Too many duplicate suffixes for ${baseName}, giving up after ${MAX_DUPLICATE_ATTEMPTS} attempts`);
+                return response.status(500).send({ error: true, message: 'Too many duplicates with this name' });
+            }
             newFilename = path.join(request.user.directories.characters, `${baseName}_${suffix}${path.extname(filename)}`);
         }
 
