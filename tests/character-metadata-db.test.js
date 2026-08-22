@@ -1104,3 +1104,80 @@ describe('groups schema extension (owner decision - fav/date_added/date_last_cha
         expect(row.date_added).toBeGreaterThan(0);
     });
 });
+
+describe('fav is db-authoritative once a character row exists (owner decision - see writeRowSync()/setCharacterFav() doc comments)', () => {
+    test('bootstrapIfNeeded seeds fav from a never-before-tracked character\'s embedded card value, once', async () => {
+        // The "vanilla-ST-install upgrade" case: a card that already carries a real fav value, encountered for
+        // the very first time by this fork's metadata store.
+        await writeCardFile('Alice.png', { name: 'Alice', fav: true, data: { name: 'Alice', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: true, world: '' } } });
+
+        await metadataDb.bootstrapIfNeeded(directories);
+
+        const row = await metadataDb.getCharacterMetadataRow(directories, 'Alice.png');
+        expect(row.fav).toBe(1);
+    });
+
+    test('an ordinary re-upsert of an already-tracked row (upsertCharacterFromWrite) ignores the card\'s embedded fav entirely - the db value wins', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ fav: true }), 1000);
+        let row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+        expect(row.fav).toBe(1);
+
+        // A later write for the SAME avatar carries a different embedded fav (e.g. a stale reconcile pass, or
+        // an /edit save whose card - post omitFavField() - never should have carried fav at all in the first
+        // place). Either way, this must not clobber the db's own value.
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ fav: false }), 2000);
+        row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+        expect(row.fav).toBe(1);
+    });
+
+    test('setCharacterFav() is the only thing that can change fav after a row exists, and it patches shallow_json to match', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ fav: false }), 1000);
+
+        const updated = await metadataDb.setCharacterFav(directories, 'Bob.png', true);
+        expect(updated).toBe(true);
+
+        const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+        expect(row.fav).toBe(1);
+
+        // queryCharacters() returns JSON.parse(shallow_json) verbatim (character-metadata-db.js) - a caller
+        // reading through that path must see the same fav the row itself reports, not whatever buildRow()
+        // embedded at insert time.
+        const queried = await metadataDb.queryCharacters(directories, { ids: ['Bob.png'] });
+        expect(queried.rows[0].fav).toBe(true);
+
+        // And a subsequent ordinary card write still must not revert it (same guarantee as the test above,
+        // now exercised after a genuine setCharacterFav() toggle rather than only after the initial insert).
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ fav: false }), 2000);
+        const rowAfter = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+        expect(rowAfter.fav).toBe(1);
+    });
+
+    test('setCharacterFav() is a no-op (returns false) for an avatar with no tracked row yet', async () => {
+        const updated = await metadataDb.setCharacterFav(directories, 'Ghost.png', true);
+        expect(updated).toBe(false);
+    });
+
+    test('getCharacterFavsByIds() bulk-reads fav for a known set of ids, omitting untracked ones', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', cardJson({ name: 'Alice', fav: true, data: { name: 'Alice', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: true, world: '' } } }), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ fav: false }), 1000);
+
+        const favs = await metadataDb.getCharacterFavsByIds(directories, ['Alice.png', 'Bob.png', 'Ghost.png']);
+        expect(favs).toEqual({ 'Alice.png': true, 'Bob.png': false });
+    });
+
+    test('reconcile() picking up an externally-touched file does not revert a fav toggle made through setCharacterFav()', async () => {
+        const filePath = await writeCardFile('Alice.png', { name: 'Alice', fav: false, data: { name: 'Alice', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+        await metadataDb.bootstrapIfNeeded(directories);
+
+        await metadataDb.setCharacterFav(directories, 'Alice.png', true);
+
+        // Touch the file's mtime so reconcile() treats it as changed and re-upserts its row - same trigger the
+        // existing tag-assignment regression test above uses. The card on disk still says fav: false.
+        const future = new Date(Date.now() + 60_000);
+        fs.utimesSync(filePath, future, future);
+        await metadataDb.reconcile(directories);
+
+        const row = await metadataDb.getCharacterMetadataRow(directories, 'Alice.png');
+        expect(row.fav).toBe(1);
+    });
+});

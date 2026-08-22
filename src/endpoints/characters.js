@@ -18,7 +18,7 @@ import { default as validateAvatarUrlMiddleware, getFileNameValidationFunction, 
 import { deepMerge, humanizedDateTime, tryParse, MemoryLimitedMap, getConfigValue, mutateJsonString, clientRelativePath, getUniqueName, sanitizeSafeCharacterReplacements, getArrayBufferSlice, uuidv7 } from '../util.js';
 import { TavernCardValidator } from '../validator/TavernCardValidator.js';
 import { parse, read, write } from '../character-card-parser.js';
-import { getCharaCardV2, convertToV2, readFromV2, charaFormatData, convertWorldInfoToCharacterBook, unsetPrivateFields, omitInstallLocalFields } from '../character-card-normalize.js';
+import { getCharaCardV2, convertToV2, readFromV2, charaFormatData, convertWorldInfoToCharacterBook, unsetPrivateFields, omitInstallLocalFields, omitFavField } from '../character-card-normalize.js';
 import { calculateChatSize, calculateDataSize, toShallow } from '../character-shallow.js';
 import { invalidateThumbnail, getThumbnailVersion } from './thumbnails.js';
 import { importRisuSprites } from './sprites.js';
@@ -30,7 +30,7 @@ import cacheBuster from '../middleware/cacheBuster.js';
 import { searchCharacters, searchCharacterIds, rebuildCharacterSearchIndex, SEARCH_ID_CAP } from './characters-search-index.js';
 import { searchGroups } from './groups-search-index.js';
 import { getGroupsData, getGroupsByIds } from './groups.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, findCharacterIdByContentHash } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, findCharacterIdByContentHash, setCharacterFav, getCharacterFavsByIds } from '../character-metadata-db.js';
 
 // With 100 MB limit it would take roughly 3000 characters to reach this limit
 const memoryCacheCapacity = getConfigValue('performance.memoryCacheCapacity', '100mb');
@@ -796,7 +796,14 @@ router.post('/create', getFileNameValidationFunction('file_name'), async functio
 
         request.body.ch_name = sanitize(request.body.ch_name);
 
-        const char = JSON.stringify(charaFormatData(request.body, request.user.directories));
+        // Favorite status is db-authoritative from the moment a row exists (see character-metadata-db.js's
+        // setCharacterFav() doc comment) - the card written below never carries `fav` at all, so read the
+        // requested initial state here and seed the row with it (setCharacterFav(), further down) right after
+        // writeCharacterData()'s own metadata-upsert hook has genuinely INSERTed it.
+        const initialFav = request.body.fav === 'true' || request.body.fav === true;
+        const charaData = charaFormatData(request.body, request.user.directories);
+        omitFavField(charaData);
+        const char = JSON.stringify(charaData);
         const internalName = request.body.file_name || mintCharacterId(request.user.directories);
         const avatarName = `${internalName}.png`;
         const chatsPath = path.join(request.user.directories.chats, internalName);
@@ -805,14 +812,17 @@ router.post('/create', getFileNameValidationFunction('file_name'), async functio
 
         if (!request.file) {
             await writeCharacterData(DEFAULT_AVATAR_PATH, char, internalName, request);
-            return response.send(avatarName);
         } else {
             const crop = tryParse(request.query.crop);
             const uploadPath = path.join(request.file.destination, request.file.filename);
             await writeCharacterData(uploadPath, char, internalName, request, crop);
             fs.unlinkSync(uploadPath);
-            return response.send(avatarName);
         }
+
+        if (initialFav) {
+            await setCharacterFav(request.user.directories, avatarName, true);
+        }
+        return response.send(avatarName);
     } catch (err) {
         console.error(err);
         response.sendStatus(500);
@@ -877,6 +887,12 @@ router.post('/edit', validateAvatarUrlMiddleware, async function (request, respo
     let char = charaFormatData(request.body, request.user.directories);
     char.chat = request.body.chat;
     char.create_date = request.body.create_date;
+    // Favorite status is db-authoritative once a row exists (character-metadata-db.js's setCharacterFav() doc
+    // comment) - an ordinary card edit must not carry `fav` back into the file at all, regardless of whatever
+    // the request body's own `fav` field says (the client no longer sends a meaningful one - see script.js's
+    // favorite-button click handler, which now calls the dedicated /fav route directly instead of folding a
+    // toggle into this save).
+    omitFavField(char);
     char = JSON.stringify(char);
     let targetFile = (request.body.avatar_url).replace('.png', '');
 
@@ -1052,8 +1068,18 @@ async function mergeCharacterUpdate(avatarPath, avatar, updateData, request, sho
     _.unset(update, 'json_data');
     _.unset(character, 'json_data');
 
+    // Favorite status is db-authoritative once a row exists (character-metadata-db.js's setCharacterFav() doc
+    // comment) - a merge payload's `fav`/`data.extensions.fav` (the shape slash-commands.js's /char-attribute
+    // still advertises and sends) must never land in the card file, but it still has to take effect: pull the
+    // intended value out here (merged the normal way first, so `deepMerge`'s existing precedence/nesting rules
+    // decide the winning value exactly like every other field) and apply it through setCharacterFav() after the
+    // write below, instead of writing it at all.
+    const favRequested = _.has(update, 'fav') || _.has(update, 'data.extensions.fav');
+
     character = deepMerge(character, update);
     processUnsetSentinels(character, update);
+    const requestedFav = !!(character.fav ?? _.get(character, 'data.extensions.fav'));
+    omitFavField(character);
 
     const validator = new TavernCardValidator(character);
     //Accept either V1 or V2.
@@ -1063,6 +1089,9 @@ async function mergeCharacterUpdate(avatarPath, avatar, updateData, request, sho
 
     const targetImg = avatar.replace('.png', '');
     await writeCharacterData(avatarPath, JSON.stringify(character), targetImg, request);
+    if (favRequested) {
+        await setCharacterFav(request.user.directories, avatar, requestedFav);
+    }
     return { ok: true };
 }
 
@@ -1173,6 +1202,38 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
         }
     } catch (exception) {
         response.status(500).send({ message: 'Unexpected error while saving character.', error: exception.toString() });
+    }
+});
+
+/**
+ * HTTP POST endpoint for the "/api/characters/fav" route - the dedicated fav-toggle write path (owner decision:
+ * favorite status is now a pure metadata-store mutation, not a card-file edit - see character-metadata-db.js's
+ * setCharacterFav() doc comment). Deliberately does NOT go through writeCharacterData()/mergeCharacterUpdate():
+ * no card read, no card write, no thumbnail/cache invalidation, no metadata-upsert-hook re-derivation - the one
+ * thing this route touches is the `fav` column (plus its `shallow_json` mirror) of an already-tracked row.
+ *
+ * 404s (not 400) when the avatar isn't tracked yet, rather than silently doing nothing - a caller has no other
+ * way to tell "no-op because unfavorited already" apart from "no-op because this row doesn't exist", and the
+ * client only ever calls this for a character it already has in hand (so this should be unreachable in normal
+ * use; a stale client cache is the only realistic trigger).
+ * @param  {import("express").Request} request The HTTP request object.
+ * @param  {import("express").Response} response The HTTP response object.
+ * @return {void}
+ */
+router.post('/fav', getFileNameValidationFunction('avatar'), async function (request, response) {
+    try {
+        const { avatar, fav } = request.body ?? {};
+        if (typeof avatar !== 'string' || !avatar) {
+            return response.status(400).send({ error: true, reason: 'avatar-required' });
+        }
+        const updated = await setCharacterFav(request.user.directories, avatar, fav === true || fav === 'true');
+        if (!updated) {
+            return response.status(404).send({ error: true, reason: 'not-tracked' });
+        }
+        return response.sendStatus(204);
+    } catch (err) {
+        console.error('[characters/fav] Failed to update favorite status:', err);
+        return response.status(500).send({ error: true });
     }
 });
 
@@ -1398,6 +1459,33 @@ function paginateSearchResults(characterResults, groupResults, { offset, limit, 
 // paginate*() branches below, not just the search one that happened to crash first.
 const DEFAULT_PAGE_LIMIT = 500;
 
+/**
+ * Overwrites each character's `.fav` with the metadata store's own value, in place - the live `/all` route's
+ * counterpart to the `/query` route's group-hydration stamp (`{ ...group, fav: r.fav, ... }` above): `fav` is
+ * db-authoritative once a row is tracked (see character-metadata-db.js's writeRowSync()/setCharacterFav() doc
+ * comments), so whatever processCharacter() read straight off the card file is a stale/irrelevant value for any
+ * already-tracked character, not a fallback to merge with. One batched query for the whole page rather than one
+ * per character.
+ *
+ * A character NOT YET tracked (getCharacterFavsByIds() simply omits it - the bootstrap/watcher/reconciler
+ * haven't caught up to a brand-new file yet) is left untouched, keeping whatever processCharacter() read from
+ * the card - the file is still the only source for a character the metadata store hasn't seen yet.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {object[]} characters Already-processed character objects (each with `.avatar` set - see
+ * processCharacter()) - mutated in place.
+ * @returns {Promise<void>}
+ */
+async function stampDbFav(directories, characters) {
+    const ids = characters.map(c => c.avatar).filter(Boolean);
+    if (ids.length === 0) return;
+    const favById = await getCharacterFavsByIds(directories, ids);
+    for (const character of characters) {
+        if (Object.prototype.hasOwnProperty.call(favById, character.avatar)) {
+            character.fav = favById[character.avatar];
+        }
+    }
+}
+
 router.post('/all', async function (request, response) {
     try {
         const { sortField, sortOrder, offset, limit, search, includeGroups, fav } = request.body ?? {};
@@ -1408,6 +1496,7 @@ router.post('/all', async function (request, response) {
             const pngFiles = files.filter(file => file.endsWith('.png'));
             const processingPromises = pngFiles.map(file => processCharacter(file, request.user.directories, { shallow: useShallowCharacters }));
             const data = (await Promise.all(processingPromises)).filter(c => c.name);
+            await stampDbFav(request.user.directories, data);
             // No pagination params at all: preserve the exact pre-existing response shape (a bare array).
             return response.send(data);
         }
@@ -1444,6 +1533,12 @@ router.post('/all', async function (request, response) {
             const finalCharacterResults = useShallowCharacters
                 ? characterSearch.results.map(r => ({ ...r, item: toShallow(r.item) }))
                 : characterSearch.results;
+            // Same db-authoritative stamp stampDbFav() applies to the non-search path above - the search index's
+            // own `fav` copy (characters-search-index.js) can lag behind a db-only fav toggle (setCharacterFav()
+            // never touches the card file, so it can't trigger a reindex the way an ordinary write does), so a
+            // displayed result's `.fav` still needs correcting here even though `favOnly` itself was already
+            // decided against whatever the index had at query time - see this function's own doc comment.
+            await stampDbFav(request.user.directories, finalCharacterResults.map(r => r.item));
 
             const { items, total } = paginateSearchResults(finalCharacterResults, groupSearch.results, {
                 offset: numericOffset, limit: numericLimit,
@@ -1468,6 +1563,7 @@ router.post('/all', async function (request, response) {
         const pngFiles = files.filter(file => file.endsWith('.png'));
         const processingPromises = pngFiles.map(file => processCharacter(file, request.user.directories, { shallow: useShallowCharacters }));
         const data = (await Promise.all(processingPromises)).filter(c => c.name);
+        await stampDbFav(request.user.directories, data);
 
         if (includeGroups) {
             const groupsData = getGroupsData(request.user.directories);
@@ -1922,6 +2018,7 @@ router.post('/get', validateAvatarUrlMiddleware, async function (request, respon
         }
 
         const data = await processCharacter(item, request.user.directories, { shallow: false });
+        await stampDbFav(request.user.directories, [data]);
 
         return response.send(data);
     } catch (err) {

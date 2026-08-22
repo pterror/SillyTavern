@@ -12520,10 +12520,35 @@ jQuery(async function () {
         $('#creator_notes_spoiler').html(formatCreatorNotes(notes, avatar));
     });
 
-    $('#favorite_button').on('click', function () {
-        updateFavButtonState(!fav_ch_checked);
-        if (menu_type != 'create') {
-            saveCharacterDebounced();
+    $('#favorite_button').on('click', async function () {
+        const newState = !fav_ch_checked;
+        updateFavButtonState(newState);
+        if (menu_type == 'create') {
+            // No row exists yet - the state just toggled here rides along in the create request's own `fav`
+            // field (createOrEditCharacter()'s formData.set('fav', ...)) and gets seeded once the row is
+            // actually INSERTed - see the server's /create route.
+            return;
+        }
+        // Favorite status is a pure metadata-store mutation now (owner decision - see character-metadata-db.js's
+        // setCharacterFav() doc comment), not a card-file edit - this used to fold into the full debounced
+        // saveCharacterDebounced() card save; now it's its own immediate, targeted write.
+        const character = getCurrentCharacter();
+        if (!character?.avatar) return;
+        try {
+            const response = await fetch('/api/characters/fav', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ avatar: character.avatar, fav: newState }),
+            });
+            if (!response.ok) throw new Error(String(response.status));
+            // Same "refresh this one character" idiom the merge-attributes-based edit flows already use
+            // (slash-commands.js's /char-attribute, createOrEditCharacter() above) - keeps charactersStore's
+            // copy (and anything derived from it, e.g. the character list) in sync with what the db now has.
+            await getOneCharacter(character.avatar);
+        } catch (error) {
+            console.error('Failed to update favorite status', error);
+            toastr.error(t`Failed to update favorite status.`);
+            updateFavButtonState(!newState);
         }
     });
 

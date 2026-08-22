@@ -667,12 +667,32 @@ function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, date
  * into the directory by hand that happens to have a legacy tag_map entry). An UPDATE of an already-existing row
  * never touches character_tags at all here; existing assignments in that table stand as-is regardless of what
  * `tagIds`/tags.json says.
+ *
+ * The exact same reasoning applies to `fav`, one owner-decision layer further: once a row exists, its `fav`
+ * column is the ONLY source of truth for favorite status - a card file's embedded `fav` (or `data.extensions.
+ * fav`) only ever seeds the row's *first* INSERT (see buildRow()'s own `fav` field, computed from whatever
+ * `character.fav` this call was given), the same one-time role tagIds plays above. An ordinary re-upsert of an
+ * existing row (an edit, a reconcile pass picking up an externally-touched file, a re-import of the same avatar
+ * id) must not let a stale or attacker/tool-authored embedded value silently override a toggle made through the
+ * dedicated fav write path (setCharacterFav() below, the only other writer of this column post-insert) - so
+ * `row.fav`/its `shallow_json`'s own embedded `fav` copy are both forced back to the row's current value here
+ * before the UPSERT ever runs, regardless of what buildRow() computed them as.
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {object} row From buildRow()
  * @param {string[]} tagIds Seed tag ids - applied only if this is a genuine insert, see above.
  */
 function writeRowSync(db, row, tagIds) {
-    const existed = !!db.get('SELECT 1 FROM characters WHERE id = @id', { id: row.id });
+    const existingRow = db.get('SELECT fav FROM characters WHERE id = @id', { id: row.id });
+    const existed = !!existingRow;
+
+    if (existed) {
+        const currentFav = existingRow.fav ? 1 : 0;
+        if (row.fav !== currentFav) {
+            const shallow = JSON.parse(row.shallow_json);
+            shallow.fav = !!currentFav;
+            row = { ...row, fav: currentFav, shallow_json: JSON.stringify(shallow) };
+        }
+    }
 
     const { lastInsertRowid } = db.run('INSERT INTO changes (id, op) VALUES (@id, @op)', { id: row.id, op: 'upsert' });
     db.run(UPSERT_SQL, { ...row, rev: Number(lastInsertRowid) });
@@ -744,6 +764,70 @@ export async function upsertCharacterFromWrite(directories, avatar, cardJson, fi
     const tagIds = getTagIdsFor(directories, avatar);
 
     applyOrBuffer(entry, row, tagIds);
+}
+
+/**
+ * Write-path hook for the fav-toggle UI action (owner decision - see this module's header on `fav` being
+ * db-authoritative once a row exists) - the ONE writer, other than a row's first INSERT, ever allowed to change
+ * the `fav` column. Deliberately does NOT touch the character's PNG card file at all: no read, no write, no
+ * fireMetadataUpsertHook() - a favorite toggle is now a pure metadata-store mutation, matching upsertGroupRow()'s
+ * existing `{ fav }` shape for groups.
+ *
+ * Patches `shallow_json`'s own embedded `fav` field to match, so a `/query` read (queryCharacters(), which
+ * returns `JSON.parse(shallow_json)` verbatim - see that function) stays consistent with the `fav` column
+ * without needing a separate per-row stamp step the way the live `/all` route's processCharacter() results do
+ * (see getCharacterFavsByIds() below, used for exactly that).
+ *
+ * No-op (returns false) if this avatar isn't tracked yet - a row has to exist for its `fav` column to mean
+ * anything; a character encountered for the first time gets its embedded `fav` picked up once by whatever write
+ * path (bootstrapIfNeeded()/reconcile()/upsertCharacterFromWrite()) first INSERTs its row, per writeRowSync()'s
+ * own doc comment.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} avatar Avatar filename (e.g. `Alice.png`)
+ * @param {boolean} fav
+ * @returns {Promise<boolean>} True if a row existed and was updated.
+ */
+export async function setCharacterFav(directories, avatar, fav) {
+    const entry = await getEntry(directories);
+    if (!entry) return false;
+
+    const existing = entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: avatar });
+    if (!existing) return false;
+
+    const shallow = JSON.parse(existing.shallow_json);
+    shallow.fav = !!fav;
+
+    const { lastInsertRowid } = entry.db.run('INSERT INTO changes (id, op) VALUES (@id, @op)', { id: avatar, op: 'upsert' });
+    entry.db.run(
+        'UPDATE characters SET fav = @fav, shallow_json = @shallow_json, rev = @rev WHERE id = @id',
+        { id: avatar, fav: fav ? 1 : 0, shallow_json: JSON.stringify(shallow), rev: Number(lastInsertRowid) },
+    );
+    return true;
+}
+
+/**
+ * Bulk `fav` lookup for a known set of ids - the batched counterpart to reading `fav` off each row individually,
+ * used by the live `/all` route (characters.js) to stamp its already-disk-read `processCharacter()` results with
+ * the db's authoritative `fav` value in one query rather than one-per-character. Ids with no tracked row are
+ * simply absent from the result (caller's job to decide a fallback - see that route for why "not tracked yet"
+ * means "the file is still the source", not "false").
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string[]} ids Avatar filenames
+ * @returns {Promise<{[id: string]: boolean}>}
+ */
+export async function getCharacterFavsByIds(directories, ids) {
+    const entry = await getEntry(directories);
+    if (!entry || !Array.isArray(ids) || ids.length === 0) return {};
+
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = entry.db.all(`SELECT id, fav FROM characters WHERE id IN (${placeholders})`, ids);
+
+    /** @type {{[id: string]: boolean}} */
+    const result = {};
+    for (const row of rows) {
+        result[row.id] = !!row.fav;
+    }
+    return result;
 }
 
 /**
