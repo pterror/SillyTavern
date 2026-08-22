@@ -280,6 +280,26 @@ localImport:
   # reflinks/hardlinks. Set to false to fail the import instead of silently paying the full
   # disk-space/time cost of copying every character file across devices or filesystem types.
   allowCrossDeviceCopyFallback: true
+  # Whether the local-directory-scan import feature (below) is active at all. Also effectively inert
+  # whenever `directories` is empty, even if this stays true.
+  enabled: true
+  # Local filesystem directories to periodically scan (and optionally fs.watch, see watchEnabled below)
+  # for character files (PNG cards, YAML, JSON, CharX, BYAF) to import automatically. Admin/config-set
+  # only - this is never accepted from a request, so it doesn't introduce an arbitrary-path-read
+  # endpoint. Empty by default. This targets this fork's personal single-user deployment shape - every
+  # discovered file is imported into the default-user library, regardless of enableUserAccounts.
+  directories: []
+  # How often (ms) each configured directory gets rescanned for new/changed files. This is the mandatory
+  # backstop, not watchEnabled's fs.watch below - it always runs regardless of whether the watcher is
+  # enabled or available on this platform, the same way character-metadata-db.js's periodic reconciler
+  # backstops its own directory watcher (see that module's header).
+  scanIntervalMs: 60000
+  # Also fs.watch() each configured directory as a latency optimization on top of the periodic scan
+  # above. Never required for correctness: fs.watch/inotify can silently drop events under burst load
+  # with no error reported (see character-metadata-db.js's header for the same finding against the
+  # characters directory), and isn't available on every platform/filesystem either way - the periodic
+  # scan above is what's actually relied on.
+  watchEnabled: true
 
 # CACHE BUSTER CONFIGURATION
 # IMPORTANT: Requires localhost or a domain with HTTPS, otherwise will not work!
