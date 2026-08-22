@@ -190,6 +190,97 @@ describe('scanDirectory (unit: direct directories fixture, no boot wiring)', () 
         const missingState = { sourceDir: path.join(tempDir, 'does-not-exist'), lastSeenMtimeMs: new Map(), watcher: null, watchTimers: new Map() };
         await expect(localImportScan.scanDirectory(missingState, directories)).resolves.toBeUndefined();
     });
+
+    describe('localImport.hardlinkDuplicateSourceFiles', () => {
+        afterEach(() => {
+            delete process.env.SILLYTAVERN_LOCALIMPORT_HARDLINKDUPLICATESOURCEFILES;
+        });
+
+        test('default (off): a duplicate source file is left as a regular, non-hardlinked file', async () => {
+            const existingJson = JSON.stringify({ name: 'Ghost', description: 'A local-import test character' });
+            fs.writeFileSync(path.join(sourceDir, 'ghost.json'), existingJson);
+            await localImportScan.scanDirectory(buildState(), directories);
+
+            const duplicatePath = path.join(sourceDir, 'ghost-again.json');
+            fs.writeFileSync(duplicatePath, existingJson);
+            await localImportScan.scanDirectory(buildState(), directories);
+
+            const characterFile = fs.readdirSync(charactersDir)[0];
+            const characterPath = path.join(charactersDir, characterFile);
+            expect(fs.statSync(duplicatePath).ino).not.toBe(fs.statSync(characterPath).ino);
+            expect(fs.readFileSync(duplicatePath, 'utf8')).toBe(existingJson);
+        });
+
+        test('enabled: a duplicate source file gets replaced in place with a hardlink to the canonical character file', async () => {
+            process.env.SILLYTAVERN_LOCALIMPORT_HARDLINKDUPLICATESOURCEFILES = 'true';
+
+            const existingJson = JSON.stringify({ name: 'Ghost', description: 'A local-import test character' });
+            fs.writeFileSync(path.join(sourceDir, 'ghost.json'), existingJson);
+            await localImportScan.scanDirectory(buildState(), directories);
+
+            const duplicatePath = path.join(sourceDir, 'ghost-again.json');
+            fs.writeFileSync(duplicatePath, existingJson);
+            await localImportScan.scanDirectory(buildState(), directories);
+
+            const characterFile = fs.readdirSync(charactersDir)[0];
+            const characterPath = path.join(charactersDir, characterFile);
+            // Same inode now: the duplicate source file's own bytes were replaced by a hardlink to the
+            // canonical character file, not just left alone / copied.
+            expect(fs.statSync(duplicatePath).ino).toBe(fs.statSync(characterPath).ino);
+            // No second character record was created - this only affects the source file on disk.
+            expect(fs.readdirSync(charactersDir).length).toBe(1);
+        });
+
+        test('enabled: never touches the ORIGINAL file that was actually imported (only later duplicates get hardlinked)', async () => {
+            process.env.SILLYTAVERN_LOCALIMPORT_HARDLINKDUPLICATESOURCEFILES = 'true';
+
+            const originalPath = writeJsonCharacterFile(sourceDir, 'ghost.json');
+            await localImportScan.scanDirectory(buildState(), directories);
+
+            const characterFile = fs.readdirSync(charactersDir)[0];
+            const characterPath = path.join(charactersDir, characterFile);
+            // The original source file was staged via a COPY into uploads (stageFile() -> copyCharacterFile()),
+            // not linked directly to the final character file, so it keeps its own independent inode.
+            expect(fs.statSync(originalPath).ino).not.toBe(fs.statSync(characterPath).ino);
+        });
+
+        test('enabled: a re-scan of an already-hardlinked duplicate is a harmless no-op (does not throw, does not re-import)', async () => {
+            process.env.SILLYTAVERN_LOCALIMPORT_HARDLINKDUPLICATESOURCEFILES = 'true';
+
+            const existingJson = JSON.stringify({ name: 'Ghost', description: 'A local-import test character' });
+            fs.writeFileSync(path.join(sourceDir, 'ghost.json'), existingJson);
+            const state = buildState();
+            await localImportScan.scanDirectory(state, directories);
+
+            fs.writeFileSync(path.join(sourceDir, 'ghost-again.json'), existingJson);
+            await localImportScan.scanDirectory(state, directories);
+            // Second pass: the now-hardlinked duplicate has a fresh mtime (from the rename), so it gets
+            // re-hashed and re-matched as a duplicate again - this must recognize the already-shared inode
+            // and just return, not throw or create another character.
+            await localImportScan.scanDirectory(state, directories);
+
+            expect(fs.readdirSync(charactersDir).length).toBe(1);
+        });
+
+        test('enabled: skips gracefully (does not throw, leaves source untouched) when the recorded canonical file is missing', async () => {
+            process.env.SILLYTAVERN_LOCALIMPORT_HARDLINKDUPLICATESOURCEFILES = 'true';
+
+            const existingJson = JSON.stringify({ name: 'Ghost', description: 'A local-import test character' });
+            fs.writeFileSync(path.join(sourceDir, 'ghost.json'), existingJson);
+            await localImportScan.scanDirectory(buildState(), directories);
+
+            // Simulate a stale DB record: the canonical character file gets removed out from under it.
+            const characterFile = fs.readdirSync(charactersDir)[0];
+            fs.rmSync(path.join(charactersDir, characterFile));
+
+            const duplicatePath = path.join(sourceDir, 'ghost-again.json');
+            fs.writeFileSync(duplicatePath, existingJson);
+            await expect(localImportScan.scanDirectory(buildState(), directories)).resolves.toBeUndefined();
+
+            expect(fs.existsSync(duplicatePath)).toBe(true);
+            expect(fs.readFileSync(duplicatePath, 'utf8')).toBe(existingJson);
+        });
+    });
 });
 
 describe('initializeLocalImportScan / disposeLocalImportScan (config wiring)', () => {
