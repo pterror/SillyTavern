@@ -3,12 +3,16 @@ import fsPromises from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
+import yaml from 'yaml';
+
 import { getConfigValue, color } from './util.js';
 import { DEFAULT_USER, UPLOADS_DIRECTORY } from './constants.js';
 import { getUserDirectories } from './users.js';
 import { copyCharacterFile, hardlinkOntoCanonical } from './local-import-copy.js';
 import { hashFileContents, importCharacterFileHeadless } from './endpoints/characters.js';
-import { beginBatchImport, endBatchImport, findCharacterIdByContentHash } from './character-metadata-db.js';
+import { beginBatchImport, endBatchImport, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, computeContentIdentityHash } from './character-metadata-db.js';
+import { parse as parseCharacterCard } from './character-card-parser.js';
+import { getCharaCardV2, convertToV2 } from './character-card-normalize.js';
 
 /**
  * Config/admin-set-only "import characters from a local directory on disk" feature, as an alternative to
@@ -47,6 +51,19 @@ import { beginBatchImport, endBatchImport, findCharacterIdByContentHash } from '
  * every discovered file is imported into DEFAULT_USER's library, regardless of `enableUserAccounts`. Extending
  * this to route different configured directories to different user handles on a multi-user install is
  * explicitly out of scope here, not an oversight.
+ *
+ * CONTENT-IDENTITY DUPLICATE FALLBACK (`performance.allowExpensiveDuplicateFallback`): the content_hash fast
+ * path above only ever catches a byte-identical re-drop. It cannot recognize a semantic duplicate between an
+ * already-poisoned library row (see character-metadata-db.js's content_identity_hash/import_poisoned columns)
+ * and a newly-discovered file that's the same character but byte-different - because the poisoned row went
+ * through the old, more-mutating import logic and never got a chance to record a hash comparable to a fresh
+ * import's. computeCandidateContentIdentityHash() below closes that gap: when the flag is on and the fast path
+ * found nothing, it non-destructively parses the candidate (no import, nothing written or consumed - unlike
+ * importCharacterFileHeadless(), which commits an import as a side effect) into the same normalized shape
+ * computeContentIdentityHash() always hashes from, then does an O(1) indexed lookup
+ * (findCharacterIdByContentIdentityHash()) against every row whose hash is trustworthy - which, thanks to
+ * character-metadata-db.js's backfillContentIdentityHashes(), now includes the poisoned rows too (their hash was
+ * recovered from their PNG's pristine 'chara' chunk, not their mutated ccv3 one).
  */
 
 /** How often (ms) the fs.watch debounce handler coalesces bursts of raw fs events for the same filename into one
@@ -194,6 +211,76 @@ async function maybeHardlinkDuplicateSource(sourcePath, characterId, contentHash
 }
 
 /**
+ * Non-destructively parses `sourcePath` (never written to, never staged, never consumed) into the same
+ * normalized shape computeContentIdentityHash() always hashes from, and returns that hash - or `null` for a
+ * format this doesn't (yet) know how to parse without importing it.
+ *
+ * PNG and JSON are the trivial cases: parseCharacterCard()/JSON.parse() + getCharaCardV2() is exactly the
+ * read-off-disk-without-importing pattern character-metadata-db.js's bootstrapIfNeeded()/reconcile() already use
+ * to build a metadata row from an arbitrary on-disk card - reused here rather than duplicated. YAML/YML reuses
+ * convertToV2() with the same field-shaping importFromYaml() (characters.js) does, minus the actual write - safe
+ * to call standalone because the YAML import path never populates `world` on the object it builds (the only
+ * field that would make charaFormatData() do its own file I/O, via readWorldInfoFile()).
+ *
+ * CharX and BYAF are deliberately NOT handled here (return `null`, meaning "no fallback match attempted, fall
+ * through to normal import") - punted as an explicit follow-up. Their only existing parsers (byaf.js's
+ * ByafParser, charx.js's CharXParser) are entangled with the actual import/asset-persistence flow, not factored
+ * out into a standalone non-destructive read the way PNG/JSON/YAML's normalization already was; pulling that
+ * apart safely is a real untangling job, not a small extraction, and out of scope here. This only means the
+ * *poisoned-row-vs-byte-different* case goes undetected for these two formats - the content_hash exact-byte fast
+ * path above still fully covers a byte-identical re-drop of a charx/byaf file either way, and an undetected
+ * semantic duplicate here is a false NEGATIVE (a duplicate slips through and gets imported again), never a false
+ * positive - see this module's own header on why that's the safe direction to err in.
+ * @param {string} sourcePath
+ * @param {string} format A formatImportFunctions key (see EXTENSION_TO_FORMAT)
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<string | null>}
+ */
+async function computeCandidateContentIdentityHash(sourcePath, format, directories) {
+    switch (format) {
+        case 'png': {
+            const imgData = await parseCharacterCard(sourcePath, 'png');
+            if (imgData === undefined) return null;
+            const character = getCharaCardV2(JSON.parse(imgData), directories, false);
+            return computeContentIdentityHash(character);
+        }
+        case 'json': {
+            const raw = await fsPromises.readFile(sourcePath, 'utf8');
+            const character = getCharaCardV2(JSON.parse(raw), directories, false);
+            return computeContentIdentityHash(character);
+        }
+        case 'yaml':
+        case 'yml': {
+            const raw = await fsPromises.readFile(sourcePath, 'utf8');
+            const yamlData = yaml.parse(raw);
+            // Mirrors importFromYaml()'s (characters.js) own field-shaping object, minus everything that
+            // function does AFTER building it (sanitize(), writeCharacterData(), the returned file name) - this
+            // is only ever used to compute a hash, nothing here is persisted.
+            const shaped = convertToV2({
+                name: yamlData.name,
+                description: yamlData.context ?? '',
+                first_mes: yamlData.greeting ?? '',
+                create_date: new Date().toISOString(),
+                chat: '',
+                personality: '',
+                creatorcomment: '',
+                avatar: 'none',
+                mes_example: '',
+                scenario: '',
+                talkativeness: 0.5,
+                creator: '',
+                tags: '',
+            }, directories);
+            return computeContentIdentityHash(shaped);
+        }
+        default:
+            // charx/byaf (or anything else EXTENSION_TO_FORMAT maps to that isn't handled above) - see this
+            // function's own doc comment.
+            return null;
+    }
+}
+
+/**
  * Discovers-and-imports one file if it looks new/changed and isn't already in the library (by content hash).
  * Shared by both the periodic scan and the (optional) fs.watch handler - see this module's header on why there
  * is only ever one such code path.
@@ -236,6 +323,30 @@ async function processFile(state, filename, directories) {
             await maybeHardlinkDuplicateSource(sourcePath, alreadyImported, contentHash, directories);
             state.lastSeenMtimeMs.set(filename, stat.mtimeMs);
             return;
+        }
+
+        // Expensive fallback (see this module's header): only reached once the cheap exact-byte check above has
+        // already found nothing. Read fresh via getConfigValue() (not the module-level cached export in
+        // character-metadata-db.js) so this reflects a config/env change on the very next scan pass - see that
+        // export's own updated doc comment for why.
+        if (getConfigValue('performance.allowExpensiveDuplicateFallback', true, 'boolean')) {
+            try {
+                const identityHash = await computeCandidateContentIdentityHash(sourcePath, format, directories);
+                const identityMatch = identityHash ? await findCharacterIdByContentIdentityHash(directories, identityHash) : null;
+                if (identityMatch) {
+                    // Same treatment as an exact content_hash match above - a real content-hash value is still
+                    // passed through to maybeHardlinkDuplicateSource() (it only ever gates on the config flag,
+                    // never inspects the hash's own value - see that function's doc comment), so the on-disk
+                    // dedup behavior is identical either way.
+                    await maybeHardlinkDuplicateSource(sourcePath, identityMatch, contentHash, directories);
+                    state.lastSeenMtimeMs.set(filename, stat.mtimeMs);
+                    return;
+                }
+            } catch (err) {
+                // Non-fatal: a failed identity check must not block an otherwise-normal import attempt below -
+                // worst case here is a missed dedup (the file gets imported as a new character), never data loss.
+                console.debug(`[local-import] Content-identity duplicate check failed for ${sourcePath} (will still attempt an ordinary import):`, err.message);
+            }
         }
 
         const stagedPath = await stageFile(sourcePath);

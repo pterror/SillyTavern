@@ -88,3 +88,51 @@ describe('character-card-parser write() - spec-fidelity (no forced v2->v3 upgrad
         expect(textChunks.chara).toBeDefined();
     });
 });
+
+/**
+ * Byte-simulates the OLD (pre-293f4294b) write() - a 'chara' chunk holding `pristineData` verbatim, PLUS a
+ * separately-written 'ccv3' chunk holding a LOCAL COPY with spec/spec_version force-bumped to v3 - the exact
+ * shape a real poisoned library row's PNG has. Built directly with png-chunk-text/png-chunks-extract rather than
+ * via cardParser.write() (which no longer produces this shape after the fix), matching this file's own
+ * "preserves an unrelated tEXt chunk" test's technique above.
+ * @param {object} pristineData
+ * @returns {Buffer}
+ */
+function buildOldStylePng(pristineData) {
+    const pristineBase64 = Buffer.from(JSON.stringify(pristineData), 'utf8').toString('base64');
+    const bumped = { ...pristineData, spec: 'chara_card_v3', spec_version: '3.0' };
+    const bumpedBase64 = Buffer.from(JSON.stringify(bumped), 'utf8').toString('base64');
+
+    const chunks = extract(new Uint8Array(BLANK_PNG));
+    chunks.splice(-1, 0, PNGtext.encode('chara', pristineBase64));
+    chunks.splice(-1, 0, PNGtext.encode('ccv3', bumpedBase64));
+    return Buffer.from(encode(chunks));
+}
+
+describe('readCharaChunkPristine() - recovering a poisoned row\'s pre-mutation content', () => {
+    test('recovers the pristine (pre-v3-bump) chara content, ignoring a present ccv3 chunk entirely', () => {
+        const pristineData = { spec: 'chara_card_v2', spec_version: '2.0', name: 'Ghost', data: { name: 'Ghost' } };
+        const buffer = buildOldStylePng(pristineData);
+
+        // Sanity: the standard, ccv3-preferring read() returns the MUTATED (v3-bumped) copy on this fixture -
+        // confirms the fixture actually reproduces the old-write()-poisoned shape this function exists for.
+        expect(JSON.parse(cardParser.read(buffer)).spec).toBe('chara_card_v3');
+
+        const pristine = JSON.parse(cardParser.readCharaChunkPristine(buffer));
+        expect(pristine).toEqual(pristineData);
+        expect(pristine.spec).toBe('chara_card_v2');
+    });
+
+    test('falls back to ccv3 (rather than throwing) for a PNG with no chara chunk at all', () => {
+        const data = JSON.stringify({ spec: 'chara_card_v3', spec_version: '3.0', name: 'Ghost' });
+        const chunks = extract(new Uint8Array(BLANK_PNG));
+        chunks.splice(-1, 0, PNGtext.encode('ccv3', Buffer.from(data, 'utf8').toString('base64')));
+        const buffer = Buffer.from(encode(chunks));
+
+        expect(cardParser.readCharaChunkPristine(buffer)).toBe(data);
+    });
+
+    test('throws on a PNG with no character-data tEXt chunks at all, same as read()', () => {
+        expect(() => cardParser.readCharaChunkPristine(BLANK_PNG)).toThrow();
+    });
+});

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import process from 'node:process';
+import { Buffer } from 'node:buffer';
 
 // importFromJson() writes through DEFAULT_AVATAR_PATH ('./public/img/...', repo-root-relative) for the blank
 // avatar template - same fix characters-import.test.js needed for the same reason (see that file's own note).
@@ -17,6 +18,21 @@ let metadataDb;
 let users;
 /** @type {typeof import('../src/constants.js')} */
 let constants;
+/** @type {typeof import('../src/character-card-parser.js')} */
+let cardParser;
+/** @type {typeof import('png-chunks-extract').default} */
+let extract;
+/** @type {typeof import('png-chunk-text')} */
+let PNGtext;
+/** @type {typeof import('../src/png/encode.js').default} */
+let pngEncode;
+
+// A minimal valid 1x1 transparent PNG - same fixture character-card-parser.test.js uses, just enough of a real
+// PNG for png-chunks-extract to parse.
+const BLANK_PNG = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+    'base64',
+);
 
 beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
@@ -29,6 +45,10 @@ beforeAll(async () => {
     metadataDb = await import('../src/character-metadata-db.js');
     users = await import('../src/users.js');
     constants = await import('../src/constants.js');
+    cardParser = await import('../src/character-card-parser.js');
+    ({ default: extract } = await import('png-chunks-extract'));
+    PNGtext = (await import('png-chunk-text')).default ?? await import('png-chunk-text');
+    ({ default: pngEncode } = await import('../src/png/encode.js'));
 });
 
 /**
@@ -279,6 +299,136 @@ describe('scanDirectory (unit: direct directories fixture, no boot wiring)', () 
 
             expect(fs.existsSync(duplicatePath)).toBe(true);
             expect(fs.readFileSync(duplicatePath, 'utf8')).toBe(existingJson);
+        });
+    });
+
+    describe('content-identity duplicate fallback (performance.allowExpensiveDuplicateFallback)', () => {
+        afterEach(() => {
+            delete process.env.SILLYTAVERN_PERFORMANCE_ALLOWEXPENSIVEDUPLICATEFALLBACK;
+        });
+
+        /** A minimal Spec V2 card object - what would have been passed to the OLD write()'s `data` param. */
+        function poisonedCardData() {
+            return {
+                spec: 'chara_card_v2',
+                spec_version: '2.0',
+                name: 'Poison',
+                data: {
+                    name: 'Poison',
+                    description: 'a poisoned-row test character',
+                    personality: '',
+                    scenario: '',
+                    first_mes: '',
+                    mes_example: '',
+                    tags: [],
+                    creator: '',
+                    character_version: '',
+                    creator_notes: '',
+                    extensions: { fav: false, world: '' },
+                },
+            };
+        }
+
+        /**
+         * Writes a PNG straight into `charactersDir` byte-simulating the OLD (pre-293f4294b) write() - a 'chara'
+         * chunk holding `data` verbatim plus a separately-written, spec-bumped 'ccv3' chunk - the exact shape a
+         * real poisoned library row's PNG has (see character-card-parser.test.js's identical fixture).
+         * @param {string} avatar
+         * @param {object} data
+         */
+        function writePoisonedLibraryCard(avatar, data) {
+            const pristineBase64 = Buffer.from(JSON.stringify(data), 'utf8').toString('base64');
+            const bumped = { ...data, spec: 'chara_card_v3', spec_version: '3.0' };
+            const bumpedBase64 = Buffer.from(JSON.stringify(bumped), 'utf8').toString('base64');
+            const chunks = extract(new Uint8Array(BLANK_PNG));
+            chunks.splice(-1, 0, PNGtext.encode('chara', pristineBase64));
+            chunks.splice(-1, 0, PNGtext.encode('ccv3', bumpedBase64));
+            fs.writeFileSync(path.join(charactersDir, avatar), Buffer.from(pngEncode(chunks)));
+        }
+
+        /**
+         * Builds a poisoned library row (a real reconcile()-discovered PNG, then backfilled - the same two steps
+         * a real boot's background chain performs) for `computeCandidateContentIdentityHash()`'s discovery-side
+         * check to be compared against. Always seeds with the flag forced ON regardless of what the calling
+         * test wants it set to for the scan itself below - backfillContentIdentityHashes() is gated on the exact
+         * same flag (see its own doc comment), so a "flag off" test still needs a real backfilled hash to exist
+         * in order to prove the scan-side gate (not "there was never anything to find") is what's actually being
+         * exercised.
+         * @param {object} data
+         */
+        async function seedBackfilledPoisonedRow(data) {
+            writePoisonedLibraryCard('Poisoned.png', data);
+            await metadataDb.reconcile(directories);
+            const before = await metadataDb.getCharacterMetadataRow(directories, 'Poisoned.png');
+            expect(before.import_poisoned).toBe(1);
+            expect(before.content_identity_hash).toBeNull();
+
+            const previousFlag = process.env.SILLYTAVERN_PERFORMANCE_ALLOWEXPENSIVEDUPLICATEFALLBACK;
+            process.env.SILLYTAVERN_PERFORMANCE_ALLOWEXPENSIVEDUPLICATEFALLBACK = 'true';
+            await metadataDb.backfillContentIdentityHashes(directories);
+            if (previousFlag === undefined) {
+                delete process.env.SILLYTAVERN_PERFORMANCE_ALLOWEXPENSIVEDUPLICATEFALLBACK;
+            } else {
+                process.env.SILLYTAVERN_PERFORMANCE_ALLOWEXPENSIVEDUPLICATEFALLBACK = previousFlag;
+            }
+
+            const after = await metadataDb.getCharacterMetadataRow(directories, 'Poisoned.png');
+            expect(after.content_identity_hash).toEqual(expect.any(String));
+        }
+
+        test('flag on: a semantically-identical byte-different PNG dropped in is recognized as a duplicate of the poisoned row, not re-imported', async () => {
+            process.env.SILLYTAVERN_PERFORMANCE_ALLOWEXPENSIVEDUPLICATEFALLBACK = 'true';
+
+            const data = poisonedCardData();
+            await seedBackfilledPoisonedRow(data);
+
+            // Today's write() never adds a ccv3 chunk for a v2 source (see 293f4294b) - so this file's bytes
+            // necessarily differ from Poisoned.png's, even though it carries the exact same `data`.
+            const discoveredBuffer = cardParser.write(BLANK_PNG, JSON.stringify(data));
+            fs.writeFileSync(path.join(sourceDir, 'discovered.png'), discoveredBuffer);
+
+            await localImportScan.scanDirectory(buildState(), directories);
+
+            // Not imported as a second character - the content-identity fallback recognized it as a duplicate of
+            // the already-poisoned (but now-backfilled) Poisoned.png.
+            expect(fs.readdirSync(charactersDir).sort()).toEqual(['Poisoned.png']);
+        });
+
+        test('flag off: the same setup is NOT recognized as a duplicate - the file gets imported as a new character', async () => {
+            process.env.SILLYTAVERN_PERFORMANCE_ALLOWEXPENSIVEDUPLICATEFALLBACK = 'false';
+
+            const data = poisonedCardData();
+            await seedBackfilledPoisonedRow(data);
+
+            const discoveredBuffer = cardParser.write(BLANK_PNG, JSON.stringify(data));
+            fs.writeFileSync(path.join(sourceDir, 'discovered.png'), discoveredBuffer);
+
+            await localImportScan.scanDirectory(buildState(), directories);
+
+            expect(fs.readdirSync(charactersDir).length).toBe(2);
+        });
+
+        test('flag on: a genuinely different character is still imported normally, not falsely matched to the poisoned row', async () => {
+            process.env.SILLYTAVERN_PERFORMANCE_ALLOWEXPENSIVEDUPLICATEFALLBACK = 'true';
+
+            await seedBackfilledPoisonedRow(poisonedCardData());
+
+            const differentData = poisonedCardData();
+            differentData.name = 'Someone Else';
+            differentData.data.name = 'Someone Else';
+            differentData.data.description = 'a completely different character';
+            const discoveredBuffer = cardParser.write(BLANK_PNG, JSON.stringify(differentData));
+            fs.writeFileSync(path.join(sourceDir, 'different.png'), discoveredBuffer);
+
+            await localImportScan.scanDirectory(buildState(), directories);
+
+            // Imported as a genuinely new second character - a minted UUID filename, not 'different.png' itself
+            // (mintCharacterId() never reuses the source file's basename - see characters.js).
+            const files = fs.readdirSync(charactersDir);
+            expect(files.length).toBe(2);
+            expect(files).toContain('Poisoned.png');
+            const newRow = await metadataDb.getCharacterMetadataRow(directories, files.find(f => f !== 'Poisoned.png'));
+            expect(newRow.name).toBe('Someone Else');
         });
     });
 });

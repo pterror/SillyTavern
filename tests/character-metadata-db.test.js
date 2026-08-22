@@ -7,6 +7,8 @@ import os from 'node:os';
 let metadataDb;
 /** @type {typeof import('../src/character-card-parser.js')} */
 let cardParser;
+/** @type {typeof import('../src/character-card-normalize.js')} */
+let cardNormalize;
 
 let tempDir;
 let charactersDir;
@@ -80,6 +82,7 @@ beforeAll(async () => {
 
     metadataDb = await import('../src/character-metadata-db.js');
     cardParser = await import('../src/character-card-parser.js');
+    cardNormalize = await import('../src/character-card-normalize.js');
 });
 
 let groupsDir;
@@ -511,6 +514,172 @@ describe('content_identity_hash / import_poisoned (unfuck-the-import: cheap dedu
         expect(preexisting).toBeDefined();
         expect(preexisting.import_poisoned).toBe(1);
         expect(preexisting.content_identity_hash).toBeNull();
+    });
+});
+
+describe('backfillContentIdentityHashes / findCharacterIdByContentIdentityHash (poisoned-row expensive fallback)', () => {
+    /** @type {typeof import('png-chunks-extract').default} */
+    let extract;
+    /** @type {typeof import('png-chunk-text')} */
+    let PNGtext;
+    /** @type {typeof import('../src/png/encode.js').default} */
+    let pngEncode;
+
+    beforeAll(async () => {
+        ({ default: extract } = await import('png-chunks-extract'));
+        PNGtext = (await import('png-chunk-text')).default ?? await import('png-chunk-text');
+        ({ default: pngEncode } = await import('../src/png/encode.js'));
+    });
+
+    afterEach(() => {
+        delete process.env.SILLYTAVERN_PERFORMANCE_ALLOWEXPENSIVEDUPLICATEFALLBACK;
+    });
+
+    /**
+     * Byte-simulates the OLD (pre-293f4294b) write() against a real PNG on disk - a 'chara' chunk holding
+     * `pristineData` verbatim, plus a separately-written 'ccv3' chunk holding a v3-bumped local copy - the exact
+     * shape a real poisoned library row's PNG has (see character-card-parser.test.js's identical fixture, which
+     * this mirrors, for the byte-level behavior this relies on).
+     * @param {string} avatar
+     * @param {object} pristineData
+     * @returns {Promise<string>} The full path written
+     */
+    async function writeOldStylePoisonedCard(avatar, pristineData) {
+        const baseImage = await fs.promises.readFile(path.join(process.cwd(), '..', 'public', 'img', 'ai4.png'));
+        const pristineBase64 = Buffer.from(JSON.stringify(pristineData), 'utf8').toString('base64');
+        const bumped = { ...pristineData, spec: 'chara_card_v3', spec_version: '3.0' };
+        const bumpedBase64 = Buffer.from(JSON.stringify(bumped), 'utf8').toString('base64');
+
+        const chunks = extract(new Uint8Array(baseImage));
+        chunks.splice(-1, 0, PNGtext.encode('chara', pristineBase64));
+        chunks.splice(-1, 0, PNGtext.encode('ccv3', bumpedBase64));
+        const filePath = path.join(charactersDir, avatar);
+        await fs.promises.writeFile(filePath, Buffer.from(pngEncode(chunks)));
+        return filePath;
+    }
+
+    /** A minimal Spec V2 card object, as it would have been passed to the old write()'s `data` param. */
+    function pristineCard(overrides = {}) {
+        return {
+            spec: 'chara_card_v2',
+            spec_version: '2.0',
+            name: 'Poison',
+            data: {
+                name: 'Poison',
+                description: 'A poisoned-row test character',
+                personality: '',
+                scenario: '',
+                first_mes: '',
+                mes_example: '',
+                tags: [],
+                creator: '',
+                character_version: '',
+                creator_notes: '',
+                extensions: { fav: false, world: '' },
+            },
+            ...overrides,
+        };
+    }
+
+    test('backfill computes a content_identity_hash for a poisoned row, from the pristine chara chunk, leaving import_poisoned set', async () => {
+        await writeOldStylePoisonedCard('Poisoned.png', pristineCard());
+        await metadataDb.reconcile(directories);
+
+        const before = await metadataDb.getCharacterMetadataRow(directories, 'Poisoned.png');
+        expect(before.import_poisoned).toBe(1);
+        expect(before.content_identity_hash).toBeNull();
+
+        await metadataDb.backfillContentIdentityHashes(directories);
+
+        const after = await metadataDb.getCharacterMetadataRow(directories, 'Poisoned.png');
+        expect(after.content_identity_hash).toEqual(expect.any(String));
+        expect(after.content_identity_hash.length).toBe(64);
+        // Still poisoned - backfilling the hash does not mean the file itself is free of other old-write-path
+        // artifacts (see SCHEMA_SQL's own comment on the distinction).
+        expect(after.import_poisoned).toBe(1);
+    });
+
+    test('the backfilled hash matches what a fresh write of the same (stripped) content would produce', async () => {
+        const data = pristineCard();
+        await writeOldStylePoisonedCard('Poisoned.png', data);
+        await metadataDb.reconcile(directories);
+        await metadataDb.backfillContentIdentityHashes(directories);
+        const poisoned = await metadataDb.getCharacterMetadataRow(directories, 'Poisoned.png');
+
+        // A brand-new, never-poisoned write of the exact same ORIGINAL card - normalized through getCharaCardV2()
+        // first, exactly the way characters.js's importFromPng()/importFromJson() always normalize a card before
+        // ever calling writeCharacterData() (upsertCharacterFromWrite() itself does no normalization - it hashes
+        // whatever JSON it's handed as-is, on the assumption that JSON already went through that normalization,
+        // which is what makes cardJson()'s own bare fixture unsuitable for this particular comparison: it skips
+        // that step deliberately, for tests that don't need it). fav/create_date deliberately differ from the
+        // poisoned copy - both get stripped before hashing, so they must not affect the result either way.
+        const normalized = cardNormalize.getCharaCardV2(JSON.parse(JSON.stringify(data)), directories, false);
+        normalized.fav = true;
+        normalized.create_date = '2020-01-01T00:00:00.000Z';
+        await metadataDb.upsertCharacterFromWrite(directories, 'Fresh.png', JSON.stringify(normalized), 1000);
+        const fresh = await metadataDb.getCharacterMetadataRow(directories, 'Fresh.png');
+
+        expect(poisoned.content_identity_hash).toBe(fresh.content_identity_hash);
+    });
+
+    test('findCharacterIdByContentIdentityHash finds a backfilled poisoned row by its recovered hash', async () => {
+        await writeOldStylePoisonedCard('Poisoned.png', pristineCard());
+        await metadataDb.reconcile(directories);
+        await metadataDb.backfillContentIdentityHashes(directories);
+        const row = await metadataDb.getCharacterMetadataRow(directories, 'Poisoned.png');
+
+        expect(await metadataDb.findCharacterIdByContentIdentityHash(directories, row.content_identity_hash)).toBe('Poisoned.png');
+        expect(await metadataDb.findCharacterIdByContentIdentityHash(directories, 'not-a-real-hash')).toBeNull();
+        expect(await metadataDb.findCharacterIdByContentIdentityHash(directories, '')).toBeNull();
+    });
+
+    test('a second backfill call is a no-op for an already-hashed row (idempotent, no re-read)', async () => {
+        await writeOldStylePoisonedCard('Poisoned.png', pristineCard());
+        await metadataDb.reconcile(directories);
+        await metadataDb.backfillContentIdentityHashes(directories);
+        const first = await metadataDb.getCharacterMetadataRow(directories, 'Poisoned.png');
+
+        // Corrupt the file so a re-read would fail loudly if the backfill mistakenly tried it again.
+        await fs.promises.writeFile(path.join(charactersDir, 'Poisoned.png'), 'not a png');
+        await metadataDb.backfillContentIdentityHashes(directories);
+
+        const second = await metadataDb.getCharacterMetadataRow(directories, 'Poisoned.png');
+        expect(second.content_identity_hash).toBe(first.content_identity_hash);
+    });
+
+    test('a row that fails to parse is left poisoned/hashless (retried on a later call), without throwing', async () => {
+        const filePath = await writeOldStylePoisonedCard('Poisoned.png', pristineCard());
+        await metadataDb.reconcile(directories);
+        await fs.promises.writeFile(filePath, 'not a valid png at all');
+
+        await expect(metadataDb.backfillContentIdentityHashes(directories)).resolves.toBeUndefined();
+
+        const row = await metadataDb.getCharacterMetadataRow(directories, 'Poisoned.png');
+        expect(row.import_poisoned).toBe(1);
+        expect(row.content_identity_hash).toBeNull();
+    });
+
+    test('gated off (allowExpensiveDuplicateFallback=false): backfill does nothing', async () => {
+        process.env.SILLYTAVERN_PERFORMANCE_ALLOWEXPENSIVEDUPLICATEFALLBACK = 'false';
+
+        await writeOldStylePoisonedCard('Poisoned.png', pristineCard());
+        await metadataDb.reconcile(directories);
+        await metadataDb.backfillContentIdentityHashes(directories);
+
+        const row = await metadataDb.getCharacterMetadataRow(directories, 'Poisoned.png');
+        expect(row.content_identity_hash).toBeNull();
+        expect(row.import_poisoned).toBe(1);
+    });
+
+    test('a row that is not poisoned (already has a trustworthy hash) is left untouched by backfill', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        const before = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+
+        await metadataDb.backfillContentIdentityHashes(directories);
+
+        const after = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+        expect(after.content_identity_hash).toBe(before.content_identity_hash);
+        expect(after.import_poisoned).toBe(0);
     });
 });
 
