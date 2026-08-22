@@ -1914,28 +1914,33 @@ router.post('/duplicate', validateAvatarUrlMiddleware, async function (request, 
             console.error('file for dupe not found', filename);
             return response.sendStatus(404);
         }
-        let suffix = 1;
-        let newFilename = filename;
-
-        // If filename ends with a _number, increment the number
+        // If filename ends with a _number, increment the number. Parsed with a single strict-integer regex
+        // rather than a `Number()` guard paired with a `parseInt()` use - those two disagree on inputs like
+        // an empty or "Infinity" trailing segment (e.g. `foo_.png`), which used to let a NaN suffix through:
+        // the first dupe silently produced `foo_NaN.png`, and the second dupe span forever in the loop below,
+        // since `foo_NaN.png` always exists and `NaN++` stays `NaN` - a synchronous existsSync spin that
+        // wedged the whole server on one request (docs/design/character-data-residency-redesign.md §1.3).
         const nameParts = path.basename(filename, path.extname(filename)).split('_');
         const lastPart = nameParts[nameParts.length - 1];
+        const isStrictInteger = /^\d+$/.test(lastPart);
 
+        let suffix = 1;
         let baseName;
 
-        if (!isNaN(Number(lastPart)) && nameParts.length > 1) {
-            suffix = parseInt(lastPart) + 1;
+        if (isStrictInteger && nameParts.length > 1) {
+            suffix = parseInt(lastPart, 10) + 1;
             baseName = nameParts.slice(0, -1).join('_'); // construct baseName without suffix
         } else {
             baseName = nameParts.join('_'); // original filename is completely the baseName
         }
 
-        newFilename = path.join(request.user.directories.characters, `${baseName}_${suffix}${path.extname(filename)}`);
+        let newFilename = path.join(request.user.directories.characters, `${baseName}_${suffix}${path.extname(filename)}`);
 
+        // suffix is always a real, strictly increasing integer here, so this loop is guaranteed to terminate:
+        // there are only finitely many existing files it could collide with before it finds a free name.
         while (fs.existsSync(newFilename)) {
-            let suffixStr = '_' + suffix;
-            newFilename = path.join(request.user.directories.characters, `${baseName}${suffixStr}${path.extname(filename)}`);
             suffix++;
+            newFilename = path.join(request.user.directories.characters, `${baseName}_${suffix}${path.extname(filename)}`);
         }
 
         fs.copyFileSync(filename, newFilename);
