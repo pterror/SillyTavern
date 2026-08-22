@@ -66,6 +66,18 @@ export function convertToV2(char, directories) {
 }
 
 /**
+ * Removes fields that are not meant to be shared, in place. Used on import (so a shared card's
+ * favorite/chat state doesn't leak into the importer's library) and on export (so the exported
+ * file doesn't carry the exporter's own local state).
+ * @param {object} char Character object (V1 top-level shape or V2 `data`-wrapped shape)
+ */
+export function unsetPrivateFields(char) {
+    _.set(char, 'fav', false);
+    _.set(char, 'data.extensions.fav', false);
+    _.unset(char, 'chat');
+}
+
+/**
  * @param {object} char Character object, expected to already carry a `data` (Spec V2) object
  * @returns {object} The same object, with V1 top-level fields hoisted back from `data.*`
  */

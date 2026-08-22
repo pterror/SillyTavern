@@ -227,3 +227,62 @@ describe('POST /api/characters/import', () => {
         expect(duplicateCheckData.duplicate_of).toBe(`${firstData.file_name}.png`);
     });
 });
+
+// unsetPrivateFields() (src/character-card-normalize.js) strips per-user local state - the favorite flag and the
+// active chat filename - so a shared card doesn't leak the sharer's local state into the importer's library, and
+// an exported card doesn't leak the exporter's. It's called from 5 sites in characters.js; these two tests cover
+// the spec-v2 JSON import site (importFromJson()) and the JSON export site (the /export route's 'json' case) -
+// the two reachable through this file's already-mounted router without needing a real PNG upload.
+describe('unsetPrivateFields is applied on the real import/export routes', () => {
+    test('importing a Spec V2 JSON character clears fav and chat even when the uploaded file sets them', async () => {
+        const body = JSON.stringify({
+            spec: 'chara_card_v2',
+            spec_version: '2.0',
+            name: 'Wraith',
+            data: {
+                name: 'Wraith',
+                description: 'A test character',
+                extensions: { fav: true },
+            },
+            fav: true,
+            chat: 'Wraith - some previous session',
+        });
+        const formData = new FormData();
+        formData.append('avatar', new Blob([body], { type: 'application/json' }), 'wraith.json');
+        formData.append('file_type', 'json');
+
+        const response = await fetch(`${baseUrl}/api/characters/import`, { method: 'POST', body: formData });
+        expect(response.status).toBe(200);
+        const data = await response.json();
+
+        const exportResponse = await fetch(`${baseUrl}/api/characters/export`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ format: 'json', avatar_url: `${data.file_name}.png` }),
+        });
+        const exported = await exportResponse.json();
+
+        expect(exported.fav).toBe(false);
+        expect(exported.data.extensions.fav).toBe(false);
+        expect(exported.chat).toBeUndefined();
+        expect(exported.name).toBe('Wraith');
+    });
+
+    test('exporting as JSON clears fav and chat on the exported copy without mutating the stored file', async () => {
+        const importResponse = await importJsonCharacter({ name: 'Specter', fav: true });
+        const importData = await importResponse.json();
+        const avatarUrl = `${importData.file_name}.png`;
+
+        const exportResponse = await fetch(`${baseUrl}/api/characters/export`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ format: 'json', avatar_url: avatarUrl }),
+        });
+        expect(exportResponse.status).toBe(200);
+        const exported = await exportResponse.json();
+
+        expect(exported.fav).toBe(false);
+        expect(exported.data.extensions.fav).toBe(false);
+        expect(exported.chat).toBeUndefined();
+    });
+});
