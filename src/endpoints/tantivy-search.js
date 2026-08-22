@@ -48,9 +48,20 @@ import { tokenizeSearchQuery, parseLabeledToken, unquoteSearchTerm } from './sea
  * searchable text field. */
 export const DATA_FIELD = 'data';
 
+/** The indexed (not stored, not full-text) boolean field every tantivy-backed index (characters, groups) uses to
+ * hold the item's favorite flag - see buildSchema()'s doc comment for why this exists and buildSearchQuery()'s
+ * `favOnly` option for how it's queried. */
+export const FAV_FIELD = 'fav';
+
 /**
  * Builds a tantivy Schema for a search index: one real (tokenized, position-indexed, unstored) text field per
- * entry in `searchableFieldNames`, plus one `data` field holding the full JSON payload of the indexed item.
+ * entry in `searchableFieldNames`, one `data` field holding the full JSON payload of the indexed item, and one
+ * `fav` boolean field so a query can restrict to favorited items without ever seeing an unfavorited one - see
+ * buildSearchQuery()'s `favOnly` option doc comment for why that has to happen at the query level (inside
+ * whatever row cap the caller applies), not as a post-fetch filter over an already-capped, relevance-only result
+ * page: relevance ranking has no relationship to favorite status, so a favorited item can rank arbitrarily far
+ * outside any fixed-size page of "most relevant" results, silently making a favorites-only search combined with
+ * a broad/common term look empty or wrong regardless of what the caller's cap is set to.
  *
  * STORAGE DESIGN (already decided, not re-litigated here): the full character/group JSON gets stored directly in
  * the tantivy doc as the `data` field, `stored: true` so it's retrievable straight from a search hit with no
@@ -69,6 +80,7 @@ export function buildSchema(tantivy, searchableFieldNames) {
         builder.addTextField(name, { stored: false, tokenizerName: 'default', indexOption: 'position' });
     }
     builder.addTextField(DATA_FIELD, { stored: true, tokenizerName: 'raw', indexOption: 'basic' });
+    builder.addBooleanField(FAV_FIELD, { indexed: true });
     return builder.build();
 }
 
@@ -169,10 +181,19 @@ function tokenQuery(tantivy, schema, token, fieldWeights, fieldLabels) {
  * @param {string} searchTerm Raw user input
  * @param {Record<string, number>} fieldWeights Map of every searchable field name -> its relevance weight
  * @param {Record<string, string[]>} fieldLabels Map of recognized lowercase label -> target field name(s)
+ * @param {object} [options] Optional call parameters
+ * @param {boolean} [options.favOnly=false] When true, AND-combines the text query with a `fav = true` term query
+ * (Query.termQuery() against FAV_FIELD, added to the schema by buildSchema() above) so only favorited items can
+ * ever match - restricting the candidate set *before* runSearch()'s row cap/ORDER BY applies, not after. This is
+ * what makes "favorites only" + a search term combine correctly: without this, runSearch() ranks and caps purely
+ * by text relevance, which has no relationship to favorite status, so a caller's own post-search favorite filter
+ * can only ever narrow whatever made it into that relevance-capped page - which can easily be zero favorited
+ * items for a common/broad term against a large library, making the favorites filter look broken rather than
+ * just working on an already-wrong candidate set.
  * @returns {import('@oxdev03/node-tantivy-binding').Query | null} A query, or null if there's nothing to search
  * for (empty input, or every token turned out to be empty after unquoting)
  */
-export function buildSearchQuery(tantivy, schema, searchTerm, fieldWeights, fieldLabels) {
+export function buildSearchQuery(tantivy, schema, searchTerm, fieldWeights, fieldLabels, { favOnly = false } = {}) {
     const tokens = tokenizeSearchQuery(searchTerm);
     if (tokens.length === 0) {
         return null;
@@ -185,10 +206,20 @@ export function buildSearchQuery(tantivy, schema, searchTerm, fieldWeights, fiel
     if (perTokenQueries.length === 0) {
         return null;
     }
-    if (perTokenQueries.length === 1) {
-        return perTokenQueries[0];
+
+    const textQuery = perTokenQueries.length === 1
+        ? perTokenQueries[0]
+        : tantivy.Query.booleanQuery(perTokenQueries.map(query => ({ occur: tantivy.Occur.Must, query })));
+
+    if (!favOnly) {
+        return textQuery;
     }
-    return tantivy.Query.booleanQuery(perTokenQueries.map(query => ({ occur: tantivy.Occur.Must, query })));
+
+    const favQuery = tantivy.Query.termQuery(schema, FAV_FIELD, true);
+    return tantivy.Query.booleanQuery([
+        { occur: tantivy.Occur.Must, query: textQuery },
+        { occur: tantivy.Occur.Must, query: favQuery },
+    ]);
 }
 
 /**

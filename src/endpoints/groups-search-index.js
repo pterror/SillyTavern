@@ -5,7 +5,7 @@ import { TAGS_FILE } from '../constants.js';
 import { readTagsData } from './tags-data.js';
 import { getGroupsData } from './groups.js';
 import { buildFtsQuery } from './search-query.js';
-import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD } from './tantivy-search.js';
+import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD, FAV_FIELD } from './tantivy-search.js';
 import { resolveSearchEngine } from './search-engine.js';
 import { createIndexCoordinator } from './search-index-coordinator.js';
 
@@ -117,20 +117,23 @@ function buildSqliteIndex(directories, engine) {
         CREATE VIRTUAL TABLE groups USING fts5(
             groupId UNINDEXED,
             data UNINDEXED,
+            fav UNINDEXED,
             ${BM25_INDEXED_COLUMNS.join(', ')}
         );
     `);
 
     const groups = getGroupsData(directories);
     const tagNamesFor = makeTagNamesResolver(directories);
-    const insertSql = `INSERT INTO groups (groupId, data, ${BM25_INDEXED_COLUMNS.join(', ')})
-         VALUES (@groupId, @data, @name, @resolved_tags, @members, @id)`;
+    const insertSql = `INSERT INTO groups (groupId, data, fav, ${BM25_INDEXED_COLUMNS.join(', ')})
+         VALUES (@groupId, @data, @fav, @name, @resolved_tags, @members, @id)`;
 
     let batchIndex = 0;
     for (let i = 0; i < groups.length; i += INDEX_BUILD_BATCH_SIZE) {
         const rows = groups.slice(i, i + INDEX_BUILD_BATCH_SIZE).map(group => ({
             groupId: group.id,
             data: JSON.stringify(group),
+            // Boolean, not a string - see characters-search-index.js's buildSqliteIndex() for why SQLite gets 0/1.
+            fav: group.fav ? 1 : 0,
             name: group.name ?? '',
             resolved_tags: tagNamesFor(group.id),
             members: Array.isArray(group.members) ? group.members.join(' ') : '',
@@ -189,6 +192,7 @@ function buildTantivyIndex(directories, tantivy) {
                 members: Array.isArray(group.members) ? group.members.join(' ') : '',
                 id: group.id ?? '',
                 [DATA_FIELD]: JSON.stringify(group),
+                [FAV_FIELD]: Boolean(group.fav),
             }, schema);
             writer.addDocument(doc);
         }
@@ -211,9 +215,11 @@ function buildTantivyIndex(directories, tantivy) {
  * @param {number} [maxRows] Caps how many matching rows get fetched and JSON.parse()'d - see
  * characters-search-index.js's querySqliteIndex() for the full rationale (that module's version of this same
  * unbounded fetch is what actually OOM'd this server on a real install).
+ * @param {boolean} [favOnly] Same `AND fav = 1` predicate as characters-search-index.js's querySqliteIndex() -
+ * see that function's doc comment for why this has to be applied inside the query, before `LIMIT`.
  * @returns {{ item: object, score: number }[]} Results sorted best-first (ascending bm25 score)
  */
-function querySqliteIndex(db, searchTerm, maxRows) {
+function querySqliteIndex(db, searchTerm, maxRows, favOnly) {
     const ftsQuery = buildFtsQuery(searchTerm, FIELD_LABELS);
     if (!ftsQuery) {
         return [];
@@ -222,7 +228,8 @@ function querySqliteIndex(db, searchTerm, maxRows) {
     // maxRows is always a value this module computed via Number.isFinite + Math.trunc (see searchGroups()),
     // never raw request input, so interpolating it directly is safe - it can only ever be digits/a minus sign.
     const limitClause = Number.isFinite(maxRows) ? ` LIMIT ${Math.max(0, Math.trunc(maxRows))}` : '';
-    return db.query(`SELECT groupId, data, bm25(groups, ${weightsArg}) as score FROM groups WHERE groups MATCH ? ORDER BY score${limitClause}`, ftsQuery)
+    const favClause = favOnly ? ' AND fav = 1' : '';
+    return db.query(`SELECT groupId, data, bm25(groups, ${weightsArg}) as score FROM groups WHERE groups MATCH ?${favClause} ORDER BY score${limitClause}`, ftsQuery)
         .map(row => ({ item: JSON.parse(row.data), score: row.score }));
 }
 
@@ -231,14 +238,16 @@ function querySqliteIndex(db, searchTerm, maxRows) {
  * countSqliteIndexMatches() for the full rationale (identical reasoning applies here).
  * @param {import('./sqlite-engine.js').SqliteEngineHandle} db
  * @param {string} searchTerm
+ * @param {boolean} [favOnly] Same `AND fav = 1` predicate as querySqliteIndex() above, kept in sync.
  * @returns {number} Total number of matching rows
  */
-function countSqliteIndexMatches(db, searchTerm) {
+function countSqliteIndexMatches(db, searchTerm, favOnly) {
     const ftsQuery = buildFtsQuery(searchTerm, FIELD_LABELS);
     if (!ftsQuery) {
         return 0;
     }
-    const [row] = db.query('SELECT COUNT(*) as total FROM groups WHERE groups MATCH ?', ftsQuery);
+    const favClause = favOnly ? ' AND fav = 1' : '';
+    const [row] = db.query(`SELECT COUNT(*) as total FROM groups WHERE groups MATCH ?${favClause}`, ftsQuery);
     return row ? Number(row.total) : 0;
 }
 
@@ -251,10 +260,13 @@ function countSqliteIndexMatches(db, searchTerm) {
  * @param {string} searchTerm Search term
  * @param {number} [maxRows] Forwarded to querySqliteIndex()/runTantivySearch() - see those functions' doc
  * comments.
+ * @param {boolean} [favOnly] Forwarded to querySqliteIndex()/countSqliteIndexMatches()/buildTantivyQuery() -
+ * restricts matches to favorited groups, applied inside the query itself so it composes correctly with
+ * `maxRows` - see characters-search-index.js's searchCharacters() `favOnly` doc for the full rationale.
  * @returns {Promise<{ results: { item: object, score: number }[], total: number, backend: 'tantivy' | 'native' | 'wasm' | 'unavailable' }>}
  * `total` is the true match count, independent of `maxRows`.
  */
-export async function searchGroups(handle, directories, searchTerm, maxRows) {
+export async function searchGroups(handle, directories, searchTerm, maxRows, favOnly) {
     const signature = getFreshnessSignature(directories);
     const engine = await resolveSearchEngine();
 
@@ -264,7 +276,7 @@ export async function searchGroups(handle, directories, searchTerm, maxRows) {
 
     if (engine.tier === 'tantivy') {
         const tantivyIndex = await indexCoordinator.getIndex(handle, signature, () => buildTantivyIndex(directories, engine.tantivy));
-        const query = buildTantivyQuery(engine.tantivy, tantivyIndex.schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS);
+        const query = buildTantivyQuery(engine.tantivy, tantivyIndex.schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS, { favOnly });
         if (!query) {
             return { results: [], total: 0, backend: 'tantivy' };
         }
@@ -275,8 +287,8 @@ export async function searchGroups(handle, directories, searchTerm, maxRows) {
 
     const db = await indexCoordinator.getIndex(handle, signature, () => buildSqliteIndex(directories, engine.sqlite));
     return {
-        results: querySqliteIndex(db, searchTerm, maxRows),
-        total: countSqliteIndexMatches(db, searchTerm),
+        results: querySqliteIndex(db, searchTerm, maxRows, favOnly),
+        total: countSqliteIndexMatches(db, searchTerm, favOnly),
         backend: engine.sqlite.kind,
     };
 }

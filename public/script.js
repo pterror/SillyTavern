@@ -11458,10 +11458,17 @@ let lastKnownSearchBackend = null;
  * and search-engine.js) - 'tantivy', 'native', 'wasm', or 'unavailable'. Previously a degraded backend only ever showed up
  * as a server console warning; this surfaces it as a persistent icon (toggled here, see
  * SEARCH_BACKEND_INDICATOR) plus a one-time toast on the transition into a worse state.
+ * Also mirrors the current FILTER_TYPES.FAV filter state into the request (`fav: true` when the main character
+ * list's favorites-only filter is active) so the server restricts matches to favorites *inside* the search index
+ * query - see the /api/characters/all handler's `fav` doc (src/endpoints/characters.js) for why that has to
+ * happen there rather than after this function's own results get narrowed client-side: the server only ever
+ * returns its top-`limit` matches by text relevance, which has no relationship to favorite status, so a
+ * favorited character/group can easily rank outside that page and never reach the client at all - no client-side
+ * filter, however correct, can recover a result it was never sent.
  * @param {string} searchQuery The current search box value
  * @returns {Promise<void>}
  */
-async function fetchServerCharacterSearchResults(searchQuery) {
+export async function fetchServerCharacterSearchResults(searchQuery) {
     const resultCount = $('#character_search_result_count');
 
     if (!searchQuery) {
@@ -11470,11 +11477,13 @@ async function fetchServerCharacterSearchResults(searchQuery) {
         return;
     }
 
+    const favOnly = isFilterState(entitiesFilter.getFilterData(FILTER_TYPES.FAV), FILTER_STATES.SELECTED);
+
     try {
         const response = await fetch('/api/characters/all', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ search: searchQuery, includeGroups: true }),
+            body: JSON.stringify({ search: searchQuery, includeGroups: true, ...(favOnly ? { fav: true } : {}) }),
         });
 
         if (!response.ok) {
@@ -11499,7 +11508,7 @@ async function fetchServerCharacterSearchResults(searchQuery) {
             }
         });
 
-        entitiesFilter.setServerSearchResults({ searchValue: searchQuery, characterScores, groupScores });
+        entitiesFilter.setServerSearchResults({ searchValue: searchQuery, favOnly, characterScores, groupScores });
 
         // The client's own list/grid pagination (printCharacters(), Characters_PerPage) already shows a
         // "rangeStart-rangeEnd .. N" navigator, but N there is just `items.length` - at most `total` capped
