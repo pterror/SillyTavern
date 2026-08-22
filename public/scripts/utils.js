@@ -2685,12 +2685,36 @@ export function findPersona({ name = null, allowAvatar = true, insensitive = tru
 }
 
 /**
- * Finds a character by name, with optional filtering and precedence for avatars
+ * Finds a character by name, with optional filtering and precedence for avatars.
+ *
+ * Classification call (design doc §6: every resident-array read site has to be classified as "resident-only is
+ * fine here" or "needs the authoritative answer"): this stays resident-only, not an oversight, for two
+ * independent reasons.
+ *
+ * First, correctness: full shallow residency for the entire library is still in effect today (phase 5's staging
+ * note, docs/design/character-data-residency-redesign.md §9) - `characters` *is* the authoritative set right
+ * now, so a resident scan here returns the same answer a server round-trip would, just computed client-side.
+ * That equivalence is what phase 6 (bounded residency, §7) breaks - it's the trigger to revisit, not a
+ * hypothetical.
+ *
+ * Second, blast radius: unlike `getGroupMembersResident()` (group-chats.js), which has exactly one sync-only
+ * caller, `findChar()` has ~14 call sites (design doc §4.4) and several are not the async slash-command
+ * callbacks they look like at a glance - `tags.js`'s `searchCharByName()` is itself called from sync contexts,
+ * and `world-info.js`'s per-field entry editor calls `findChar()` inside a synchronous `.map()` deep in a
+ * switch-case field handler. Making `findChar()` itself async would force an async ripple through call sites
+ * that were never scoped as part of this pass (the `world-info.js:3108` character picker is explicitly called
+ * out in §4.4 as its *own*, separate future task - "becomes search-as-you-type plus a separate resolve" - not
+ * something this function's signature change should preempt).
+ *
+ * What *did* change here: the tag-filtered candidate set the design doc flagged ("the `filteredByTags` path
+ * currently materializes a tag-filtered copy of the whole array") is now built lazily, only if a preferred-current-
+ * char or exact-avatar match doesn't already resolve the call - so a tag-filtered `/findchar` no longer pays for
+ * a full-array `.filter()` on every call, only on the ones that actually reach the name-scan fallback.
  * @param {object} [options={}] - The options for the search
  * @param {string?} [options.name=null] - The name to search for
  * @param {boolean} [options.allowAvatar=true] - Whether to allow searching by avatar
  * @param {boolean} [options.insensitive=true] - Whether the search should be case insensitive
- * @param {string[]?} [options.filteredByTags=null] - Tags to filter characters by
+ * @param {string[]?} [options.filteredByTags=null] - Tags to filter characters by (AND'd together)
  * @param {boolean} [options.preferCurrentChar=true] - Whether to prefer the current character(s)
  * @param {boolean} [options.quiet=false] - Whether to suppress warnings
  * @returns {Character?} - The found character or null if not found
@@ -2698,24 +2722,25 @@ export function findPersona({ name = null, allowAvatar = true, insensitive = tru
 export function findChar({ name = null, allowAvatar = true, insensitive = true, filteredByTags = null, preferCurrentChar = true, quiet = false } = {}) {
     const matches = (char) => !name || (allowAvatar && char.avatar === name) || (insensitive ? equalsIgnoreCaseAndAccents(char.name, name) : char.name === name);
 
-    // Filter characters by tags if provided
-    let filteredCharacters = characters;
-    if (filteredByTags) {
-        filteredCharacters = characters.filter(char => {
-            const charTags = getTagsList(char.avatar, false);
-            return filteredByTags.every(tagName => charTags.some(x => x.name == tagName));
-        });
-    }
+    const hasTagFilter = Array.isArray(filteredByTags) && filteredByTags.length > 0;
+    /** Per-candidate tag-conjunction test - replaces the eager whole-array `.filter()` copy this used to build up front. */
+    const tagsMatch = (char) => {
+        if (!hasTagFilter || !char) return true;
+        const charTags = getTagsList(char.avatar, false);
+        return filteredByTags.every(tagName => charTags.some(x => x.name == tagName));
+    };
 
-    // Get the current character(s)
-    // Only use the O(1) store lookup when no tag filter narrowed filteredCharacters down - otherwise it could
-    // return a character that tag filtering was supposed to exclude.
-    /** @type {any[]} */
-    const currentChars = selected_group ? groupsStore.get(selected_group)?.members.map(member => filteredByTags ? filteredCharacters.find(char => char.avatar === member) : charactersStore.get(member))
-        : filteredCharacters.filter(char => getCurrentCharacter()?.avatar === char.avatar);
-
-    // If we have a current char and prefer it, return that if it matches
+    // If we have a current char and prefer it, return that if it matches. `currentChars` is computed lazily,
+    // inside this branch, so a call with `preferCurrentChar: false` never pays for it - same reasoning as the
+    // tag-filtered fallback scan below.
     if (preferCurrentChar) {
+        // The O(1) store lookup is still used for group members; the tag filter (if any) is applied
+        // per-candidate afterward instead of pre-filtering the whole character list.
+        /** @type {any[]} */
+        const currentChars = selected_group
+            ? (groupsStore.get(selected_group)?.members ?? []).map(member => charactersStore.get(member)).filter(tagsMatch)
+            : characters.filter(char => tagsMatch(char) && getCurrentCharacter()?.avatar === char.avatar);
+
         const preferredCharSearch = currentChars.filter(matches);
         if (preferredCharSearch.length > 1) {
             if (!quiet) toastr.warning(t`Multiple characters found for given conditions.`);
@@ -2727,18 +2752,17 @@ export function findChar({ name = null, allowAvatar = true, insensitive = true, 
     }
 
     // If allowAvatar is true, search by avatar first
-    // Same as above: only skip filteredCharacters (and use the store directly) when there's no tag filter to honor.
     if (allowAvatar && name) {
-        const characterByAvatar = filteredByTags
-            ? filteredCharacters.find(char => char.avatar === name || (!name.endsWith('.png') && char.avatar === `${name}.png`))
-            : (charactersStore.get(name) || (!name.endsWith('.png') ? charactersStore.get(`${name}.png`) : undefined));
-        if (characterByAvatar) {
+        const characterByAvatar = charactersStore.get(name) || (!name.endsWith('.png') ? charactersStore.get(`${name}.png`) : undefined);
+        if (characterByAvatar && tagsMatch(characterByAvatar)) {
             return characterByAvatar;
         }
     }
 
-    // Search for matching characters by name
-    const matchingCharacters = name ? filteredCharacters.filter(matches) : filteredCharacters;
+    // Search for matching characters by name. This is the fallback path that pays for the tag-filtered scan, if
+    // any - everything above resolves off O(1) store lookups plus at most a handful of current-char candidates.
+    const candidates = hasTagFilter ? characters.filter(tagsMatch) : characters;
+    const matchingCharacters = name ? candidates.filter(matches) : candidates;
     if (matchingCharacters.length > 1) {
         if (!quiet) toastr.warning('Multiple characters found for given conditions.');
         else console.warn('Multiple characters found for given conditions. Returning the first match.');
