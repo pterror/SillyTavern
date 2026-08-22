@@ -2,17 +2,23 @@ import { localforage } from '../lib.js';
 import { getCurrentUserHandle } from './user.js';
 
 /**
- * Client-side cache for `{ tags, tag_map }` (see loadTagsSettings() in tags.js).
+ * Client-side cache for tag *definitions* only (`tags` - name/color/folder_type/sort_order/...). See
+ * loadTagsSettings() in tags.js.
  *
- * Unlike characters, tags.json has no per-item identity that a manifest-and-diff approach (character-cache.js)
- * could act on - it's a single file holding the whole tags array and tag_map object, and a tag edit doesn't
- * correspond to one file's mtime the way a character edit does to one PNG's. Given that, and that tag edits are
- * expected to be far less frequent/voluminous than character edits, a single whole-file mtime is used as the
- * freshness signature instead: unchanged mtime means the cached `{ tags, tag_map }` is reused as-is and the
- * (potentially ~10MB+) `/api/tags/get` response is skipped entirely; any change re-fetches everything. This
- * "invalidate everything on any change" coarseness is the same tradeoff characters-search-index.js already
- * makes for its own freshness signature - it just wasn't an acceptable tradeoff for the *client's* character
- * boot fetch, which is why that one got the finer-grained per-avatar manifest instead.
+ * Tag *assignments* (what used to be `tag_map`) are no longer cacheable here: phase 3 of the character-data-
+ * residency redesign moved assignments off tags.json entirely and onto per-user sqlite (character_tags/
+ * group_tags rows), fetched at boot via a batched `POST /api/tags/for` over whatever characters/groups are
+ * actually resident client-side (see seedTagMapForResidentEntities() in tags.js) - there's no single blob left to
+ * key a cache entry by, and no reason to: that fetch already only asks for the ids currently in memory.
+ *
+ * Definitions are still a single small array with no per-item manifest the way characters have, so the same
+ * whole-array "invalidate everything on any change" freshness signature is kept - just backed by `tags_rev`
+ * (character-metadata-db.js's monotonic revision counter) instead of tags.json's own mtime, since tags.json is
+ * gone. `tags_rev` also bumps on every assign/unassign (not just definition saves), so this cache can go stale
+ * more often than it strictly needs to - that's a deliberate, correctness-safe tradeoff (one extra `/api/tags/get`
+ * fetch next boot, never wrong data), not a bug: there is no cheaper signal to tell "a definition changed" apart
+ * from "only an assignment changed" without giving `tags_rev` two counters, which isn't worth it for a payload
+ * this small.
  */
 
 /** @type {Map<string, LocalForage>} */
@@ -34,8 +40,8 @@ function getTagsCacheStore() {
 const CACHE_KEY = 'tagsData';
 
 /**
- * @returns {Promise<{ mtime: number, tags: object[], tag_map: object }|null>} The cached tags data, or null if
- * nothing is cached yet.
+ * @returns {Promise<{ mtime: number, tags: object[] }|null>} The cached tag definitions, or null if nothing is
+ * cached yet.
  */
 export async function getCachedTags() {
     try {
@@ -47,13 +53,12 @@ export async function getCachedTags() {
 }
 
 /**
- * @param {number} mtime tags.json's mtime at the time `tags`/`tag_map` were fetched (see /api/tags/manifest).
+ * @param {number} mtime `tags_rev` at the time `tags` was fetched (see /api/tags/manifest).
  * @param {object[]} tags
- * @param {object} tag_map
  */
-export async function setCachedTags(mtime, tags, tag_map) {
+export async function setCachedTags(mtime, tags) {
     try {
-        await getTagsCacheStore().setItem(CACHE_KEY, { mtime, tags, tag_map });
+        await getTagsCacheStore().setItem(CACHE_KEY, { mtime, tags });
     } catch (error) {
         console.error('Failed to cache tags data:', error);
     }
