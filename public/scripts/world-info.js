@@ -1116,7 +1116,7 @@ function registerWorldInfoSlashCommands() {
         const context = getContext();
         if (context.groupId && !characterIdentifier) throw new Error('This command is not available in groups without providing a character name');
         type = String(type ?? '').trim().toLowerCase() || 'primary';
-        characterIdentifier = String(characterIdentifier ?? '') || context.characters[context.characterId]?.avatar || null;
+        characterIdentifier = String(characterIdentifier ?? '') || context.characterAvatar || null;
         const character = findChar({ name: characterIdentifier });
         if (!character) {
             toastr.error(t`Character not found.`);
@@ -1128,7 +1128,7 @@ function registerWorldInfoSlashCommands() {
             books.push(character.data.extensions.world);
         }
         if (type === 'all' || type === 'additional') {
-            const fileName = getCharaFilename(context.characters.indexOf(character));
+            const fileName = getCharaFilename(character.avatar);
             const extraCharLore = world_info.charLore?.find((e) => e.name === fileName);
             if (extraCharLore && Array.isArray(extraCharLore.extraBooks)) {
                 books.push(...extraCharLore.extraBooks.filter(onlyUnique).filter(Boolean));

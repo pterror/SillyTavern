@@ -403,10 +403,12 @@ export function getGroupNames() {
 }
 
 /**
- * Finds the character ID for a group member.
- * @param {number|string} arg 0-based member index or character name
+ * Finds the character avatar for a group member. The numeric form of `arg` is a 0-based *slot* index into
+ * this group's own member list (a UI convenience for referring to "the first/second/... member of this
+ * group"), not a position in the global `characters` array - it never was, and it stays that way.
+ * @param {number|string} arg 0-based member index (within this group) or character name
  * @param {Boolean} full Whether to return a key-value object containing extra data
- * @returns {number|Object} 0-based character ID or key-value object if full is true
+ * @returns {string|Object} Character avatar, or a key-value object if full is true
  */
 export function findGroupMemberId(arg, full = false) {
     arg = arg?.toString()?.trim();
@@ -427,18 +429,10 @@ export function findGroupMemberId(arg, full = false) {
     const searchByString = isNaN(index);
 
     if (searchByString) {
-        const memberNames = group.members.map(x => {
-            const entity = charactersStore.get(x);
-            return {
-                avatar: x,
-                name: entity?.name,
-                // index feeds a fuse search result straight back into selectGroupMember(id) (0-based character
-                // id), so it has to be the real array position, not just whether the character was found -
-                // characters.indexOf(entity) here still avoids the redundant second predicate-scan the old
-                // separate find()+findIndex() pair did.
-                index: entity ? characters.indexOf(entity) : -1,
-            };
-        });
+        const memberNames = group.members.map(x => ({
+            avatar: x,
+            name: charactersStore.get(x)?.name,
+        }));
         const fuse = new Fuse(memberNames, { keys: ['avatar', 'name'] });
         const result = fuse.search(arg);
 
@@ -447,16 +441,16 @@ export function findGroupMemberId(arg, full = false) {
             return;
         }
 
-        const chid = result[0].item.index;
+        const avatar = result[0].item.avatar;
 
-        if (chid === -1) {
+        if (!charactersStore.has(avatar)) {
             console.warn(`WARN: No character found for group member ${arg}`);
             return;
         }
 
-        console.log(`Targeting group member ${chid} (${arg}) from search result`, result[0]);
+        console.log(`Targeting group member ${avatar} (${arg}) from search result`, result[0]);
 
-        return !full ? chid : { ...{ id: chid }, ...result[0].item };
+        return !full ? avatar : { ...{ id: avatar }, ...result[0].item };
     } else {
         const memberAvatar = group.members[index];
 
@@ -465,21 +459,17 @@ export function findGroupMemberId(arg, full = false) {
             return;
         }
 
-        // chid feeds back into callers expecting a numeric character id (see findGroupMemberId's own doc
-        // comment), so it has to be the real array position - resolving the entity once via charactersStore
-        // still avoids the redundant separate find()+findIndex() scans the old code did for the same member.
         const memberEntity = charactersStore.get(memberAvatar);
-        const chid = memberEntity ? characters.indexOf(memberEntity) : -1;
 
-        if (chid === -1) {
+        if (!memberEntity) {
             console.warn(`WARN: No character found for group member ${memberAvatar} at index ${index}`);
             return;
         }
 
         console.log(`Targeting group member ${memberAvatar} at index ${index}`);
 
-        return !full ? chid : {
-            id: chid,
+        return !full ? memberAvatar : {
+            id: memberAvatar,
             avatar: memberAvatar,
             name: memberEntity?.name,
             index: index,
@@ -1088,8 +1078,8 @@ async function generateGroupWrapper(byAutoMode, type = null, params = {}) {
         const enabledMembers = group.members.filter(x => !group.disabled_members.includes(x));
         let activatedMembers = [];
 
-        if (params && typeof params.force_chid == 'number') {
-            activatedMembers = [params.force_chid];
+        if (params && typeof params.force_avatar == 'string') {
+            activatedMembers = [params.force_avatar];
         } else if (type === 'quiet') {
             activatedMembers = activateSwipe(group.members, { allowSystem: true }).slice(0, 1);
 
@@ -1112,13 +1102,7 @@ async function generateGroupWrapper(byAutoMode, type = null, params = {}) {
         } else if (activationStrategy === group_activation_strategy.POOLED) {
             activatedMembers = activatePooledOrder(enabledMembers, lastMessage, isUserInput);
         } else if (activationStrategy === group_activation_strategy.MANUAL && !isUserInput) {
-            // activatedMembers is a list of chids (array positions) fed straight into generation, so each entry
-            // still has to be a real characters.indexOf() - just resolved via charactersStore first instead of
-            // a raw findIndex() predicate scan.
-            activatedMembers = shuffle(enabledMembers).slice(0, 1)
-                .map(x => charactersStore.get(x))
-                .filter(Boolean)
-                .map(entity => characters.indexOf(entity));
+            activatedMembers = shuffle(enabledMembers).slice(0, 1).filter(x => charactersStore.has(x));
         }
 
         if (activatedMembers.length === 0) {
@@ -1134,20 +1118,20 @@ async function generateGroupWrapper(byAutoMode, type = null, params = {}) {
 
         if (power_user.show_group_chat_queue) {
             for (let i = 0; i < activatedMembers.length; ++i) {
-                groupChatQueueOrder.set(characters[activatedMembers[i]].avatar, i + 1);
+                groupChatQueueOrder.set(activatedMembers[i], i + 1);
             }
         }
         await eventSource.emit(event_types.GROUP_WRAPPER_STARTED, { selected_group, type });
         // now the real generation begins: cycle through every activated character
-        for (const chId of activatedMembers) {
+        for (const avatar of activatedMembers) {
             throwIfAborted();
             deactivateSendButtons();
-            setCharacterId(chId);
-            setCharacterName(characters[chId].name);
+            setCharacterId(avatar);
+            setCharacterName(charactersStore.get(avatar).name);
             if (power_user.show_group_chat_queue) {
                 printGroupMembers();
             }
-            await eventSource.emit(event_types.GROUP_MEMBER_DRAFTED, chId);
+            await eventSource.emit(event_types.GROUP_MEMBER_DRAFTED, avatar);
 
             // Wait for generation to finish
             const generateType = ['swipe', 'impersonate', 'quiet', 'continue'].includes(type) ? type : 'normal';
@@ -1161,7 +1145,7 @@ async function generateGroupWrapper(byAutoMode, type = null, params = {}) {
                 }
             }
             if (power_user.show_group_chat_queue) {
-                groupChatQueueOrder.delete(characters[chId].avatar);
+                groupChatQueueOrder.delete(avatar);
                 groupChatQueueOrder.forEach((value, key, map) => map.set(key, value - 1));
             }
         }
@@ -1200,16 +1184,12 @@ function getLastMessageGenerationId() {
 /**
  * Activate group chat members for 'impersonate' generation type.
  * @param {string[]} members Array of group member avatar ids
- * @returns {number[]} Array of character ids
+ * @returns {string[]} Array of character avatars
  */
 function activateImpersonate(members) {
     const randomIndex = Math.floor(Math.random() * members.length);
     const activatedMembers = [members[randomIndex]];
-    const memberIds = activatedMembers
-        .map((x) => charactersStore.get(x))
-        .filter(Boolean)
-        .map((entity) => characters.indexOf(entity));
-    return memberIds;
+    return activatedMembers.filter((x) => charactersStore.has(x));
 }
 
 /**
@@ -1217,7 +1197,7 @@ function activateImpersonate(members) {
  * @param {string[]} members Array of group member avatar ids
  * @param {Object} [options] Options object
  * @param {boolean} [options.allowSystem] Whether to allow system messages
- * @returns {number[]} Array of character ids
+ * @returns {string[]} Array of character avatars
  */
 function activateSwipe(members, { allowSystem = false } = {}) {
     let activatedNames = [];
@@ -1258,27 +1238,17 @@ function activateSwipe(members, { allowSystem = false } = {}) {
         activatedNames.push(lastMessage.original_avatar);
     }
 
-    const memberIds = activatedNames
-        .map((x) => charactersStore.get(x))
-        .filter(Boolean)
-        .map((entity) => characters.indexOf(entity));
-    return memberIds;
+    return activatedNames.filter((x) => charactersStore.has(x));
 }
 
 /**
  * Activate group members for the list activation order.
  * @param {string[]} members Array of group member avatar ids
- * @returns {number[]} Array of character ids
+ * @returns {string[]} Array of character avatars
  */
 function activateListOrder(members) {
-    let activatedMembers = members.filter(onlyUnique);
-
-    // map to character ids
-    const memberIds = activatedMembers
-        .map((x) => charactersStore.get(x))
-        .filter(Boolean)
-        .map((entity) => characters.indexOf(entity));
-    return memberIds;
+    const activatedMembers = members.filter(onlyUnique);
+    return activatedMembers.filter((x) => charactersStore.has(x));
 }
 
 /**
@@ -1286,7 +1256,7 @@ function activateListOrder(members) {
  * @param {string[]} members List of member avatars
  * @param {Object} lastMessage Last message
  * @param {boolean} isUserInput Whether the user has input text
- * @returns {number[]} List of character ids
+ * @returns {string[]} List of character avatars
  */
 function activatePooledOrder(members, lastMessage, isUserInput) {
     /** @type {string} */
@@ -1320,9 +1290,7 @@ function activatePooledOrder(members, lastMessage, isUserInput) {
         activatedMember = randomPool[Math.floor(Math.random() * randomPool.length)];
     }
 
-    const activatedEntity = charactersStore.get(activatedMember);
-    const memberId = activatedEntity ? characters.indexOf(activatedEntity) : -1;
-    return memberId !== -1 ? [memberId] : [];
+    return charactersStore.has(activatedMember) ? [activatedMember] : [];
 }
 
 /**
@@ -1332,7 +1300,7 @@ function activatePooledOrder(members, lastMessage, isUserInput) {
  * @param {ChatMessage} lastMessage Last message in the chat
  * @param {boolean} allowSelfResponses If the group allows self-responses
  * @param {boolean} isUserInput If the generation was triggered by user input
- * @returns {number[]} Array of character ids
+ * @returns {string[]} Array of character avatars
  */
 function activateNaturalOrder(members, input, lastMessage, allowSelfResponses, isUserInput) {
     let activatedMembers = [];
@@ -1403,12 +1371,7 @@ function activateNaturalOrder(members, input, lastMessage, allowSelfResponses, i
     // de-duplicate array of character avatars
     activatedMembers = activatedMembers.filter(onlyUnique);
 
-    // map to character ids
-    const memberIds = activatedMembers
-        .map((x) => charactersStore.get(x))
-        .filter(Boolean)
-        .map((entity) => characters.indexOf(entity));
-    return memberIds;
+    return activatedMembers.filter((x) => charactersStore.has(x));
 }
 
 /**
@@ -1665,7 +1628,7 @@ function isGroupMember(group, avatarId) {
  * @param {object} param
  * @param {boolean} [param.doFilter=false] Whether to apply filters
  * @param {boolean} [param.onlyMembers=false] Whether to include only group members
- * @returns {Array<{item: Character, id: number, type: string}>} Array of group character objects
+ * @returns {Array<{item: Character, id: string, type: string}>} Array of group character objects
  */
 function getGroupCharacters({ doFilter = false, onlyMembers = false } = {}) {
     function applyFilterAndSort(results, filter, filterSelector) {
@@ -1710,13 +1673,9 @@ function getGroupCharacters({ doFilter = false, onlyMembers = false } = {}) {
 
     const thisGroup = openGroupId && groupsStore.get(openGroupId);
 
-    // Create index map for O(1) lookups when mapping characters to their array indices
-    // (separate from memberIndexMap used later for sorting members by their group order)
-    const characterIndexMap = new Map(characters.map((char, index) => [char, index]));
-
     const results = characters
         .filter((x) => isGroupMember(thisGroup, x.avatar) == onlyMembers)
-        .map((x) => ({ item: x, id: characterIndexMap.get(x), type: 'character' }));
+        .map((x) => ({ item: x, id: x.avatar, type: 'character' }));
 
     // Early return for candidates (non-members)
     if (!onlyMembers) {
@@ -1804,7 +1763,7 @@ function getGroupCharacterBlock(character) {
     template.find('.ch_name').text(character.name);
     // data-avatar mirrors template.data('id') above as a real DOM attribute, so CSS-selector consumers
     // (e.g. slash-commands.js performGroupMemberAction) can match this row by avatar too.
-    template.attr({ 'data-chid': characters.indexOf(character), 'data-avatar': character.avatar });
+    template.attr({ 'data-avatar': character.avatar });
     template.find('.ch_fav').val(String(isFav));
     template.toggleClass('is_fav', isFav);
 
@@ -1827,7 +1786,7 @@ function getGroupCharacterBlock(character) {
 
     // Display inline tags
     const tagsElement = template.find('.tags');
-    printTagList(tagsElement, { forEntityOrKey: characters.indexOf(character), tagOptions: { isCharacterList: true } });
+    printTagList(tagsElement, { forEntityOrKey: character.avatar, tagOptions: { isCharacterList: true } });
 
     if (!openGroupId) {
         template.find('[data-action="speak"]').hide();
@@ -2108,13 +2067,11 @@ async function onGroupActionClick(event) {
     }
 
     if (action === 'speak') {
-        // Resolve by avatar (member.data('id'), the stable id already set in getGroupCharacterBlock) rather
-        // than the row's data-chid, which is a positional index baked in at render time and can go stale if
-        // the characters array reorders before this click.
-        const speakEntity = charactersStore.get(member.data('id'));
-        const chid = speakEntity ? characters.indexOf(speakEntity) : -1;
-        if (chid !== -1) {
-            Generate('normal', { force_chid: chid });
+        // Resolve by avatar (member.data('id'), the stable id already set in getGroupCharacterBlock), the
+        // only identifier a group member row carries.
+        const avatar = member.data('id');
+        if (charactersStore.has(avatar)) {
+            Generate('normal', { force_avatar: avatar });
         }
     }
 
@@ -2177,19 +2134,16 @@ async function openCharacterDefinition(characterSelect) {
         return;
     }
 
-    // Resolve by avatar (characterSelect.data('id'), the stable id already set in getGroupCharacterBlock)
-    // rather than the row's data-chid, which is a positional index baked in at render time and can go stale
-    // if the characters array reorders before this click.
+    // Resolve by avatar (characterSelect.data('id'), the stable id already set in getGroupCharacterBlock),
+    // the only identifier a group member row carries.
     const avatar = characterSelect.data('id');
-    const definitionEntity = charactersStore.get(avatar);
-    const chid = definitionEntity ? characters.indexOf(definitionEntity) : -1;
 
-    if (chid === -1) {
+    if (!charactersStore.has(avatar)) {
         return;
     }
 
     await unshallowCharacter(avatar);
-    setCharacterId(chid);
+    setCharacterId(avatar);
     select_selected_character(avatar);
     // Gentle nudge to recalculate tokens
     RA_CountCharTokens();
@@ -2600,7 +2554,7 @@ jQuery(() => {
     }
 
     $(document).on('click', '.group_select', function () {
-        const groupId = $(this).attr('data-chid') || $(this).attr('data-grid');
+        const groupId = $(this).attr('data-grid');
         openGroupById(groupId);
     });
     $('#rm_group_filter').on('input', filterGroupMembers);

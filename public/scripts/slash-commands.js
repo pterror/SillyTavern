@@ -78,7 +78,7 @@ import { user_avatar } from './personas.js';
 import { addEphemeralStoppingString, chat_styles, context_presets, flushEphemeralStoppingStrings, playMessageSound, power_user } from './power-user.js';
 import { SERVER_INPUTS, textgen_types, textgenerationwebui_settings } from './textgen-settings.js';
 import { decodeTextTokens, getAvailableTokenizers, getFriendlyTokenizerName, getTextTokens, getTokenCountAsync, selectTokenizer } from './tokenizers.js';
-import { debounce, delay, equalsIgnoreCaseAndAccents, findChar, getCharIndex, isFalseBoolean, isTrueBoolean, onlyUnique, regexFromString, showFontAwesomePicker, stringToRange, trimToEndSentence, trimToStartSentence, waitUntilCondition } from './utils.js';
+import { debounce, delay, equalsIgnoreCaseAndAccents, findChar, isFalseBoolean, isTrueBoolean, onlyUnique, regexFromString, showFontAwesomePicker, stringToRange, trimToEndSentence, trimToStartSentence, waitUntilCondition } from './utils.js';
 import { registerVariableCommands, resolveVariable } from './variables.js';
 import { registerActionLoaderSlashCommands } from './action-loader-slashcommands.js';
 import { background_settings } from './backgrounds.js';
@@ -4737,8 +4737,6 @@ async function askCharacter(args, text) {
         return '';
     }
 
-    const chId = getCharIndex(character);
-
     if (text) {
         const mesText = getRegexedString(text.trim(), regex_placement.SLASH_COMMAND);
         // Sending a message implicitly saves the chat, so this needs to be done before changing the character
@@ -4747,7 +4745,7 @@ async function askCharacter(args, text) {
     }
 
     // Override character and send a user message
-    setCharacterId(String(chId));
+    setCharacterId(character);
 
     const { name, force_avatar, original_avatar } = getNameAndAvatarForMessage(character, args?.name);
 
@@ -4826,18 +4824,12 @@ async function unhideMessageCallback(args, value) {
 
 /**
  * Copium for running group actions when the member is offscreen.
- * @param {number} chid - character ID
+ * @param {string} avatar - character avatar
  * @param {string} action - one of 'enable', 'disable', 'up', 'down', 'view', 'remove'
  * @returns {void}
  */
-function performGroupMemberAction(chid, action) {
-    // Resolve the row by avatar (the stable id) rather than data-chid - chid here is freshly resolved by
-    // findGroupMemberId() at call time, but the row's own data-chid attribute was baked in at whatever time
-    // the group member list last rendered, so the two can mismatch if the array reordered in between.
-    const avatar = characters[chid]?.avatar;
-    const memberSelector = avatar
-        ? `.group_member[data-avatar="${CSS.escape(avatar)}"]`
-        : `.group_member[data-chid="${chid}"]`;
+function performGroupMemberAction(avatar, action) {
+    const memberSelector = `.group_member[data-avatar="${CSS.escape(avatar)}"]`;
     // Do not optimize. Paginator gets recreated on every action
     const paginationSelector = '#rm_group_members_pagination';
     const pageSizeSelector = '#rm_group_members_pagination select';
@@ -4868,14 +4860,14 @@ async function disableGroupMemberCallback(_, arg) {
         return '';
     }
 
-    const chid = findGroupMemberId(arg);
+    const avatar = findGroupMemberId(arg);
 
-    if (chid === undefined) {
+    if (avatar === undefined) {
         console.warn(`WARN: No group member found for argument ${arg}`);
         return '';
     }
 
-    performGroupMemberAction(chid, 'disable');
+    performGroupMemberAction(avatar, 'disable');
     return '';
 }
 
@@ -4885,14 +4877,14 @@ async function enableGroupMemberCallback(_, arg) {
         return '';
     }
 
-    const chid = findGroupMemberId(arg);
+    const avatar = findGroupMemberId(arg);
 
-    if (chid === undefined) {
+    if (avatar === undefined) {
         console.warn(`WARN: No group member found for argument ${arg}`);
         return '';
     }
 
-    performGroupMemberAction(chid, 'enable');
+    performGroupMemberAction(avatar, 'enable');
     return '';
 }
 
@@ -4902,14 +4894,14 @@ async function moveGroupMemberUpCallback(_, arg) {
         return '';
     }
 
-    const chid = findGroupMemberId(arg);
+    const avatar = findGroupMemberId(arg);
 
-    if (chid === undefined) {
+    if (avatar === undefined) {
         console.warn(`WARN: No group member found for argument ${arg}`);
         return '';
     }
 
-    performGroupMemberAction(chid, 'up');
+    performGroupMemberAction(avatar, 'up');
     return '';
 }
 
@@ -4919,14 +4911,14 @@ async function moveGroupMemberDownCallback(_, arg) {
         return '';
     }
 
-    const chid = findGroupMemberId(arg);
+    const avatar = findGroupMemberId(arg);
 
-    if (chid === undefined) {
+    if (avatar === undefined) {
         console.warn(`WARN: No group member found for argument ${arg}`);
         return '';
     }
 
-    performGroupMemberAction(chid, 'down');
+    performGroupMemberAction(avatar, 'down');
     return '';
 }
 
@@ -4941,14 +4933,14 @@ async function peekCallback(_, arg) {
         return '';
     }
 
-    const chid = findGroupMemberId(arg);
+    const avatar = findGroupMemberId(arg);
 
-    if (chid === undefined) {
+    if (avatar === undefined) {
         console.warn(`WARN: No group member found for argument ${arg}`);
         return '';
     }
 
-    performGroupMemberAction(chid, 'view');
+    performGroupMemberAction(avatar, 'view');
     return '';
 }
 
@@ -4967,14 +4959,14 @@ async function removeGroupMemberCallback(_, arg) {
         return '';
     }
 
-    const chid = findGroupMemberId(arg);
+    const avatar = findGroupMemberId(arg);
 
-    if (chid === undefined) {
+    if (avatar === undefined) {
         console.warn(`WARN: No group member found for argument ${arg}`);
         return '';
     }
 
-    performGroupMemberAction(chid, 'remove');
+    performGroupMemberAction(avatar, 'remove');
     return '';
 }
 
@@ -5033,17 +5025,17 @@ async function triggerGenerationCallback(args, value) {
         // Prevent generate recursion
         $('#send_textarea').val('')[0].dispatchEvent(new Event('input', { bubbles: true }));
 
-        let chid = undefined;
+        let avatar = undefined;
 
         if (selected_group && value) {
-            chid = findGroupMemberId(value);
+            avatar = findGroupMemberId(value);
 
-            if (chid === undefined) {
+            if (avatar === undefined) {
                 console.warn(`WARN: No group member found for argument ${value}`);
             }
         }
 
-        outerResolve(new Promise(innerResolve => setTimeout(() => innerResolve(Generate('normal', { force_chid: chid })), 100)));
+        outerResolve(new Promise(innerResolve => setTimeout(() => innerResolve(Generate('normal', { force_avatar: avatar })), 100)));
     }, 1));
 
     if (shouldAwait) {
@@ -5124,8 +5116,7 @@ async function goToCharacterCallback(_, name) {
 
     const character = findChar({ name: name });
     if (character) {
-        const chid = getCharIndex(character);
-        await openChat(String(chid));
+        await openChat(character.avatar);
         setActiveCharacter(character.avatar);
         setActiveGroup(null);
         return character.name;
@@ -5141,9 +5132,9 @@ async function goToCharacterCallback(_, name) {
     return '';
 }
 
-async function openChat(chid) {
+async function openChat(avatar) {
     resetSelectedGroup();
-    setCharacterId(chid);
+    setCharacterId(avatar);
     await delay(1);
     await reloadCurrentChat();
 }
