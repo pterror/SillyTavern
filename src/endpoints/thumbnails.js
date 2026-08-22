@@ -75,6 +75,35 @@ function getOriginalFolder(directories, type) {
 }
 
 /**
+ * Gets the `?v=` version value the GET /thumbnail route below hands out for a file, derived from the *cached
+ * thumbnail's* own mtime (not the original image's) - the exact same value that route computes at
+ * `stat.mtimeMs` further down, so a caller who already has this can request the versioned URL directly and
+ * skip the no-cache redirect hop. Meant for the various list endpoints (character manifest, background list,
+ * persona list) to hand the client a ready `?v=` up front.
+ *
+ * Returns null when no cached thumbnail exists yet - nothing to version; the client should omit `v` and let
+ * the route's own lazy-generate-then-redirect path mint one on first request, same as before this existed.
+ * @param {import('../users.js').UserDirectoryList} directories User directories
+ * @param {ThumbnailType} type Type of the thumbnail
+ * @param {string} file Name of the file
+ * @returns {string|null} Version string matching what the GET /thumbnail route expects in `?v=`, or null
+ */
+export function getThumbnailVersion(directories, type, file) {
+    const folder = getThumbnailFolder(directories, type);
+    if (folder === undefined) return null;
+
+    const pathToCachedFile = path.join(folder, file);
+
+    try {
+        if (!fs.existsSync(pathToCachedFile)) return null;
+        const stat = fs.statSync(pathToCachedFile);
+        return String(Math.round(stat.mtimeMs));
+    } catch {
+        return null;
+    }
+}
+
+/**
  * Removes the generated thumbnail from the disk.
  * @param {import('../users.js').UserDirectoryList} directories User directories
  * @param {ThumbnailType} type Type of the thumbnail

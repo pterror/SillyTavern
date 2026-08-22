@@ -4,7 +4,7 @@ import path from 'node:path';
 import express from 'express';
 import sanitize from 'sanitize-filename';
 
-import { invalidateThumbnail } from './thumbnails.js';
+import { invalidateThumbnail, getThumbnailVersion } from './thumbnails.js';
 import { thumbnailDimensions, readMetadataIndex, renameMetadata, removeMetadata, getOrGenerateMetadataBatch } from './image-metadata.js';
 import { getImages } from '../util.js';
 import { getFileNameValidationFunction } from '../middleware/validateFileName.js';
@@ -27,6 +27,9 @@ router.post('/all', async function (request, response) {
             return {
                 filename: img,
                 isAnimated: metadata?.isAnimated ?? false,
+                // Cached thumbnail's own mtime, if one exists yet - lets getThumbnailUrl() emit `?v=` up front
+                // and skip the thumbnail route's no-cache redirect hop. See getThumbnailVersion() for details.
+                thumbnailVersion: getThumbnailVersion(request.user.directories, 'bg', img),
             };
         });
 
