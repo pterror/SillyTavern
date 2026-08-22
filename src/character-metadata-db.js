@@ -10,6 +10,7 @@ import { getCharaCardV2 } from './character-card-normalize.js';
 import { calculateChatSize, calculateDataSize, toShallow } from './character-shallow.js';
 import { readTagsData } from './endpoints/tags-data.js';
 import { getSqliteEngine } from './endpoints/sqlite-engine.js';
+import { TAGS_FILE } from './constants.js';
 
 /**
  * Phase 1 of the character-data-residency redesign (see docs/design/character-data-residency-redesign.md, §3):
@@ -173,6 +174,46 @@ const SCHEMA_SQL = `
         key   TEXT PRIMARY KEY,
         value TEXT
     );
+
+    -- PHASE 3 EXTENSION (owner decision, see this module's header on tags.json's removal): groups get the same
+    -- existence-tracking treatment characters already have, just minimal - groups aren't part of the character
+    -- residency redesign otherwise, this table exists ONLY so group<->tag assignments have something to check
+    -- existence against (assignEntityTag()) and something to cascade-delete against (deleteGroupRow()). Unlike
+    -- characters, a group's id is stable for its whole lifetime (see groups.js's /create - it's minted once and
+    -- never changes on rename), so there is no group equivalent of renameCharacterRow()/date_added carry-forward.
+    CREATE TABLE IF NOT EXISTS groups (
+        id   TEXT PRIMARY KEY,
+        name TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS group_tags (
+        group_id TEXT NOT NULL,
+        tag_id   TEXT NOT NULL,
+        PRIMARY KEY (group_id, tag_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_group_tags_tag ON group_tags(tag_id, group_id);
+
+    -- Shared tag_usage table (same one character_tags' triggers feed) - a tag's usage count is meant to answer
+    -- "how many things use this tag" regardless of whether those things are characters or groups, matching what
+    -- the client's RelationStore.usageCounts already counted in one combined Map before this migration (tag_map
+    -- always held both character avatars and group ids as keys).
+    CREATE TRIGGER IF NOT EXISTS trg_group_tags_ai AFTER INSERT ON group_tags BEGIN
+        INSERT INTO tag_usage (tag_id, count) VALUES (NEW.tag_id, 1)
+        ON CONFLICT(tag_id) DO UPDATE SET count = count + 1;
+    END;
+    CREATE TRIGGER IF NOT EXISTS trg_group_tags_ad AFTER DELETE ON group_tags BEGIN
+        UPDATE tag_usage SET count = count - 1 WHERE tag_id = OLD.tag_id;
+    END;
+
+    -- Tag *definitions* (name/color/folder_type/sort_order/... - everything tags.json's 'tags' array used to
+    -- hold). 'data' is the whole Tag object as JSON, mirroring the shallow_json pattern characters already use
+    -- above, rather than enumerating every field as its own column - this table is small (thousands of rows at
+    -- the very most) and nothing here needs to be queried/sorted server-side, so there is no cost to keeping it
+    -- schema-flexible instead of chasing every field the client's Tag typedef might ever grow.
+    CREATE TABLE IF NOT EXISTS tags (
+        id   TEXT PRIMARY KEY,
+        data TEXT NOT NULL
+    );
 `;
 
 const UPSERT_SQL = `
@@ -304,20 +345,40 @@ function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, date
 }
 
 /**
- * Writes one row plus its change-log entry and tag relations, synchronously, meant to run inside
- * `db.transaction(...)`. Not exported - all the exported upsert/delete/rename functions below route through
- * this (or its batch-flush sibling, flushPendingSync()).
+ * Writes one row plus its change-log entry, synchronously, meant to run inside `db.transaction(...)`. Not
+ * exported - all the exported upsert/delete/rename functions below route through this (or its batch-flush
+ * sibling, flushBatch()).
+ *
+ * PHASE 3 (design doc §3.4/Phase 3): `character_tags` is now the source of truth for character<->tag
+ * assignments, mutated directly by `POST /api/tags/assign`/`/unassign` (see assignCharacterTag()/
+ * unassignCharacterTag() below) - NOT re-derived from tags.json on every ordinary metadata write anymore. This
+ * function used to unconditionally `DELETE FROM character_tags WHERE character_id = @id` and reinsert from
+ * `tagIds` on every call, which was correct back when character_tags was a read-only mirror kept in sync by
+ * resyncTags() (still true through phase 1/2), but became actively destructive once direct-assignment writes
+ * existed: an ordinary character edit (rename, fav toggle, whatever) firing this same write path would silently
+ * revert any tag assigned/unassigned since tags.json was last read, because tags.json's tag_map is no longer
+ * kept current for characters.
+ *
+ * So `tagIds` is now used ONLY to seed a genuinely brand-new row's tags - once, at the row's first INSERT
+ * (`existed` below is false) - which is what carries an existing library's tags.json content forward into this
+ * table the first time a character is discovered (bootstrapIfNeeded()'s one-time backfill, or a file dropped
+ * into the directory by hand that happens to have a legacy tag_map entry). An UPDATE of an already-existing row
+ * never touches character_tags at all here; existing assignments in that table stand as-is regardless of what
+ * `tagIds`/tags.json says.
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {object} row From buildRow()
- * @param {string[]} tagIds
+ * @param {string[]} tagIds Seed tag ids - applied only if this is a genuine insert, see above.
  */
 function writeRowSync(db, row, tagIds) {
+    const existed = !!db.get('SELECT 1 FROM characters WHERE id = @id', { id: row.id });
+
     const { lastInsertRowid } = db.run('INSERT INTO changes (id, op) VALUES (@id, @op)', { id: row.id, op: 'upsert' });
     db.run(UPSERT_SQL, { ...row, rev: Number(lastInsertRowid) });
 
-    db.run('DELETE FROM character_tags WHERE character_id = @id', { id: row.id });
-    for (const tagId of tagIds) {
-        db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@characterId, @tagId)', { characterId: row.id, tagId });
+    if (!existed) {
+        for (const tagId of tagIds) {
+            db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@characterId, @tagId)', { characterId: row.id, tagId });
+        }
     }
 }
 
@@ -412,6 +473,14 @@ export async function deleteCharacterRow(directories, avatar) {
  * leaving the blob's own copy stale would mean every *reader* of this table's shallow projection - not just this
  * phase's endpoint - sees the wrong date_added after any rename, which is exactly the kind of silently-wrong
  * result this design keeps calling out as worse than an explicit failure.
+ *
+ * PHASE 3 addition: tag assignments get the exact same forward-carry treatment as date_added, for the exact same
+ * reason. `character_tags` is now source of truth (see writeRowSync()'s header), so the generic upsert hook that
+ * already ran for `newAvatar` seeded it with only whatever tags.json happened to say for that (brand-new, never
+ * before seen) id - typically nothing. Without this, the trailing `deleteRowSync(oldAvatar)` below would delete
+ * `oldAvatar`'s real tag rows with nothing ever having carried them to `newAvatar`, i.e. every rename would
+ * silently drop that character's tags. Tag ids are unioned into `newAvatar`, not overwritten - if the generic
+ * hook's seed already gave it something (a legacy tags.json entry already keyed by the new name), both survive.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} oldAvatar
  * @param {string} newAvatar
@@ -439,6 +508,23 @@ export async function renameCharacterRow(directories, oldAvatar, newAvatar) {
             } else {
                 entry.db.run('UPDATE characters SET date_added = @dateAdded WHERE id = @id', { dateAdded, id: newAvatar });
             }
+        }
+    }
+
+    // Carry oldAvatar's tag assignments forward to newAvatar - see this function's doc comment above. Read
+    // BEFORE the transaction that deletes oldAvatar's rows, same ordering the date_added carry-forward above
+    // already uses.
+    const oldTagIds = entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id: oldAvatar }).map(r => r.tag_id);
+    if (oldTagIds.length > 0) {
+        const pending = entry.batch?.pending.get(newAvatar);
+        if (pending) {
+            pending.tagIds = [...new Set([...pending.tagIds, ...oldTagIds])];
+        } else {
+            entry.db.transaction(() => {
+                for (const tagId of oldTagIds) {
+                    entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@newAvatar, @tagId)', { newAvatar, tagId });
+                }
+            });
         }
     }
 
@@ -691,8 +777,19 @@ export async function resyncTags(directories) {
  *     concurrently and will win the same idempotent upsert either way)
  *   - a row with no file on disk -> deleted
  *   - a file whose stat().mtimeMs disagrees with the stored file_mtime -> re-upserted (refreshes every derived
- *     column; date_added is untouched, per the UPSERT's own ON CONFLICT clause)
- * Also calls resyncTags() at the end, since nothing watches tags.json for changes yet.
+ *     column; date_added is untouched, per the UPSERT's own ON CONFLICT clause; tag assignments are untouched
+ *     too, per writeRowSync()'s header - phase 3 made character_tags the source of truth, so a reconcile pass
+ *     over ordinary character metadata must not touch it)
+ *
+ * PHASE 3: this function used to call resyncTags() at the end of every pass, on the grounds that "nothing
+ * watches tags.json for changes yet". That stopped being true (and stopped being safe) once character_tags
+ * became a real, directly-mutated table rather than a read-only mirror: resyncTags() diffs FROM tags.json's
+ * tag_map, which is no longer kept current for characters (assignments happen via `POST /api/tags/assign`/
+ * `/unassign` now, not through tags.json) - so calling it here on every 5-minute interval would periodically
+ * revert every direct assignment back to whatever tags.json's now-stale tag_map says, silently. resyncTags()
+ * itself is untouched and still exported/tested directly; it's just no longer wired into this automatic pass.
+ * The one legitimate ongoing caller of a tags.json-derived seed is bootstrapIfNeeded()'s one-time backfill (see
+ * its own doc comment) for a library that predates the new endpoints.
  * @param {import('./users.js').UserDirectoryList} directories
  * @returns {Promise<void>}
  */
@@ -752,8 +849,6 @@ export async function reconcile(directories) {
     if (entry.batch) {
         flushBatch(entry);
     }
-
-    await resyncTags(directories);
 }
 
 /**
@@ -866,7 +961,13 @@ export async function initializeMetadataStores(directoriesList) {
         // this timer never becomes the reason the server can't exit.
         entry.reconcileInterval.unref?.();
 
+        // Ordering matters: migrateTagsJsonIfNeeded() classifies tag_map's keys against the characters/groups
+        // tables, so both bootstraps have to have already populated them (bootstrapIfNeeded() for characters,
+        // bootstrapGroupsIfNeeded() for groups) before it runs, or every key would look unresolvable on a
+        // brand-new install's very first boot.
         entry.bootstrapPromise = bootstrapIfNeeded(directories)
+            .then(() => bootstrapGroupsIfNeeded(directories))
+            .then(() => migrateTagsJsonIfNeeded(directories))
             .then(() => reconcile(directories))
             .catch(err => console.error(`[character-metadata] Bootstrap failed for ${directories.root}:`, err));
     }
@@ -933,6 +1034,412 @@ export async function getTagUsageCount(directories, tagId) {
     if (!entry) return 0;
     const row = entry.db.get('SELECT count FROM tag_usage WHERE tag_id = @tagId', { tagId });
     return row ? Number(row.count) : 0;
+}
+
+/**
+ * Bumps the single `tags_rev` meta counter to `Date.now()` - the freshness signature for anything derived from
+ * tag *content* (definitions or assignments), replacing tags.json's own mtime now that tags.json is gone (see
+ * this module's header on its removal). Called by every write below that changes what a `#tags` search field or
+ * a cached tag definition would resolve to: saveTagDefinitions(), assignEntityTag(), unassignEntityTag(), and
+ * migrateTagsJsonIfNeeded()'s one-time seed. Readers: getTagsRevision() below (consumed by
+ * characters-search-index.js/groups-search-index.js in place of the old tags.json-mtime half of their freshness
+ * signature, and by tags-cache.js's client-side freshness check in place of `/api/tags/manifest`'s old
+ * whole-file mtime).
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ */
+function bumpTagsRevisionSync(db) {
+    db.run(
+        "INSERT INTO meta (key, value) VALUES ('tags_rev', @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        { value: String(Date.now()) },
+    );
+}
+
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<number | null>} The current `tags_rev` (0 if nothing has ever bumped it yet), or `null` if
+ * the metadata store is unavailable.
+ */
+export async function getTagsRevision(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    const row = entry.db.get("SELECT value FROM meta WHERE key = 'tags_rev'");
+    return row ? Number(row.value) : 0;
+}
+
+/**
+ * Phase 3 (design doc §3.4, extended by owner decision to groups): `POST /api/tags/for`'s backing query - the
+ * tag ids assigned to each of `ids`, in one batched read rather than one `getCharacterTagIds()`/
+ * `getGroupTagIds()` call per entity. `ids` can freely mix character avatars and group ids - each one is looked
+ * up against whichever of `character_tags`/`group_tags` actually has rows for it. Every requested id is a key in
+ * the result, `[]` if it has no tags (or doesn't exist) - so a caller never has to distinguish "no tags" from
+ * "id absent".
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string[]} ids
+ * @returns {Promise<Record<string, string[]> | null>} `null` if the metadata store is unavailable.
+ */
+export async function getEntityTagIdsForMany(directories, ids) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    /** @type {Record<string, string[]>} */
+    const result = {};
+    for (const id of ids) {
+        result[id] = [];
+    }
+
+    // Chunked for the same reason checkCharactersExist() is - stay clear of SQLite's bound-parameter ceiling.
+    for (let i = 0; i < ids.length; i += BATCH_FLUSH_SIZE) {
+        const chunk = ids.slice(i, i + BATCH_FLUSH_SIZE).filter(id => typeof id === 'string' && id.length > 0);
+        if (chunk.length === 0) continue;
+        const placeholders = chunk.map(() => '?').join(', ');
+        const characterRows = entry.db.all(`SELECT character_id as entity_id, tag_id FROM character_tags WHERE character_id IN (${placeholders})`, chunk);
+        const groupRows = entry.db.all(`SELECT group_id as entity_id, tag_id FROM group_tags WHERE group_id IN (${placeholders})`, chunk);
+        for (const row of [...characterRows, ...groupRows]) {
+            result[row.entity_id]?.push(row.tag_id);
+        }
+    }
+
+    return result;
+}
+
+/**
+ * Phase 3 (extended by owner decision to groups): `POST /api/tags/assign`'s backing write - a single-row insert
+ * into `character_tags` or `group_tags`, whichever table `id` actually exists in, replacing the old
+ * whole-tags.json rewrite. Requires the entity to actually exist (checked against `characters` then `groups`,
+ * not just attempted blind) so a typo'd id can't create a permanently dangling tag row nothing will ever clean
+ * up - neither table has a foreign key enforcing that itself (SQLite FKs are opt-in and this schema doesn't turn
+ * them on).
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} id Character avatar or group id
+ * @param {string} tagId
+ * @returns {Promise<'ok' | 'not_found' | null>} `null` if the metadata store is unavailable.
+ */
+export async function assignEntityTag(directories, id, tagId) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    if (entry.db.get('SELECT 1 FROM characters WHERE id = @id', { id })) {
+        entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@id, @tagId)', { id, tagId });
+        bumpTagsRevisionSync(entry.db);
+        return 'ok';
+    }
+    if (entry.db.get('SELECT 1 FROM groups WHERE id = @id', { id })) {
+        entry.db.run('INSERT OR IGNORE INTO group_tags (group_id, tag_id) VALUES (@id, @tagId)', { id, tagId });
+        bumpTagsRevisionSync(entry.db);
+        return 'ok';
+    }
+    return 'not_found';
+}
+
+/**
+ * Phase 3 (extended by owner decision to groups): `POST /api/tags/unassign`'s backing write - a single-row
+ * delete from `character_tags`/`group_tags`. Deliberately NOT a 404 on a nonexistent entity (unlike
+ * assignEntityTag()) - "make sure this assignment doesn't exist" is trivially satisfied when the entity itself
+ * doesn't exist either, so there's nothing to reject. Runs the delete against both tables unconditionally rather
+ * than resolving which one first - cheaper than a lookup, and harmless since an id is only ever a row in one of
+ * them (a character avatar and a group id can't collide in practice - see this module's header on identity).
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} id Character avatar or group id
+ * @param {string} tagId
+ * @returns {Promise<'ok' | null>} `null` if the metadata store is unavailable.
+ */
+export async function unassignEntityTag(directories, id, tagId) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    entry.db.run('DELETE FROM character_tags WHERE character_id = @id AND tag_id = @tagId', { id, tagId });
+    entry.db.run('DELETE FROM group_tags WHERE group_id = @id AND tag_id = @tagId', { id, tagId });
+    bumpTagsRevisionSync(entry.db);
+    return 'ok';
+}
+
+/**
+ * Tag ids currently assigned to one group - the group-side equivalent of getCharacterTagIds(). Exposed mainly
+ * for tests/diagnostics; getEntityTagIdsForMany() is what the `/for` endpoint actually uses.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} groupId
+ * @returns {Promise<string[]>}
+ */
+export async function getGroupTagIds(directories, groupId) {
+    const entry = await getEntry(directories);
+    if (!entry) return [];
+    return entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id', { id: groupId }).map(r => r.tag_id);
+}
+
+/**
+ * Phase 3: `GET /api/tags/usage`'s backing read - the entire trigger-maintained `tag_usage` table as one object.
+ * This is the aggregate the design doc says "subsumes three separate full scans" (§3.4) - a caller no longer
+ * needs to walk every character/group to count how many carry a given tag.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<Record<string, number> | null>} `null` if the metadata store is unavailable.
+ */
+export async function getAllTagUsage(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    const rows = entry.db.all('SELECT tag_id, count FROM tag_usage');
+    /** @type {Record<string, number>} */
+    const result = {};
+    for (const row of rows) {
+        result[row.tag_id] = Number(row.count);
+    }
+    return result;
+}
+
+/**
+ * Write-path hook for groups.js's /create and /edit routes - upserts a group's id/name into the `groups` table
+ * (see this module's header on why this table is minimal). Unlike upsertCharacterFromWrite(), there's no
+ * date_added/rev/change-log bookkeeping here - nothing currently reads change history for groups, this table
+ * exists purely so assignEntityTag()/unassignEntityTag() have something to resolve a group id against.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} id
+ * @param {string} name
+ * @returns {Promise<void>}
+ */
+export async function upsertGroupRow(directories, id, name) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+    entry.db.run(
+        'INSERT INTO groups (id, name) VALUES (@id, @name) ON CONFLICT(id) DO UPDATE SET name = excluded.name',
+        { id, name: name ?? '' },
+    );
+}
+
+/**
+ * Write-path hook for groups.js's /delete route - removes the group's row and cascades to its tag assignments
+ * (group_tags has no real foreign key, so this cascade is application code, same as deleteRowSync() does for
+ * characters).
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} id
+ * @returns {Promise<void>}
+ */
+export async function deleteGroupRow(directories, id) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+    entry.db.transaction(() => {
+        entry.db.run('DELETE FROM groups WHERE id = @id', { id });
+        entry.db.run('DELETE FROM group_tags WHERE group_id = @id', { id });
+    });
+}
+
+/**
+ * One-time backfill of the `groups` table for a library that predates it - the group equivalent of
+ * bootstrapIfNeeded(), needed for the same reason: groups.js's write-path hooks (upsertGroupRow()) only fire on
+ * a *future* create/edit, so a group that already exists on disk needs an explicit one-time scan or
+ * migrateTagsJsonIfNeeded() below could never resolve its tag_map entries as "a real group" and would silently
+ * drop them. Gated by its own meta flag so it only ever runs once per user, same pattern as
+ * bootstrap_completed.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<void>}
+ */
+export async function bootstrapGroupsIfNeeded(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+
+    const already = entry.db.get("SELECT value FROM meta WHERE key = 'groups_bootstrap_completed'");
+    if (already) return;
+
+    if (fs.existsSync(directories.groups)) {
+        const files = fs.readdirSync(directories.groups).filter(f => f.endsWith('.json'));
+        entry.db.transaction(() => {
+            for (const file of files) {
+                try {
+                    const raw = fs.readFileSync(path.join(directories.groups, file), 'utf8');
+                    const group = JSON.parse(raw);
+                    if (group && typeof group.id === 'string' && group.id) {
+                        entry.db.run(
+                            'INSERT INTO groups (id, name) VALUES (@id, @name) ON CONFLICT(id) DO UPDATE SET name = excluded.name',
+                            { id: group.id, name: group.name ?? '' },
+                        );
+                    }
+                } catch (err) {
+                    console.error(`[character-metadata] Bootstrap failed to process group file ${file}, skipping it (group tags for it won't resolve until it's next created/edited):`, err.message);
+                }
+            }
+        });
+    }
+
+    entry.db.run(
+        "INSERT INTO meta (key, value) VALUES ('groups_bootstrap_completed', @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        { value: String(Date.now()) },
+    );
+}
+
+/**
+ * Tag *definitions* (name/color/folder_type/... - see the `tags` table's own schema comment). Returns them in no
+ * particular order - sorting is a client concern (compareTagsForSort(), tags.js), same as before this migration.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<object[] | null>} `null` if the metadata store is unavailable.
+ */
+export async function getTagDefinitions(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    return entry.db.all('SELECT data FROM tags').map(r => JSON.parse(r.data));
+}
+
+/**
+ * Replaces the entire `tags` table's contents with `tagsArray` - a full replace, not a diff, mirroring exactly
+ * what the old `POST /api/tags/save` did to tags.json's `tags` array (a whole-array rewrite), just against a
+ * table that costs nothing to rewrite wholesale instead of a multi-megabyte file. Bumps `tags_rev` (see
+ * bumpTagsRevisionSync()) so search-index freshness and the client's tags-cache.js both see the change.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {object[]} tagsArray
+ * @returns {Promise<'ok' | null>} `null` if the metadata store is unavailable.
+ */
+export async function saveTagDefinitions(directories, tagsArray) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    entry.db.transaction(() => {
+        entry.db.run('DELETE FROM tags');
+        for (const tag of tagsArray) {
+            if (!tag || typeof tag.id !== 'string' || !tag.id) continue;
+            entry.db.run('INSERT INTO tags (id, data) VALUES (@id, @data)', { id: tag.id, data: JSON.stringify(tag) });
+        }
+        bumpTagsRevisionSync(entry.db);
+    });
+    return 'ok';
+}
+
+/**
+ * One-time migration off tags.json (owner decision: tags.json is removed entirely, not just drained of
+ * character assignments - see this module's header). Seeds the `tags` table from tags.json's `tags` array
+ * (saveTagDefinitions()) and `character_tags`/`group_tags` from its `tag_map`, classifying each tag_map key
+ * against the now-populated `characters`/`groups` tables (this is why this function must run AFTER
+ * bootstrapIfNeeded() AND bootstrapGroupsIfNeeded() - see initializeMetadataStores()'s ordering) - a key that
+ * matches neither is dropped with a warning rather than guessed at, matching this module's existing "no
+ * dangling rows" stance (resyncTags() applies the identical rule for characters today).
+ *
+ * On success, tags.json is renamed to `tags.json.migrated` rather than deleted - the migration only needs to
+ * stop being *read*, and renaming keeps the original bytes recoverable if anything about this pass turns out to
+ * be wrong, at zero ongoing cost (nothing ever looks at `.migrated` files). Gated by its own meta flag so it
+ * only ever runs once per user; a JSON parse failure does NOT set that flag, so a corrupt tags.json gets retried
+ * next boot rather than silently treated as "migrated, nothing to do".
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<void>}
+ */
+export async function migrateTagsJsonIfNeeded(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+
+    const already = entry.db.get("SELECT value FROM meta WHERE key = 'tags_json_migrated'");
+    if (already) return;
+
+    const tagsJsonPath = path.join(directories.root, TAGS_FILE);
+    if (!fs.existsSync(tagsJsonPath)) {
+        entry.db.run(
+            "INSERT INTO meta (key, value) VALUES ('tags_json_migrated', @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            { value: String(Date.now()) },
+        );
+        return;
+    }
+
+    /** @type {{ tags?: object[], tag_map?: Record<string, string[]> }} */
+    let parsed;
+    try {
+        parsed = JSON.parse(fs.readFileSync(tagsJsonPath, 'utf8'));
+    } catch (err) {
+        console.error('[character-metadata] Failed to parse tags.json during migration - leaving it in place and retrying next boot:', err.message);
+        return;
+    }
+
+    const tagsArray = Array.isArray(parsed.tags) ? parsed.tags : [];
+    const tagMap = parsed.tag_map && typeof parsed.tag_map === 'object' ? parsed.tag_map : {};
+
+    await saveTagDefinitions(directories, tagsArray);
+    const droppedKeys = importTagMapSync(entry, tagMap);
+    entry.db.run(
+        "INSERT INTO meta (key, value) VALUES ('tags_json_migrated', @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        { value: String(Date.now()) },
+    );
+
+    if (droppedKeys.length > 0) {
+        console.warn(`[character-metadata] tags.json migration: ${droppedKeys.length} tag_map key(s) matched neither a known character nor a known group, dropped: ${droppedKeys.slice(0, 20).join(', ')}${droppedKeys.length > 20 ? ', ...' : ''}`);
+    }
+
+    try {
+        fs.renameSync(tagsJsonPath, `${tagsJsonPath}.migrated`);
+    } catch (err) {
+        console.error('[character-metadata] Migrated tags.json successfully but could not rename it out of the way (safe to ignore - it is never read again):', err.message);
+    }
+}
+
+/**
+ * Shared classify-and-insert core for importing a `{[id]: tagId[]}` map into `character_tags`/`group_tags` -
+ * used by both migrateTagsJsonIfNeeded() (the one-time tags.json migration) and restoreTagMap() (a settings
+ * snapshot restore, see this module's header). Runs inside its own transaction; bumps tags_rev once at the end
+ * rather than per-key. Each key is classified against the CURRENT contents of `characters`/`groups` - a key
+ * matching neither is dropped (reported via the returned list) rather than guessed at, the same "no dangling
+ * rows" stance resyncTags() already took for characters.
+ * @param {MetadataDbEntry} entry
+ * @param {Record<string, string[]>} tagMap
+ * @returns {string[]} Keys that were dropped because they matched neither a known character nor a known group
+ */
+function importTagMapSync(entry, tagMap) {
+    const knownCharacterIds = new Set(entry.db.all('SELECT id FROM characters').map(r => r.id));
+    const knownGroupIds = new Set(entry.db.all('SELECT id FROM groups').map(r => r.id));
+    const droppedKeys = [];
+
+    entry.db.transaction(() => {
+        for (const [key, tagIds] of Object.entries(tagMap)) {
+            if (!Array.isArray(tagIds)) continue;
+            if (knownCharacterIds.has(key)) {
+                for (const tagId of tagIds) {
+                    entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@key, @tagId)', { key, tagId });
+                }
+            } else if (knownGroupIds.has(key)) {
+                for (const tagId of tagIds) {
+                    entry.db.run('INSERT OR IGNORE INTO group_tags (group_id, tag_id) VALUES (@key, @tagId)', { key, tagId });
+                }
+            } else {
+                droppedKeys.push(key);
+            }
+        }
+        bumpTagsRevisionSync(entry.db);
+    });
+
+    return droppedKeys;
+}
+
+/**
+ * The full `{[id]: tagId[]}` export of every character's and group's tag assignments, reconstructed from
+ * `character_tags`/`group_tags` - the settings-snapshot backup path's (settings.js's backupUserSettings(), via
+ * mergeTagsIntoSnapshot() in tags.js) replacement for what used to be tags.json's `tag_map` field verbatim. Same
+ * "one file fully captures state" property snapshots have always had, just sourced from sqlite now.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<Record<string, string[]> | null>} `null` if the metadata store is unavailable.
+ */
+export async function getFullTagMapExport(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    /** @type {Record<string, string[]>} */
+    const result = {};
+    for (const row of entry.db.all('SELECT character_id as id, tag_id FROM character_tags')) {
+        (result[row.id] ??= []).push(row.tag_id);
+    }
+    for (const row of entry.db.all('SELECT group_id as id, tag_id FROM group_tags')) {
+        (result[row.id] ??= []).push(row.tag_id);
+    }
+    return result;
+}
+
+/**
+ * The inverse of getFullTagMapExport() - imports a `{[id]: tagId[]}` map (as embedded in a settings snapshot
+ * being restored, see settings.js's /restore-snapshot) into `character_tags`/`group_tags`. Additive (uses the
+ * same OR IGNORE insert importTagMapSync() always has), not a replace-everything - a snapshot restore is a
+ * point-in-time merge of what that snapshot had, not a promise that nothing else has been assigned since, same
+ * spirit as the old splitTagsFromSnapshot()'s straight tags.json overwrite except now merge-safe against
+ * concurrent direct assignments instead of clobbering them.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {Record<string, string[]>} tagMap
+ * @returns {Promise<string[] | null>} Dropped keys (matched neither a known character nor group), or `null` if
+ * the metadata store is unavailable.
+ */
+export async function restoreTagMap(directories, tagMap) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    return importTagMapSync(entry, tagMap && typeof tagMap === 'object' ? tagMap : {});
 }
 
 /**

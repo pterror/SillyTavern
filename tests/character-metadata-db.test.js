@@ -82,13 +82,17 @@ beforeAll(async () => {
     cardParser = await import('../src/character-card-parser.js');
 });
 
+let groupsDir;
+
 beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-character-metadata-db-test-'));
     charactersDir = path.join(tempDir, 'characters');
     chatsDir = path.join(tempDir, 'chats');
+    groupsDir = path.join(tempDir, 'groups');
     fs.mkdirSync(charactersDir, { recursive: true });
     fs.mkdirSync(chatsDir, { recursive: true });
-    directories = { root: tempDir, characters: charactersDir, chats: chatsDir };
+    fs.mkdirSync(groupsDir, { recursive: true });
+    directories = { root: tempDir, characters: charactersDir, chats: chatsDir, groups: groupsDir };
 });
 
 afterEach(() => {
@@ -295,6 +299,269 @@ describe('batch import mode', () => {
 
         await metadataDb.endBatchImport(directories);
         expect(await metadataDb.getCharacterMetadataRow(directories, 'Bob.png')).toBeDefined();
+    });
+});
+
+describe('phase 3: character_tags as source of truth (not a tags.json mirror)', () => {
+    test('assignEntityTag/unassignEntityTag are single-row writes reflected by getCharacterTagIds and tag_usage', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+
+        expect(await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag1')).toBe('ok');
+        expect(await metadataDb.getCharacterTagIds(directories, 'Bob.png')).toEqual(['tag1']);
+        expect(await metadataDb.getTagUsageCount(directories, 'tag1')).toBe(1);
+
+        // Assigning again is a no-op, not a duplicate/error.
+        expect(await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag1')).toBe('ok');
+        expect(await metadataDb.getTagUsageCount(directories, 'tag1')).toBe(1);
+
+        expect(await metadataDb.unassignEntityTag(directories, 'Bob.png', 'tag1')).toBe('ok');
+        expect(await metadataDb.getCharacterTagIds(directories, 'Bob.png')).toEqual([]);
+        expect(await metadataDb.getTagUsageCount(directories, 'tag1')).toBe(0);
+    });
+
+    test('assignEntityTag rejects an unknown character id rather than creating a dangling row', async () => {
+        expect(await metadataDb.assignEntityTag(directories, 'NoSuchCharacter.png', 'tag1')).toBe('not_found');
+        expect(await metadataDb.getCharacterTagIds(directories, 'NoSuchCharacter.png')).toEqual([]);
+    });
+
+    test('unassignEntityTag on an unknown character is a harmless no-op', async () => {
+        await expect(metadataDb.unassignEntityTag(directories, 'NoSuchCharacter.png', 'tag1')).resolves.toBe('ok');
+    });
+
+    test('getEntityTagIdsForMany batches getCharacterTagIds over multiple ids, [] for untagged/unknown ids', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', cardJson({ name: 'Alice' }), 1000);
+        await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag1');
+        await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag2');
+
+        const result = await metadataDb.getEntityTagIdsForMany(directories, ['Bob.png', 'Alice.png', 'Ghost.png']);
+        expect(result['Bob.png'].sort()).toEqual(['tag1', 'tag2']);
+        expect(result['Alice.png']).toEqual([]);
+        expect(result['Ghost.png']).toEqual([]);
+    });
+
+    test('getAllTagUsage returns the whole trigger-maintained tag_usage table', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', cardJson({ name: 'Alice' }), 1000);
+        await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag1');
+        await metadataDb.assignEntityTag(directories, 'Alice.png', 'tag1');
+        await metadataDb.assignEntityTag(directories, 'Alice.png', 'tag2');
+
+        expect(await metadataDb.getAllTagUsage(directories)).toEqual({ tag1: 2, tag2: 1 });
+    });
+
+    test('an ordinary metadata write (upsertCharacterFromWrite on an existing row) does not touch existing direct tag assignments', async () => {
+        // This is the regression the phase-3 fix in writeRowSync() targets: before the fix, character_tags was
+        // treated as a read-only mirror of tags.json and every ordinary write unconditionally deleted+reinserted
+        // a character's tag rows from tags.json's (now-stale, since assignments no longer write there) tag_map -
+        // silently reverting any direct assignment.
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag1');
+        expect(await metadataDb.getCharacterTagIds(directories, 'Bob.png')).toEqual(['tag1']);
+
+        // Simulate an ordinary edit (fav toggled, name unchanged) - tags.json has no entry for Bob.png at all,
+        // which is the expected post-phase-3 steady state (assignments never get written there anymore).
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ fav: true }), 2000);
+
+        expect(await metadataDb.getCharacterTagIds(directories, 'Bob.png')).toEqual(['tag1']);
+    });
+
+    test('reconcile() finding a changed file does not revert direct tag assignments back to tags.json', async () => {
+        // Regression test for the periodic-clobber bug: reconcile() used to call resyncTags() at the end of
+        // every pass (including the automatic 5-minute interval), which would mirror tags.json's tag_map - stale
+        // for characters, post-phase-3 - back over character_tags, undoing direct /assign|/unassign writes.
+        const filePath = await writeCardFile('Alice.png');
+        await metadataDb.bootstrapIfNeeded(directories);
+        await metadataDb.assignEntityTag(directories, 'Alice.png', 'tag1');
+        expect(await metadataDb.getCharacterTagIds(directories, 'Alice.png')).toEqual(['tag1']);
+
+        // tags.json (if anything even still writes it) disagrees - no tag1 for Alice.
+        fs.writeFileSync(path.join(tempDir, 'tags.json'), JSON.stringify({ tags: [], tag_map: {} }));
+
+        // Touch the file's mtime so reconcile() treats it as changed and re-upserts its row.
+        const future = new Date(Date.now() + 60_000);
+        fs.utimesSync(filePath, future, future);
+        await metadataDb.reconcile(directories);
+
+        expect(await metadataDb.getCharacterTagIds(directories, 'Alice.png')).toEqual(['tag1']);
+    });
+
+    test('renameCharacterRow carries tag assignments over from the old id to the new one', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag1');
+        await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag2');
+
+        // Same shape the real /rename route hits: writeCharacterData()'s embedded hook already generically
+        // upserted a (tagless) row for the new filename before renameCharacterRow() runs.
+        await metadataDb.upsertCharacterFromWrite(directories, 'Robert.png', cardJson({ name: 'Robert' }), 3000);
+        expect(await metadataDb.getCharacterTagIds(directories, 'Robert.png')).toEqual([]);
+
+        await metadataDb.renameCharacterRow(directories, 'Bob.png', 'Robert.png');
+
+        expect(await metadataDb.getCharacterTagIds(directories, 'Bob.png')).toEqual([]);
+        expect((await metadataDb.getCharacterTagIds(directories, 'Robert.png')).sort()).toEqual(['tag1', 'tag2']);
+    });
+
+    test('renameCharacterRow unions carried-forward tags with anything the new id was already seeded with', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag1');
+
+        // The new-id row happens to have already picked up a tag of its own (e.g. a legacy tags.json entry
+        // keyed by the new name, or a race with a direct /assign call) before the rename hook runs.
+        await metadataDb.upsertCharacterFromWrite(directories, 'Robert.png', cardJson({ name: 'Robert' }), 3000);
+        await metadataDb.assignEntityTag(directories, 'Robert.png', 'tag2');
+
+        await metadataDb.renameCharacterRow(directories, 'Bob.png', 'Robert.png');
+
+        expect((await metadataDb.getCharacterTagIds(directories, 'Robert.png')).sort()).toEqual(['tag1', 'tag2']);
+    });
+});
+
+describe('phase 3 extension: groups (owner decision - tags.json removal includes group tags)', () => {
+    function writeGroupFile(id, name) {
+        fs.writeFileSync(path.join(groupsDir, `${id}.json`), JSON.stringify({ id, name, members: [] }));
+    }
+
+    test('upsertGroupRow/deleteGroupRow make a group id resolvable/unresolvable for tag assignment', async () => {
+        expect(await metadataDb.assignEntityTag(directories, 'group1', 'tag1')).toBe('not_found');
+
+        await metadataDb.upsertGroupRow(directories, 'group1', 'My Group');
+        expect(await metadataDb.assignEntityTag(directories, 'group1', 'tag1')).toBe('ok');
+        expect(await metadataDb.getGroupTagIds(directories, 'group1')).toEqual(['tag1']);
+
+        await metadataDb.deleteGroupRow(directories, 'group1');
+        expect(await metadataDb.getGroupTagIds(directories, 'group1')).toEqual([]);
+        expect(await metadataDb.assignEntityTag(directories, 'group1', 'tag1')).toBe('not_found');
+    });
+
+    test('deleteGroupRow cascades to group_tags and tag_usage', async () => {
+        await metadataDb.upsertGroupRow(directories, 'group1', 'My Group');
+        await metadataDb.assignEntityTag(directories, 'group1', 'tag1');
+        expect(await metadataDb.getTagUsageCount(directories, 'tag1')).toBe(1);
+
+        await metadataDb.deleteGroupRow(directories, 'group1');
+        expect(await metadataDb.getTagUsageCount(directories, 'tag1')).toBe(0);
+    });
+
+    test('getEntityTagIdsForMany resolves a mix of character and group ids in one call', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await metadataDb.upsertGroupRow(directories, 'group1', 'My Group');
+        await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag1');
+        await metadataDb.assignEntityTag(directories, 'group1', 'tag2');
+
+        const result = await metadataDb.getEntityTagIdsForMany(directories, ['Bob.png', 'group1', 'Ghost.png']);
+        expect(result).toEqual({ 'Bob.png': ['tag1'], group1: ['tag2'], 'Ghost.png': [] });
+    });
+
+    test('tag_usage counts characters and groups together for the same tag', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await metadataDb.upsertGroupRow(directories, 'group1', 'My Group');
+        await metadataDb.assignEntityTag(directories, 'Bob.png', 'shared-tag');
+        await metadataDb.assignEntityTag(directories, 'group1', 'shared-tag');
+
+        expect(await metadataDb.getTagUsageCount(directories, 'shared-tag')).toBe(2);
+    });
+
+    test('bootstrapGroupsIfNeeded seeds the groups table from existing group files, once', async () => {
+        writeGroupFile('group1', 'Existing Group');
+        await metadataDb.bootstrapGroupsIfNeeded(directories);
+        expect(await metadataDb.assignEntityTag(directories, 'group1', 'tag1')).toBe('ok');
+
+        // A second call must be a no-op (gated by its own meta flag) - a group file arriving after this point
+        // isn't picked up by bootstrap; that's the write-path hook's (upsertGroupRow) job going forward.
+        writeGroupFile('group2', 'Late Arrival');
+        await metadataDb.bootstrapGroupsIfNeeded(directories);
+        expect(await metadataDb.assignEntityTag(directories, 'group2', 'tag1')).toBe('not_found');
+    });
+});
+
+describe('phase 3 extension: tag definitions (owner decision - tags.json removal includes definitions, not just tag_map)', () => {
+    test('saveTagDefinitions/getTagDefinitions round-trip full Tag objects', async () => {
+        const tagsArray = [{ id: 'tag1', name: 'Funny', color: '#fff' }, { id: 'tag2', name: 'Serious' }];
+        expect(await metadataDb.saveTagDefinitions(directories, tagsArray)).toBe('ok');
+        expect(await metadataDb.getTagDefinitions(directories)).toEqual(tagsArray);
+    });
+
+    test('saveTagDefinitions is a full replace, not additive', async () => {
+        await metadataDb.saveTagDefinitions(directories, [{ id: 'tag1', name: 'Funny' }]);
+        await metadataDb.saveTagDefinitions(directories, [{ id: 'tag2', name: 'Serious' }]);
+        expect(await metadataDb.getTagDefinitions(directories)).toEqual([{ id: 'tag2', name: 'Serious' }]);
+    });
+
+    test('getTagsRevision advances on a definitions save and on assign/unassign', async () => {
+        const before = await metadataDb.getTagsRevision(directories);
+        expect(before).toBe(0);
+
+        await metadataDb.saveTagDefinitions(directories, [{ id: 'tag1', name: 'Funny' }]);
+        const afterSave = await metadataDb.getTagsRevision(directories);
+        expect(afterSave).toBeGreaterThanOrEqual(before);
+
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await new Promise(resolve => setTimeout(resolve, 2));
+        await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag1');
+        const afterAssign = await metadataDb.getTagsRevision(directories);
+        expect(afterAssign).toBeGreaterThanOrEqual(afterSave);
+    });
+});
+
+describe('phase 3 extension: tags.json removal (migration + settings-snapshot round trip)', () => {
+    test('migrateTagsJsonIfNeeded seeds definitions + character_tags + group_tags, then renames tags.json out of the way', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        fs.writeFileSync(path.join(groupsDir, 'group1.json'), JSON.stringify({ id: 'group1', name: 'G', members: [] }));
+        await metadataDb.bootstrapGroupsIfNeeded(directories);
+
+        const tagsJsonPath = path.join(tempDir, 'tags.json');
+        fs.writeFileSync(tagsJsonPath, JSON.stringify({
+            tags: [{ id: 'tag1', name: 'Funny' }],
+            tag_map: { 'Bob.png': ['tag1'], group1: ['tag1'], 'GhostCharacter.png': ['tag1'] },
+        }));
+
+        await metadataDb.migrateTagsJsonIfNeeded(directories);
+
+        expect(await metadataDb.getTagDefinitions(directories)).toEqual([{ id: 'tag1', name: 'Funny' }]);
+        expect(await metadataDb.getCharacterTagIds(directories, 'Bob.png')).toEqual(['tag1']);
+        expect(await metadataDb.getGroupTagIds(directories, 'group1')).toEqual(['tag1']);
+        // The unresolvable key is dropped, not guessed at - see this function's own doc comment.
+        expect(await metadataDb.getEntityTagIdsForMany(directories, ['GhostCharacter.png'])).toEqual({ 'GhostCharacter.png': [] });
+
+        expect(fs.existsSync(tagsJsonPath)).toBe(false);
+        expect(fs.existsSync(`${tagsJsonPath}.migrated`)).toBe(true);
+    });
+
+    test('migrateTagsJsonIfNeeded only runs once - a second call does not reprocess a re-created tags.json', async () => {
+        await metadataDb.migrateTagsJsonIfNeeded(directories); // no tags.json yet - marks migrated with nothing to do
+
+        fs.writeFileSync(path.join(tempDir, 'tags.json'), JSON.stringify({ tags: [{ id: 'tag1', name: 'Funny' }], tag_map: {} }));
+        await metadataDb.migrateTagsJsonIfNeeded(directories);
+
+        expect(await metadataDb.getTagDefinitions(directories)).toEqual([]);
+        // The re-created tags.json is untouched since migration was already marked complete.
+        expect(fs.existsSync(path.join(tempDir, 'tags.json'))).toBe(true);
+    });
+
+    test('getFullTagMapExport/restoreTagMap round-trip a settings snapshot\'s tag_map across both entity types', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await metadataDb.upsertGroupRow(directories, 'group1', 'G');
+        await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag1');
+        await metadataDb.assignEntityTag(directories, 'group1', 'tag2');
+
+        const exported = await metadataDb.getFullTagMapExport(directories);
+        expect(exported).toEqual({ 'Bob.png': ['tag1'], group1: ['tag2'] });
+
+        // Simulate restoring that export into a library that has since lost the assignments (but still has the
+        // same characters/groups) - restoreTagMap() should bring them back.
+        await metadataDb.unassignEntityTag(directories, 'Bob.png', 'tag1');
+        await metadataDb.unassignEntityTag(directories, 'group1', 'tag2');
+        expect(await metadataDb.getFullTagMapExport(directories)).toEqual({});
+
+        const dropped = await metadataDb.restoreTagMap(directories, exported);
+        expect(dropped).toEqual([]);
+        expect(await metadataDb.getFullTagMapExport(directories)).toEqual({ 'Bob.png': ['tag1'], group1: ['tag2'] });
+    });
+
+    test('restoreTagMap drops keys that match neither a known character nor group, reporting them', async () => {
+        const dropped = await metadataDb.restoreTagMap(directories, { 'NoSuchCharacter.png': ['tag1'] });
+        expect(dropped).toEqual(['NoSuchCharacter.png']);
     });
 });
 

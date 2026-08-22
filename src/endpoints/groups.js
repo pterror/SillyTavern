@@ -8,6 +8,7 @@ import { sync as writeFileAtomicSync, default as writeFileAtomic } from 'write-f
 
 import { color, tryParse } from '../util.js';
 import { getFileNameValidationFunction } from '../middleware/validateFileName.js';
+import { upsertGroupRow, deleteGroupRow } from '../character-metadata-db.js';
 
 export const router = express.Router();
 
@@ -164,7 +165,7 @@ router.post('/all', (request, response) => {
     return response.send(getGroupsData(request.user.directories));
 });
 
-router.post('/create', (request, response) => {
+router.post('/create', async (request, response) => {
     if (!request.body) {
         return response.sendStatus(400);
     }
@@ -195,10 +196,19 @@ router.post('/create', (request, response) => {
     }
 
     writeFileAtomicSync(pathToFile, fileData);
+
+    // Phase 3 write-path hook (owner decision - see character-metadata-db.js's header): keeps the `groups`
+    // table current so a tag assign/unassign against this id (src/endpoints/tags.js) has something to resolve
+    // existence against. Awaited but not fatal to the request if it fails - same tolerance characters.js's own
+    // hooks use elsewhere (see e.g. its /rename route), since the metadata store is a derived index, not the
+    // group's own source of truth (the JSON file just written is).
+    await upsertGroupRow(request.user.directories, groupMetadata.id, groupMetadata.name).catch(err =>
+        console.error(`Could not update group metadata store for ${groupMetadata.id}:`, err));
+
     return response.send(groupMetadata);
 });
 
-router.post('/edit', getFileNameValidationFunction('id'), (request, response) => {
+router.post('/edit', getFileNameValidationFunction('id'), async (request, response) => {
     if (!request.body || !request.body.id) {
         return response.sendStatus(400);
     }
@@ -208,6 +218,11 @@ router.post('/edit', getFileNameValidationFunction('id'), (request, response) =>
     const fileData = JSON.stringify(request.body, null, 4);
 
     writeFileAtomicSync(pathToFile, fileData);
+
+    // Same phase 3 write-path hook as /create above - a group's name can change here.
+    await upsertGroupRow(request.user.directories, id, request.body.name).catch(err =>
+        console.error(`Could not update group metadata store for ${id}:`, err));
+
     return response.send({ ok: true });
 });
 
@@ -240,6 +255,13 @@ router.post('/delete', getFileNameValidationFunction('id'), async (request, resp
     if (fs.existsSync(pathToGroup)) {
         fs.unlinkSync(pathToGroup);
     }
+
+    // Phase 3 write-path hook: removes the group's row and cascades to its tag assignments (see
+    // deleteGroupRow()'s own doc comment) - without this, a deleted group's tags would linger in group_tags
+    // forever (and its tag_usage counts would stay inflated), the same class of leak deleteCharacterRow()
+    // already guards against for characters.
+    await deleteGroupRow(request.user.directories, id).catch(err =>
+        console.error(`Could not remove group metadata store row for ${id}:`, err));
 
     return response.send({ ok: true });
 });
