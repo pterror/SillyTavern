@@ -202,6 +202,7 @@ import {
     chooseBogusFolder,
     getTagBlock,
     loadTagsSettings,
+    seedTagMapForResidentEntities,
     printTagFilters,
     getTagKeyForEntity,
     printTagList,
@@ -813,6 +814,11 @@ async function firstLoadInit() {
     initBookmarks();
     await getUserAvatars(true, user_avatar);
     await getCharacters();
+    // Boot-time tag_map seed - must run after getCharacters() (which also awaits getGroups() internally), since
+    // it needs both `characters` and `groups` populated to know which ids to ask /api/tags/for. See
+    // seedTagMapForResidentEntities()'s own doc comment (tags.js) for why this can't happen inside
+    // loadTagsSettings() itself (that runs earlier, via getSettings(), before either array exists).
+    await seedTagMapForResidentEntities();
     await getBackgrounds();
     await initTokenizers();
     initBackgrounds();

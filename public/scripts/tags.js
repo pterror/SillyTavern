@@ -48,6 +48,7 @@ export {
     chooseBogusFolder,
     getTagBlock,
     loadTagsSettings,
+    seedTagMapForResidentEntities,
     printTagFilters,
     getTagsList,
     printTagList,
@@ -411,24 +412,28 @@ function rebuildTagStores() {
         invalidateGroupsFuseIndex();
     });
 
-    // Same "one subscriber instead of scattered call sites" shape as the Fuse-invalidation subscribers above,
-    // for the tags.json mirror save (see saveTagsDebounced() / TAGS_FILE in constants.js): every mutation site
-    // in this file keeps calling its store op exactly as before and doesn't know this save exists. Registered
-    // on *both* stores since either one changing means the pair being persisted together is now stale.
+    // Debounced whole-array save of tag *definitions* (POST /api/tags/save) - every mutation site in this file
+    // keeps calling tagsStore's own ops exactly as before and doesn't know this save exists.
     tagsStore.onChange(saveTagsDebounced);
-    tagMapStore.onChange(saveTagsDebounced);
+
+    // Tag *assignments* are no longer a blob to save wholesale - phase 3 (character-data-residency redesign)
+    // moved them to per-user sqlite, mutated one row at a time via POST /api/tags/assign|unassign. Each
+    // tagMapStore op reports exactly what changed (RelationChange), so persistTagMapChange() below translates
+    // that directly into the matching network call(s) instead of re-uploading the whole tag_map on every change.
+    tagMapStore.onChange(persistTagMapChange);
 }
 
 /**
- * POSTs the current `{ tags, tag_map }` to the server's tags.json (POST /api/tags/save). Shared by the
- * debounced mutation-triggered save (saveTagsDebounced) and the one-shot seed save in loadTagsSettings.
+ * POSTs the current tag *definitions* array to the server (POST /api/tags/save) - assignments are never part of
+ * this payload anymore (see persistTagMapChange()). Shared by the debounced mutation-triggered save
+ * (saveTagsDebounced) and the one-shot seed save in loadTagsSettings.
  */
 async function saveTagsNow() {
     try {
         const response = await fetch('/api/tags/save', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ tags, tag_map }),
+            body: JSON.stringify({ tags }),
             cache: 'no-cache',
         });
 
@@ -437,9 +442,9 @@ async function saveTagsNow() {
         }
 
         // Keep the client's tags cache (tags-cache.js, consulted by loadTagsSettings() on the next boot) in sync
-        // with what's now actually on disk. Re-stat rather than guess at the new mtime - write-file-atomic
-        // doesn't report it back, and any drift here is correctness-safe either way (it would just cost one
-        // extra full /api/tags/get fetch next boot instead of a cache hit, not stale data).
+        // with what the server now has. Re-fetch the revision rather than guess at it - and any drift here is
+        // correctness-safe either way (it would just cost one extra full /api/tags/get fetch next boot instead
+        // of a cache hit, not stale data).
         const manifestResponse = await fetch('/api/tags/manifest', {
             method: 'POST',
             headers: getRequestHeaders(),
@@ -449,7 +454,7 @@ async function saveTagsNow() {
         if (manifestResponse.ok) {
             const { mtime } = await manifestResponse.json();
             if (mtime !== null && mtime !== undefined) {
-                await setCachedTags(mtime, tags, tag_map);
+                await setCachedTags(mtime, tags);
             }
         } else {
             console.error(`Failed to refresh tags manifest after save: ${manifestResponse.statusText}`);
@@ -460,11 +465,143 @@ async function saveTagsNow() {
 }
 
 /**
- * Debounced save of `{ tags, tag_map }` to tags.json. Registered as the tagsStore/tagMapStore onChange
- * subscriber (rebuildTagStores()) - every mutation call site in this file keeps calling its store op exactly
- * as before and doesn't know this save exists.
+ * Debounced save of the tag *definitions* array (POST /api/tags/save). Registered as tagsStore's onChange
+ * subscriber (rebuildTagStores()) - every definition mutation site in this file keeps calling its store op
+ * exactly as before and doesn't know this save exists.
  */
 const saveTagsDebounced = debounce(saveTagsNow, debounce_timeout.relaxed);
+
+/**
+ * Runs `worker` over `items` in fixed-size chunks, awaiting each chunk (via Promise.all) before starting the
+ * next - bounded concurrency without either extreme (fully serial, or unbounded-parallel). Used by
+ * persistTagMapChange() below for the bulk-fanout ops (relatedRemoved in particular can mean one network call
+ * per affected character/group in a large library).
+ * @template T
+ * @param {T[]} items
+ * @param {(item: T) => Promise<any>} worker
+ * @param {number} [chunkSize=8]
+ * @returns {Promise<void>}
+ */
+async function runWithConcurrency(items, worker, chunkSize = 8) {
+    for (let i = 0; i < items.length; i += chunkSize) {
+        const chunk = items.slice(i, i + chunkSize);
+        await Promise.all(chunk.map(worker));
+    }
+}
+
+/**
+ * Single-row POST /api/tags/assign. Fire-and-forget - see persistTagMapChange()'s doc comment for the failure
+ * tolerance (matches the old debounced-whole-file-save's: a failed fetch is logged, never retried or rolled
+ * back, same gap as before just at finer grain now).
+ * @param {string} id Character avatar or group id (a tagMapStore key)
+ * @param {string} tagId
+ * @returns {Promise<void>}
+ */
+async function assignTagOnServer(id, tagId) {
+    try {
+        const response = await fetch('/api/tags/assign', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ id, tagId }),
+            cache: 'no-cache',
+        });
+        if (!response.ok) {
+            throw new Error(`Failed to assign tag: ${response.statusText}`);
+        }
+    } catch (error) {
+        console.error(`Error assigning tag ${tagId} to ${id}:`, error);
+    }
+}
+
+/**
+ * Single-row POST /api/tags/unassign. Same fire-and-forget tolerance as assignTagOnServer() - unassigning an
+ * unknown/already-untagged id is a harmless server-side no-op, so this is also safe to call redundantly (e.g.
+ * when the underlying character/group is itself mid-deletion and the server's own delete cascade already
+ * removed the row).
+ * @param {string} id Character avatar or group id (a tagMapStore key)
+ * @param {string} tagId
+ * @returns {Promise<void>}
+ */
+async function unassignTagOnServer(id, tagId) {
+    try {
+        const response = await fetch('/api/tags/unassign', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ id, tagId }),
+            cache: 'no-cache',
+        });
+        if (!response.ok) {
+            throw new Error(`Failed to unassign tag: ${response.statusText}`);
+        }
+    } catch (error) {
+        console.error(`Error unassigning tag ${tagId} from ${id}:`, error);
+    }
+}
+
+/**
+ * Translates one tagMapStore RelationChange into the matching /api/tags/assign|unassign network call(s) - the
+ * tagMapStore.onChange subscriber registered in rebuildTagStores(). Every tag_map mutation call site in this
+ * file already funnels through tagMapStore's own ops (assign/unassign/setKey/copyKey/removeKey/
+ * removeRelatedIdEverywhere/renameKey), so this one place persists all of them - a mutation site never talks to
+ * the network directly.
+ *
+ * Fire-and-forget, no rollback on failure: matches the exact failure tolerance the old debounced-whole-tags.json
+ * write already had (a failed save there was also just logged, never retried or rolled back) - this is the same
+ * gap, just at finer (per-assignment) grain instead of per-batch.
+ *
+ * `keyRenamed` is deliberately a NO-OP here, unlike every other case: it only ever fires from renameTagKey(),
+ * itself only ever called from script.js on a character rename - and the server's own `/characters/rename`
+ * route already carries that character's tag assignments forward from the old id to the new one, atomically,
+ * server-side, with no client action needed (character-metadata-db.js's renameCharacterRow() unions old-avatar's
+ * tag rows into new-avatar's before deleting the old row). Firing assign/unassign calls here too would be
+ * redundant work at best and a race against a rename that's already complete server-side at worst.
+ * tagMapStore.renameKey() itself still runs in renameTagKey() (unconditionally, before this subscriber ever
+ * sees the change) so the *local* cache's key is correct immediately, without waiting on a fresh /for fetch.
+ * @param {import('./entity-store.js').RelationChange} change
+ */
+function persistTagMapChange(change) {
+    switch (change.op) {
+        case 'assigned':
+            assignTagOnServer(change.key, change.relatedId);
+            break;
+        case 'unassigned':
+            unassignTagOnServer(change.key, change.relatedId);
+            break;
+        case 'keySet': {
+            const key = change.key;
+            const tasks = [
+                ...change.addedIds.map(tagId => () => assignTagOnServer(key, tagId)),
+                ...change.removedIds.map(tagId => () => unassignTagOnServer(key, tagId)),
+            ];
+            runWithConcurrency(tasks, task => task());
+            break;
+        }
+        case 'keyCopied':
+            runWithConcurrency(change.addedIds, tagId => assignTagOnServer(change.toKey, tagId));
+            break;
+        case 'keyRemoved':
+            // The character/group deletion path (deleteCharacterRow()/deleteGroupRow()) already cascades and
+            // removes these rows server-side, so these calls are typically redundant-but-harmless in that case -
+            // not worth detecting and skipping, per the design decision to just let them fire (unassign
+            // tolerates unknown ids).
+            runWithConcurrency(change.removedIds, tagId => unassignTagOnServer(change.key, tagId));
+            break;
+        case 'relatedRemoved': {
+            const tasks = [];
+            for (const key of change.affectedKeys) {
+                tasks.push(() => unassignTagOnServer(key, change.relatedId));
+                if (change.replacedWithId) {
+                    tasks.push(() => assignTagOnServer(key, change.replacedWithId));
+                }
+            }
+            runWithConcurrency(tasks, task => task());
+            break;
+        }
+        case 'keyRenamed':
+            // Deliberately a no-op - see this function's doc comment above.
+            break;
+    }
+}
 
 /**
  * Forces `tagMapStore`'s usage-count index to be recomputed from the current contents of `tag_map`. Needed
@@ -760,25 +897,30 @@ function filterByFolder(filterHelper) {
 }
 
 /**
- * Loads `tags`/`tag_map` from tags.json (the cutover target - see TAGS_FILE in constants.js), falling back to
- * the `tags`/`tag_map` fields embedded in `settings` (the pre-cutover location) only if tags.json doesn't have
- * them yet - a fresh install that's never had a tag mutation fire the save subscriber, or a settings.json
- * snapshot restored from before the split that the server's restore-snapshot handler couldn't pair up with a
- * matching tags backup (see restoreUserTagsForSnapshot in src/endpoints/tags.js, which backfills tags.json from
- * the snapshot's embedded fields specifically to keep this fallback path rare).
+ * Loads tag *definitions* (`tags` - name/color/folder_type/sort_order/...) from the server's per-user metadata
+ * store (POST /api/tags/get), falling back to the `tags` field embedded in `settings` (the pre-tags.json-split
+ * location) only if the server has none yet - a fresh install, or a settings.json snapshot restored from before
+ * that split.
  *
- * After loading, unconditionally seeds/refreshes tags.json with whatever ended up in `tags`/`tag_map` - this
- * closes the gap between "tags.json doesn't exist yet" and "the next settings save, which no longer carries
- * tags/tag_map, happens": without this, a page load that falls back to the settings.json copy but never
- * triggers a tag mutation could otherwise end up with neither settings.json nor tags.json holding the data.
+ * `tag_map` (assignments) is NOT loaded here anymore - phase 3 of the character-data-residency redesign moved
+ * assignments off any single fetchable blob entirely, onto per-user sqlite rows keyed by character avatar/group
+ * id. There is nothing to seed it *from* until `characters`/`groups` are actually populated (this runs during
+ * settings load, before either of those exist yet) - `tag_map` is left empty here and gets its real content from
+ * a batched `POST /api/tags/for` once both are resident, see seedTagMapForResidentEntities() below (called from
+ * script.js's boot sequence right after `getCharacters()`).
+ *
+ * After loading, unconditionally seeds/refreshes the server's tag definitions with whatever ended up in `tags` -
+ * this closes the gap between "the server has no definitions yet" and "the next definitions save happens":
+ * without this, a page load that falls back to the settings.json copy but never triggers a definition mutation
+ * could otherwise end up with the definitions living only in memory.
  */
 async function loadTagsSettings(settings) {
     let tagsFile = null;
 
     // Cheap freshness check before paying for the full (potentially very large) /api/tags/get response: if
-    // tags.json's mtime matches what's cached, reuse the cached tags/tag_map and skip the fetch (and the
-    // seed/normalize save below) entirely. A `null` mtime means tags.json doesn't exist yet (fresh install) -
-    // nothing to be cache-fresh against, so that always falls through to the full path.
+    // tags_rev matches what's cached, reuse the cached `tags` and skip the fetch (and the seed/normalize save
+    // below) entirely. A `null` revision means the metadata store is unavailable - nothing to be cache-fresh
+    // against, so that always falls through to the full path.
     try {
         const manifestResponse = await fetch('/api/tags/manifest', {
             method: 'POST',
@@ -792,7 +934,7 @@ async function loadTagsSettings(settings) {
                 const cached = await getCachedTags();
                 if (cached && cached.mtime === mtime) {
                     tags = cached.tags;
-                    tag_map = cached.tag_map;
+                    tag_map = Object.create(null);
                     rebuildTagStores();
                     invalidateCharactersFuseIndex();
                     invalidateGroupsFuseIndex();
@@ -827,20 +969,77 @@ async function loadTagsSettings(settings) {
 
     if (tagsFile) {
         tags = tagsFile.tags !== undefined && tagsFile.tags !== null ? tagsFile.tags : DEFAULT_TAGS;
-        tag_map = tagsFile.tag_map !== undefined && tagsFile.tag_map !== null ? tagsFile.tag_map : Object.create(null);
     } else {
         tags = settings.tags !== undefined ? settings.tags : DEFAULT_TAGS;
-        tag_map = settings.tag_map !== undefined ? settings.tag_map : Object.create(null);
     }
+    tag_map = Object.create(null);
 
     rebuildTagStores();
     invalidateCharactersFuseIndex();
     invalidateGroupsFuseIndex();
 
-    // See the seeding note above - keep tags.json in sync with whatever just got loaded, regardless of source.
+    // See the seeding note above - keep the server's tag definitions in sync with whatever just got loaded,
+    // regardless of source.
     await saveTagsNow();
 }
 
+/**
+ * One-time boot seed of the local `tag_map` cache from the server, for every character and group currently
+ * resident client-side. Assignments are per-row server state now (see loadTagsSettings()'s doc comment on why
+ * `tag_map` starts empty there) - this is the client-side replacement for the old wholesale tags.json
+ * `tag_map` load: a single batched `POST /api/tags/for` covering every character avatar and group id known at
+ * boot, whose `{[id]: tagId[]}` response shape is exactly `tag_map`'s own shape, used directly as the seed.
+ *
+ * Must run after both `characters` and `groups` are populated - called from script.js's boot sequence right
+ * after `await getCharacters()` (which itself awaits `getGroups()` internally, so both arrays are guaranteed
+ * populated by the time this runs). Until phase 5 (bounded residency) lands, "resident at boot" is effectively
+ * the whole library - the same cost the old wholesale tags.json load already paid.
+ *
+ * Rebuilding tagMapStore here (via rebuildTagStores()) does NOT itself fire any network calls: constructing a
+ * fresh `RelationStore` from the fetched object doesn't go through assign()/unassign()/etc, so
+ * persistTagMapChange() never sees an event for this boot-time seed.
+ */
+async function seedTagMapForResidentEntities() {
+    const ids = [...characters.map(c => c.avatar), ...groups.map(g => g.id)];
+    if (ids.length === 0) {
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/tags/for', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ ids }),
+            cache: 'no-cache',
+        });
+        if (!response.ok) {
+            throw new Error(`Failed to load tag assignments: ${response.statusText}`);
+        }
+
+        tag_map = await response.json();
+        rebuildTagStores();
+        invalidateCharactersFuseIndex();
+        invalidateGroupsFuseIndex();
+
+        // The initial printCharacters(true) from getCharacters() already ran with an empty tag_map (this seed
+        // runs after it, by construction) - redraw now that real assignments are known, so tag pills/filters
+        // aren't stuck empty until some unrelated re-render happens to fire.
+        printCharactersDebounced();
+        printTagFilters(tag_filter_type.character);
+        printTagFilters(tag_filter_type.group_members_list);
+        printTagFilters(tag_filter_type.group_candidates_list);
+    } catch (error) {
+        console.error('Error loading tag assignments for resident entities:', error);
+    }
+}
+
+/**
+ * The sole caller is script.js on a character rename. Only updates the *local* tagMapStore key - deliberately
+ * fires no network call of its own (persistTagMapChange()'s 'keyRenamed' case is a no-op; see its doc comment):
+ * the server's own `/characters/rename` route already carries that character's tag assignments forward from the
+ * old avatar to the new one atomically, server-side, before this ever runs. This just keeps the client's local
+ * cache key in sync immediately, without waiting on a fresh /api/tags/for fetch.
+ */
 function renameTagKey(oldKey, newKey) {
     // Fuse-index invalidation is handled by the tagMapStore.onChange subscriber (rebuildTagStores()).
     tagMapStore.renameKey(oldKey, newKey);
