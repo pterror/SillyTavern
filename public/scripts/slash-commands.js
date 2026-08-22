@@ -4949,7 +4949,7 @@ async function countGroupMemberCallback() {
         return '';
     }
 
-    return String(getGroupMembers(selected_group).length);
+    return String((await getGroupMembers(selected_group)).resolved.length);
 }
 
 async function removeGroupMemberCallback(_, arg) {
