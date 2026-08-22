@@ -57,9 +57,13 @@ beforeEach(() => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-characters-query-test-'));
     const charactersDir = path.join(tempDir, 'characters');
     const chatsDir = path.join(tempDir, 'chats');
+    const groupsDir = path.join(tempDir, 'groups');
+    const groupChatsDir = path.join(tempDir, 'groupChats');
     fs.mkdirSync(charactersDir, { recursive: true });
     fs.mkdirSync(chatsDir, { recursive: true });
-    directories = { root: tempDir, characters: charactersDir, chats: chatsDir };
+    fs.mkdirSync(groupsDir, { recursive: true });
+    fs.mkdirSync(groupChatsDir, { recursive: true });
+    directories = { root: tempDir, characters: charactersDir, chats: chatsDir, groups: groupsDir, groupChats: groupChatsDir };
 });
 
 afterEach(() => {
@@ -145,6 +149,187 @@ function assignTags(characterId, tagIds) {
     existing.tag_map[characterId] = tagIds;
     fs.writeFileSync(tagsPath, JSON.stringify(existing));
 }
+
+/**
+ * Seeds one group directly through the real write path (the group JSON file plus the phase-3 write-path hook,
+ * the same two things groups.js's /create route does) - mirrors seedCharacter()'s "seed at the layer /query
+ * actually reads from" approach.
+ * @param {string} id
+ * @param {object} overrides Shallow-merged onto a minimal group object
+ */
+async function seedGroup(id, overrides = {}) {
+    const group = { id, name: id, members: [], chats: [], fav: false, ...overrides };
+    fs.writeFileSync(path.join(directories.groups, `${id}.json`), JSON.stringify(group));
+    await metadataDb.upsertGroupRow(directories, id, group.name, { fav: group.fav });
+}
+
+describe('POST /api/characters/query - filter.includeGroups (owner decision extending the design doc to groups)', () => {
+    test('includeGroups: false/absent is byte-for-byte the existing characters-only response shape', async () => {
+        await seedCharacter('Alice.png');
+        await seedGroup('g1');
+
+        const response = await postJson('/api/characters/query', { page: 1, pageSize: 10 });
+        const body = await response.json();
+        expect(body.total).toBe(1); // the group is not counted
+        expect(body.rows).toEqual([expect.objectContaining({ avatar: 'Alice.png' })]);
+        expect(body.rows[0].type).toBeUndefined(); // still a bare Character, not {type, item}
+    });
+
+    test('merges characters and groups into one {type, item}[] page, sorted by name together', async () => {
+        await seedCharacter('Zebra.png', { name: 'Zebra', data: { name: 'Zebra', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+        await seedGroup('g1', { name: 'Middle Group' });
+        await seedCharacter('Apple.png', { name: 'Apple', data: { name: 'Apple', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+
+        const response = await postJson('/api/characters/query', { filter: { includeGroups: true }, sort: { field: 'name', order: 'asc' }, page: 1, pageSize: 10 });
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.total).toBe(3);
+        expect(body.rows.map(r => [r.type, r.item.name])).toEqual([
+            ['character', 'Apple'],
+            ['group', 'Middle Group'],
+            ['character', 'Zebra'],
+        ]);
+        // A group's hydrated item carries the metadata-row-sourced fields, not a stale/absent value off the raw file.
+        expect(body.rows[1].item.id).toBe('g1');
+        expect(typeof body.rows[1].item.date_added).toBe('number');
+    });
+
+    test('paginates the merged sequence as one combined page, not per-type pages', async () => {
+        for (let i = 0; i < 3; i++) {
+            await seedCharacter(`Char${i}.png`, { name: `Char${i}`, data: { name: `Char${i}`, tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+        }
+        for (let i = 0; i < 3; i++) {
+            await seedGroup(`Group${i}`, { name: `Group${i}` });
+        }
+
+        const page1 = await (await postJson('/api/characters/query', { filter: { includeGroups: true }, sort: { field: 'name', order: 'asc' }, page: 1, pageSize: 2 })).json();
+        const page2 = await (await postJson('/api/characters/query', { filter: { includeGroups: true }, sort: { field: 'name', order: 'asc' }, page: 2, pageSize: 2 })).json();
+        const page3 = await (await postJson('/api/characters/query', { filter: { includeGroups: true }, sort: { field: 'name', order: 'asc' }, page: 3, pageSize: 2 })).json();
+
+        expect(page1.total).toBe(6);
+        const allNames = [...page1.rows, ...page2.rows, ...page3.rows].map(r => r.item.name);
+        expect(allNames).toEqual(['Char0', 'Char1', 'Char2', 'Group0', 'Group1', 'Group2']);
+    });
+
+    test('each sort field orders characters and groups together: date_added', async () => {
+        await seedCharacter('Old.png', { name: 'Old', data: { name: 'Old', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } }, 1000);
+        await seedGroup('g-mid');
+        await new Promise(resolve => setTimeout(resolve, 5));
+        await seedCharacter('New.png', { name: 'New', data: { name: 'New', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+
+        const response = await postJson('/api/characters/query', { filter: { includeGroups: true }, sort: { field: 'date_added', order: 'asc' }, page: 1, pageSize: 10 });
+        const body = await response.json();
+        expect(body.rows.length).toBe(3);
+        // Old.png and g-mid seeded before New.png/-created-later - New must sort last.
+        expect(body.rows[body.rows.length - 1].item.avatar ?? body.rows[body.rows.length - 1].item.id).toBe('New.png');
+    });
+
+    test('each sort field orders characters and groups together: date_last_chat', async () => {
+        await seedCharacter('NoChat.png');
+        await seedGroup('g1', { chats: ['c1'] });
+        fs.writeFileSync(path.join(directories.groupChats, 'c1.jsonl'), 'x');
+        await metadataDb.bumpGroupChatStats(directories, 'c1');
+
+        const response = await postJson('/api/characters/query', { filter: { includeGroups: true }, sort: { field: 'date_last_chat', order: 'desc' }, page: 1, pageSize: 10 });
+        const body = await response.json();
+        // The group (which has a real date_last_chat) sorts before the character (date_last_chat 0) descending.
+        expect(body.rows[0].type).toBe('group');
+        expect(body.rows[1].type).toBe('character');
+    });
+
+    test('each sort field orders characters and groups together: chat_size', async () => {
+        await seedCharacter('NoChat.png');
+        await seedGroup('g1', { chats: ['c1'] });
+        fs.writeFileSync(path.join(directories.groupChats, 'c1.jsonl'), 'x'.repeat(500));
+        await metadataDb.bumpGroupChatStats(directories, 'c1');
+
+        const response = await postJson('/api/characters/query', { filter: { includeGroups: true }, sort: { field: 'chat_size', order: 'desc' }, page: 1, pageSize: 10 });
+        const body = await response.json();
+        expect(body.rows[0].type).toBe('group');
+        expect(body.rows[0].item.chat_size).toBe(500);
+    });
+
+    test('each sort field orders characters and groups together: fav', async () => {
+        await seedCharacter('NotFav.png');
+        await seedGroup('FavGroup', { fav: true });
+
+        const response = await postJson('/api/characters/query', { filter: { includeGroups: true }, sort: { field: 'fav', order: 'desc' }, page: 1, pageSize: 10 });
+        const body = await response.json();
+        expect(body.rows[0]).toEqual(expect.objectContaining({ type: 'group' }));
+        expect(body.rows[0].item.fav).toBe(true);
+    });
+
+    test('each sort field orders characters and groups together: random, with a seed', async () => {
+        for (let i = 0; i < 4; i++) {
+            await seedCharacter(`Char${i}.png`, { name: `Char${i}`, data: { name: `Char${i}`, tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+        }
+        for (let i = 0; i < 4; i++) {
+            await seedGroup(`Group${i}`, { name: `Group${i}` });
+        }
+
+        const first = await (await postJson('/api/characters/query', { filter: { includeGroups: true }, sort: { field: 'random', seed: 99 }, page: 1, pageSize: 8 })).json();
+        const second = await (await postJson('/api/characters/query', { filter: { includeGroups: true }, sort: { field: 'random', seed: 99 }, page: 1, pageSize: 8 })).json();
+
+        expect(first.total).toBe(8);
+        expect(first.rows.map(r => r.item.id ?? r.item.avatar)).toEqual(second.rows.map(r => r.item.id ?? r.item.avatar));
+        // Not simply "all characters then all groups" - proves the hash genuinely interleaves the two types.
+        const typeSequence = first.rows.map(r => r.type);
+        expect(new Set(typeSequence)).toEqual(new Set(['character', 'group']));
+    });
+
+    test('filter.tags.include ("open a folder") matches characters and groups carrying the tag, together', async () => {
+        await seedCharacter('Tagged.png');
+        await seedCharacter('Untagged.png', { name: 'Untagged', data: { name: 'Untagged', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+        await seedGroup('TaggedGroup');
+        await seedGroup('UntaggedGroup');
+        assignTags('Tagged.png', ['folder-1']);
+        await metadataDb.resyncTags(directories);
+        // Unlike characters, group tag assignments have no tags.json mirror to resync from (resyncTags() is
+        // characters-only - see its own doc comment) - group_tags is assigned directly via the phase-3 write
+        // path, same as groups.js's real /api/tags/assign route would do.
+        await metadataDb.assignEntityTag(directories, 'TaggedGroup', 'folder-1');
+
+        const response = await postJson('/api/characters/query', { filter: { includeGroups: true, tags: { include: ['folder-1'] } }, sort: { field: 'name' }, page: 1, pageSize: 10 });
+        const body = await response.json();
+        expect(body.total).toBe(2);
+        expect(body.rows.map(r => `${r.type}:${r.item.name}`).sort()).toEqual(['character:Tagged', 'group:TaggedGroup']);
+    });
+
+    test('filter.fav narrows both characters and groups', async () => {
+        await seedCharacter('FavChar.png', { fav: true, data: { name: 'FavChar', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: true, world: '' } } });
+        await seedCharacter('PlainChar.png', { name: 'PlainChar', data: { name: 'PlainChar', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+        await seedGroup('FavGroup', { fav: true });
+        await seedGroup('PlainGroup', { fav: false });
+
+        const response = await postJson('/api/characters/query', { filter: { includeGroups: true, fav: true }, page: 1, pageSize: 10 });
+        const body = await response.json();
+        expect(body.total).toBe(2);
+        expect(body.rows.map(r => r.item.name).sort()).toEqual(['FavChar', 'FavGroup']);
+    });
+
+    test('filter.search excludes groups from the merged result, characters-only, but keeps {type, item} envelope shape', async () => {
+        await seedCharacterWithFile('Vampire.png', { name: 'Vampire Lord', data: { name: 'Vampire Lord', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+        await seedGroup('VampireGroup', { name: 'Vampire Group' }); // matches by name, but groups aren't searched
+
+        const response = await postJson('/api/characters/query', { filter: { includeGroups: true, search: 'vampire' }, sort: { field: 'search' }, page: 1, pageSize: 10 });
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.rows).toEqual([{ type: 'character', item: expect.objectContaining({ avatar: 'Vampire.png' }) }]);
+        expect(body.total).toBe(1);
+    });
+
+    test('a deleted group is not resolvable via getGroupsByIds and is simply dropped from the page rather than shipping a null item', async () => {
+        await seedGroup('g1');
+        // Delete the file but leave the metadata row behind (simulating drift) - the route must not crash or
+        // emit a null item.
+        fs.unlinkSync(path.join(directories.groups, 'g1.json'));
+
+        const response = await postJson('/api/characters/query', { filter: { includeGroups: true }, page: 1, pageSize: 10 });
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.rows).toEqual([]);
+    });
+});
 
 describe('POST /api/characters/query', () => {
     test('with no characters, returns empty rows and a zero total', async () => {

@@ -11,6 +11,12 @@ process.env.SILLYTAVERN_BACKUPS_CHAT_ENABLED = 'false';
 process.env.SILLYTAVERN_BACKUPS_CHAT_MAXTOTALBACKUPS = '-1';
 process.env.SILLYTAVERN_BACKUPS_CHAT_THROTTLEINTERVAL = '0';
 process.env.SILLYTAVERN_BACKUPS_CHAT_CHECKINTEGRITY = 'true';
+// chats.js now also imports character-metadata-db.js (bumpGroupChatStats() - the groups-schema extension's
+// write-path hook for /group/save), which reads these three config values at module load too (directly, plus
+// character-shallow.js's own), so they need the same env-var treatment as the keys above.
+process.env.SILLYTAVERN_PERFORMANCE_SHALLOWCHARACTERSINCLUDECREATORNOTES = 'false';
+process.env.SILLYTAVERN_PERFORMANCE_CHARACTERINDEXBUILDCONCURRENCY = '4';
+process.env.SILLYTAVERN_PERFORMANCE_CHARACTERMETADATARECONCILEINTERVALMS = '300000';
 
 /** @type {import('../src/endpoints/chats.js')} */
 let chats;
