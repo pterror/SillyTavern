@@ -271,6 +271,16 @@ performance:
     # Timeout for request compression in milliseconds.
     timeout: 4000
 
+# Settings for importing character files from a local directory on disk (as opposed to browser
+# upload). The copy-fallback chain tries a reflink (copy-on-write clone), then a hardlink, before
+# falling back to a plain full-cost copy.
+localImport:
+  # Whether a plain full-cost copy is allowed when reflink and hardlink both fail because the source
+  # and characters directories are on different filesystems (EXDEV) or the filesystem doesn't support
+  # reflinks/hardlinks. Set to false to fail the import instead of silently paying the full
+  # disk-space/time cost of copying every character file across devices or filesystem types.
+  allowCrossDeviceCopyFallback: true
+
 # CACHE BUSTER CONFIGURATION
 # IMPORTANT: Requires localhost or a domain with HTTPS, otherwise will not work!
 cacheBuster:
