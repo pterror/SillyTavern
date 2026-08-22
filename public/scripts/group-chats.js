@@ -24,6 +24,9 @@ import {
 import { RA_CountCharTokens, humanizedDateTime, dragElement, favsToHotswap, getMessageTimeStamp } from './RossAscends-mods.js';
 import { power_user, loadMovingUIState, sortEntitiesList, invalidateGroupsFuseIndex } from './power-user.js';
 import { debounce_timeout } from './constants.js';
+import { getRandomSortSeed } from './random-sort.js';
+import { characterRepository, buildCharacterQuery, isServerQueryableSort } from './character-repository.js';
+import { checkCharactersExistOrNull } from './character-existence-check.js';
 
 import {
     chat,
@@ -261,6 +264,10 @@ async function loadGroupChat(chatId) {
  * Resolves a group member entry to its character, by avatar (the normal case, O(1) via charactersStore) or -
  * for legacy group data that stored members by display name instead of avatar - by name (O(n) fallback scan,
  * only hit when the avatar lookup misses).
+ *
+ * Resident-only: a miss here means "not currently resident", not "does not exist" (design doc §6/§4.2). It is
+ * safe to use as a positive existence signal (a hit is a real character), but a miss must never by itself be
+ * read as "deleted" - see `characterRepository.exists()` and its callers below for the authoritative check.
  * @param {string} member Group member entry (usually an avatar, occasionally a legacy name)
  * @returns {Character|undefined}
  */
@@ -269,25 +276,93 @@ function findGroupMemberCharacter(member) {
 }
 
 /**
+ * Resolves a list of group member entries (avatars, or legacy display names) to characters, returning an
+ * explicit resolved/unresolved split instead of holes (design doc §6). Order of `resolved` follows `members`,
+ * skipping whatever didn't resolve.
+ *
+ * Resolution order: the resident/legacy-name lookup (`findGroupMemberCharacter`) first, since it's free and
+ * covers the common case; whatever it misses on falls to `characterRepository.getMany()`, which is the
+ * authoritative (server-backed) answer for ids that are valid but not currently resident. A legacy
+ * display-name entry that doesn't resolve locally will also miss the repository lookup (it isn't a real avatar
+ * id), which is correct - it lands in `unresolved`, not silently treated as valid.
+ * @param {string[]} members
+ * @returns {Promise<{resolved: Character[], unresolved: string[]}>}
+ */
+async function resolveGroupMembers(members) {
+    /** @type {Map<string, Character>} */
+    const local = new Map();
+    /** @type {string[]} */
+    const toFetch = [];
+    for (const member of members) {
+        const character = findGroupMemberCharacter(member);
+        if (character) local.set(member, character);
+        else toFetch.push(member);
+    }
+
+    const fetched = toFetch.length > 0 ? await characterRepository.getMany(toFetch) : new Map();
+
+    /** @type {Character[]} */
+    const resolved = [];
+    /** @type {string[]} */
+    const unresolved = [];
+    for (const member of members) {
+        const character = local.get(member) ?? fetched.get(member);
+        if (character) resolved.push(character);
+        else unresolved.push(member);
+    }
+
+    return { resolved, unresolved };
+}
+
+/**
  * Validates a group by checking if all members exist and removing duplicates.
+ *
+ * Member existence is the destructive-if-wrong check design doc §4.2 flags: a member entry that doesn't
+ * resolve gets deleted from the group and the group saved. Under bounded residency, "not resident" and "does
+ * not exist" are different claims (§6), so the authoritative answer for whatever doesn't resolve locally comes
+ * from `characterRepository.exists()`, never from treating a resident-array/legacy-name miss as conclusive. A
+ * failed or partial existence check aborts the member-pruning mutation entirely - members are left untouched
+ * rather than risking deleting ones that merely failed to answer (§4.2's rule). The unrelated duplicate-chat-id
+ * cleanup below is not destructive-by-wrong-answer the same way, so it always runs regardless.
  * @param {Group} group Group to validate
  * @returns {Promise<void>}
  */
-async function validateGroup(group) {
+export async function validateGroup(group) {
     if (!group) return;
 
-    // Validate that all members exist as characters
+    const membersArray = Array.isArray(group.members) ? group.members : [];
+    const needsExistenceCheck = membersArray.filter(member => !findGroupMemberCharacter(member));
+
+    // checkCharactersExistOrNull() (character-existence-check.js) is the shared §4.2 wrapper every
+    // destructive-existence site in this codebase goes through (tags.js, world-info.js) - it returns `null`
+    // rather than throwing/an all-false map on failure, so "could not verify" can never be misread as "gone".
+    /** @type {Record<string, boolean>|null} */
+    let existsResult = await checkCharactersExistOrNull(needsExistenceCheck);
+
+    // Defensive on top of the shared helper's own contract: `characterRepository.exists()` promises every
+    // requested id back as a key (character-repository.js's own doc comment), but a response missing some is
+    // exactly as dangerous to read as "gone" as a failed check would be, so treat it the same way rather than
+    // trusting the promise blindly.
+    if (existsResult !== null && needsExistenceCheck.some(member => !(member in existsResult))) {
+        console.warn('Group member existence check returned a partial answer; leaving group members unchanged', group.id);
+        existsResult = null;
+    }
+
     let dirty = false;
-    group.members = group.members.filter(member => {
-        const character = findGroupMemberCharacter(member);
-        if (!character) {
+    if (existsResult !== null) {
+        const filtered = membersArray.filter(member => {
+            if (findGroupMemberCharacter(member)) return true;
+            if (existsResult[member]) return true;
             const msg = t`Warning: Listed member ${member} does not exist as a character. It will be removed from the group.`;
             toastr.warning(msg, t`Group Validation`);
             console.warn(msg);
             dirty = true;
+            return false;
+        });
+        if (dirty) {
+            group.members = filtered;
         }
-        return character;
-    });
+    }
 
     // Remove duplicate chat ids
     if (Array.isArray(group.chats)) {
@@ -378,14 +453,47 @@ export async function getGroupChat(groupId, reload = false) {
 }
 
 /**
- * Retrieves the members of a group
+ * Retrieves the members of a group, resolved and split explicitly (design doc §6): a non-resident member no
+ * longer becomes an `undefined` hole in the returned array - it lands in `unresolved` instead, so callers have
+ * to handle the distinction rather than tripping over holes.
  *
  * @param {string} [groupId=selected_group] - The ID of the group to retrieve members from. Defaults to the currently selected group.
- * @returns {Character[]} An array of character objects representing the members of the group. If the group is not found, an empty array is returned.
+ * @returns {Promise<{resolved: Character[], unresolved: string[]}>} Resolved characters (in member order) plus
+ * the member entries that didn't resolve. Both are empty if the group isn't found.
  */
-export function getGroupMembers(groupId = selected_group) {
+export async function getGroupMembers(groupId = selected_group) {
     const group = groupsStore.get(groupId);
-    return group?.members.map(member => charactersStore.get(member)) ?? [];
+    if (!group) return { resolved: [], unresolved: [] };
+    return resolveGroupMembers(group.members);
+}
+
+/**
+ * Synchronous, resident-only counterpart to `getGroupMembers()`, for the one caller that cannot await it:
+ * `SlashCommandCommonEnumsProvider.js`'s `groupMembers` enum provider, whose returned function is invoked
+ * synchronously by the slash-command autocomplete machinery (`SlashCommandAutoCompleteNameResult.js`, 3 call
+ * sites, no `await` anywhere in that path). Making the whole autocomplete provider interface async to give that
+ * one call site the authoritative answer instead is a much larger, riskier change - it touches every other enum
+ * provider too, not just character-related ones - and was not scoped as part of this pass; out of scope here.
+ *
+ * Classification call (design doc §6: every `undefined`/miss site has to be classified as "resident-only is
+ * fine here" or "needs the authoritative answer"): this is resident-only-is-fine, not an oversight. Full
+ * shallow residency for the entire library is still in effect today (phase 5's staging note, §9), so a
+ * `charactersStore`/`characterRepository.peek()` miss here is a true rarity, not the routine case bounded
+ * residency would make it. The consequence of a miss is also only that one entry is silently absent from an
+ * autocomplete suggestion list, not a write - so it doesn't belong to §4.2's destructive-existence cluster
+ * either. If/when bounded residency lands (phase 6+) and this starts missing routinely, that's the trigger to
+ * revisit the autocomplete interface question this function currently sidesteps.
+ * @param {string} [groupId=selected_group]
+ * @returns {Character[]} Resolved members only, in member order - unresolved (non-resident, non-legacy-name)
+ * entries are silently dropped rather than left as `undefined` holes, since a sync caller has no channel to
+ * receive an explicit unresolved list the way `getGroupMembers()`'s async callers do.
+ */
+export function getGroupMembersResident(groupId = selected_group) {
+    const group = groupsStore.get(groupId);
+    if (!group) return [];
+    // findGroupMemberCharacter() is exactly the resident/legacy-name lookup this needs - it's
+    // charactersStore.get() (equivalently characterRepository.peek()) with the legacy display-name fallback.
+    return group.members.map(findGroupMemberCharacter).filter(Boolean);
 }
 
 /**
@@ -1519,7 +1627,7 @@ async function modifyGroupMember(groupId, groupMember, isDelete) {
     printTagFilters(tag_filter_type.group_candidates_list);
     printTagFilters(tag_filter_type.group_members_list);
 
-    const groupHasMembers = getGroupCharacters({ doFilter: false, onlyMembers: true }).length > 0;
+    const groupHasMembers = (await getGroupCharacters({ doFilter: false, onlyMembers: true })).length > 0;
     $('#rm_group_submit').prop('disabled', !groupHasMembers);
 }
 
@@ -1624,13 +1732,59 @@ function isGroupMember(group, avatarId) {
 }
 
 /**
+ * Whether `getGroupCharacters()`'s non-member candidate set can be built from the server `/query` endpoint
+ * (design doc §5/§6, §4.1's `getGroupCharacters` row) instead of scanning the resident `characters` array -
+ * mirrors `canUseServerQueryForEntitiesList()` in script.js (see its doc comment for the full reasoning): an
+ * active search term stays on the pre-existing local path, since group-candidate search runs through the same
+ * fuzzy/score-cache pipeline (`groupCandidatesFilter`/`FilterHelper.searchFilter()`) the server's FTS/tantivy
+ * backend does not necessarily agree with, and narrowing the candidate set by the "wrong" search engine before
+ * that pass runs risks silently dropping a match. Group candidates carry no tag/fav filter UI of their own
+ * (only search, via `groupCandidatesFilter.setFilterData(FILTER_TYPES.SEARCH, ...)`), so unlike the main
+ * entities list this does not need to special-case those.
+ * @returns {boolean}
+ */
+function canUseServerQueryForGroupCandidates() {
+    if (groupCandidatesFilter.getFilterData(FILTER_TYPES.SEARCH)) return false;
+    if ($('#character_sort_order option[data-field="search"]').is(':selected')) return false;
+    const sortField = power_user.sort_order === 'random' ? 'random' : power_user.sort_field;
+    return isServerQueryableSort(sortField);
+}
+
+/**
+ * Pure mapping from the current sort UI state (the shared `#character_sort_order` dropdown, same `power_user`
+ * fields the main entities list reads) plus the current group's member set into the server `/query` wire
+ * shape's `excludeIds` form (design doc §4.1: "not-in-member-set + ... predicates + sort -> page + count").
+ * @param {string[]} excludeIds Current group's member list - excluded from the result.
+ * @returns {{filter: import('./character-repository.js').CharacterQueryFilter, sort: import('./character-repository.js').CharacterQuerySort|undefined}}
+ */
+export function buildGroupCandidateQuery(excludeIds) {
+    const isRandom = power_user.sort_order === 'random';
+    const { filter, sort } = buildCharacterQuery({
+        sortField: isRandom ? 'random' : power_user.sort_field,
+        sortOrder: power_user.sort_order === 'desc' ? 'desc' : 'asc',
+        randomSeed: isRandom ? getRandomSortSeed(accountStorage) : undefined,
+    });
+    filter.excludeIds = excludeIds;
+    return { filter, sort };
+}
+
+/**
  * Gets group characters based on filters.
+ *
+ * The non-member (candidate) path backs the "add member" picker over the entire non-member library (design
+ * doc §4.1), so it goes through `characterRepository.queryAll()` with `excludeIds` set to the current members
+ * instead of scanning the resident `characters` array whenever the current filter/sort state supports it (see
+ * `canUseServerQueryForGroupCandidates()`); an active search term keeps the pre-existing fully-local path,
+ * matching `getEntitiesList()`'s documented search carve-out in script.js. The member path is bounded by the
+ * group's own member count regardless (not the library), so it stays resolved through `resolveGroupMembers()`
+ * rather than a resident-array scan - avoiding the same non-resident-member holes `getGroupMembers()` was fixed
+ * for (design doc §6), without needing a server query of its own.
  * @param {object} param
  * @param {boolean} [param.doFilter=false] Whether to apply filters
  * @param {boolean} [param.onlyMembers=false] Whether to include only group members
- * @returns {Array<{item: Character, id: string, type: string}>} Array of group character objects
+ * @returns {Promise<Array<{item: Character, id: string, type: string}>>} Array of group character objects
  */
-function getGroupCharacters({ doFilter = false, onlyMembers = false } = {}) {
+async function getGroupCharacters({ doFilter = false, onlyMembers = false } = {}) {
     function applyFilterAndSort(results, filter, filterSelector) {
         let filtered = results;
         if (doFilter) {
@@ -1672,26 +1826,34 @@ function getGroupCharacters({ doFilter = false, onlyMembers = false } = {}) {
     }
 
     const thisGroup = openGroupId && groupsStore.get(openGroupId);
+    const membersArray = thisGroup?.members ?? newGroupMembers;
 
-    const results = characters
-        .filter((x) => isGroupMember(thisGroup, x.avatar) == onlyMembers)
-        .map((x) => ({ item: x, id: x.avatar, type: 'character' }));
-
-    // Early return for candidates (non-members)
+    // Candidates (non-members): the entire non-member library as a pagination dataSource (§4.1).
     if (!onlyMembers) {
+        if (doFilter && canUseServerQueryForGroupCandidates()) {
+            const { filter, sort } = buildGroupCandidateQuery(membersArray);
+            const rows = await characterRepository.queryAll(filter, sort);
+            const results = rows.map((x) => ({ item: x, id: x.avatar, type: 'character' }));
+            return applyFilterAndSort(results, groupCandidatesFilter, '#rm_group_filter');
+        }
+        const results = characters
+            .filter((x) => isGroupMember(thisGroup, x.avatar) == onlyMembers)
+            .map((x) => ({ item: x, id: x.avatar, type: 'character' }));
         return applyFilterAndSort(results, groupCandidatesFilter, '#rm_group_filter');
     }
 
-    // Handle members with manual sort capability
+    // Members: bounded by the group's own member count, resolved authoritatively (see doc comment above).
+    const { resolved } = await resolveGroupMembers(membersArray);
+    const results = resolved.map((x) => ({ item: x, id: x.avatar, type: 'character' }));
     return handleMembers(results, thisGroup);
 }
 
-function printGroupCandidates() {
+async function printGroupCandidates() {
     const storageKey = 'GroupCandidates_PerPage';
     const pageSize = Number(accountStorage.getItem(storageKey)) || 5;
     const sizeChangerOptions = [5, 10, 25, 50, 100, 200, 500, 1000];
     $('#rm_group_add_members_pagination').pagination({
-        dataSource: getGroupCharacters({ doFilter: true, onlyMembers: false }),
+        dataSource: await getGroupCharacters({ doFilter: true, onlyMembers: false }),
         pageRange: 1,
         position: 'top',
         showPageNumbers: false,
@@ -1716,14 +1878,18 @@ function printGroupCandidates() {
     });
 }
 
-function printGroupMembers() {
+async function printGroupMembers() {
     const storageKey = 'GroupMembers_PerPage';
+    const pageSize = Number(accountStorage.getItem(storageKey)) || 5;
+    const sizeChangerOptions = [5, 10, 25, 50, 100, 200, 500, 1000];
+    // Resolved once and reused across every `.rm_group_members_pagination` element below (there is normally
+    // only one, but the original sync version re-called `getGroupCharacters()` per element too - keep that
+    // shape rather than fetching once and assuming there is exactly one).
+    const dataSource = await getGroupCharacters({ doFilter: true, onlyMembers: true });
     $('.rm_group_members_pagination').each(function () {
         let that = this;
-        const pageSize = Number(accountStorage.getItem(storageKey)) || 5;
-        const sizeChangerOptions = [5, 10, 25, 50, 100, 200, 500, 1000];
         $(this).pagination({
-            dataSource: getGroupCharacters({ doFilter: true, onlyMembers: true }),
+            dataSource,
             pageRange: 1,
             position: 'top',
             showPageNumbers: false,
