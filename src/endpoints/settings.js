@@ -36,7 +36,7 @@ const AUTOSAVE_FUNCTIONS = new Map();
  */
 function triggerAutoSave(handle) {
     if (!AUTOSAVE_FUNCTIONS.has(handle)) {
-        const throttledAutoSave = _.throttle(() => backupUserSettings(handle, true), AUTOSAVE_INTERVAL);
+        const throttledAutoSave = _.throttle(() => backupUserSettings(handle, true).catch(err => console.error('Autosave failed', err)), AUTOSAVE_INTERVAL);
         AUTOSAVE_FUNCTIONS.set(handle, throttledAutoSave);
     }
 
@@ -121,7 +121,7 @@ async function backupSettings() {
         const userHandles = await getAllUserHandles();
 
         for (const handle of userHandles) {
-            backupUserSettings(handle, true);
+            await backupUserSettings(handle, true);
         }
     } catch (err) {
         console.error('Could not backup settings file', err);
@@ -129,14 +129,15 @@ async function backupSettings() {
 }
 
 /**
- * Makes a backup of the user's settings file. The backup is a single file that fully captures state, same as
- * before the tags.json split: tags/tag_map get merged in from the user's live tags.json at backup time (see
- * mergeTagsIntoSnapshot in tags.js) even though settings.json itself no longer carries those fields.
+ * Makes a backup of the user's settings file. The backup is a single file that fully captures state: tag
+ * definitions and tag_map get merged in from the per-user metadata sqlite store at backup time (see
+ * mergeTagsIntoSnapshot in tags.js) even though settings.json itself doesn't carry those fields - tags.json
+ * itself is gone entirely (phase 3, owner decision).
  * @param {string} handle User handle
  * @param {boolean} preventDuplicates Prevent duplicate backups
- * @returns {void}
+ * @returns {Promise<void>}
  */
-function backupUserSettings(handle, preventDuplicates) {
+async function backupUserSettings(handle, preventDuplicates) {
     const userDirectories = getUserDirectories(handle);
 
     if (!fs.existsSync(userDirectories.root)) {
@@ -152,7 +153,7 @@ function backupUserSettings(handle, preventDuplicates) {
     let snapshotContent;
     try {
         const settingsContent = JSON.parse(fs.readFileSync(sourceFile, 'utf8'));
-        snapshotContent = JSON.stringify(mergeTagsIntoSnapshot(handle, settingsContent), null, 4);
+        snapshotContent = JSON.stringify(await mergeTagsIntoSnapshot(handle, userDirectories, settingsContent), null, 4);
     } catch (err) {
         console.error('Could not read/parse settings file for backup', err);
         return;
@@ -336,7 +337,7 @@ router.post('/load-snapshot', getFileNameValidationFunction('name'), async (requ
 
 router.post('/make-snapshot', async (request, response) => {
     try {
-        backupUserSettings(request.user.profile.handle, false);
+        await backupUserSettings(request.user.profile.handle, false);
         response.sendStatus(204);
     } catch (error) {
         console.error(error);
@@ -362,10 +363,10 @@ router.post('/restore-snapshot', getFileNameValidationFunction('name'), async (r
         const pathToSettings = path.join(request.user.directories.root, SETTINGS_FILE);
         const parsedSnapshot = JSON.parse(fs.readFileSync(snapshotPath, 'utf8'));
 
-        // Split tags/tag_map back out of the snapshot into tags.json (see splitTagsFromSnapshot's own comment)
-        // before writing the remaining settings content, so the restored settings.json matches the post-cutover
-        // shape and tags.json ends up exactly what the restored snapshot had - never orphaned either way.
-        const settingsOnly = splitTagsFromSnapshot(request.user.profile.handle, parsedSnapshot);
+        // Import tags/tag_map out of the snapshot into the metadata store (see splitTagsFromSnapshot's own
+        // comment) before writing the remaining settings content, so the restored settings.json matches the
+        // post-cutover shape and the restored snapshot's tag data is applied either way.
+        const settingsOnly = await splitTagsFromSnapshot(request.user.profile.handle, request.user.directories, parsedSnapshot);
 
         fs.rmSync(pathToSettings, { force: true });
         writeFileAtomicSync(pathToSettings, JSON.stringify(settingsOnly, null, 4), 'utf8');
