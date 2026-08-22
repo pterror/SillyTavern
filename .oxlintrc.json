@@ -1,0 +1,23 @@
+{
+    "$schema": "./node_modules/oxlint/configuration_schema.json",
+    "plugins": ["import"],
+    "ignorePatterns": [
+        "**/node_modules/**",
+        "**/dist/**",
+        "**/.git/**",
+        "public/lib/**",
+        "public/scripts/extensions/third-party/**",
+        "backups/**",
+        "data/**",
+        "cache/**",
+        "src/tokenizers/**",
+        "docker/**",
+        "plugins/**",
+        "**/*.min.js",
+        "public/scripts/extensions/quick-reply/lib/**",
+        "public/scripts/extensions/tts/lib/**"
+    ],
+    "rules": {
+        "import/no-cycle": "error"
+    }
+}

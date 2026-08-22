@@ -31,4 +31,31 @@ if [ -n "$dangling" ]; then
     exit 1
 fi
 
+# Blocks commits that grow the circular-import count beyond the checked-in
+# baseline (.oxlint-cycle-baseline).
+#
+# The codebase has 833 pre-existing import cycles (as of 2026-08-23) --
+# not worth blocking every commit on until someone deliberately works
+# through them. But circular imports have caused real TDZ crashes here
+# (FILTER_TYPES in tags.js/filters.js, charactersStore in
+# script.js/character-repository.js), invisible to any static check except
+# this one, so new cycles are worth catching before they ship. This is a
+# ratchet, not a full gate: it only blocks the count going UP. If you fix
+# cycles, lower the number in .oxlint-cycle-baseline to lock in the win.
+if ! command -v npx >/dev/null 2>&1; then
+    echo "pre-commit: npx not found on PATH -- enter the project dev shell (direnv/nix develop) first" >&2
+    exit 1
+fi
+
+baseline="$(cat .oxlint-cycle-baseline 2>/dev/null || echo 0)"
+cycle_output="$(npx oxlint -c .oxlintrc.json -A all -D import/no-cycle 2>&1 || true)"
+cycle_count="$(printf '%s\n' "$cycle_output" | grep -c 'import(no-cycle)' || true)"
+
+if [ "$cycle_count" -gt "$baseline" ]; then
+    echo "pre-commit: blocked -- import/no-cycle count went from $baseline to $cycle_count" >&2
+    echo "" >&2
+    echo "This commit appears to introduce a new circular import. Circular imports have caused real TDZ crashes here (ReferenceError: Cannot access '<name>' before initialization) -- run 'npm run lint:cycles' to see the cycle paths and either break the cycle or, if this is intentional/a false positive, raise .oxlint-cycle-baseline to $cycle_count." >&2
+    exit 1
+fi
+
 exit 0
