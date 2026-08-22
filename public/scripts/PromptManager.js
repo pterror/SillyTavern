@@ -1134,12 +1134,8 @@ class PromptManager {
         if ('global' === this.configuration.promptOrder.strategy) {
             this.activeCharacter = { id: this.configuration.promptOrder.dummyId };
         } else if ('character' === this.configuration.promptOrder.strategy) {
-            // `id` is the character's avatar (stable identity, same as charactersStore's key) rather than
-            // `event.detail.id` (this_chid, a positional index into the characters array that shifts whenever
-            // the list reorders around it - e.g. after deleting an earlier character). `legacyId` carries the
-            // old this_chid-based value through for getPromptOrderForCharacter()'s one-time migration fallback,
-            // for users with prompt_order entries saved under the old index-keyed scheme.
-            this.activeCharacter = { ...event.detail.character, id: event.detail.character.avatar, legacyId: event.detail.id };
+            // `id` is the character's avatar (stable identity, same as charactersStore's key).
+            this.activeCharacter = { ...event.detail.character, id: event.detail.character.avatar };
             const promptOrder = this.getPromptOrderForCharacter(this.activeCharacter);
 
             // ToDo: These should be passed as parameter or attached to the manager as a set of default options.
@@ -1159,7 +1155,7 @@ class PromptManager {
         if ('global' === this.configuration.promptOrder.strategy) {
             this.activeCharacter = { id: this.configuration.promptOrder.dummyId };
         } else if ('character' === this.configuration.promptOrder.strategy) {
-            this.activeCharacter = { ...event.detail.character, id: event.detail.character.avatar, legacyId: event.detail.id };
+            this.activeCharacter = { ...event.detail.character, id: event.detail.character.avatar };
         } else {
             throw new Error('Prompt order strategy not supported.');
         }
@@ -1208,15 +1204,6 @@ class PromptManager {
 
     /**
      * Get the order of prompts for a specific character. If no character is specified or the character doesn't have a prompt list, an empty array is returned.
-     *
-     * `character_id` used to be keyed by `this_chid` (a positional index into the characters array) rather
-     * than the character's avatar - that index isn't stable across character list changes (e.g. deleting an
-     * earlier character shifts everyone after it), so old entries can silently stop matching their character
-     * and get replaced with the default order. If nothing matches by the current avatar-based id but
-     * `character.legacyId` (the old this_chid value, still threaded through by handleCharacterSelected/
-     * handleCharacterUpdated) matches an existing entry, that's a pre-migration entry - adopt it by rewriting
-     * its `character_id` to the avatar in place, so it's found directly next time and stops being at risk of
-     * being silently reset or inherited by whatever character/index shifts into that old slot later.
      * @param {object|null} character - The character to get the prompt list for.
      * @returns {Partial<Prompt>[]} The prompt list for the character, or an empty array.
      */
@@ -1224,17 +1211,7 @@ class PromptManager {
         if (!character) return [];
 
         const entry = this.serviceSettings.prompt_order.find(list => String(list.character_id) === String(character.id));
-        if (entry) return entry.order ?? [];
-
-        if (character.legacyId !== undefined) {
-            const legacyEntry = this.serviceSettings.prompt_order.find(list => String(list.character_id) === String(character.legacyId));
-            if (legacyEntry) {
-                legacyEntry.character_id = character.id;
-                return legacyEntry.order ?? [];
-            }
-        }
-
-        return [];
+        return entry ? (entry.order ?? []) : [];
     }
 
     /**
@@ -1248,18 +1225,11 @@ class PromptManager {
 
     /**
      * Remove the prompt list for a specific character.
-     *
-     * Also checks `character.legacyId` (see getPromptOrderForCharacter()) in case this character's entry was
-     * never actually read (and thus never migrated) before being deleted - without this, an unmigrated entry
-     * for a deleted character would be orphaned in `prompt_order` forever instead of being cleaned up.
      * @param {object} character - The character whose prompt list will be removed.
      * @returns {void}
      */
     removePromptOrderForCharacter(character) {
-        let index = this.serviceSettings.prompt_order.findIndex(list => String(list.character_id) === String(character.id));
-        if (-1 === index && character.legacyId !== undefined) {
-            index = this.serviceSettings.prompt_order.findIndex(list => String(list.character_id) === String(character.legacyId));
-        }
+        const index = this.serviceSettings.prompt_order.findIndex(list => String(list.character_id) === String(character.id));
         if (-1 !== index) this.serviceSettings.prompt_order.splice(index, 1);
     }
 
