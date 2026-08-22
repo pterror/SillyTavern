@@ -7,6 +7,8 @@ import os from 'node:os';
 let router;
 /** @type {typeof import('../src/character-metadata-db.js')} */
 let metadataDb;
+/** @type {typeof import('../src/character-card-parser.js')} */
+let cardParser;
 /** @type {import('node:http').Server} */
 let server;
 let baseUrl;
@@ -26,12 +28,21 @@ beforeAll(async () => {
 
     ({ router } = await import('../src/endpoints/characters.js'));
     metadataDb = await import('../src/character-metadata-db.js');
+    cardParser = await import('../src/character-card-parser.js');
 
     const express = (await import('express')).default;
     const app = express();
     app.use(express.json());
     app.use((req, res, next) => {
-        req.user = { directories, profile: { handle: 'test-user' } };
+        // Handle derived from the current test's tempDir (unique per test via mkdtempSync's random suffix), not
+        // a fixed string - characters-search-index.js's indexCoordinator is a module-level singleton keyed by
+        // handle, so a shared 'test-user' handle across tests that each get a *different* `directories` (a fresh
+        // tempDir per beforeEach) would let one test's stale in-memory tantivy index handle leak into the next
+        // test's incremental-update path (loadOrUpdateTantivyIndex() now uses the coordinator's `previous` param
+        // to update an index in place, unlike the old always-rebuild-from-scratch behavior, so this cross-test
+        // reuse became observable in a way it wasn't before - a real production user's handle never remaps to a
+        // different `directories` mid-process, so this is a test-only hazard, not a product one).
+        req.user = { directories, profile: { handle: `test-user-${path.basename(directories.root)}` } };
         next();
     });
     app.use('/api/characters', router);
@@ -89,6 +100,36 @@ async function seedCharacter(avatar, overrides = {}, fileMtime = 1000) {
         },
         ...overrides,
     };
+    await metadataDb.upsertCharacterFromWrite(directories, avatar, JSON.stringify(card), fileMtime);
+}
+
+/**
+ * Like seedCharacter(), but also writes a real (parseable) PNG to `directories.characters` - needed for the
+ * `filter.search` tests below, since search (characters-search-index.js) reads full character data straight off
+ * disk to build its index, unlike plain `/query` which never touches the filesystem. Mirrors
+ * character-metadata-db.test.js's writeCardFile().
+ * @param {string} avatar
+ * @param {object} overrides Shallow-merged onto a minimal valid Spec V2 card
+ * @param {number} [fileMtime]
+ */
+async function seedCharacterWithFile(avatar, overrides = {}, fileMtime = 1000) {
+    const baseImage = await fs.promises.readFile(path.join(process.cwd(), '..', 'public', 'img', 'ai4.png'));
+    const name = avatar.replace(/\.png$/, '');
+    const card = {
+        name,
+        fav: false,
+        spec: 'chara_card_v2',
+        spec_version: '2.0',
+        data: {
+            name,
+            description: '', personality: '', scenario: '', first_mes: '', mes_example: '',
+            tags: [], creator: '', character_version: '', creator_notes: '',
+            extensions: { fav: false, world: '' },
+        },
+        ...overrides,
+    };
+    const buffer = cardParser.write(baseImage, JSON.stringify(card));
+    await fs.promises.writeFile(path.join(directories.characters, avatar), buffer);
     await metadataDb.upsertCharacterFromWrite(directories, avatar, JSON.stringify(card), fileMtime);
 }
 
@@ -274,19 +315,16 @@ describe('POST /api/characters/query', () => {
         expect(body.total).toBeUndefined();
     });
 
-    test('rejects sort.field "random" with 400 instead of silently falling back to name order', async () => {
+    test('sort.field "random" without a seed 400s instead of silently falling back to name order', async () => {
         const response = await postJson('/api/characters/query', { sort: { field: 'random' } });
         expect(response.status).toBe(400);
+        expect((await response.json()).reason).toBe('random-seed-required');
     });
 
-    test('rejects sort.field "search" with 400', async () => {
+    test('sort.field "search" without filter.search 400s', async () => {
         const response = await postJson('/api/characters/query', { sort: { field: 'search' } });
         expect(response.status).toBe(400);
-    });
-
-    test('rejects filter.search with 400 - full-text search stays on the existing /all endpoint', async () => {
-        const response = await postJson('/api/characters/query', { filter: { search: 'vampire' } });
-        expect(response.status).toBe(400);
+        expect((await response.json()).reason).toBe('search-sort-requires-search');
     });
 
     test('rejects an unknown sort field with 400', async () => {
@@ -309,6 +347,117 @@ describe('POST /api/characters/query', () => {
         const after = await (await postJson('/api/characters/query', { filter: { ids: ['New.png'] } })).json();
         expect(after.rows[0].date_added).toBe(before.rows[0].date_added);
         expect(after.rev).toBeGreaterThan(before.rev);
+    });
+});
+
+describe('POST /api/characters/query - sort.field "random" (design doc §5.3, decisions 8/10/13)', () => {
+    test('with a seed, orders deterministically and consistently across repeated calls', async () => {
+        for (let i = 0; i < 8; i++) {
+            await seedCharacter(`Char${i}.png`, { name: `Char${i}`, data: { name: `Char${i}`, tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+        }
+
+        const first = await (await postJson('/api/characters/query', { sort: { field: 'random', seed: 42 }, page: 1, pageSize: 8 })).json();
+        const second = await (await postJson('/api/characters/query', { sort: { field: 'random', seed: 42 }, page: 1, pageSize: 8 })).json();
+
+        expect(first.total).toBe(8);
+        expect(first.rows.map(r => r.avatar)).toEqual(second.rows.map(r => r.avatar));
+    });
+
+    test('a different seed can produce a different order (not a fresh shuffle per render)', async () => {
+        for (let i = 0; i < 8; i++) {
+            await seedCharacter(`Char${i}.png`, { name: `Char${i}`, data: { name: `Char${i}`, tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+        }
+
+        const seedA = await (await postJson('/api/characters/query', { sort: { field: 'random', seed: 1 }, page: 1, pageSize: 8 })).json();
+        const seedB = await (await postJson('/api/characters/query', { sort: { field: 'random', seed: 2 }, page: 1, pageSize: 8 })).json();
+
+        expect(seedA.rows.map(r => r.avatar)).not.toEqual(seedB.rows.map(r => r.avatar));
+    });
+
+    test('random order paginates without duplicates or gaps when the seed travels on every page', async () => {
+        for (let i = 0; i < 9; i++) {
+            await seedCharacter(`Char${i}.png`, { name: `Char${i}`, data: { name: `Char${i}`, tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+        }
+
+        const page1 = await (await postJson('/api/characters/query', { sort: { field: 'random', seed: 7 }, page: 1, pageSize: 3 })).json();
+        const page2 = await (await postJson('/api/characters/query', { sort: { field: 'random', seed: 7 }, page: 2, pageSize: 3 })).json();
+        const page3 = await (await postJson('/api/characters/query', { sort: { field: 'random', seed: 7 }, page: 3, pageSize: 3 })).json();
+
+        const allAvatars = [...page1.rows, ...page2.rows, ...page3.rows].map(r => r.avatar);
+        expect(new Set(allAvatars).size).toBe(9);
+    });
+
+    test('rejects a non-finite seed with 400', async () => {
+        const response = await postJson('/api/characters/query', { sort: { field: 'random', seed: 'not-a-number' } });
+        expect(response.status).toBe(400);
+    });
+});
+
+describe('POST /api/characters/query - filter.search (design doc §5.1/§5)', () => {
+    test('finds a seeded, on-disk character by name and returns its shallow row from SQLite', async () => {
+        await seedCharacterWithFile('Vampire.png', { name: 'Vampire Lord', data: { name: 'Vampire Lord', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+        await seedCharacterWithFile('Werewolf.png', { name: 'Werewolf', data: { name: 'Werewolf', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+
+        const response = await postJson('/api/characters/query', { filter: { search: 'vampire' }, sort: { field: 'search' }, page: 1, pageSize: 10 });
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.rows.map(r => r.avatar)).toEqual(['Vampire.png']);
+        expect(body.total).toBe(1);
+        expect(typeof body.searchBackend).toBe('string');
+    });
+
+    test('a search term composes with an ordinary column sort, not just sort.field "search"', async () => {
+        await seedCharacterWithFile('AVampire.png', { name: 'A Vampire', data: { name: 'A Vampire', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+        await seedCharacterWithFile('ZVampire.png', { name: 'Z Vampire', data: { name: 'Z Vampire', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+
+        const response = await postJson('/api/characters/query', { filter: { search: 'vampire' }, sort: { field: 'name', order: 'desc' }, page: 1, pageSize: 10 });
+        const body = await response.json();
+        expect(body.rows.map(r => r.name)).toEqual(['Z Vampire', 'A Vampire']);
+    });
+
+    test('a search term composes with sort.field "random" (decision 23)', async () => {
+        await seedCharacterWithFile('Vampire.png', { name: 'Vampire Lord', data: { name: 'Vampire Lord', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+
+        const response = await postJson('/api/characters/query', { filter: { search: 'vampire' }, sort: { field: 'random', seed: 5 }, page: 1, pageSize: 10 });
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.rows.map(r => r.avatar)).toEqual(['Vampire.png']);
+    });
+
+    test('no matches returns an empty page, not an error', async () => {
+        await seedCharacterWithFile('Vampire.png', { name: 'Vampire Lord', data: { name: 'Vampire Lord', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+
+        const response = await postJson('/api/characters/query', { filter: { search: 'nonexistentterm' }, page: 1, pageSize: 10 });
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.rows).toEqual([]);
+        expect(body.total).toBe(0);
+    });
+
+    test('filter.search intersects with filter.ids rather than overriding it', async () => {
+        await seedCharacterWithFile('VampireA.png', { name: 'Vampire A', data: { name: 'Vampire A', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+        await seedCharacterWithFile('VampireB.png', { name: 'Vampire B', data: { name: 'Vampire B', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+
+        const response = await postJson('/api/characters/query', { filter: { search: 'vampire', ids: ['VampireA.png'] }, page: 1, pageSize: 10 });
+        const body = await response.json();
+        expect(body.rows.map(r => r.avatar)).toEqual(['VampireA.png']);
+    });
+});
+
+describe('POST /api/characters/search-index/rebuild (design doc §3.2 explicit repair endpoint)', () => {
+    test('forces a rebuild and reports which engine tier served it', async () => {
+        await seedCharacterWithFile('Rebuildable.png');
+
+        const response = await postJson('/api/characters/search-index/rebuild', {});
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.ok).toBe(true);
+        expect(typeof body.backend).toBe('string');
+
+        // The rebuilt index actually finds the character - not just a 200 with no real effect.
+        const searchResponse = await postJson('/api/characters/query', { filter: { search: 'Rebuildable' }, page: 1, pageSize: 10 });
+        const searchBody = await searchResponse.json();
+        expect(searchBody.rows.map(r => r.avatar)).toEqual(['Rebuildable.png']);
     });
 });
 
