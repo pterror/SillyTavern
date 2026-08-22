@@ -2062,13 +2062,27 @@ export const UNSET_VALUE = '__@@UNSET@@__';
 
 /**
  * Writes a field to the character's data extensions object.
- * @param {string} characterAvatar Avatar (identity) of the character
+ * @param {string|number} characterIdOrAvatar Avatar (identity) of the character, or (deprecated)
+ *   its legacy positional index in the character array
  * @param {string} key Field name
  * @param {any} value Field value
  * @returns {Promise<void>} When the field is written
  */
-export async function writeExtensionField(characterAvatar, key, value) {
+export async function writeExtensionField(characterIdOrAvatar, key, value) {
     const context = getContext();
+    const isLegacyChid = typeof characterIdOrAvatar === 'number' || /^\d+$/.test(characterIdOrAvatar);
+    let characterAvatar = characterIdOrAvatar;
+
+    if (isLegacyChid) {
+        console.warn('writeExtensionField: called with a legacy character index; pass the character avatar instead', characterIdOrAvatar);
+        const legacyCharacter = context.characters[Number(characterIdOrAvatar)];
+        if (!legacyCharacter) {
+            console.warn('Character not found', characterIdOrAvatar);
+            return;
+        }
+        characterAvatar = legacyCharacter.avatar;
+    }
+
     const character = charactersStore.get(characterAvatar);
     if (!character) {
         console.warn('Character not found', characterAvatar);
