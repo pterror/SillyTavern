@@ -83,16 +83,19 @@ beforeAll(async () => {
 });
 
 let groupsDir;
+let groupChatsDir;
 
 beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-character-metadata-db-test-'));
     charactersDir = path.join(tempDir, 'characters');
     chatsDir = path.join(tempDir, 'chats');
     groupsDir = path.join(tempDir, 'groups');
+    groupChatsDir = path.join(tempDir, 'groupChats');
     fs.mkdirSync(charactersDir, { recursive: true });
     fs.mkdirSync(chatsDir, { recursive: true });
     fs.mkdirSync(groupsDir, { recursive: true });
-    directories = { root: tempDir, characters: charactersDir, chats: chatsDir, groups: groupsDir };
+    fs.mkdirSync(groupChatsDir, { recursive: true });
+    directories = { root: tempDir, characters: charactersDir, chats: chatsDir, groups: groupsDir, groupChats: groupChatsDir };
 });
 
 afterEach(() => {
@@ -701,5 +704,135 @@ describe('resyncTags / tag_usage', () => {
 
         expect(await metadataDb.getCharacterTagIds(directories, 'Alice.png')).toEqual([]);
         expect(await metadataDb.getTagUsageCount(directories, 'tag1')).toBe(1);
+    });
+});
+
+describe('groups schema extension (owner decision - fav/date_added/date_last_chat/chat_size/name_fold)', () => {
+    function writeGroupFile(id, overrides = {}) {
+        fs.writeFileSync(path.join(groupsDir, `${id}.json`), JSON.stringify({ id, name: id, members: [], chats: [], ...overrides }));
+    }
+
+    test('migrates an existing (pre-columns) groups table in place, backfilling real values for existing rows', async () => {
+        // Simulates an install that already ran bootstrapGroupsIfNeeded() under the old id/name-only shape:
+        // build that table directly and seed one row, then let a normal call pick up both the ALTER and the
+        // one-time backfill (migrateGroupsColumns()).
+        const { default: Database } = await import('better-sqlite3');
+        const dbPath = path.join(tempDir, 'character-metadata.sqlite');
+        const rawDb = new Database(dbPath);
+        rawDb.exec('CREATE TABLE groups (id TEXT PRIMARY KEY, name TEXT NOT NULL);');
+        rawDb.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT); INSERT INTO meta (key, value) VALUES ('groups_bootstrap_completed', '1');");
+        rawDb.prepare('INSERT INTO groups (id, name) VALUES (@id, @name)').run({ id: 'OldGroup', name: 'Old Group' });
+        rawDb.close();
+
+        // The old row's on-disk JSON file, so the backfill has something real to read fav/chats from.
+        writeGroupFile('OldGroup', { name: 'Old Group', fav: true, chats: ['c1'] });
+        fs.writeFileSync(path.join(groupChatsDir, 'c1.jsonl'), 'x'.repeat(10));
+
+        // Any exported groups call routes through getEntry() -> migrateGroupsColumns(), which runs the ALTER +
+        // backfill before returning. bootstrapGroupsIfNeeded() itself must stay a no-op here (its own meta flag
+        // is already set), proving the backfill came from migrateGroupsColumns(), not a re-run of bootstrap.
+        await metadataDb.bootstrapGroupsIfNeeded(directories);
+        const row = await metadataDb.getGroupTagIds(directories, 'OldGroup'); // cheap way to force getEntry()
+        expect(row).toEqual([]); // no tags assigned - just proving the call succeeded post-migration
+
+        const rawDb2 = new Database(dbPath);
+        const migrated = rawDb2.prepare('SELECT * FROM groups WHERE id = ?').get('OldGroup');
+        rawDb2.close();
+        expect(migrated.fav).toBe(1);
+        expect(migrated.chat_size).toBe(10);
+        expect(migrated.date_added).toBeGreaterThan(0);
+        expect(migrated.name_fold).toBe('old group');
+    });
+
+    test('upsertGroupRow never overwrites date_added on a later call for the same id', async () => {
+        await metadataDb.upsertGroupRow(directories, 'g1', 'My Group');
+        const first = await metadataDb.getGroupTagIds(directories, 'g1'); // not used - just a sanity round trip
+        expect(first).toEqual([]);
+
+        const { default: Database } = await import('better-sqlite3');
+        const dbPath = path.join(tempDir, 'character-metadata.sqlite');
+        const db = new Database(dbPath);
+        const before = db.prepare('SELECT date_added FROM groups WHERE id = ?').get('g1');
+        db.close();
+
+        await new Promise(resolve => setTimeout(resolve, 5));
+        await metadataDb.upsertGroupRow(directories, 'g1', 'Renamed Group', { fav: true });
+
+        const db2 = new Database(dbPath);
+        const after = db2.prepare('SELECT date_added, name, fav, name_fold FROM groups WHERE id = ?').get('g1');
+        db2.close();
+
+        expect(after.date_added).toBe(before.date_added);
+        expect(after.name).toBe('Renamed Group');
+        expect(after.name_fold).toBe('renamed group');
+        expect(after.fav).toBe(1);
+    });
+
+    test('upsertGroupRow does not reset date_last_chat/chat_size set by bumpGroupChatStats', async () => {
+        writeGroupFile('g1', { name: 'G1', chats: ['c1'] });
+        await metadataDb.upsertGroupRow(directories, 'g1', 'G1');
+        fs.writeFileSync(path.join(groupChatsDir, 'c1.jsonl'), 'x'.repeat(42));
+        await metadataDb.bumpGroupChatStats(directories, 'c1');
+
+        // A plain /edit-shaped call (rename) must not clobber the stats just bumped.
+        await metadataDb.upsertGroupRow(directories, 'g1', 'G1 Renamed');
+
+        const { default: Database } = await import('better-sqlite3');
+        const db = new Database(path.join(tempDir, 'character-metadata.sqlite'));
+        const row = db.prepare('SELECT chat_size, date_last_chat, name FROM groups WHERE id = ?').get('g1');
+        db.close();
+
+        expect(row.chat_size).toBe(42);
+        expect(row.date_last_chat).toBeGreaterThan(0);
+        expect(row.name).toBe('G1 Renamed');
+    });
+
+    test('bumpGroupChatStats resolves the owning group from the chat id (not the group id) and stats only its own chats', async () => {
+        writeGroupFile('g1', { name: 'G1', chats: ['c1', 'c2'] });
+        writeGroupFile('g2', { name: 'G2', chats: ['c3'] });
+        await metadataDb.upsertGroupRow(directories, 'g1', 'G1');
+        await metadataDb.upsertGroupRow(directories, 'g2', 'G2');
+
+        fs.writeFileSync(path.join(groupChatsDir, 'c1.jsonl'), 'x'.repeat(10));
+        fs.writeFileSync(path.join(groupChatsDir, 'c2.jsonl'), 'x'.repeat(20));
+        fs.writeFileSync(path.join(groupChatsDir, 'c3.jsonl'), 'x'.repeat(999));
+
+        // c2 is one of g1's *other* chats (not the one "just saved") - bumpGroupChatStats still sums the whole
+        // group's chats, matching what getGroupsData() would compute, not just the single saved chat's size.
+        await metadataDb.bumpGroupChatStats(directories, 'c2');
+
+        const { default: Database } = await import('better-sqlite3');
+        const db = new Database(path.join(tempDir, 'character-metadata.sqlite'));
+        const g1 = db.prepare('SELECT chat_size, date_last_chat FROM groups WHERE id = ?').get('g1');
+        const g2 = db.prepare('SELECT chat_size, date_last_chat FROM groups WHERE id = ?').get('g2');
+        db.close();
+
+        expect(g1.chat_size).toBe(30); // c1 (10) + c2 (20), not just c2
+        expect(g1.date_last_chat).toBeGreaterThan(0);
+        expect(g2.chat_size).toBe(0); // g2's own chat stats untouched
+        expect(g2.date_last_chat).toBe(0);
+    });
+
+    test('bumpGroupChatStats on a chat id no group owns is a harmless no-op', async () => {
+        await metadataDb.upsertGroupRow(directories, 'g1', 'G1');
+        await expect(metadataDb.bumpGroupChatStats(directories, 'no-such-chat')).resolves.toBeUndefined();
+    });
+
+    test('bootstrapGroupsIfNeeded seeds fav/date_added/date_last_chat/chat_size/name_fold from disk, once', async () => {
+        writeGroupFile('g1', { name: 'Alpha Group', fav: true, chats: ['c1'] });
+        fs.writeFileSync(path.join(groupChatsDir, 'c1.jsonl'), 'x'.repeat(7));
+
+        await metadataDb.bootstrapGroupsIfNeeded(directories);
+
+        const { default: Database } = await import('better-sqlite3');
+        const db = new Database(path.join(tempDir, 'character-metadata.sqlite'));
+        const row = db.prepare('SELECT * FROM groups WHERE id = ?').get('g1');
+        db.close();
+
+        expect(row.fav).toBe(1);
+        expect(row.name_fold).toBe('alpha group');
+        expect(row.chat_size).toBe(7);
+        expect(row.date_last_chat).toBeGreaterThan(0);
+        expect(row.date_added).toBeGreaterThan(0);
     });
 });
