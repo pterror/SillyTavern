@@ -19,7 +19,7 @@ import { TavernCardValidator } from '../validator/TavernCardValidator.js';
 import { parse, read, write } from '../character-card-parser.js';
 import { getCharaCardV2, convertToV2, readFromV2, charaFormatData, convertWorldInfoToCharacterBook } from '../character-card-normalize.js';
 import { calculateChatSize, calculateDataSize, toShallow } from '../character-shallow.js';
-import { invalidateThumbnail } from './thumbnails.js';
+import { invalidateThumbnail, getThumbnailVersion } from './thumbnails.js';
 import { importRisuSprites } from './sprites.js';
 import { getUserDirectories } from '../users.js';
 import { getChatInfo } from './chats.js';
@@ -1664,14 +1664,22 @@ router.post('/changes', async function (request, response) {
 /**
  * HTTP POST endpoint for the "/api/characters/manifest" route.
  *
- * Lightweight companion to `/all`: returns just `[{ avatar, mtime }, ...]` for every character PNG in the
- * user's library, one entry per file, with no PNG tEXt-chunk read, no JSON parse, and no chat-size calculation
- * (the expensive parts of processCharacter()). This is meant to be fetched on every boot so the client can diff
- * it against what it already has cached (see character-cache.js) and only request full data for characters
- * that are new or whose mtime changed, instead of always re-fetching the entire library via `/all`.
+ * Lightweight companion to `/all`: returns just `[{ avatar, mtime, thumbnailVersion }, ...]` for every
+ * character PNG in the user's library, one entry per file, with no PNG tEXt-chunk read, no JSON parse, and no
+ * chat-size calculation (the expensive parts of processCharacter()). This is meant to be fetched on every boot
+ * so the client can diff it against what it already has cached (see character-cache.js) and only request full
+ * data for characters that are new or whose mtime changed, instead of always re-fetching the entire library
+ * via `/all`.
  *
  * mtimeMs (last content modification), not ctimeMs (metadata/inode change time, which is what processCharacter()
  * uses for date_added) - a real edit to the character's data is what should invalidate a client's cached copy.
+ *
+ * `thumbnailVersion` is a *different* value from `mtime` above - it's the cached avatar thumbnail's own mtime
+ * (via getThumbnailVersion(), see src/endpoints/thumbnails.js), not the source PNG's. The two diverge: a
+ * thumbnail is only (re)generated lazily on first request to GET /thumbnail, so its mtime reflects whenever
+ * that happened, not when the source character file last changed. Handing the client this value lets
+ * getThumbnailUrl() emit the thumbnail route's `?v=` up front and skip its no-cache redirect hop; null when no
+ * cached thumbnail exists yet (client just omits `v`, same as before this field existed).
  *
  * @param  {import("express").Request} request The HTTP request object.
  * @param  {import("express").Response} response The HTTP response object.
@@ -1683,7 +1691,8 @@ router.post('/manifest', function (request, response) {
         const pngFiles = files.filter(file => file.endsWith('.png'));
         const manifest = pngFiles.map(file => {
             const stat = fs.statSync(path.join(request.user.directories.characters, file));
-            return { avatar: file, mtime: stat.mtimeMs };
+            const thumbnailVersion = getThumbnailVersion(request.user.directories, 'avatar', file);
+            return { avatar: file, mtime: stat.mtimeMs, thumbnailVersion };
         });
         return response.send(manifest);
     } catch (err) {

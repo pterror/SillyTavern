@@ -1,5 +1,5 @@
 import { Fuse, localforage } from '../lib.js';
-import { chat_metadata, eventSource, event_types, generateQuietPrompt, getCurrentCharacter, getCurrentChatId, getRequestHeaders, getThumbnailUrl, saveMetadata, saveSettingsDebounced } from '../script.js';
+import { chat_metadata, eventSource, event_types, generateQuietPrompt, getCurrentCharacter, getCurrentChatId, getRequestHeaders, getThumbnailUrl, setThumbnailVersion, saveMetadata, saveSettingsDebounced } from '../script.js';
 import { openThirdPartyExtensionMenu, saveMetadataDebounced } from './extensions.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
@@ -715,6 +715,11 @@ export async function getBackgrounds() {
         const { images, config } = await response.json();
         Object.assign(THUMBNAIL_CONFIG, config);
         cachedSystemBackgrounds = images;
+        // Hand the thumbnail route its `?v=` up front for every background with a cached thumbnail already,
+        // so getThumbnailUrl() can skip its no-cache redirect hop.
+        for (const image of images) {
+            setThumbnailVersion('bg', image.filename, image.thumbnailVersion);
+        }
         const existingFiles = new Set(images.map(x => x.filename));
         for (const selectedFile of selectedSystemBackgroundFiles) {
             if (!existingFiles.has(selectedFile)) {

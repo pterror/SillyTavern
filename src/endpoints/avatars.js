@@ -9,14 +9,31 @@ import { sync as writeFileAtomicSync } from 'write-file-atomic';
 import { getImages, tryParse } from '../util.js';
 import { getFileNameValidationFunction } from '../middleware/validateFileName.js';
 import { applyAvatarCropResize } from './characters.js';
-import { invalidateThumbnail } from './thumbnails.js';
+import { invalidateThumbnail, getThumbnailVersion } from './thumbnails.js';
 import cacheBuster from '../middleware/cacheBuster.js';
 
 export const router = express.Router();
 
+/**
+ * HTTP POST endpoint for the "/api/avatars/get" route: list of persona avatar filenames plus, for each one
+ * that already has a cached thumbnail, the thumbnail's version (see getThumbnailVersion() in thumbnails.js).
+ * The `thumbnailVersions` map lets the client's getThumbnailUrl() emit the thumbnail route's `?v=` up front
+ * instead of taking its no-cache redirect detour on every persona avatar render.
+ * @param  {import("express").Request} request The HTTP request object.
+ * @param  {import("express").Response} response The HTTP response object.
+ * @return {void}
+ */
 router.post('/get', function (request, response) {
-    const images = getImages(request.user.directories.avatars);
-    response.send(images);
+    const avatars = getImages(request.user.directories.avatars);
+
+    /** @type {Record<string, string>} */
+    const thumbnailVersions = {};
+    for (const avatar of avatars) {
+        const version = getThumbnailVersion(request.user.directories, 'persona', avatar);
+        if (version) thumbnailVersions[avatar] = version;
+    }
+
+    response.send({ avatars, thumbnailVersions });
 });
 
 router.post('/delete', getFileNameValidationFunction('avatar'), function (request, response) {

@@ -1493,8 +1493,15 @@ async function fetchCharactersDelta() {
         throw new Error(`Failed to fetch character manifest: ${manifestResponse.statusText}`);
     }
 
-    /** @type {{avatar: string, mtime: number}[]} */
+    /** @type {{avatar: string, mtime: number, thumbnailVersion: string|null}[]} */
     const manifest = await manifestResponse.json();
+
+    // Hand the avatar thumbnail route its `?v=` up front for every character with a cached thumbnail already,
+    // so getThumbnailUrl() can skip the no-cache redirect hop below (see thumbnailVersionCache's own comment).
+    for (const entry of manifest) {
+        setThumbnailVersion('avatar', entry.avatar, entry.thumbnailVersion);
+    }
+
     const { toFetch, cached } = await diffCharacterManifest(manifest);
 
     /** @type {Map<string, object>} */
@@ -7843,6 +7850,31 @@ async function read_avatar_load(input) {
 }
 
 /**
+ * Cache of thumbnail versions known ahead of a request, keyed by `${type}:${file}`. Populated by the list
+ * endpoints that already know a file's cached-thumbnail mtime (character manifest, background list, persona
+ * list - see fetchCharactersDelta(), backgrounds.js's getBackgrounds(), personas.js's getUserAvatars()) via
+ * setThumbnailVersion(), so getThumbnailUrl() below can emit the thumbnail route's `?v=` on the very first
+ * request instead of always taking its no-cache redirect detour (src/endpoints/thumbnails.js).
+ *
+ * Best-effort only: a missing or stale entry just means that one request rides the redirect once, same as
+ * before this cache existed - the thumbnail route's version check is self-correcting regardless.
+ * @type {Map<string, string>}
+ */
+const thumbnailVersionCache = new Map();
+
+/**
+ * Records a known thumbnail version for a type+file pair (see thumbnailVersionCache above). No-op if version
+ * is null/undefined/empty.
+ * @param {import('../src/endpoints/thumbnails.js').ThumbnailType} type The type of the thumbnail
+ * @param {string} file The file name or path the version applies to
+ * @param {string|number|null|undefined} version The cached thumbnail's version, if known
+ */
+export function setThumbnailVersion(type, file, version) {
+    if (version === null || version === undefined || version === '') return;
+    thumbnailVersionCache.set(`${type}:${file}`, String(version));
+}
+
+/**
  * Gets the URL for a thumbnail of a specific type and file.
  * @param {import('../src/endpoints/thumbnails.js').ThumbnailType} type The type of the thumbnail to get
  * @param {string} file The file name or path for which to get the thumbnail URL
@@ -7850,7 +7882,9 @@ async function read_avatar_load(input) {
  * @returns {string} The URL for the thumbnail
  */
 export function getThumbnailUrl(type, file, t = false) {
-    return `/thumbnail?type=${type}&file=${encodeURIComponent(file)}${t ? `&t=${Date.now()}` : ''}`;
+    const version = !t && thumbnailVersionCache.get(`${type}:${file}`);
+    const versionParam = version ? `&v=${encodeURIComponent(version)}` : '';
+    return `/thumbnail?type=${type}&file=${encodeURIComponent(file)}${versionParam}${t ? `&t=${Date.now()}` : ''}`;
 }
 
 export function buildAvatarList(block, entities, { templateId = 'inline_avatar_template', empty = true, interactable = false, highlightFavs = true } = {}) {

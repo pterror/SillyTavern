@@ -13,6 +13,7 @@ import {
     getCurrentChatId,
     getRequestHeaders,
     getThumbnailUrl,
+    setThumbnailVersion,
     groupToEntity,
     menu_type,
     name1,
@@ -318,10 +319,18 @@ export async function getUserAvatars(doRender = true, openPageAt = '') {
         headers: getRequestHeaders({ omitContentType: true }),
     });
     if (response.ok) {
-        const allEntities = await response.json();
+        /** @type {{avatars: string[], thumbnailVersions: Record<string, string>}} */
+        const data = await response.json();
+        const allEntities = data?.avatars;
 
         if (!Array.isArray(allEntities)) {
             return [];
+        }
+
+        // Hand the thumbnail route its `?v=` up front for every persona with a cached thumbnail already, so
+        // getThumbnailUrl() can skip its no-cache redirect hop.
+        for (const [avatar, version] of Object.entries(data.thumbnailVersions ?? {})) {
+            setThumbnailVersion('persona', avatar, version);
         }
 
         if (!doRender) {

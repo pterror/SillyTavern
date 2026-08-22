@@ -11,6 +11,7 @@ let baseUrl;
 let tempDir;
 let charactersDir;
 let chatsDir;
+let thumbnailsAvatarDir;
 
 /**
  * Mounts the real characters.js router behind a fake auth middleware that stamps a per-user
@@ -23,8 +24,10 @@ beforeAll(async () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-characters-manifest-test-'));
     charactersDir = path.join(tempDir, 'characters');
     chatsDir = path.join(tempDir, 'chats');
+    thumbnailsAvatarDir = path.join(tempDir, 'thumbnails', 'avatar');
     fs.mkdirSync(charactersDir, { recursive: true });
     fs.mkdirSync(chatsDir, { recursive: true });
+    fs.mkdirSync(thumbnailsAvatarDir, { recursive: true });
 
     // characters.js transitively imports modules (e.g. image-metadata.js) that read config.yaml at import time
     // via getConfigValue() - point that at the repo's default config so the import doesn't hard process.exit(1)
@@ -38,7 +41,7 @@ beforeAll(async () => {
     app.use(express.json());
     app.use((req, res, next) => {
         req.user = {
-            directories: { characters: charactersDir, chats: chatsDir, root: tempDir },
+            directories: { characters: charactersDir, chats: chatsDir, root: tempDir, thumbnailsAvatar: thumbnailsAvatarDir },
             profile: { handle: 'test-user' },
         };
         next();
@@ -97,6 +100,33 @@ describe('POST /api/characters/manifest', () => {
 
         const after = (await (await postJson('/api/characters/manifest', {})).json())[0];
         expect(after.mtime).not.toBe(before.mtime);
+    });
+
+    test('thumbnailVersion is null when no cached thumbnail exists yet', async () => {
+        fs.writeFileSync(path.join(charactersDir, 'Alice.png'), 'not a real png, just needs to exist');
+
+        const manifest = await (await postJson('/api/characters/manifest', {})).json();
+        expect(manifest[0].thumbnailVersion).toBeNull();
+    });
+
+    test('thumbnailVersion reflects the cached thumbnail\'s own mtime, not the source PNG\'s', async () => {
+        const originalPath = path.join(charactersDir, 'Alice.png');
+        const cachedThumbPath = path.join(thumbnailsAvatarDir, 'Alice.png');
+        fs.writeFileSync(originalPath, 'source bytes');
+        fs.writeFileSync(cachedThumbPath, 'cached thumbnail bytes');
+        // Force the two mtimes apart - a thumbnail is only generated lazily, well after the source file was
+        // written, and on a fast filesystem both writes above can otherwise land in the same mtime tick.
+        const originalMtime = fs.statSync(originalPath).mtimeMs;
+        fs.utimesSync(cachedThumbPath, new Date(originalMtime + 5000), new Date(originalMtime + 5000));
+
+        const manifest = await (await postJson('/api/characters/manifest', {})).json();
+        const entry = manifest.find(e => e.avatar === 'Alice.png');
+        const expectedVersion = String(Math.round(fs.statSync(cachedThumbPath).mtimeMs));
+
+        expect(entry.thumbnailVersion).toBe(expectedVersion);
+        expect(entry.thumbnailVersion).not.toBe(String(Math.round(entry.mtime)));
+
+        fs.rmSync(cachedThumbPath);
     });
 });
 
