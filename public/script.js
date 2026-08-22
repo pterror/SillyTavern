@@ -7990,6 +7990,19 @@ export async function getChat() {
             }),
         });
 
+        if (response.status === 404) {
+            // This character's persisted "current chat" pointer names a file that's gone from disk -
+            // most likely deleted from another tab/session (or from the chat-select modal while this
+            // character was loaded elsewhere) after this session last synced. Falling through to the
+            // normal empty-chat path below would push a fresh first-message save right back out under
+            // that same filename, silently resurrecting the chat the user just deleted. Route through
+            // the same "pick another existing chat, or genuinely start a new one" logic delChat() uses
+            // when it deletes the active chat itself, instead of reviving the old name.
+            console.warn(`Chat file not found for ${getCurrentCharacter()?.chat}, replacing with an existing or new chat`);
+            await replaceCurrentChat();
+            return;
+        }
+
         if (!response.ok) {
             throw new Error('Chat could not be loaded');
         }
