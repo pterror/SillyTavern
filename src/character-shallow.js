@@ -39,6 +39,45 @@ export function calculateChatSize(charDir) {
 }
 
 /**
+ * calculateGroupChatStats - the group equivalent of calculateChatSize() above, for the groups-schema extension
+ * (design doc's character-data-residency-redesign, owner decision: give `groups` the same fav/date_added/
+ * date_last_chat/chat_size columns characters already have). A character has exactly one chats directory named
+ * after it; a group instead owns a *set* of chat ids (`group.chats`) living flat in one shared `groupChats`
+ * directory alongside every other group's chats - so this takes the group's own chat-id list and stats only
+ * those specific files by name, rather than reading the whole `groupChats` directory and filtering (the shape
+ * getGroupsData() in src/endpoints/groups.js used to use inline) - bounded by this one group's chat count, not
+ * by how many chats exist across every group. Shared by getGroupsData() (groups.js) and
+ * character-metadata-db.js's write-path hook (bumpGroupChatStats()) and bootstrap backfill
+ * (bootstrapGroupsIfNeeded()), for the same "compute this once, not per caller" reason calculateChatSize() above
+ * is already shared.
+ * @param {string} groupChatsDir `directories.groupChats`
+ * @param {string[]} chatIds `group.chats` - a group's own array of chat ids (NOT filenames; `.jsonl` is appended)
+ * @returns { {chatSize: number, dateLastChat: number} }
+ */
+export function calculateGroupChatStats(groupChatsDir, chatIds) {
+    let chatSize = 0;
+    let dateLastChat = 0;
+
+    if (Array.isArray(chatIds)) {
+        for (const chatId of chatIds) {
+            try {
+                const chatStat = fs.statSync(path.join(groupChatsDir, `${chatId}.jsonl`));
+                chatSize += chatStat.size;
+                dateLastChat = Math.max(dateLastChat, chatStat.mtimeMs);
+            } catch (err) {
+                // A chat id listed in group.chats but missing on disk (deleted out from under the group, or a
+                // chat that was never actually written) simply doesn't contribute - same tolerance
+                // getGroupsData()'s old inline version had via its `chats.includes(...)` membership check, which
+                // silently skipped any group.chats entry with no matching file.
+                if (err.code !== 'ENOENT') throw err;
+            }
+        }
+    }
+
+    return { chatSize, dateLastChat };
+}
+
+/**
  * Calculate the total string length of the data object.
  * @param {object} data Character `data` object (Spec V2)
  * @returns {number} Total string length across every value in `data`
