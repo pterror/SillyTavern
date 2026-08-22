@@ -60,6 +60,95 @@ import { charactersStore, getRequestHeaders, unshallowCharacter } from '../scrip
 const DEFAULT_QUERY_WANT = /** @type {const} */ (['rows', 'total']);
 
 /**
+ * The server's own page cap (`MAX_QUERY_PAGE_SIZE`, src/endpoints/characters.js) - `queryAll()` below chunks its
+ * internal loop at this size. Duplicated here rather than fetched from the server because it's a wire-contract
+ * constant, not runtime state.
+ */
+const QUERY_ALL_PAGE_SIZE = 2000;
+
+/**
+ * Client `power_user.sort_field` values that map 1:1, with matching semantics, onto a server `sort.field`
+ * column (design doc §5's `QUERYABLE_SORT_COLUMNS` equivalent, mirrored from src/character-metadata-db.js).
+ * Deliberately narrower than the full `#character_sort_order` dropdown (public/index.html):
+ * - `'create_date'` ("Newest"/"Oldest") sorts by the character card's own `create_date` field (an ISO string a
+ *   card can carry from its original creator); the server's `date_added` column is a different value (this
+ *   install's own file-add time). They usually agree but are not the same field, so mapping one to the other
+ *   would be a silent behavior change, not a preservation - excluded on purpose.
+ * - `'data_size'` ("Most/Least tokens") has no server column at all (`QUERYABLE_SORT_COLUMNS` doesn't carry it).
+ * Callers whose current sort field isn't in this set (or who have an active search term - see
+ * `isServerQueryEligible()`) fall back to the pre-existing fully-local candidate-building path; that fallback is
+ * a documented scope boundary (design doc §6/phase 5), not an oversight.
+ * @type {ReadonlySet<string>}
+ */
+export const QUERYABLE_CLIENT_SORT_FIELDS = new Set(['name', 'date_last_chat', 'chat_size', 'fav']);
+
+/**
+ * @typedef {object} CharacterQueryStateInput
+ * @property {string} [searchTerm] - current search box value; non-empty disqualifies the server-query fast path
+ * (see `isServerQueryEligible()`'s doc comment for why, not just this typedef).
+ * @property {string[]} [tagsInclude] - selected tag ids (`FILTER_TYPES.TAG` filter data's `selected`) - doubles
+ * as "which bogus folder is currently open", same as the pre-existing local `filterByTagState()`/`tagFilter()`.
+ * @property {string[]} [tagsExclude] - excluded tag ids (`FILTER_TYPES.TAG` filter data's `excluded`).
+ * @property {boolean} [fav] - `true`/`false` to restrict to favorited/non-favorited, `undefined` for no fav
+ * filter - already-normalized from `FILTER_TYPES.FAV`'s tri-state via `isFilterState()`; this module takes no
+ * dependency on filters.js, so callers normalize before calling.
+ * @property {string} [sortField] - `power_user.sort_field`, or `'random'`/`'search'` for those two special
+ * cases (matching the `#character_sort_order` dropdown's overloaded use of `data-order="random"` and the
+ * separate "Search" option).
+ * @property {'asc'|'desc'} [sortOrder] - `power_user.sort_order` (`'random'` itself is carried via `sortField`,
+ * not this - see above).
+ * @property {number} [randomSeed] - required (finite) when `sortField === 'random'`.
+ */
+
+/**
+ * Pure mapping from the client's current filter/sort UI state to the server `/query` wire shape (design doc §5).
+ * No DOM/module dependency beyond its own typedefs, so it's unit-testable without mocking script.js - see
+ * tests/character-repository.test.js. Every caller (getEntitiesList(), favsToHotswap()) is expected to have
+ * already decided (via `isServerQueryEligible()`) whether the server-query path applies at all; this function
+ * just shapes whatever state it's given, it does not gate eligibility itself.
+ * @param {CharacterQueryStateInput} [state]
+ * @returns {{filter: CharacterQueryFilter, sort: CharacterQuerySort|undefined}}
+ */
+export function buildCharacterQuery({
+    searchTerm = '',
+    tagsInclude = [],
+    tagsExclude = [],
+    fav = undefined,
+    sortField = undefined,
+    sortOrder = 'asc',
+    randomSeed = undefined,
+} = {}) {
+    /** @type {CharacterQueryFilter} */
+    const filter = {};
+    if (searchTerm) filter.search = searchTerm;
+    if (tagsInclude.length > 0 || tagsExclude.length > 0) {
+        filter.tags = { include: tagsInclude, exclude: tagsExclude, mode: 'and' };
+    }
+    if (typeof fav === 'boolean') filter.fav = fav;
+
+    /** @type {CharacterQuerySort|undefined} */
+    let sort;
+    if (sortField === 'random') {
+        sort = { field: 'random', order: sortOrder === 'desc' ? 'desc' : 'asc', seed: randomSeed };
+    } else if (sortField) {
+        sort = { field: /** @type {CharacterQuerySort['field']} */ (sortField), order: sortOrder === 'desc' ? 'desc' : 'asc' };
+    }
+
+    return { filter, sort };
+}
+
+/**
+ * Whether the current sort state can be answered by the server `/query` endpoint at all - `sortField === 'random'`
+ * always qualifies (random needs only a finite seed, checked separately by the caller before it mints a request),
+ * anything else must be in `QUERYABLE_CLIENT_SORT_FIELDS`.
+ * @param {string|undefined} sortField
+ * @returns {boolean}
+ */
+export function isServerQueryableSort(sortField) {
+    return sortField === 'random' || QUERYABLE_CLIENT_SORT_FIELDS.has(sortField);
+}
+
+/**
  * @param {string} url
  * @param {object} body
  * @returns {Promise<any>}
@@ -201,6 +290,41 @@ export class CharacterRepository {
      */
     async query(filter = {}, sort = undefined, page = 1, pageSize = 100, want = DEFAULT_QUERY_WANT) {
         return postJson('/api/characters/query', { filter, sort, page, pageSize, want });
+    }
+
+    /**
+     * Fetches *every* row matching a filter+sort by looping `query()` pages internally (each request capped at
+     * `QUERY_ALL_PAGE_SIZE`, the server's own `MAX_QUERY_PAGE_SIZE`). This is deliberately NOT the endpoint's
+     * intended access pattern at scale - it fully materializes the matched set client-side, so it does not carry
+     * forward to the 10M-row target `/query`'s paging contract is sized for (design doc §5, §6). It exists as the
+     * documented, non-regressing fallback (design doc phase 5 entry) for callers that still need one fully
+     * resident, fully sorted array to hand to something else that isn't itself server-paginated yet -
+     * `getEntitiesList()`'s character candidate set (has to merge with the small, always-resident group/folder
+     * entity set - see script.js) and `favsToHotswap()`'s favorite-character list (has to merge with favorited
+     * groups the same way). A literal per-page server-driven pagination *controller* is blocked on that same
+     * group/folder interleave problem, which `/query`'s contract does not answer (no rank/cursor primitive) -
+     * that gap is intentionally left open, not papered over here.
+     *
+     * Never trusts `total` as a loop-termination bound by itself: design doc §5 decision 6 allows `total` to be
+     * an approximate (`~`-prefixed) estimate for expensive-to-count filters, and an approximate count must never
+     * be read as an exact stopping point. The authoritative stop condition is a short page (fewer rows returned
+     * than requested), which is true regardless of whether `total` was exact or approximate.
+     * @param {CharacterQueryFilter} [filter]
+     * @param {CharacterQuerySort} [sort]
+     * @returns {Promise<Character[]>} every matching row, in server sort order.
+     */
+    async queryAll(filter = {}, sort = undefined) {
+        /** @type {Character[]} */
+        const rows = [];
+        let page = 1;
+        for (;;) {
+            const result = await this.query(filter, sort, page, QUERY_ALL_PAGE_SIZE, ['rows']);
+            const pageRows = result.rows ?? [];
+            rows.push(...pageRows);
+            if (pageRows.length < QUERY_ALL_PAGE_SIZE) break;
+            page++;
+        }
+        return rows;
     }
 
     /**

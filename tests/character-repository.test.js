@@ -17,9 +17,13 @@ jest.unstable_mockModule('../public/script.js', () => ({
 
 /** @type {typeof import('../public/scripts/character-repository.js').CharacterRepository} */
 let CharacterRepository;
+/** @type {typeof import('../public/scripts/character-repository.js').buildCharacterQuery} */
+let buildCharacterQuery;
+/** @type {typeof import('../public/scripts/character-repository.js').isServerQueryableSort} */
+let isServerQueryableSort;
 
 beforeAll(async () => {
-    ({ CharacterRepository } = await import('../public/scripts/character-repository.js'));
+    ({ CharacterRepository, buildCharacterQuery, isServerQueryableSort } = await import('../public/scripts/character-repository.js'));
 });
 
 /** Minimal fake of the EntityStore surface CharacterRepository actually uses. */
@@ -260,5 +264,136 @@ describe('onChange()', () => {
         listener.mockClear();
         store._emit({ op: 'reset' });
         expect(listener).not.toHaveBeenCalled();
+    });
+});
+
+describe('queryAll()', () => {
+    test('returns everything in one call when the first page is short', async () => {
+        const store = makeStore([]);
+        const repo = new CharacterRepository(store);
+        const rows = [{ avatar: 'a' }, { avatar: 'b' }];
+        global.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ rows, rev: 1 }) });
+
+        const result = await repo.queryAll({ fav: true }, { field: 'name' });
+
+        expect(result).toEqual(rows);
+        expect(global.fetch).toHaveBeenCalledTimes(1);
+        const [, init] = global.fetch.mock.calls[0];
+        expect(JSON.parse(init.body)).toMatchObject({ filter: { fav: true }, sort: { field: 'name' }, page: 1 });
+    });
+
+    test('loops pages until a short page terminates it, never trusting an approximate total to stop early', async () => {
+        const store = makeStore([]);
+        const repo = new CharacterRepository(store);
+        // Page size is the server's MAX_QUERY_PAGE_SIZE (2000), duplicated in character-repository.js as
+        // QUERY_ALL_PAGE_SIZE - a full first page must not be treated as "the whole result", even with an
+        // approximate ('~'-prefixed) total that looks like it might already cover everything.
+        const fullPage = Array.from({ length: 2000 }, (_, i) => ({ avatar: `c${i}` }));
+        const shortPage = [{ avatar: 'last' }];
+        global.fetch = jest.fn()
+            .mockResolvedValueOnce({ ok: true, json: async () => ({ rows: fullPage, rev: 1, total: '~2001' }) })
+            .mockResolvedValueOnce({ ok: true, json: async () => ({ rows: shortPage, rev: 1 }) });
+
+        const result = await repo.queryAll();
+
+        expect(result).toHaveLength(2001);
+        expect(global.fetch).toHaveBeenCalledTimes(2);
+        const secondCallBody = JSON.parse(global.fetch.mock.calls[1][1].body);
+        expect(secondCallBody.page).toBe(2);
+    });
+
+    test('an empty result set makes exactly one call and returns an empty array', async () => {
+        const store = makeStore([]);
+        const repo = new CharacterRepository(store);
+        global.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ rows: [], rev: 1, total: 0 }) });
+
+        const result = await repo.queryAll({ ids: [] });
+
+        expect(result).toEqual([]);
+        expect(global.fetch).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe('buildCharacterQuery()', () => {
+    test('an empty/default call produces an empty filter and no sort', () => {
+        expect(buildCharacterQuery()).toEqual({ filter: {}, sort: undefined });
+    });
+
+    test('maps a search term into filter.search', () => {
+        const { filter } = buildCharacterQuery({ searchTerm: 'aria' });
+        expect(filter).toEqual({ search: 'aria' });
+    });
+
+    test('maps tag include/exclude into filter.tags with mode "and" - matching the pre-existing local tagFilter() AND logic (filters.js)', () => {
+        const { filter } = buildCharacterQuery({ tagsInclude: ['t1', 't2'], tagsExclude: ['t3'] });
+        expect(filter.tags).toEqual({ include: ['t1', 't2'], exclude: ['t3'], mode: 'and' });
+    });
+
+    test('omits filter.tags entirely when both tag arrays are empty', () => {
+        const { filter } = buildCharacterQuery({ tagsInclude: [], tagsExclude: [] });
+        expect(filter.tags).toBeUndefined();
+    });
+
+    test('maps fav true/false through, and omits it when undefined (no fav filter active)', () => {
+        expect(buildCharacterQuery({ fav: true }).filter.fav).toBe(true);
+        expect(buildCharacterQuery({ fav: false }).filter.fav).toBe(false);
+        expect(buildCharacterQuery({}).filter.fav).toBeUndefined();
+    });
+
+    test('maps a plain sort field/order', () => {
+        const { sort } = buildCharacterQuery({ sortField: 'chat_size', sortOrder: 'desc' });
+        expect(sort).toEqual({ field: 'chat_size', order: 'desc' });
+    });
+
+    test('defaults sortOrder to "asc" for a non-"desc" value when a sort field is given', () => {
+        const { sort } = buildCharacterQuery({ sortField: 'name' });
+        expect(sort).toEqual({ field: 'name', order: 'asc' });
+    });
+
+    test('maps sortField "random" with a seed, per design doc §5.3', () => {
+        const { sort } = buildCharacterQuery({ sortField: 'random', sortOrder: 'asc', randomSeed: 42 });
+        expect(sort).toEqual({ field: 'random', order: 'asc', seed: 42 });
+    });
+
+    test('a full combined call shapes filter and sort together', () => {
+        const { filter, sort } = buildCharacterQuery({
+            searchTerm: 'kobold',
+            tagsInclude: ['fantasy'],
+            tagsExclude: [],
+            fav: true,
+            sortField: 'date_last_chat',
+            sortOrder: 'desc',
+        });
+        expect(filter).toEqual({ search: 'kobold', tags: { include: ['fantasy'], exclude: [], mode: 'and' }, fav: true });
+        expect(sort).toEqual({ field: 'date_last_chat', order: 'desc' });
+    });
+});
+
+describe('isServerQueryableSort()', () => {
+    test('accepts every column /query can actually sort by (src/character-metadata-db.js QUERYABLE_SORT_COLUMNS)', () => {
+        for (const field of ['name', 'date_last_chat', 'chat_size', 'fav']) {
+            expect(isServerQueryableSort(field)).toBe(true);
+        }
+    });
+
+    test('accepts "random" unconditionally (a seed is checked separately by the caller)', () => {
+        expect(isServerQueryableSort('random')).toBe(true);
+    });
+
+    test('rejects "create_date" - a different field than the server\'s date_added column (character-repository.js doc comment)', () => {
+        expect(isServerQueryableSort('create_date')).toBe(false);
+    });
+
+    test('rejects "data_size" - no server column exists for it at all', () => {
+        expect(isServerQueryableSort('data_size')).toBe(false);
+    });
+
+    test('rejects "search" - relevance order needs an id list from the search index, not a plain column', () => {
+        expect(isServerQueryableSort('search')).toBe(false);
+    });
+
+    test('rejects undefined/unknown fields', () => {
+        expect(isServerQueryableSort(undefined)).toBe(false);
+        expect(isServerQueryableSort('made_up_field')).toBe(false);
     });
 });
