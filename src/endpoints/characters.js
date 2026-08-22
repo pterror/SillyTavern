@@ -26,7 +26,7 @@ import { getChatInfo } from './chats.js';
 import { ByafParser } from '../byaf.js';
 import { CharXParser, persistCharXAssets } from '../charx.js';
 import cacheBuster from '../middleware/cacheBuster.js';
-import { searchCharacters } from './characters-search-index.js';
+import { searchCharacters, searchCharacterIds, rebuildCharacterSearchIndex, SEARCH_ID_CAP } from './characters-search-index.js';
 import { searchGroups } from './groups-search-index.js';
 import { getGroupsData } from './groups.js';
 import { upsertCharacterFromWrite, deleteCharacterRow, renameCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, checkCharactersExist, getChangesSince } from '../character-metadata-db.js';
@@ -1507,12 +1507,12 @@ router.post('/metadata/batch-import/end', async function (request, response) {
     }
 });
 
-// Phase 2's sortable fields (design doc §5's `sort.field` union, minus 'random' and 'search' - see
-// character-metadata-db.js's QUERYABLE_SORT_COLUMNS for why those two are deliberately not handled by this
-// endpoint yet). Kept here (not imported from character-metadata-db.js) because this is specifically the set of
-// values this HTTP layer accepts as *valid input* before ever calling into the metadata module - a distinct
-// concern from that module's own "which SQL column does this map to".
-const QUERY_SORT_FIELDS = new Set(['name', 'date_added', 'date_last_chat', 'chat_size', 'fav']);
+// Phase 2's sortable fields (design doc §5's `sort.field` union) - kept here (not imported from
+// character-metadata-db.js) because this is specifically the set of values this HTTP layer accepts as *valid
+// input* before ever calling into the metadata module - a distinct concern from that module's own "which SQL
+// column does this map to". 'random' and 'search' are real, handled values (see the route below), not rejected -
+// they just don't map to a QUERYABLE_SORT_COLUMNS entry, since neither is a plain column sort.
+const QUERY_SORT_FIELDS = new Set(['name', 'date_added', 'date_last_chat', 'chat_size', 'fav', 'random', 'search']);
 
 // page/pageSize bounds for "/query" - page/pageSize is the doc's §5 contract shape (not offset/limit, which is
 // queryCharacters()'s own internal shape - this route is where the translation happens). The upper bound on
@@ -1524,9 +1524,13 @@ const MAX_QUERY_PAGE_SIZE = 2000;
 /**
  * HTTP POST endpoint for the "/api/characters/query" route (design doc §5): the phase-2 replacement for the
  * fs.readdirSync()+PNG-parse-everything+slice-in-JS shape of a plain (no search term) `/all` browse request -
- * this endpoint never touches the filesystem or parses a PNG; every field it can return already lives in the
- * phase-1 SQLite metadata table (character-metadata-db.js), kept fresh by that module's write hooks/watcher/
- * reconciler independent of this request.
+ * this endpoint never touches the filesystem or parses a PNG for a plain (no `filter.search`) request; every
+ * field it can return already lives in the phase-1 SQLite metadata table (character-metadata-db.js), kept fresh
+ * by that module's write hooks/watcher/reconciler independent of this request. A `filter.search` request routes
+ * through characters-search-index.js's tantivy/FTS5 tier to resolve the matched id set, then intersects that
+ * with this table via `queryCharacters()`'s `ids` filter (doc §5's "push the FTS hit-id set into SQLite as a
+ * temporary table and let SQLite do the filtering and ordering" composition plan) - still zero PNG parses,
+ * regardless of search.
  *
  * NOT YET WIRED TO ANY CLIENT CODE. Per the design doc's own phase table, inverting `getEntitiesList()`/
  * `printCharacters()` (public/script.js) to actually call this instead of the old fully-resident-array path is
@@ -1534,15 +1538,18 @@ const MAX_QUERY_PAGE_SIZE = 2000;
  * pre-existing `/all` handler above until that phase lands. This mirrors how `/metadata/rescan` and the
  * batch-import endpoints above landed in phase 1 unwired, for the same reason.
  *
- * Two things the doc's full `sort`/`filter` union allows that this endpoint deliberately rejects (400, not a
- * silent fallback) rather than half-implementing:
- *   - `sort.field: 'random'` - the seeded-hash comparator and its client-owned-seed wire shape belong to phase
- *     5b (design doc §5.3), which hasn't landed. Falling back to name order the way the pre-phase-2 `/all`
- *     handler's `sortOrder=random` bug silently did is exactly the "silent wrong result" failure the doc calls
- *     out by name - this 400s instead.
- *   - `sort.field: 'search'` / `filter.search` - full-text search stays on the existing tantivy/FTS5 path
- *     (characters-search-index.js) for this dispatch; wiring the two together (doc §5's "push the FTS hit-id set
- *     into SQLite as a temporary table" plan) is real, separate work this pass does not attempt.
+ * `sort.field: 'random'` (design doc §5.3, decisions 8/10/13) requires `sort.seed` - a finite number the client
+ * generated and persisted (public/scripts/random-sort.js's mintRandomSortSeed()/getRandomSortSeed(), phase 5b,
+ * already shipped client-side). Omitting it 400s rather than silently defaulting to *some* seed: decision 10 is
+ * explicit that the seed is client-owned so two tabs/devices can disagree without coordination, and a
+ * server-minted fallback would defeat that plus break pagination the moment the client reloads and gets a
+ * different seed than whatever the server silently used for page 1.
+ *
+ * `sort.field: 'search'` requires `filter.search` (same rule as the pre-existing client-side
+ * `verifyCharactersSearchSortRule()`), but a `filter.search` term composes with *any* sort field, not just
+ * 'search' - decision 23: "random and search compose unconditionally... sort stops being forced by the presence
+ * of a query." Search narrows the candidate id set; whatever sort field is chosen orders it (relevance for
+ * 'search', the seeded hash for 'random', a plain column otherwise).
  * @param  {import("express").Request} request The HTTP request object.
  * @param  {import("express").Response} response The HTTP response object.
  * @return {void}
@@ -1554,17 +1561,18 @@ router.post('/query', async function (request, response) {
         const sort = body.sort ?? {};
         const want = Array.isArray(body.want) ? body.want : ['rows', 'total'];
 
-        if (filter.search) {
-            return response.status(400).send({ error: true, reason: 'search-not-supported', message: 'filter.search is not handled by /query yet - use the existing /all endpoint\'s search param.' });
-        }
-        if (sort.field === 'random') {
-            return response.status(400).send({ error: true, reason: 'random-sort-not-supported', message: 'sort.field "random" is phase 5b work (seeded-hash comparator) and is not implemented yet.' });
-        }
-        if (sort.field === 'search') {
-            return response.status(400).send({ error: true, reason: 'search-sort-not-supported', message: 'sort.field "search" requires filter.search, which /query does not handle yet.' });
+        const searchTerm = typeof filter.search === 'string' ? filter.search.trim() : '';
+        const hasSearch = searchTerm.length > 0;
+
+        if (sort.field === 'search' && !hasSearch) {
+            return response.status(400).send({ error: true, reason: 'search-sort-requires-search', message: 'sort.field "search" requires a non-empty filter.search.' });
         }
         if (sort.field !== undefined && !QUERY_SORT_FIELDS.has(sort.field)) {
             return response.status(400).send({ error: true, reason: 'invalid-sort-field' });
+        }
+        const seed = Number(sort.seed);
+        if (sort.field === 'random' && !Number.isFinite(seed)) {
+            return response.status(400).send({ error: true, reason: 'random-seed-required', message: 'sort.field "random" requires a finite sort.seed - design doc §5.3 decision 10, the client mints and persists this (public/scripts/random-sort.js).' });
         }
         for (const w of want) {
             if (w !== 'rows' && w !== 'total') {
@@ -1576,8 +1584,12 @@ router.post('/query', async function (request, response) {
         const pageSize = Number.isFinite(Number(body.pageSize)) && Number(body.pageSize) > 0
             ? Math.min(Math.trunc(Number(body.pageSize)), MAX_QUERY_PAGE_SIZE)
             : DEFAULT_QUERY_PAGE_SIZE;
+        const offset = (page - 1) * pageSize;
+        const wantRows = want.includes('rows');
+        const wantTotal = want.includes('total');
 
-        const result = await queryCharacters(request.user.directories, {
+        let searchBackend;
+        let queryParams = {
             tags: filter.tags,
             fav: filter.fav,
             world: filter.world,
@@ -1585,22 +1597,86 @@ router.post('/query', async function (request, response) {
             ids: filter.ids,
             sortField: sort.field,
             sortOrder: sort.order,
-            offset: (page - 1) * pageSize,
+            seed,
+            offset,
             limit: pageSize,
-            wantRows: want.includes('rows'),
-            wantTotal: want.includes('total'),
-        });
+            wantRows,
+            wantTotal,
+        };
+        // Whether a total computed against a search-narrowed candidate set is exact or has to be flagged
+        // approximate (design doc §5 decision 6: "approximate is fine, capped is not" - the wire convention is a
+        // `~` prefix, never a bare-but-silently-truncated number).
+        let approxTotal = false;
+
+        if (hasSearch) {
+            const handle = request.user.profile.handle;
+            // 'search' sort only needs a relevance-ordered page-sized window (runIdSearch()'s own doc comment on
+            // why tantivy's payload shrink makes this cheap either way); any other sort needs the *whole*
+            // matched candidate set (bounded by SEARCH_ID_CAP) since ordering doesn't come from relevance rank -
+            // see SEARCH_ID_CAP's doc comment (characters-search-index.js) for why sort:'random' + search is
+            // exactly the case this matters for (decision 23).
+            const idFetchCap = sort.field === 'search' ? offset + pageSize : SEARCH_ID_CAP;
+            const favOnly = filter.fav === true;
+            const searchResult = await searchCharacterIds(handle, request.user.directories, searchTerm, idFetchCap, favOnly);
+            searchBackend = searchResult.backend;
+
+            // filter.ids (an explicit "resolve exactly these ids" request) and filter.search both restrict the
+            // candidate set - when both are present they intersect, not override each other. Order is preserved
+            // from the search engine's relevance ranking either way (queryCharacters()'s 'search' branch uses
+            // this same array as idOrder; other sort fields ignore order here and let SQL ORDER BY decide it).
+            const explicitIds = Array.isArray(filter.ids) ? new Set(filter.ids) : null;
+            const effectiveIds = explicitIds ? searchResult.ids.filter(id => explicitIds.has(id)) : searchResult.ids;
+
+            approxTotal = searchResult.total > idFetchCap;
+            queryParams = { ...queryParams, ids: effectiveIds, idOrder: searchResult.ids };
+
+            if (effectiveIds.length === 0) {
+                const rev = (await queryCharacters(request.user.directories, { ids: [], wantRows: false, wantTotal: false }))?.rev ?? 0;
+                const payload = { rev, searchBackend };
+                if (wantRows) payload.rows = [];
+                if (wantTotal) payload.total = 0;
+                return response.send(payload);
+            }
+        }
+
+        const result = await queryCharacters(request.user.directories, queryParams);
 
         if (result === null) {
             return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
         }
 
         const payload = { rev: result.rev };
-        if (want.includes('rows')) payload.rows = result.rows;
-        if (want.includes('total')) payload.total = result.total;
+        if (wantRows) payload.rows = result.rows;
+        if (wantTotal) payload.total = approxTotal ? `~${result.total}` : result.total;
+        if (searchBackend !== undefined) payload.searchBackend = searchBackend;
         return response.send(payload);
     } catch (err) {
         console.error('[characters/query] Query failed:', err);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/**
+ * HTTP POST endpoint for the "/api/characters/search-index/rebuild" route (design doc §3.2): the explicit repair
+ * path for a user's character search index (tantivy or, on installs without it, the SQLite FTS5 fallback tier -
+ * see characters-search-index.js). Forces an immediate full rebuild regardless of the current freshness
+ * signature - "the existing full-rebuild path stays, demoted to a repair tool behind an explicit endpoint rather
+ * than something a directory mtime change can trigger implicitly." Not wired to any client UI yet, same
+ * unwired-but-real status as `/metadata/rescan` and the batch-import endpoints above.
+ * @param  {import("express").Request} request The HTTP request object.
+ * @param  {import("express").Response} response The HTTP response object.
+ * @return {void}
+ */
+router.post('/search-index/rebuild', async function (request, response) {
+    try {
+        const handle = request.user.profile.handle;
+        const result = await rebuildCharacterSearchIndex(handle, request.user.directories);
+        if (!result.ok) {
+            return response.status(503).send({ error: true, reason: 'search-unavailable', backend: result.backend });
+        }
+        return response.send({ ok: true, backend: result.backend });
+    } catch (err) {
+        console.error('[characters/search-index/rebuild] Rebuild failed:', err);
         return response.status(500).send({ error: true });
     }
 });
