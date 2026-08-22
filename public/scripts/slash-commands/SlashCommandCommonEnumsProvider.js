@@ -1,6 +1,6 @@
 import { chat_metadata, characters, substituteParams, chat, extension_prompt_roles, extension_prompt_types, name2, neutralCharacterName } from '../../script.js';
 import { extension_settings } from '../extensions.js';
-import { getGroupMembers, groups } from '../group-chats.js';
+import { getGroupMembersResident, groups } from '../group-chats.js';
 import { power_user, personaStore } from '../power-user.js';
 import { searchCharByName, getTagsList, tags, tag_map } from '../tags.js';
 import { onlyUniqueJson, sortIgnoreCaseAndAccents } from '../utils.js';
@@ -204,12 +204,18 @@ export const commonEnumProviders = {
     },
 
     /**
-     * All group members of the given group, or default the current active one
+     * All group members of the given group, or default the current active one.
+     *
+     * Uses `getGroupMembersResident()` rather than the authoritative async `getGroupMembers()` - this returned
+     * function is invoked synchronously by the autocomplete machinery (`SlashCommandAutoCompleteNameResult.js`),
+     * so it cannot await. See `getGroupMembersResident()`'s doc comment (group-chats.js) for the full
+     * resident-only-is-fine classification call (design doc §6) and why widening the autocomplete provider
+     * interface to async is out of scope here.
      *
      * @param {string?} groupId - The id of the group - pass in `undefined` to use the current active group
      * @returns {() =>SlashCommandEnumValue[]}
      */
-    groupMembers: (groupId = undefined) => () => getGroupMembers(groupId).map((character, index) => new SlashCommandEnumValue(String(index), character.name, enumTypes.enum, enumIcons.character)),
+    groupMembers: (groupId = undefined) => () => getGroupMembersResident(groupId).map((character, index) => new SlashCommandEnumValue(String(index), character.name, enumTypes.enum, enumIcons.character)),
 
     /**
      * All possible personas
