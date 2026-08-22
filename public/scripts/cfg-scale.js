@@ -1,7 +1,7 @@
 import {
     chat_metadata,
     substituteParams,
-    this_chid,
+    getSelectionState,
     eventSource,
     event_types,
     saveSettingsDebounced,
@@ -113,7 +113,7 @@ function setChatCfg(tempValue, setting) {
 
 // TODO: Only change CFG when character is selected
 function onCfgMenuItemClick() {
-    if (!selected_group && this_chid === undefined) {
+    if (getSelectionState().type === 'none') {
         toastr.warning('Select a character before trying to configure CFG', '', { timeOut: 2000 });
         return;
     }

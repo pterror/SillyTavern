@@ -1,9 +1,9 @@
 import {
     getCurrentCharacter,
+    getSelectionState,
     saveChat,
     system_message_types,
     syncSwipeToMes,
-    this_chid,
     openCharacterChat,
     chat_metadata,
     getRequestHeaders,
@@ -58,10 +58,6 @@ async function getExistingChatNames() {
             return [...group.chats];
         }
 
-        return [];
-    }
-
-    if (this_chid === undefined) {
         return [];
     }
 
@@ -254,7 +250,7 @@ export async function createBranch(mesId, { swipeId = null } = {}) {
  * @returns {Promise<string?>} - A promise that resolves to the bookmark name when the bookmark is created.
  */
 export async function createNewBookmark(mesId, { forceName = null } = {}) {
-    if (this_chid === undefined && !selected_group) {
+    if (getSelectionState().type === 'none') {
         toastr.info('No character selected.', 'Create Checkpoint');
         return null;
     }
@@ -335,7 +331,7 @@ export async function convertSoloToGroupChat() {
         return;
     }
 
-    if (this_chid === undefined) {
+    if (!getCurrentCharacter()) {
         console.log('Need to have a character selected');
         return;
     }
@@ -451,7 +447,7 @@ export async function convertSoloToGroupChat() {
  * @returns {Promise<string?>} Branch file name
  */
 export async function branchChat(mesId, { swipeId = null } = {}) {
-    if (this_chid === undefined && !selected_group) {
+    if (getSelectionState().type === 'none') {
         toastr.info('No character selected.', 'Create Branch');
         return null;
     }

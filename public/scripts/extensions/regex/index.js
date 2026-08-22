@@ -1,4 +1,4 @@
-import { eventSource, event_types, getCurrentCharacter, getCurrentChatId, messageFormatting, reloadCurrentChat, saveSettingsDebounced, this_chid } from '../../../script.js';
+import { eventSource, event_types, getCurrentCharacter, getCurrentChatId, getSelectionState, messageFormatting, reloadCurrentChat, saveSettingsDebounced } from '../../../script.js';
 import { extension_settings, renderExtensionTemplateAsync } from '../../extensions.js';
 import { selected_group } from '../../group-chats.js';
 import { callGenericPopup, Popup, POPUP_TYPE } from '../../popup.js';
@@ -673,7 +673,7 @@ async function loadRegexScripts() {
             await moveRegexScript(script, SCRIPT_TYPES.GLOBAL, scriptType);
         });
         scriptHtml.find('.move_to_scoped').on('click', async function () {
-            if (this_chid === undefined) {
+            if (!getCurrentCharacter()) {
                 toastr.error(t`No character selected.`);
                 return;
             }
@@ -1266,7 +1266,7 @@ async function onRegexDebuggerOpenClick() {
         const newPresetScripts = $('#regex_debugger_rules_preset').children('li').map((_, el) => allKnownScripts.find(s => s.id === $(el).data('id'))).get().filter(Boolean);
 
         extension_settings.regex = newGlobalScripts;
-        if (this_chid !== undefined) {
+        if (getCurrentCharacter()) {
             await saveScriptsByType(newScopedScripts, SCRIPT_TYPES.SCOPED);
         }
         await saveScriptsByType(newPresetScripts, SCRIPT_TYPES.PRESET);
@@ -1604,9 +1604,7 @@ function purgePresetEmbeddedRegexScripts({ apiId, name }) {
 }
 
 async function checkCharEmbeddedRegexScripts() {
-    const chid = this_chid;
-
-    if (chid !== undefined && !selected_group) {
+    if (getSelectionState().type === 'character') {
         const character = getCurrentCharacter();
         const scripts = getScriptsByType(SCRIPT_TYPES.SCOPED);
 
@@ -1732,7 +1730,7 @@ export async function init() {
     });
     $('#open_regex_debugger').on('click', onRegexDebuggerOpenClick);
     $('#open_scoped_editor').on('click', function () {
-        if (this_chid === undefined) {
+        if (!getCurrentCharacter()) {
             toastr.error(t`No character selected.`);
             return;
         }
@@ -1856,7 +1854,7 @@ export async function init() {
     });
 
     $('#bulk_regex_move_to_scoped').on('click', async () => {
-        if (this_chid === undefined) {
+        if (!getCurrentCharacter()) {
             toastr.error(t`No character selected.`);
             return;
         }
@@ -1953,7 +1951,7 @@ export async function init() {
     }
 
     $('#regex_scoped_toggle').on('input', function () {
-        if (this_chid === undefined) {
+        if (!getCurrentCharacter()) {
             toastr.error(t`No character selected.`);
             return;
         }

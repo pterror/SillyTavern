@@ -1,6 +1,6 @@
 import {
     eventSource,
-    this_chid,
+    getSelectionState,
     getCurrentCharacter,
     getRequestHeaders,
     event_types,
@@ -322,11 +322,11 @@ async function showCharGallery(deleteModeState = false) {
 
     try {
         deleteModeActive = deleteModeState;
-        // this_chid never actually reaches the /api/images/list request as a folder name - when a character
-        // is selected the branch below always overwrites url with the avatar/name-derived gallery folder, so
-        // this is just a (falsy) placeholder for "no group, no character selected yet".
+        // The selected-group id never actually reaches the /api/images/list request as a folder name -
+        // when a character is selected the branch below always overwrites url with the avatar/name-derived
+        // gallery folder, so this is just a (falsy) placeholder for "no group, no character selected yet".
         let url = selected_group;
-        if (!selected_group && this_chid !== undefined) {
+        if (getSelectionState().type === 'character') {
             url = getGalleryFolder(getCurrentCharacter());
         }
 
@@ -580,8 +580,8 @@ function updateGalleryFolder(newUrl) {
     if (context.characterId === undefined) {
         throw new Error('Character is not selected');
     }
-    const avatar = context.characters[context.characterId]?.avatar;
-    const name = context.characters[context.characterId]?.name;
+    const avatar = context.characterAvatar;
+    const name = getCurrentCharacter()?.name;
     if (!avatar) {
         throw new Error('Character PNG ID is not found');
     }
@@ -606,7 +606,7 @@ function restoreGalleryFolder() {
     if (context.characterId === undefined) {
         throw new Error('Character is not selected');
     }
-    const avatar = context.characters[context.characterId]?.avatar;
+    const avatar = context.characterAvatar;
     if (!avatar) {
         throw new Error('Character PNG ID is not found');
     }
@@ -787,11 +787,11 @@ SlashCommandParser.addCommandObject(SlashCommand.fromProps({
 
 async function listGalleryCommand(args) {
     try {
-        // Same as listGalleryCallback: this_chid never actually reaches the request as a folder name, since
-        // the branch below overwrites url with the avatar/name-derived gallery folder whenever a character
-        // is selected - it's just a (falsy) placeholder otherwise.
+        // Same as listGalleryCallback: the selected-group id never actually reaches the request as a folder
+        // name, since the branch below overwrites url with the avatar/name-derived gallery folder whenever a
+        // character is selected - it's just a (falsy) placeholder otherwise.
         let url = args.char ?? (args.group ? groups.find(it => it.name == args.group)?.id : null) ?? selected_group;
-        if (!args.char && !args.group && !selected_group && this_chid !== undefined) {
+        if (!args.char && !args.group && getSelectionState().type === 'character') {
             url = getGalleryFolder(getCurrentCharacter());
         }
 

@@ -11,12 +11,12 @@ import {
     getCurrentCharacter,
     getCurrentChatId,
     getRequestHeaders,
+    getSelectionState,
     getUserAvatar,
     saveSettingsDebounced,
     substituteParams,
     substituteParamsExtended,
     systemUserName,
-    this_chid,
     user_avatar,
 } from '../../../script.js';
 import {
@@ -28,7 +28,6 @@ import {
     renderExtensionTemplateAsync,
     writeExtensionField,
 } from '../../extensions.js';
-import { selected_group } from '../../group-chats.js';
 import {
     clamp,
     debounce,
@@ -874,7 +873,7 @@ async function refinePrompt(prompt, args = null) {
 }
 
 async function onChatChanged() {
-    if (this_chid === undefined || selected_group) {
+    if (getSelectionState().type !== 'character') {
         $('#sd_character_prompt_block').hide();
         return;
     }
@@ -933,7 +932,7 @@ async function onCharacterNegativePromptInput() {
 }
 
 function getCharacterPrefix() {
-    if (this_chid === undefined || selected_group) {
+    if (getSelectionState().type !== 'character') {
         return '';
     }
 
@@ -947,7 +946,7 @@ function getCharacterPrefix() {
 }
 
 function getCharacterNegativePrefix() {
-    if (this_chid === undefined || selected_group) {
+    if (getSelectionState().type !== 'character') {
         return '';
     }
 
@@ -2949,7 +2948,7 @@ function getRawLastMessage() {
     const lastMessage = getLastUsableMessage();
     const character = context.groupId
         ? charactersStore.get(lastMessage.original_avatar)
-        : context.characters[context.characterId];
+        : getCurrentCharacter();
 
     if (!character) {
         console.debug('Character not found, using raw message.');
@@ -3012,7 +3011,7 @@ async function generatePicture(initiator, args, trigger, message, callback) {
 
     let characterName = context.groupId
         ? context.groups[Object.keys(context.groups).filter(x => context.groups[x].id === context.groupId)[0]]?.id?.toString()
-        : context.characters[context.characterId]?.name;
+        : getCurrentCharacter()?.name;
 
     if (generationType === generationMode.BACKGROUND) {
         const callbackOriginal = callback;
@@ -3204,7 +3203,7 @@ function generateFreeModePrompt(trigger, combineNegatives) {
     return trigger
         .replace(/^char(\s|,)|{{charPrefix}}/gi, (_, suffix) => {
             const getLastCharacterKey = () => {
-                if (typeof this_chid !== 'undefined') {
+                if (getCurrentCharacter()) {
                     return getCharaFilename(null, { manualAvatarKey: getCurrentCharacter()?.avatar });
                 }
                 const context = getContext();
@@ -3317,7 +3316,7 @@ async function generatePrompt(quietPrompt) {
  */
 async function sendGenerationRequest(generationType, prompt, additionalNegativePrefix, characterName, callback, initiator, signal) {
     const noCharPrefix = [generationMode.FREE, generationMode.BACKGROUND, generationMode.USER, generationMode.USER_MULTIMODAL, generationMode.FREE_EXTENDED];
-    const isCharChat = this_chid !== undefined && !selected_group;
+    const isCharChat = getSelectionState().type === 'character';
     const ignoreNoCharForSwipe = initiator === initiators.swipe && isCharChat;
 
     const skipCharPrefix = !ignoreNoCharForSwipe && noCharPrefix.includes(generationType);
@@ -5236,7 +5235,7 @@ async function sdMessageButton($icon, { animate } = {}) {
 
 async function onCharacterPromptShareInput() {
     // Not a valid state to share character prompt
-    if (this_chid === undefined || selected_group) {
+    if (getSelectionState().type !== 'character') {
         return;
     }
 
@@ -5299,7 +5298,7 @@ async function generateMediaSwipe(mediaAttachment, message, onStart, onComplete,
         const context = getContext();
         const characterName = context.groupId
             ? context.groups[Object.keys(context.groups).filter(x => context.groups[x].id === context.groupId)[0]]?.id?.toString()
-            : context.characters[context.characterId]?.name;
+            : getCurrentCharacter()?.name;
 
         // Show non-blocking stoppable toast for this generation
         loaderHandle = loader.show({
@@ -5954,7 +5953,7 @@ export async function init() {
     $('body').addClass('sd');
 
     const getMacroValue = ({ isNegative }) => {
-        if (selected_group || this_chid === undefined) {
+        if (getSelectionState().type !== 'character') {
             return '';
         }
 
