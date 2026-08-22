@@ -29,7 +29,7 @@ import cacheBuster from '../middleware/cacheBuster.js';
 import { searchCharacters, searchCharacterIds, rebuildCharacterSearchIndex, SEARCH_ID_CAP } from './characters-search-index.js';
 import { searchGroups } from './groups-search-index.js';
 import { getGroupsData } from './groups.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, renameCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, checkCharactersExist, getChangesSince } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, checkCharactersExist, getChangesSince } from '../character-metadata-db.js';
 
 // With 100 MB limit it would take roughly 3000 characters to reach this limit
 const memoryCacheCapacity = getConfigValue('performance.memoryCacheCapacity', '100mb');
@@ -766,57 +766,42 @@ router.post('/create', getFileNameValidationFunction('file_name'), async functio
     }
 });
 
+/**
+ * "Rename" a character - under Option A (design doc §2.2, §9 phase 4d) the avatar filename IS the immutable id,
+ * so a display-name change is a pure card-data edit: no file move, no chats-directory copy, no
+ * tag/charLore/note/active_character fan-out, no "please rename your sprites folder" toast. The route path and
+ * request/response shape are unchanged (still `{ avatar_url, new_name }` in, `{ avatar }` out) so existing
+ * callers - client and extensions alike - don't need to know identity stopped moving; `avatar` in the response
+ * is now always identical to the `avatar_url` that was sent in.
+ * @param  {import("express").Request} request The HTTP request object.
+ * @param  {import("express").Response} response The HTTP response object.
+ * @return {Promise<void>}
+ */
 router.post('/rename', validateAvatarUrlMiddleware, async function (request, response) {
     if (!request.body.avatar_url || !request.body.new_name) {
         return response.sendStatus(400);
     }
 
-    const oldAvatarName = request.body.avatar_url;
+    const avatarName = request.body.avatar_url;
     const newName = sanitize(request.body.new_name);
-    const oldInternalName = path.parse(request.body.avatar_url).name;
-    const newInternalName = getPngName(newName, request.user.directories);
-    const newAvatarName = `${newInternalName}.png`;
-
-    const oldAvatarPath = path.join(request.user.directories.characters, oldAvatarName);
-
-    const oldChatsPath = path.join(request.user.directories.chats, oldInternalName);
-    const newChatsPath = path.join(request.user.directories.chats, newInternalName);
+    const avatarPath = path.join(request.user.directories.characters, avatarName);
 
     try {
-        // Read old file, replace name int it
-        const rawOldData = await readCharacterData(oldAvatarPath);
-        if (rawOldData === undefined) throw new Error('Failed to read character file');
+        const rawData = await readCharacterData(avatarPath);
+        if (rawData === undefined) throw new Error('Failed to read character file');
 
-        const oldData = getCharaCardV2(JSON.parse(rawOldData), request.user.directories);
-        _.set(oldData, 'data.name', newName);
-        _.set(oldData, 'name', newName);
-        const newData = JSON.stringify(oldData);
+        const data = getCharaCardV2(JSON.parse(rawData), request.user.directories);
+        _.set(data, 'data.name', newName);
+        _.set(data, 'name', newName);
+        const newData = JSON.stringify(data);
 
-        // Write data to new location
-        await writeCharacterData(oldAvatarPath, newData, newInternalName, request);
+        // Rewrites the PNG in place at the SAME path/id. writeCharacterData()'s own write-path hook
+        // (upsertCharacterFromWrite) upserts the existing row by id, so `name`/`name_fold`/`shallow_json`
+        // refresh but `date_added` stays frozen (its ON CONFLICT clause never touches that column) - no separate
+        // renameCharacterRow() call is needed anymore, because the id never changes.
+        await writeCharacterData(avatarPath, newData, path.parse(avatarName).name, request);
 
-        // Rename chats folder
-        if (fs.existsSync(oldChatsPath) && !fs.existsSync(newChatsPath)) {
-            fs.cpSync(oldChatsPath, newChatsPath, { recursive: true });
-            fs.rmSync(oldChatsPath, { recursive: true, force: true });
-        }
-
-        // Remove the old character file
-        fs.unlinkSync(oldAvatarPath);
-
-        // writeCharacterData() above already fired the generic metadata-store upsert hook for `newAvatarName`,
-        // but that ran *before* the chats folder was moved (so its chat_size/date_last_chat were computed
-        // against an empty/nonexistent chats dir) and it necessarily saw a brand-new id with no prior row, so it
-        // gave it date_added = now. Re-firing now that the chats folder is in place fixes the chat stats; then
-        // renameCharacterRow() fixes date_added (by copying it from the old row) and removes the old row -
-        // see both functions' own doc comments. Neither failing should fail the rename response to the client;
-        // the character file itself is already safely renamed on disk by this point.
-        await fireMetadataUpsertHook(request.user.directories, newAvatarName, newData);
-        await renameCharacterRow(request.user.directories, oldAvatarName, newAvatarName).catch(err =>
-            console.error('[character-metadata] Failed to finalize metadata store rename (the reconciler will catch it):', err));
-
-        // Return new avatar name to ST
-        return response.send({ avatar: newAvatarName });
+        return response.send({ avatar: avatarName });
     } catch (err) {
         console.error(err);
         return response.sendStatus(500);
@@ -1888,20 +1873,6 @@ function mintCharacterId(directories) {
         }
     }
     throw new Error('Failed to mint a unique character id after 5 attempts');
-}
-
-/**
- * Gets the name for the uploaded PNG file - still used by `/rename` only (design doc §9 phase 4d: `/rename`
- * itself collapses to a card-data edit in a follow-up change, at which point this function and its callsite go
- * away together).
- * @param {string} file File name
- * @param {import('../users.js').UserDirectoryList} directories User directories
- * @returns {string} - The name for the uploaded PNG file
- */
-function getPngName(file, directories) {
-    file = sanitize(file);
-    return getUniqueName(file, (name) => fs.existsSync(path.join(directories.characters, `${name}.png`)),
-        { nameBuilder: (base, i) => i === 0 ? base : `${base}${i}`, startIndex: 0, maxTries: 10000 }) ?? file;
 }
 
 /**
