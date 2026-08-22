@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import _ from 'lodash';
 
-import { color, getConfigValue } from './util.js';
+import { color, getConfigValue, mapWithConcurrency } from './util.js';
 import { parse as parseCharacterCard } from './character-card-parser.js';
 import { getCharaCardV2 } from './character-card-normalize.js';
 import { calculateChatSize, calculateDataSize, toShallow } from './character-shallow.js';
@@ -65,6 +65,15 @@ import { getSqliteEngine } from './endpoints/sqlite-engine.js';
 // without needing a transaction per file, which is the whole point of batch mode - see this module's header and
 // the doc's §3.3 item 7.
 const BATCH_FLUSH_SIZE = 500;
+
+// How many character files get read+parsed concurrently while bootstrapIfNeeded() backfills a library that
+// predates this store. Deliberately the SAME config knob characters-search-index.js's index build already uses
+// (performance.characterIndexBuildConcurrency), not a second one - both are the identical shape of work (stat +
+// read a PNG file off disk + parse its tEXt chunk) against the same characters directory, and that build's own
+// measurement (see that file's INDEX_BUILD_READ_CONCURRENCY comment) already established this install's disk,
+// not Node's threadpool, is the limiting factor at any concurrency above ~4 - there is no reason bootstrap's
+// version of the same work would plateau anywhere different, so there is nothing for a separate knob to tune.
+const BOOTSTRAP_READ_CONCURRENCY = getConfigValue('performance.characterIndexBuildConcurrency', 64, 'number');
 
 // How often the background reconciler re-walks a user's characters directory (see this module's header, freshness
 // mechanism 3). This is a backstop, not the primary freshness path (that's the write-path hooks), so it doesn't
@@ -545,36 +554,54 @@ export async function bootstrapIfNeeded(directories) {
     }
 
     const files = (await fsPromises.readdir(directories.characters)).filter(f => f.endsWith('.png'));
-    /** @type {{ row: object, tagIds: string[] }[]} */
-    let pending = [];
 
-    const flush = () => {
-        if (pending.length === 0) return;
-        const batch = pending;
-        pending = [];
-        entry.db.transaction(() => {
-            for (const { row, tagIds } of batch) {
-                writeRowSync(entry.db, row, tagIds);
+    // Read tags.json ONCE, up front, rather than via the per-call getTagIdsFor() (which re-reads and re-parses
+    // tags.json off disk, synchronously, on every invocation) - the same fix characters-search-index.js's
+    // makeTagNamesResolver() already applies to this exact file for this exact reason. Calling getTagIdsFor()
+    // once per character here (as this loop used to) meant a full sync readFileSync+JSON.parse of tags.json for
+    // every single card in the library, not just once - both the redundant I/O and the fact that readFileSync
+    // blocks the event loop for the length of the whole bootstrap pass.
+    const { tag_map } = readTagsData(directories);
+
+    // Streamed in BATCH_FLUSH_SIZE-sized chunks, each chunk's file reads run with bounded concurrency (see
+    // BOOTSTRAP_READ_CONCURRENCY above) instead of one file at a time - this loop used to `await` each file's
+    // stat+parse sequentially, which is what made this pass I/O-bound on per-file round-trip latency rather than
+    // on actual disk throughput (exactly the mistake characters-search-index.js's readCharacterBatches() already
+    // fixed for the equivalent search-index-build pass - see that function's header). Chunking (rather than one
+    // mapWithConcurrency call over the whole library) keeps this consistent with BATCH_FLUSH_SIZE's own job of
+    // bounding peak memory: at most one chunk's worth of computed rows is ever held before being flushed.
+    for (let i = 0; i < files.length; i += BATCH_FLUSH_SIZE) {
+        const chunkFiles = files.slice(i, i + BATCH_FLUSH_SIZE);
+        const chunkResults = await mapWithConcurrency(chunkFiles, BOOTSTRAP_READ_CONCURRENCY, async (file) => {
+            try {
+                const filePath = path.join(directories.characters, file);
+                const stat = await fsPromises.stat(filePath);
+                const imgData = await parseCharacterCard(filePath, 'png');
+                if (imgData === undefined) return null;
+                const character = getCharaCardV2(JSON.parse(imgData), directories, false);
+                const { chatSize, dateLastChat } = calculateChatSize(path.join(directories.chats, file.replace(/\.png$/, '')));
+                const row = buildRow(file, character, { dateAddedCandidate: Math.round(stat.ctimeMs), fileMtime: stat.mtimeMs, chatSize, dateLastChat });
+                return { row, tagIds: tag_map[file] ?? [] };
+            } catch (err) {
+                console.error(`[character-metadata] Bootstrap failed to process ${file}, skipping it this pass (the reconciler will retry it):`, err.message);
+                return null;
             }
         });
-    };
 
-    for (const file of files) {
-        try {
-            const filePath = path.join(directories.characters, file);
-            const stat = await fsPromises.stat(filePath);
-            const imgData = await parseCharacterCard(filePath, 'png');
-            if (imgData === undefined) continue;
-            const character = getCharaCardV2(JSON.parse(imgData), directories, false);
-            const { chatSize, dateLastChat } = calculateChatSize(path.join(directories.chats, file.replace(/\.png$/, '')));
-            const row = buildRow(file, character, { dateAddedCandidate: Math.round(stat.ctimeMs), fileMtime: stat.mtimeMs, chatSize, dateLastChat });
-            pending.push({ row, tagIds: getTagIdsFor(directories, file) });
-            if (pending.length >= BATCH_FLUSH_SIZE) flush();
-        } catch (err) {
-            console.error(`[character-metadata] Bootstrap failed to process ${file}, skipping it this pass (the reconciler will retry it):`, err.message);
+        const pending = chunkResults.filter(Boolean);
+        if (pending.length > 0) {
+            entry.db.transaction(() => {
+                for (const { row, tagIds } of pending) {
+                    writeRowSync(entry.db, row, tagIds);
+                }
+            });
         }
+
+        // Yield the event loop between chunks, matching reconcile()'s own per-batch yield (see that function) -
+        // a 24k+-card bootstrap pass must not hog the event loop for its entire duration any more than a
+        // reconcile pass is allowed to.
+        await new Promise(resolve => setImmediate(resolve));
     }
-    flush();
 
     entry.db.run('INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value', { key: 'bootstrap_completed', value: String(Date.now()) });
     await resyncTags(directories);

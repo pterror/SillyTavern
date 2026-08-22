@@ -8,7 +8,7 @@ import { buildFtsQuery } from './search-query.js';
 import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD, FAV_FIELD } from './tantivy-search.js';
 import { resolveSearchEngine } from './search-engine.js';
 import { createIndexCoordinator } from './search-index-coordinator.js';
-import { getConfigValue } from '../util.js';
+import { getConfigValue, mapWithConcurrency } from '../util.js';
 
 /**
  * Fast full-content character search, backed by a persistent per-user SQLite FTS5 index built from *full*
@@ -170,31 +170,6 @@ const CHECKPOINT_EVERY_N_BATCHES = 20;
 // becomes the limiting factor instead of disk, so it's exposed as `performance.characterIndexBuildConcurrency`
 // (config.yaml) rather than hardcoded, for exactly that case.
 const INDEX_BUILD_READ_CONCURRENCY = getConfigValue('performance.characterIndexBuildConcurrency', 64, 'number');
-
-/**
- * Runs `fn` over `items` with at most `concurrency` calls in flight at once, preserving input order in the
- * returned array. A plain `Promise.all(items.map(fn))` would start every call at once regardless of how large
- * `items` is - fine at INDEX_BUILD_BATCH_SIZE's current default (500), less fine if that's ever raised a lot
- * higher, or on installs where per-call overhead (open file descriptors, etc.) matters more than it does here.
- * @template T, R
- * @param {T[]} items
- * @param {number} concurrency
- * @param {(item: T, index: number) => Promise<R>} fn
- * @returns {Promise<R[]>}
- */
-async function mapWithConcurrency(items, concurrency, fn) {
-    const results = new Array(items.length);
-    let nextIndex = 0;
-    async function worker() {
-        while (nextIndex < items.length) {
-            const index = nextIndex++;
-            results[index] = await fn(items[index], index);
-        }
-    }
-    const workerCount = Math.max(1, Math.min(concurrency, items.length));
-    await Promise.all(Array.from({ length: workerCount }, worker));
-    return results;
-}
 
 /**
  * Streams a user's characters off disk in fixed-size batches (see INDEX_BUILD_BATCH_SIZE) instead of returning

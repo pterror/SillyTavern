@@ -175,6 +175,34 @@ export function delay(ms) {
 }
 
 /**
+ * Runs `fn` over `items` with at most `concurrency` calls in flight at once, preserving input order in the
+ * returned array. A plain `Promise.all(items.map(fn))` would start every call at once regardless of how large
+ * `items` is - fine for small lists, not for whole-library-sized ones where per-call overhead (open file
+ * descriptors, etc.) matters. Originally written for characters-search-index.js's index build (see that file's
+ * history for the concurrency-plateau measurements this default is based on); factored out here so any other
+ * whole-library file-read pass (e.g. character-metadata-db.js's bootstrap) can reuse the exact same bounded-
+ * concurrency behavior instead of reimplementing it, sequentially, from scratch.
+ * @template T, R
+ * @param {T[]} items
+ * @param {number} concurrency
+ * @param {(item: T, index: number) => Promise<R>} fn
+ * @returns {Promise<R[]>}
+ */
+export async function mapWithConcurrency(items, concurrency, fn) {
+    const results = new Array(items.length);
+    let nextIndex = 0;
+    async function worker() {
+        while (nextIndex < items.length) {
+            const index = nextIndex++;
+            results[index] = await fn(items[index], index);
+        }
+    }
+    const workerCount = Math.max(1, Math.min(concurrency, items.length));
+    await Promise.all(Array.from({ length: workerCount }, worker));
+    return results;
+}
+
+/**
  * Generates a random hex string of the given length.
  * @param {number} length String length
  * @returns {string} Random hex string
