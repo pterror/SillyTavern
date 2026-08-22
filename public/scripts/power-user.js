@@ -13,6 +13,7 @@ import {
     event_types,
     getCurrentChatId,
     printCharactersDebounced,
+    printCharacters,
     setCharacterId,
     setEditedMessageId,
     chat,
@@ -51,7 +52,8 @@ import { tokenizers } from './tokenizers.js';
 import { BIAS_CACHE } from './logit-bias.js';
 import { renderTemplateAsync } from './templates.js';
 
-import { countOccurrences, debounce, delay, download, getFileText, getSanitizedFilename, getStringHash, isOdd, isTrueBoolean, onlyUnique, resetScrollHeight, shuffle, sortMoments, stringToRange, timestampToMoment } from './utils.js';
+import { countOccurrences, debounce, delay, download, getFileText, getSanitizedFilename, getStringHash, isOdd, isTrueBoolean, onlyUnique, resetScrollHeight, sortMoments, stringToRange, timestampToMoment } from './utils.js';
+import { compareByRandomSeed, getRandomSortSeed, rerollRandomSortSeed } from './random-sort.js';
 import { FILTER_TYPES } from './filters.js';
 import { PARSER_FLAG, SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
@@ -2057,6 +2059,7 @@ export async function loadPowerUserSettings(settings, data) {
 
 
     $(`#character_sort_order option[data-order="${power_user.sort_order}"][data-field="${power_user.sort_field}"]`).prop('selected', true);
+    updateRandomSortRerollVisibility();
     switchReducedMotion();
     switchCompactInputArea();
     reloadMarkdownProcessor();
@@ -2696,6 +2699,15 @@ const compareFunc = (first, second) => {
 };
 
 /**
+ * Shows/hides the random-sort reroll button. It only makes sense while random sort is the active *order*
+ * (`power_user.sort_order`), independent of whether a search is currently narrowing the list - search and
+ * random compose, so the button stays available while searching too.
+ */
+function updateRandomSortRerollVisibility() {
+    $('#charListRandomReroll').toggle(power_user.sort_order === 'random');
+}
+
+/**
  * Sorts an array of entities based on the current sort settings
  * @param {any[]} entities An array of objects with an `item` property
  * @param {boolean} forceSearch Whether to force search sorting
@@ -2708,11 +2720,12 @@ export function sortEntitiesList(entities, forceSearch, filterHelper = null) {
     }
 
     const isSearch = forceSearch || $('#character_sort_order option[data-field="search"]').is(':selected');
-
-    if (!isSearch && power_user.sort_order === 'random') {
-        shuffle(entities);
-        return;
-    }
+    // Random rides on sort_order like any other order, and composes with search unconditionally: search
+    // narrows the candidate set (isSearch above), this decides how whatever survives that narrowing is
+    // ordered. The two are independent, so both can be true derived states of different inputs, but the
+    // dropdown only ever selects one *sort*, hence the else-if.
+    const isRandom = !isSearch && power_user.sort_order === 'random';
+    const randomSeed = isRandom ? getRandomSortSeed(accountStorage) : null;
 
     entities.sort((a, b) => {
         // Sort tags/folders will always be at the top. Their original sorting will be kept, to respect manual tag sorting.
@@ -2726,6 +2739,13 @@ export function sortEntitiesList(entities, forceSearch, filterHelper = null) {
             const aScore = filterHelper.getScore(FILTER_TYPES.SEARCH, `${a.type}.${a.id}`);
             const bScore = filterHelper.getScore(FILTER_TYPES.SEARCH, `${b.type}.${b.id}`);
             return (aScore - bScore);
+        }
+
+        // Seeded hash instead of a shuffle: a stable total order, so it doesn't reshuffle on every re-render,
+        // and narrowing the set (search, tag filters) never reorders whatever survives. See random-sort.js
+        // and docs/design/character-data-residency-redesign.md §5.3.
+        if (isRandom) {
+            return compareByRandomSeed(`${a.type}.${a.id}`, `${b.type}.${b.id}`, randomSeed);
         }
 
         return sortFunc(a.item, b.item);
@@ -3930,9 +3950,21 @@ jQuery(() => {
             power_user.sort_order = $(this).find(':selected').data('order');
             power_user.sort_rule = $(this).find(':selected').data('rule');
         }
+        updateRandomSortRerollVisibility();
         printCharactersDebounced();
         saveSettingsDebounced();
     });
+
+    // Random sort persists its order (seeded hash, not a fresh shuffle - see random-sort.js), so it needs an
+    // explicit way to get a new order on demand. Re-picking "Random" in the dropdown fires no `change` event,
+    // which is why this can't just live on the dropdown itself.
+    $('#charListRandomReroll').on('click', function () {
+        rerollRandomSortSeed(accountStorage);
+        // The seed is part of the ordering's identity, so a reroll is a full refresh, not a re-render: it
+        // resets to page 1 rather than reshuffling underneath whatever page the user is currently on.
+        printCharacters(true);
+    });
+    updateRandomSortRerollVisibility();
 
     $('#gestures-checkbox').on('change', function () {
         power_user.gestures = !!$('#gestures-checkbox').prop('checked');
