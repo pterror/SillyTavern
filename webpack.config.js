@@ -8,12 +8,23 @@ import { serverDirectory } from './src/server-directory.js';
 import { getVersion, color } from './src/util.js';
 
 /**
- * Generate a cache version string based on the application version, Git revision, and Webpack version.
+ * Manually-bumped cache-busting identifier for the frontend Webpack build.
+ * Bump this by hand when frontend source changes meaningfully enough to warrant a fresh
+ * build cache (e.g. loader/plugin config changes, breaking changes to public/lib.js entry
+ * graph). Intentionally NOT tied to the Git commit hash — commits land frequently in this
+ * repo, and hashing on `gitRevision` would invalidate (and re-prune) the cache on nearly
+ * every restart regardless of whether frontend source actually changed.
+ */
+const FRONTEND_CACHE_VERSION = 1;
+
+/**
+ * Generate a cache version string based on the application version, the manually-bumped
+ * frontend cache version, and the Webpack version.
  * @returns {string} The cache version string.
  */
 function getWebpackCacheVersion() {
     return crypto.createHash('shake256', { outputLength: 8 })
-        .update(JSON.stringify([appVersion.pkgVersion, appVersion.gitRevision, webpack.version]))
+        .update(JSON.stringify([appVersion.pkgVersion, FRONTEND_CACHE_VERSION, webpack.version]))
         .digest('hex');
 }
 
