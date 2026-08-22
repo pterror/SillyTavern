@@ -1,7 +1,7 @@
 import { describe, test, expect } from '@jest/globals';
 import tantivy from '@oxdev03/node-tantivy-binding';
 
-import { buildSchema, buildSearchQuery, runSearch, DATA_FIELD } from '../src/endpoints/tantivy-search.js';
+import { buildSchema, buildSearchQuery, runSearch, DATA_FIELD, FAV_FIELD } from '../src/endpoints/tantivy-search.js';
 
 // Exercises buildSchema()/buildSearchQuery()/runSearch() against a real in-memory tantivy index, not a mock -
 // this module's whole reason to exist is a handful of confirmed-by-direct-testing behaviors (prefix matching
@@ -20,6 +20,7 @@ function makeIndex(docs) {
             name: doc.name ?? '',
             tags: doc.tags ?? '',
             [DATA_FIELD]: JSON.stringify(doc),
+            [FAV_FIELD]: Boolean(doc.fav),
         }, schema));
     }
     writer.commit();
@@ -27,8 +28,8 @@ function makeIndex(docs) {
     return { index, schema };
 }
 
-function names(index, schema, term, maxRows = 10) {
-    const query = buildSearchQuery(tantivy, schema, term, FIELD_WEIGHTS, FIELD_LABELS);
+function names(index, schema, term, maxRows = 10, options = {}) {
+    const query = buildSearchQuery(tantivy, schema, term, FIELD_WEIGHTS, FIELD_LABELS, options);
     if (!query) {
         return { names: [], total: 0 };
     }
@@ -110,5 +111,43 @@ describe('tantivy-search.js', () => {
         const { results: hits } = runSearch(index, query, 10);
         expect(hits).toHaveLength(1);
         expect(hits[0].item).toEqual(docs[3]);
+    });
+});
+
+// Real bug this covers: characters.js's /api/characters/all search branch caps results at `maxRows` by text
+// relevance alone (unbounded fetch is a documented OOM risk - see characters-search-index.js's querySqliteIndex()
+// doc comment), so a client combining "favorites only" with a search term used to get whatever survived that
+// relevance cap silently narrowed further by fav - which can easily be nothing at all, on a library where
+// favorite status has no correlation with which docs rank best for a common term. `favOnly` fixes this by making
+// the fav restriction part of the query itself, so it applies *before* the cap, not after.
+describe('tantivy-search.js: favOnly restricts matches before maxRows caps them (not after)', () => {
+    // Every doc matches "lord" by BM25_WEIGHTS-equivalent fields, but the two non-favorited docs match it via the
+    // higher-weighted `name` field while the only favorited doc matches it solely via the lower-weighted `tags`
+    // field - guaranteeing it ranks worse than both, deterministically, regardless of BM25 length normalization.
+    // That's the exact shape of the reported bug: a maxRows cap of 1 returns only the top-ranked non-favorited
+    // doc, and a naive post-filter over that page would find zero favorites even though one genuinely matches.
+    const docs = [
+        { name: 'Lord Vampire', tags: 'gothic', fav: false },
+        { name: 'Lord Skeleton', tags: 'undead', fav: false },
+        { name: 'Werewolf', tags: 'lord', fav: true },
+    ];
+    const { index, schema } = makeIndex(docs);
+
+    test('without favOnly, a small maxRows cap can exclude the only favorited match entirely', () => {
+        const { names: matched } = names(index, schema, 'lord', 1);
+        expect(matched).toEqual(expect.arrayContaining([expect.stringMatching(/^Lord /)]));
+        expect(matched).not.toContain('Werewolf');
+    });
+
+    test('favOnly restricts to favorited docs regardless of relevance rank, even under the same small maxRows', () => {
+        const { names: matched, total } = names(index, schema, 'lord', 1, { favOnly: true });
+        expect(matched).toEqual(['Werewolf']);
+        expect(total).toBe(1);
+    });
+
+    test('favOnly with no favorited matches returns nothing, not an unfiltered fallback', () => {
+        const { names: matched, total } = names(index, schema, 'skeleton', 10, { favOnly: true });
+        expect(matched).toEqual([]);
+        expect(total).toBe(0);
     });
 });

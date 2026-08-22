@@ -106,8 +106,9 @@ export class FilterHelper {
         };
         /**
          * Pre-computed character/group search results from the server's fast full-content index (see
-         * setServerSearchResults() below), or null if none are available for the current search value yet.
-         * @type {{ searchValue: string, characterScores: Map<number, number>, groupScores: Map<string, number> } | null}
+         * setServerSearchResults() below), or null if none are available for the current search value/fav state
+         * yet.
+         * @type {{ searchValue: string, favOnly: boolean, characterScores: Map<number, number>, groupScores: Map<string, number> } | null}
          */
         this.serverSearchResults = null;
     }
@@ -124,10 +125,22 @@ export class FilterHelper {
      * character data regardless of that setting, so routing through it here closes that gap, not just the
      * multi-second-per-keystroke slowness the fast server index was originally built to fix.
      *
-     * Call with `searchValue` not matching the current search box value has no effect (searchFilter() only uses
-     * a cache entry when its searchValue matches exactly); call with `null` to clear a stale/failed result and
-     * let searchFilter() fall back to the client-side pass for this search.
-     * @param {{ searchValue: string, characterScores: Map<number, number>, groupScores: Map<string, number> } | null} results
+     * `favOnly` records whether these results were fetched with the server-side favorites restriction applied
+     * (fetchServerCharacterSearchResults(), script.js, mirrors the current FILTER_TYPES.FAV state into the
+     * request) - searchFilter() below only reuses a cache entry when both `searchValue` AND `favOnly` match the
+     * current filter state, not just `searchValue`. Without that second check, toggling the favorites filter
+     * while a search is already in flight (or before the corresponding re-fetch lands) could silently reuse
+     * favorites-blind (or, symmetrically, over-restricted) scores - the underlying bug this whole `favOnly` plumbing
+     * exists to fix in the first place: a search index page capped by relevance alone can easily contain zero
+     * favorited items even when many exist, so combining it with the *client-side* favorite filter's own pass
+     * (FilterHelper.favFilter() below) can never recover them after the fact.
+     *
+     * Call with `searchValue`/`favOnly` not matching the current search box value/fav filter state has no effect
+     * (searchFilter() only uses a cache entry when both match exactly); call with `null` to clear a stale/failed
+     * result and let searchFilter() fall back to the client-side pass for this search (that fallback runs over
+     * every resident character/group, not a relevance-capped page, so it isn't subject to this same gap - just
+     * slower, per this file's other perf notes).
+     * @param {{ searchValue: string, favOnly: boolean, characterScores: Map<number, number>, groupScores: Map<string, number> } | null} results
      */
     setServerSearchResults(results) {
         this.serverSearchResults = results;
@@ -356,12 +369,16 @@ export class FilterHelper {
             const fuzzySearchTagsResult = fuzzySearchTags(searchValue, this.fuzzySearchCaches);
             this.cacheScores(FILTER_TYPES.SEARCH, new Map(fuzzySearchTagsResult.map(i => [`tag.${i.item.id}`, i.score])));
 
-            if (this.serverSearchResults?.searchValue === searchValue) {
+            const favOnly = isFilterState(this.filterData[FILTER_TYPES.FAV], FILTER_STATES.SELECTED);
+            if (this.serverSearchResults?.searchValue === searchValue && this.serverSearchResults?.favOnly === favOnly) {
                 this.cacheScores(FILTER_TYPES.SEARCH, new Map([...this.serverSearchResults.characterScores].map(([index, score]) => [`character.${index}`, score])));
                 this.cacheScores(FILTER_TYPES.SEARCH, new Map([...this.serverSearchResults.groupScores].map(([id, score]) => [`group.${id}`, score])));
             } else {
-                // Server results for this exact search string aren't in yet (still in flight, or the request
-                // failed) - fall back to the client-side pass so search still returns something meanwhile.
+                // Server results for this exact search string + fav filter state aren't in yet (still in flight,
+                // or the request failed) - fall back to the client-side pass so search still returns something
+                // meanwhile. This client-side pass runs over every resident character/group (not a
+                // relevance-capped server page), so favFilter() below can still correctly narrow it even before
+                // the server results land - see setServerSearchResults()'s doc comment for the gap this avoids.
                 const fuzzySearchCharactersResults = fuzzySearchCharacters(searchValue, this.fuzzySearchCaches);
                 const fuzzySearchGroupsResults = fuzzySearchGroups(searchValue, this.fuzzySearchCaches);
                 this.cacheScores(FILTER_TYPES.SEARCH, new Map(fuzzySearchCharactersResults.map(i => [`character.${i.refIndex}`, i.score])));

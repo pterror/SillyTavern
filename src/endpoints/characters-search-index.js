@@ -5,7 +5,7 @@ import { TAGS_FILE } from '../constants.js';
 import { readTagsData } from './tags-data.js';
 import { processCharacter } from './characters.js';
 import { buildFtsQuery } from './search-query.js';
-import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD } from './tantivy-search.js';
+import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD, FAV_FIELD } from './tantivy-search.js';
 import { resolveSearchEngine } from './search-engine.js';
 import { createIndexCoordinator } from './search-index-coordinator.js';
 import { getConfigValue } from '../util.js';
@@ -270,13 +270,14 @@ async function buildSqliteIndex(directories, engine) {
         CREATE VIRTUAL TABLE cards USING fts5(
             avatar UNINDEXED,
             data UNINDEXED,
+            fav UNINDEXED,
             ${BM25_INDEXED_COLUMNS.join(', ')}
         );
     `);
 
     const tagNamesFor = makeTagNamesResolver(directories);
-    const insertSql = `INSERT INTO cards (avatar, data, ${BM25_INDEXED_COLUMNS.join(', ')})
-         VALUES (@avatar, @data, @name, @resolved_tags, @description, @mes_example, @scenario, @personality, @first_mes, @creator_notes, @creator, @tags, @alternate_greetings)`;
+    const insertSql = `INSERT INTO cards (avatar, data, fav, ${BM25_INDEXED_COLUMNS.join(', ')})
+         VALUES (@avatar, @data, @fav, @name, @resolved_tags, @description, @mes_example, @scenario, @personality, @first_mes, @creator_notes, @creator, @tags, @alternate_greetings)`;
 
     // One insertMany() call - and, per CHECKPOINT_EVERY_N_BATCHES, one checkpoint - per batch, not one giant
     // call/transaction over the whole library: see readCharacterBatches() and the two constants above this
@@ -287,6 +288,10 @@ async function buildSqliteIndex(directories, engine) {
         const rows = batch.map(character => ({
             avatar: character.avatar,
             data: JSON.stringify(character),
+            // Boolean, not the string this codebase's fav flag is sometimes coerced from elsewhere (see
+            // character-card-normalize.js) - SQLite has no real boolean type, so this stores 0/1 for the plain
+            // `AND fav = 1` predicate querySqliteIndex()/countSqliteIndexMatches() add when favOnly is set.
+            fav: character.data?.extensions?.fav ? 1 : 0,
             name: character.data?.name ?? '',
             resolved_tags: tagNamesFor(character.avatar),
             description: character.data?.description ?? '',
@@ -361,6 +366,7 @@ async function buildTantivyIndex(directories, tantivy) {
                 tags: Array.isArray(character.data?.tags) ? character.data.tags.join(' ') : '',
                 alternate_greetings: Array.isArray(character.data?.alternate_greetings) ? character.data.alternate_greetings.join(' ') : '',
                 [DATA_FIELD]: JSON.stringify(character),
+                [FAV_FIELD]: Boolean(character.data?.extensions?.fav),
             }, schema);
             writer.addDocument(doc);
         }
@@ -392,10 +398,14 @@ async function buildTantivyIndex(directories, tantivy) {
  * OOM'd this server on a real 24,171-character install (confirmed by reproducing it: the crash's V8 stack was
  * inside JsonParser, not JsonStringifier, i.e. this line, not response.send()). Left undefined only for a
  * caller that genuinely wants every match - none currently do.
+ * @param {boolean} [favOnly] When true, adds `AND fav = 1` to the WHERE clause - see the `favOnly` doc on
+ * buildSearchQuery() (tantivy-search.js) for why this has to be a query-level predicate (applied before
+ * `LIMIT`), not a post-fetch filter over the already-capped page: a favorited row can rank arbitrarily far below
+ * `maxRows` other, more textually-relevant rows, so filtering after the LIMIT would silently miss it.
  * @returns {{ item: object, score: number }[]} Results sorted best-first (ascending bm25 score - lower is
  * better, same convention the rest of this codebase's search results already use)
  */
-function querySqliteIndex(db, searchTerm, maxRows) {
+function querySqliteIndex(db, searchTerm, maxRows, favOnly) {
     const ftsQuery = buildFtsQuery(searchTerm, FIELD_LABELS);
     if (!ftsQuery) {
         return [];
@@ -404,7 +414,8 @@ function querySqliteIndex(db, searchTerm, maxRows) {
     // maxRows is always a value this module computed via Number.isFinite + Math.trunc (see searchCharacters()),
     // never raw request input, so interpolating it directly is safe - it can only ever be digits/a minus sign.
     const limitClause = Number.isFinite(maxRows) ? ` LIMIT ${Math.max(0, Math.trunc(maxRows))}` : '';
-    return db.query(`SELECT avatar, data, bm25(cards, ${weightsArg}) as score FROM cards WHERE cards MATCH ? ORDER BY score${limitClause}`, ftsQuery)
+    const favClause = favOnly ? ' AND fav = 1' : '';
+    return db.query(`SELECT avatar, data, bm25(cards, ${weightsArg}) as score FROM cards WHERE cards MATCH ?${favClause} ORDER BY score${limitClause}`, ftsQuery)
         .map(row => ({ item: JSON.parse(row.data), score: row.score }));
 }
 
@@ -416,14 +427,17 @@ function querySqliteIndex(db, searchTerm, maxRows) {
  * read or parsed - so this stays cheap regardless of how many rows match.
  * @param {import('./sqlite-engine.js').SqliteEngineHandle} db
  * @param {string} searchTerm
+ * @param {boolean} [favOnly] Same `AND fav = 1` predicate as querySqliteIndex() above, kept in sync so the
+ * reported total matches what querySqliteIndex() with the same favOnly value would actually return.
  * @returns {number} Total number of matching rows
  */
-function countSqliteIndexMatches(db, searchTerm) {
+function countSqliteIndexMatches(db, searchTerm, favOnly) {
     const ftsQuery = buildFtsQuery(searchTerm, FIELD_LABELS);
     if (!ftsQuery) {
         return 0;
     }
-    const [row] = db.query('SELECT COUNT(*) as total FROM cards WHERE cards MATCH ?', ftsQuery);
+    const favClause = favOnly ? ' AND fav = 1' : '';
+    const [row] = db.query(`SELECT COUNT(*) as total FROM cards WHERE cards MATCH ?${favClause}`, ftsQuery);
     return row ? Number(row.total) : 0;
 }
 
@@ -448,12 +462,17 @@ function countSqliteIndexMatches(db, searchTerm) {
  * hypothetical, and applies just as much to the tantivy tier's per-hit JSON.parse() of the stored `data` field).
  * Callers should always pass this (the /api/characters/all handler in characters.js passes offset+limit, sized
  * to cover whatever page it's about to slice out of the merged character+group results).
+ * @param {boolean} [favOnly] When true, restricts matches to favorited characters only, applied inside the query
+ * itself (not after `maxRows` truncates the page) - see buildSearchQuery()'s `favOnly` doc comment
+ * (tantivy-search.js) for why a post-fetch filter here would be wrong: it lets the caller's own client-side
+ * favorites filter (FilterHelper.favFilter(), public/scripts/filters.js) actually work when combined with a
+ * search term, instead of only ever narrowing whichever relevance-ranked page happened to survive the cap.
  * @returns {Promise<{ results: { item: object, score: number }[], total: number, backend: 'tantivy' | 'native' | 'wasm' | 'unavailable' }>}
  * Results sorted best-first (ascending score - see tantivy-search.js's runSearch() for why the tantivy tier's
  * naturally-higher-is-better score gets negated to match this convention), the true total match count
  * (independent of `maxRows`), and which engine tier produced them.
  */
-export async function searchCharacters(handle, directories, searchTerm, maxRows) {
+export async function searchCharacters(handle, directories, searchTerm, maxRows, favOnly) {
     const signature = getFreshnessSignature(directories);
     const engine = await resolveSearchEngine();
 
@@ -463,7 +482,7 @@ export async function searchCharacters(handle, directories, searchTerm, maxRows)
 
     if (engine.tier === 'tantivy') {
         const tantivyIndex = await indexCoordinator.getIndex(handle, signature, () => buildTantivyIndex(directories, engine.tantivy));
-        const query = buildTantivyQuery(engine.tantivy, tantivyIndex.schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS);
+        const query = buildTantivyQuery(engine.tantivy, tantivyIndex.schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS, { favOnly });
         if (!query) {
             return { results: [], total: 0, backend: 'tantivy' };
         }
@@ -474,8 +493,8 @@ export async function searchCharacters(handle, directories, searchTerm, maxRows)
 
     const db = await indexCoordinator.getIndex(handle, signature, () => buildSqliteIndex(directories, engine.sqlite));
     return {
-        results: querySqliteIndex(db, searchTerm, maxRows),
-        total: countSqliteIndexMatches(db, searchTerm),
+        results: querySqliteIndex(db, searchTerm, maxRows, favOnly),
+        total: countSqliteIndexMatches(db, searchTerm, favOnly),
         backend: engine.sqlite.kind,
     };
 }

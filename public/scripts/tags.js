@@ -15,6 +15,7 @@ import {
     DEFAULT_PRINT_TIMEOUT,
     printCharacters,
     getRequestHeaders,
+    fetchServerCharacterSearchResults,
 } from '../script.js';
 import { FILTER_TYPES, FILTER_STATES, DEFAULT_FILTER_STATE, isFilterState, FilterHelper } from './filters.js';
 
@@ -719,6 +720,20 @@ function determineTagFilterState(filterHelper, tag, isFilterActionable) {
  */
 function filterByFav(filterHelper) {
     applyActionableTagFilter.call(this, filterHelper, ACTIONABLE_TAGS.FAV, FILTER_TYPES.FAV, ACTIONABLE_FILTER_STORAGE_KEYS.FAV);
+
+    // applyActionableTagFilter() above already triggered a render via setFilterData(), but for the main
+    // character list that render reused whatever server search results (fetchServerCharacterSearchResults(),
+    // script.js) were last fetched for the *previous* fav filter state - see FilterHelper.setServerSearchResults()'s
+    // doc comment (filters.js) for why a stale favOnly value there can't just be patched over client-side: the
+    // server's search index page is capped by relevance alone, so a favorited match can be missing from it
+    // entirely regardless of what the client's own favFilter() does afterward. If a search is currently active,
+    // re-fetch with the new fav state and re-render once the (now favorites-aware, if applicable) results land.
+    if (isMainCharacterList(filterHelper)) {
+        const searchTerm = filterHelper.getFilterData(FILTER_TYPES.SEARCH);
+        if (searchTerm) {
+            fetchServerCharacterSearchResults(searchTerm).then(() => printCharactersDebounced());
+        }
+    }
 }
 
 /**

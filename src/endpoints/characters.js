@@ -1312,8 +1312,8 @@ function paginateSearchResults(characterResults, groupResults, { offset, limit, 
  * The stats are calculated by the `calculateStats` function.
  * The characters are processed by the `processCharacter` function.
  *
- * Accepts optional `sortField`/`sortOrder`/`offset`/`limit`/`search`/`includeGroups` in the request body to get
- * a sorted (or fuzzy-searched) page back instead of the full array - see paginateCharacters()/paginateEntities()/
+ * Accepts optional `sortField`/`sortOrder`/`offset`/`limit`/`search`/`includeGroups`/`fav` in the request body to
+ * get a sorted (or fuzzy-searched) page back instead of the full array - see paginateCharacters()/paginateEntities()/
  * paginateSearchResults() above. None of these are required: a request with no body (or an empty one) behaves
  * exactly as before, returning every character in on-disk order. Passing sort/offset/limit alone is deliberately
  * just a slice of the already-fully-processed array, not a way to skip processing files outside the requested
@@ -1332,6 +1332,13 @@ function paginateSearchResults(characterResults, groupResults, { offset, limit, 
  * `includeGroups: true` merges the user's groups into the same sorted-or-searched, paginated result (see
  * paginateEntities()/paginateSearchResults()). This changes `items` to an array of `{ type, item }` instead of
  * bare character objects, since an item may now be a character *or* a group.
+ *
+ * `fav: true` (only meaningful together with `search`) restricts matches to favorited characters/groups, applied
+ * inside the search index query itself rather than after the `offset+limit`-sized page is fetched - see
+ * searchCharacters()'s `favOnly` doc comment (characters-search-index.js) for why a post-fetch filter here would
+ * be wrong: a favorited item's text relevance to the search term is unrelated to its favorite status, so it can
+ * rank arbitrarily far outside whatever page a plain relevance search returns, silently making a favorites-only
+ * search on a large library look like it returns nothing.
  *
  * @param  {import("express").Request} request The HTTP request object.
  * @param  {import("express").Response} response The HTTP response object.
@@ -1355,7 +1362,8 @@ const DEFAULT_PAGE_LIMIT = 500;
 
 router.post('/all', async function (request, response) {
     try {
-        const { sortField, sortOrder, offset, limit, search, includeGroups } = request.body ?? {};
+        const { sortField, sortOrder, offset, limit, search, includeGroups, fav } = request.body ?? {};
+        const favOnly = fav === true;
 
         if (sortField === undefined && offset === undefined && limit === undefined && !search && !includeGroups) {
             const files = fs.readdirSync(request.user.directories.characters);
@@ -1381,9 +1389,15 @@ router.post('/all', async function (request, response) {
             // final slice, this just stops each individual FTS5 query (and the JSON.parse() of every one of its
             // rows - see querySqliteIndex()) from doing that work across the *entire* matching set first.
             const searchFetchLimit = numericOffset + numericLimit;
+            // favOnly restricts both searches to favorited items *inside* the query itself (see
+            // searchCharacters()'s `favOnly` doc comment, characters-search-index.js) - not a post-fetch filter
+            // over `searchFetchLimit` relevance-ranked rows, which would silently drop any favorited match that
+            // doesn't happen to rank in the top `searchFetchLimit` results for the term (real bug: a favorites-only
+            // + search combination on a large library could return zero results for a term that has thousands of
+            // real matches, because none of the relevance-top-N happened to be favorited).
             const [characterSearch, groupSearch] = await Promise.all([
-                searchCharacters(handle, request.user.directories, search, searchFetchLimit),
-                includeGroups ? searchGroups(handle, request.user.directories, search, searchFetchLimit) : emptySearch,
+                searchCharacters(handle, request.user.directories, search, searchFetchLimit, favOnly),
+                includeGroups ? searchGroups(handle, request.user.directories, search, searchFetchLimit, favOnly) : emptySearch,
             ]);
             // The search index is always built from *full* character data (see characters-search-index.js) -
             // trim results down to shallow fields here to match this server's normal list-response shape
