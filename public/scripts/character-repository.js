@@ -16,6 +16,12 @@
  * Explicitly out of scope for this pass (phase 6, not phase 5): an IndexedDB tier in front of the server fetch.
  * `get()`/`getMany()`'s server fallback path also does *not* write fetched rows back into `charactersStore` -
  * see `get()`'s doc comment for why that's a deliberate correctness call, not an oversight.
+ *
+ * `query()`/`queryAll()` also carry `filter.includeGroups` (design doc §5/§6 close of the "getEntitiesList can't
+ * answer a mixed character+group+folder ordering" gap): set it to merge groups into the same server-sorted,
+ * server-paginated result instead of building the group portion from the fully-resident `groups` array. Use
+ * `normalizeQueryRow()` to read the result regardless of which shape it came back as - script.js's
+ * `getEntitiesList()`/`printCharacters()` are the reference callers.
  */
 
 import { charactersStore, getRequestHeaders, unshallowCharacter } from '../script.js';
@@ -33,6 +39,15 @@ import { charactersStore, getRequestHeaders, unshallowCharacter } from '../scrip
  * @property {string} [world]
  * @property {string[]} [excludeIds] - group member exclusion.
  * @property {string[]} [ids] - resolve-by-id batch; intersects with `search` when both are present.
+ * @property {boolean} [includeGroups] - omitted/false: `rows` stays the pre-existing bare `Character[]` shape,
+ * every caller that doesn't pass this keeps working unmodified. `true`: the server merges the user's groups into
+ * the same sorted/paginated result, and `rows` becomes `Array<{type: 'character', item: Character} | {type:
+ * 'group', item: Group}>` instead - see `normalizeQueryRow()` below for the one place callers should go to tell
+ * the two apart, rather than re-deriving the discriminator ad hoc. Composes with `filter.tags` (a folder is just
+ * a tag - `tags.include=[folderId]`, and a folder can contain groups too, via `group_tags`), but NOT with
+ * `filter.search`: a non-empty `search` excludes groups from the merged result server-side regardless of this
+ * flag (no group full-text index exists), so search stays on its separate, pre-existing path
+ * (`fetchServerCharacterSearchResults()`/`entitiesFilter.searchFilter()`, script.js) - design doc §5.
  */
 
 /**
@@ -45,7 +60,10 @@ import { charactersStore, getRequestHeaders, unshallowCharacter } from '../scrip
 
 /**
  * @typedef {object} CharacterQueryResult
- * @property {Character[]} [rows] - present iff `want` included `'rows'` (default: yes).
+ * @property {Character[]|Array<{type: 'character', item: Character}|{type: 'group', item: object}>} [rows] -
+ * present iff `want` included `'rows'` (default: yes). Bare `Character[]` unless the request set
+ * `filter.includeGroups: true`, in which case it's the tagged-row shape - see `CharacterQueryFilter.includeGroups`
+ * and `normalizeQueryRow()`.
  * @property {number|string} [total] - present iff `want` included `'total'` (default: yes). A plain number is
  * exact; a `~`-prefixed string (e.g. `"~12345"`) is an approximate count that must still be treated as the real
  * scope of the result set, never as a truncated/capped one - design doc §5 decision 6. Callers that need a
@@ -98,6 +116,7 @@ export const QUERYABLE_CLIENT_SORT_FIELDS = new Set(['name', 'date_last_chat', '
  * @property {'asc'|'desc'} [sortOrder] - `power_user.sort_order` (`'random'` itself is carried via `sortField`,
  * not this - see above).
  * @property {number} [randomSeed] - required (finite) when `sortField === 'random'`.
+ * @property {boolean} [includeGroups] - see `CharacterQueryFilter.includeGroups`.
  */
 
 /**
@@ -117,6 +136,7 @@ export function buildCharacterQuery({
     sortField = undefined,
     sortOrder = 'asc',
     randomSeed = undefined,
+    includeGroups = false,
 } = {}) {
     /** @type {CharacterQueryFilter} */
     const filter = {};
@@ -125,6 +145,7 @@ export function buildCharacterQuery({
         filter.tags = { include: tagsInclude, exclude: tagsExclude, mode: 'and' };
     }
     if (typeof fav === 'boolean') filter.fav = fav;
+    if (includeGroups) filter.includeGroups = true;
 
     /** @type {CharacterQuerySort|undefined} */
     let sort;
@@ -146,6 +167,22 @@ export function buildCharacterQuery({
  */
 export function isServerQueryableSort(sortField) {
     return sortField === 'random' || QUERYABLE_CLIENT_SORT_FIELDS.has(sortField);
+}
+
+/**
+ * Normalizes one `/query` response row to a `{type, item}` shape regardless of whether the request that
+ * produced it set `filter.includeGroups` - the one place a caller should go to tell a character row from a
+ * group row, instead of re-deriving the discriminator ad hoc at every call site (a bare row has no `type` field
+ * at all; `filter.includeGroups: true` rows already carry one straight from the server). A bare row is always a
+ * character - `filter.includeGroups: false`/omitted never returns a group.
+ * @param {Character|{type: 'character'|'group', item: Character|object}} row
+ * @returns {{type: 'character'|'group', item: Character|object}}
+ */
+export function normalizeQueryRow(row) {
+    if (row && typeof row === 'object' && (row.type === 'character' || row.type === 'group') && 'item' in row) {
+        return row;
+    }
+    return { type: 'character', item: row };
 }
 
 /**
@@ -309,12 +346,16 @@ export class CharacterRepository {
      * an approximate (`~`-prefixed) estimate for expensive-to-count filters, and an approximate count must never
      * be read as an exact stopping point. The authoritative stop condition is a short page (fewer rows returned
      * than requested), which is true regardless of whether `total` was exact or approximate.
-     * @param {CharacterQueryFilter} [filter]
+     * @param {CharacterQueryFilter} [filter] - pass `includeGroups: true` to merge groups into the loop too; the
+     * returned array is then the tagged `{type, item}` row shape (`normalizeQueryRow()`) rather than bare
+     * `Character[]` - this method doesn't reshape rows, it only loops pages, so the shape is whatever `filter`
+     * asked the server for.
      * @param {CharacterQuerySort} [sort]
-     * @returns {Promise<Character[]>} every matching row, in server sort order.
+     * @returns {Promise<Array<Character|{type: 'character'|'group', item: Character|object}>>} every matching
+     * row, in server sort order.
      */
     async queryAll(filter = {}, sort = undefined) {
-        /** @type {Character[]} */
+        /** @type {Array<Character|{type: 'character'|'group', item: Character|object}>} */
         const rows = [];
         let page = 1;
         for (;;) {
