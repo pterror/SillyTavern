@@ -1,9 +1,9 @@
 import {
     buildAvatarList,
     characterToEntity,
-    characters,
     charactersStore,
     getCurrentCharacter,
+    getSelectionState,
     chat,
     chat_metadata,
     createOrEditCharacter,
@@ -23,7 +23,6 @@ import {
     saveMetadata,
     saveSettingsDebounced,
     setUserName,
-    this_chid,
 } from '../script.js';
 import { power_user, personaStore } from './power-user.js';
 import { getTokenCountAsync } from './tokenizers.js';
@@ -36,7 +35,6 @@ import {
     ensureImageFormatSupported,
     flashHighlight,
     getBase64Async,
-    getCharIndex,
     isFalseBoolean,
     isTrueBoolean,
     onlyUnique,
@@ -601,13 +599,11 @@ export async function initPersona(avatarId, personaName, personaDescription, per
  * The function creates a new persona with the same name as the character, and sets the persona description to the character description with the macros swapped.
  * The function also saves the settings and refreshes the persona selector.
  *
- * @param {number} [characterId] - The ID of the character to convert to a persona. Defaults to the current character ID.
+ * @param {string} [avatar] - The avatar of the character to convert to a persona. Defaults to the current character.
  * @returns {Promise<boolean>} A promise that resolves to true if the character was converted, false otherwise.
  */
-export async function convertCharacterToPersona(characterId = null) {
-    // characterId stays a positional index for explicit callers (e.g. BulkEditOverlay), but the
-    // "use the current character" default now resolves via avatar instead of this_chid.
-    const character = null === characterId ? getCurrentCharacter() : characters[characterId];
+export async function convertCharacterToPersona(avatar = null) {
+    const character = null === avatar ? getCurrentCharacter() : charactersStore.get(avatar);
 
     const avatarUrl = character?.avatar;
     if (!avatarUrl) {
@@ -756,7 +752,7 @@ export function updatePersonaConnectionsAvatarList() {
     const entities = connections.map(connection => {
         if (connection.type === 'character') {
             const character = charactersStore.get(connection.id);
-            if (character) return characterToEntity(character, getCharIndex(character));
+            if (character) return characterToEntity(character);
         }
         if (connection.type === 'group') {
             const group = groupsStore.get(connection.id);
@@ -847,7 +843,7 @@ export async function askForPersonaSelection(title, text, personas, { okButton =
                 saveSettingsDebounced();
                 updatePersonaConnectionsAvatarList();
                 if (power_user.persona_show_notifications) {
-                    const name = targetedChar.type == 'character' ? characters[targetedChar.id]?.name : groups[targetedChar.id]?.name;
+                    const name = targetedChar.type == 'character' ? charactersStore.get(targetedChar.id)?.name : groups[targetedChar.id]?.name;
                     toastr.info(t`All connections to ${name} have been removed.`, t`Personas Unlocked`);
                 }
             },
@@ -1946,7 +1942,7 @@ export async function retriggerFirstMessageOnEmptyChat() {
     if (selected_group) {
         await reloadCurrentChat();
     }
-    if (!selected_group && Number(this_chid) >= 0 && chat.length === 1) {
+    if (getSelectionState().type === 'character' && chat.length === 1) {
         await createOrEditCharacter();
     }
 }
