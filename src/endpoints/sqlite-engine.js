@@ -49,10 +49,38 @@ let engine = undefined;
  * inside a single transaction, with each row's keys bound as named parameters
  * @property {(sql: string, param: string) => object[]} query Runs a SQL statement with a single positional `?`
  * parameter and returns every result row
+ * @property {(sql: string, params?: object|any[]) => {changes: number, lastInsertRowid: number|bigint}} run
+ * Runs a single parameterized statement (INSERT/UPDATE/DELETE) and returns how many rows it touched plus the
+ * rowid of the last inserted row (meaningful for an `INTEGER PRIMARY KEY AUTOINCREMENT` table like this
+ * module's callers use for a monotonic change-log revision counter). `params` may be a plain object (named
+ * parameters, `@x`/`:x`/`$x` in the SQL) or an array (positional `?` parameters) - see this module's header for
+ * why named-parameter keys need per-engine handling.
+ * @property {(sql: string, params?: object|any[]) => object|undefined} get Runs a parameterized statement and
+ * returns the first result row, or `undefined` if there were none.
+ * @property {(sql: string, params?: object|any[]) => object[]} all Runs a parameterized statement and returns
+ * every result row.
+ * @property {(fn: () => void) => void} transaction Runs `fn` (which should call this handle's own run/get/all/
+ * exec methods, synchronously - both engines execute statements synchronously, see search-index-coordinator.js's
+ * header for why that matters) inside a single BEGIN/COMMIT, rolling back if `fn` throws.
  * @property {() => void} checkpoint Folds the WAL file back into the main database file where supported
  * (native only - see this module's header comment on why the wasm engine's checkpoint is a no-op)
  * @property {() => void} close Closes the underlying database connection
  */
+
+/**
+ * node-sqlite3-wasm, unlike better-sqlite3, requires the bind-parameter prefix character to be part of the
+ * object key itself (`{'@avatar': ...}` rather than `{avatar: ...}`) - see this module's header comment. Native
+ * accepts a plain object or array unmodified; only the wasm adapter needs this applied, and only for
+ * object-shaped (named) params - an array of positional params needs no prefixing on either engine.
+ * @param {object|any[]|undefined} params
+ * @returns {object|any[]|undefined}
+ */
+function prefixNamedParamsForWasm(params) {
+    if (!params || Array.isArray(params)) {
+        return params;
+    }
+    return Object.fromEntries(Object.entries(params).map(([key, value]) => [`@${key}`, value]));
+}
 
 /**
  * Exported (alongside openWasmDatabase()) so tests can exercise the adapters directly against a real database,
@@ -75,6 +103,10 @@ export function openNativeDatabase(DatabaseCtor, path) {
             })(rows);
         },
         query: (sql, param) => db.prepare(sql).all(param),
+        run: (sql, params) => db.prepare(sql).run(params ?? {}),
+        get: (sql, params) => db.prepare(sql).get(params ?? {}),
+        all: (sql, params) => db.prepare(sql).all(params ?? {}),
+        transaction: (fn) => db.transaction(fn)(),
         checkpoint: () => db.pragma('wal_checkpoint(TRUNCATE)'),
         close: () => db.close(),
     };
@@ -108,6 +140,22 @@ export function openWasmDatabase(WasmDatabaseCtor, path) {
             }
         },
         query: (sql, param) => db.prepare(sql).all(param),
+        run: (sql, params) => db.prepare(sql).run(prefixNamedParamsForWasm(params) ?? {}),
+        get: (sql, params) => db.prepare(sql).get(prefixNamedParamsForWasm(params) ?? {}),
+        all: (sql, params) => db.prepare(sql).all(prefixNamedParamsForWasm(params) ?? {}),
+        // No native transaction() API on this engine (see this module's header on WAL support being the other
+        // native-only feature) - a plain BEGIN/COMMIT/ROLLBACK around a synchronous fn() is equivalent, same
+        // pattern insertMany() above already uses.
+        transaction: (fn) => {
+            db.exec('BEGIN');
+            try {
+                fn();
+                db.exec('COMMIT');
+            } catch (err) {
+                db.exec('ROLLBACK');
+                throw err;
+            }
+        },
         checkpoint: () => { /* no-op: this engine's WASM-compiled SQLite doesn't support WAL mode at all */ },
         close: () => db.close(),
     };
