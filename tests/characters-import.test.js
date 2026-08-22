@@ -363,3 +363,77 @@ describe('unsetPrivateFields is applied on the real import/export routes', () =>
         expect(exported.chat).toBeUndefined();
     });
 });
+
+// Regression coverage for a live local-import-scan.js failure: importFromPng()/importFromJson() used to read
+// jsonData.data.name a second time AFTER already overwriting it in place with sanitize(jsonData.data.name) -
+// so a name that sanitizes down to an empty string (e.g. "." - an otherwise-valid, non-empty string) made the
+// second read see that now-empty, falsy value and fall through to the top-level jsonData.name, which is
+// `undefined` on a real-world v2/v3 card (they only ever populate data.name). sanitize(undefined) then threw
+// "Input must be string" (from the sanitize-filename package) and aborted the whole import, surfaced upstream
+// only as "[local-import] Failed to process ..., will retry next pass: Input must be string" with no stack.
+describe('POST /api/characters/import - a card whose name sanitizes to empty no longer crashes the import', () => {
+    /** @type {typeof import('../src/character-card-parser.js').write} */
+    let writeCard;
+
+    // Same 1x1 PNG fixture the other PNG-import describe block above uses.
+    const BLANK_PNG = Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+        'base64',
+    );
+
+    beforeAll(async () => {
+        ({ write: writeCard } = await import('../src/character-card-parser.js'));
+    });
+
+    test('a v2 PNG card whose data.name is "." (sanitizes to empty, no top-level name) imports instead of throwing', async () => {
+        const sourceCard = writeCard(BLANK_PNG, JSON.stringify({
+            spec: 'chara_card_v2', spec_version: '2.0',
+            data: { name: '.', description: 'A test character' },
+        }));
+
+        const formData = new FormData();
+        formData.append('avatar', new Blob([sourceCard], { type: 'image/png' }), 'main_-1990c43d7a8e_spec_v2.png');
+        formData.append('file_type', 'png');
+        const response = await fetch(`${baseUrl}/api/characters/import`, { method: 'POST', body: formData });
+
+        expect(response.status).toBe(200);
+        const data = await response.json();
+        expect(data.error).toBeUndefined();
+        expect(data.file_name).toEqual(expect.any(String));
+        expect(data.character.name).toBe('');
+    });
+
+    test('a v2 JSON card whose data.name is "." (sanitizes to empty, no top-level name) imports instead of throwing', async () => {
+        const body = JSON.stringify({
+            spec: 'chara_card_v2', spec_version: '2.0',
+            data: { name: '.', description: 'A test character' },
+        });
+        const formData = new FormData();
+        formData.append('avatar', new Blob([body], { type: 'application/json' }), 'dotname.json');
+        formData.append('file_type', 'json');
+        const response = await fetch(`${baseUrl}/api/characters/import`, { method: 'POST', body: formData });
+
+        expect(response.status).toBe(200);
+        const data = await response.json();
+        expect(data.error).toBeUndefined();
+        expect(data.file_name).toEqual(expect.any(String));
+        expect(data.character.name).toBe('');
+    });
+
+    test('a v2 card with no name field anywhere (data.name and top-level name both absent) imports instead of throwing', async () => {
+        const body = JSON.stringify({
+            spec: 'chara_card_v2', spec_version: '2.0',
+            data: { description: 'No name field at all' },
+        });
+        const formData = new FormData();
+        formData.append('avatar', new Blob([body], { type: 'application/json' }), 'noname.json');
+        formData.append('file_type', 'json');
+        const response = await fetch(`${baseUrl}/api/characters/import`, { method: 'POST', body: formData });
+
+        expect(response.status).toBe(200);
+        const data = await response.json();
+        expect(data.error).toBeUndefined();
+        expect(data.file_name).toEqual(expect.any(String));
+        expect(data.character.name).toBe('');
+    });
+});
