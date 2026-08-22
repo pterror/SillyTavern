@@ -1,6 +1,6 @@
 import { Fuse } from '../lib.js';
 
-import { saveSettings, substituteParams, getRequestHeaders, chat_metadata, this_chid, characters, charactersStore, getCurrentCharacter, saveCharacterDebounced, menu_type, eventSource, event_types, getExtensionPromptByName, saveMetadata, getCurrentChatId, extension_prompt_roles, create_save, createOrEditCharacter, name1, getOneCharacter, select_selected_character } from '../script.js';
+import { saveSettings, substituteParams, getRequestHeaders, chat_metadata, characters, charactersStore, getCurrentCharacter, saveCharacterDebounced, menu_type, eventSource, event_types, getExtensionPromptByName, saveMetadata, getCurrentChatId, extension_prompt_roles, create_save, createOrEditCharacter, name1, getOneCharacter, select_selected_character } from '../script.js';
 import { download, debounce, initScrollHeight, resetScrollHeight, parseJsonFile, extractDataFromPng, getFileBuffer, getCharaFilename, getSortableDelay, escapeRegex, PAGINATION_TEMPLATE, navigation_option, waitUntilCondition, isTrueBoolean, setValueByPath, flashHighlight, select2ModifyOptions, getSelect2OptionId, dynamicSelect2DataViaAjax, highlightRegex, select2ChoiceClickSubscribe, isFalseBoolean, getSanitizedFilename, checkOverwriteExistingData, getStringHash, parseStringArray, cancelDebounce, findChar, onlyUnique, equalsIgnoreCaseAndAccents, uuidv4, normalizeArray, getUniqueName, logSlashCommandWarn, addLongPressEvent, escapeHtml, setInfoBlock, clearInfoBlock } from './utils.js';
 import { extension_settings, getContext } from './extensions.js';
 import { NOTE_MODULE_NAME, metadata_keys, shouldWIAddPrompt } from './authors-note.js';
@@ -4268,28 +4268,25 @@ async function updateWorldInfoLinks(oldName, newName, { retargetPersonaLore } = 
     }
 
     // find all characters using the old lorebook name as their primary world
-    const linkedChIDs = [];
-    characters.forEach((character, chid) => {
-        if (character.data?.extensions?.world === oldName) {
-            linkedChIDs.push(chid);
-        }
-    });
+    const linkedAvatars = characters
+        .filter(character => character.data?.extensions?.world === oldName)
+        .map(character => character.avatar);
 
-    if (!linkedChIDs.length) {
+    if (!linkedAvatars.length) {
         return;
     }
 
     // Trigger the confirmation popup
     const updatePastLinksConfirm = await Popup.show.confirm(
         t`World/Lorebook renamed!`,
-        `<p>${t`Auxiliary Lorebook links have been updated. Would you like to update primary lorebook links for ${linkedChIDs.length} character(s) as well?`}</p>`,
+        `<p>${t`Auxiliary Lorebook links have been updated. Would you like to update primary lorebook links for ${linkedAvatars.length} character(s) as well?`}</p>`,
     ) == POPUP_RESULT.AFFIRMATIVE;
 
     if (updatePastLinksConfirm) {
         let activeCharacterUpdated = false;
 
-        for (const chid of linkedChIDs) {
-            const character = characters[chid];
+        for (const avatar of linkedAvatars) {
+            const character = charactersStore.get(avatar);
 
             try {
                 // /merge-attributes API call to update the file on the backend silently
@@ -4314,7 +4311,7 @@ async function updateWorldInfoLinks(oldName, newName, { retargetPersonaLore } = 
                 await getOneCharacter(character.avatar);
 
                 // Flag if the currently open character was affected
-                if (String(chid) === String(this_chid)) {
+                if (avatar === getCurrentCharacter()?.avatar) {
                     activeCharacterUpdated = true;
                 }
 

@@ -61,7 +61,6 @@ import {
     substituteParams,
     system_avatar,
     system_message_types,
-    this_chid,
     getCurrentCharacter,
     updateMessageElement,
     updateSwipeCounter,
@@ -5312,22 +5311,19 @@ async function createCharacterCallback(args) {
 async function updateCharacterCallback(args) {
     // Find the target character
     let character;
-    let characterIndex;
     if (args.char) {
         character = findChar({ name: args.char });
         if (!character) {
             toastr.warning(t`Character "${args.char}" not found`);
             return '';
         }
-        characterIndex = String(characters.indexOf(character));
     } else {
         // Use currently selected character
-        if (this_chid === undefined || !getCurrentCharacter()) {
+        if (!getCurrentCharacter()) {
             toastr.warning(t`No character selected and no char argument provided`);
             return '';
         }
         character = getCurrentCharacter();
-        characterIndex = this_chid;
     }
 
     // Build the update object with only provided fields
@@ -5459,11 +5455,9 @@ async function updateCharacterCallback(args) {
         // Refresh the character data
         await getOneCharacter(character.avatar);
 
-        // The character itself is looked up fresh by avatar (stable identity) rather than via
-        // characters[characterIndex], since characterIndex can go stale across the awaits above
-        // (avatar upload, getOneCharacter refresh). characterIndex is still sent as the event payload's
-        // `id` field for other this_chid-based consumers.
-        await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { id: characterIndex, character: charactersStore.get(character.avatar) } });
+        // The character itself is looked up fresh by avatar (stable identity), since it can be a different
+        // reference across the awaits above (avatar upload, getOneCharacter refresh).
+        await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character: charactersStore.get(character.avatar) } });
 
         // Update the side panel if this is the currently selected character
         if (character.avatar === getCurrentCharacter()?.avatar) {
@@ -5531,7 +5525,7 @@ async function getCharacterDataCallback(args) {
         }
     } else {
         // Use currently selected character
-        if (this_chid === undefined || !getCurrentCharacter()) {
+        if (!getCurrentCharacter()) {
             toastr.warning(t`No character selected and no char argument provided`);
             return '';
         }
@@ -5603,7 +5597,7 @@ async function deleteCharacterCallback(args) {
         }
     } else {
         // Use currently selected character
-        if (this_chid === undefined || !getCurrentCharacter()) {
+        if (!getCurrentCharacter()) {
             toastr.warning(t`No character selected and no char argument provided`);
             return 'false';
         }
@@ -6099,24 +6093,28 @@ export async function sendNarratorMessage(args, text) {
 }
 
 export async function promptQuietForLoudResponse(who, text) {
-    let character_id = getContext().characterId;
+    // Captured once, by avatar, before the generateQuietPrompt() await below - same intent as the old
+    // character_id snapshot (this_chid could go stale across an await; an avatar can't go stale the same
+    // way, but it can still point at a character that's no longer selected, which is exactly what "captured
+    // once at entry" is meant to preserve here).
+    const character = getCurrentCharacter();
     if (who === 'sys') {
         text = 'System: ' + text;
     } else if (who === 'user') {
         text = name1 + ': ' + text;
     } else if (who === 'char') {
-        text = characters[character_id].name + ': ' + text;
+        text = character.name + ': ' + text;
     } else if (who === 'raw') {
         // We don't need to modify the text
     }
 
-    //text = `${text}${power_user.instruct.enabled ? '' : '\n'}${(power_user.always_force_name2 && who != 'raw') ? characters[character_id].name + ":" : ""}`
+    //text = `${text}${power_user.instruct.enabled ? '' : '\n'}${(power_user.always_force_name2 && who != 'raw') ? character.name + ":" : ""}`
 
     let reply = await generateQuietPrompt({ quietPrompt: text, quietToLoud: true });
     text = await getRegexedString(reply, regex_placement.SLASH_COMMAND);
 
     const message = {
-        name: characters[character_id].name,
+        name: character.name,
         is_user: false,
         is_name: true,
         is_system: false,
