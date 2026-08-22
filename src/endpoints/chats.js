@@ -23,6 +23,7 @@ import {
     readFirstLine,
     isPathUnderParent,
 } from '../util.js';
+import { bumpGroupChatStats } from '../character-metadata-db.js';
 
 const isBackupEnabled = !!getConfigValue('backups.chat.enabled', true, 'boolean');
 const maxTotalChatBackups = Number(getConfigValue('backups.chat.maxTotalBackups', -1, 'number'));
@@ -932,6 +933,18 @@ router.post('/group/save', async function (request, response) {
 
         if (Array.isArray(chatData)) {
             await trySaveChat(chatData, chatFilePath, request.body.force, handle, String(id), request.user.directories.backups);
+
+            // Groups-schema extension write-path hook (owner decision - see character-metadata-db.js's
+            // bumpGroupChatStats() for the full rationale): keeps date_last_chat/chat_size fresh the moment a
+            // group chat is actually saved, rather than only whenever the group's own JSON file happens to be
+            // rewritten. `id` here is the CHAT's own id (group-chats.js's saveGroupChat() posts `group.chat_id`,
+            // not the group's persistent id) - bumpGroupChatStats() resolves which group owns it internally, see
+            // its own doc comment. Awaited but not fatal to the request if it fails, same tolerance groups.js's
+            // own upsertGroupRow() calls use - the chat write itself already succeeded above, and a stats-update
+            // failure here shouldn't turn that into a user-visible error.
+            await bumpGroupChatStats(request.user.directories, String(id)).catch(err =>
+                console.error(`Could not update group chat stats for ${id}:`, err));
+
             return response.send({ ok: true });
         } else {
             return response.status(400).send({ error: 'The request\'s body.chat is not an array.' });

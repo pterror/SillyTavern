@@ -29,8 +29,8 @@ import { CharXParser, persistCharXAssets } from '../charx.js';
 import cacheBuster from '../middleware/cacheBuster.js';
 import { searchCharacters, searchCharacterIds, rebuildCharacterSearchIndex, SEARCH_ID_CAP } from './characters-search-index.js';
 import { searchGroups } from './groups-search-index.js';
-import { getGroupsData } from './groups.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, checkCharactersExist, getChangesSince, findCharacterIdByContentHash } from '../character-metadata-db.js';
+import { getGroupsData, getGroupsByIds } from './groups.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, findCharacterIdByContentHash } from '../character-metadata-db.js';
 
 // With 100 MB limit it would take roughly 3000 characters to reach this limit
 const memoryCacheCapacity = getConfigValue('performance.memoryCacheCapacity', '100mb');
@@ -1550,6 +1550,29 @@ const MAX_QUERY_PAGE_SIZE = 2000;
  * 'search' - decision 23: "random and search compose unconditionally... sort stops being forced by the presence
  * of a query." Search narrows the candidate id set; whatever sort field is chosen orders it (relevance for
  * 'search', the seeded hash for 'random', a plain column otherwise).
+ *
+ * `filter.includeGroups: true` (owner decision extending the character-data-residency-redesign to groups, not
+ * part of the original design doc's §5 contract) merges the user's groups into the same sorted, paginated
+ * result, the SQL-backed analogue of what `/all`'s own `includeGroups` already does over a full in-memory scan
+ * (see paginateEntities() above). Response shape changes accordingly: `rows` becomes
+ * `Array<{ type: 'character', item: Character } | { type: 'group', item: Group }>` instead of a bare
+ * `Character[]`, and `total` counts both. **Omitted or `false` is byte-for-byte today's existing behavior** -
+ * every existing caller (favsToHotswap, CharacterRepository.queryAll, characters-query.test.js) keeps seeing
+ * exactly what it always has; this is the compatibility bar the implementation is built to hold, not a
+ * best-effort goal.
+ *
+ * `filter.search` + `filter.includeGroups: true`: groups have no full-text index and this extension does not add
+ * one (owner decision - see character-metadata-db.js's queryEntities() header). A non-empty `filter.search`
+ * therefore always routes through the pre-existing, characters-only queryCharacters() call below regardless of
+ * `includeGroups` - the result is simply wrapped into `{type: 'character', item}` shape when `includeGroups` was
+ * requested, so the response envelope stays consistent, but no group can ever appear in a search result. Not an
+ * error - matching the existing `sort.field: 'search'` rule's own "requires, doesn't merely permit" documentation
+ * style, this is a hard scope boundary, not a fallback.
+ *
+ * `filter.tags.include` composes with `includeGroups` for free (no separate mechanism): character_tags and
+ * group_tags are both indexed by tag_id, so a `{filter: {tags: {include: [folderId]}}, includeGroups: true}`
+ * request is exactly "open a folder" - it returns every character and group carrying that tag as one merged,
+ * paginated page, since a folder can contain both.
  * @param  {import("express").Request} request The HTTP request object.
  * @param  {import("express").Response} response The HTTP response object.
  * @return {void}
@@ -1560,6 +1583,7 @@ router.post('/query', async function (request, response) {
         const filter = body.filter ?? {};
         const sort = body.sort ?? {};
         const want = Array.isArray(body.want) ? body.want : ['rows', 'total'];
+        const includeGroups = filter.includeGroups === true;
 
         const searchTerm = typeof filter.search === 'string' ? filter.search.trim() : '';
         const hasSearch = searchTerm.length > 0;
@@ -1639,6 +1663,43 @@ router.post('/query', async function (request, response) {
             }
         }
 
+        // filter.includeGroups (owner decision extending the design doc's §5 contract to groups - see this
+        // route's own doc comment above): a search request always answers from queryCharacters() (characters-only
+        // - groups have no full-text index, see queryEntities()'s header), so only a non-search request with
+        // includeGroups actually reaches queryEntities()'s UNION ALL path.
+        if (!hasSearch && includeGroups) {
+            const result = await queryEntities(request.user.directories, queryParams);
+            if (result === null) {
+                return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
+            }
+
+            const payload = { rev: result.rev };
+            if (wantTotal) payload.total = result.total;
+            if (wantRows) {
+                // Hydrate just this page's group ids (getGroupsByIds() - bounded by pageSize, never a
+                // whole-directory read) and stamp queryEntities()'s own fav/date_added/date_last_chat/chat_size
+                // onto each one, so what's displayed always agrees with what the page was actually sorted by
+                // (see queryEntities()'s header on why hydration doesn't re-derive these from a live stat).
+                const groupIds = result.rows.filter(r => r.type === 'group').map(r => r.id);
+                const groupsById = groupIds.length > 0 ? getGroupsByIds(request.user.directories, groupIds) : {};
+                payload.rows = result.rows.map(r => {
+                    if (r.type === 'character') {
+                        return { type: 'character', item: r.item };
+                    }
+                    const group = groupsById[r.id];
+                    if (!group) {
+                        // The metadata row exists but the group's JSON file doesn't (deleted out from under a
+                        // stale row, or unreadable) - drop it rather than shipping a null item the client isn't
+                        // expecting. Rare and self-correcting: the next /delete or /edit reconciles the metadata
+                        // row against reality.
+                        return null;
+                    }
+                    return { type: 'group', item: { ...group, fav: r.fav, date_added: r.date_added, date_last_chat: r.date_last_chat, chat_size: r.chat_size } };
+                }).filter(Boolean);
+            }
+            return response.send(payload);
+        }
+
         const result = await queryCharacters(request.user.directories, queryParams);
 
         if (result === null) {
@@ -1646,7 +1707,7 @@ router.post('/query', async function (request, response) {
         }
 
         const payload = { rev: result.rev };
-        if (wantRows) payload.rows = result.rows;
+        if (wantRows) payload.rows = includeGroups ? result.rows.map(item => ({ type: 'character', item })) : result.rows;
         if (wantTotal) payload.total = approxTotal ? `~${result.total}` : result.total;
         if (searchBackend !== undefined) payload.searchBackend = searchBackend;
         return response.send(payload);
