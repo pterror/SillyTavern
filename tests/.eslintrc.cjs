@@ -28,6 +28,7 @@ module.exports = {
     ],
     globals: {
         SillyTavern: 'readonly',
+        globalThis: 'readonly',
     },
     rules: {
         'no-unused-vars': ['error', { args: 'none' }],

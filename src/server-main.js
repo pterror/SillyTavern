@@ -73,6 +73,7 @@ import { init as settingsInit } from './endpoints/settings.js';
 import { redirectDeprecatedEndpoints, ServerStartup, setupPrivateEndpoints } from './server-startup.js';
 import { diskCache } from './endpoints/characters.js';
 import { initializeMetadataStores, disposeMetadataStores } from './character-metadata-db.js';
+import { initializeLocalImportScan, disposeLocalImportScan } from './local-import-scan.js';
 import { migrateFlatSecrets } from './endpoints/secrets.js';
 import { migrateGroupChatsMetadataFormat } from './endpoints/groups.js';
 
@@ -314,6 +315,11 @@ async function preSetupTasks() {
     // starting to listen, per the design doc's "Runs at boot (non-blocking)".
     await initializeMetadataStores(directories);
 
+    // Config/admin-set-only "import characters from a local directory on disk" feature - inert unless
+    // localImport.directories is non-empty (see that module's header). Started after initializeMetadataStores()
+    // since it drives the same metadata store's batch-import/write path for whatever it discovers.
+    await initializeLocalImportScan();
+
     await settingsInit();
     await statsInit();
 
@@ -331,6 +337,7 @@ async function preSetupTasks() {
         }
         diskCache.dispose();
         disposeMetadataStores();
+        disposeLocalImportScan();
         setWindowTitle(consoleTitle);
         process.exit();
     };

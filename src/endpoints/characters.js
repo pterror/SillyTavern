@@ -1966,11 +1966,12 @@ function getPreservedName(request) {
  * sha256 hex digest of a file's raw bytes, streamed rather than read fully into memory first - the natural hash
  * point for bulk-import dedup (see `/import` below): this runs on the multer-saved upload BEFORE any
  * format-specific parsing touches it, so it's always hashing the exact bytes the user dropped, regardless of
- * format.
+ * format. Exported for local-import-scan.js, which needs the identical hash-then-dedup ordering against a
+ * locally-discovered file instead of a multer upload.
  * @param {string} filePath
  * @returns {Promise<string>} lowercase hex digest
  */
-function hashFileContents(filePath) {
+export function hashFileContents(filePath) {
     return new Promise((resolve, reject) => {
         const hash = crypto.createHash('sha256');
         const stream = fs.createReadStream(filePath);
@@ -1980,21 +1981,63 @@ function hashFileContents(filePath) {
     });
 }
 
+/**
+ * Format -> importer dispatch table for `/import` below, hoisted to module scope so importCharacterFileHeadless()
+ * (local-import-scan.js's entry point) can reuse the exact same table rather than a second copy that could drift.
+ */
+const formatImportFunctions = {
+    'yaml': importFromYaml,
+    'yml': importFromYaml,
+    'json': importFromJson,
+    'png': importFromPng,
+    'charx': importFromCharX,
+    'byaf': importFromByaf,
+};
+
+/**
+ * Headless counterpart to `POST /import` for the local-directory-scan feature (local-import-scan.js) - there is
+ * no real HTTP request for a scan-discovered file, so this builds the minimal fake Express `request` object that
+ * writeCharacterData()/the importFromX() functions actually read fields off of (`user.directories`,
+ * `user.profile.handle` for the disk-cache sync queue, and `body` for BYAF's optional persona name), and drives
+ * them through the exact same `formatImportFunctions` dispatch table, hash-based exact-duplicate dedup
+ * (findCharacterIdByContentHash()), and writeCharacterData()/metadata-upsert path `/import` uses - so a
+ * scan-discovered file is imported through the identical machinery a browser-uploaded one would be, not a
+ * parallel reimplementation of it.
+ *
+ * `filePath` must already be a file this function is allowed to consume: every formatImportFunctions() entry
+ * reads it and then deletes/unlinks it as part of normal processing (matching what they already do to a
+ * multer-saved upload) - callers must pass a copy staged for this purpose (see local-import-scan.js, which gets
+ * it there via copyCharacterFile()), never the original source file outside the managed tree.
+ * @param {string} filePath Absolute path to a staged copy of the discovered file - consumed (deleted) by the import.
+ * @param {string} format One of formatImportFunctions' keys (yaml/yml/json/png/charx/byaf)
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {{ userHandle: string, contentHash: string }} options
+ * @returns {Promise<{ fileName: string } | { duplicateOf: string } | null>} `null` for an unsupported format or a
+ * failed import (the importer returned no file name).
+ */
+export async function importCharacterFileHeadless(filePath, format, directories, { userHandle, contentHash }) {
+    const importFunction = formatImportFunctions[format];
+    if (!importFunction) return null;
+
+    const duplicateOf = await findCharacterIdByContentHash(directories, contentHash);
+    if (duplicateOf) return { duplicateOf };
+
+    /** @type {import('express').Request} */
+    const fakeRequest = /** @type {any} */ ({
+        user: { directories, profile: { handle: userHandle } },
+        body: {},
+    });
+
+    const fileName = await importFunction(filePath, { request: fakeRequest, contentHash }, undefined);
+    return fileName ? { fileName } : null;
+}
+
 router.post('/import', async function (request, response) {
     if (!request.body || !request.file) return response.sendStatus(400);
 
     const uploadPath = path.join(request.file.destination, request.file.filename);
     const format = request.body.file_type;
     const preservedFileName = getPreservedName(request);
-
-    const formatImportFunctions = {
-        'yaml': importFromYaml,
-        'yml': importFromYaml,
-        'json': importFromJson,
-        'png': importFromPng,
-        'charx': importFromCharX,
-        'byaf': importFromByaf,
-    };
 
     try {
         const importFunction = formatImportFunctions[format];
