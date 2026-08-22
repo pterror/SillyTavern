@@ -45,16 +45,17 @@ import { getConfigValue, mapWithConcurrency } from '../util.js';
  * hypothetically). Both this file's own two SQLite tiers still run the exact same SQLite/FTS5 code and produce
  * identical ranking and `label:query` behavior (search-query.js) when they're the tier in use.
  *
- * Freshness (for both backends) is checked cheaply (two stat() calls - the characters directory and tags.json)
- * on every search rather than via push-based invalidation hooks on every character-mutating route:
- * characters.js has ~9 routes that touch character files (create/rename/edit/edit-avatar/edit-attribute/
- * merge-attributes/delete/import/duplicate), and this module needs to import processCharacter() *from*
- * characters.js - having characters.js import an invalidate() call back from here would be the exact
- * characters.js<->other-module circular import shape that already caused a real TDZ crash earlier this session
- * (see the tags.js fix). A directory's mtime changes on any add/remove/rename, and write-file-atomic's
- * rename-over-target means an in-place edit changes it too - so comparing "has the characters dir (or
- * tags.json) changed since we indexed" catches every mutation path automatically, with no route-by-route hook
- * list to keep in sync and no import cycle. On staleness the SQLite index is rebuilt from scratch (not updated
+ * Freshness (for both backends) is checked cheaply (a characters-directory stat() plus getTagsRevision(),
+ * character-metadata-db.js's monotonic tag-revision counter - see getFreshnessSignature() below) on every
+ * search rather than via push-based invalidation hooks on every character-mutating route: characters.js has ~9
+ * routes that touch character files (create/rename/edit/edit-avatar/edit-attribute/merge-attributes/delete/
+ * import/duplicate), and this module needs to import processCharacter() *from* characters.js - having
+ * characters.js import an invalidate() call back from here would be the exact characters.js<->other-module
+ * circular import shape that already caused a real TDZ crash earlier this session (see the tags.js fix). A
+ * directory's mtime changes on any add/remove/rename, and write-file-atomic's rename-over-target means an
+ * in-place edit changes it too - so comparing "has the characters dir (or any tag definition/assignment)
+ * changed since we indexed" catches every mutation path automatically, with no route-by-route hook list to keep
+ * in sync and no import cycle. On staleness the SQLite index is rebuilt from scratch (not updated
  * incrementally row-by-row) - FTS5 absolutely supports incremental INSERT/UPDATE/DELETE, but wiring that up
  * per-route would reintroduce the same circular-import problem this stat-based check avoids, for a marginal
  * win given a full rebuild is already a ~6s one-time cost at real-world scale, not the multi-second-*per-query*
