@@ -1,12 +1,13 @@
 import fs from 'node:fs';
 import { promises as fsPromises } from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 
 import _ from 'lodash';
 
 import { color, getConfigValue, mapWithConcurrency } from './util.js';
 import { parse as parseCharacterCard } from './character-card-parser.js';
-import { getCharaCardV2 } from './character-card-normalize.js';
+import { getCharaCardV2, stripInstallLocalFields } from './character-card-normalize.js';
 import { calculateChatSize, calculateDataSize, calculateGroupChatStats, toShallow } from './character-shallow.js';
 import { readTagsData } from './endpoints/tags-data.js';
 import { getSqliteEngine } from './endpoints/sqlite-engine.js';
@@ -92,6 +93,17 @@ const BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS = 5000;
 // need to be aggressive - it exists to catch what the other two mechanisms missed.
 const RECONCILE_INTERVAL_MS = getConfigValue('performance.characterMetadataReconcileIntervalMs', 5 * 60 * 1000, 'number');
 
+// Forward-looking groundwork for a not-yet-built library-wide duplicate scan: whether such a scan is allowed to
+// fall back to the expensive normalized parse-and-compare path (open both files, strip install-local fields,
+// deep-compare) for a character whose `import_poisoned` flag is set - see this module's header comment on
+// content_identity_hash/import_poisoned for why a poisoned row's cheap indexed hash can't be trusted alone. At
+// 24k+ poisoned rows on an install that predates the import-mutation fix, that fallback is O(n) per comparison
+// and could make a scan slow; this lets an install opt out of paying that cost (a scan would then just skip
+// poisoned characters rather than fully resolving whether they're duplicates). No scan feature reads this yet -
+// it exists so the day one is built, the "should this even be attempted" question already has a documented,
+// per-install answer instead of being decided ad hoc inside that feature.
+export const allowExpensiveDuplicateFallback = !!getConfigValue('performance.allowExpensiveDuplicateFallback', true, 'boolean');
+
 // Debounce window for the fs.watch handler (see startWatcher() below) - editors and this app's own
 // write-file-atomic writes can produce more than one raw fs event per logical change (e.g. a rename-over-target
 // shows up as both a 'rename' for the temp name and a 'change'/'rename' for the target), so a short debounce per
@@ -152,6 +164,25 @@ const SCHEMA_SQL = `
     -- character that was never brought in through that path (created/edited in-app, or imported before this
     -- column existed) - deliberately not backfilled for a preexisting library (see this column's own migration
     -- note below), so a NULL/NULL pair never counts as a match: the lookup only ever compares real hash values.
+    --
+    -- content_identity_hash / import_poisoned (see migrateContentIdentityColumns() below): a DIFFERENT hash
+    -- from content_hash above - content_hash fingerprints the raw bytes of whatever file an import was fed
+    -- (only ever set on import, only ever matches a byte-identical re-upload); content_identity_hash
+    -- fingerprints the character's own semantic content (install-local fields like fav/chat/create_date
+    -- stripped first - see stripInstallLocalFields()), computed fresh on EVERY successful write (create, edit,
+    -- import, rename - anything that reaches upsertCharacterFromWrite()), so two independently-imported copies
+    -- of the same original card can be recognized as the same character even though their raw bytes differ.
+    -- That equivalence only holds if the stored file actually went through the minimal-mutation write path
+    -- (character-card-parser.js's write(), characters.js's writeCharacterData()) - a card written by the OLD,
+    -- more-mutating import logic may have been reformatted/reencoded/spec-upgraded in ways that would make its
+    -- hash disagree with a fresh import of the identical original card, even though they're the same character.
+    -- import_poisoned=1 flags exactly that "can't trust the hash" state. Every row that predates this column
+    -- starts poisoned (its bytes are whatever the old logic produced, unknown/untrustworthy) - see the column's
+    -- own DEFAULT below. Any successful write clears it (poisoned=0) and records a hash computed from what was
+    -- JUST written, because that write necessarily went through the current (fixed) write path regardless of
+    -- how poisoned the row was before. Only upsertCharacterFromWrite() ever clears it - the reconciler/watcher/
+    -- bootstrap paths (which discover files, they don't write them) leave both columns exactly as they found
+    -- them, same as they already leave date_added alone (see this module's header).
 
     CREATE TABLE IF NOT EXISTS character_tags (
         character_id TEXT NOT NULL,
@@ -265,10 +296,12 @@ const SCHEMA_SQL = `
 const UPSERT_SQL = `
     INSERT INTO characters (
         id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size,
-        file_mtime, world, creator, version, creator_notes, shallow_json, content_hash, rev
+        file_mtime, world, creator, version, creator_notes, shallow_json, content_hash,
+        content_identity_hash, import_poisoned, rev
     ) VALUES (
         @id, @name, @name_fold, @fav, @date_added, @create_date, @date_last_chat, @chat_size, @data_size,
-        @file_mtime, @world, @creator, @version, @creator_notes, @shallow_json, @content_hash, @rev
+        @file_mtime, @world, @creator, @version, @creator_notes, @shallow_json, @content_hash,
+        @content_identity_hash, @import_poisoned, @rev
     )
     ON CONFLICT(id) DO UPDATE SET
         name = excluded.name,
@@ -291,6 +324,19 @@ const UPSERT_SQL = `
         -- write that actually carries a fresh hash (a re-import that reuses this same id, i.e. a preserved-name
         -- replace) overwrites it; every other writer's NULL candidate falls through to keep whatever was there.
         content_hash = COALESCE(excluded.content_hash, characters.content_hash),
+        -- Same COALESCE shape as content_hash just above, for the same reason: buildRow() binds a real hash
+        -- string only from upsertCharacterFromWrite() (a genuine write just happened), NULL from every other
+        -- caller (reconcile/watch/bootstrap, which are re-observing a file, not writing one) - see this
+        -- column's own SCHEMA_SQL comment.
+        content_identity_hash = COALESCE(excluded.content_identity_hash, characters.content_identity_hash),
+        -- Not a COALESCE (import_poisoned is NOT NULL, so there's no NULL sentinel available for "no signal" -
+        -- buildRow() binds a real 0/1 always). Instead: a genuine write (excluded.import_poisoned = 0) always
+        -- wins and clears poison, because that write just proved this row's bytes now come from the current
+        -- write path regardless of whether it was poisoned before. Anything else (reconcile/watch/bootstrap,
+        -- which bind import_poisoned = 1 as their "no signal" value - see buildRow()) leaves whatever was
+        -- already there untouched, so a previously-cleared row never gets silently re-poisoned just because
+        -- something re-observed its unchanged file.
+        import_poisoned = CASE WHEN excluded.import_poisoned = 0 THEN 0 ELSE characters.import_poisoned END,
         rev = excluded.rev
     -- date_added is deliberately absent from this SET list - see this module's header ("date_added IS RECORDED
     -- ONCE"). On a genuine insert the VALUES clause's candidate is used; on conflict SQLite leaves the existing
@@ -339,6 +385,69 @@ function migrateContentHashColumn(db) {
         db.exec('ALTER TABLE characters ADD COLUMN content_hash TEXT');
     }
     db.exec('CREATE INDEX IF NOT EXISTS idx_characters_content_hash ON characters(content_hash)');
+}
+
+/**
+ * Adds `content_identity_hash`/`import_poisoned` (see this module's SCHEMA_SQL comment on both) to an existing
+ * `characters` table that predates them. Same ALTER-if-missing shape as migrateContentHashColumn() just above,
+ * for the identical reason (no `ADD COLUMN IF NOT EXISTS` in SQLite).
+ *
+ * `import_poisoned`'s ALTER deliberately gives it `DEFAULT 1` (not 0): every row that already exists the first
+ * time this runs was written by whatever import logic was in place before this column existed - which, as of
+ * this fix, is unconditionally the OLD, more-mutating logic - so treating every preexisting row as poisoned by
+ * default is simply correct, not a conservative placeholder. A brand-new install's very first CREATE TABLE
+ * never has this column either (matching migrateContentHashColumn()'s reasoning), so a genuinely-new row
+ * inserted via this same connection before any real write happens would also land poisoned=1 by that DEFAULT -
+ * which is also correct: SCHEMA_SQL's CREATE TABLE has no way to know this row is about to be immediately
+ * overwritten by an INSERT that explicitly supplies its own import_poisoned value (buildRow() always supplies
+ * one, so in practice the DEFAULT only matters for a row this module has never upserted through buildRow() at
+ * all, e.g. hand-authored test fixtures).
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ */
+function migrateContentIdentityColumns(db) {
+    const columns = db.all('PRAGMA table_info(characters)');
+    if (!columns.some(c => c.name === 'content_identity_hash')) {
+        db.exec('ALTER TABLE characters ADD COLUMN content_identity_hash TEXT');
+    }
+    if (!columns.some(c => c.name === 'import_poisoned')) {
+        db.exec('ALTER TABLE characters ADD COLUMN import_poisoned INTEGER NOT NULL DEFAULT 1');
+    }
+    db.exec('CREATE INDEX IF NOT EXISTS idx_characters_content_identity_hash ON characters(content_identity_hash)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_characters_import_poisoned ON characters(import_poisoned)');
+}
+
+/**
+ * Computes the content-identity fingerprint for a just-written character (see this module's SCHEMA_SQL comment
+ * on content_identity_hash) - sha256 over a canonical (sorted-keys) JSON serialization of the character with
+ * install-local fields (fav/chat/create_date) stripped, so two independently-imported copies of the same
+ * original card hash identically regardless of which install produced them or what key order their JSON
+ * happened to serialize in.
+ * @param {object} character Spec V2 character object (already parsed from the JSON that was just written)
+ * @returns {string} sha256 hex digest
+ */
+export function computeContentIdentityHash(character) {
+    const stripped = stripInstallLocalFields(character);
+    return crypto.createHash('sha256').update(canonicalStringify(stripped)).digest('hex');
+}
+
+/**
+ * JSON.stringify with object keys sorted at every level, so two objects with the same key/value pairs in a
+ * different insertion order (e.g. a value that round-tripped through JSON.parse -> mutate -> JSON.stringify
+ * versus one that never did) always serialize identically. Only ever fed the plain-data output of
+ * stripInstallLocalFields() (no cycles, no non-JSON-safe values), so this doesn't need JSON.stringify's full
+ * generality (replacer functions, etc.) - just deterministic key order.
+ * @param {*} value
+ * @returns {string}
+ */
+function canonicalStringify(value) {
+    if (Array.isArray(value)) {
+        return `[${value.map(canonicalStringify).join(',')}]`;
+    }
+    if (value !== null && typeof value === 'object') {
+        const keys = Object.keys(value).sort();
+        return `{${keys.map(k => `${JSON.stringify(k)}:${canonicalStringify(value[k])}`).join(',')}}`;
+    }
+    return JSON.stringify(value);
 }
 
 /**
@@ -435,6 +544,7 @@ async function getEntry(directories) {
     const db = engine.openDatabase(getDbPath(directories));
     db.exec(SCHEMA_SQL);
     migrateContentHashColumn(db);
+    migrateContentIdentityColumns(db);
     migrateGroupsColumns(db, directories);
     // Design doc §5.3, decisions 8/13: random-sort order is a per-query `ORDER BY <hash>(id, seed)`, never a
     // materialized column (a materialized seeded column is O(users × rerolls) to maintain - see the decision's
@@ -458,9 +568,12 @@ async function getEntry(directories) {
  * @param {number} extra.fileMtime
  * @param {number} extra.chatSize
  * @param {number} extra.dateLastChat
+ * @param {string|null} [extra.contentHash]
+ * @param {string|null} [extra.contentIdentityHash] sha256 hex digest from computeContentIdentityHash(), or
+ * undefined/null from every caller except upsertCharacterFromWrite() - see this column's SCHEMA_SQL comment.
  * @returns {object} Row fields (minus `rev`)
  */
-function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, dateLastChat, contentHash }) {
+function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, dateLastChat, contentHash, contentIdentityHash }) {
     const includeCreatorNotes = !!getConfigValue('performance.shallowCharactersIncludeCreatorNotes', false, 'boolean');
     const dataSize = calculateDataSize(character?.data);
     const shallowSource = {
@@ -492,6 +605,17 @@ function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, date
         // SQL value, never `undefined` (which better-sqlite3 rejects as a bind parameter). See UPSERT_SQL's
         // ON CONFLICT clause for why a `null` candidate here never clobbers an existing hash on update.
         content_hash: contentHash ?? null,
+        // See UPSERT_SQL's ON CONFLICT clause and this column's SCHEMA_SQL comment: a real hash string only
+        // ever comes from upsertCharacterFromWrite() (a write just happened); every other caller's `undefined`
+        // normalizes to `null` here, which the COALESCE in UPSERT_SQL then treats as "no signal, don't touch".
+        content_identity_hash: contentIdentityHash ?? null,
+        // Not COALESCE-able the way content_identity_hash is (this column is NOT NULL, so there's no spare
+        // NULL to use as a "no signal" sentinel) - 0 only when a real write just proved this row unpoisoned
+        // (contentIdentityHash was supplied), 1 (the "no signal, and also the correct default for a row nobody
+        // has ever confirmed clean" value) otherwise. See UPSERT_SQL's own CASE-based ON CONFLICT clause for
+        // how a genuine INSERT and a "no signal" conflict update end up with the right value from this same
+        // bound parameter despite it only ever being a plain 0/1.
+        import_poisoned: contentIdentityHash ? 0 : 1,
     };
 }
 
@@ -583,8 +707,13 @@ export async function upsertCharacterFromWrite(directories, avatar, cardJson, fi
         return;
     }
 
+    // Every call here follows a real writeCharacterData() success (see this function's own header), so the file
+    // just written necessarily went through the current, minimal-mutation write path regardless of whether this
+    // row was poisoned before - buildRow() uses contentIdentityHash's mere presence (not its value) to clear
+    // import_poisoned, see that column's SCHEMA_SQL comment.
+    const contentIdentityHash = computeContentIdentityHash(character);
     const { chatSize, dateLastChat } = calculateChatSize(path.join(directories.chats, avatar.replace(/\.png$/, '')));
-    const row = buildRow(avatar, character, { dateAddedCandidate: Date.now(), fileMtime: fileMtimeMs, chatSize, dateLastChat, contentHash });
+    const row = buildRow(avatar, character, { dateAddedCandidate: Date.now(), fileMtime: fileMtimeMs, chatSize, dateLastChat, contentHash, contentIdentityHash });
     const tagIds = getTagIdsFor(directories, avatar);
 
     applyOrBuffer(entry, row, tagIds);

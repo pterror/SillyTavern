@@ -17,6 +17,9 @@ process.env.SILLYTAVERN_BACKUPS_CHAT_CHECKINTEGRITY = 'true';
 process.env.SILLYTAVERN_PERFORMANCE_SHALLOWCHARACTERSINCLUDECREATORNOTES = 'false';
 process.env.SILLYTAVERN_PERFORMANCE_CHARACTERINDEXBUILDCONCURRENCY = '4';
 process.env.SILLYTAVERN_PERFORMANCE_CHARACTERMETADATARECONCILEINTERVALMS = '300000';
+// Groundwork for a not-yet-built duplicate scan (see character-metadata-db.js's own comment on this constant) -
+// also read at module load, so it needs the same env-var treatment as the three keys above.
+process.env.SILLYTAVERN_PERFORMANCE_ALLOWEXPENSIVEDUPLICATEFALLBACK = 'true';
 
 /** @type {import('../src/endpoints/chats.js')} */
 let chats;

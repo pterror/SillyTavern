@@ -260,6 +260,14 @@ performance:
   # the real ceiling long before this number is, so there's little reason to set it low - raise it further if
   # profiling on your own hardware shows this is the bottleneck rather than disk.
   characterIndexBuildConcurrency: 64
+  # Forward-looking groundwork for a not-yet-built library-wide duplicate scan (see character-metadata-db.js's
+  # content_identity_hash/import_poisoned columns): whether such a scan would be allowed to fall back to an
+  # expensive normalized parse-and-compare for a character whose import_poisoned flag is set (its cheap indexed
+  # hash can't be trusted - see that column's own doc comment). On an install with a large preexisting library
+  # (most/all characters poisoned, since only characters written after this setting's introduction get a
+  # trustworthy hash), that fallback is O(n) per comparison and could make a scan slow. Set to false to have a
+  # future scan skip poisoned characters entirely instead of paying that cost. No feature reads this yet.
+  allowExpensiveDuplicateFallback: true
   # Configures gzip compression for client requests with large payloads (e.g. settings or chat saves).
   requestCompression:
     # Enable request compression.

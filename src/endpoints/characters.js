@@ -18,7 +18,7 @@ import { default as validateAvatarUrlMiddleware, getFileNameValidationFunction, 
 import { deepMerge, humanizedDateTime, tryParse, MemoryLimitedMap, getConfigValue, mutateJsonString, clientRelativePath, getUniqueName, sanitizeSafeCharacterReplacements, getArrayBufferSlice, uuidv7 } from '../util.js';
 import { TavernCardValidator } from '../validator/TavernCardValidator.js';
 import { parse, read, write } from '../character-card-parser.js';
-import { getCharaCardV2, convertToV2, readFromV2, charaFormatData, convertWorldInfoToCharacterBook, unsetPrivateFields } from '../character-card-normalize.js';
+import { getCharaCardV2, convertToV2, readFromV2, charaFormatData, convertWorldInfoToCharacterBook, unsetPrivateFields, omitInstallLocalFields } from '../character-card-normalize.js';
 import { calculateChatSize, calculateDataSize, toShallow } from '../character-shallow.js';
 import { invalidateThumbnail, getThumbnailVersion } from './thumbnails.js';
 import { importRisuSprites } from './sprites.js';
@@ -360,24 +360,55 @@ export async function applyAvatarCropResize(jimp, crop) {
     return await image.getBuffer(JimpMime.png);
 }
 
+// First 8 bytes every PNG file starts with - used below to recognize "this is already a PNG" without paying
+// for a full Jimp decode just to answer that question.
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
 /**
  * Parses an image buffer and applies crop if defined.
+ *
+ * When no crop is requested and `buffer` is already a PNG, the Jimp decode/cover/re-encode round trip is
+ * skipped entirely and the original bytes are returned untouched - `cover()`'ing an image to its own existing
+ * dimensions is a no-op transform that still produces different output bytes than the source encoder did
+ * (different compressor, stripped ancillary chunks that aren't `chara`/`ccv3`), which is pure churn when
+ * nothing was actually asked to change. A crop, or a non-PNG source that genuinely needs format conversion,
+ * still goes through Jimp as before - this only removes the reencode when there's nothing for it to do.
  * @param {Buffer} buffer Buffer of the image
  * @param {Crop|undefined} [crop] Crop parameters
  * @returns {Promise<Buffer>} Image buffer
  */
 async function parseImageBuffer(buffer, crop) {
+    if (crop === undefined && buffer.subarray(0, 8).equals(PNG_SIGNATURE)) {
+        return buffer;
+    }
     const image = await Jimp.fromBuffer(buffer);
     return await applyAvatarCropResize(image, crop);
 }
 
 /**
  * Reads an image file and applies crop if defined.
+ *
+ * Same no-op-reencode avoidance as parseImageBuffer() above, for the file-path input case (the common one for
+ * `/import`'s PNG importer and for the YAML/JSON importers' shared DEFAULT_AVATAR_PATH) - see that function's
+ * doc comment for why skipping the Jimp round trip when there is genuinely nothing to change is safe. The
+ * `catch` below already proved raw-bytes-passthrough is safe for a PNG Jimp can't decode (e.g. an APNG); this
+ * generalizes the same passthrough to the far more common case of a plain PNG Jimp *could* decode but doesn't
+ * need to, because no crop was requested.
  * @param {string} imgPath Path to the image file
  * @param {Crop|undefined} crop Crop parameters
  * @returns {Promise<Buffer>} Image buffer
  */
 async function tryReadImage(imgPath, crop) {
+    if (crop === undefined) {
+        try {
+            const raw = await fs.promises.readFile(imgPath);
+            if (raw.subarray(0, 8).equals(PNG_SIGNATURE)) {
+                return raw;
+            }
+        } catch (error) {
+            // Fall through to the Jimp path below, which has its own error handling.
+        }
+    }
     try {
         const rawImg = await Jimp.read(imgPath);
         return await applyAvatarCropResize(rawImg, crop);
@@ -472,6 +503,7 @@ async function importFromYaml(uploadPath, context, preservedFileName) {
         'creator': '',
         'tags': '',
     }, context.request.user.directories);
+    omitInstallLocalFields(char);
     const result = await writeCharacterData(DEFAULT_AVATAR_PATH, JSON.stringify(char), fileName, context.request, undefined, context.contentHash);
     return result ? fileName : '';
 }
@@ -500,7 +532,7 @@ async function importFromCharX(uploadPath, { request, contentHash }, preservedFi
     }
     card.name = sanitize(card.data?.name || card.name);
     let processedCard = readFromV2(card);
-    unsetPrivateFields(processedCard);
+    omitInstallLocalFields(processedCard);
     processedCard.create_date = new Date().toISOString();
 
     const fileName = preservedFileName || mintCharacterId(request.user.directories);
@@ -538,6 +570,7 @@ async function importFromByaf(uploadPath, { request, contentHash }, preservedFil
 
     const byafData = await new ByafParser(data).parse();
     const card = readFromV2(byafData.card);
+    omitInstallLocalFields(card);
     const fileName = preservedFileName || mintCharacterId(request.user.directories);
 
     // Don't import chats and images if the character is being replaced or updated, instead of newly imported.
@@ -620,13 +653,15 @@ async function importFromJson(uploadPath, { request, contentHash }, preservedFil
     if (jsonData.spec !== undefined) {
         console.info(`Importing from ${jsonData.spec} json`);
         importRisuSprites(request.user.directories, jsonData);
-        unsetPrivateFields(jsonData);
         if (jsonData.data?.name) {
             jsonData.data.name = sanitize(jsonData.data.name);
         }
         jsonData.name = sanitize(jsonData.data?.name || jsonData.name);
         jsonData = readFromV2(jsonData);
         jsonData.create_date = new Date().toISOString();
+        // Last mutation before stringify - see omitInstallLocalFields()'s own doc comment on why import no
+        // longer writes fav/chat into the card at all (the metadata store is authoritative for that state now).
+        omitInstallLocalFields(jsonData);
         const pngName = preservedFileName || mintCharacterId(request.user.directories);
         const char = JSON.stringify(jsonData);
         const result = await writeCharacterData(DEFAULT_AVATAR_PATH, char, pngName, request, undefined, contentHash);
@@ -654,6 +689,7 @@ async function importFromJson(uploadPath, { request, contentHash }, preservedFil
             'tags': jsonData.tags ?? '',
         };
         char = convertToV2(char, request.user.directories);
+        omitInstallLocalFields(char);
         let charJSON = JSON.stringify(char);
         const result = await writeCharacterData(DEFAULT_AVATAR_PATH, charJSON, pngName, request, undefined, contentHash);
         return result ? pngName : '';
@@ -681,6 +717,7 @@ async function importFromJson(uploadPath, { request, contentHash }, preservedFil
             'tags': jsonData.tags ?? '',
         };
         char = convertToV2(char, request.user.directories);
+        omitInstallLocalFields(char);
         const charJSON = JSON.stringify(char);
         const result = await writeCharacterData(DEFAULT_AVATAR_PATH, charJSON, pngName, request, undefined, contentHash);
         return result ? pngName : '';
@@ -711,9 +748,9 @@ async function importFromPng(uploadPath, { request, contentHash }, preservedFile
     if (jsonData.spec !== undefined) {
         console.info(`Found a ${jsonData.spec} character file.`);
         importRisuSprites(request.user.directories, jsonData);
-        unsetPrivateFields(jsonData);
         jsonData = readFromV2(jsonData);
         jsonData.create_date = new Date().toISOString();
+        omitInstallLocalFields(jsonData);
         const char = JSON.stringify(jsonData);
         const result = await writeCharacterData(uploadPath, char, pngName, request, undefined, contentHash);
         fs.unlinkSync(uploadPath);
@@ -741,6 +778,7 @@ async function importFromPng(uploadPath, { request, contentHash }, preservedFile
             'tags': jsonData.tags ?? '',
         };
         char = convertToV2(char, request.user.directories);
+        omitInstallLocalFields(char);
         const charJSON = JSON.stringify(char);
         const result = await writeCharacterData(uploadPath, charJSON, pngName, request, undefined, contentHash);
         fs.unlinkSync(uploadPath);
