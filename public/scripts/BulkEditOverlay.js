@@ -68,29 +68,24 @@ class CharacterContextMenu {
      */
     static favorite = async (avatar) => {
         const character = CharacterContextMenu.#getCharacter(avatar);
-        const newFavState = !character.data.extensions.fav;
+        const newFavState = !character.fav;
 
-        const data = {
-            name: character.name,
-            avatar: character.avatar,
-            data: {
-                extensions: {
-                    fav: newFavState,
-                },
-            },
-            fav: newFavState,
-        };
-
-        const mergeResponse = await fetch('/api/characters/merge-attributes', {
+        // Favorite status is a pure metadata-store mutation now (owner decision - see character-metadata-db.js's
+        // setCharacterFav() doc comment), not a card-file edit - this used to round-trip the whole card through
+        // /merge-attributes just to flip one bit.
+        const favResponse = await fetch('/api/characters/fav', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify(data),
+            body: JSON.stringify({ avatar: character.avatar, fav: newFavState }),
         });
 
-        if (!mergeResponse.ok) {
-            mergeResponse.json().then(json => toastr.error(`Character not saved. Error: ${json.message}. Field: ${json.error}`));
+        if (!favResponse.ok) {
+            toastr.error(t`Failed to update favorite status.`);
+            return;
         }
 
+        character.fav = newFavState;
+        if (character.data?.extensions) character.data.extensions.fav = newFavState;
         const element = document.querySelector(`[data-avatar="${CSS.escape(avatar)}"]`);
         element?.classList.toggle('is_fav');
     };

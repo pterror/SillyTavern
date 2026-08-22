@@ -106,6 +106,20 @@ export function omitInstallLocalFields(char) {
 }
 
 /**
+ * Just the `fav`/`data.extensions.fav` half of omitInstallLocalFields() above - used by characters.js's /create
+ * and /edit routes (owner decision: favorite status is now a pure metadata-store mutation, see
+ * character-metadata-db.js's setCharacterFav()), which must NOT also unset `chat` the way omitInstallLocalFields()
+ * does - `chat` (the current chat-pointer) is a live field those two routes read from the request body and write
+ * through deliberately (charaFormatData()/the /edit route's own `char.chat = request.body.chat`), an entirely
+ * separate, still-file-resident concern this change does not touch.
+ * @param {object} char Character object (V1 top-level shape or V2 `data`-wrapped shape), mutated in place
+ */
+export function omitFavField(char) {
+    _.unset(char, 'fav');
+    _.unset(char, 'data.extensions.fav');
+}
+
+/**
  * Strips the same per-importer/per-install fields unsetPrivateFields() does (fav, data.extensions.fav, chat),
  * plus create_date - which unsetPrivateFields() deliberately leaves alone (import legitimately wants a fresh
  * one, see character-card-normalize.js's own git history) but which is exactly as install-local as the other
