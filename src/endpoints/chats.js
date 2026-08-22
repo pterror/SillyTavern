@@ -604,6 +604,13 @@ router.post('/get', validateAvatarUrlMiddleware, function (request, response) {
         const chatFileName = `${String(request.body.file_name)}.jsonl`;
         const chatFilePath = path.join(directoryPath, sanitize(chatFileName));
 
+        // Distinct from "empty/corrupted chat" (which legitimately returns []) - the client uses this
+        // to tell "this chat was deleted out from under me" apart from "this is a genuinely blank
+        // chat", so it doesn't blindly recreate a deleted file under its old name (see getChat()).
+        if (!fs.existsSync(chatFilePath)) {
+            return response.status(404).send({ error: 'not_found' });
+        }
+
         return response.send(getChatData(chatFilePath));
     } catch (error) {
         console.error(error);
