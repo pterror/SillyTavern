@@ -1,4 +1,4 @@
-import { chat, chat_metadata, eventSource, event_types, getCurrentCharacter, getRequestHeaders, this_chid } from '../../../script.js';
+import { chat, chat_metadata, eventSource, event_types, getCurrentCharacter, getRequestHeaders } from '../../../script.js';
 import { extension_settings } from '../../extensions.js';
 import { QuickReplyApi } from './api/QuickReplyApi.js';
 import { AutoExecuteHandler } from './src/AutoExecuteHandler.js';
@@ -141,15 +141,15 @@ const executeIfReadyElseQueue = async (functionToCall, args) => {
 };
 
 const handleCharChange = () => {
-    if (lastCharId === this_chid) return;
-
-    // Unload the old character's config and update the character ID cache.
-    settings.charConfig = null;
-    lastCharId = this_chid;
-
-    // If no character is loaded, there's nothing more to do.
     /** @type {Character} */
     const character = getCurrentCharacter();
+    if (lastCharId === character?.avatar) return;
+
+    // Unload the old character's config and update the character avatar cache.
+    settings.charConfig = null;
+    lastCharId = character?.avatar;
+
+    // If no character is loaded, there's nothing more to do.
     if (!character || selected_group) {
         return;
     }
@@ -312,7 +312,7 @@ const onBeforeGeneration = async (_generationType, _options = {}, isDryRun = fal
         log('Before-generation hook skipped due to dryRun.');
         return;
     }
-    if (selected_group && this_chid === undefined) {
+    if (selected_group && !getCurrentCharacter()) {
         log('Before-generation hook skipped for event before group wrapper.');
         return;
     }

@@ -7,9 +7,9 @@ import {
     extension_prompt_roles,
     extension_prompt_types,
     saveSettingsDebounced,
-    this_chid,
+    getCurrentCharacter,
+    getSelectionState,
 } from '../script.js';
-import { selected_group } from './group-chats.js';
 import { extension_settings, getContext, saveMetadataDebounced } from './extensions.js';
 import { getCharaFilename, debounce, delay } from './utils.js';
 import { getTokenCountAsync } from './tokenizers.js';
@@ -392,7 +392,7 @@ export function setFloatingPrompt() {
 }
 
 function onANMenuItemClick() {
-    if (!selected_group && this_chid === undefined) {
+    if (getSelectionState().type === 'none') {
         toastr.warning(t`Select a character before trying to use Author's Note`, '', { timeOut: 2000 });
         return;
     }
@@ -594,7 +594,7 @@ function registerAuthorsNoteMacros() {
         macros.register('charAuthorsNote', {
             category: MacroCategory.PROMPTS,
             description: t`The contents of the Character Author's Note`,
-            handler: () => this_chid !== undefined ? (extension_settings.note.chara.find((e) => e.name === getCharaFilename())?.prompt ?? '') : '',
+            handler: () => getCurrentCharacter() ? (extension_settings.note.chara.find((e) => e.name === getCharaFilename())?.prompt ?? '') : '',
         });
         macros.register('defaultAuthorsNote', {
             category: MacroCategory.PROMPTS,
@@ -608,7 +608,7 @@ function registerAuthorsNoteMacros() {
             t`The contents of the Author's Note`,
         );
         MacrosParser.registerMacro('charAuthorsNote',
-            () => this_chid !== undefined ? (extension_settings.note.chara.find((e) => e.name === getCharaFilename())?.prompt ?? '') : '',
+            () => getCurrentCharacter() ? (extension_settings.note.chara.find((e) => e.name === getCharaFilename())?.prompt ?? '') : '',
             t`The contents of the Character Author's Note`,
         );
         MacrosParser.registerMacro('defaultAuthorsNote',
