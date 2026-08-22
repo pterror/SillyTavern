@@ -13237,7 +13237,11 @@ jQuery(async function () {
         const messageElement = $(this).closest('.mes');
         const thumbURL = $(this).children('img').attr('src');
         const charsPath = '/characters/';
-        const targetAvatarImg = thumbURL.substring(thumbURL.lastIndexOf('=') + 1);
+        // Pull the `file=` query param specifically, not "whatever's after the last =" - getThumbnailUrl()
+        // can append a trailing `&v=<version>` or `&t=<timestamp>` after `file=`, and grabbing the last `=`
+        // segment would then yield that cache-busting value instead of the avatar filename.
+        const fileParamMatch = thumbURL.match(/[?&]file=([^&]*)/);
+        const targetAvatarImg = fileParamMatch ? fileParamMatch[1] : thumbURL.substring(thumbURL.lastIndexOf('=') + 1);
         const charname = targetAvatarImg.replace('.png', '');
         const isValidCharacter = characters.some(x => x.avatar === decodeURIComponent(targetAvatarImg));
 
