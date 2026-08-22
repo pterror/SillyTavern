@@ -189,6 +189,13 @@ export function registerEnvMacros() {
         description: 'Original message content for {{original}} substitution in in character prompt overrides.',
         returns: 'Original message content.',
         handler: ({ env }) => {
+            // env.functions.original is only defined by MacroEnvBuilder when the caller
+            // passed an `original` string (e.g. during an in-character prompt override).
+            // Other evaluation contexts, such as plain token counting, have no meaningful
+            // "original message" to substitute, so resolve to empty rather than throwing.
+            if (typeof env.functions.original !== 'function') {
+                return '';
+            }
             const value = env.functions.original();
             return value;
         },
