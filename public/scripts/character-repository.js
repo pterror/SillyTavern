@@ -214,13 +214,37 @@ async function postJson(url, body) {
  * resident/non-resident contract this exists to make explicit.
  */
 export class CharacterRepository {
+    /** @type {import('./entity-store.js').EntityStore<Character>|undefined} explicit store passed to the constructor, if any */
+    #explicitStore;
+
+    /** @type {import('./entity-store.js').EntityStore<Character>|null} resolved lazily - see `get store()` */
+    #resolvedStore = null;
+
     /**
      * @param {import('./entity-store.js').EntityStore<Character>} [store] - defaults to the app's real
      * `charactersStore` singleton; overridable for tests, and this is what phase 6 swaps to change what backs a
      * residency miss.
      */
-    constructor(store = charactersStore) {
-        this.store = store;
+    constructor(store) {
+        this.#explicitStore = store;
+    }
+
+    /**
+     * Resolves lazily on first access rather than defaulting eagerly in the constructor: script.js imports this
+     * module (for `characterRepository`/`buildCharacterQuery`/etc) above its own `charactersStore` declaration,
+     * and this module's `export const characterRepository = new CharacterRepository()` runs at module-eval time -
+     * so a `store = charactersStore` constructor default would read `charactersStore` while script.js is still
+     * mid import-resolution, before its `export const charactersStore` has initialized (TDZ crash: "can't access
+     * lexical declaration 'charactersStore' before initialization"). Same class of bug as FILTER_TYPES in
+     * tags.js (commit f30735376) and getStringHash in utils.js (commit 85017bb94); same fix shape - defer the
+     * reference until first real use, by which point script.js has finished evaluating.
+     * @returns {import('./entity-store.js').EntityStore<Character>}
+     */
+    get store() {
+        if (this.#resolvedStore === null) {
+            this.#resolvedStore = this.#explicitStore ?? charactersStore;
+        }
+        return this.#resolvedStore;
     }
 
     /**
