@@ -10965,9 +10965,20 @@ export async function doNewChat({ deleteCurrentChat = false } = {}) {
     } else {
         //RossAscends: added character name to new chat filenames and replaced Date.now() with humanizedDateTime;
         chat_metadata = {};
-        charactersStore.update(getCurrentCharacter().avatar, { chat: `${name2} - ${humanizedDateTime()}` });
-        $('#selected_chat_pole').val(getCurrentCharacter().chat);
+        const newChatName = `${name2} - ${humanizedDateTime()}`;
+        charactersStore.update(getCurrentCharacter().avatar, { chat: newChatName });
+        $('#selected_chat_pole').val(newChatName);
         await getChat();
+        // getChat() can refetch this character from the server (unshallowCharacter() -> getOneCharacter(), for
+        // a shallow-loaded entity) and Object.assign the response onto the in-memory entity - since the chat
+        // rename above hasn't been persisted server-side yet at this point, that refetch silently clobbers it
+        // back to the still-old server value (and select_selected_character(), at the tail of getChat(), then
+        // re-syncs #selected_chat_pole from that clobbered entity too). Reapplying both here, right before the
+        // save, is what actually makes createOrEditCharacter() below persist the new chat name instead of
+        // silently re-saving the old one - without this, "start new chat" looks like it worked (a fresh empty
+        // chat renders) but no new chat file is ever created.
+        charactersStore.update(getCurrentCharacter().avatar, { chat: newChatName });
+        $('#selected_chat_pole').val(newChatName);
         await createOrEditCharacter(new CustomEvent('newChat'));
         if (deleteCurrentChat) await delChat(chat_file_for_del + '.jsonl');
     }
