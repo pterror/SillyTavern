@@ -92,20 +92,38 @@ function prefixNamedParamsForWasm(params) {
 export function openNativeDatabase(DatabaseCtor, path) {
     const db = new DatabaseCtor(path);
     db.pragma('journal_mode = WAL');
+
+    // Prepared-statement cache, keyed by SQL text. db.prepare() isn't free - it parses the SQL and compiles it to
+    // VDBE bytecode - and a caller that runs the same SQL text repeatedly with different params on every call
+    // (any hot loop using run()/get()/all(), e.g. character-metadata-db.js's writeRowSync() during a large
+    // bootstrap/reconcile pass) was re-paying that compile cost every single time instead of once. A better-
+    // sqlite3 Statement is safe to reuse across calls - each .run()/.get()/.all() rebinds its own params - so
+    // caching is just the "prepare once, execute many" shape insertMany() below already used for its one
+    // hardcoded statement, generalized to every SQL string this handle sees.
+    const stmtCache = new Map();
+    const prepare = (sql) => {
+        let stmt = stmtCache.get(sql);
+        if (!stmt) {
+            stmt = db.prepare(sql);
+            stmtCache.set(sql, stmt);
+        }
+        return stmt;
+    };
+
     return {
         exec: (sql) => db.exec(sql),
         insertMany: (sql, rows) => {
-            const stmt = db.prepare(sql);
+            const stmt = prepare(sql);
             db.transaction((items) => {
                 for (const item of items) {
                     stmt.run(item);
                 }
             })(rows);
         },
-        query: (sql, param) => db.prepare(sql).all(param),
-        run: (sql, params) => db.prepare(sql).run(params ?? {}),
-        get: (sql, params) => db.prepare(sql).get(params ?? {}),
-        all: (sql, params) => db.prepare(sql).all(params ?? {}),
+        query: (sql, param) => prepare(sql).all(param),
+        run: (sql, params) => prepare(sql).run(params ?? {}),
+        get: (sql, params) => prepare(sql).get(params ?? {}),
+        all: (sql, params) => prepare(sql).all(params ?? {}),
         transaction: (fn) => db.transaction(fn)(),
         checkpoint: () => db.pragma('wal_checkpoint(TRUNCATE)'),
         close: () => db.close(),
@@ -119,10 +137,27 @@ export function openNativeDatabase(DatabaseCtor, path) {
  */
 export function openWasmDatabase(WasmDatabaseCtor, path) {
     const db = new WasmDatabaseCtor(path);
+
+    // Prepared-statement cache, keyed by SQL text - same "prepare once, reuse across calls" reasoning as
+    // openNativeDatabase()'s cache above (see that comment). Unlike better-sqlite3, node-sqlite3-wasm statements
+    // need an explicit stmt.finalize() to release their native-side resources; a cached statement is finalized
+    // only when this handle's close() runs, not after each individual call - insertMany() below used to finalize
+    // its statement at the end of every call, which was safe only because it never cached anything, but caching
+    // the *same* statement object elsewhere means it must survive past a single insertMany() call.
+    const stmtCache = new Map();
+    const prepare = (sql) => {
+        let stmt = stmtCache.get(sql);
+        if (!stmt) {
+            stmt = db.prepare(sql);
+            stmtCache.set(sql, stmt);
+        }
+        return stmt;
+    };
+
     return {
         exec: (sql) => db.exec(sql),
         insertMany: (sql, rows) => {
-            const stmt = db.prepare(sql);
+            const stmt = prepare(sql);
             db.exec('BEGIN');
             try {
                 for (const item of rows) {
@@ -135,14 +170,12 @@ export function openWasmDatabase(WasmDatabaseCtor, path) {
             } catch (err) {
                 db.exec('ROLLBACK');
                 throw err;
-            } finally {
-                stmt.finalize();
             }
         },
-        query: (sql, param) => db.prepare(sql).all(param),
-        run: (sql, params) => db.prepare(sql).run(prefixNamedParamsForWasm(params) ?? {}),
-        get: (sql, params) => db.prepare(sql).get(prefixNamedParamsForWasm(params) ?? {}),
-        all: (sql, params) => db.prepare(sql).all(prefixNamedParamsForWasm(params) ?? {}),
+        query: (sql, param) => prepare(sql).all(param),
+        run: (sql, params) => prepare(sql).run(prefixNamedParamsForWasm(params) ?? {}),
+        get: (sql, params) => prepare(sql).get(prefixNamedParamsForWasm(params) ?? {}),
+        all: (sql, params) => prepare(sql).all(prefixNamedParamsForWasm(params) ?? {}),
         // No native transaction() API on this engine (see this module's header on WAL support being the other
         // native-only feature) - a plain BEGIN/COMMIT/ROLLBACK around a synchronous fn() is equivalent, same
         // pattern insertMany() above already uses.
@@ -157,7 +190,13 @@ export function openWasmDatabase(WasmDatabaseCtor, path) {
             }
         },
         checkpoint: () => { /* no-op: this engine's WASM-compiled SQLite doesn't support WAL mode at all */ },
-        close: () => db.close(),
+        close: () => {
+            for (const stmt of stmtCache.values()) {
+                stmt.finalize();
+            }
+            stmtCache.clear();
+            db.close();
+        },
     };
 }
 

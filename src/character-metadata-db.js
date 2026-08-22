@@ -816,7 +816,19 @@ export async function initializeMetadataStores(directoriesList) {
 
         startWatcher(entry);
         entry.reconcileInterval = setInterval(() => {
-            reconcile(directories).catch(err => console.error(`[character-metadata] Periodic reconcile failed for ${directories.root}:`, err));
+            // Wait for any bootstrap backfill still in flight before starting a periodic reconcile pass. Without
+            // this, a library big enough that bootstrapIfNeeded() takes longer than RECONCILE_INTERVAL_MS (very
+            // real at tens of thousands of characters - the whole reason this file is being sped up) got a
+            // reconcile() pass launched concurrently with the still-running bootstrap: both walk the same
+            // characters directory and write to the same db at the same time, so every character bootstrap
+            // hasn't reached yet looks "new" to reconcile() too, and it re-parses + re-upserts it right alongside
+            // bootstrap doing the same thing - real duplicate work, not just lock contention, that was
+            // multiplying total bootstrap wall-clock time. entry.bootstrapPromise is read here (not captured
+            // earlier) so this always sees whatever's current by the time the interval actually fires.
+            const waitForBootstrap = entry.bootstrapPromise ?? Promise.resolve();
+            waitForBootstrap
+                .then(() => reconcile(directories))
+                .catch(err => console.error(`[character-metadata] Periodic reconcile failed for ${directories.root}:`, err));
         }, RECONCILE_INTERVAL_MS);
         // setInterval alone would keep the process alive even if everything else has shut down - unref() so
         // this timer never becomes the reason the server can't exit.

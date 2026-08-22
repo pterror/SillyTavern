@@ -193,6 +193,52 @@ describe('bootstrapIfNeeded', () => {
     });
 });
 
+describe('reconcile racing bootstrap (regression: initializeMetadataStores() must not let its periodic reconcile interval fire concurrently with an in-flight bootstrap)', () => {
+    // initializeMetadataStores() itself schedules the periodic reconcile via a real 5-minute (by default)
+    // setInterval, which isn't practical to exercise directly in a unit test without either a multi-minute wait
+    // or fake-timer/real-async-I/O interaction that would make this flaky. What these two tests pin down instead
+    // is the actual causal mechanism the fix (entry.bootstrapPromise awaited before the interval's reconcile()
+    // call - see initializeMetadataStores()) addresses: reconcile() concurrent with a still-running
+    // bootstrapIfNeeded() over the same directory produces duplicate upserts (one from each pass reaching the
+    // same not-yet-bootstrapped file), inflating the change log without a matching row-count increase - this is
+    // exactly the rev-vs-character-count mismatch observed on a real, large, in-progress bootstrap. Sequencing
+    // them (what the fix makes the periodic interval actually do) does not.
+    test('running reconcile() concurrently with an in-flight bootstrapIfNeeded() duplicates upserts (rev advances more than once per character)', async () => {
+        // A large-enough file count that the two passes' real async fs I/O actually interleaves (this is what
+        // made the bug reliably reproduce on the owner's real ~24k-card library, not a hypothetical) - too few
+        // files risks one pass finishing before the other's had a chance to observe any overlap.
+        for (let i = 0; i < 150; i++) {
+            await writeCardFile(`Card${i}.png`, { name: `Card${i}`, data: { name: `Card${i}`, description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+        }
+
+        // Deliberately NOT awaited before starting reconcile() - this is the exact shape the old, unguarded
+        // `setInterval(() => reconcile(directories), ...)` produced whenever the interval fired mid-bootstrap.
+        const bootstrapPromise = metadataDb.bootstrapIfNeeded(directories);
+        const reconcilePromise = metadataDb.reconcile(directories);
+        await Promise.all([bootstrapPromise, reconcilePromise]);
+
+        const changes = await metadataDb.getChangesSince(directories, 0);
+        const result = await metadataDb.queryCharacters(directories, { wantRows: false, wantTotal: true });
+        // A rev count higher than the final character count means at least one file got processed (parsed +
+        // written) by both passes instead of exactly one - the real duplicate-work symptom this test guards
+        // against, not just lock contention.
+        expect(changes.rev).toBeGreaterThan(result.total);
+    });
+
+    test('sequencing reconcile() after bootstrapIfNeeded() resolves (what the fixed periodic interval does) does not duplicate upserts', async () => {
+        for (let i = 0; i < 150; i++) {
+            await writeCardFile(`Card${i}.png`, { name: `Card${i}`, data: { name: `Card${i}`, description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+        }
+
+        await metadataDb.bootstrapIfNeeded(directories);
+        await metadataDb.reconcile(directories);
+
+        const changes = await metadataDb.getChangesSince(directories, 0);
+        const result = await metadataDb.queryCharacters(directories, { wantRows: false, wantTotal: true });
+        expect(changes.rev).toBe(result.total);
+    });
+});
+
 describe('reconcile', () => {
     test('discovers a file written directly to disk (no write-path hook) with date_added = now, not ctimeMs', async () => {
         await metadataDb.bootstrapIfNeeded(directories); // establishes the "already bootstrapped" baseline
