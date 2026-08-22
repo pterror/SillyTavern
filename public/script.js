@@ -1324,9 +1324,32 @@ export async function printCharacters(fullRefresh = false) {
         // set is materialized client-side and the plugin slices it in memory on page turn.
         const entities = await getEntitiesList({ doFilter: true });
 
+        // When a search term is active, `entities` was narrowed by `entitiesFilter.serverSearchResults`
+        // (searchFilter(), filters.js), which is itself capped at the server's page-fetch limit
+        // (POST /api/characters/all's `DEFAULT_PAGE_LIMIT`, characters.js) - so `entities.length` here can be
+        // far smaller than the real match count. `resultCount`'s "Showing X of Y matches" text (search-box.js/
+        // fetchServerCharacterSearchResults()) already discloses that same gap for the search bar; this mirrors
+        // it for the pagination navigator, which otherwise renders e.g. "1-500 .. 500" - individually correct
+        // against the capped `entities` array, but silently wrong (and inconsistent with the "of Y matches" text
+        // right above it) against the real match count. `entities.length` still drives the actual page-turn math
+        // (`pageSize`/`totalPage` derive from it, unaffected by this override) - only the displayed total number
+        // changes, since paging itself genuinely can't go past what the server actually sent down.
+        const searchResults = entitiesFilter.serverSearchResults;
+        const searchTerm = entitiesFilter.getFilterData(FILTER_TYPES.SEARCH);
+        const realMatchTotal = searchTerm && searchResults?.searchValue === searchTerm && searchResults.total > entities.length
+            ? searchResults.total
+            : undefined;
+
         $('#rm_print_characters_pagination').pagination({
             ...sharedPaginationOptions,
             dataSource: entities,
+            formatNavigator: realMatchTotal === undefined
+                ? PAGINATION_TEMPLATE
+                : function (currentPage, _totalPage, totalNumber) {
+                    const rangeStart = (currentPage - 1) * pageSize + 1;
+                    const rangeEnd = Math.min(currentPage * pageSize, totalNumber);
+                    return `${rangeStart}-${rangeEnd} .. ${realMatchTotal}`;
+                },
             callback: makePageCallback(() => entities.length),
         });
     }
@@ -11933,7 +11956,7 @@ export async function fetchServerCharacterSearchResults(searchQuery) {
             }
         });
 
-        entitiesFilter.setServerSearchResults({ searchValue: searchQuery, favOnly, characterScores, groupScores });
+        entitiesFilter.setServerSearchResults({ searchValue: searchQuery, favOnly, characterScores, groupScores, total });
 
         // The client's own list/grid pagination (printCharacters(), Characters_PerPage) already shows a
         // "rangeStart-rangeEnd .. N" navigator, but N there is just `items.length` - at most `total` capped
