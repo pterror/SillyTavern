@@ -1,8 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { TAGS_FILE } from '../constants.js';
-import { readTagsData } from './tags-data.js';
+import { getTagDefinitions, getEntityTagIdsForMany, getTagsRevision } from '../character-metadata-db.js';
 import { processCharacter } from './characters.js';
 import { buildFtsQuery } from './search-query.js';
 import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD, FAV_FIELD } from './tantivy-search.js';
@@ -121,13 +120,14 @@ const indexCoordinator = createIndexCoordinator();
 
 /**
  * @param {import('../users.js').UserDirectoryList} directories User directories
- * @returns {string} A cheap fingerprint that changes whenever a character or tags.json is added/removed/edited
+ * @returns {Promise<string>} A cheap fingerprint that changes whenever a character is added/removed/edited or a
+ * tag definition/assignment changes (getTagsRevision() - see character-metadata-db.js - replaces the old
+ * tags.json-mtime half of this signature now that tags.json is gone)
  */
-function getFreshnessSignature(directories) {
+async function getFreshnessSignature(directories) {
     const charDirMtime = fs.statSync(directories.characters).mtimeMs;
-    const pathToTags = path.join(directories.root, TAGS_FILE);
-    const tagsMtime = fs.existsSync(pathToTags) ? fs.statSync(pathToTags).mtimeMs : 0;
-    return `${charDirMtime}:${tagsMtime}`;
+    const tagsRev = await getTagsRevision(directories);
+    return `${charDirMtime}:${tagsRev}`;
 }
 
 // How many characters get read, processed, and inserted into the FTS5 index per batch/transaction while
@@ -207,13 +207,21 @@ async function* readCharacterBatches(directories) {
 
 /**
  * @param {import('../users.js').UserDirectoryList} directories
- * @returns {(avatar: string) => string} Resolves a character's tag names (space-joined) from tags.json, the
- * same `#tags` concept the client's fuzzySearchCharacters() resolves from its in-memory tag_map.
+ * @param {string[]} avatars Every character avatar about to be indexed - fetched once up front so this resolves
+ * with two batched sqlite reads total (tag definitions + getEntityTagIdsForMany()) rather than one
+ * getCharacterTagIds() call per character, which would turn an index build into N round trips instead of the 2
+ * batched reads the old single readTagsData() call effectively was.
+ * @returns {Promise<(avatar: string) => string>} A sync closure over the pre-fetched data, resolving a
+ * character's tag names (space-joined) - the same `#tags` concept the client's fuzzySearchCharacters() resolves
+ * from its in-memory tag_map.
  */
-function makeTagNamesResolver(directories) {
-    const { tags, tag_map } = readTagsData(directories);
-    const tagsById = new Map(tags.map(tag => [tag.id, tag]));
-    return (avatar) => (tag_map[avatar] ?? [])
+async function makeTagNamesResolver(directories, avatars) {
+    const [definitions, assignments] = await Promise.all([
+        getTagDefinitions(directories),
+        getEntityTagIdsForMany(directories, avatars),
+    ]);
+    const tagsById = new Map((definitions ?? []).map(tag => [tag.id, tag]));
+    return (avatar) => (assignments?.[avatar] ?? [])
         .map(id => tagsById.get(id)?.name)
         .filter(Boolean)
         .join(' ');
@@ -250,7 +258,8 @@ async function buildSqliteIndex(directories, engine) {
         );
     `);
 
-    const tagNamesFor = makeTagNamesResolver(directories);
+    const avatars = fs.readdirSync(directories.characters).filter(file => file.endsWith('.png'));
+    const tagNamesFor = await makeTagNamesResolver(directories, avatars);
     const insertSql = `INSERT INTO cards (avatar, data, fav, ${BM25_INDEXED_COLUMNS.join(', ')})
          VALUES (@avatar, @data, @fav, @name, @resolved_tags, @description, @mes_example, @scenario, @personality, @first_mes, @creator_notes, @creator, @tags, @alternate_greetings)`;
 
@@ -323,7 +332,8 @@ async function buildTantivyIndex(directories, tantivy) {
     const index = new tantivy.Index(schema, indexDir, false);
     const writer = index.writer();
 
-    const tagNamesFor = makeTagNamesResolver(directories);
+    const avatars = fs.readdirSync(directories.characters).filter(file => file.endsWith('.png'));
+    const tagNamesFor = await makeTagNamesResolver(directories, avatars);
 
     let batchIndex = 0;
     for await (const batch of readCharacterBatches(directories)) {
@@ -448,7 +458,7 @@ function countSqliteIndexMatches(db, searchTerm, favOnly) {
  * (independent of `maxRows`), and which engine tier produced them.
  */
 export async function searchCharacters(handle, directories, searchTerm, maxRows, favOnly) {
-    const signature = getFreshnessSignature(directories);
+    const signature = await getFreshnessSignature(directories);
     const engine = await resolveSearchEngine();
 
     if (engine.tier === 'unavailable') {

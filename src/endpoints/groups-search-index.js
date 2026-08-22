@@ -1,8 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { TAGS_FILE } from '../constants.js';
-import { readTagsData } from './tags-data.js';
+import { getTagDefinitions, getEntityTagIdsForMany, getTagsRevision } from '../character-metadata-db.js';
 import { getGroupsData } from './groups.js';
 import { buildFtsQuery } from './search-query.js';
 import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD, FAV_FIELD } from './tantivy-search.js';
@@ -58,23 +57,31 @@ const indexCoordinator = createIndexCoordinator();
 
 /**
  * @param {import('../users.js').UserDirectoryList} directories User directories
- * @returns {string} A cheap fingerprint that changes whenever a group or tags.json is added/removed/edited
+ * @returns {Promise<string>} A cheap fingerprint that changes whenever a group is added/removed/edited or a tag
+ * definition/assignment changes (getTagsRevision() - see character-metadata-db.js - replaces the old
+ * tags.json-mtime half of this signature now that tags.json is gone)
  */
-function getFreshnessSignature(directories) {
+async function getFreshnessSignature(directories) {
     const groupsDirMtime = fs.existsSync(directories.groups) ? fs.statSync(directories.groups).mtimeMs : 0;
-    const pathToTags = path.join(directories.root, TAGS_FILE);
-    const tagsMtime = fs.existsSync(pathToTags) ? fs.statSync(pathToTags).mtimeMs : 0;
-    return `${groupsDirMtime}:${tagsMtime}`;
+    const tagsRev = await getTagsRevision(directories);
+    return `${groupsDirMtime}:${tagsRev}`;
 }
 
 /**
  * @param {import('../users.js').UserDirectoryList} directories
- * @returns {(groupId: string) => string} Resolves a group's tag names (space-joined) from tags.json
+ * @param {string[]} groupIds Every group id about to be indexed - fetched once up front so this resolves with
+ * two batched sqlite reads total (tag definitions + getEntityTagIdsForMany()) rather than one getGroupTagIds()
+ * call per group - see characters-search-index.js's makeTagNamesResolver() for the full rationale.
+ * @returns {Promise<(groupId: string) => string>} A sync closure over the pre-fetched data, resolving a group's
+ * tag names (space-joined)
  */
-function makeTagNamesResolver(directories) {
-    const { tags, tag_map } = readTagsData(directories);
-    const tagsById = new Map(tags.map(tag => [tag.id, tag]));
-    return (groupId) => (tag_map[groupId] ?? [])
+async function makeTagNamesResolver(directories, groupIds) {
+    const [definitions, assignments] = await Promise.all([
+        getTagDefinitions(directories),
+        getEntityTagIdsForMany(directories, groupIds),
+    ]);
+    const tagsById = new Map((definitions ?? []).map(tag => [tag.id, tag]));
+    return (groupId) => (assignments?.[groupId] ?? [])
         .map(id => tagsById.get(id)?.name)
         .filter(Boolean)
         .join(' ');
@@ -96,9 +103,9 @@ const CHECKPOINT_EVERY_N_BATCHES = 20;
  * @param {import('../users.js').UserDirectoryList} directories User directories
  * @param {{ kind: 'native' | 'wasm', openDatabase: (path: string) => import('./sqlite-engine.js').SqliteEngineHandle }} engine
  * The resolved SQLite engine (sqlite-engine.js)
- * @returns {import('./sqlite-engine.js').SqliteEngineHandle} The freshly built, open database handle
+ * @returns {Promise<import('./sqlite-engine.js').SqliteEngineHandle>} The freshly built, open database handle
  */
-function buildSqliteIndex(directories, engine) {
+async function buildSqliteIndex(directories, engine) {
     const dbDir = path.join(directories.root, 'search-index');
     if (!fs.existsSync(dbDir)) {
         fs.mkdirSync(dbDir, { recursive: true });
@@ -123,7 +130,7 @@ function buildSqliteIndex(directories, engine) {
     `);
 
     const groups = getGroupsData(directories);
-    const tagNamesFor = makeTagNamesResolver(directories);
+    const tagNamesFor = await makeTagNamesResolver(directories, groups.map(group => group.id));
     const insertSql = `INSERT INTO groups (groupId, data, fav, ${BM25_INDEXED_COLUMNS.join(', ')})
          VALUES (@groupId, @data, @fav, @name, @resolved_tags, @members, @id)`;
 
@@ -162,11 +169,11 @@ function buildSqliteIndex(directories, engine) {
  * batched).
  * @param {import('../users.js').UserDirectoryList} directories User directories
  * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy The resolved tantivy module (tantivy-engine.js)
- * @returns {{ index: import('@oxdev03/node-tantivy-binding').Index, schema: import('@oxdev03/node-tantivy-binding').Schema, close: () => void }}
+ * @returns {Promise<{ index: import('@oxdev03/node-tantivy-binding').Index, schema: import('@oxdev03/node-tantivy-binding').Schema, close: () => void }>}
  * The freshly built, open index handle - `close()` is a no-op, see characters-search-index.js's
  * buildTantivyIndex() for why.
  */
-function buildTantivyIndex(directories, tantivy) {
+async function buildTantivyIndex(directories, tantivy) {
     const dbDir = path.join(directories.root, 'search-index');
     if (!fs.existsSync(dbDir)) {
         fs.mkdirSync(dbDir, { recursive: true });
@@ -180,7 +187,7 @@ function buildTantivyIndex(directories, tantivy) {
     const writer = index.writer();
 
     const groups = getGroupsData(directories);
-    const tagNamesFor = makeTagNamesResolver(directories);
+    const tagNamesFor = await makeTagNamesResolver(directories, groups.map(group => group.id));
 
     let batchIndex = 0;
     for (let i = 0; i < groups.length; i += INDEX_BUILD_BATCH_SIZE) {
@@ -267,7 +274,7 @@ function countSqliteIndexMatches(db, searchTerm, favOnly) {
  * `total` is the true match count, independent of `maxRows`.
  */
 export async function searchGroups(handle, directories, searchTerm, maxRows, favOnly) {
-    const signature = getFreshnessSignature(directories);
+    const signature = await getFreshnessSignature(directories);
     const engine = await resolveSearchEngine();
 
     if (engine.tier === 'unavailable') {
