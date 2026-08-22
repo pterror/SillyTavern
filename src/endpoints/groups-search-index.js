@@ -289,7 +289,11 @@ export async function searchGroups(handle, directories, searchTerm, maxRows, fav
         }
         const boundedMaxRows = Number.isFinite(maxRows) ? maxRows : DEFAULT_TANTIVY_MAX_ROWS;
         const { results, total } = runTantivySearch(tantivyIndex.index, query, boundedMaxRows);
-        return { results, total, backend: 'tantivy' };
+        // Groups still store the full group JSON in DATA_FIELD (see that constant's doc comment,
+        // tantivy-search.js) - runSearch() no longer parses it for the caller, since characters-search-index.js's
+        // id-only payload has nothing to parse, so this tier does it here instead.
+        const items = results.map(r => ({ item: JSON.parse(r.raw), score: r.score }));
+        return { results: items, total, backend: 'tantivy' };
     }
 
     const db = await indexCoordinator.getIndex(handle, signature, () => buildSqliteIndex(directories, engine.sqlite));

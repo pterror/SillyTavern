@@ -34,7 +34,10 @@ function names(index, schema, term, maxRows = 10, options = {}) {
         return { names: [], total: 0 };
     }
     const { results, total } = runSearch(index, query, maxRows);
-    return { names: results.map(r => r.item.name), total };
+    // runSearch() no longer parses DATA_FIELD itself (characters-search-index.js's slim id-only payload has
+    // nothing to parse) - this test's own index still stores the full JSON doc there (matching
+    // groups-search-index.js's unchanged behavior), so this helper parses it back itself.
+    return { names: results.map(r => JSON.parse(r.raw).name), total };
 }
 
 describe('tantivy-search.js', () => {
@@ -110,7 +113,7 @@ describe('tantivy-search.js', () => {
         const query = buildSearchQuery(tantivy, schema, 'sunny', FIELD_WEIGHTS, FIELD_LABELS);
         const { results: hits } = runSearch(index, query, 10);
         expect(hits).toHaveLength(1);
-        expect(hits[0].item).toEqual(docs[3]);
+        expect(JSON.parse(hits[0].raw)).toEqual(docs[3]);
     });
 });
 

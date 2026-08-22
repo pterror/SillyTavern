@@ -11,6 +11,12 @@ import { calculateChatSize, calculateDataSize, toShallow } from './character-sha
 import { readTagsData } from './endpoints/tags-data.js';
 import { getSqliteEngine } from './endpoints/sqlite-engine.js';
 import { TAGS_FILE } from './constants.js';
+// cyrb53 - pure, dependency-free (no DOM/browser globals), already factored out of power-user.js specifically so
+// it stays importable in a plain Node environment (see that module's own header) - reused here rather than
+// duplicated so the server's seeded random-sort ordering (design doc §5.3, decision 8/13) can never drift from
+// the client comparator (public/scripts/random-sort.js's compareByRandomSeed()) that decides the *same* ordering
+// for whatever page hasn't round-tripped to the server yet.
+import { getStringHash } from '../public/scripts/hash-utils.js';
 
 /**
  * Phase 1 of the character-data-residency redesign (see docs/design/character-data-residency-redesign.md, §3):
@@ -295,7 +301,12 @@ async function getEntry(directories) {
     }
     const db = engine.openDatabase(getDbPath(directories));
     db.exec(SCHEMA_SQL);
-
+    // Design doc §5.3, decisions 8/13: random-sort order is a per-query `ORDER BY <hash>(id, seed)`, never a
+    // materialized column (a materialized seeded column is O(users × rerolls) to maintain - see the decision's
+    // rationale). Registering the client's own cyrb53 as a real SQL function is what makes that expressible at
+    // the SQL layer at all, so it composes with LIMIT/OFFSET pagination instead of requiring a JS-side sort over
+    // every candidate row first.
+    db.defineFunction('RANDHASH', (id, seed) => getStringHash(String(id ?? ''), Number(seed ?? 0)));
     /** @type {MetadataDbEntry} */
     const entry = { db, directories, watcher: null, watchTimers: new Map(), reconcileInterval: null, batch: null, bootstrapPromise: null };
     entries.set(key, entry);
@@ -1067,6 +1078,61 @@ export async function getTagsRevision(directories) {
 }
 
 /**
+ * Generic reader over the `meta` key/value table (see SCHEMA_SQL) - the phase-1 header flags this table as
+ * under-used ("only ever holds bootstrap_completed... worth fixing before the table has data worth migrating"),
+ * so this is the one general-purpose accessor pair (this + setMetaValue() below) rather than a bespoke
+ * get/set function per new key. characters-search-index.js's incremental tantivy maintenance uses this to persist
+ * "which change-log rev / tags_rev this user's on-disk tantivy index was last caught up to" - state that belongs
+ * to the search-index subsystem, not this module's own freshness bookkeeping, but is stored here rather than in
+ * a second small file/lock because this table (and this module's write path) already is the single point every
+ * character/tag mutation funnels through, so there is no second source of truth to keep in sync.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} key
+ * @returns {Promise<string | null>} The stored value, or `null` if unset *or* if the metadata store itself is
+ * unavailable - callers that need to tell those two apart should call getEntry()-backed functions directly, none
+ * currently need to.
+ */
+export async function getMetaValue(directories, key) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    const row = entry.db.get('SELECT value FROM meta WHERE key = ?', [key]);
+    return row ? String(row.value) : null;
+}
+
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} key
+ * @param {string | number} value Stringified before storage - `meta.value` is TEXT (see SCHEMA_SQL).
+ * @returns {Promise<void>} No-ops if the metadata store is unavailable.
+ */
+export async function setMetaValue(directories, key, value) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+    entry.db.run(
+        'INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+        { key, value: String(value) },
+    );
+}
+
+/**
+ * Every character id that currently carries at least one tag - `character_tags`' own id set, not a
+ * `SELECT * FROM characters` scan. Used by characters-search-index.js's incremental tantivy maintenance: a tag
+ * *rename* (a definition edit, not an assignment change) bumps `tags_rev` without producing any `changes` log
+ * row for the characters that display that tag's name in their indexed `resolved_tags` field, so those
+ * characters need re-indexing even though nothing in the `changes` table names them. This is a cheap
+ * index-only query against `character_tags` regardless of library size - it never touches `characters` or the
+ * filesystem - so re-indexing the ids it returns is still per-change-event work, not a library-wide scan.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<string[] | null>} `null` if the metadata store is unavailable.
+ */
+export async function getAllTaggedCharacterIds(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    const rows = entry.db.all('SELECT DISTINCT character_id FROM character_tags');
+    return rows.map(row => row.character_id);
+}
+
+/**
  * Phase 3 (design doc §3.4, extended by owner decision to groups): `POST /api/tags/for`'s backing query - the
  * tag ids assigned to each of `ids`, in one batched read rather than one `getCharacterTagIds()`/
  * `getGroupTagIds()` call per entity. `ids` can freely mix character avatars and group ids - each one is looked
@@ -1443,14 +1509,16 @@ export async function restoreTagMap(directories, tagMap) {
 }
 
 /**
- * Phase 2 (design doc §5): the columns queryCharacters() below is allowed to sort by, mapped to the actual SQLite
- * column each one sorts on. Deliberately NOT including 'random' or 'search' - both are real values in the doc's
- * `sort.field` union, but neither belongs to this module: 'random' is the seeded-hash comparator design doc §5.3
- * scopes to phase 5b (it needs the client-owned seed plumbing that phase adds), and 'search' means routing
- * through the tantivy/FTS5 index (characters-search-index.js) rather than this table, which is explicitly out of
- * scope for this pass - see the caller (characters.js's /query route) for why it 400s on both instead of
- * silently falling back to name order the way the pre-phase-2 `/all` endpoint's `sortOrder=random` bug did (doc
- * §5.3: "silent wrong result, not a failure" is exactly the failure mode being avoided here).
+ * Phase 2 (design doc §5): the columns queryCharacters() below is allowed to sort by via a plain `ORDER BY
+ * <column>`, mapped to the actual SQLite column each one sorts on. Deliberately NOT including 'random' or
+ * 'search' - both are real values in the doc's `sort.field` union, but neither is a plain column sort:
+ *   - 'random' (design doc §5.3, decisions 8/13) sorts by `RANDHASH(id, seed)` (a registered SQL function - see
+ *     getEntry() above), not a table column, so it's handled as its own branch in queryCharacters() below rather
+ *     than living in this lookup table.
+ *   - 'search' means "preserve the relevance order the caller's own full-text search already computed"
+ *     (characters-search-index.js's tantivy/FTS5 tier) - there is no SQL column for text relevance, so
+ *     queryCharacters() takes that order as a caller-supplied `idOrder` array (see its `sortField === 'search'`
+ *     branch) instead of computing anything here.
  */
 const QUERYABLE_SORT_COLUMNS = {
     name: 'name_fold',
@@ -1547,13 +1615,29 @@ function buildWhereClause({ tags, fav, world, excludeIds, ids } = {}) {
  * @param {string} [params.world]
  * @param {string[]} [params.excludeIds]
  * @param {string[]} [params.ids] Present-but-empty means "resolve nothing" (short-circuits to an empty result,
- * no query run) - see buildWhereClause()'s doc comment.
- * @param {string} [params.sortField] One of QUERYABLE_SORT_COLUMNS' keys. Anything else (including 'random'/
- * 'search') is the caller's responsibility to have already rejected - this function just no-ops it into "no
- * primary sort", which would silently misbehave as a *pagination* endpoint (same items could reappear or vanish
- * across pages), so the caller must not let that happen. Omitted -> id order only (still fully deterministic,
- * just not meaningful).
- * @param {string} [params.sortOrder] 'asc' (default) or 'desc'.
+ * no query run) - see buildWhereClause()'s doc comment. When `filter.search` is also active (see the /query
+ * route in characters.js), the caller is expected to have already intersected any explicit `filter.ids` with the
+ * search engine's own matched-id set before calling, so this one `ids` restriction is all this function needs to
+ * honor both at once.
+ * @param {string} [params.sortField] One of QUERYABLE_SORT_COLUMNS' keys, or 'random' (needs `params.seed`), or
+ * 'search' (needs `params.idOrder` - see that param's doc). Anything else is the caller's responsibility to have
+ * already rejected - this function just no-ops an unrecognized field into "no primary sort", which would
+ * silently misbehave as a *pagination* endpoint (same items could reappear or vanish across pages), so the
+ * caller must not let that happen. Omitted -> id order only (still fully deterministic, just not meaningful).
+ * @param {string} [params.sortOrder] 'asc' (default) or 'desc'. Not meaningful for 'search' (relevance order is
+ * whatever `idOrder` already is - see decision 23, random and search compose but neither one has an inherent
+ * "reverse" the way a column sort does).
+ * @param {number} [params.seed] Required (and validated finite) when `sortField === 'random'` - design doc §5.3
+ * decision 10: the seed is client-owned and must travel on every page request, or page 2 silently comes from a
+ * different permutation than page 1.
+ * @param {string[]} [params.idOrder] Required when `sortField === 'search'`: the caller's own full-text search
+ * engine's already-relevance-ordered id list (characters-search-index.js). Rows are re-ordered to match this
+ * array's order rather than any SQL `ORDER BY`, since there is no SQL column for text relevance - offset/limit
+ * are applied in JS against the reordered set, not pushed into the SQL query, for the same reason. Every id in
+ * this array should already be a member of the `ids`/other-filter-restricted candidate set (the /query route
+ * arranges this); an id present here but absent from that set (a stale search-index hit for a since-deleted
+ * character, or one excluded by another filter) is silently dropped rather than erroring, exactly like a normal
+ * SQL join would.
  * @param {number} [params.offset]
  * @param {number} [params.limit]
  * @param {boolean} [params.wantRows] Default true.
@@ -1571,7 +1655,7 @@ export async function queryCharacters(directories, params = {}) {
 
     const {
         tags, fav, world, excludeIds, ids,
-        sortField, sortOrder,
+        sortField, sortOrder, seed, idOrder,
         offset, limit,
         wantRows = true, wantTotal = true,
     } = params;
@@ -1594,17 +1678,39 @@ export async function queryCharacters(directories, params = {}) {
     }
 
     let rows;
-    if (wantRows) {
-        const column = QUERYABLE_SORT_COLUMNS[sortField];
-        const direction = sortOrder === 'desc' ? 'DESC' : 'ASC';
+    if (wantRows && sortField === 'search') {
+        // Relevance order has no SQL column - fetch every candidate row (already bounded by the `ids` restriction
+        // buildWhereClause() applied above, which the /query route sizes to the search engine's own matched-id
+        // cap, not this table's size) with no SQL ORDER BY/LIMIT, then reorder and slice in JS to match idOrder.
+        const orderedIds = Array.isArray(idOrder) ? idOrder : [];
+        const rawRows = entry.db.all(`SELECT id, shallow_json FROM characters ${where}`, args);
+        const shallowById = new Map(rawRows.map(r => [r.id, r.shallow_json]));
+        const numericOffset = Number.isFinite(offset) && offset > 0 ? Math.trunc(offset) : 0;
+        const numericLimit = Number.isFinite(limit) && limit >= 0 ? Math.trunc(limit) : DEFAULT_QUERY_LIMIT;
+        rows = orderedIds
+            .filter(id => shallowById.has(id))
+            .slice(numericOffset, numericOffset + numericLimit)
+            .map(id => JSON.parse(shallowById.get(id)));
+    } else if (wantRows) {
         const orderParts = [];
-        if (column) {
-            orderParts.push(`${column} ${direction}`);
-            // fav is boolean-valued, so a great many rows tie on it - name_fold is the natural secondary key
-            // (this is exactly what the schema's idx_characters_fav_name_fold composite index exists for, per
-            // design doc §3.1).
-            if (sortField === 'fav') {
-                orderParts.push('name_fold ASC');
+        if (sortField === 'random') {
+            // Design doc §5.3, decisions 8/13: a per-query hash order, computed via the RANDHASH SQL function
+            // registered in getEntry() above - never materialized. `seed` must be finite (the /query route
+            // validates this before calling, same "explicit 400, not a silent wrong result" rule the doc calls
+            // out for the pre-phase-2 `/all` endpoint's sortOrder=random bug).
+            const direction = sortOrder === 'desc' ? 'DESC' : 'ASC';
+            orderParts.push(`RANDHASH(id, ?) ${direction}`);
+        } else {
+            const column = QUERYABLE_SORT_COLUMNS[sortField];
+            const direction = sortOrder === 'desc' ? 'DESC' : 'ASC';
+            if (column) {
+                orderParts.push(`${column} ${direction}`);
+                // fav is boolean-valued, so a great many rows tie on it - name_fold is the natural secondary key
+                // (this is exactly what the schema's idx_characters_fav_name_fold composite index exists for, per
+                // design doc §3.1).
+                if (sortField === 'fav') {
+                    orderParts.push('name_fold ASC');
+                }
             }
         }
         // Always-present final tie-break: without one, rows tying on the primary key have no guaranteed stable
@@ -1618,7 +1724,11 @@ export async function queryCharacters(directories, params = {}) {
         const numericOffset = Number.isFinite(offset) && offset > 0 ? Math.trunc(offset) : 0;
         const numericLimit = Number.isFinite(limit) && limit >= 0 ? Math.trunc(limit) : DEFAULT_QUERY_LIMIT;
 
-        const rawRows = entry.db.all(`SELECT shallow_json FROM characters ${where} ${orderBy} LIMIT ? OFFSET ?`, [...args, numericLimit, numericOffset]);
+        // The RANDHASH(id, ?) placeholder above (when present) is the first `?` after the WHERE clause's own
+        // args, so its bind value goes right after `args` and before the LIMIT/OFFSET pair - SQLite binds `?`
+        // placeholders strictly in the order they appear in the SQL text.
+        const orderArgs = sortField === 'random' ? [Number(seed) || 0] : [];
+        const rawRows = entry.db.all(`SELECT shallow_json FROM characters ${where} ${orderBy} LIMIT ? OFFSET ?`, [...args, ...orderArgs, numericLimit, numericOffset]);
         rows = rawRows.map(r => JSON.parse(r.shallow_json));
     }
 
@@ -1664,6 +1774,20 @@ export async function checkCharactersExist(directories, ids) {
     }
 
     return result;
+}
+
+/**
+ * The change log's current high-water mark - the same value queryCharacters()/getChangesSince() already compute
+ * inline, factored out as its own lightweight call for a caller (characters-search-index.js's incremental
+ * tantivy maintenance) that only needs "what revision are we at right now", not a full changes page.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<number | null>} `null` if the metadata store is unavailable.
+ */
+export async function getCurrentRev(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    const row = entry.db.get('SELECT COALESCE(MAX(rev), 0) as rev FROM changes');
+    return Number(row?.rev ?? 0);
 }
 
 /**

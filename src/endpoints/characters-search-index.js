@@ -1,13 +1,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { getTagDefinitions, getEntityTagIdsForMany, getTagsRevision } from '../character-metadata-db.js';
+import {
+    getTagDefinitions, getEntityTagIdsForMany, getTagsRevision,
+    getChangesSince, getCurrentRev, getAllTaggedCharacterIds, getMetaValue, setMetaValue,
+} from '../character-metadata-db.js';
 import { processCharacter } from './characters.js';
 import { buildFtsQuery } from './search-query.js';
 import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD, FAV_FIELD } from './tantivy-search.js';
 import { resolveSearchEngine } from './search-engine.js';
 import { createIndexCoordinator } from './search-index-coordinator.js';
-import { getConfigValue, mapWithConcurrency } from '../util.js';
+import { getConfigValue, mapWithConcurrency, color } from '../util.js';
 
 /**
  * Fast full-content character search, backed by a persistent per-user SQLite FTS5 index built from *full*
@@ -67,6 +70,38 @@ import { getConfigValue, mapWithConcurrency } from '../util.js';
  * background rebuild catches the next request up to date. That module's header has the full story, including
  * the real production incident (an 18+ second search request, root-caused to exactly this rebuild-on-stale path
  * racing itself) that motivated it.
+ *
+ * DESIGN DOC §5.1/§3.3'S TANTIVY SUB-SCOPE (payload shrink, a real delete key, incremental maintenance, an
+ * explicit repair path) - IMPLEMENTED HERE, CHARACTERS ONLY (groups-search-index.js keeps the pre-existing
+ * full-JSON/full-rebuild-only behavior; groups have no metadata-store change log to drive incremental
+ * maintenance off of, and §5.1's "rows now come from SQLite" rationale is specific to characters):
+ *
+ * - PAYLOAD SHRINK: `DATA_FIELD` (tantivy-search.js) now stores just a character's id (its avatar filename),
+ *   not the full character JSON. This is also what makes the same field the delete-by-term key (see below) -
+ *   see DATA_FIELD's own doc comment. A consequence: `runSearch()` no longer hands back full character data, so
+ *   both searchCharacters() (the existing full-item contract `/all`'s search branch relies on) and the new
+ *   searchCharacterIds() (id-only, for `/query`'s filter.search - see characters.js) resolve what they actually
+ *   need from the matched id list themselves - searchCharacters() via processCharacter()'s own mtime-keyed cache
+ *   (characters.js), searchCharacterIds() not at all, since `/query` resolves rows from the phase-1 SQLite
+ *   metadata store instead (design doc §5's "push the FTS hit-id set into SQLite" composition).
+ * - DELETE KEY: DATA_FIELD is `tokenizerName: 'raw'` (tantivy-search.js's buildSchema()) - already exactly what
+ *   design doc §3's probe requires for `deleteDocumentsByTerm()` to hit precisely one document instead of
+ *   collateral-damaging every document that happens to share a token with a `default`-tokenized field.
+ * - INCREMENTAL MAINTENANCE: applyIncrementalTantivyChanges() below reads the phase-1 metadata store's own
+ *   change log (getChangesSince(), character-metadata-db.js) instead of the coarse characters-directory
+ *   `statSync` this module used before - see getFreshnessSignature() below for the new rev-based signature, and
+ *   loadOrUpdateTantivyIndex() for the "reopen the persisted index (`Index.open`) and catch it up" path that
+ *   replaces "rmSync the whole directory and reparse every PNG" as the *default* response to staleness. A tag
+ *   *rename* (not an assignment change - see decision log) bumps `tags_rev` without producing any `changes` row,
+ *   so applyIncrementalTantivyChanges() also re-indexes every currently-tagged character
+ *   (getAllTaggedCharacterIds()) whenever `tags_rev` moved, an index-only SQL query independent of library size.
+ * - REPAIR, NOT DEFAULT: rebuildCharacterSearchIndex() (exported below) is the only remaining caller of a genuine
+ *   full rebuild for characters, wired to an explicit `POST /api/characters/search-index/rebuild` endpoint
+ *   (characters.js) - a directory-mtime change (or, now, any content/tag change at all) can no longer trigger
+ *   one implicitly. The very first index build for a fresh install still has to be a full pass (nothing to
+ *   incrementally update from), and a persisted-index reopen that fails for any reason (corrupt directory, a
+ *   truncated change log with nothing incremental to catch up from) also falls back to a full rebuild - both are
+ *   loadOrUpdateTantivyIndex()'s job, not something a caller has to know to ask for separately.
  */
 
 // Column order/weights mirror fuzzySearchCharacters() in public/scripts/power-user.js (and this file's
@@ -122,13 +157,24 @@ const indexCoordinator = createIndexCoordinator();
 /**
  * @param {import('../users.js').UserDirectoryList} directories User directories
  * @returns {Promise<string>} A cheap fingerprint that changes whenever a character is added/removed/edited or a
- * tag definition/assignment changes (getTagsRevision() - see character-metadata-db.js - replaces the old
- * tags.json-mtime half of this signature now that tags.json is gone)
+ * tag definition/assignment changes. Prefers the phase-1 metadata store's own change-log high-water mark
+ * (getCurrentRev()) over a directory `statSync`, now that the store exists and tracks exactly this - a `rev`
+ * change is a strictly more precise signal (it can't miss a same-mtime-different-content edit, and the
+ * reconciler's drift-catching also bumps it, so a mutation that bypassed the write-path hooks still shows up
+ * here once the reconciler catches it). Falls back to the old directory-mtime signature only if the metadata
+ * store itself is unavailable (`getCurrentRev()` returns `null` - a broken-SQLite-install edge case distinct
+ * from "tantivy works but SQLite doesn't", since tantivy and the metadata store resolve their engines
+ * independently) - loadOrUpdateTantivyIndex() below has the matching fallback: without a change log there is
+ * nothing to incrementally catch up from, so that state always full-rebuilds.
  */
 async function getFreshnessSignature(directories) {
-    const charDirMtime = fs.statSync(directories.characters).mtimeMs;
     const tagsRev = await getTagsRevision(directories);
-    return `${charDirMtime}:${tagsRev}`;
+    const rev = await getCurrentRev(directories);
+    if (rev === null) {
+        const charDirMtime = fs.statSync(directories.characters).mtimeMs;
+        return `mtime:${charDirMtime}:${tagsRev}`;
+    }
+    return `rev:${rev}:${tagsRev}`;
 }
 
 // How many characters get read, processed, and inserted into the FTS5 index per batch/transaction while
@@ -150,6 +196,24 @@ const INDEX_BUILD_BATCH_SIZE = 500;
 // applies identically to runTantivySearch()'s per-hit JSON.parse() of the stored `data` field, tantivy's raw
 // per-query speed doesn't change how many full character objects an unbounded result set would parse.
 const DEFAULT_TANTIVY_MAX_ROWS = 500;
+
+// `meta` table keys (character-metadata-db.js's getMetaValue()/setMetaValue()) this module uses to remember
+// which change-log rev / tags_rev the on-disk tantivy index was last caught up to - see this module's header on
+// why that table, not a second file, holds this. Namespaced with a `tantivy_char_` prefix since `meta` is a flat
+// key/value table shared with the metadata store's own bootstrap_completed/tags_rev keys.
+const TANTIVY_INDEX_REV_META_KEY = 'tantivy_char_index_rev';
+const TANTIVY_INDEX_TAGS_REV_META_KEY = 'tantivy_char_index_tags_rev';
+
+// Fallback cap for callers that need the *whole* (or a generous approximation of the whole) matched-id set, not
+// just a relevance-ranked page of it - specifically sort:'random' combined with filter.search (design doc §5.3,
+// decision 23: "random and search compose unconditionally"), where hash order has no relationship to text
+// relevance, so bounding tightly by relevance rank would silently bias which matches are ever reachable under a
+// random ordering. This is affordable now in a way it wasn't before the payload shrink: a tantivy hit is a bare
+// id string, not a 13KB-mean JSON.parse (DEFAULT_TANTIVY_MAX_ROWS's original OOM concern - see querySqliteIndex()
+// below), so fetching orders of magnitude more ids costs orders of magnitude less than fetching that many full
+// rows used to. The /query route (characters.js) marks a total as approximate whenever a search itself matched
+// more ids than this cap - decision 6 permits an approximate total, never a silently-truncated one.
+export const SEARCH_ID_CAP = 50000;
 
 // How many batches to insert before folding the WAL back into the main db file (native engine only - see
 // buildSqliteIndex()'s checkpoint comment for why this matters and why the wasm engine's checkpoint is a
@@ -306,26 +370,80 @@ async function buildSqliteIndex(directories, engine) {
     return db;
 }
 
+/** No-op `close()` for a tantivy index handle - this binding has no explicit index-handle-close API, so every
+ * function below that produces one of these handles uses this same no-op rather than each defining its own
+ * (which previously left `close()`'s actual behavior implicit at each call site). */
+const NOOP_CLOSE = () => { /* no explicit close API on this binding's Index */ };
+
 /**
- * (Re)builds the persistent on-disk tantivy index for a user's characters - the tantivy-tier equivalent of
- * buildSqliteIndex() above, reusing the exact same batched-read discipline (readCharacterBatches(),
- * INDEX_BUILD_BATCH_SIZE/INDEX_BUILD_READ_CONCURRENCY/CHECKPOINT_EVERY_N_BATCHES) for the same OOM-avoidance
- * reasons documented on those constants - a tantivy IndexWriter can still accumulate an unbounded amount of
- * unflushed state if fed the entire library in one go, so periodic writer.commit() calls here play the same role
- * periodic db.checkpoint() calls do for the SQLite tier.
+ * One character's tantivy document, factored out so buildTantivyIndex() (full build) and
+ * applyIncrementalTantivyChanges() (incremental update) build byte-identical documents from the same inputs -
+ * a full rebuild and an incremental catch-up for the same character must never disagree about what its indexed
+ * fields are.
+ * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy
+ * @param {import('@oxdev03/node-tantivy-binding').Schema} schema
+ * @param {object} character A full (non-shallow) processed character (processCharacter()'s `shallow: false` shape)
+ * @param {(avatar: string) => string} tagNamesFor
+ * @returns {import('@oxdev03/node-tantivy-binding').Document}
+ */
+function characterToTantivyDoc(tantivy, schema, character, tagNamesFor) {
+    return tantivy.Document.fromDict({
+        name: character.data?.name ?? '',
+        resolved_tags: tagNamesFor(character.avatar),
+        description: character.data?.description ?? '',
+        mes_example: character.data?.mes_example ?? '',
+        scenario: character.data?.scenario ?? '',
+        personality: character.data?.personality ?? '',
+        first_mes: character.data?.first_mes ?? '',
+        creator_notes: character.data?.creator_notes ?? '',
+        creator: character.data?.creator ?? '',
+        tags: Array.isArray(character.data?.tags) ? character.data.tags.join(' ') : '',
+        alternate_greetings: Array.isArray(character.data?.alternate_greetings) ? character.data.alternate_greetings.join(' ') : '',
+        // Design doc §5.1's payload shrink: just the id (== the avatar filename, under today's pre-Option-A
+        // identity - design doc §2.2), not the full character JSON - see DATA_FIELD's doc comment
+        // (tantivy-search.js) for why this is also exactly what qualifies as the delete-by-term key.
+        [DATA_FIELD]: character.avatar,
+        [FAV_FIELD]: Boolean(character.data?.extensions?.fav),
+    }, schema);
+}
+
+/**
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @returns {string} The on-disk directory tantivy persists a user's character index to.
+ */
+function tantivyIndexDir(directories) {
+    return path.join(directories.root, 'search-index', 'characters-tantivy');
+}
+
+/**
+ * (Re)builds the persistent on-disk tantivy index for a user's characters FROM SCRATCH - the tantivy-tier
+ * equivalent of buildSqliteIndex() above, reusing the exact same batched-read discipline
+ * (readCharacterBatches(), INDEX_BUILD_BATCH_SIZE/INDEX_BUILD_READ_CONCURRENCY/CHECKPOINT_EVERY_N_BATCHES) for
+ * the same OOM-avoidance reasons documented on those constants - a tantivy IndexWriter can still accumulate an
+ * unbounded amount of unflushed state if fed the entire library in one go, so periodic writer.commit() calls
+ * here play the same role periodic db.checkpoint() calls do for the SQLite tier.
+ *
+ * NOT the default response to staleness anymore (design doc §3.2/§3.3 item 3) - loadOrUpdateTantivyIndex()
+ * below only falls back to this when there's nothing to incrementally update from (no persisted index, a
+ * truncated change log, or a corrupt/unreadable persisted index), or when rebuildCharacterSearchIndex()'s
+ * explicit repair endpoint asks for it directly. Records the change-log rev and tags_rev in effect *before*
+ * scanning the directory (not after) as the "caught up to" watermark, so a write landing mid-build is treated as
+ * a change still pending for the next incremental pass rather than silently missed.
  * @param {import('../users.js').UserDirectoryList} directories User directories
  * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy The resolved tantivy module (tantivy-engine.js)
- * @returns {Promise<{ index: import('@oxdev03/node-tantivy-binding').Index, schema: import('@oxdev03/node-tantivy-binding').Schema, close: () => void }>}
- * The freshly built, open index handle - `close()` is a no-op (this binding has no explicit index-handle-close
- * API; the coordinator's swap-and-close still calls it via optional chaining, this just makes the no-op explicit
- * instead of relying on that chaining silently skipping a missing method).
+ * @returns {Promise<{ index: import('@oxdev03/node-tantivy-binding').Index, schema: import('@oxdev03/node-tantivy-binding').Schema, close: () => void, lastRev: number | null, lastTagsRev: number | null }>}
+ * The freshly built, open index handle, plus the rev/tagsRev watermark it was built against (`null` if the
+ * metadata store was unavailable at the time - matches getFreshnessSignature()'s own fallback).
  */
 async function buildTantivyIndex(directories, tantivy) {
+    const lastRev = await getCurrentRev(directories);
+    const lastTagsRev = await getTagsRevision(directories);
+
     const dbDir = path.join(directories.root, 'search-index');
     if (!fs.existsSync(dbDir)) {
         fs.mkdirSync(dbDir, { recursive: true });
     }
-    const indexDir = path.join(dbDir, 'characters-tantivy');
+    const indexDir = tantivyIndexDir(directories);
     fs.rmSync(indexDir, { recursive: true, force: true });
     fs.mkdirSync(indexDir, { recursive: true });
 
@@ -339,22 +457,7 @@ async function buildTantivyIndex(directories, tantivy) {
     let batchIndex = 0;
     for await (const batch of readCharacterBatches(directories)) {
         for (const character of batch) {
-            const doc = tantivy.Document.fromDict({
-                name: character.data?.name ?? '',
-                resolved_tags: tagNamesFor(character.avatar),
-                description: character.data?.description ?? '',
-                mes_example: character.data?.mes_example ?? '',
-                scenario: character.data?.scenario ?? '',
-                personality: character.data?.personality ?? '',
-                first_mes: character.data?.first_mes ?? '',
-                creator_notes: character.data?.creator_notes ?? '',
-                creator: character.data?.creator ?? '',
-                tags: Array.isArray(character.data?.tags) ? character.data.tags.join(' ') : '',
-                alternate_greetings: Array.isArray(character.data?.alternate_greetings) ? character.data.alternate_greetings.join(' ') : '',
-                [DATA_FIELD]: JSON.stringify(character),
-                [FAV_FIELD]: Boolean(character.data?.extensions?.fav),
-            }, schema);
-            writer.addDocument(doc);
+            writer.addDocument(characterToTantivyDoc(tantivy, schema, character, tagNamesFor));
         }
 
         batchIndex++;
@@ -366,7 +469,146 @@ async function buildTantivyIndex(directories, tantivy) {
     writer.commit();
     index.reload();
 
-    return { index, schema, close: () => { /* no explicit close API on this binding's Index - see doc comment above */ } };
+    if (lastRev !== null) {
+        await setMetaValue(directories, TANTIVY_INDEX_REV_META_KEY, String(lastRev));
+        await setMetaValue(directories, TANTIVY_INDEX_TAGS_REV_META_KEY, String(lastTagsRev ?? 0));
+    }
+
+    return { index, schema, close: NOOP_CLOSE, lastRev, lastTagsRev };
+}
+
+/**
+ * Applies every character change since `sinceRev` (design doc §3.3 item 3's "a changed card is one
+ * delete-plus-add, not a rebuild") to an already-open tantivy index/writer, in place - the incremental
+ * alternative to buildTantivyIndex()'s full rescan. Delete-then-add for every touched id, including updates
+ * (not just genuine deletes): tantivy has no update-in-place (design doc §3's probe finding), so a changed row
+ * costs exactly the same as a new one either way.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy
+ * @param {import('@oxdev03/node-tantivy-binding').Index} index An already-open index (freshly built this
+ * process, or reopened via `Index.open()` - either way, safe to mutate directly).
+ * @param {import('@oxdev03/node-tantivy-binding').Schema} schema
+ * @param {number | null} sinceRev The rev this index was last caught up to, or `null`/non-finite to mean "assume
+ * nothing" (the first incremental pass after a fresh full build already covers everything up to its own
+ * `lastRev`, so this is normally a real number, not `null`, in practice).
+ * @param {number} sinceTagsRev The tags_rev this index was last caught up to.
+ * @returns {Promise<{ lastRev: number, lastTagsRev: number } | null>} The new watermark, or `null` if incremental
+ * maintenance isn't possible right now (metadata store unavailable, or the change log was pruned past `sinceRev`
+ * - `truncated: true`, not implemented as of phase 1, but this function is already correct against it) - the
+ * caller (loadOrUpdateTantivyIndex()) must fall back to a full rebuild in that case.
+ */
+async function applyIncrementalTantivyChanges(directories, tantivy, index, schema, sinceRev, sinceTagsRev) {
+    const currentRev = await getCurrentRev(directories);
+    const currentTagsRev = await getTagsRevision(directories);
+    if (currentRev === null) {
+        return null;
+    }
+
+    const changesResult = await getChangesSince(directories, Number.isFinite(sinceRev) ? sinceRev : 0);
+    if (!changesResult || changesResult.truncated) {
+        return null;
+    }
+
+    /** @type {Map<string, 'upsert'|'delete'>} */
+    const idsToReindex = new Map(changesResult.changes.map(({ id, op }) => [id, op]));
+
+    // A tag *rename* (a tags.js definition edit, not an assignment change) bumps tags_rev without producing any
+    // `changes` row naming the characters whose indexed resolved_tags text it affects - see this module's header.
+    if (currentTagsRev !== sinceTagsRev) {
+        const taggedIds = await getAllTaggedCharacterIds(directories);
+        for (const id of taggedIds ?? []) {
+            if (!idsToReindex.has(id)) {
+                idsToReindex.set(id, 'upsert');
+            }
+        }
+    }
+
+    if (idsToReindex.size > 0) {
+        const writer = index.writer();
+        const idsNeedingData = [...idsToReindex.entries()].filter(([, op]) => op !== 'delete').map(([id]) => id);
+        const tagNamesFor = idsNeedingData.length > 0 ? await makeTagNamesResolver(directories, idsNeedingData) : () => '';
+
+        for (const [id, op] of idsToReindex) {
+            writer.deleteDocumentsByTerm(DATA_FIELD, id);
+            if (op === 'delete') {
+                continue;
+            }
+            let character = null;
+            try {
+                character = await processCharacter(id, directories, { shallow: false });
+            } catch {
+                // File gone (raced a delete that hasn't reached the metadata store's write hook/reconciler yet,
+                // or a corrupt PNG) - leave it deleted above rather than throwing the whole incremental pass away.
+            }
+            if (!character?.name) {
+                continue;
+            }
+            writer.addDocument(characterToTantivyDoc(tantivy, schema, character, tagNamesFor));
+        }
+
+        writer.commit();
+        index.reload();
+    }
+
+    return { lastRev: currentRev, lastTagsRev: currentTagsRev ?? 0 };
+}
+
+/**
+ * The `build` callback passed to indexCoordinator.getIndex() for the tantivy tier - decides between three paths,
+ * in order: update an already-open handle in place, reopen a persisted-on-disk handle and catch it up, or fall
+ * back to a full rebuild (buildTantivyIndex()). This is what makes staleness resolve to incremental maintenance
+ * by default (design doc §3.2's "the existing full-rebuild path stays, demoted to a repair tool") instead of the
+ * pre-existing rmSync-and-reparse-everything behavior.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy
+ * @param {Awaited<ReturnType<typeof buildTantivyIndex>> | undefined} previous The currently-live handle for this
+ * handle's tantivy index, if this process already has one open (see search-index-coordinator.js's `build`
+ * param) - `undefined` on a handle's first-ever call this process.
+ * @returns {Promise<Awaited<ReturnType<typeof buildTantivyIndex>>>}
+ */
+async function loadOrUpdateTantivyIndex(directories, tantivy, previous) {
+    // No change log to incrementally read from at all (metadata store unavailable) - getFreshnessSignature()'s
+    // matching mtime-based fallback means this gets called on *every* directory-mtime change in that state, and
+    // a full rebuild is the only thing that can possibly be correct without a change log.
+    if (await getCurrentRev(directories) === null) {
+        return buildTantivyIndex(directories, tantivy);
+    }
+
+    if (previous?.index) {
+        const updated = await applyIncrementalTantivyChanges(directories, tantivy, previous.index, previous.schema, previous.lastRev, previous.lastTagsRev ?? 0);
+        if (updated) {
+            if (updated.lastRev !== null) {
+                await setMetaValue(directories, TANTIVY_INDEX_REV_META_KEY, String(updated.lastRev));
+                await setMetaValue(directories, TANTIVY_INDEX_TAGS_REV_META_KEY, String(updated.lastTagsRev));
+            }
+            return { ...previous, ...updated };
+        }
+    } else {
+        const indexDir = tantivyIndexDir(directories);
+        const persistedRev = await getMetaValue(directories, TANTIVY_INDEX_REV_META_KEY);
+        if (persistedRev !== null) {
+            try {
+                if (tantivy.Index.exists(indexDir)) {
+                    const index = tantivy.Index.open(indexDir);
+                    const schema = index.schema;
+                    const persistedTagsRev = Number((await getMetaValue(directories, TANTIVY_INDEX_TAGS_REV_META_KEY)) ?? 0);
+                    const updated = await applyIncrementalTantivyChanges(directories, tantivy, index, schema, Number(persistedRev), persistedTagsRev);
+                    if (updated) {
+                        await setMetaValue(directories, TANTIVY_INDEX_REV_META_KEY, String(updated.lastRev));
+                        await setMetaValue(directories, TANTIVY_INDEX_TAGS_REV_META_KEY, String(updated.lastTagsRev));
+                        return { index, schema, close: NOOP_CLOSE, ...updated };
+                    }
+                }
+            } catch (err) {
+                console.error(color.red('[search] failed to reopen the persisted character tantivy index for incremental update, falling back to a full rebuild:'));
+                console.error(color.red(`[search]   ${err.message}`));
+            }
+        }
+    }
+
+    // Nothing to incrementally update from (first-ever build, a truncated change log, or a reopen that failed) -
+    // buildTantivyIndex() itself persists the new rev/tagsRev watermark.
+    return buildTantivyIndex(directories, tantivy);
 }
 
 /**
@@ -443,44 +685,135 @@ function countSqliteIndexMatches(db, searchTerm, favOnly) {
  * @param {string} handle User handle
  * @param {import('../users.js').UserDirectoryList} directories User directories
  * @param {string} searchTerm Search term
- * @param {number} [maxRows] Caps how many matching rows/docs get fetched and JSON.parse()'d - see
- * querySqliteIndex()'s doc comment for the full rationale (the OOM this guards against is real, not
- * hypothetical, and applies just as much to the tantivy tier's per-hit JSON.parse() of the stored `data` field).
- * Callers should always pass this (the /api/characters/all handler in characters.js passes offset+limit, sized
- * to cover whatever page it's about to slice out of the merged character+group results).
+ * @param {number} [maxRows] Caps how many matching ids get fetched - see querySqliteIndex()'s doc comment for
+ * the SQLite tier's rationale. For the tantivy tier this is now (design doc §5.1's payload shrink) a cap on bare
+ * id strings, not full-JSON hits, so it's cheap to size generously - see SEARCH_ID_CAP.
  * @param {boolean} [favOnly] When true, restricts matches to favorited characters only, applied inside the query
  * itself (not after `maxRows` truncates the page) - see buildSearchQuery()'s `favOnly` doc comment
  * (tantivy-search.js) for why a post-fetch filter here would be wrong: it lets the caller's own client-side
  * favorites filter (FilterHelper.favFilter(), public/scripts/filters.js) actually work when combined with a
  * search term, instead of only ever narrowing whichever relevance-ranked page happened to survive the cap.
- * @returns {Promise<{ results: { item: object, score: number }[], total: number, backend: 'tantivy' | 'native' | 'wasm' | 'unavailable' }>}
- * Results sorted best-first (ascending score - see tantivy-search.js's runSearch() for why the tantivy tier's
+ * @returns {Promise<{ hits: { id: string, score: number }[], total: number, backend: 'tantivy' | 'native' | 'wasm' | 'unavailable' }>}
+ * `hits` sorted best-first (ascending score - see tantivy-search.js's runSearch() for why the tantivy tier's
  * naturally-higher-is-better score gets negated to match this convention), the true total match count
  * (independent of `maxRows`), and which engine tier produced them.
  */
-export async function searchCharacters(handle, directories, searchTerm, maxRows, favOnly) {
+async function runIdSearch(handle, directories, searchTerm, maxRows, favOnly) {
     const signature = await getFreshnessSignature(directories);
     const engine = await resolveSearchEngine();
 
     if (engine.tier === 'unavailable') {
-        return { results: [], total: 0, backend: 'unavailable' };
+        return { hits: [], total: 0, backend: 'unavailable' };
     }
 
     if (engine.tier === 'tantivy') {
-        const tantivyIndex = await indexCoordinator.getIndex(handle, signature, () => buildTantivyIndex(directories, engine.tantivy));
+        const tantivyIndex = await indexCoordinator.getIndex(handle, signature, (previous) => loadOrUpdateTantivyIndex(directories, engine.tantivy, previous));
         const query = buildTantivyQuery(engine.tantivy, tantivyIndex.schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS, { favOnly });
         if (!query) {
-            return { results: [], total: 0, backend: 'tantivy' };
+            return { hits: [], total: 0, backend: 'tantivy' };
         }
         const boundedMaxRows = Number.isFinite(maxRows) ? maxRows : DEFAULT_TANTIVY_MAX_ROWS;
         const { results, total } = runTantivySearch(tantivyIndex.index, query, boundedMaxRows);
-        return { results, total, backend: 'tantivy' };
+        // DATA_FIELD now stores just the id (design doc §5.1) - `raw` *is* the id, nothing to parse.
+        return { hits: results.map(r => ({ id: r.raw, score: r.score })), total, backend: 'tantivy' };
     }
 
     const db = await indexCoordinator.getIndex(handle, signature, () => buildSqliteIndex(directories, engine.sqlite));
+    const results = querySqliteIndex(db, searchTerm, maxRows, favOnly);
     return {
-        results: querySqliteIndex(db, searchTerm, maxRows, favOnly),
+        hits: results.map(r => ({ id: r.item.avatar, score: r.score })),
         total: countSqliteIndexMatches(db, searchTerm, favOnly),
         backend: engine.sqlite.kind,
     };
+}
+
+/**
+ * Fuzzy-searches a user's characters and resolves each match's full character data - the pre-existing contract
+ * `/api/characters/all`'s search branch (characters.js) relies on. Built on runIdSearch() (above) plus a
+ * resolution step that didn't used to be necessary: before design doc §5.1's payload shrink, a tantivy hit
+ * already carried the full character JSON; now it's just an id, so this resolves each matched id's full
+ * character data itself, via processCharacter()'s own mtime-keyed cache (characters.js) - cheap for anything
+ * unchanged since the index was built, and bounded to at most `maxRows` reads regardless of library size, not a
+ * per-request full-library scan (design doc §3.3's "read and parse once per change event, never once per
+ * request" - a cache hit here pays neither cost).
+ * @param {string} handle User handle
+ * @param {import('../users.js').UserDirectoryList} directories User directories
+ * @param {string} searchTerm Search term
+ * @param {number} [maxRows] Forwarded to runIdSearch() - see that function's doc comment. Callers should always
+ * pass this (the /api/characters/all handler in characters.js passes offset+limit, sized to cover whatever page
+ * it's about to slice out of the merged character+group results).
+ * @param {boolean} [favOnly] Forwarded to runIdSearch() - see that function's doc comment.
+ * @returns {Promise<{ results: { item: object, score: number }[], total: number, backend: 'tantivy' | 'native' | 'wasm' | 'unavailable' }>}
+ * Results sorted best-first, the true total match count (independent of `maxRows`), and which engine tier
+ * produced them. A matched id whose character data can no longer be resolved (deleted since the index was last
+ * caught up, or a corrupt/unreadable card) is silently dropped, the same way readCharacterBatches() already
+ * drops any character missing `.name`.
+ */
+export async function searchCharacters(handle, directories, searchTerm, maxRows, favOnly) {
+    const { hits, total, backend } = await runIdSearch(handle, directories, searchTerm, maxRows, favOnly);
+    if (hits.length === 0) {
+        return { results: [], total, backend };
+    }
+
+    const resolved = await mapWithConcurrency(hits, INDEX_BUILD_READ_CONCURRENCY, async (hit) => {
+        try {
+            const character = await processCharacter(hit.id, directories, { shallow: false });
+            return character?.name ? { item: character, score: hit.score } : null;
+        } catch {
+            return null;
+        }
+    });
+
+    return { results: resolved.filter(Boolean), total, backend };
+}
+
+/**
+ * Fuzzy-searches a user's characters and returns just the matched ids, in relevance order - the id-only
+ * counterpart to searchCharacters() above, for a caller that resolves rows itself instead of needing full
+ * character data back (design doc §5's "push the FTS hit-id set into SQLite as a temporary table and let SQLite
+ * do the filtering and ordering" composition plan - `POST /api/characters/query`'s `filter.search` handling,
+ * characters.js, is the first caller). No per-hit disk read here at all, unlike searchCharacters() - the whole
+ * point of this variant.
+ * @param {string} handle User handle
+ * @param {import('../users.js').UserDirectoryList} directories User directories
+ * @param {string} searchTerm Search term
+ * @param {number} [maxRows] Forwarded to runIdSearch() - see that function's doc comment and SEARCH_ID_CAP for
+ * how a caller that needs the *whole* matched set (not just a relevance-ranked page of it - e.g. sort:'random'
+ * combined with filter.search, design doc §5.3 decision 23) should size this.
+ * @param {boolean} [favOnly] Forwarded to runIdSearch() - see that function's doc comment.
+ * @returns {Promise<{ ids: string[], total: number, backend: 'tantivy' | 'native' | 'wasm' | 'unavailable' }>}
+ * `ids` in relevance order (best match first), the true total match count (independent of `maxRows`), and which
+ * engine tier produced them.
+ */
+export async function searchCharacterIds(handle, directories, searchTerm, maxRows, favOnly) {
+    const { hits, total, backend } = await runIdSearch(handle, directories, searchTerm, maxRows, favOnly);
+    return { ids: hits.map(hit => hit.id), total, backend };
+}
+
+/**
+ * Forces an immediate, blocking, full rebuild of a user's character search index, regardless of the current
+ * freshness signature - design doc §3.2's explicit repair endpoint ("the existing full-rebuild path stays,
+ * demoted to a repair tool behind an explicit endpoint rather than something a directory mtime change can
+ * trigger implicitly"). Wired to `POST /api/characters/search-index/rebuild` (characters.js). Not needed for
+ * correctness in normal operation - loadOrUpdateTantivyIndex() already falls back to a full rebuild whenever
+ * incremental maintenance genuinely can't proceed - this exists for an owner who wants to force one anyway (a
+ * corrupted index suspected, or recovering from an incident) without waiting for the next staleness check.
+ * @param {string} handle User handle
+ * @param {import('../users.js').UserDirectoryList} directories User directories
+ * @returns {Promise<{ ok: boolean, backend: 'tantivy' | 'native' | 'wasm' | 'unavailable' }>}
+ */
+export async function rebuildCharacterSearchIndex(handle, directories) {
+    const engine = await resolveSearchEngine();
+    if (engine.tier === 'unavailable') {
+        return { ok: false, backend: 'unavailable' };
+    }
+
+    const signature = await getFreshnessSignature(directories);
+    if (engine.tier === 'tantivy') {
+        await indexCoordinator.forceRebuild(handle, signature, () => buildTantivyIndex(directories, engine.tantivy));
+        return { ok: true, backend: 'tantivy' };
+    }
+
+    await indexCoordinator.forceRebuild(handle, signature, () => buildSqliteIndex(directories, engine.sqlite));
+    return { ok: true, backend: engine.sqlite.kind };
 }

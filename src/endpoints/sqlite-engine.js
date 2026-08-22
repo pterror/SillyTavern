@@ -64,6 +64,14 @@ let engine = undefined;
  * header for why that matters) inside a single BEGIN/COMMIT, rolling back if `fn` throws.
  * @property {() => void} checkpoint Folds the WAL file back into the main database file where supported
  * (native only - see this module's header comment on why the wasm engine's checkpoint is a no-op)
+ * @property {(name: string, fn: (...args: any[]) => any) => void} defineFunction Registers a scalar SQL function
+ * callable from any statement run on this handle (e.g. inside an `ORDER BY`) - both engines expose this natively
+ * (better-sqlite3's `db.function()`, node-sqlite3-wasm's `db.function()`), just under slightly different call
+ * shapes, papered over here the same way the rest of this handle's surface already normalizes per-engine API
+ * differences. character-metadata-db.js uses this to register a deterministic hash function for design doc
+ * §5.3's seeded random-sort ordering (`ORDER BY <hash function>(id, seed)`), computed per-query rather than
+ * materialized - see that decision's rationale (decision 13) for why this has to be a real SQL-level function
+ * instead of a JS-side sort, which would defeat `LIMIT`/`OFFSET` pagination at scale.
  * @property {() => void} close Closes the underlying database connection
  */
 
@@ -126,6 +134,10 @@ export function openNativeDatabase(DatabaseCtor, path) {
         all: (sql, params) => prepare(sql).all(params ?? {}),
         transaction: (fn) => db.transaction(fn)(),
         checkpoint: () => db.pragma('wal_checkpoint(TRUNCATE)'),
+        // deterministic: true - the function's output depends only on its arguments, which lets SQLite's query
+        // planner cache/reorder calls safely. Every registered function in this codebase is a pure hash, so this
+        // is always safe to set.
+        defineFunction: (name, fn) => { db.function(name, { deterministic: true }, fn); },
         close: () => db.close(),
     };
 }
@@ -190,6 +202,7 @@ export function openWasmDatabase(WasmDatabaseCtor, path) {
             }
         },
         checkpoint: () => { /* no-op: this engine's WASM-compiled SQLite doesn't support WAL mode at all */ },
+        defineFunction: (name, fn) => { db.function(name, fn, { deterministic: true }); },
         close: () => {
             for (const stmt of stmtCache.values()) {
                 stmt.finalize();
