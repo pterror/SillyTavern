@@ -1220,23 +1220,28 @@ export async function printCharacters(fullRefresh = false) {
     updatePersonaConnectionsAvatarList();
 }
 
-/** Checks the state of the current search, and adds/removes the search sorting option accordingly */
+/**
+ * Shows/hides the "Search" sort option depending on whether a search term is active - it's meaningless
+ * without one, since it sorts by search relevance score. Does *not* select it: relevance is an ordinary sort
+ * choice the user can pick, not a mode the search box imposes (a search term no longer force-switches the
+ * sort, so e.g. Random stays selected, and stays applied to the narrowed result set, while typing).
+ */
 function verifyCharactersSearchSortRule() {
     const searchTerm = entitiesFilter.getFilterData(FILTER_TYPES.SEARCH);
     const searchOption = $('#character_sort_order option[data-field="search"]');
-    const selector = $('#character_sort_order');
     const isHidden = searchOption.attr('hidden') !== undefined;
 
     // If we have a search term, we are displaying the sorting option for it
     if (searchTerm && isHidden) {
         searchOption.removeAttr('hidden');
-        searchOption.prop('selected', true);
-        flashHighlight(selector);
     }
-    // If search got cleared, we make sure to hide the option and go back to the one before
+    // If search got cleared, hide the option, and fall back to the last real sort if it was the selected one
+    // (it's no longer a valid choice with nothing to rank by).
     if (!searchTerm && !isHidden) {
         searchOption.attr('hidden', '');
-        $(`#character_sort_order option[data-order="${power_user.sort_order}"][data-field="${power_user.sort_field}"]`).prop('selected', true);
+        if (searchOption.is(':selected')) {
+            $(`#character_sort_order option[data-order="${power_user.sort_order}"][data-field="${power_user.sort_field}"]`).prop('selected', true);
+        }
     }
 }
 

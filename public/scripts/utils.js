@@ -511,32 +511,14 @@ export async function parseJsonFile(file) {
 
 /**
  * Calculates a hash code for a string.
- * cyrb53 (c) 2018 bryc ({@link https://github.com/bryc/code/blob/master/jshash/experimental/cyrb53.js|github.com/bryc})
- * License: Public domain (or MIT if needed). Attribution appreciated.
- * A fast and simple 53-bit string hash function with decent collision resistance.
- * Largely inspired by MurmurHash2/3, but with a focus on speed/simplicity.
+ * @see hash-utils.js for the implementation - re-exported here so existing `from './utils.js'` imports
+ * keep working. hash-utils.js is dependency-free and importable outside a DOM; utils.js is not.
+ * @function
  * @param {string} str The string to hash.
  * @param {number} [seed=0] The seed to use for the hash.
  * @returns {number} The hash code.
  */
-export function getStringHash(str, seed = 0) {
-    if (typeof str !== 'string') {
-        return 0;
-    }
-
-    let h1 = 0xdeadbeef ^ seed,
-        h2 = 0x41c6ce57 ^ seed;
-    for (let i = 0, ch; i < str.length; i++) {
-        ch = str.charCodeAt(i);
-        h1 = Math.imul(h1 ^ ch, 2654435761);
-        h2 = Math.imul(h2 ^ ch, 1597334677);
-    }
-
-    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-
-    return 4294967296 * (2097151 & h2) + (h1 >>> 0);
-}
+export { getStringHash } from './hash-utils.js';
 
 /**
  * Copy text to clipboard. Use navigator.clipboard.writeText if available, otherwise use document.execCommand.
