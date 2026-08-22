@@ -20,14 +20,19 @@ import {
     sendTextareaMessage,
     doNavbarIconClick,
     isSwipingAllowed,
+    characterToEntity,
+    groupToEntity,
 } from '../script.js';
 
 import {
     power_user,
     send_on_enter_options,
+    sortEntitiesList,
 } from './power-user.js';
 
-import { selected_group, is_group_generating, openGroupById } from './group-chats.js';
+import { characterRepository, buildCharacterQuery, isServerQueryableSort } from './character-repository.js';
+import { getRandomSortSeed } from './random-sort.js';
+import { selected_group, is_group_generating, openGroupById, groups } from './group-chats.js';
 import { applyTagsOnCharacterSelect } from './tags.js';
 import {
     SECRET_KEYS,
@@ -302,14 +307,55 @@ async function RA_autoloadchat() {
     }
 }
 
+/**
+ * Fills the favorites hotswap strip. Design doc §4.4: "scans everything to fill a 25-slot strip. Becomes
+ * `WHERE fav = 1 LIMIT 25`" - the character half of that is real here: `characterRepository.query()` asks the
+ * server for the top `FAVS_LIMIT` favorited characters, already sorted the same way the main list is, instead
+ * of building/filtering/sorting the whole resident list just to throw away everything past 25.
+ *
+ * Groups aren't in `/query`'s contract (characters-only, design doc §5), so favorited groups are pulled from the
+ * small, always-resident `groups` array and merged in locally. That merge is still correct at the 25-item
+ * boundary: the server's top-`FAVS_LIMIT` favorited characters is a superset of "characters that could appear in
+ * the true combined top 25" - adding favorited groups into the mix can only displace characters further down,
+ * never pull in a character ranked below what the server already returned. Sorting the merged (≤ FAVS_LIMIT
+ * characters + all favorited groups) set with the same comparator the main list uses and re-slicing to
+ * `FAVS_LIMIT` therefore reproduces exactly what scanning-then-filtering-then-slicing the old fully-local list
+ * would have produced.
+ *
+ * Falls back to the pre-existing fully-local path (`getEntitiesList({ doFilter: false })`) when the current sort
+ * field has no server equivalent (`create_date`/`data_size` - see `isServerQueryableSort()`,
+ * character-repository.js) - same documented scope boundary as `getEntitiesList()`'s server-query path
+ * (script.js), not a special case invented here.
+ */
 export async function favsToHotswap() {
-    const entities = getEntitiesList({ doFilter: false });
     const container = $('#right-nav-panel .hotswap');
 
     // Hard limit is required because even if all hotswaps don't fit the screen, their images would still be loaded
     // 25 is roughly calculated as the maximum number of favs that can fit an ultrawide monitor with the default theme
     const FAVS_LIMIT = 25;
-    const favs = entities.filter(x => x.item.fav || x.item.fav == 'true').slice(0, FAVS_LIMIT);
+
+    const isRandom = power_user.sort_order === 'random';
+    const sortField = isRandom ? 'random' : power_user.sort_field;
+
+    let favs;
+    if (isServerQueryableSort(sortField)) {
+        const { sort } = buildCharacterQuery({
+            fav: true,
+            sortField,
+            sortOrder: power_user.sort_order === 'desc' ? 'desc' : 'asc',
+            randomSeed: isRandom ? getRandomSortSeed(accountStorage) : undefined,
+        });
+        const { rows: favCharacterRows = [] } = await characterRepository.query({ fav: true }, sort, 1, FAVS_LIMIT, ['rows']);
+        const favCharacterEntities = favCharacterRows.map(item => characterToEntity(item));
+        const favGroupEntities = groups.filter(x => x.fav || x.fav == 'true').map(item => groupToEntity(item));
+
+        favs = [...favCharacterEntities, ...favGroupEntities];
+        sortEntitiesList(favs, false);
+        favs = favs.slice(0, FAVS_LIMIT);
+    } else {
+        const entities = await getEntitiesList({ doFilter: false });
+        favs = entities.filter(x => x.item.fav || x.item.fav == 'true').slice(0, FAVS_LIMIT);
+    }
 
     //helpful instruction message if no characters are favorited
     if (favs.length == 0) {
