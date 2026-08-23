@@ -37,6 +37,36 @@ function readTextChunks(buffer) {
     return result;
 }
 
+describe('png/encode.js - CRC32 correctness (2026-08 crc -> crc-32 package swap)', () => {
+    // Locks in the thing that actually matters about swapping the CRC implementation package that
+    // src/png/encode.js uses to compute each chunk's trailing CRC: the new package still produces the
+    // exact PNG-spec CRC-32/IEEE-802.3 value, not some other polynomial (e.g. CRC-32C) that would happen
+    // to also be called "crc32" but produce bytes no real PNG reader/writer would accept. Every existing
+    // write()/read() round-trip test above already exercises this indirectly - extract() (used by read())
+    // independently recomputes and verifies each chunk's CRC, and throws if it doesn't match - so a wrong
+    // polynomial would already fail loudly there. This test just makes that guarantee explicit and adds a
+    // negative case proving the check isn't vacuous.
+    test('a fresh write() output round-trips through an independent PNG extractor without a CRC mismatch', () => {
+        const data = JSON.stringify({ spec: 'chara_card_v2', spec_version: '2.0', name: 'Ghost', data: { name: 'Ghost' } });
+        const buffer = cardParser.write(BLANK_PNG, data);
+        // extract() throws 'CRC values for X header do not match, PNG file is likely corrupted' on any
+        // chunk whose trailing CRC doesn't match a fresh CRC-32/IEEE-802.3 computation over its own bytes.
+        expect(() => extract(new Uint8Array(buffer))).not.toThrow();
+    });
+
+    test('a single flipped bit in a chunk body IS caught as a CRC mismatch (the check does real work)', () => {
+        const data = JSON.stringify({ spec: 'chara_card_v2', spec_version: '2.0', name: 'Ghost', data: { name: 'Ghost' } });
+        const buffer = Buffer.from(cardParser.write(BLANK_PNG, data));
+
+        // Flip one bit inside the IHDR chunk's data (byte 16, well inside the 13-byte IHDR payload that
+        // starts at offset 8 + 4(length) + 4('IHDR') = 16) without touching its trailing CRC bytes.
+        const corrupted = Buffer.from(buffer);
+        corrupted[16] ^= 0x01;
+
+        expect(() => extract(new Uint8Array(corrupted))).toThrow(/CRC values .* do not match/);
+    });
+});
+
 describe('character-card-parser write() - spec-fidelity (no forced v2->v3 upgrade)', () => {
     test('a v2-spec source gets only a chara chunk, no synthesized ccv3', () => {
         const data = JSON.stringify({ spec: 'chara_card_v2', spec_version: '2.0', name: 'Ghost', data: { name: 'Ghost' } });
