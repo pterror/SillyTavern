@@ -1,3 +1,5 @@
+import crypto from 'node:crypto';
+
 import _ from 'lodash';
 
 import { deepMerge, humanizedDateTime, tryParse } from './util.js';
@@ -140,6 +142,61 @@ export function stripInstallLocalFields(char) {
     _.unset(clone, 'chat');
     _.unset(clone, 'create_date');
     return clone;
+}
+
+/**
+ * Computes the content-identity fingerprint for a character (see character-metadata-db.js's SCHEMA_SQL
+ * comment on content_identity_hash) - sha256 over a canonical (sorted-keys) JSON serialization of the
+ * character with install-local fields (fav/chat/create_date) stripped, so two independently-imported copies
+ * of the same original card hash identically regardless of which install produced them or what key order
+ * their JSON happened to serialize in.
+ *
+ * Lives here (character-card-normalize.js), not in character-metadata-db.js where it originally was, so it
+ * can be imported by local-import-classify.js/local-import-worker.js (2026-08 local-import worker-pool work)
+ * WITHOUT dragging character-metadata-db.js's own module-top-level getConfigValue() calls along with it -
+ * those require CONFIG_PATH to already be set via util.js's setConfigFilePath(), which is per-thread
+ * module state a worker_threads worker never inherits from the main thread (confirmed the hard way: every
+ * worker that imported character-metadata-db.js died at import time via that module's getConfig()'s
+ * `process.exit(1)` fallback, silently killing the whole pool - see local-import-worker.js's own header).
+ * This module (character-card-normalize.js) has no such top-level config dependency, so it's safe for a
+ * worker to import.
+ * @param {object} character Spec V2 character object (already parsed from the JSON that was just written)
+ * @returns {string} sha256 hex digest
+ */
+export function computeContentIdentityHash(character) {
+    const stripped = stripInstallLocalFields(character);
+    return crypto.createHash('sha256').update(canonicalStringify(stripped)).digest('hex');
+}
+
+/**
+ * JSON.stringify with object keys sorted at every level, so two objects with the same key/value pairs in a
+ * different insertion order (e.g. a value that round-tripped through JSON.parse -> mutate -> JSON.stringify
+ * versus one that never did) always serialize identically. Only ever fed the plain-data output of
+ * stripInstallLocalFields() (no cycles, no non-JSON-safe values), so this doesn't need JSON.stringify's full
+ * generality (replacer functions, etc.) - just deterministic key order.
+ * @param {*} value
+ * @returns {string}
+ */
+function canonicalStringify(value) {
+    if (Array.isArray(value)) {
+        return `[${value.map(canonicalStringify).join(',')}]`;
+    }
+    if (value !== null && typeof value === 'object') {
+        // Skips undefined-VALUED own keys (not just absent ones) - matching JSON.stringify()'s own semantics
+        // (which silently omits them from object output), rather than serializing the literal word `undefined`
+        // for one. Without this, an object that still carries an own key set to undefined (e.g. readFromV2()'s
+        // fieldMappings loop's talkativeness fallback, which sets a default and then unconditionally overwrites
+        // it back to `undefined` when the source has no explicit value) would hash differently depending on
+        // whether it happened to have already been round-tripped through JSON.stringify/JSON.parse before
+        // reaching here - a real footgun for exactly one of this function's callers
+        // (character-metadata-db.js's backfillContentIdentityHashes() feeds it a freshly-normalized,
+        // never-round-tripped object; upsertCharacterFromWrite() always feeds it `JSON.parse(cardJson)`, which
+        // can never have an undefined-valued key in the first place) rather than a difference in the character's
+        // actual semantic content.
+        const keys = Object.keys(value).filter(k => value[k] !== undefined).sort();
+        return `{${keys.map(k => `${JSON.stringify(k)}:${canonicalStringify(value[k])}`).join(',')}}`;
+    }
+    return JSON.stringify(value);
 }
 
 /**

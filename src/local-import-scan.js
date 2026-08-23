@@ -3,17 +3,15 @@ import fsPromises from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
-import yaml from 'yaml';
-
-import { getConfigValue, color } from './util.js';
+import { getConfigValue, color, mapWithConcurrency } from './util.js';
 import { DEFAULT_USER, UPLOADS_DIRECTORY } from './constants.js';
 import { getUserDirectories } from './users.js';
 import { copyCharacterFile, hardlinkOntoCanonical } from './local-import-copy.js';
 import { importCharacterFileHeadless } from './endpoints/characters.js';
-import { beginBatchImport, endBatchImport, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, computeContentIdentityHash, getLocalImportSkip, setLocalImportSkip, clearLocalImportSkip, getAllLocalImportMtimes, setLocalImportMtime, clearLocalImportMtime } from './character-metadata-db.js';
-import { read as readCharacterCard } from './character-card-parser.js';
-import { getCharaCardV2, convertToV2 } from './character-card-normalize.js';
+import { beginBatchImport, endBatchImport, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, getLocalImportSkip, setLocalImportSkip, clearLocalImportSkip, getAllLocalImportMtimes, setLocalImportMtime, clearLocalImportMtime } from './character-metadata-db.js';
 import { attachOverflowWatch, isWindowsOverflowSignal } from './watch-overflow.js';
+import { detectFormat } from './local-import-classify.js';
+import { LocalImportWorkerPool, resolveWorkerPoolSize } from './local-import-worker-pool.js';
 
 /**
  * Config/admin-set-only "import characters from a local directory on disk" feature, as an alternative to
@@ -73,18 +71,6 @@ import { attachOverflowWatch, isWindowsOverflowSignal } from './watch-overflow.j
  * different purpose and have no reason to be forced to share a literal. */
 const WATCH_DEBOUNCE_MS = 300;
 
-/** Extension (lowercase, no dot) -> format key accepted by characters.js's formatImportFunctions dispatch table.
- * Deliberately the full set `/import` recognizes (see that route), not a subset - a locally-dropped file is no
- * less legitimate a source than a browser upload of the same format. */
-const EXTENSION_TO_FORMAT = {
-    png: 'png',
-    json: 'json',
-    charx: 'charx',
-    byaf: 'byaf',
-    yaml: 'yaml',
-    yml: 'yml',
-};
-
 /**
  * @typedef {object} DirectoryScanState
  * @property {string} sourceDir Absolute path to the configured directory being watched/scanned
@@ -106,6 +92,10 @@ const EXTENSION_TO_FORMAT = {
  * watch-overflow.js's attachOverflowWatch()) - `null` on every other platform, or if attaching one failed for
  * any reason (never fatal - see that module's own doc comment). Entirely separate from `watcher` above; closed
  * independently in stopWatcherFor().
+ * @property {Map<string, Promise<void>>} [hashLocks] Per-content-hash serialization for the worker-pool era
+ * (see withPerHashLock()'s own doc comment) - optional/lazily-created (withPerHashLock() populates it on
+ * first use if absent) so a hand-built state literal (e.g. a test's buildState() helper, predating this
+ * property) never needs updating just to keep constructing a valid DirectoryScanState.
  */
 
 /** @type {DirectoryScanState[]} */
@@ -129,16 +119,28 @@ let disposed = false;
  * (e.g. "has the initial post-restart pass finished yet") - production code (server-main.js) never awaits this,
  * that is the whole point of backgrounding it (see initializeLocalImportScan()'s own doc comment). */
 let currentPassPromise = null;
+/** @type {LocalImportWorkerPool | null} Lazily created by ensureWorkerPool() on first use (either
+ * initializeLocalImportScan() or a direct scanDirectory()/processFile() call, e.g. from a test that never
+ * calls initializeLocalImportScan() at all) and reused for the lifetime of this module's process - see
+ * ensureWorkerPool()'s own doc comment on why a pool is created once and shared, not once per pass/file.
+ * Disposed and cleared only by disposeLocalImportScan(). */
+let workerPool = null;
 
 /**
- * @param {string} filename
- * @returns {string | null} A formatImportFunctions key, or null if this filename isn't a recognized character
- * file format at all (e.g. a stray .txt or .DS_Store dropped into a watched directory) - such files are silently
- * ignored, not an error, since a watched directory isn't guaranteed to contain only character files.
+ * Returns the shared worker pool used by processFile() (both the periodic-scan and fs.watch call paths -
+ * see this module's header) to run each file's CPU-bound pre-import work (hashing/parsing - see
+ * local-import-worker.js) off the main thread, creating it on first use if one doesn't already exist. A
+ * single pool is reused across every call in this module's process, not recreated per pass or per file -
+ * spinning up worker_threads has real (if small) startup cost, and the whole feature exists for throughput
+ * on a large corpus, not to pay that cost per file. Sized via resolveWorkerPoolSize() (see that function's
+ * own doc comment on the config knob and default).
+ * @returns {LocalImportWorkerPool}
  */
-function detectFormat(filename) {
-    const ext = path.extname(filename).slice(1).toLowerCase();
-    return EXTENSION_TO_FORMAT[ext] ?? null;
+function ensureWorkerPool() {
+    if (!workerPool) {
+        workerPool = new LocalImportWorkerPool(resolveWorkerPoolSize());
+    }
+    return workerPool;
 }
 
 /**
@@ -239,123 +241,6 @@ async function maybeHardlinkDuplicateSource(sourcePath, characterId, contentHash
 }
 
 /**
- * Non-destructively parses `sourceBuffer` (the source file's bytes, already read once by the caller - never
- * written to, never staged, never consumed) into the same normalized shape computeContentIdentityHash() always
- * hashes from, and returns that hash - or `null` for a format this doesn't (yet) know how to parse without
- * importing it.
- *
- * Takes the already-read buffer rather than a path/re-reading it from disk: `processFile()` (the only caller)
- * already reads `sourcePath` in full to compute `contentHash` via sha256 - re-reading the identical bytes here a
- * second time (this used to call parseCharacterCard()/fsPromises.readFile() directly on the path) was a second
- * full disk read of every newly-discovered file for no reason, measured as a real contributor to this module's
- * throughput on the owner's ~300k-file real-world scan (2026-08 local-import perf investigation) - the same
- * "redo expensive per-item work instead of computing it once" shape as the tags.json bug bootstrapIfNeeded() had.
- *
- * PNG and JSON are the trivial cases: readCharacterCard()/JSON.parse() + getCharaCardV2() is exactly the
- * read-off-disk-without-importing pattern character-metadata-db.js's bootstrapIfNeeded()/reconcile() already use
- * to build a metadata row from an arbitrary on-disk card - reused here rather than duplicated. YAML/YML reuses
- * convertToV2() with the same field-shaping importFromYaml() (characters.js) does, minus the actual write - safe
- * to call standalone because the YAML import path never populates `world` on the object it builds (the only
- * field that would make charaFormatData() do its own file I/O, via readWorldInfoFile()).
- *
- * CharX and BYAF are deliberately NOT handled here (return `null`, meaning "no fallback match attempted, fall
- * through to normal import") - punted as an explicit follow-up. Their only existing parsers (byaf.js's
- * ByafParser, charx.js's CharXParser) are entangled with the actual import/asset-persistence flow, not factored
- * out into a standalone non-destructive read the way PNG/JSON/YAML's normalization already was; pulling that
- * apart safely is a real untangling job, not a small extraction, and out of scope here. This only means the
- * *poisoned-row-vs-byte-different* case goes undetected for these two formats - the content_hash exact-byte fast
- * path above still fully covers a byte-identical re-drop of a charx/byaf file either way, and an undetected
- * semantic duplicate here is a false NEGATIVE (a duplicate slips through and gets imported again), never a false
- * positive - see this module's own header on why that's the safe direction to err in.
- * @param {Buffer} sourceBuffer The source file's raw bytes, already read by the caller.
- * @param {string} format A formatImportFunctions key (see EXTENSION_TO_FORMAT)
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<string | null>}
- */
-async function computeCandidateContentIdentityHash(sourceBuffer, format, directories) {
-    switch (format) {
-        case 'png': {
-            const imgData = readCharacterCard(sourceBuffer);
-            if (imgData === undefined) return null;
-            const character = getCharaCardV2(JSON.parse(imgData), directories, false);
-            return computeContentIdentityHash(character);
-        }
-        case 'json': {
-            const raw = sourceBuffer.toString('utf8');
-            const character = getCharaCardV2(JSON.parse(raw), directories, false);
-            return computeContentIdentityHash(character);
-        }
-        case 'yaml':
-        case 'yml': {
-            const raw = sourceBuffer.toString('utf8');
-            const yamlData = yaml.parse(raw);
-            // Mirrors importFromYaml()'s (characters.js) own field-shaping object, minus everything that
-            // function does AFTER building it (sanitize(), writeCharacterData(), the returned file name) - this
-            // is only ever used to compute a hash, nothing here is persisted.
-            const shaped = convertToV2({
-                name: yamlData.name,
-                description: yamlData.context ?? '',
-                first_mes: yamlData.greeting ?? '',
-                create_date: new Date().toISOString(),
-                chat: '',
-                personality: '',
-                creatorcomment: '',
-                avatar: 'none',
-                mes_example: '',
-                scenario: '',
-                talkativeness: 0.5,
-                creator: '',
-                tags: '',
-            }, directories);
-            return computeContentIdentityHash(shaped);
-        }
-        default:
-            // charx/byaf (or anything else EXTENSION_TO_FORMAT maps to that isn't handled above) - see this
-            // function's own doc comment.
-            return null;
-    }
-}
-
-/**
- * Cheap, non-destructive pre-check for a `.json`-extension candidate - run BEFORE any staging/import machinery
- * touches the file, so it can tell "this file's content will never be a character card" apart from "the import
- * pipeline itself failed on it for some other reason" (see processFile()'s own comment on why that distinction
- * is what decides retry-forever vs skip-once). Two real corpus-hygiene shapes get recognized here, both drawn
- * from an actual owner-reported case (see local-import-scan.test.js):
- *   - 'not-json': the bytes aren't valid JSON at all - e.g. a PNG file that got misnamed/mislabeled with a
- *     `.json` extension.
- *   - 'unrecognized-shape': valid JSON, but not any of the three shapes importFromJson() (characters.js)
- *     actually dispatches on (ccv2/v3's top-level `spec`, v1's `name`, or Pygmalion's `char_name`) - deliberately
- *     mirrors that function's own dispatch conditions exactly, rather than a separate/looser notion of "looks
- *     like a card", so this can never disagree with what importFromJson() would actually have done. e.g. a
- *     lorebook/world-info export that happens to sit in the same corpus directory as real character cards.
- * Returns `null` for anything else - including a shape this function doesn't specifically recognize but that
- * importFromJson() might still handle - meaning "don't pre-emptively skip, let the normal import attempt run
- * and speak for itself".
- * @param {Buffer} sourceBuffer The source file's raw bytes, already read by the caller.
- * @returns {'not-json' | 'unrecognized-shape' | null}
- */
-function classifyJsonCandidate(sourceBuffer) {
-    let parsed;
-    try {
-        parsed = JSON.parse(sourceBuffer.toString('utf8'));
-    } catch {
-        return 'not-json';
-    }
-
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        return 'unrecognized-shape';
-    }
-
-    // Mirrors importFromJson()'s (characters.js) own dispatch conditions exactly - see that function.
-    if (parsed.spec !== undefined || parsed.name !== undefined || parsed.char_name !== undefined) {
-        return null;
-    }
-
-    return 'unrecognized-shape';
-}
-
-/**
  * Records that `filename` has been processed as of `mtimeMs` in both the in-memory skip cache and its persisted
  * counterpart (see DirectoryScanState.lastSeenMtimeMs's own doc comment on why there are two) - every call site
  * in processFile() that used to only update the in-memory Map now goes through here instead, so the two never
@@ -445,6 +330,36 @@ async function cleanupRemovedFile(state, directories, filename) {
     }
 }
 
+/**
+ * Serializes concurrent processFile() calls that land on the SAME content hash within one directory's scan
+ * pass, so `fn` (the dedup-check-then-maybe-import critical section) never runs for two files sharing a hash
+ * at the same time. Necessary specifically because scanDirectory() now dispatches files with real
+ * concurrency (mapWithConcurrency(), bounded by the worker pool size - see that call site) instead of one at
+ * a time: two DIFFERENT source files with byte-identical content, discovered in the same pass, would
+ * otherwise both reach findCharacterIdByContentHash() before either had actually committed an import,
+ * both find nothing, and both import - a real TOCTOU race reproduced via this module's own test suite once
+ * concurrent dispatch landed (there is no UNIQUE constraint on `characters.content_hash`, and
+ * importCharacterFileHeadless()'s own re-check right before writing has the identical shape of race, so it
+ * cannot single-handedly prevent this either). Files with DIFFERENT hashes are never blocked by each other -
+ * only same-hash collisions are serialized - so this doesn't undo the throughput this pool exists for.
+ * @param {DirectoryScanState} state
+ * @param {string} hash
+ * @param {() => Promise<void>} fn
+ * @returns {Promise<void>}
+ */
+function withPerHashLock(state, hash, fn) {
+    if (!state.hashLocks) state.hashLocks = new Map();
+    // The map only ever stores a chain that's been through .catch(() => {}) below, so it can never itself be a
+    // rejected promise - `prior` is always safe to .then() off of without also handling a rejection case here.
+    const prior = state.hashLocks.get(hash) ?? Promise.resolve();
+    const run = prior.then(fn);
+    // The stored chain must never itself reject (a rejection here would permanently poison every future
+    // waiter for this hash within the pass, not just this one caller) - `run` (returned to THIS call's own
+    // caller) still carries the real outcome/rejection; only the map's internally-chained copy is swallowed.
+    state.hashLocks.set(hash, run.catch(() => { }));
+    return run;
+}
+
 async function processFile(state, filename, directories) {
     const format = detectFormat(filename);
     if (!format) return;
@@ -486,40 +401,52 @@ async function processFile(state, filename, directories) {
         }
     }
 
+    // Read fresh via getConfigValue() (not the module-level cached export in character-metadata-db.js) so this
+    // reflects a config/env change on the very next scan pass - see that export's own updated doc comment for
+    // why. Read here (before dispatching to the worker) so the worker never computes an identity hash the
+    // config would just have discarded - see local-import-worker.js's own header on why this flag travels
+    // with the task rather than being re-read inside the worker.
+    const allowIdentityFallback = getConfigValue('performance.allowExpensiveDuplicateFallback', true, 'boolean');
+
     try {
-        // Read the source file's bytes exactly once and reuse the buffer for both the sha256 dedup hash below
-        // and (on the expensive-fallback path further down) the content-identity parse - the fast path used to
-        // call hashFileContents(sourcePath) (a stream read) and then, on the fallback path, re-read the same
-        // path a second time from disk via parseCharacterCard()/fsPromises.readFile(). Two full reads of every
-        // newly-discovered file's bytes for no reason - the same "redo expensive per-item work instead of
-        // computing it once" shape as the tags.json bug bootstrapIfNeeded() had, measured as a real contributor
-        // to this module's throughput on the owner's ~300k-file real-world scan (2026-08 local-import perf
-        // investigation). A plain buffered read (not a stream) also means one read syscall for a typical
-        // multi-MB card instead of the dozens a 64KB-chunked ReadStream issued.
-        const sourceBuffer = await fsPromises.readFile(sourcePath);
+        // The CPU-bound part of this file's work - read, sha256 hash, (for .json) the not-a-card/wrong-shape
+        // classification, and (unless already short-circuited by that classification, and only if
+        // allowIdentityFallback) the content-identity parse+hash - runs entirely inside a worker thread (see
+        // local-import-worker.js/local-import-worker-pool.js's own headers on why: this was measured as a real,
+        // substantial main-thread CPU bottleneck on the owner's real corpus - 2026-08 local-import worker-pool
+        // investigation - and every step here is pure/DB-free, so it's safe to run off-thread). Only the
+        // source file PATH crosses into the worker and a small `{contentHash, jsonClassification, identityHash}`
+        // result crosses back - the multi-megabyte file buffer itself never does, in either direction.
+        //
+        // Every sqlite read/write below (getLocalImportSkip already ran above; findCharacterIdByContentHash,
+        // findCharacterIdByContentIdentityHash, setLocalImportSkip, markProcessed, and the actual
+        // stageFile()+importCharacterFileHeadless() write) stays on THIS (main) thread, unchanged from before -
+        // see local-import-worker.js's header for why worker-thread sqlite access would be unsafe here (no WAL
+        // journal mode/busy_timeout configured, and scanDirectory() wraps a whole pass in one write transaction
+        // via beginBatchImport()/endBatchImport()).
+        const workerResult = await ensureWorkerPool().run(sourcePath, format, directories, allowIdentityFallback);
 
-        // Permanent-skip classification (see classifyJsonCandidate()'s own doc comment): runs on the raw bytes
-        // alone, before any staging/import machinery is touched, so it can never be confused with - or mask - a
-        // real failure IN that machinery. Only ever short-circuits format 'json' candidates that are positively
-        // determined here to be either not valid JSON at all, or valid JSON that isn't a recognized character-
-        // card shape; everything else (including every other format, and any json this doesn't recognize as
-        // one of those two failure shapes) falls through to the exact same import attempt as before, which
+        // Permanent-skip classification (see local-import-classify.js's classifyJsonCandidate() doc comment):
+        // computed in the worker above; acted on here exactly as before - never confused with, or masking, a
+        // real failure in the staging/import machinery below. Only ever short-circuits format 'json' candidates
+        // positively determined to be either not valid JSON at all, or valid JSON that isn't a recognized
+        // character-card shape; everything else falls through to the exact same import attempt as before, which
         // keeps its own existing retry-on-failure behavior for genuinely transient problems untouched.
-        if (format === 'json') {
-            const classification = classifyJsonCandidate(sourceBuffer);
-            if (classification) {
-                const reasonText = classification === 'not-json'
-                    ? 'not valid JSON (the content does not look like a character card - possibly a misnamed/mislabeled file, e.g. an image saved with a .json extension)'
-                    : 'valid JSON but not a recognized character card shape (no spec/name/char_name field - likely a lorebook/world-info export or other non-character JSON)';
-                console.warn(color.yellow(`[local-import] Permanently skipping ${sourcePath}: ${reasonText}. Will not retry unless the file changes.`));
-                await setLocalImportSkip(directories, sourcePath, stat.mtimeMs, classification);
-                await markProcessed(state, directories, sourcePath, filename, stat.mtimeMs);
-                return;
-            }
+        if (format === 'json' && workerResult.jsonClassification) {
+            const classification = workerResult.jsonClassification;
+            const reasonText = classification === 'not-json'
+                ? 'not valid JSON (the content does not look like a character card - possibly a misnamed/mislabeled file, e.g. an image saved with a .json extension)'
+                : 'valid JSON but not a recognized character card shape (no spec/name/char_name field - likely a lorebook/world-info export or other non-character JSON)';
+            console.warn(color.yellow(`[local-import] Permanently skipping ${sourcePath}: ${reasonText}. Will not retry unless the file changes.`));
+            await setLocalImportSkip(directories, sourcePath, stat.mtimeMs, classification);
+            await markProcessed(state, directories, sourcePath, filename, stat.mtimeMs);
+            return;
+        }
 
+        if (format === 'json') {
             // Reaching here for a .json candidate means: this file is NOT skip-worthy at its current bytes -
             // either it never was, or (the case this specifically guards) it WAS previously skip-classified at
-            // an older mtime and has since been edited into something classifyJsonCandidate() no longer
+            // an older mtime and has since been edited into something the worker's classification no longer
             // rejects (e.g. a stray lorebook export the owner turned into a real character card). The mtime-gated
             // early-return above already established any existingSkip row here is for a DIFFERENT (stale) mtime
             // if one exists at all - clear it unconditionally (a no-op DELETE if there was never a row) so a
@@ -535,61 +462,68 @@ async function processFile(state, filename, directories) {
             }
         }
 
-        const contentHash = crypto.createHash('sha256').update(sourceBuffer).digest('hex');
+        const contentHash = workerResult.contentHash;
 
-        // Cheap pre-copy dedup check: skip staging entirely for a file already in the library. Correctness of
-        // dedup does not depend on this - importCharacterFileHeadless() re-checks the same hash right before
-        // actually importing - this only saves the reflink/hardlink/copy work for the common "rescanning a
-        // directory whose files are already all imported" case.
-        const alreadyImported = await findCharacterIdByContentHash(directories, contentHash);
-        if (alreadyImported) {
-            await maybeHardlinkDuplicateSource(sourcePath, alreadyImported, contentHash, directories);
-            // In-memory only, not persisted - see markProcessedInMemoryOnly()'s own doc comment on why a
-            // duplicate match must never be treated as a durable, restart-surviving skip.
-            markProcessedInMemoryOnly(state, filename, stat.mtimeMs);
-            return;
-        }
-
-        // Expensive fallback (see this module's header): only reached once the cheap exact-byte check above has
-        // already found nothing. Read fresh via getConfigValue() (not the module-level cached export in
-        // character-metadata-db.js) so this reflects a config/env change on the very next scan pass - see that
-        // export's own updated doc comment for why.
-        if (getConfigValue('performance.allowExpensiveDuplicateFallback', true, 'boolean')) {
-            try {
-                const identityHash = await computeCandidateContentIdentityHash(sourceBuffer, format, directories);
-                const identityMatch = identityHash ? await findCharacterIdByContentIdentityHash(directories, identityHash) : null;
-                if (identityMatch) {
-                    // Same treatment as an exact content_hash match above - a real content-hash value is still
-                    // passed through to maybeHardlinkDuplicateSource() (it only ever gates on the config flag,
-                    // never inspects the hash's own value - see that function's doc comment), so the on-disk
-                    // dedup behavior is identical either way.
-                    await maybeHardlinkDuplicateSource(sourcePath, identityMatch, contentHash, directories);
-                    // In-memory only - same reasoning as the exact content_hash match above.
-                    markProcessedInMemoryOnly(state, filename, stat.mtimeMs);
-                    return;
-                }
-            } catch (err) {
-                // Non-fatal: a failed identity check must not block an otherwise-normal import attempt below -
-                // worst case here is a missed dedup (the file gets imported as a new character), never data loss.
-                console.debug(`[local-import] Content-identity duplicate check failed for ${sourcePath} (will still attempt an ordinary import):`, err.message);
+        // Everything from here down (dedup-check through the eventual stage+import) is serialized per content
+        // hash via withPerHashLock() (see that function's own doc comment) - concurrent worker dispatch (see
+        // scanDirectory()'s mapWithConcurrency() call) means this section can now genuinely run for several
+        // DIFFERENT files at once, and if two of those happen to share a content hash, the dedup-check-then-
+        // import sequence below is a real TOCTOU race without this: both would find nothing imported yet, and
+        // both would import. Files with different hashes are never blocked by each other.
+        await withPerHashLock(state, contentHash, async () => {
+            // Cheap pre-copy dedup check: skip staging entirely for a file already in the library. Correctness
+            // of dedup does not depend on this alone - importCharacterFileHeadless() re-checks the same hash
+            // right before actually importing - this also saves the reflink/hardlink/copy work for the common
+            // "rescanning a directory whose files are already all imported" case.
+            const alreadyImported = await findCharacterIdByContentHash(directories, contentHash);
+            if (alreadyImported) {
+                await maybeHardlinkDuplicateSource(sourcePath, alreadyImported, contentHash, directories);
+                // In-memory only, not persisted - see markProcessedInMemoryOnly()'s own doc comment on why a
+                // duplicate match must never be treated as a durable, restart-surviving skip.
+                markProcessedInMemoryOnly(state, filename, stat.mtimeMs);
+                return;
             }
-        }
 
-        const stagedPath = await stageFile(sourcePath);
-        const result = await importCharacterFileHeadless(stagedPath, format, directories, {
-            userHandle: DEFAULT_USER.handle,
-            contentHash,
+            // Expensive fallback (see this module's header): only reached once the cheap exact-byte check above
+            // has already found nothing. identityHash was computed in the worker above, gated on the exact same
+            // allowIdentityFallback flag already read on this thread before dispatch.
+            if (allowIdentityFallback && workerResult.identityHash) {
+                try {
+                    const identityMatch = await findCharacterIdByContentIdentityHash(directories, workerResult.identityHash);
+                    if (identityMatch) {
+                        // Same treatment as an exact content_hash match above - a real content-hash value is
+                        // still passed through to maybeHardlinkDuplicateSource() (it only ever gates on the
+                        // config flag, never inspects the hash's own value - see that function's doc comment),
+                        // so the on-disk dedup behavior is identical either way.
+                        await maybeHardlinkDuplicateSource(sourcePath, identityMatch, contentHash, directories);
+                        // In-memory only - same reasoning as the exact content_hash match above.
+                        markProcessedInMemoryOnly(state, filename, stat.mtimeMs);
+                        return;
+                    }
+                } catch (err) {
+                    // Non-fatal: a failed identity check must not block an otherwise-normal import attempt
+                    // below - worst case here is a missed dedup (the file gets imported as a new character),
+                    // never data loss.
+                    console.debug(`[local-import] Content-identity duplicate check failed for ${sourcePath} (will still attempt an ordinary import):`, err.message);
+                }
+            }
+
+            const stagedPath = await stageFile(sourcePath);
+            const result = await importCharacterFileHeadless(stagedPath, format, directories, {
+                userHandle: DEFAULT_USER.handle,
+                contentHash,
+            });
+
+            if (!result) {
+                console.warn(`[local-import] Failed to import ${sourcePath} (unrecognized content or import error) - will retry next pass.`);
+            } else if ('duplicateOf' in result) {
+                console.debug(`[local-import] Skipped ${sourcePath} - duplicate of already-imported character ${result.duplicateOf}.`);
+            } else {
+                console.log(color.cyan(`[local-import] Imported ${sourcePath} as ${result.fileName}.png`));
+            }
+
+            await markProcessed(state, directories, sourcePath, filename, stat.mtimeMs);
         });
-
-        if (!result) {
-            console.warn(`[local-import] Failed to import ${sourcePath} (unrecognized content or import error) - will retry next pass.`);
-        } else if ('duplicateOf' in result) {
-            console.debug(`[local-import] Skipped ${sourcePath} - duplicate of already-imported character ${result.duplicateOf}.`);
-        } else {
-            console.log(color.cyan(`[local-import] Imported ${sourcePath} as ${result.fileName}.png`));
-        }
-
-        await markProcessed(state, directories, sourcePath, filename, stat.mtimeMs);
     } catch (err) {
         // Logs the full Error (stack included), not just err.message - a message-only line like "Input must be
         // string" gives no way to tell which of several sanitize()/hash/parse calls in the import path actually
@@ -645,11 +579,25 @@ export async function scanDirectory(state, directories) {
             }
         }
 
-        for (const filename of entries) {
-            await processFile(state, filename, directories);
-        }
+        // Bounded-concurrency dispatch, not a plain sequential loop: processFile()'s own CPU-bound work now
+        // runs inside the worker pool (see ensureWorkerPool()), so driving it one file at a time here would
+        // leave every worker but one idle. Concurrency is capped at the same resolveWorkerPoolSize() the pool
+        // itself was created with - dispatching more files at once than there are workers to service them just
+        // queues up inside the pool with no throughput benefit, while still growing the number of files whose
+        // main-thread pre/post-worker DB work (stat, skip-check, dedup lookups, staging, import) is interleaved
+        // at once for no reason. mapWithConcurrency() (util.js) is the same bounded-concurrency driver
+        // characters-search-index.js's own I/O-bound file-read pass already uses - reused here rather than a
+        // second implementation of "N in flight at once, preserve nothing about ordering that matters" (file
+        // processing order was never significant - each file's outcome is independent of every other's).
+        await mapWithConcurrency(entries, resolveWorkerPoolSize(), filename => processFile(state, filename, directories));
     } finally {
         await endBatchImport(directories);
+        // withPerHashLock()'s coordination is only ever needed to arbitrate races WITHIN one pass's concurrent
+        // dispatch (see that function's own doc comment) - across passes, runScanCycle()'s self-pacing already
+        // guarantees only one pass is ever in flight at a time, so nothing from a finished pass can still be
+        // racing a later one. Clearing here keeps this Map's size bounded by "distinct hashes seen in the most
+        // recent pass" rather than growing for the lifetime of a long-running server.
+        state.hashLocks?.clear();
     }
 }
 
@@ -870,6 +818,12 @@ export async function initializeLocalImportScan() {
         }
     }
 
+    // Created eagerly here (rather than left to ensureWorkerPool()'s own lazy-create-on-first-use path) so the
+    // pool's lifetime is explicitly tied to this scan lifecycle from the start, same as every other resource
+    // this function sets up (watchers, scanStates) - disposeLocalImportScan() is this function's exact
+    // counterpart and is what actually tears it back down (see that function).
+    ensureWorkerPool();
+
     // Not awaited - see this function's own doc comment on why the initial pass must never block server startup.
     runScanCycle(userDirectories, scanIntervalMs).catch(err => {
         console.error('[local-import] Scan cycle crashed unexpectedly:', err);
@@ -878,8 +832,11 @@ export async function initializeLocalImportScan() {
 
 /**
  * Graceful-shutdown / test-teardown counterpart to initializeLocalImportScan(): closes every watcher, tells any
- * in-flight scan cycle to stop rescheduling itself once its current pass finishes, and clears the pending
- * reschedule timer if one is set. Mirrors character-metadata-db.js's disposeMetadataStores().
+ * in-flight scan cycle to stop rescheduling itself once its current pass finishes, clears the pending
+ * reschedule timer if one is set, and tears down the worker pool (see LocalImportWorkerPool.dispose()) so no
+ * worker thread outlives this scan's lifecycle - across a scan-config re-init (initializeLocalImportScan()
+ * calls this first) or an actual server shutdown alike. Mirrors character-metadata-db.js's
+ * disposeMetadataStores().
  */
 export function disposeLocalImportScan() {
     disposed = true;
@@ -893,5 +850,18 @@ export function disposeLocalImportScan() {
     if (scanTimeout) {
         clearTimeout(scanTimeout);
         scanTimeout = null;
+    }
+    if (workerPool) {
+        // Not awaited - disposeLocalImportScan() has always been a synchronous, fire-and-forget teardown (same
+        // convention stopWatcherFor()'s callers already rely on), and every worker here is already .unref()'d
+        // (see LocalImportWorkerPool._spawnSlot()) so a still-terminating worker can never be the reason this
+        // process/test fails to exit. The pool reference is cleared immediately so the very next
+        // ensureWorkerPool() call (e.g. from initializeLocalImportScan() re-initializing right after this)
+        // always gets a fresh pool rather than the one already mid-teardown.
+        const poolToDispose = workerPool;
+        workerPool = null;
+        poolToDispose.dispose().catch(err => {
+            console.error('[local-import] Worker pool disposal failed:', err);
+        });
     }
 }

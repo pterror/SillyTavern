@@ -93,6 +93,20 @@ describe('scanDirectory (unit: direct directories fixture, no boot wiring)', () 
         fs.rmSync(tempDir, { recursive: true, force: true });
     });
 
+    // Every scanDirectory() call in this block lazily creates local-import-scan.js's shared worker pool
+    // (2026-08 local-import worker-pool work) on first use and reuses it across every test here - by design,
+    // spinning one up per test/file would defeat the point of a persistent pool (see
+    // local-import-worker-pool.js's own header). Without this, that pool's worker threads stay alive for the
+    // rest of this file's test run (this describe block never calls disposeLocalImportScan() itself, unlike
+    // the boot-wiring describe block below) - the workers are deliberately NOT .unref()'d (see
+    // local-import-worker-pool.js's own header on why that was tried and found unsafe), so leaving them
+    // running is exactly the "leaked worker thread" failure mode the pool's lifecycle design exists to
+    // prevent, and would keep the whole test process from exiting cleanly. This teardown is what actually
+    // bounds their lifetime to the tests that need them.
+    afterAll(() => {
+        localImportScan.disposeLocalImportScan();
+    });
+
     /** @returns {ReturnType<typeof buildState>} */
     function buildState() {
         return { sourceDir, lastSeenMtimeMs: new Map(), watcher: null, watchTimers: new Map() };
@@ -431,13 +445,21 @@ describe('scanDirectory (unit: direct directories fixture, no boot wiring)', () 
             expect(newRow.name).toBe('Someone Else');
         });
 
-        test('reads a newly-discovered source file only once, not twice, even though both the dedup hash and the identity-check parse consume its bytes (2026-08 local-import perf fix - a second fs.promises.readFile of the same source path here used to double every new file\'s disk I/O)', async () => {
+        test('never reads a newly-discovered source file on the main thread at all (2026-08 worker-pool fix: the read - and both the dedup hash and the identity-check parse that consume its bytes - now happen once, entirely inside a worker thread, not via fs.promises.readFile here)', async () => {
             process.env.SILLYTAVERN_PERFORMANCE_ALLOWEXPENSIVEDUPLICATEFALLBACK = 'true';
 
             const discoveredBuffer = cardParser.write(BLANK_PNG, JSON.stringify(poisonedCardData()));
             const sourcePath = path.join(sourceDir, 'discovered.png');
             fs.writeFileSync(sourcePath, discoveredBuffer);
 
+            // The original version of this test (pre-worker-pool) spied on fs.promises.readFile here and
+            // asserted exactly one call, catching a real bug where the same source file's bytes were read
+            // twice from disk (once for the dedup hash, once again for the identity-check parse). That read
+            // now happens exactly once too, but inside local-import-worker.js's own thread via a plain
+            // fs.readFileSync - a separate Node realm this spy can't see into. So this asserts the main
+            // thread never reads the source file's bytes AT ALL (zero fs.promises.readFile calls for it) -
+            // the single-read guarantee has gotten strictly stronger (the multi-megabyte buffer no longer
+            // even crosses into this thread), just no longer directly observable as "exactly once" from here.
             const readFileSpy = jest.spyOn(fs.promises, 'readFile');
             try {
                 await localImportScan.scanDirectory(buildState(), directories);
@@ -446,10 +468,10 @@ describe('scanDirectory (unit: direct directories fixture, no boot wiring)', () 
             }
 
             const sourceReads = readFileSpy.mock.calls.filter(call => call[0] === sourcePath);
-            expect(sourceReads.length).toBe(1);
+            expect(sourceReads.length).toBe(0);
 
             // Sanity: the file was genuinely processed through both the hash-dedup and identity-check code paths
-            // (not skipped for some unrelated reason that would make the single-read count meaningless).
+            // (not skipped for some unrelated reason that would make the zero-main-thread-reads count meaningless).
             expect(fs.readdirSync(charactersDir).length).toBe(1);
         });
     });
