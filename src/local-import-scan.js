@@ -13,6 +13,7 @@ import { importCharacterFileHeadless } from './endpoints/characters.js';
 import { beginBatchImport, endBatchImport, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, computeContentIdentityHash, getLocalImportSkip, setLocalImportSkip, clearLocalImportSkip, getAllLocalImportMtimes, setLocalImportMtime, clearLocalImportMtime } from './character-metadata-db.js';
 import { read as readCharacterCard } from './character-card-parser.js';
 import { getCharaCardV2, convertToV2 } from './character-card-normalize.js';
+import { attachOverflowWatch, isWindowsOverflowSignal } from './watch-overflow.js';
 
 /**
  * Config/admin-set-only "import characters from a local directory on disk" feature, as an alternative to
@@ -101,12 +102,23 @@ const EXTENSION_TO_FORMAT = {
  * @property {fs.FSWatcher | null} watcher
  * @property {Map<string, NodeJS.Timeout>} watchTimers Per-filename debounce timers, mirrors
  * character-metadata-db.js's watchTimers.
+ * @property {{ close: () => void } | null} overflowWatch Linux-only dedicated overflow watch (see
+ * watch-overflow.js's attachOverflowWatch()) - `null` on every other platform, or if attaching one failed for
+ * any reason (never fatal - see that module's own doc comment). Entirely separate from `watcher` above; closed
+ * independently in stopWatcherFor().
  */
 
 /** @type {DirectoryScanState[]} */
 let scanStates = [];
 /** @type {NodeJS.Timeout | null} */
 let scanTimeout = null;
+/** @type {import('./users.js').UserDirectoryList | null} Captured by initializeLocalImportScan() so
+ * triggerImmediateRescan() (called from a watcher-overflow signal, long after that function returned) can
+ * still reach the exact same arguments runScanCycle() needs - see that function's own doc comment. */
+let capturedUserDirectories = null;
+/** @type {number | null} Same reasoning as capturedUserDirectories - captured once at init, read by
+ * triggerImmediateRescan(). */
+let capturedScanIntervalMs = null;
 /** Set true by disposeLocalImportScan() to tell a scan cycle already in flight (see runScanCycle()) to stop
  * rescheduling itself once its current pass finishes, rather than only clearing scanTimeout - a pass can be
  * mid-flight (not yet at its own reschedule point) when dispose is called, and without this flag it would still
@@ -650,6 +662,13 @@ function startWatcherFor(state, directories) {
 
     try {
         state.watcher = fs.watch(state.sourceDir, (_eventType, filename) => {
+            if (isWindowsOverflowSignal(filename)) {
+                // See watch-overflow.js's own doc comment: on Windows, `filename === null` is ReadDirectoryChangesW's
+                // buffer-overflow signal (with a rare, owner-accepted false-positive case) - trigger the next
+                // full pass now instead of waiting out the rest of scanIntervalMs.
+                triggerImmediateRescan();
+                return;
+            }
             if (!filename) return;
 
             const existingTimer = state.watchTimers.get(filename);
@@ -670,6 +689,17 @@ function startWatcherFor(state, directories) {
     } catch (err) {
         console.error(`[local-import] Failed to start directory watcher for ${state.sourceDir} (the periodic scan remains the source of truth):`, err.message);
     }
+
+    // Linux-only, entirely separate mechanism (see watch-overflow.js's own doc comment on why Windows piggybacks
+    // on the fs.watch() callback above but Linux needs a dedicated watch) - never awaited, so a failure/delay
+    // attaching it can't hold up startWatcherFor() itself; state.overflowWatch starts null and is filled in once
+    // (if ever) this resolves.
+    attachOverflowWatch(state.sourceDir, () => triggerImmediateRescan()).then(handle => {
+        state.overflowWatch = handle;
+    }).catch(() => {
+        // attachOverflowWatch() itself never rejects (see its own doc comment - unavailable/failed always
+        // resolves to null), this catch is only defense-in-depth against a future change to that contract.
+    });
 }
 
 /**
@@ -679,6 +709,10 @@ function stopWatcherFor(state) {
     if (state.watcher) {
         state.watcher.close();
         state.watcher = null;
+    }
+    if (state.overflowWatch) {
+        state.overflowWatch.close();
+        state.overflowWatch = null;
     }
     for (const timer of state.watchTimers.values()) clearTimeout(timer);
     state.watchTimers.clear();
@@ -732,6 +766,9 @@ function warmMtimeCache(state, allMtimes) {
  * currentPassPromise/waitForCurrentScanPass() for why that's still exposed despite production never awaiting it.
  */
 async function runScanCycle(userDirectories, scanIntervalMs) {
+    capturedUserDirectories = userDirectories;
+    capturedScanIntervalMs = scanIntervalMs;
+
     const pass = (async () => {
         for (const state of scanStates) {
             await scanDirectory(state, userDirectories).catch(err => {
@@ -760,6 +797,25 @@ async function runScanCycle(userDirectories, scanIntervalMs) {
  */
 export async function waitForCurrentScanPass() {
     await currentPassPromise;
+}
+
+/**
+ * Called from a watcher-overflow signal (see watch-overflow.js) to run the NEXT pass now instead of waiting out
+ * the rest of `scanIntervalMs` - a pure latency optimization, same posture as everything else in that module.
+ * Deliberately does NOT start a second pass on top of one already running: if `scanTimeout` isn't currently set,
+ * a pass is either already in flight or this module was never initialized (disposed/never-started) - either
+ * way there is nothing safe or useful to do here, since runScanCycle() itself is the only thing ever allowed to
+ * schedule the next pass (see that function's own doc comment on why overlap is impossible by construction) and
+ * starting a second, independent call chain here would reintroduce exactly that hazard for the sake of shaving
+ * time off an already-imminent pass.
+ */
+function triggerImmediateRescan() {
+    if (!scanTimeout || !capturedUserDirectories || capturedScanIntervalMs === null) return;
+    clearTimeout(scanTimeout);
+    scanTimeout = null;
+    runScanCycle(capturedUserDirectories, capturedScanIntervalMs).catch(err => {
+        console.error('[local-import] Overflow-triggered scan cycle crashed unexpectedly:', err);
+    });
 }
 
 /**
@@ -803,6 +859,7 @@ export async function initializeLocalImportScan() {
         lastSeenMtimeMs: new Map(),
         watcher: null,
         watchTimers: new Map(),
+        overflowWatch: null,
     }));
 
     const allMtimes = await getAllLocalImportMtimes(userDirectories);
@@ -831,6 +888,8 @@ export function disposeLocalImportScan() {
     }
     scanStates = [];
     currentPassPromise = null;
+    capturedUserDirectories = null;
+    capturedScanIntervalMs = null;
     if (scanTimeout) {
         clearTimeout(scanTimeout);
         scanTimeout = null;

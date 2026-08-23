@@ -1,0 +1,89 @@
+diff --git a/node_modules/inotify-remastered-plus/src/bindings.cc b/node_modules/inotify-remastered-plus/src/bindings.cc
+index 7bda2c8..1bf026e 100644
+--- a/node_modules/inotify-remastered-plus/src/bindings.cc
++++ b/node_modules/inotify-remastered-plus/src/bindings.cc
+@@ -16,6 +16,7 @@ namespace NodeInotify {
+ 		Nan::SetPrototypeMethod(t, "addWatch", Inotify::AddWatch);
+ 		Nan::SetPrototypeMethod(t, "removeWatch", Inotify::RemoveWatch);
+ 		Nan::SetPrototypeMethod(t, "close", Inotify::Close);
++		Nan::SetPrototypeMethod(t, "setOverflowCallback", Inotify::SetOverflowCallback);
+ 
+ 		Local<ObjectTemplate> object_tmpl = t->InstanceTemplate();
+ 		Nan::SetAccessor(object_tmpl, Nan::New<String>("persistent").ToLocalChecked(), Inotify::GetPersistent);
+@@ -195,6 +196,33 @@ namespace NodeInotify {
+ 		info.GetReturnValue().Set(descriptor);
+ 	}
+ 
++	/*
++	 * rhi.zone patch (2026-08): registers a JS callback for IN_Q_OVERFLOW events specifically. The kernel
++	 * always reports wd == -1 for an overflow event (see the IN_Q_OVERFLOW NODE_DEFINE_CONSTANT comment
++	 * above), which inotify_add_watch() never returns for a real watch - so -1 is a safe, permanently
++	 * reserved dispatch-table slot for this, using the exact same handle()->Set(wd, callback) mechanism
++	 * AddWatch() already uses for every real watch descriptor, just called directly instead of going through
++	 * a real inotify_add_watch() syscall (there is no path to watch for this - it's a queue-level condition,
++	 * not a per-path one). See the dispatch loop's own comment (Callback()) for why this method existing is
++	 * only half the fix - the other half is that loop no longer assuming a lookup always succeeds.
++	 */
++	NAN_METHOD(Inotify::SetOverflowCallback) {
++		Nan::HandleScope scope;
++
++		if (info.Length() < 1 || !info[0]->IsFunction()) {
++			return Nan::ThrowTypeError("You must specify a callback function");
++		}
++
++		auto isolate = v8::Isolate::GetCurrent();
++		auto context = isolate->GetCurrentContext();
++		Inotify *inotify = Nan::ObjectWrap::Unwrap<Inotify>(info.This());
++
++		Local<Integer> overflow_key = Nan::New<Integer>(-1);
++		if (inotify->handle()->Set(context, overflow_key, info[0]).IsJust() == false) {
++			return Nan::ThrowTypeError("Setting overflow callback failed.");
++		}
++	}
++
+ 	NAN_METHOD(Inotify::RemoveWatch) {
+ 		Nan::HandleScope scope;
+ 		auto isolate = v8::Isolate::GetCurrent();
+@@ -297,10 +325,26 @@ namespace NodeInotify {
+ 				Local<Object> handle = inotify->handle();
+ 
+ 				Local<Value> value = handle->Get(context, Nan::New<Integer>(event->wd)).ToLocalChecked();
+-				Local<Function> func = Local<Function>::Cast(value);
+-
+-				Nan::Callback callback(func);
+-				Nan::Call(callback, handle, 1, argv);
++				// rhi.zone patch (2026-08): the lookup above returns v8::Undefined() whenever nothing was ever
++				// registered for this wd - always true for an IN_Q_OVERFLOW event (wd == -1) unless the JS
++				// caller opted in via the new setOverflowCallback() above, and could in principle also happen
++				// for any other wd this dispatch loop wasn't expecting. The ORIGINAL code here unconditionally
++				// cast whatever it got to a Function and called it - casting undefined to Function "succeeds"
++				// at the V8 API level (it's just a typed pointer reinterpretation, not a runtime check), so the
++				// actual failure only surfaced once Nan::Call() tried to invoke a function that fundamentally
++				// isn't one, which throws a JS TypeError inside this native callback - and since that throw
++				// happens under Nan::TryCatch specifically so it can be escalated via Nan::FatalException()
++				// below, Node treats it as an unrecoverable fatal error and kills the ENTIRE process, not just
++				// this one event. Reproduced directly (40k rapid file writes to overflow the default
++				// 16384-deep queue) before this fix existed - the crash was real, not theoretical. Skipping the
++				// call entirely whenever nothing callable is registered turns "the whole process dies" into "this
++				// one event is silently not delivered", which is what every OTHER unhandled-corner-case path in
++				// this file already does (see e.g. RemoveWatch's own comment on IN_IGNORED cleanup).
++				if (value->IsFunction()) {
++					Local<Function> func = Local<Function>::Cast(value);
++					Nan::Callback callback(func);
++					Nan::Call(callback, handle, 1, argv);
++				}
+ 				inotify->Unref();
+ 
+ 				if(event->mask & IN_IGNORED) {
+diff --git a/node_modules/inotify-remastered-plus/src/bindings.h b/node_modules/inotify-remastered-plus/src/bindings.h
+index d89d41f..23b0bd0 100644
+--- a/node_modules/inotify-remastered-plus/src/bindings.h
++++ b/node_modules/inotify-remastered-plus/src/bindings.h
+@@ -17,6 +17,7 @@ namespace NodeInotify {
+ 			static NAN_METHOD(AddWatch);
+ 			static NAN_METHOD(RemoveWatch);
+ 			static NAN_METHOD(Close);
++			static NAN_METHOD(SetOverflowCallback);
+ 			static NAN_GETTER(GetPersistent);
+ 
+ 		private:
