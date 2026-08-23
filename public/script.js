@@ -288,6 +288,7 @@ import { extractReasoningFromData, extractReasoningSignatureFromData, initReason
 import { accountStorage } from './scripts/util/AccountStorage.js';
 import { initWelcomeScreen, openPermanentAssistantChat, openPermanentAssistantCard, getPermanentAssistantAvatar } from './scripts/welcome-screen.js';
 import { initDataMaid } from './scripts/data-maid.js';
+import { saveDraft, loadDraft, clearDraft } from './scripts/chat-draft.js';
 import { clearItemizedPrompts, deleteItemizedPromptForMessage, deleteItemizedPrompts, findItemizedPromptSet, initItemizedPrompts, itemizedParams, itemizedPrompts, loadItemizedPrompts, promptItemize, replaceItemizedPromptText, saveItemizedPrompts, swapItemizedPrompts } from './scripts/itemized-prompts.js';
 import { getSystemMessageByType, initSystemMessages, SAFETY_CHAT, sendSystemMessage, system_message_types, system_messages } from './scripts/system-messages.js';
 import { event_types, eventSource } from './scripts/events.js';
@@ -634,6 +635,44 @@ export function getCurrentChatId() {
         return getCurrentCharacter()?.chat;
     }
 }
+
+/**
+ * Builds the chat-draft context for whatever chat is currently loaded, for use with chat-draft.js's
+ * saveDraft/loadDraft/clearDraft. Returns null when there's no fully-resolved chat to scope a draft to (e.g.
+ * no character/group selected yet, or a group with no chat_id) - callers must treat that as "don't
+ * save/load/clear anything", not fall back to some shared key that unrelated chats could collide on.
+ * @returns {{type: 'character'|'group', id: string, chatId: string}|null} The current draft context, or null.
+ */
+function getCurrentDraftContext() {
+    const selection = getSelectionState();
+    const chatId = getCurrentChatId();
+    if (!chatId) {
+        return null;
+    }
+    if (selection.type === 'group') {
+        return { type: 'group', id: selection.groupId, chatId };
+    }
+    if (selection.type === 'character') {
+        return { type: 'character', id: selection.avatar, chatId };
+    }
+    return null;
+}
+
+/**
+ * Saves the current `#send_textarea` content as the draft for whatever chat is currently loaded. Synchronous
+ * (localStorage.setItem doesn't wait on anything), so it's safe to call directly - not just through the
+ * debounced wrapper - right before an unavoidable page reload (see the chat-integrity-conflict path below),
+ * where waiting for the debounce to fire on its own is not guaranteed.
+ */
+function flushDraftSave() {
+    const context = getCurrentDraftContext();
+    if (!context) {
+        return;
+    }
+    saveDraft(localStorage, context, String($('#send_textarea').val()));
+}
+
+const saveDraftDebounced = debounce(flushDraftSave, debounce_timeout.standard);
 
 export const talkativeness_default = 0.5;
 export const depth_prompt_depth_default = 4;
@@ -5063,6 +5102,13 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         is_send_press = true;
         textareaText = String($('#send_textarea').val());
         $('#send_textarea').val('')[0].dispatchEvent(new Event('input', { bubbles: true }));
+        // Explicit, synchronous clear (not just relying on the debounced input-triggered save eventually
+        // observing the now-empty box) - a message that was just sent must not be resurrectable as a "draft"
+        // by a reload that happens to land in the gap before the debounce fires.
+        const sentDraftContext = getCurrentDraftContext();
+        if (sentDraftContext) {
+            clearDraft(localStorage, sentDraftContext);
+        }
     } else {
         textareaText = '';
         if (chat.length && lastMessage.is_user) {
@@ -8112,6 +8158,14 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
         const result = await fetch('/api/chats/save', saveChatRequest);
 
         if (result.ok) {
+            // The server rotates the integrity slug on every successful write (see trySaveChat()'s doc comment
+            // in chats.js) and hands the new one back here. Carry it forward into chat_metadata so this tab's
+            // *next* save sends the up-to-date slug - otherwise every save after the first would keep sending
+            // the stale load-time slug and the integrity check would never actually fire for this tab again.
+            const data = await result.json().catch(() => null);
+            if (data && typeof data.integrity === 'string') {
+                chat_metadata.integrity = data.integrity;
+            }
             return;
         }
 
@@ -8133,6 +8187,10 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
 
         if (!forceSaveConfirmed) {
             console.warn('Chat integrity check failed, and user did not confirm the overwrite. Reloading the page.');
+            // Flush the draft synchronously before reloading - this reload happens on a forced/error path,
+            // not through the normal debounced-on-input save, so whatever's sitting unsent in the textarea
+            // right now would otherwise be destroyed with no chance for the debounce timer to have fired.
+            flushDraftSave();
             window.location.reload();
             return;
         }
@@ -12320,6 +12378,28 @@ jQuery(async function () {
     }, 200);
 
     $(document).on('click', '.api_loading', () => cancelStatusCheck('Canceled because connecting was manually canceled'));
+
+    //////////DRAFT PERSISTENCE LOGIC/////////////
+    // Debounced save on every keystroke (including programmatic `.val(...).dispatchEvent(new Event('input'))`
+    // calls elsewhere, e.g. slash commands filling the box) - see chat-draft.js for why an empty/whitespace
+    // value clears the draft instead of persisting one, which is what makes this also handle "the draft's
+    // chat got closed/emptied out from under it" without any extra code here.
+    $('#send_textarea').on('input', () => saveDraftDebounced());
+
+    // Restore whatever draft belongs to the chat that just became current - on first load and on every
+    // subsequent chat switch alike, since CHAT_CHANGED fires for both. Only restores when a draft actually
+    // exists for the *exact* now-current context, so switching to a chat with no saved draft never pulls in
+    // a stale one from wherever the textarea happened to be left.
+    eventSource.on(event_types.CHAT_CHANGED, () => {
+        const context = getCurrentDraftContext();
+        if (!context) {
+            return;
+        }
+        const draft = loadDraft(localStorage, context);
+        if (draft) {
+            $('#send_textarea').val(draft)[0].dispatchEvent(new Event('input', { bubbles: true }));
+        }
+    });
 
     //////////INPUT BAR FOCUS-KEEPING LOGIC/////////////
     let S_TAPreviouslyFocused = false;

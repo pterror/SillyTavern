@@ -366,7 +366,16 @@ async function checkChatIntegrity(filePath, integritySlug) {
     }
 
     // Check if the integrity matches
-    return chatIntegrity === integritySlug;
+    const matches = chatIntegrity === integritySlug;
+
+    if (!matches) {
+        // TEMP DEBUG (see docs/design or ask before removing): capturing facts for the
+        // /newchat double-save integrity mismatch repro. Remove once root-caused.
+        const stat = fs.statSync(filePath);
+        console.error(`[integrity-debug] mismatch for "${filePath}": expected="${integritySlug}" onDisk="${chatIntegrity}" fileMtime=${stat.mtime.toISOString()} fileCtime=${stat.ctime.toISOString()} fileSize=${stat.size} now=${new Date().toISOString()}`);
+    }
+
+    return matches;
 }
 
 /**
@@ -516,24 +525,44 @@ class IntegrityMismatchError extends Error {
 
 /**
  * Tries to save the chat data to a file, performing an integrity check if required.
+ *
+ * Also rotates the integrity slug on every successful write when integrity tracking is enabled (regardless of
+ * whether this particular call skipped the check via `skipIntegrityCheck`/force) and returns the new slug to
+ * the caller. This is the other half of the fix `checkChatIntegrity` needs: previously the slug a tab first
+ * loaded was carried forward unchanged on every subsequent save, including the one written to disk - so the
+ * "expected" slug on file never diverged from what any tab that had ever loaded the chat was sending, and the
+ * check could never actually catch a stale write. Minting a fresh slug here, writing it into the saved file,
+ * and handing it back to the caller (which must feed it into that tab's *next* save, see
+ * `saveChat()`/`saveGroupChat()` in the client) means a second tab whose last-known slug predates this write
+ * will correctly fail the check on its next save attempt instead of silently clobbering it.
  * @param {Array} chatData The chat array to save.
  * @param {string} filePath Target file path for the data.
  * @param {boolean} skipIntegrityCheck If undefined, the chat's integrity will not be checked.
  * @param {string} handle The users handle, passed to getBackupFunction.
  * @param {string} cardName Passed to backupChat.
  * @param {string} backupDirectory Passed to backupChat.
+ * @returns {Promise<string|undefined>} The new integrity slug written to the file, or undefined if integrity
+ * tracking is disabled (`backups.chat.checkIntegrity` config) or the chat has no header to carry a slug.
  */
 export async function trySaveChat(chatData, filePath, skipIntegrityCheck = false, handle, cardName, backupDirectory) {
-    const jsonlData = chatData?.map(m => JSON.stringify(m)).join('\n');
-
     const doIntegrityCheck = (checkIntegrity && !skipIntegrityCheck);
     const chatIntegritySlug = doIntegrityCheck ? chatData?.[0]?.chat_metadata?.integrity : undefined;
 
     if (chatIntegritySlug && !await checkChatIntegrity(filePath, chatIntegritySlug)) {
         throw new IntegrityMismatchError(`Chat integrity check failed for "${filePath}". The expected integrity slug was "${chatIntegritySlug}".`);
     }
+
+    /** @type {string|undefined} */
+    let nextIntegritySlug;
+    if (checkIntegrity && chatData?.[0]?.chat_metadata && typeof chatData[0].chat_metadata === 'object') {
+        nextIntegritySlug = crypto.randomUUID();
+        chatData[0].chat_metadata.integrity = nextIntegritySlug;
+    }
+
+    const jsonlData = chatData?.map(m => JSON.stringify(m)).join('\n');
     tryWriteFileSync(filePath, jsonlData);
     getBackupFunction(handle, cardName)(backupDirectory, cardName, jsonlData);
+    return nextIntegritySlug;
 }
 
 router.post('/save', validateAvatarUrlMiddleware, async function (request, response) {
@@ -547,9 +576,14 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
             return response.sendStatus(400);
         }
 
+        // TEMP DEBUG (see checkChatIntegrity's matching note): log every /save call so a
+        // genuine double-save for the same filename shows up here even before/without an
+        // integrity mismatch. Remove once root-caused.
+        console.error(`[integrity-debug] POST /save file="${chatFilePath}" force=${!!request.body.force} items=${Array.isArray(chatData) ? chatData.length : 'n/a'} integrity=${chatData?.[0]?.chat_metadata?.integrity} now=${new Date().toISOString()}`);
+
         if (Array.isArray(chatData)) {
-            await trySaveChat(chatData, chatFilePath, request.body.force, handle, cardName, request.user.directories.backups);
-            return response.send({ ok: true });
+            const integrity = await trySaveChat(chatData, chatFilePath, request.body.force, handle, cardName, request.user.directories.backups);
+            return response.send({ ok: true, integrity });
         } else {
             return response.status(400).send({ error: 'The request\'s body.chat is not an array.' });
         }
@@ -932,7 +966,7 @@ router.post('/group/save', async function (request, response) {
         const chatData = request.body.chat;
 
         if (Array.isArray(chatData)) {
-            await trySaveChat(chatData, chatFilePath, request.body.force, handle, String(id), request.user.directories.backups);
+            const integrity = await trySaveChat(chatData, chatFilePath, request.body.force, handle, String(id), request.user.directories.backups);
 
             // Groups-schema extension write-path hook (owner decision - see character-metadata-db.js's
             // bumpGroupChatStats() for the full rationale): keeps date_last_chat/chat_size fresh the moment a
@@ -945,7 +979,7 @@ router.post('/group/save', async function (request, response) {
             await bumpGroupChatStats(request.user.directories, String(id)).catch(err =>
                 console.error(`Could not update group chat stats for ${id}:`, err));
 
-            return response.send({ ok: true });
+            return response.send({ ok: true, integrity });
         } else {
             return response.status(400).send({ error: 'The request\'s body.chat is not an array.' });
         }
