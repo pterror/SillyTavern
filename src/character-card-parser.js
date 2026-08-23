@@ -25,8 +25,25 @@ import { loadReflinkModule } from './reflink-support.js';
  * @param {string} data Character data to write
  * @returns {Buffer} PNG image buffer with metadata
  */
-export const write = (image, data) => {
-    const chunks = extract(new Uint8Array(image));
+/**
+ * The chunk-list-manipulation half of write() - factored out so a caller that has already extracted
+ * `image`'s chunks for some other reason (writeCardToFile() below needs the same chunk list to compute
+ * findReflinkablePrefixOffset()'s result) can reuse that extraction instead of paying extractChunks() a
+ * second time over the same bytes. extractChunks() copies every chunk's data byte-by-byte (see
+ * png-chunks-extract's own source) - for a multi-MB card, that copy is a real, measured cost (2026-08
+ * local-import perf investigation: extractChunks() alone accounted for ~45% of writeCardToFile()'s wall
+ * time on a real corpus, spread across what used to be three separate extract() calls per imported file -
+ * this function's own doc comment on write() explains the other two), so calling it twice on identical
+ * bytes for two different reasons is exactly the "redo expensive work instead of computing it once" shape
+ * the tags.json bootstrapIfNeeded() bug had.
+ * @param {Array<{name: string, data: Uint8Array}>} chunks Already-extracted chunk list (mutated in place,
+ * same as the inline logic this was factored out of - callers that still need the original list untouched
+ * must extract their own copy).
+ * @param {string} data Character data to write (same contract as write()).
+ * @returns {Array<{name: string, data: Uint8Array}>} `chunks`, mutated: existing chara/ccv3 tEXt chunks
+ * removed, fresh one(s) inserted immediately before IEND.
+ */
+function spliceCardDataIntoChunks(chunks, data) {
     const tEXtChunks = chunks.filter(chunk => chunk.name === 'tEXt');
 
     // Remove existing tEXt chunks
@@ -53,6 +70,12 @@ export const write = (image, data) => {
         // Ignore errors when inspecting spec - if `data` isn't valid JSON, `chara` alone is written above.
     }
 
+    return chunks;
+};
+
+export const write = (image, data) => {
+    const chunks = extract(new Uint8Array(image));
+    spliceCardDataIntoChunks(chunks, data);
     const newBuffer = Buffer.from(encode(chunks));
     return newBuffer;
 };
@@ -209,6 +232,21 @@ export function findReflinkablePrefixOffset(srcBuf) {
         return null;
     }
 
+    return findReflinkablePrefixOffsetFromChunks(chunks);
+}
+
+/**
+ * The chunk-list half of findReflinkablePrefixOffset() above - factored out so writeCardToFile() can reuse
+ * a chunk list it already extracted for its own write, instead of paying extract() a second time over
+ * identical bytes purely to answer this question (see spliceCardDataIntoChunks()'s own doc comment for the
+ * measured cost this avoids). findReflinkablePrefixOffset(srcBuf) itself is kept as a thin extract-then-
+ * delegate wrapper for its other caller (reclaimReflinkPrefix(), which has no reason to extract twice
+ * either but only ever has a raw buffer on hand, not a pre-extracted chunk list).
+ * @param {Array<{name: string, data: Uint8Array}>} chunks Already-extracted chunk list (read-only - never
+ * mutated).
+ * @returns {number | null} Same contract as findReflinkablePrefixOffset().
+ */
+function findReflinkablePrefixOffsetFromChunks(chunks) {
     if (chunks.length === 0 || chunks[chunks.length - 1].name !== 'IEND') {
         return null;
     }
@@ -268,9 +306,17 @@ export function findReflinkablePrefixOffset(srcBuf) {
  */
 export async function writeCardToFile(sourcePath, destPath, data) {
     const srcBuf = await fs.promises.readFile(sourcePath);
-    const outputImage = write(srcBuf, data);
 
-    const offset = findReflinkablePrefixOffset(srcBuf);
+    // Extract srcBuf's chunks exactly once and reuse the same list for both the rewritten-buffer build
+    // and the reflinkable-prefix computation - this used to call write(srcBuf, data) (its own internal
+    // extract()) and findReflinkablePrefixOffset(srcBuf) (a second, independent extract() over the
+    // identical bytes) back to back. See spliceCardDataIntoChunks()'s own doc comment for why that
+    // duplicate extract() was a measured, real cost, not a theoretical one.
+    const chunks = extract(new Uint8Array(srcBuf));
+    const offset = findReflinkablePrefixOffsetFromChunks(chunks);
+    spliceCardDataIntoChunks(chunks, data);
+    const outputImage = Buffer.from(encode(chunks));
+
     const prefixVerified = offset !== null && offset <= srcBuf.length && offset <= outputImage.length
         && Buffer.compare(outputImage.subarray(0, offset), srcBuf.subarray(0, offset)) === 0;
 
