@@ -18,7 +18,7 @@ import { default as validateAvatarUrlMiddleware, getFileNameValidationFunction, 
 import { deepMerge, humanizedDateTime, tryParse, MemoryLimitedMap, getConfigValue, mutateJsonString, clientRelativePath, getUniqueName, sanitizeSafeCharacterReplacements, getArrayBufferSlice, uuidv7 } from '../util.js';
 import { TavernCardValidator } from '../validator/TavernCardValidator.js';
 import { parse, read, write, writeCardToFile } from '../character-card-parser.js';
-import { getCharaCardV2, convertToV2, readFromV2, charaFormatData, convertWorldInfoToCharacterBook, unsetPrivateFields, omitInstallLocalFields, omitFavField } from '../character-card-normalize.js';
+import { getCharaCardV2, convertToV2, readFromV2, charaFormatData, convertWorldInfoToCharacterBook, unsetPrivateFields, omitInstallLocalFields, omitFavField, computeContentIdentityHash } from '../character-card-normalize.js';
 import { calculateChatSize, calculateDataSize, toShallow } from '../character-shallow.js';
 import { invalidateThumbnail, getThumbnailVersion } from './thumbnails.js';
 import { importRisuSprites } from './sprites.js';
@@ -30,7 +30,7 @@ import cacheBuster from '../middleware/cacheBuster.js';
 import { searchCharacters, searchCharacterIds, rebuildCharacterSearchIndex, SEARCH_ID_CAP } from './characters-search-index.js';
 import { searchGroups } from './groups-search-index.js';
 import { getGroupsData, getGroupsByIds } from './groups.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, findCharacterIdByContentHash, setCharacterFav, getCharacterFavsByIds } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, setCharacterFav, getCharacterFavsByIds } from '../character-metadata-db.js';
 
 // With 100 MB limit it would take roughly 3000 characters to reach this limit
 const memoryCacheCapacity = getConfigValue('performance.memoryCacheCapacity', '100mb');
@@ -251,6 +251,52 @@ export async function fireMetadataUpsertHook(directories, avatar, data, contentH
 }
 
 /**
+ * Live-write-path counterpart to scripts/reclaim-character-reflinks.mjs's one-time historical reclaim -
+ * finds a DIFFERENT already-on-disk character whose `content_identity_hash` matches the card about to be
+ * written, so writeCharacterData()'s fast path can attempt to reflink against that live file's extents
+ * instead of (or in addition to, see writeCardFromChunks()'s own doc comment on ordering) `inputFile`'s own
+ * history. Owner decision: since every write here already goes through the write-then-atomic-rename pattern
+ * (see writeSharedPrefixThenAppend()), a target that's some OTHER live, still-mutable character carries no
+ * more risk than reflinking against this same character's own prior version already does - no partial state
+ * is ever exposed either way.
+ *
+ * Only ever proposes a candidate PATH - `findCharacterIdByContentIdentityHash()`'s O(1) indexed lookup on
+ * `content_identity_hash` covers just the JSON half of the card (see computeContentIdentityHash()'s own doc
+ * comment: fav/chat/create_date stripped, image bytes never enter that hash at all), so a hash match here is
+ * never proof the two characters' actual portraits match. writeCardFromChunks() is what does the real,
+ * byte-level verification against the candidate's own current file before ever trusting it - this function
+ * fails open (`null`) on anything short of "a different row's hash matches and its file is currently
+ * readable," same posture as every other content_identity_hash consumer in this codebase.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {string} selfAvatar This write's own avatar filename (e.g. `Alice.png`) - excluded from the match so
+ * a character can never "match" its own row.
+ * @param {string} data The Spec-V2 JSON string about to be written.
+ * @returns {Promise<string | null>} Absolute path to a different character's current file, or `null`.
+ */
+async function findCrossCharacterReflinkCandidate(directories, selfAvatar, data) {
+    let character;
+    try {
+        character = JSON.parse(data);
+    } catch (error) {
+        return null;
+    }
+
+    const hash = computeContentIdentityHash(character);
+    const matchedId = await findCharacterIdByContentIdentityHash(directories, hash);
+    if (!matchedId || matchedId === selfAvatar) {
+        return null;
+    }
+
+    const candidatePath = path.join(directories.characters, matchedId);
+    try {
+        await fsPromises.access(candidatePath, fs.constants.R_OK);
+    } catch (error) {
+        return null;
+    }
+    return candidatePath;
+}
+
+/**
  * Writes the character card to the specified image file.
  * @param {string|Buffer} inputFile - Path to the image file or image buffer
  * @param {string} data - Character card data
@@ -308,7 +354,8 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
         // since there's no on-disk source file to reflink from / the image data itself is changing.
         if (!Buffer.isBuffer(inputFile) && crop === undefined) {
             try {
-                await writeCardToFile(inputFile, outputImagePath, data);
+                const crossReflinkCandidatePath = await findCrossCharacterReflinkCandidate(request.user.directories, `${outputFile}.png`, data);
+                await writeCardToFile(inputFile, outputImagePath, data, crossReflinkCandidatePath);
                 await fireMetadataUpsertHook(request.user.directories, `${outputFile}.png`, data, contentHash);
                 return true;
             } catch (error) {
