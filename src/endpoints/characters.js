@@ -18,7 +18,7 @@ import { default as validateAvatarUrlMiddleware, getFileNameValidationFunction, 
 import { deepMerge, humanizedDateTime, tryParse, MemoryLimitedMap, getConfigValue, mutateJsonString, clientRelativePath, getUniqueName, sanitizeSafeCharacterReplacements, getArrayBufferSlice, uuidv7 } from '../util.js';
 import { TavernCardValidator } from '../validator/TavernCardValidator.js';
 import { parse, read, write, writeCardToFile, computeAvatarIdentityHashFromImageBuffer } from '../character-card-parser.js';
-import { getCharaCardV2, convertToV2, readFromV2, charaFormatData, convertWorldInfoToCharacterBook, unsetPrivateFields, omitInstallLocalFields, omitFavField, computeContentIdentityHash } from '../character-card-normalize.js';
+import { getCharaCardV2, convertToV2, readFromV2, charaFormatData, convertWorldInfoToCharacterBook, unsetPrivateFields, omitInstallLocalFields, omitFavField, omitChatField, computeContentIdentityHash } from '../character-card-normalize.js';
 import { calculateChatSize, calculateDataSize, toShallow } from '../character-shallow.js';
 import { invalidateThumbnail, getThumbnailVersion } from './thumbnails.js';
 import { importRisuSprites } from './sprites.js';
@@ -30,7 +30,7 @@ import cacheBuster from '../middleware/cacheBuster.js';
 import { searchCharacters, searchCharacterIds, rebuildCharacterSearchIndex, SEARCH_ID_CAP } from './characters-search-index.js';
 import { searchGroups, searchGroupIds } from './groups-search-index.js';
 import { getGroupsData, getGroupsByIds } from './groups.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, setCharacterFav, getCharacterFavsByIds } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds } from '../character-metadata-db.js';
 
 // With 100 MB limit it would take roughly 3000 characters to reach this limit
 const memoryCacheCapacity = getConfigValue('performance.memoryCacheCapacity', '100mb');
@@ -998,7 +998,11 @@ router.post('/edit', validateAvatarUrlMiddleware, async function (request, respo
     }
 
     let char = charaFormatData(request.body, request.user.directories);
-    char.chat = request.body.chat;
+    // Chat pointer is db-authoritative once a row exists (character-metadata-db.js's setCharacterActiveChat()
+    // doc comment, 2026-08 chat-pointer db migration) - capture the requested value here, BEFORE it's kept out
+    // of the card (omitChatField() below), so it can be seeded into the row after the write succeeds (see
+    // below - same "seed after the row exists" shape /create's initialFav already uses).
+    const requestedChat = request.body.chat;
     char.create_date = request.body.create_date;
     // Favorite status is db-authoritative once a row exists (character-metadata-db.js's setCharacterFav() doc
     // comment) - an ordinary card edit must not carry `fav` back into the file at all, regardless of whatever
@@ -1006,6 +1010,10 @@ router.post('/edit', validateAvatarUrlMiddleware, async function (request, respo
     // favorite-button click handler, which now calls the dedicated /fav route directly instead of folding a
     // toggle into this save).
     omitFavField(char);
+    // Same carve-out as fav just above, now for `chat` (2026-08 chat-pointer db migration) - an ordinary card
+    // edit must not carry `chat` back into the file at all either; requestedChat (captured above) is applied
+    // through setCharacterActiveChat() after the write succeeds instead.
+    omitChatField(char);
     char = JSON.stringify(char);
     let targetFile = (request.body.avatar_url).replace('.png', '');
 
@@ -1022,6 +1030,10 @@ router.post('/edit', validateAvatarUrlMiddleware, async function (request, respo
 
             // Bust cache to reload the new avatar
             cacheBuster.bust(request, response);
+        }
+
+        if (typeof requestedChat === 'string' && requestedChat !== '') {
+            await setCharacterActiveChat(request.user.directories, request.body.avatar_url, requestedChat);
         }
 
         return response.sendStatus(200);
@@ -1188,11 +1200,18 @@ async function mergeCharacterUpdate(avatarPath, avatar, updateData, request, sho
     // decide the winning value exactly like every other field) and apply it through setCharacterFav() after the
     // write below, instead of writing it at all.
     const favRequested = _.has(update, 'fav') || _.has(update, 'data.extensions.fav');
+    // Same carve-out as `fav` above, now for `chat` (2026-08 chat-pointer db migration) - a merge payload's
+    // `chat` (the shape script.js's updateRemoteChatName() sends via /merge-attributes) must never land in the
+    // card file either; pull it out here, merge normally so deepMerge's precedence rules decide the winning
+    // value, then apply it through setCharacterActiveChat() after the write below instead of writing it at all.
+    const chatRequested = _.has(update, 'chat');
 
     character = deepMerge(character, update);
     processUnsetSentinels(character, update);
     const requestedFav = !!(character.fav ?? _.get(character, 'data.extensions.fav'));
+    const requestedChat = character.chat;
     omitFavField(character);
+    omitChatField(character);
 
     const validator = new TavernCardValidator(character);
     //Accept either V1 or V2.
@@ -1204,6 +1223,9 @@ async function mergeCharacterUpdate(avatarPath, avatar, updateData, request, sho
     await writeCharacterData(avatarPath, JSON.stringify(character), targetImg, request);
     if (favRequested) {
         await setCharacterFav(request.user.directories, avatar, requestedFav);
+    }
+    if (chatRequested && typeof requestedChat === 'string' && requestedChat !== '') {
+        await setCharacterActiveChat(request.user.directories, avatar, requestedChat);
     }
     return { ok: true };
 }
@@ -1346,6 +1368,40 @@ router.post('/fav', getFileNameValidationFunction('avatar'), async function (req
         return response.sendStatus(204);
     } catch (err) {
         console.error('[characters/fav] Failed to update favorite status:', err);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/**
+ * HTTP POST endpoint for the "/api/characters/chat" route - the dedicated chat-pointer write path (2026-08
+ * chat-pointer db migration, owner decision: which chat is currently open is now a pure metadata-store
+ * mutation, not a card-file edit - see character-metadata-db.js's setCharacterActiveChat() doc comment).
+ * Mirrors POST /fav exactly: no card read, no card write, no thumbnail/cache invalidation, no
+ * metadata-upsert-hook re-derivation - the one thing this route touches is the `active_chat` column (plus its
+ * `shallow_json` mirror) of an already-tracked row.
+ *
+ * 404s (not 400) when the avatar isn't tracked yet, rather than silently doing nothing - same reasoning as
+ * /fav's own doc comment.
+ * @param  {import("express").Request} request The HTTP request object.
+ * @param  {import("express").Response} response The HTTP response object.
+ * @return {void}
+ */
+router.post('/chat', getFileNameValidationFunction('avatar'), async function (request, response) {
+    try {
+        const { avatar, chat } = request.body ?? {};
+        if (typeof avatar !== 'string' || !avatar) {
+            return response.status(400).send({ error: true, reason: 'avatar-required' });
+        }
+        if (typeof chat !== 'string' || !chat) {
+            return response.status(400).send({ error: true, reason: 'chat-required' });
+        }
+        const updated = await setCharacterActiveChat(request.user.directories, avatar, chat);
+        if (!updated) {
+            return response.status(404).send({ error: true, reason: 'not-tracked' });
+        }
+        return response.sendStatus(204);
+    } catch (err) {
+        console.error('[characters/chat] Failed to update active chat pointer:', err);
         return response.status(500).send({ error: true });
     }
 });
@@ -1599,6 +1655,32 @@ async function stampDbFav(directories, characters) {
     }
 }
 
+/**
+ * Overwrites each character's `.chat` with the metadata store's own value, in place - the `active_chat`
+ * counterpart to stampDbFav() just above (2026-08 chat-pointer db migration), same reasoning: `active_chat` is
+ * db-authoritative once a row is tracked, so whatever processCharacter() read straight off the card file is a
+ * stale/irrelevant value for any already-tracked, already-backfilled character.
+ *
+ * A character not present in getCharacterActiveChatsByIds()'s result - either because it isn't tracked yet, OR
+ * because it's tracked but `active_chat` is still NULL (not yet backfilled/first-touched) - is left untouched,
+ * same "not present means no signal, don't touch whatever's already there" contract that function's own doc
+ * comment establishes. Kept a separate function from stampDbFav() rather than folded in, matching this file's
+ * existing one-concern-per-function granularity.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {object[]} characters Already-processed character objects (each with `.avatar` set) - mutated in place.
+ * @returns {Promise<void>}
+ */
+async function stampDbActiveChat(directories, characters) {
+    const ids = characters.map(c => c.avatar).filter(Boolean);
+    if (ids.length === 0) return;
+    const chatById = await getCharacterActiveChatsByIds(directories, ids);
+    for (const character of characters) {
+        if (Object.prototype.hasOwnProperty.call(chatById, character.avatar)) {
+            character.chat = chatById[character.avatar];
+        }
+    }
+}
+
 router.post('/all', async function (request, response) {
     try {
         const { sortField, sortOrder, offset, limit, search, includeGroups, fav } = request.body ?? {};
@@ -1610,6 +1692,7 @@ router.post('/all', async function (request, response) {
             const processingPromises = pngFiles.map(file => processCharacter(file, request.user.directories, { shallow: useShallowCharacters }));
             const data = (await Promise.all(processingPromises)).filter(c => c.name);
             await stampDbFav(request.user.directories, data);
+            await stampDbActiveChat(request.user.directories, data);
             // No pagination params at all: preserve the exact pre-existing response shape (a bare array).
             return response.send(data);
         }
@@ -1652,6 +1735,7 @@ router.post('/all', async function (request, response) {
             // displayed result's `.fav` still needs correcting here even though `favOnly` itself was already
             // decided against whatever the index had at query time - see this function's own doc comment.
             await stampDbFav(request.user.directories, finalCharacterResults.map(r => r.item));
+            await stampDbActiveChat(request.user.directories, finalCharacterResults.map(r => r.item));
 
             const { items, total } = paginateSearchResults(finalCharacterResults, groupSearch.results, {
                 offset: numericOffset, limit: numericLimit,
@@ -1677,6 +1761,7 @@ router.post('/all', async function (request, response) {
         const processingPromises = pngFiles.map(file => processCharacter(file, request.user.directories, { shallow: useShallowCharacters }));
         const data = (await Promise.all(processingPromises)).filter(c => c.name);
         await stampDbFav(request.user.directories, data);
+        await stampDbActiveChat(request.user.directories, data);
 
         if (includeGroups) {
             const groupsData = getGroupsData(request.user.directories);
@@ -2215,6 +2300,7 @@ router.post('/get', validateAvatarUrlMiddleware, async function (request, respon
 
         const data = await processCharacter(item, request.user.directories, { shallow: false });
         await stampDbFav(request.user.directories, [data]);
+        await stampDbActiveChat(request.user.directories, [data]);
 
         return response.send(data);
     } catch (err) {

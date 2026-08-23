@@ -1278,3 +1278,153 @@ describe('fav is db-authoritative once a character row exists (owner decision - 
         expect(row.fav).toBe(1);
     });
 });
+
+describe('active_chat is db-authoritative once a character row exists (2026-08 chat-pointer db migration - see writeRowSync()/setCharacterActiveChat() doc comments)', () => {
+    test('setCharacterActiveChat() is a no-op (returns false) for an avatar with no tracked row yet, and does not insert one', async () => {
+        const updated = await metadataDb.setCharacterActiveChat(directories, 'Ghost.png', 'Some Chat File');
+        expect(updated).toBe(false);
+
+        const row = await metadataDb.getCharacterMetadataRow(directories, 'Ghost.png');
+        expect(row).toBeUndefined();
+    });
+
+    test('setCharacterActiveChat() updates active_chat, patches shallow_json.chat, and bumps rev for a tracked row', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        const before = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+
+        const updated = await metadataDb.setCharacterActiveChat(directories, 'Bob.png', 'Bob - New Chat');
+        expect(updated).toBe(true);
+
+        const after = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+        expect(after.active_chat).toBe('Bob - New Chat');
+        expect(after.rev).toBeGreaterThan(before.rev);
+
+        const shallow = JSON.parse(after.shallow_json);
+        expect(shallow.chat).toBe('Bob - New Chat');
+
+        // queryCharacters() returns JSON.parse(shallow_json) verbatim - a caller reading through that path must
+        // see the same chat pointer the row itself reports.
+        const queried = await metadataDb.queryCharacters(directories, { ids: ['Bob.png'] });
+        expect(queried.rows[0].chat).toBe('Bob - New Chat');
+    });
+
+    test('writeRowSync(): a NULL existing active_chat is seeded from this write\'s own card-derived value (row predates the column, or the backfill/first-touch hasn\'t reached it yet)', async () => {
+        // Insert a row the old-fashioned way, WITHOUT ever giving it a chat (simulates a row that predates
+        // active_chat, or one first-touched before the column had any value) - upsertCharacterFromWrite() with a
+        // card carrying no `chat` field at all leaves active_chat NULL on insert (buildRow(): character.chat ??
+        // null).
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        const inserted = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+        expect(inserted.active_chat).toBeNull();
+
+        // A later write for the same avatar DOES carry a chat - this must be allowed to seed the still-NULL
+        // column, exactly like a genuine first INSERT would.
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ chat: 'Bob - First Real Chat' }), 2000);
+        const seeded = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+        expect(seeded.active_chat).toBe('Bob - First Real Chat');
+        expect(JSON.parse(seeded.shallow_json).chat).toBe('Bob - First Real Chat');
+    });
+
+    test('writeRowSync(): a NON-NULL existing active_chat is preserved even when a later write\'s card carries a different value (db wins, matching fav exactly)', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ chat: 'Bob - Original Chat' }), 1000);
+        const inserted = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+        expect(inserted.active_chat).toBe('Bob - Original Chat');
+
+        // A later ordinary re-upsert (reconcile picking up an externally-touched file, a stale card, etc.)
+        // carries a DIFFERENT embedded chat - this must not clobber the db's own value.
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ chat: 'Some Stale Value' }), 2000);
+        const after = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+        expect(after.active_chat).toBe('Bob - Original Chat');
+        expect(JSON.parse(after.shallow_json).chat).toBe('Bob - Original Chat');
+    });
+
+    test('getCharacterActiveChatsByIds() bulk-reads active_chat for a known set of ids, omitting both untracked ids and tracked-but-NULL ids', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', cardJson({ name: 'Alice', chat: 'Alice - Chat', data: { name: 'Alice', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } }), 1000);
+        // Bob is tracked but has never had a chat pointer at all (active_chat stays NULL).
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+
+        const chats = await metadataDb.getCharacterActiveChatsByIds(directories, ['Alice.png', 'Bob.png', 'Ghost.png']);
+        expect(chats).toEqual({ 'Alice.png': 'Alice - Chat' });
+    });
+
+    test('backfillActiveChatFromCards() populates active_chat from on-disk cards for pre-existing NULL rows, without clobbering a concurrently-set non-null value', async () => {
+        await writeCardFile('Alice.png', { name: 'Alice', chat: 'Alice - From Disk', data: { name: 'Alice', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+        await writeCardFile('Bob.png', { name: 'Bob', chat: 'Bob - From Disk', data: { name: 'Bob', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+        // A card with no chat field at all - getCharaCardV2()'s own placeholder-synthesis fallback
+        // (convertToV2()/readFromV2(): `char.chat ?? \`${name} - ${date}\``) means this only stays chat-less at
+        // the RAW card level, not after normalization - which is exactly why this test seeds rows directly
+        // (below) rather than through reconcile()/bootstrapIfNeeded(): those both call getCharaCardV2() on the
+        // parsed card before ever reaching buildRow(), so a real "no chat at all" row can only be produced this
+        // way, matching the genuine "row predates the active_chat column" case the backfill targets - a row
+        // inserted before the column existed has active_chat NULL regardless of what buildRow()/getCharaCardV2()
+        // would compute for its card today.
+        await writeCardFile('Carol.png', { name: 'Carol', data: { name: 'Carol', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+
+        const { default: Database } = await import('better-sqlite3');
+        const dbPath = path.join(tempDir, 'character-metadata.sqlite');
+        const rawDb = new Database(dbPath);
+        rawDb.exec(`
+            CREATE TABLE characters (
+                id             TEXT PRIMARY KEY,
+                name           TEXT NOT NULL,
+                name_fold      TEXT NOT NULL,
+                fav            INTEGER NOT NULL,
+                date_added     INTEGER NOT NULL,
+                create_date    TEXT,
+                date_last_chat INTEGER NOT NULL,
+                chat_size      INTEGER NOT NULL,
+                data_size      INTEGER NOT NULL,
+                file_mtime     INTEGER NOT NULL,
+                world          TEXT,
+                creator        TEXT,
+                version        TEXT,
+                creator_notes  TEXT,
+                shallow_json   TEXT NOT NULL,
+                rev            INTEGER NOT NULL
+            );
+        `);
+        const insert = rawDb.prepare(`
+            INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, rev)
+            VALUES (@id, @name, @nameFold, 0, 1000, NULL, 0, 0, 0, 1000, NULL, NULL, NULL, NULL, '{}', 1)
+        `);
+        insert.run({ id: 'Alice.png', name: 'Alice', nameFold: 'alice' });
+        insert.run({ id: 'Bob.png', name: 'Bob', nameFold: 'bob' });
+        insert.run({ id: 'Carol.png', name: 'Carol', nameFold: 'carol' });
+        rawDb.close();
+
+        const beforeAlice = await metadataDb.getCharacterMetadataRow(directories, 'Alice.png');
+        const beforeBob = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+        const beforeCarol = await metadataDb.getCharacterMetadataRow(directories, 'Carol.png');
+        expect(beforeAlice.active_chat).toBeNull();
+        expect(beforeBob.active_chat).toBeNull();
+        expect(beforeCarol.active_chat).toBeNull();
+
+        // Simulate a live write racing the backfill for Bob's row: it already sets a real, more-current value
+        // BEFORE the backfill runs - the backfill's own (necessarily older) view of Bob's card must not clobber
+        // it, per the `AND active_chat IS NULL` guard on its UPDATE.
+        await metadataDb.setCharacterActiveChat(directories, 'Bob.png', 'Bob - Concurrently Set');
+
+        await metadataDb.backfillActiveChatFromCards(directories);
+
+        const afterAlice = await metadataDb.getCharacterMetadataRow(directories, 'Alice.png');
+        const afterBob = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+        const afterCarol = await metadataDb.getCharacterMetadataRow(directories, 'Carol.png');
+        expect(afterAlice.active_chat).toBe('Alice - From Disk');
+        expect(afterBob.active_chat).toBe('Bob - Concurrently Set');
+        expect(afterCarol.active_chat).toBeNull();
+    });
+
+    test('backfillActiveChatFromCards() is idempotent (a second call is a no-op for already-backfilled rows)', async () => {
+        await writeCardFile('Alice.png', { name: 'Alice', chat: 'Alice - From Disk', data: { name: 'Alice', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+        await metadataDb.reconcile(directories);
+        await metadataDb.backfillActiveChatFromCards(directories);
+        const first = await metadataDb.getCharacterMetadataRow(directories, 'Alice.png');
+
+        // Corrupt the file so a re-read would fail loudly if the backfill mistakenly tried it again.
+        await fs.promises.writeFile(path.join(charactersDir, 'Alice.png'), 'not a png');
+        await expect(metadataDb.backfillActiveChatFromCards(directories)).resolves.toBeUndefined();
+
+        const second = await metadataDb.getCharacterMetadataRow(directories, 'Alice.png');
+        expect(second.active_chat).toBe(first.active_chat);
+    });
+});
