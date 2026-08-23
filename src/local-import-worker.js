@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import { parentPort } from 'node:worker_threads';
 import extract from 'png-chunks-extract';
 
-import { classifyJsonCandidate, computeCandidateContentIdentityHash } from './local-import-classify.js';
+import { classifyJsonCandidate, computeCandidateContentIdentityHash, computeContentIdentityHashFromRawText } from './local-import-classify.js';
 import { readFromChunks, writeCardFromChunks, writeCardToFile } from './character-card-parser.js';
 import { DEFAULT_AVATAR_PATH } from './constants.js';
 
@@ -108,15 +108,31 @@ parentPort.on('message', async (msg) => {
             jsonClassification = classifyJsonCandidate(sourceBuffer);
         }
 
-        let identityHash = null;
-        if (!jsonClassification && allowIdentityFallback) {
-            identityHash = await computeCandidateContentIdentityHash(sourceBuffer, format, msg.directories);
+        // png/json: decode the raw card text ONCE here (a single extractChunks()/CRC-32 pass for png - see
+        // decodeRawText()'s own doc comment) and reuse it for BOTH the identity-hash fallback below and the
+        // phase-2 'parsed' payload. Previously, the identityHash branch called
+        // computeCandidateContentIdentityHash(sourceBuffer, format, ...) - which, for png, internally
+        // re-extracts the SAME bytes via its own readCharacterCard() call - paying extractChunks()'s
+        // full-file chunk-copy+CRC-verify sweep (including the multi-MB IDAT pixel data every chunk gets
+        // CRC-checked against, even though only the tiny tEXt metadata chunk is ever read) a second time per
+        // file. Measured on a real spec_v2 sample: this redundant extraction alone accounted for ~43% of this
+        // phase's CPU time (2026-08 local-import perf investigation, canonicalStringify/console-logging
+        // follow-up) - see computeContentIdentityHashFromRawText()'s own doc comment for the full numbers.
+        let decoded = null;
+        if (!jsonClassification && (format === 'png' || format === 'json')) {
+            decoded = decodeRawText(sourceBuffer, format);
         }
 
-        if (!jsonClassification && (format === 'png' || format === 'json')) {
-            const { rawText, chunks } = decodeRawText(sourceBuffer, format);
-            pendingTasks.set(id, { sourcePath, sourceBuffer, chunks, format });
-            parentPort.postMessage({ id, phase: 'parsed', ok: true, contentHash, jsonClassification, identityHash, rawText });
+        let identityHash = null;
+        if (!jsonClassification && allowIdentityFallback) {
+            identityHash = decoded
+                ? computeContentIdentityHashFromRawText(decoded.rawText, msg.directories)
+                : await computeCandidateContentIdentityHash(sourceBuffer, format, msg.directories);
+        }
+
+        if (decoded) {
+            pendingTasks.set(id, { sourcePath, sourceBuffer, chunks: decoded.chunks, format });
+            parentPort.postMessage({ id, phase: 'parsed', ok: true, contentHash, jsonClassification, identityHash, rawText: decoded.rawText });
             return;
         }
 

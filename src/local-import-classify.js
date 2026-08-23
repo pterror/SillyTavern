@@ -76,10 +76,37 @@ export function classifyJsonCandidate(sourceBuffer) {
 }
 
 /**
+ * Parses `rawText` (a card's already-decoded JSON text - the embedded ccv3/chara chunk's text for a png, or a
+ * .json candidate's own utf8 text) into the same normalized shape computeContentIdentityHash() always hashes
+ * from, and returns that hash. Factored out of computeCandidateContentIdentityHash()'s png/json branches
+ * specifically so a caller that has ALREADY decoded a png's raw card text via its own single extractChunks()
+ * pass (local-import-worker.js's decodeRawText()) can reuse that text directly instead of going through
+ * computeCandidateContentIdentityHash(sourceBuffer, 'png', ...) below, which would call readCharacterCard()
+ * (character-card-parser.js's read()) and pay a SECOND full extractChunks()/CRC-32-over-every-chunk
+ * (including the multi-MB IDAT pixel data) pass over the exact same bytes - a real, measured redundant-work
+ * cost on a real corpus (2026-08 local-import perf investigation: extractChunks()+crc32 together accounted
+ * for ~65% of this phase's CPU time, and calling it twice per file roughly doubled that share for no reason,
+ * since decodeRawText()'s own chunk list already exists and is never mutated by anything the identity-hash
+ * path needs).
+ * @param {string} rawText
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {string} sha256 hex digest
+ */
+export function computeContentIdentityHashFromRawText(rawText, directories) {
+    const character = getCharaCardV2(JSON.parse(rawText), directories, false);
+    return computeContentIdentityHash(character);
+}
+
+/**
  * Non-destructively parses `sourceBuffer` into the same normalized shape computeContentIdentityHash() always
  * hashes from, and returns that hash - or `null` for a format this doesn't (yet) know how to parse without
  * importing it (charx/byaf - see local-import-scan.js's original doc comment for the full rationale, unchanged
  * by this relocation).
+ *
+ * For png/json candidates, prefer computeContentIdentityHashFromRawText() directly when the caller already has
+ * the card's raw text from its own extraction (see that function's own doc comment on why) - this function's
+ * png/json branches exist for callers (e.g. tests, or a caller with only raw bytes and no existing extraction)
+ * that don't have that text yet.
  * @param {Buffer} sourceBuffer
  * @param {string} format A formatImportFunctions key (see EXTENSION_TO_FORMAT)
  * @param {import('./users.js').UserDirectoryList} directories
@@ -90,13 +117,11 @@ export async function computeCandidateContentIdentityHash(sourceBuffer, format, 
         case 'png': {
             const imgData = readCharacterCard(sourceBuffer);
             if (imgData === undefined) return null;
-            const character = getCharaCardV2(JSON.parse(imgData), directories, false);
-            return computeContentIdentityHash(character);
+            return computeContentIdentityHashFromRawText(imgData, directories);
         }
         case 'json': {
             const raw = sourceBuffer.toString('utf8');
-            const character = getCharaCardV2(JSON.parse(raw), directories, false);
-            return computeContentIdentityHash(character);
+            return computeContentIdentityHashFromRawText(raw, directories);
         }
         case 'yaml':
         case 'yml': {
