@@ -63,6 +63,7 @@
         "html-entities": "^2.6.0",
         "iconv-lite": "^0.6.3",
         "image-size": "^2.0.2",
+        "inotify-remastered-plus": "^2.5.0",
         "ip-matching": "^2.1.2",
         "ip-regex": "^5.0.0",
         "ipaddr.js": "^2.2.0",
@@ -134,7 +135,8 @@
         "typecheck:dangling-refs": "tsc -p tsconfig.precommit.json --noEmit",
         "lint:cycles": "oxlint -c .oxlintrc.json -A all -D import/no-cycle",
         "plugins:update": "node plugins update",
-        "plugins:install": "node plugins install"
+        "plugins:install": "node plugins install",
+        "postinstall": "patch-package"
     },
     "bin": {
         "sillytavern": "./src/server-global.js"
@@ -177,6 +179,7 @@
         "eslint-plugin-jsdoc": "^48.10.0",
         "eslint-plugin-playwright": "^2.3.0",
         "oxlint": "^1.79.0",
+        "patch-package": "^8.0.1",
         "typescript": "^5.9.3"
     }
 }
