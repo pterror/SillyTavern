@@ -51,9 +51,13 @@ export default function encode(chunks) {
         output[idx++] = nameChars[2];
         output[idx++] = nameChars[3];
 
-        for (let j = 0; j < size;) {
-            output[idx++] = data[j++];
-        }
+        // Bulk copy via TypedArray.set() (a native memcpy) instead of a byte-at-a-time JS loop - same
+        // output, but for a multi-MB chunk (e.g. IDAT) the per-byte loop was measured as a real,
+        // significant contributor to writeCardToFile()'s per-file cost on a real corpus (2026-08
+        // local-import perf investigation) - copying byte-by-byte in JS pays per-iteration interpreter/JIT
+        // overhead that .set() skips entirely.
+        output.set(data, idx);
+        idx += size;
 
         const crc = crc32(data, crc32(new Uint8Array(nameChars)));
 
