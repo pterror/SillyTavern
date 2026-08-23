@@ -188,6 +188,7 @@ import {
     clamp,
     shakeElement,
     createTimeout,
+    getStringHash,
 } from './scripts/utils.js';
 import { debounce_timeout, GENERATION_TYPE_TRIGGERS, IGNORE_SYMBOL, inject_ids, MEDIA_DISPLAY, MEDIA_SOURCE, MEDIA_TYPE, OVERSWIPE_BEHAVIOR, SCROLL_BEHAVIOR, SWIPE_DIRECTION, SWIPE_SOURCE, SWIPE_STATE } from './scripts/constants.js';
 
@@ -697,6 +698,16 @@ let this_edit_mes_id = undefined;
 
 //settings
 export let settings;
+/**
+ * Hash of the JSON-stringified payload from the most recent successful /api/settings/save call, or null before
+ * the first one this session. saveSettings() rebuilds its payload object from scratch on every call (679 call
+ * sites share saveSettingsDebounced(), several of which fire on blur/focusout/change with no dirty-check of
+ * their own), so a fresh object each time makes reference-equality useless - this lets saveSettings() skip the
+ * POST (and the write-file-atomic disk write it triggers server-side) when nothing in the payload actually
+ * changed since the last save, without requiring every call site to remember to check itself.
+ * @type {number|null}
+ */
+let lastSavedSettingsHash = null;
 export let amount_gen = 80; //default max length of AI generated responses
 export let max_context = 2048;
 
@@ -8778,11 +8789,25 @@ export async function saveSettings(loopCounter = 0) {
         selected_proxy: selected_proxy,
     };
 
+    // Central dirty-check: skip the POST (and the server-side write-file-atomic disk write it triggers) if the
+    // payload is byte-identical to the last one this session actually saved. Cheaper than a deep-equal since
+    // JSON.stringify(payload) already has to be computed for the request body regardless; hashing that string
+    // avoids holding two ~150KB strings just to compare them. If an object's key insertion order happened to
+    // shift between calls the hash would differ even though nothing meaningful changed - that only costs one
+    // extra (harmless) save, never data loss, so this doesn't need canonical/sorted-key serialization - see
+    // character-card-normalize.js's canonicalStringify for why that one *does* need it (content-identity hashing
+    // across independently-imported copies, not this-session-only dirty-checking).
+    const payloadString = JSON.stringify(payload);
+    const payloadHash = getStringHash(payloadString);
+    if (payloadHash === lastSavedSettingsHash) {
+        return;
+    }
+
     try {
         const saveSettingsRequest = await compressRequest({
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify(payload),
+            body: payloadString,
             cache: 'no-cache',
         });
         const result = await fetch('/api/settings/save', saveSettingsRequest);
@@ -8792,6 +8817,7 @@ export async function saveSettings(loopCounter = 0) {
         }
 
         settings = payload;
+        lastSavedSettingsHash = payloadHash;
         await eventSource.emit(event_types.SETTINGS_UPDATED);
     } catch (error) {
         console.error('Error saving settings:', error);
