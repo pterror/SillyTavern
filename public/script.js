@@ -496,6 +496,24 @@ export function getSelectionState() {
 }
 
 let saveCharactersPage = 0;
+
+// Last known match total for the server-paginated character list (design doc §6's dynamic-total branch below) -
+// mirrors saveCharactersPage's "survive a full .pagination({...}) reconstruction" job, but for the total instead
+// of the page. Needed because pagination.js's own dynamic-total-number boot path (public/lib/pagination.js's
+// observer(), `validTotalPage = Math.max(self.getTotalPage(), 1)`) has no way to know the real total before its
+// first ajax response lands - self.getTotalNumber() falls through to 0 at construction time whenever
+// totalNumberLocator is set and no `attributes.totalNumber` was supplied. With no seed, EVERY re-render
+// (printCharactersDebounced() on a search keystroke, tag toggle, sort/filter change - any of which reconstructs
+// this plugin from scratch) clamps `Math.min(defaultPageNumber, validTotalPage)` down to 1 regardless of
+// `pageNumber: saveCharactersPage || 1`, so a user mid-way through the list gets silently bounced back to a page-1
+// request, and - worse - the synchronous `render(true)` boot shell (built before that request even fires) briefly
+// shows the "0 of 0" empty state on the currently-rendered page until the real response arrives. That gap is
+// normally too fast to see, but it's exactly what surfaces when the server is busy (e.g. a concurrent local-import
+// batch competing for the event loop/SQLite) and the response is slow enough to notice. Seeding `totalNumber` here
+// keeps `validTotalPage` honest from the very first synchronous render, so a reconstruction re-requests the page
+// the user was actually on instead of quietly resetting to 1 (see the `resetPageNumberOnInit: false` pairing
+// below - the seed alone isn't enough, since resetPageNumberOnInit's own force-to-1 branch fires independently).
+let saveCharactersTotal = 0;
 export const default_avatar = 'img/ai4.png';
 export const system_avatar = 'img/five.png';
 export const comment_avatar = 'img/quill.png';
@@ -1136,6 +1154,7 @@ export async function printCharacters(fullRefresh = false) {
 
     if (fullRefresh) {
         saveCharactersPage = 0;
+        saveCharactersTotal = 0;
         currentScrollTop = 0;
         await delay(1);
     }
@@ -1295,6 +1314,17 @@ export async function printCharacters(fullRefresh = false) {
             ...sharedPaginationOptions,
             dataSource: SERVER_PAGINATED_DATA_SOURCE,
             locator: 'rows',
+            // Seed pagination.js's dynamic-total boot math with the last real total we saw (see
+            // saveCharactersTotal's own doc comment above) - without this, `self.getTotalNumber()` reads 0 until
+            // the first ajax response of *this* reconstruction lands, which clamps the boot page request (and the
+            // synchronous pre-ajax render) down to page 1 / "0 of 0" no matter what `pageNumber` says.
+            // `resetPageNumberOnInit: false` is the other half: pagination.js's own init path force-overwrites the
+            // requested page to 1 whenever a `totalNumberLocator` is present, independent of the totalNumber seed.
+            // Together they let a debounced re-render (search keystroke, tag toggle, sort/filter change - anything
+            // that reconstructs this plugin without an explicit fullRefresh) re-request the page the user was
+            // actually on instead of silently bouncing them back to page 1 with a momentary empty flash.
+            totalNumber: saveCharactersTotal || undefined,
+            resetPageNumberOnInit: false,
             totalNumberLocator: function (/** @type {{total: number|string}} */ response) {
                 const parsed = Number(String(response.total).replace(/^~/, ''));
                 return Number.isFinite(parsed) ? parsed : 0;
@@ -1307,7 +1337,8 @@ export async function printCharacters(fullRefresh = false) {
                         const rows = Array.isArray(result.rows) ? result.rows : [];
                         const pageEntities = rows.map(row => queryRowToEntity(row));
                         const parsedTotal = Number(String(result.total ?? 0).replace(/^~/, ''));
-                        matchTotal = (Number.isFinite(parsedTotal) ? parsedTotal : 0) + folderTiles.length;
+                        saveCharactersTotal = Number.isFinite(parsedTotal) ? parsedTotal : 0;
+                        matchTotal = saveCharactersTotal + folderTiles.length;
                         const combined = page === 1 ? [...folderTiles, ...pageEntities] : pageEntities;
                         ajaxParams.success({ rows: combined, total: result.total });
                     })
