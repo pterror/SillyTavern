@@ -11,6 +11,7 @@ import { getConfigValue, generateTimestamp, removeOldBackups } from '../util.js'
 import { getAllUserHandles, getUserDirectories } from '../users.js';
 import { getFileNameValidationFunction } from '../middleware/validateFileName.js';
 import { mergeTagsIntoSnapshot, splitTagsFromSnapshot } from './tags.js';
+import { getStringHash } from '../../public/scripts/hash-utils.js';
 
 const ENABLE_EXTENSIONS = !!getConfigValue('extensions.enabled', true, 'boolean');
 const ENABLE_EXTENSIONS_AUTO_UPDATE = !!getConfigValue('extensions.autoUpdate', true, 'boolean');
@@ -201,9 +202,56 @@ function getLatestBackup(handle) {
 
 export const router = express.Router();
 
+/**
+ * Optimistic-concurrency guard for concurrent /save calls from multiple tabs/devices. The client sends the hash
+ * of the settings content it currently believes is on disk (X-Settings-Hash, from the last /get or successful
+ * /save it saw - see saveSettings()/getSettings() in script.js); this hashes the *actual* current on-disk
+ * content the same way (cyrb53 via getStringHash, shared with the client instead of reimplemented, so both
+ * sides always agree) and compares. A mismatch means some other session wrote in between, so the caller's view
+ * is stale and its write must not proceed - otherwise it would silently clobber that other write with whatever
+ * this caller had, which is the actual bug this exists to close.
+ *
+ * Hashes the file fresh on every call rather than keeping a separately persisted "last known hash": at this
+ * file's size (tens to a couple hundred KB) that's cheap, and a cached hash could itself drift from disk
+ * (external edits, a restore-snapshot, a crash mid-write) in ways a persisted value wouldn't self-correct from -
+ * reading the actual current bytes is the only value that's always trustworthy.
+ *
+ * The header is optional and its absence skips the check entirely (today's unconditional-overwrite behavior) -
+ * this keeps the endpoint backward compatible with any caller that doesn't send it, rather than hard-requiring
+ * every caller to opt in before it can save at all.
+ * @param {import('express').Request} request Express request
+ * @param {string} pathToSettings Absolute path to the user's settings.json
+ * @returns {{ ok: true } | { ok: false }} Whether the save may proceed
+ */
+function checkSettingsConflict(request, pathToSettings) {
+    const expectedHashHeader = request.get('X-Settings-Hash');
+    if (expectedHashHeader === undefined) {
+        return { ok: true };
+    }
+
+    const expectedHash = Number(expectedHashHeader);
+    if (!Number.isFinite(expectedHash)) {
+        // Malformed header shouldn't cost the caller their save - treat it the same as absent.
+        return { ok: true };
+    }
+
+    const currentContent = fs.existsSync(pathToSettings) ? fs.readFileSync(pathToSettings, 'utf8') : '';
+    const currentHash = getStringHash(currentContent);
+    return { ok: currentHash === expectedHash };
+}
+
 router.post('/save', function (request, response) {
     try {
         const pathToSettings = path.join(request.user.directories.root, SETTINGS_FILE);
+
+        const conflictCheck = checkSettingsConflict(request, pathToSettings);
+        if (!conflictCheck.ok) {
+            return response.status(409).send({
+                result: 'conflict',
+                error: 'Settings were changed by another session since this client last loaded or saved them.',
+            });
+        }
+
         writeFileAtomicSync(pathToSettings, JSON.stringify(request.body, null, 4), 'utf8');
         triggerAutoSave(request.user.profile.handle);
         response.send({ result: 'ok' });
