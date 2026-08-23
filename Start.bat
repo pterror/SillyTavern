@@ -21,6 +21,24 @@ if errorlevel 1 (
     )
 )
 
+rem Same shape as the better-sqlite3 block above. inotify-remastered-plus is `os: linux`-gated in its own
+rem package.json, so on a real Windows launch this probe always exits 0 immediately and the block below never
+rem actually does anything - kept here anyway for symmetry with start.sh and any non-native-Windows environment
+rem this same batch file might run under.
+node src\probe-inotify-remastered-plus.js >nul 2>&1
+if errorlevel 1 (
+    echo inotify-remastered-plus native binding is missing, unpatched, or broken, attempting a rebuild...
+    rem patch-package with NO package-name argument is its apply mode - see start.sh's own comment on why
+    rem passing a package name here instead would silently do the wrong thing (its GENERATE mode).
+    call npx patch-package >nul 2>&1
+    call npm rebuild inotify-remastered-plus --ignore-scripts=false
+    if errorlevel 1 (
+        echo inotify-remastered-plus rebuild failed - the local-import directory scanner will fall back to its periodic backstop pass alone. This usually means no C/C++ compiler toolchain and/or Python 3 is installed.
+    ) else (
+        echo inotify-remastered-plus rebuild finished.
+    )
+)
+
 node server.js %*
 pause
 popd
