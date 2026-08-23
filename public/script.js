@@ -708,6 +708,21 @@ export let settings;
  * @type {number|null}
  */
 let lastSavedSettingsHash = null;
+/**
+ * Hash of the settings content this client currently believes is persisted on the server, in the exact string
+ * form the server itself reads/writes (JSON.stringify(..., null, 4) - see /api/settings/save in settings.js).
+ * Set from the raw string /api/settings/get returns (that string IS the on-disk content verbatim), and updated
+ * again after each successful save to the string this client just wrote. Sent back on the next save as
+ * X-Settings-Hash so the server can detect whether some other tab/device wrote in between and reject the save
+ * instead of silently clobbering that write - see checkSettingsConflict() server-side.
+ *
+ * Deliberately distinct from lastSavedSettingsHash above: that one hashes a *compact*, same-session-only string
+ * purely to skip redundant same-tab POSTs, and is never set from a /get. This one has to match the server's
+ * on-disk byte format exactly (since it's compared against a hash of those exact bytes) and has to exist before
+ * this tab's first save of the session, seeded from /get.
+ * @type {number|null}
+ */
+let knownServerSettingsHash = null;
 export let amount_gen = 80; //default max length of AI generated responses
 export let max_context = 2048;
 
@@ -8652,6 +8667,9 @@ export async function getSettings(initLoaderHandle = null) {
 
     const data = await response.json();
     if (data.result != 'file not find' && data.settings) {
+        // data.settings is the on-disk settings.json content verbatim - hash it as-received (before parsing) so
+        // this matches what the server will hash on the next save. See knownServerSettingsHash's doc comment.
+        knownServerSettingsHash = getStringHash(data.settings);
         settings = JSON.parse(data.settings);
         if (settings.username !== undefined && settings.username !== '') {
             name1 = settings.username;
@@ -8831,14 +8849,39 @@ export async function saveSettings(loopCounter = 0) {
         return;
     }
 
+    // Canonical on-disk form (matches what the server writes/reads - see /api/settings/save), needed so the
+    // conflict-detection hash we send/store lines up byte-for-byte with what the server will hash. Computed
+    // separately from payloadString above (which stays compact) so today's already-shipped same-session dirty
+    // check keeps working unchanged.
+    const canonicalSettingsString = JSON.stringify(payload, null, 4);
+
     try {
+        const headers = getRequestHeaders();
+        if (knownServerSettingsHash !== null) {
+            headers['X-Settings-Hash'] = String(knownServerSettingsHash);
+        }
         const saveSettingsRequest = await compressRequest({
             method: 'POST',
-            headers: getRequestHeaders(),
+            headers: headers,
             body: payloadString,
             cache: 'no-cache',
         });
         const result = await fetch('/api/settings/save', saveSettingsRequest);
+
+        if (result.status === 409) {
+            // Another tab/device wrote settings since we last loaded or saved them - our view was stale, so the
+            // server rejected this write instead of silently overwriting that other change. Re-sync from the
+            // server's actual current state rather than retrying with the same (now-outdated) payload, which
+            // would just re-attempt the same clobber. The user's pending change isn't reapplied automatically:
+            // settings saves are normally one small toggle at a time, not accumulated work, and blindly
+            // replaying "whatever this tab's in-memory state was" on top of a refreshed baseline risks silently
+            // re-clobbering whatever the other session just wrote in a subtler way. Telling the user and letting
+            // them redo the one thing they changed is simpler and can't lose someone else's write.
+            console.warn('Settings save rejected: local view of settings was stale, refreshing from server.');
+            toastr.warning(t`Settings were changed in another tab or device. Refreshing - please reapply your change.`, t`Settings save rejected`);
+            await getSettings();
+            return;
+        }
 
         if (!result.ok) {
             throw new Error(`Failed to save settings: ${result.statusText}`);
@@ -8846,6 +8889,7 @@ export async function saveSettings(loopCounter = 0) {
 
         settings = payload;
         lastSavedSettingsHash = payloadHash;
+        knownServerSettingsHash = getStringHash(canonicalSettingsString);
         await eventSource.emit(event_types.SETTINGS_UPDATED);
     } catch (error) {
         console.error('Error saving settings:', error);
