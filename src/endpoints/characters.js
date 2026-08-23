@@ -17,7 +17,7 @@ import { AVATAR_WIDTH, AVATAR_HEIGHT, DEFAULT_AVATAR_PATH } from '../constants.j
 import { default as validateAvatarUrlMiddleware, getFileNameValidationFunction, forbiddenRegExp } from '../middleware/validateFileName.js';
 import { deepMerge, humanizedDateTime, tryParse, MemoryLimitedMap, getConfigValue, mutateJsonString, clientRelativePath, getUniqueName, sanitizeSafeCharacterReplacements, getArrayBufferSlice, uuidv7 } from '../util.js';
 import { TavernCardValidator } from '../validator/TavernCardValidator.js';
-import { parse, read, write } from '../character-card-parser.js';
+import { parse, read, write, writeCardToFile } from '../character-card-parser.js';
 import { getCharaCardV2, convertToV2, readFromV2, charaFormatData, convertWorldInfoToCharacterBook, unsetPrivateFields, omitInstallLocalFields, omitFavField } from '../character-card-normalize.js';
 import { calculateChatSize, calculateDataSize, toShallow } from '../character-shallow.js';
 import { invalidateThumbnail, getThumbnailVersion } from './thumbnails.js';
@@ -295,11 +295,31 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
             }
         }
 
+        const outputImagePath = path.join(request.user.directories.characters, `${outputFile}.png`);
+
+        // Fast path: when the source is already a file on disk and no crop is requested, its image data
+        // is going into the output completely unchanged (crop is the only thing that would actually
+        // touch pixels) - writeCardToFile() reflinks that unchanged portion straight from `inputFile`
+        // instead of paying a full-file rewrite for a change that, in the common case, only ever touches
+        // a few KB of trailing metadata. Verifies its own fast-path assumption byte-for-byte before ever
+        // touching disk, and falls back to an ordinary full write on its own if that verification (or the
+        // reflink itself) doesn't pan out - so correctness here never depends on the optimization
+        // succeeding. Buffer input (in-memory upload) and crop both skip straight to the slow path below,
+        // since there's no on-disk source file to reflink from / the image data itself is changing.
+        if (!Buffer.isBuffer(inputFile) && crop === undefined) {
+            try {
+                await writeCardToFile(inputFile, outputImagePath, data);
+                await fireMetadataUpsertHook(request.user.directories, `${outputFile}.png`, data, contentHash);
+                return true;
+            } catch (error) {
+                console.warn(`writeCardToFile failed for ${inputFile}, falling back to the full read/re-encode path.`, error);
+            }
+        }
+
         const inputImage = await getInputImage();
 
         // Get the chunks
         const outputImage = write(inputImage, data);
-        const outputImagePath = path.join(request.user.directories.characters, `${outputFile}.png`);
 
         writeFileAtomicSync(outputImagePath, outputImage);
 
