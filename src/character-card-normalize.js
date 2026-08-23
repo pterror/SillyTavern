@@ -122,6 +122,19 @@ export function omitFavField(char) {
 }
 
 /**
+ * Just the `chat` half of omitInstallLocalFields() above (2026-08 chat-pointer db migration - owner decision:
+ * the current chat pointer is now a pure metadata-store mutation, see character-metadata-db.js's
+ * setCharacterActiveChat()) - used by characters.js's /edit and /merge-attributes routes' write paths, the same
+ * "carve the field out before it reaches the card, apply it through the dedicated db writer after" treatment
+ * `omitFavField()` already gets at those exact call sites. Unlike `fav`, `chat` has no `data.extensions.chat`
+ * twin to also unset - it only ever lives at the top level.
+ * @param {object} char Character object (V1 top-level shape or V2 `data`-wrapped shape), mutated in place
+ */
+export function omitChatField(char) {
+    _.unset(char, 'chat');
+}
+
+/**
  * Strips the same per-importer/per-install fields unsetPrivateFields() does (fav, data.extensions.fav, chat),
  * plus create_date - which unsetPrivateFields() deliberately leaves alone (import legitimately wants a fresh
  * one, see character-card-normalize.js's own git history) but which is exactly as install-local as the other

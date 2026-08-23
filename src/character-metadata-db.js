@@ -156,7 +156,13 @@ const SCHEMA_SQL = `
         version        TEXT,
         creator_notes  TEXT,
         shallow_json   TEXT NOT NULL,
-        rev            INTEGER NOT NULL
+        rev            INTEGER NOT NULL,
+        -- active_chat (2026-08, chat-pointer db migration - docs/design/character-chat-pointer-db-migration.md):
+        -- which chat file is "currently open" for this character, mirroring fav's own db-authoritative shape
+        -- exactly (see writeRowSync()'s doc comment on both). NULL means "no signal yet" - either this row
+        -- predates the column, or the one-time backfill (backfillActiveChatFromCards() below) hasn't reached it
+        -- yet - never "confirmed no chat"; see writeRowSync()'s own null-vs-non-null handling of this column.
+        active_chat    TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_characters_name_fold ON characters(name_fold);
     CREATE INDEX IF NOT EXISTS idx_characters_date_added ON characters(date_added);
@@ -386,11 +392,11 @@ const UPSERT_SQL = `
     INSERT INTO characters (
         id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size,
         file_mtime, world, creator, version, creator_notes, shallow_json, content_hash,
-        content_identity_hash, avatar_identity_hash, import_poisoned, rev
+        content_identity_hash, avatar_identity_hash, import_poisoned, active_chat, rev
     ) VALUES (
         @id, @name, @name_fold, @fav, @date_added, @create_date, @date_last_chat, @chat_size, @data_size,
         @file_mtime, @world, @creator, @version, @creator_notes, @shallow_json, @content_hash,
-        @content_identity_hash, @avatar_identity_hash, @import_poisoned, @rev
+        @content_identity_hash, @avatar_identity_hash, @import_poisoned, @active_chat, @rev
     )
     ON CONFLICT(id) DO UPDATE SET
         name = excluded.name,
@@ -429,6 +435,12 @@ const UPSERT_SQL = `
         -- already there untouched, so a previously-cleared row never gets silently re-poisoned just because
         -- something re-observed its unchanged file.
         import_poisoned = CASE WHEN excluded.import_poisoned = 0 THEN 0 ELSE characters.import_poisoned END,
+        -- Plain overwrite, same as fav just above (NOT a COALESCE) - writeRowSync() below already pre-resolves
+        -- the correct value (the row's own current active_chat when it's non-NULL, or this write's freshly
+        -- computed candidate when the row's current value is NULL - see that function's own doc comment) before
+        -- this SQL ever runs, so there is no "no signal" NULL candidate left to guard against here the way
+        -- content_hash/content_identity_hash/avatar_identity_hash need to.
+        active_chat = excluded.active_chat,
         rev = excluded.rev
     -- date_added is deliberately absent from this SET list - see this module's header ("date_added IS RECORDED
     -- ONCE"). On a genuine insert the VALUES clause's candidate is used; on conflict SQLite leaves the existing
@@ -522,6 +534,23 @@ function migrateAvatarIdentityColumn(db) {
         db.exec('ALTER TABLE characters ADD COLUMN avatar_identity_hash TEXT');
     }
     db.exec('CREATE INDEX IF NOT EXISTS idx_characters_avatar_identity_hash ON characters(avatar_identity_hash)');
+}
+
+/**
+ * Adds `active_chat` (see this module's SCHEMA_SQL comment on it) to an existing `characters` table that
+ * predates it. Same ALTER-if-missing shape as migrateAvatarIdentityColumn() just above, for the identical
+ * reason (SQLite has no `ADD COLUMN IF NOT EXISTS`). No DEFAULT-driven backfill happens here (unlike
+ * import_poisoned's DEFAULT 1) - a preexisting row simply starts NULL ("no signal yet"), and
+ * backfillActiveChatFromCards() (below) is what actually recovers a legacy card's embedded value, the same
+ * two-step split content_identity_hash/avatar_identity_hash already use (an ALTER that adds the column, and a
+ * separate resumable backfill pass that populates it).
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ */
+function migrateActiveChatColumn(db) {
+    const columns = db.all('PRAGMA table_info(characters)');
+    if (!columns.some(c => c.name === 'active_chat')) {
+        db.exec('ALTER TABLE characters ADD COLUMN active_chat TEXT');
+    }
 }
 
 /**
@@ -658,6 +687,7 @@ async function getEntry(directories) {
     migrateContentHashColumn(db);
     migrateContentIdentityColumns(db);
     migrateAvatarIdentityColumn(db);
+    migrateActiveChatColumn(db);
     migrateLocalImportMtimesDuplicateOfColumn(db);
     migrateGroupsColumns(db, directories);
     // Design doc §5.3, decisions 8/13: random-sort order is a per-query `ORDER BY <hash>(id, seed)`, never a
@@ -736,6 +766,10 @@ function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, date
         // how a genuine INSERT and a "no signal" conflict update end up with the right value from this same
         // bound parameter despite it only ever being a plain 0/1.
         import_poisoned: contentIdentityHash ? 0 : 1,
+        // active_chat: same one-time "carry forward once at first INSERT" role `fav` plays above (see this
+        // column's own SCHEMA_SQL comment and writeRowSync()'s null-vs-non-null handling) - seeds a genuinely
+        // new row from whatever the just-parsed card's own `chat` field says, `null` if it had none.
+        active_chat: character.chat ?? null,
     };
 }
 
@@ -770,20 +804,37 @@ function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, date
  * dedicated fav write path (setCharacterFav() below, the only other writer of this column post-insert) - so
  * `row.fav`/its `shallow_json`'s own embedded `fav` copy are both forced back to the row's current value here
  * before the UPSERT ever runs, regardless of what buildRow() computed them as.
+ *
+ * `active_chat` (2026-08, chat-pointer db migration) gets the SAME forced-back-to-current treatment ONE
+ * important difference from `fav`: `fav` is NOT NULL, so its column always holds a real "current" value to
+ * force back to. `active_chat` is nullable, and NULL means "no signal yet" (a row predating this column, or
+ * one the backfill/first-touch hasn't reached), not "confirmed no chat" - so only a NON-NULL existing value is
+ * forced back unconditionally (db wins, matching fav exactly); a NULL existing value instead lets THIS write's
+ * own freshly-computed `row.active_chat` (buildRow()'s `character.chat ?? null`) seed it, exactly like a first
+ * INSERT would - see this column's own SCHEMA_SQL comment.
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {object} row From buildRow()
  * @param {string[]} tagIds Seed tag ids - applied only if this is a genuine insert, see above.
  */
 function writeRowSync(db, row, tagIds) {
-    const existingRow = db.get('SELECT fav FROM characters WHERE id = @id', { id: row.id });
+    const existingRow = db.get('SELECT fav, active_chat, shallow_json FROM characters WHERE id = @id', { id: row.id });
     const existed = !!existingRow;
 
     if (existed) {
         const currentFav = existingRow.fav ? 1 : 0;
-        if (row.fav !== currentFav) {
+        const favChanged = row.fav !== currentFav;
+        // NULL existing active_chat = "no signal yet" - let row.active_chat (this write's own candidate) seed
+        // it, i.e. leave row.active_chat exactly as buildRow() computed it. Only a NON-NULL existing value gets
+        // forced back, and only when it actually differs from this write's candidate.
+        const forceActiveChat = existingRow.active_chat !== null && row.active_chat !== existingRow.active_chat;
+
+        if (favChanged || forceActiveChat) {
             const shallow = JSON.parse(row.shallow_json);
-            shallow.fav = !!currentFav;
-            row = { ...row, fav: currentFav, shallow_json: JSON.stringify(shallow) };
+            const patchedFav = favChanged ? currentFav : row.fav;
+            const patchedActiveChat = forceActiveChat ? existingRow.active_chat : row.active_chat;
+            shallow.fav = !!patchedFav;
+            shallow.chat = patchedActiveChat;
+            row = { ...row, fav: patchedFav, active_chat: patchedActiveChat, shallow_json: JSON.stringify(shallow) };
         }
     }
 
@@ -909,6 +960,45 @@ export async function setCharacterFav(directories, avatar, fav) {
 }
 
 /**
+ * Write-path hook for the chat-switch UI action (2026-08 chat-pointer db migration, owner decision - see this
+ * module's header on `active_chat` being db-authoritative once a row exists) - the ONE writer, other than a
+ * row's first INSERT, ever allowed to change the `active_chat` column. Mirrors setCharacterFav() exactly:
+ * deliberately does NOT touch the character's PNG card file at all - no read, no write, no
+ * fireMetadataUpsertHook() - a chat switch is now a pure metadata-store mutation.
+ *
+ * Patches `shallow_json`'s own embedded `chat` field to match, so a `/query` read (queryCharacters(), which
+ * returns `JSON.parse(shallow_json)` verbatim) stays consistent with the `active_chat` column without needing a
+ * separate per-row stamp step the way the live `/all` route's processCharacter() results do (see
+ * getCharacterActiveChatsByIds() below, used for exactly that).
+ *
+ * No-op (returns false) if this avatar isn't tracked yet - a row has to exist for its `active_chat` column to
+ * mean anything; a character encountered for the first time gets its embedded `chat` picked up once by
+ * whatever write path (bootstrapIfNeeded()/backfillActiveChatFromCards()/reconcile()/upsertCharacterFromWrite())
+ * first INSERTs its row, per writeRowSync()'s own doc comment.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} avatar Avatar filename (e.g. `Alice.png`)
+ * @param {string} chat Chat file name (no extension), the same shape `character.chat` already carries
+ * @returns {Promise<boolean>} True if a row existed and was updated.
+ */
+export async function setCharacterActiveChat(directories, avatar, chat) {
+    const entry = await getEntry(directories);
+    if (!entry) return false;
+
+    const existing = entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: avatar });
+    if (!existing) return false;
+
+    const shallow = JSON.parse(existing.shallow_json);
+    shallow.chat = chat;
+
+    const { lastInsertRowid } = entry.db.run('INSERT INTO changes (id, op) VALUES (@id, @op)', { id: avatar, op: 'upsert' });
+    entry.db.run(
+        'UPDATE characters SET active_chat = @activeChat, shallow_json = @shallowJson, rev = @rev WHERE id = @id',
+        { id: avatar, activeChat: chat, shallowJson: JSON.stringify(shallow), rev: Number(lastInsertRowid) },
+    );
+    return true;
+}
+
+/**
  * One `IN (...)` query binds every id in the batch as its own `?` placeholder (see below) - SQLite caps how many
  * bound parameters a single prepared statement may have (SQLITE_MAX_VARIABLE_NUMBER: 999 on an old/default
  * build, up to 32766 on others), and this codebase runs against both a native and a wasm SQLite build (see
@@ -949,6 +1039,40 @@ export async function getCharacterFavsByIds(directories, ids) {
         const rows = entry.db.all(`SELECT id, fav FROM characters WHERE id IN (${placeholders})`, batch);
         for (const row of rows) {
             result[row.id] = !!row.fav;
+        }
+    }
+    return result;
+}
+
+/**
+ * Bulk `active_chat` lookup for a known set of ids - same batched shape as getCharacterFavsByIds() just above
+ * (FAV_LOOKUP_BATCH_SIZE-sized `IN (...)` chunks, for the identical SQLITE_MAX_VARIABLE_NUMBER reason), used by
+ * the live `/all`/`/query`-adjacent routes (characters.js) to stamp their already-disk-read results with the
+ * db's authoritative `active_chat` value.
+ *
+ * UNLIKE getCharacterFavsByIds() (which reports every tracked id's real boolean, including `false`), this
+ * OMITS a tracked-but-NULL row from the result, not just an untracked one - see this column's own SCHEMA_SQL
+ * comment: NULL means "no signal yet" (predates the column, or the backfill/first-touch hasn't reached it),
+ * never "confirmed no chat". So to a caller, "not present in the result map" uniformly means "no signal, don't
+ * touch whatever's already there" for BOTH "not tracked" and "tracked but not backfilled yet" - a caller must
+ * not treat a present-but-empty-string value and an absent key differently from that, but must never treat
+ * absence as "confirmed empty" either.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string[]} ids Avatar filenames
+ * @returns {Promise<{[id: string]: string}>}
+ */
+export async function getCharacterActiveChatsByIds(directories, ids) {
+    const entry = await getEntry(directories);
+    if (!entry || !Array.isArray(ids) || ids.length === 0) return {};
+
+    /** @type {{[id: string]: string}} */
+    const result = {};
+    for (let i = 0; i < ids.length; i += FAV_LOOKUP_BATCH_SIZE) {
+        const batch = ids.slice(i, i + FAV_LOOKUP_BATCH_SIZE);
+        const placeholders = batch.map(() => '?').join(',');
+        const rows = entry.db.all(`SELECT id, active_chat FROM characters WHERE id IN (${placeholders}) AND active_chat IS NOT NULL`, batch);
+        for (const row of rows) {
+            result[row.id] = row.active_chat;
         }
     }
     return result;
@@ -1363,6 +1487,98 @@ export async function backfillContentIdentityHashes(directories) {
 }
 
 /**
+ * One-time-per-boot backfill of `active_chat` for rows that predate the column (2026-08 chat-pointer db
+ * migration - docs/design/character-chat-pointer-db-migration.md §3) - the `active_chat` counterpart to
+ * backfillContentIdentityHashes() just above, same shape for the same reason (a resumable, corpus-wide catch-up
+ * pass for a column added after rows already existed).
+ *
+ * IDEMPOTENT/RESUMABLE WITHOUT A `meta` COMPLETION FLAG, same as backfillContentIdentityHashes(): every call
+ * re-queries `WHERE active_chat IS NULL` fresh, so a row this pass successfully populated simply stops matching
+ * that WHERE clause and is never re-visited; a row that failed (missing/corrupt file, logged and skipped)
+ * naturally gets retried on the next call (the next server boot), since it's still NULL. No separate
+ * "backfill complete" bookkeeping needed.
+ *
+ * Reads each row's card straight off disk via parseCharacterCard() (the ordinary, cheap read - unlike
+ * backfillContentIdentityHashes()'s pristine-chunk trick, which exists only because THAT backfill needs a hash
+ * comparable to one computed via today's write path; `chat` isn't identity-sensitive, so there's nothing to
+ * protect against an old-write-path mutation here).
+ *
+ * `UPDATE ... SET active_chat = @chat WHERE id = @id AND active_chat IS NULL` - the `AND active_chat IS NULL`
+ * guard matters: a live write for this exact row (setCharacterActiveChat(), or an ordinary card write that
+ * seeded active_chat via writeRowSync()'s own null-seeding path) landing between this backfill's read and this
+ * UPDATE already set a real, more-current value; this backfill's own (necessarily older) read must not clobber
+ * it - same "concurrent live write wins" property backfillContentIdentityHashes()'s own UPDATE already has for
+ * avatar_identity_hash (COALESCE there; a WHERE guard here, since active_chat's candidate is never NULL itself
+ * once resolved as a real chat name).
+ *
+ * Same batching/concurrency/progress-logging shape as backfillContentIdentityHashes() (BATCH_FLUSH_SIZE-sized
+ * chunks, BOOTSTRAP_READ_CONCURRENCY-bounded concurrent reads, per-row try/catch that logs+skips rather than
+ * aborting the whole pass).
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<void>}
+ */
+export async function backfillActiveChatFromCards(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+
+    if (!fs.existsSync(directories.characters)) return;
+
+    // Static snapshot, same reasoning as backfillContentIdentityHashes()'s own poisonedIds snapshot - bounds
+    // this call's work to "however many rows were NULL when it started", rather than looping forever on a
+    // persistently-failing row.
+    const nullIds = entry.db.all('SELECT id FROM characters WHERE active_chat IS NULL').map(r => r.id);
+    if (nullIds.length === 0) return;
+
+    const backfillStart = Date.now();
+    let lastProgressLog = backfillStart;
+    let processedRows = 0;
+
+    for (let i = 0; i < nullIds.length; i += BATCH_FLUSH_SIZE) {
+        const chunkIds = nullIds.slice(i, i + BATCH_FLUSH_SIZE);
+        const chunkResults = await mapWithConcurrency(chunkIds, BOOTSTRAP_READ_CONCURRENCY, async (id) => {
+            try {
+                const filePath = path.join(directories.characters, id);
+                const imgData = await parseCharacterCard(filePath, 'png');
+                if (imgData === undefined) return null;
+                const character = JSON.parse(imgData);
+                const chat = character.chat ?? null;
+                if (chat === null) return null; // Nothing to seed - leave the row NULL for a later real write to seed.
+                return { id, chat };
+            } catch (err) {
+                console.error(`[character-metadata] Active-chat backfill failed to process ${id}, leaving it NULL (will retry next boot):`, err.message);
+                return null;
+            }
+        });
+
+        const updates = chunkResults.filter(Boolean);
+        if (updates.length > 0) {
+            entry.db.transaction(() => {
+                for (const { id, chat } of updates) {
+                    entry.db.run('UPDATE characters SET active_chat = @chat WHERE id = @id AND active_chat IS NULL', { chat, id });
+                }
+            });
+        }
+
+        processedRows += chunkIds.length;
+
+        const now = Date.now();
+        if (now - lastProgressLog >= BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS) {
+            const elapsedSec = (now - backfillStart) / 1000;
+            const rate = processedRows / elapsedSec;
+            const remaining = nullIds.length - processedRows;
+            const etaSec = rate > 0 ? Math.round(remaining / rate) : null;
+            console.log(color.cyan(`[character-metadata] Active-chat backfill progress: ${processedRows}/${nullIds.length} (${rate.toFixed(1)} cards/sec, ETA ${etaSec === null ? 'unknown' : `${etaSec}s`})`));
+            lastProgressLog = now;
+        }
+
+        await new Promise(resolve => setImmediate(resolve));
+    }
+
+    const totalSec = (Date.now() - backfillStart) / 1000;
+    console.log(color.cyan(`[character-metadata] Active-chat backfill complete: processed ${nullIds.length} row(s) in ${totalSec.toFixed(1)}s (${(nullIds.length / totalSec).toFixed(1)} cards/sec).`));
+}
+
+/**
  * Diffs tags.json's tag_map against the character_tags table and applies only the delta, rather than a full
  * delete-everything-reinsert-everything pass - at 300k+ characters with an already-populated table, most rows
  * agree between passes, so this keeps a routine reconcile cheap. tags.json stays the write source of truth in
@@ -1612,6 +1828,7 @@ export async function initializeMetadataStores(directoriesList) {
             // entry.bootstrapPromise is awaited by the periodic reconcile interval (see below) so THAT stays
             // sequenced correctly, but server startup itself (server-main.js) never awaits this promise at all.
             .then(() => backfillContentIdentityHashes(directories))
+            .then(() => backfillActiveChatFromCards(directories))
             .catch(err => console.error(`[character-metadata] Bootstrap failed for ${directories.root}:`, err));
     }
 }

@@ -2064,13 +2064,13 @@ export async function replaceCurrentChat() {
             // pick existing chat
             charactersStore.update(getCurrentCharacter().avatar, { chat: chats[0].file_name.replace('.jsonl', '') });
             $('#selected_chat_pole').val(getCurrentCharacter().chat);
-            saveCharacterDebounced();
+            await saveActiveChat(getCurrentCharacter().avatar, getCurrentCharacter().chat);
             await getChat();
         } else {
             // start new chat
             charactersStore.update(getCurrentCharacter().avatar, { chat: `${name2} - ${humanizedDateTime()}` });
             $('#selected_chat_pole').val(getCurrentCharacter().chat);
-            saveCharacterDebounced();
+            await saveActiveChat(getCurrentCharacter().avatar, getCurrentCharacter().chat);
             await getChat({ isNewChat: true });
         }
     }
@@ -8435,6 +8435,29 @@ function getFirstMessage() {
     return message;
 }
 
+/**
+ * Persists a character's active chat pointer as a targeted metadata-only write, instead of rewriting the
+ * whole character card (createOrEditCharacter() -> POST /api/characters/edit, or the merge-attributes
+ * route) - same idiom as the favorite-status toggle (#favorite_button click handler): a small, dedicated
+ * POST that doesn't touch the card file, so it doesn't defeat reflink sharing on its PNG.
+ * @param {string} avatar Character avatar to update the chat pointer for
+ * @param {string} chat New active chat file name (no .jsonl extension)
+ * @returns {Promise<void>}
+ */
+async function saveActiveChat(avatar, chat) {
+    try {
+        const response = await fetch('/api/characters/chat', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ avatar, chat }),
+        });
+        if (!response.ok) throw new Error(String(response.status));
+    } catch (error) {
+        console.error('Failed to save active chat', error);
+        toastr.error(t`Failed to save active chat.`);
+    }
+}
+
 export async function openCharacterChat(file_name) {
     await waitUntilCondition(() => !isChatSaving, debounce_timeout.extended, 10);
     await clearChat({ clearData: true });
@@ -8442,7 +8465,7 @@ export async function openCharacterChat(file_name) {
     chat_metadata = {};
     await getChat();
     $('#selected_chat_pole').val(file_name);
-    await createOrEditCharacter(new CustomEvent('newChat'));
+    await saveActiveChat(getCurrentCharacter().avatar, file_name);
 }
 
 ////////// OPTIMZED MAIN API CHANGE FUNCTION ////////////
@@ -11510,7 +11533,7 @@ export async function doNewChat({ deleteCurrentChat = false } = {}) {
         // chat renders) but no new chat file is ever created.
         charactersStore.update(getCurrentCharacter().avatar, { chat: newChatName });
         $('#selected_chat_pole').val(newChatName);
-        await createOrEditCharacter(new CustomEvent('newChat'));
+        await saveActiveChat(getCurrentCharacter().avatar, newChatName);
         if (deleteCurrentChat) await delChat(chat_file_for_del + '.jsonl');
     }
 }
@@ -11647,18 +11670,7 @@ export async function updateRemoteChatName(avatar, newName) {
         return;
     }
     character.chat = newName;
-    const mergeRequest = {
-        avatar: character.avatar,
-        chat: newName,
-    };
-    const mergeResponse = await fetch('/api/characters/merge-attributes', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify(mergeRequest),
-    });
-    if (!mergeResponse.ok) {
-        console.error('Failed to save extension field', mergeResponse.statusText);
-    }
+    await saveActiveChat(character.avatar, newName);
 }
 
 
