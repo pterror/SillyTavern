@@ -1953,10 +1953,24 @@ export async function findCharacterIdByContentIdentityHash(directories, hash) {
  * and drop the new one on the floor - the exact gap that motivated adding `avatar_identity_hash` at all. A real
  * duplicate for THIS purpose requires both hashes to agree.
  *
- * `avatarIdentityHash === null` (candidate's own avatar hash unknown - a charx/byaf source, or a row this
- * install hasn't backfilled avatar_identity_hash for yet) fails open to "not a match", same posture as every
- * other identity-hash consumer in this module: a missed dedup optimization, never a false "these are the same"
- * that could silently drop a genuinely new character.
+ * `avatarIdentityHash === null` (candidate's own avatar hash unknown - a charx/byaf source) fails open to "not a
+ * match", same posture as every other identity-hash consumer in this module: a missed dedup optimization, never
+ * a false "these are the same" that could silently drop a genuinely new character.
+ *
+ * The OTHER null case - the candidate's avatarIdentityHash is known, but the matching row's own
+ * avatar_identity_hash column is still NULL because this install's one-time
+ * scripts/backfill-avatar-identity-hashes.mjs was never run (or hasn't reached this row yet) - is NOT the same
+ * situation and must not be treated the same way. A plain `column = @value` SQL comparison silently excludes
+ * any row whose column is NULL (SQL's NULL-never-equals-anything semantics), so on an unbackfilled install this
+ * would fail EVERY genuine duplicate open, all the way down to "no match", which is exactly backwards: for THIS
+ * function's caller, "no match" means "import this as a brand-new character", so at scale on an 88%-unbackfilled
+ * library this created real duplicate rows for content already in the library (2026-08 incident). The fix below
+ * resolves that case with a real, bounded byte-level check - same rigor as reclaimReflinkPrefix()'s own
+ * byte-verify - rather than either blindly trusting the missing value (false-positive merge risk: two different
+ * portraits sharing content_identity_hash would get wrongly treated as the same character) or leaving it
+ * fail-open (the false negative that caused the incident). It also opportunistically writes the real value back
+ * once computed, so any given row only ever needs this slow path once, converging the corpus incrementally
+ * without depending on the standalone backfill script running at all.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} contentIdentityHash computeContentIdentityHash()'s output for the candidate
  * @param {string|null} avatarIdentityHash computeAvatarIdentityHashFromChunks()'s output for the candidate, or
@@ -1976,11 +1990,49 @@ export async function findCharacterIdByIdentityHashes(directories, contentIdenti
         }
     }
 
-    const row = entry.db.get(
+    const exactRow = entry.db.get(
         'SELECT id FROM characters WHERE content_identity_hash = @contentIdentityHash AND avatar_identity_hash = @avatarIdentityHash',
         { contentIdentityHash, avatarIdentityHash },
     );
-    return row ? row.id : null;
+    if (exactRow) return exactRow.id;
+
+    // Real fallback, reached only for rows the index comparison above could never resolve either way: same
+    // content_identity_hash, but avatar_identity_hash IS NULL on the row (not yet backfilled). Bounded to
+    // however many rows genuinely share this content_identity_hash - rare, see this column's own SCHEMA_SQL
+    // comment on why more than one is even possible - never a corpus-wide scan.
+    if (!fs.existsSync(directories.characters)) return null;
+    const unbackfilledCandidates = entry.db.all(
+        'SELECT id FROM characters WHERE content_identity_hash = @contentIdentityHash AND avatar_identity_hash IS NULL',
+        { contentIdentityHash },
+    );
+    for (const { id } of unbackfilledCandidates) {
+        let rowAvatarHash;
+        try {
+            const filePath = path.join(directories.characters, id);
+            const buffer = await fsPromises.readFile(filePath);
+            rowAvatarHash = computeAvatarIdentityHashFromChunks(extract(new Uint8Array(buffer)));
+        } catch (err) {
+            // Missing/unreadable file for this row - can't confirm or deny a match against it. Fail open to "not
+            // this row" and keep checking any other same-content-hash candidates, the same posture as everywhere
+            // else in this module: a missed dedup, never a false merge.
+            console.debug(`[character-metadata] Identity-hash fallback verification failed reading ${id}, treating as no match:`, /** @type {any} */ (err)?.message ?? err);
+            continue;
+        }
+
+        // Opportunistic self-heal: this read+hash is exactly what the standalone backfill script would have
+        // computed for this row, so persist it now - this row never needs this slow path again. COALESCE-guarded
+        // the same way backfillContentIdentityHashes() and the standalone script both already are, so a
+        // concurrent live write for this exact row (which would have set a real, more-current value) always
+        // wins over this comparatively stale read.
+        entry.db.run(
+            'UPDATE characters SET avatar_identity_hash = COALESCE(avatar_identity_hash, @hash) WHERE id = @id',
+            { hash: rowAvatarHash, id },
+        );
+
+        if (rowAvatarHash === avatarIdentityHash) return id;
+    }
+
+    return null;
 }
 
 /**
