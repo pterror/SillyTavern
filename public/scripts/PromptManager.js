@@ -728,6 +728,13 @@ class PromptManager {
                 const promptId = event.target.dataset.pmPrompt;
                 const prompt = this.getPromptById(promptId);
 
+                // Losing focus (e.g. the browser tab/window regaining focus can blur whatever
+                // element was previously active) isn't itself an edit - only persist when the
+                // textarea's value actually diverged from what's already saved.
+                if (prompt.content === event.target.value) {
+                    return;
+                }
+
                 prompt.content = event.target.value;
 
                 // Update edit form if present
@@ -1319,6 +1326,12 @@ class PromptManager {
 
         const textarea = /** @type {HTMLTextAreaElement} */(document.getElementById(textareaIdentifier));
         textarea.addEventListener('blur', () => {
+            // Same reasoning as handleQuickEditSave above: a blur alone (including one caused by
+            // the window/tab regaining focus while this field happened to be focused) is not an
+            // edit. Only save if the value actually changed.
+            if (prompt.content === textarea.value) {
+                return;
+            }
             prompt.content = textarea.value;
             this.updatePromptByIdentifier(identifier, prompt);
             debouncedSaveServiceSettings().then(() => this.render());
