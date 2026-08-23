@@ -806,7 +806,15 @@ async function saveGroupChat(groupId, shouldSaveGroup, force = false) {
     });
     const response = await fetch('/api/chats/group/save', saveGroupChatRequest);
 
-    if (!response.ok) {
+    if (response.ok) {
+        // See saveChat()'s matching comment in script.js: the server mints a fresh integrity slug on every
+        // successful write and returns it here, and it has to land in chat_metadata so this tab's next save
+        // sends the current slug instead of the one it loaded with.
+        const data = await response.json().catch(() => null);
+        if (data && typeof data.integrity === 'string') {
+            chat_metadata.integrity = data.integrity;
+        }
+    } else {
         const errorData = await response.json();
         const isIntegrityError = errorData?.error === 'integrity' && !force;
         if (!isIntegrityError) {
