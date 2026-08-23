@@ -4,7 +4,7 @@ import { parentPort } from 'node:worker_threads';
 import extract from 'png-chunks-extract';
 
 import { classifyJsonCandidate, computeCandidateContentIdentityHash, computeContentIdentityHashFromRawText } from './local-import-classify.js';
-import { readFromChunks, writeCardFromChunks, writeCardToFile } from './character-card-parser.js';
+import { readFromChunks, writeCardFromChunks, writeCardToFile, computeAvatarIdentityHashFromChunks, computeDefaultAvatarIdentityHash } from './character-card-parser.js';
 import { DEFAULT_AVATAR_PATH } from './constants.js';
 
 /**
@@ -130,13 +130,33 @@ parentPort.on('message', async (msg) => {
                 : await computeCandidateContentIdentityHash(sourceBuffer, format, msg.directories);
         }
 
+        // avatarIdentityHash: deliberately NOT gated on allowIdentityFallback the way identityHash above is -
+        // that flag is specifically about the EXPENSIVE content-identity dedup fallback (JSON normalization +
+        // hash, see this module's header and character-metadata-db.js's own allowExpensiveDuplicateFallback
+        // comment), and avatarIdentityHash is not that: it's cheap (just concatenating `decoded.chunks`' already-
+        // extracted IDAT entries - no second extraction, see computeAvatarIdentityHashFromChunks()'s own doc
+        // comment) AND, for a `needsWrite: true` result, it's the value processFile() (local-import-scan.js)
+        // passes straight through to fireMetadataUpsertHook() once the write actually lands - the same "always
+        // computed on a real write, regardless of any dedup-fallback flag" posture upsertCharacterFromWrite()
+        // already gives content_identity_hash itself (that one re-derives from the character JSON unconditionally
+        // - see that function). Gating this on allowIdentityFallback would silently leave avatar_identity_hash
+        // NULL for every write made with the flag off, which nothing else in this feature would ever backfill
+        // for a row created going forward. `format === 'json'` (also, ahead of any real yaml/yml candidate this
+        // worker never decodes chunks for - see decodeRawText()) has no chunk list of its own because those
+        // formats are always written through the fixed DEFAULT_AVATAR_PATH asset (see characters.js's
+        // writeCharacterData() callers) - computeDefaultAvatarIdentityHash() is that same fixed asset's hash,
+        // computed once per process and cached forever, not a per-candidate cost either.
+        const avatarIdentityHash = decoded?.chunks
+            ? computeAvatarIdentityHashFromChunks(decoded.chunks)
+            : (!jsonClassification && (format === 'json' || format === 'yaml' || format === 'yml')) ? computeDefaultAvatarIdentityHash() : null;
+
         if (decoded) {
             pendingTasks.set(id, { sourcePath, sourceBuffer, chunks: decoded.chunks, format });
-            parentPort.postMessage({ id, phase: 'parsed', ok: true, contentHash, jsonClassification, identityHash, rawText: decoded.rawText });
+            parentPort.postMessage({ id, phase: 'parsed', ok: true, contentHash, jsonClassification, identityHash, avatarIdentityHash, rawText: decoded.rawText });
             return;
         }
 
-        parentPort.postMessage({ id, phase: 'done', ok: true, contentHash, jsonClassification, identityHash });
+        parentPort.postMessage({ id, phase: 'done', ok: true, contentHash, jsonClassification, identityHash, avatarIdentityHash });
     } catch (err) {
         parentPort.postMessage({ id, phase: 'done', ok: false, error: /** @type {any} */ (err)?.message ?? String(err) });
     }

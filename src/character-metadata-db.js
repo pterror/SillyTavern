@@ -5,7 +5,8 @@ import path from 'node:path';
 import _ from 'lodash';
 
 import { color, getConfigValue, mapWithConcurrency } from './util.js';
-import { parse as parseCharacterCard, parsePristine as parseCharacterCardPristine } from './character-card-parser.js';
+import extract from 'png-chunks-extract';
+import { parse as parseCharacterCard, readCharaChunkPristineFromChunks, computeAvatarIdentityHashFromChunks } from './character-card-parser.js';
 import { getCharaCardV2, computeContentIdentityHash } from './character-card-normalize.js';
 import { calculateChatSize, calculateDataSize, calculateGroupChatStats, toShallow } from './character-shallow.js';
 import { readTagsData } from './endpoints/tags-data.js';
@@ -198,6 +199,35 @@ const SCHEMA_SQL = `
     -- image, fav/chat written into the card instead of omitted), which stays true regardless of whether its hash
     -- is now trustworthy. Only an actual write through the current path (upsertCharacterFromWrite()) proves the
     -- file itself has been brought current, which is the only thing that legitimately clears the flag.
+    --
+    -- avatar_identity_hash (2026-08, alongside cross-character reflink writes - see findCrossCharacterReflinkCandidate()'s
+    -- own doc comment for the gap this closes): computeAvatarIdentityHashFromChunks() (character-card-parser.js)
+    -- of the character's own PNG - sha256 over the concatenated raw IDAT chunk payload bytes, NOT a full
+    -- decoded-pixel hash (see that function's own doc comment for the cost tradeoff - this fork already tried
+    -- and retired "decode/re-encode the avatar on every write" once). content_identity_hash alone can never tell
+    -- "these are the same character" apart from "these have the same text but a different portrait" - two rows
+    -- can share a content_identity_hash with completely different avatar_identity_hash values, and that's
+    -- expected, not a bug: a real identity match requires BOTH to agree (see findCharacterIdByIdentityHashes()
+    -- below, local-import-scan.js's import-time dedup-skip consumer). findCharacterIdByContentIdentityHash()
+    -- itself deliberately stays JSON-only and untouched by this column - its one caller
+    -- (findCrossCharacterReflinkCandidate(), the live-write reflink-candidate lookup) only ever proposes a
+    -- CANDIDATE that gets independently byte-verified before ever being trusted (see that function's own doc
+    -- comment), so narrowing its query to an avatar-hash match too would only ever throw away legitimate reflink
+    -- opportunities for no safety benefit - the real safety property downstream is the byte verification, not
+    -- the hash.
+    --
+    -- Populated the same three ways content_identity_hash is (see above): upsertCharacterFromWrite() on every
+    -- real write (computed from the just-written image's own chunks - see writeCardFromChunks()'s own doc
+    -- comment on why that's always correct regardless of which write branch actually ran), NULL/COALESCE'd-away
+    -- when a caller has nothing new to report (e.g. /rename, which never touches pixels), and
+    -- backfillAvatarIdentityHashes() (scripts/backfill-avatar-identity-hashes.mjs) - a one-time, read-then-
+    -- conditional-write corpus-wide backfill for every row that predates this column, modeled on
+    -- scripts/reclaim-character-reflinks.mjs's own live-server-safe posture (see that script's header): each
+    -- row is read and written independently (WHERE avatar_identity_hash IS NULL), never a single bulk
+    -- transaction, so a live import racing this backfill for some OTHER row is unaffected, and a live write that
+    -- lands for the SAME row between this backfill's read and write simply wins (its own upsertCharacterFromWrite()
+    -- call already set a real value, so the IS NULL guard on the backfill's UPDATE naturally no-ops instead of
+    -- clobbering it).
 
     CREATE TABLE IF NOT EXISTS character_tags (
         character_id TEXT NOT NULL,
@@ -354,11 +384,11 @@ const UPSERT_SQL = `
     INSERT INTO characters (
         id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size,
         file_mtime, world, creator, version, creator_notes, shallow_json, content_hash,
-        content_identity_hash, import_poisoned, rev
+        content_identity_hash, avatar_identity_hash, import_poisoned, rev
     ) VALUES (
         @id, @name, @name_fold, @fav, @date_added, @create_date, @date_last_chat, @chat_size, @data_size,
         @file_mtime, @world, @creator, @version, @creator_notes, @shallow_json, @content_hash,
-        @content_identity_hash, @import_poisoned, @rev
+        @content_identity_hash, @avatar_identity_hash, @import_poisoned, @rev
     )
     ON CONFLICT(id) DO UPDATE SET
         name = excluded.name,
@@ -386,6 +416,9 @@ const UPSERT_SQL = `
         -- caller (reconcile/watch/bootstrap, which are re-observing a file, not writing one) - see this
         -- column's own SCHEMA_SQL comment.
         content_identity_hash = COALESCE(excluded.content_identity_hash, characters.content_identity_hash),
+        -- Same COALESCE shape again, same reasoning, for avatar_identity_hash - see that column's own
+        -- SCHEMA_SQL comment.
+        avatar_identity_hash = COALESCE(excluded.avatar_identity_hash, characters.avatar_identity_hash),
         -- Not a COALESCE (import_poisoned is NOT NULL, so there's no NULL sentinel available for "no signal" -
         -- buildRow() binds a real 0/1 always). Instead: a genuine write (excluded.import_poisoned = 0) always
         -- wins and clears poison, because that write just proved this row's bytes now come from the current
@@ -471,6 +504,22 @@ function migrateContentIdentityColumns(db) {
     }
     db.exec('CREATE INDEX IF NOT EXISTS idx_characters_content_identity_hash ON characters(content_identity_hash)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_characters_import_poisoned ON characters(import_poisoned)');
+}
+
+/**
+ * Adds `avatar_identity_hash` (see this module's SCHEMA_SQL comment on it) to an existing `characters` table
+ * that predates it. Same ALTER-if-missing shape as migrateContentIdentityColumns() just above. Unlike
+ * import_poisoned, there is no DEFAULT-driven "every preexisting row starts in a known state" story here - a
+ * preexisting row's avatar_identity_hash simply starts NULL (unknown, not "known to disagree") until either a
+ * real write touches it or scripts/backfill-avatar-identity-hashes.mjs's one-time corpus sweep does.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ */
+function migrateAvatarIdentityColumn(db) {
+    const columns = db.all('PRAGMA table_info(characters)');
+    if (!columns.some(c => c.name === 'avatar_identity_hash')) {
+        db.exec('ALTER TABLE characters ADD COLUMN avatar_identity_hash TEXT');
+    }
+    db.exec('CREATE INDEX IF NOT EXISTS idx_characters_avatar_identity_hash ON characters(avatar_identity_hash)');
 }
 
 // computeContentIdentityHash() itself now lives in character-card-normalize.js (imported above, 2026-08
@@ -576,6 +625,7 @@ async function getEntry(directories) {
     db.exec(SCHEMA_SQL);
     migrateContentHashColumn(db);
     migrateContentIdentityColumns(db);
+    migrateAvatarIdentityColumn(db);
     migrateGroupsColumns(db, directories);
     // Design doc §5.3, decisions 8/13: random-sort order is a per-query `ORDER BY <hash>(id, seed)`, never a
     // materialized column (a materialized seeded column is O(users × rerolls) to maintain - see the decision's
@@ -602,9 +652,12 @@ async function getEntry(directories) {
  * @param {string|null} [extra.contentHash]
  * @param {string|null} [extra.contentIdentityHash] sha256 hex digest from computeContentIdentityHash(), or
  * undefined/null from every caller except upsertCharacterFromWrite() - see this column's SCHEMA_SQL comment.
+ * @param {string|null} [extra.avatarIdentityHash] computeAvatarIdentityHashFromChunks() of the character's own
+ * PNG, or undefined/null from every caller except upsertCharacterFromWrite() - see this column's own SCHEMA_SQL
+ * comment.
  * @returns {object} Row fields (minus `rev`)
  */
-function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, dateLastChat, contentHash, contentIdentityHash }) {
+function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, dateLastChat, contentHash, contentIdentityHash, avatarIdentityHash }) {
     const includeCreatorNotes = !!getConfigValue('performance.shallowCharactersIncludeCreatorNotes', false, 'boolean');
     const dataSize = calculateDataSize(character?.data);
     const shallowSource = {
@@ -640,6 +693,9 @@ function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, date
         // ever comes from upsertCharacterFromWrite() (a write just happened); every other caller's `undefined`
         // normalizes to `null` here, which the COALESCE in UPSERT_SQL then treats as "no signal, don't touch".
         content_identity_hash: contentIdentityHash ?? null,
+        // Same normalize-undefined-to-null shape as content_identity_hash just above, same reasoning - see
+        // avatar_identity_hash's own SCHEMA_SQL comment.
+        avatar_identity_hash: avatarIdentityHash ?? null,
         // Not COALESCE-able the way content_identity_hash is (this column is NOT NULL, so there's no spare
         // NULL to use as a "no signal" sentinel) - 0 only when a real write just proved this row unpoisoned
         // (contentIdentityHash was supplied), 1 (the "no signal, and also the correct default for a row nobody
@@ -744,9 +800,13 @@ function getTagIdsFor(directories, avatar) {
  * offer; every other writer (create/edit/rename/etc.) omits it, which buildRow() normalizes to `null` and
  * UPSERT_SQL's ON CONFLICT clause then treats as "don't touch whatever hash is already there" rather than a
  * real candidate value - see that clause's own comment.
+ * @param {string|null} [avatarIdentityHash] computeAvatarIdentityHashFromChunks() of the image bytes actually
+ * written - passed through from characters.js's writeCharacterData() via fireMetadataUpsertHook() for every
+ * caller that just performed a real image write. `null` (the default) from a caller with no new image bytes to
+ * report (e.g. /rename), same "don't touch whatever's already there" COALESCE treatment as `contentHash`.
  * @returns {Promise<void>}
  */
-export async function upsertCharacterFromWrite(directories, avatar, cardJson, fileMtimeMs, contentHash = null) {
+export async function upsertCharacterFromWrite(directories, avatar, cardJson, fileMtimeMs, contentHash = null, avatarIdentityHash = null) {
     const entry = await getEntry(directories);
     if (!entry) return;
 
@@ -764,7 +824,7 @@ export async function upsertCharacterFromWrite(directories, avatar, cardJson, fi
     // import_poisoned, see that column's SCHEMA_SQL comment.
     const contentIdentityHash = computeContentIdentityHash(character);
     const { chatSize, dateLastChat } = calculateChatSize(path.join(directories.chats, avatar.replace(/\.png$/, '')));
-    const row = buildRow(avatar, character, { dateAddedCandidate: Date.now(), fileMtime: fileMtimeMs, chatSize, dateLastChat, contentHash, contentIdentityHash });
+    const row = buildRow(avatar, character, { dateAddedCandidate: Date.now(), fileMtime: fileMtimeMs, chatSize, dateLastChat, contentHash, contentIdentityHash, avatarIdentityHash });
     const tagIds = getTagIdsFor(directories, avatar);
 
     applyOrBuffer(entry, row, tagIds);
@@ -1188,9 +1248,18 @@ export async function backfillContentIdentityHashes(directories) {
         const chunkResults = await mapWithConcurrency(chunkIds, BOOTSTRAP_READ_CONCURRENCY, async (id) => {
             try {
                 const filePath = path.join(directories.characters, id);
-                const pristine = await parseCharacterCardPristine(filePath);
+                // Extracted ONCE and reused for both the pristine content-identity hash AND the avatar-identity
+                // hash - this loop already had to pay this exact extract() for the pristine text (previously via
+                // parsePristine()'s own internal one), so backfilling avatar_identity_hash here is free: this
+                // poisoned row would otherwise NEVER get an avatar_identity_hash from anywhere else until
+                // scripts/backfill-avatar-identity-hashes.mjs's separate one-time pass runs, which would leave
+                // findCharacterIdByIdentityHashes()'s dual-hash dedup check unable to recognize it as a genuine
+                // duplicate in the meantime (a real, avatar_identity_hash IS NULL never matches anything).
+                const buffer = await fs.promises.readFile(filePath);
+                const chunks = extract(new Uint8Array(buffer));
+                const pristine = readCharaChunkPristineFromChunks(chunks);
                 const character = getCharaCardV2(JSON.parse(pristine), directories, false);
-                return { id, hash: computeContentIdentityHash(character) };
+                return { id, hash: computeContentIdentityHash(character), avatarHash: computeAvatarIdentityHashFromChunks(chunks) };
             } catch (err) {
                 console.error(`[character-metadata] Content-identity backfill failed to process ${id}, leaving it poisoned (will retry next boot):`, err.message);
                 return null;
@@ -1200,8 +1269,14 @@ export async function backfillContentIdentityHashes(directories) {
         const updates = chunkResults.filter(Boolean);
         if (updates.length > 0) {
             entry.db.transaction(() => {
-                for (const { id, hash } of updates) {
-                    entry.db.run('UPDATE characters SET content_identity_hash = @hash WHERE id = @id', { hash, id });
+                for (const { id, hash, avatarHash } of updates) {
+                    // avatar_identity_hash: same COALESCE-flavored "don't clobber a real value" guard
+                    // UPSERT_SQL's own ON CONFLICT clause uses, expressed here as a WHERE-guarded UPDATE instead
+                    // (this statement is a plain UPDATE, not an upsert) - a live write for this exact row landing
+                    // between this backfill's read and this transaction (upsertCharacterFromWrite(), which
+                    // clears import_poisoned too - see that function) already set a real, more-current value;
+                    // this backfill's own (necessarily older) read must not overwrite it.
+                    entry.db.run('UPDATE characters SET content_identity_hash = @hash, avatar_identity_hash = COALESCE(avatar_identity_hash, @avatarHash) WHERE id = @id', { hash, avatarHash, id });
                 }
             });
         }
@@ -1588,6 +1663,46 @@ export async function findCharacterIdByContentIdentityHash(directories, hash) {
     }
 
     const row = entry.db.get('SELECT id FROM characters WHERE content_identity_hash = @hash', { hash });
+    return row ? row.id : null;
+}
+
+/**
+ * local-import-scan.js's import-time dedup-skip consumer: unlike findCharacterIdByContentIdentityHash() above
+ * (deliberately JSON-only - see this column's own SCHEMA_SQL comment on why its one caller,
+ * findCrossCharacterReflinkCandidate(), must stay that way), a candidate here gets silently discarded as
+ * "already imported" the moment a match is found - there is no downstream byte verification the way the
+ * live-write reflink path has (writeCardFromChunks()'s own prefix check). Matching on `content_identity_hash`
+ * alone here would therefore treat two characters with identical text but different portraits as duplicates
+ * and drop the new one on the floor - the exact gap that motivated adding `avatar_identity_hash` at all. A real
+ * duplicate for THIS purpose requires both hashes to agree.
+ *
+ * `avatarIdentityHash === null` (candidate's own avatar hash unknown - a charx/byaf source, or a row this
+ * install hasn't backfilled avatar_identity_hash for yet) fails open to "not a match", same posture as every
+ * other identity-hash consumer in this module: a missed dedup optimization, never a false "these are the same"
+ * that could silently drop a genuinely new character.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} contentIdentityHash computeContentIdentityHash()'s output for the candidate
+ * @param {string|null} avatarIdentityHash computeAvatarIdentityHashFromChunks()'s output for the candidate, or
+ * `null` if the candidate's avatar bytes aren't known at this point (see this function's own doc comment)
+ * @returns {Promise<string | null>} The existing character's id if BOTH hashes match the same row, else `null`.
+ */
+export async function findCharacterIdByIdentityHashes(directories, contentIdentityHash, avatarIdentityHash) {
+    if (!contentIdentityHash || !avatarIdentityHash) return null;
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    if (entry.batch) {
+        for (const pending of entry.batch.pending.values()) {
+            if (pending.row.content_identity_hash === contentIdentityHash && pending.row.avatar_identity_hash === avatarIdentityHash) {
+                return pending.row.id;
+            }
+        }
+    }
+
+    const row = entry.db.get(
+        'SELECT id FROM characters WHERE content_identity_hash = @contentIdentityHash AND avatar_identity_hash = @avatarIdentityHash',
+        { contentIdentityHash, avatarIdentityHash },
+    );
     return row ? row.id : null;
 }
 
