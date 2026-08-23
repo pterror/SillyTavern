@@ -163,7 +163,7 @@ async function seedGroup(id, overrides = {}) {
     await metadataDb.upsertGroupRow(directories, id, group.name, { fav: group.fav });
 }
 
-describe('POST /api/characters/query - filter.includeGroups (owner decision extending the design doc to groups)', () => {
+describe('POST /api/characters/query - filter.includeGroups (extends the design doc to groups)', () => {
     test('includeGroups: false/absent is byte-for-byte the existing characters-only response shape', async () => {
         await seedCharacter('Alice.png');
         await seedGroup('g1');
@@ -307,15 +307,43 @@ describe('POST /api/characters/query - filter.includeGroups (owner decision exte
         expect(body.rows.map(r => r.item.name).sort()).toEqual(['FavChar', 'FavGroup']);
     });
 
-    test('filter.search excludes groups from the merged result, characters-only, but keeps {type, item} envelope shape', async () => {
+    test('filter.search includes groups in the merged, relevance-ordered result when both a character and a group match (groups have their own full-text index, groups-search-index.js)', async () => {
         await seedCharacterWithFile('Vampire.png', { name: 'Vampire Lord', data: { name: 'Vampire Lord', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
-        await seedGroup('VampireGroup', { name: 'Vampire Group' }); // matches by name, but groups aren't searched
+        await seedGroup('VampireGroup', { name: 'Vampire Group' });
+        await seedCharacterWithFile('Unrelated.png', { name: 'Someone Else', data: { name: 'Someone Else', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+        await seedGroup('OtherGroup', { name: 'Other Group' });
+
+        const response = await postJson('/api/characters/query', { filter: { includeGroups: true, search: 'vampire' }, sort: { field: 'search' }, page: 1, pageSize: 10 });
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.total).toBe(2);
+        expect(body.rows).toEqual(expect.arrayContaining([
+            { type: 'character', item: expect.objectContaining({ avatar: 'Vampire.png' }) },
+            { type: 'group', item: expect.objectContaining({ id: 'VampireGroup' }) },
+        ]));
+        expect(body.rows).toHaveLength(2);
+    });
+
+    test('filter.search + includeGroups still excludes a group that does not match the term', async () => {
+        await seedCharacterWithFile('Vampire.png', { name: 'Vampire Lord', data: { name: 'Vampire Lord', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+        await seedGroup('OtherGroup', { name: 'Other Group' });
 
         const response = await postJson('/api/characters/query', { filter: { includeGroups: true, search: 'vampire' }, sort: { field: 'search' }, page: 1, pageSize: 10 });
         expect(response.status).toBe(200);
         const body = await response.json();
         expect(body.rows).toEqual([{ type: 'character', item: expect.objectContaining({ avatar: 'Vampire.png' }) }]);
         expect(body.total).toBe(1);
+    });
+
+    test('filter.search + includeGroups composes with an ordinary (non-search) sort field across both types', async () => {
+        await seedCharacterWithFile('VampireB.png', { name: 'Vampire Baron', data: { name: 'Vampire Baron', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+        await seedGroup('VampireA', { name: 'Vampire Alpha' });
+
+        const response = await postJson('/api/characters/query', { filter: { includeGroups: true, search: 'vampire' }, sort: { field: 'name', order: 'asc' }, page: 1, pageSize: 10 });
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.total).toBe(2);
+        expect(body.rows).toHaveLength(2);
     });
 
     test('a deleted group is not resolvable via getGroupsByIds and is simply dropped from the page rather than shipping a null item', async () => {

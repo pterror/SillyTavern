@@ -1485,23 +1485,27 @@ function isSearchSortSelected() {
  * the eligibility conditions below are about the sort/search state, which is orthogonal to whether groups are
  * merged in.
  *
- * Excludes any active search term for a reason beyond "search isn't wired through /query here": this app
- * already has a *separate*, fully-working server search integration (`fetchServerCharacterSearchResults()` /
- * `entitiesFilter.serverSearchResults`, both in this file/filters.js) that scores characters AND groups
- * together via `/api/characters/all` and feeds `entitiesFilter.searchFilter()`'s existing fuzzy/score-cache
- * pipeline. If this function's server-query path also narrowed the candidate set by `filter.search` (via the
- * *different* tantivy/FTS backend `/query` uses), the subsequent client-side `searchFilter()` pass would run
- * its own fuzzy match against an already-narrowed set - and the two search engines do not necessarily agree on
- * what matches, so a character the server's FTS matched but the client's Fuse pass would not could get silently
- * dropped by that second pass. Leaving search entirely on the pre-existing path (full local candidate set,
- * scored via the pre-existing mechanism) avoids that divergence risk. This is a deliberate, documented scope
- * boundary, not an oversight - the design doc's "getEntitiesList inverts to ask repo.query()" applies to the
- * plain browse/filter/sort case, not to search, which already had its own solved path before this change.
+ * An active search term no longer excludes this path (it used to - see git history around this comment for the
+ * old rationale, and the `/query` route's own doc comment in characters.js for why it stopped applying): this
+ * app previously had a *separate* server search integration (`fetchServerCharacterSearchResults()` /
+ * `entitiesFilter.serverSearchResults`, both in this file/filters.js) that scored characters AND groups
+ * together via `/api/characters/all`, on the theory that `/query`'s own `filter.search` used a different index
+ * that might disagree with it or (for groups) not cover them at all. That gap is closed - groups now have their
+ * own full-text index wired into `/query`'s `filter.search` + `filter.includeGroups` handling (see that route's
+ * doc comment), so `filter.search` here and the old `/all`-based search are the exact same underlying indexes,
+ * not two that could silently diverge. `fetchServerCharacterSearchResults()`/`serverSearchResults` still exist -
+ * they now call `/query` themselves (see that function's doc comment) - but only matter for a caller whose sort
+ * field isn't server-queryable at all (the `isServerQueryableSort(sortField)` check below, independent of
+ * search), which still needs the pre-existing fully-local fallback and its own score cache.
+ *
+ * `isSearchSortSelected()` is still checked, but no longer disqualifies outright - `sort.field: 'search'`
+ * requires a non-empty search term (mirrors the `/query` route's own "requires, doesn't merely permit" rule),
+ * which `verifyCharactersSearchSortRule()` already guarantees by hiding the option otherwise, but this function
+ * doesn't get to assume UI state stayed in sync, so it re-checks directly.
  * @returns {boolean}
  */
 function canUseServerQueryForEntitiesList() {
-    if (entitiesFilter.getFilterData(FILTER_TYPES.SEARCH)) return false;
-    if (isSearchSortSelected()) return false;
+    if (isSearchSortSelected()) return Boolean(entitiesFilter.getFilterData(FILTER_TYPES.SEARCH));
     const sortField = power_user.sort_order === 'random' ? 'random' : power_user.sort_field;
     return isServerQueryableSort(sortField);
 }
@@ -1530,6 +1534,7 @@ function buildCharacterQueryFromCurrentFilterState({ includeGroups = false } = {
 
     const isRandom = power_user.sort_order === 'random';
     return buildCharacterQuery({
+        searchTerm: entitiesFilter.getFilterData(FILTER_TYPES.SEARCH) ?? '',
         tagsInclude: tagFilterData.selected ?? [],
         tagsExclude: tagFilterData.excluded ?? [],
         fav,
@@ -11981,24 +11986,37 @@ const SEARCH_BACKEND_INDICATOR = {
 let lastKnownSearchBackend = null;
 
 /**
- * Fetches full-content character/group search results from the server's fast index and stores them on
- * entitiesFilter for searchFilter() (filters.js) to use instead of its client-side pass - see
- * FilterHelper.setServerSearchResults()'s JSDoc for why this isn't just a speed optimization.
+ * Fetches full-content character/group search results from the server's fast index (`POST /api/characters/query`,
+ * `filter.search` + `sort.field: 'search'`) and stores them on entitiesFilter for searchFilter() (filters.js) to
+ * use instead of its client-side pass - see FilterHelper.setServerSearchResults()'s JSDoc for why this isn't
+ * just a speed optimization.
  *
- * Results come back already best-first sorted (see paginateSearchResults() in src/endpoints/characters.js), so
- * this assigns each match a synthetic ascending-is-better score by its position in that order - the endpoint
- * doesn't expose the underlying bm25 score directly, and rank alone is enough for both consumers:
- * searchFilter()'s membership check (does a cached score exist at all) and sortEntitiesList()'s ascending sort.
+ * Previously called `POST /api/characters/all` - a second, separate search pipeline from the `/query` endpoint
+ * plain browse/sort already used, kept apart specifically because `/query`'s `filter.search` used to answer from
+ * a characters-only index and would have silently dropped every group match. That gap is closed now (groups have
+ * their own full-text index, groups-search-index.js, wired into `/query`'s `filter.search` + `filter.includeGroups`
+ * handling - see that route's own doc comment, characters.js) - `canUseServerQueryForEntitiesList()` no longer
+ * excludes an active search term either, so this is genuinely the same query the main list's own server-paginated
+ * render path issues, not a parallel one that could disagree with it.
  *
- * The response also carries `searchBackend` (see the /api/characters/all handler in src/endpoints/characters.js
- * and search-engine.js) - 'tantivy', 'native', 'wasm', or 'unavailable'. Previously a degraded backend only ever showed up
- * as a server console warning; this surfaces it as a persistent icon (toggled here, see
- * SEARCH_BACKEND_INDICATOR) plus a one-time toast on the transition into a worse state.
+ * Results come back already best-first sorted (relevance order - see the `/query` route's `sort.field === 'search'`
+ * handling, characters.js), so this assigns each match a synthetic ascending-is-better score by its position in
+ * that order - the endpoint doesn't expose the underlying relevance score directly, and rank alone is enough for
+ * both consumers: searchFilter()'s membership check (does a cached score exist at all) and sortEntitiesList()'s
+ * ascending sort. This still matters even though the main list itself now renders straight from `/query`'s own
+ * rows (not through this scoring path) - it's what keeps a caller whose *sort field* isn't server-queryable (an
+ * `isServerQueryableSort()` failure, not a search one - `canUseServerQueryForEntitiesList()`, script.js) working
+ * on its own pre-existing fully-local fallback while a search term is also active.
+ *
+ * The response also carries `searchBackend` ('tantivy'|'native'|'wasm'|'unavailable' - see the `/query` route and
+ * search-engine.js). Previously a degraded backend only ever showed up as a server console warning; this surfaces
+ * it as a persistent icon (toggled here, see SEARCH_BACKEND_INDICATOR) plus a one-time toast on the transition
+ * into a worse state.
  * Also mirrors the current FILTER_TYPES.FAV filter state into the request (`fav: true` when the main character
  * list's favorites-only filter is active) so the server restricts matches to favorites *inside* the search index
- * query - see the /api/characters/all handler's `fav` doc (src/endpoints/characters.js) for why that has to
+ * query - see the `/query` route's `filter.fav` + `filter.search` composition (characters.js) for why that has to
  * happen there rather than after this function's own results get narrowed client-side: the server only ever
- * returns its top-`limit` matches by text relevance, which has no relationship to favorite status, so a
+ * returns its top-`pageSize` matches by text relevance, which has no relationship to favorite status, so a
  * favorited character/group can easily rank outside that page and never reach the client at all - no client-side
  * filter, however correct, can recover a result it was never sent.
  * @param {string} searchQuery The current search box value
@@ -12016,24 +12034,29 @@ export async function fetchServerCharacterSearchResults(searchQuery) {
     const favOnly = isFilterState(entitiesFilter.getFilterData(FILTER_TYPES.FAV), FILTER_STATES.SELECTED);
 
     try {
-        const response = await fetch('/api/characters/all', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ search: searchQuery, includeGroups: true, ...(favOnly ? { fav: true } : {}) }),
-        });
+        // pageSize mirrors the pre-existing /all-based call's own implicit cap (DEFAULT_PAGE_LIMIT, 500,
+        // characters.js) - this is a UI-chrome/local-fallback data source, not the main list's own render (that
+        // goes through printCharacters()'s server-paginated branch directly), so it only ever needs a bounded
+        // top page, same as before.
+        const result = await characterRepository.query(
+            { search: searchQuery, includeGroups: true, ...(favOnly ? { fav: true } : {}) },
+            { field: 'search' },
+            1, 500, ['rows', 'total'],
+        );
 
-        if (!response.ok) {
-            console.error('Server-side character search request failed', response.status);
-            entitiesFilter.setServerSearchResults(null);
-            resultCount.hide();
-            return;
-        }
-
-        const { items, total, searchBackend } = await response.json();
+        const rows = Array.isArray(result.rows) ? result.rows : [];
+        // `total` may be `~`-prefixed (design doc §5 decision 6, an approximate count under a capped search
+        // candidate set) - stripped to a plain number here since every consumer of `serverSearchResults.total`
+        // (this function's own resultCount text below, printCharacters()'s fallback-path pagination navigator,
+        // filters.js) treats it as an ordinary number, same convention printCharacters()'s server-paginated
+        // branch already uses for its own `totalNumberLocator`.
+        const parsedTotal = Number(String(result.total ?? 0).replace(/^~/, ''));
+        const total = Number.isFinite(parsedTotal) ? parsedTotal : rows.length;
+        const searchBackend = result.searchBackend;
         const characterScores = new Map();
         const groupScores = new Map();
 
-        items.forEach(({ type, item }, rank) => {
+        rows.forEach(({ type, item }, rank) => {
             if (type === 'character') {
                 characterScores.set(item.avatar, rank);
             } else if (type === 'group') {
@@ -12044,12 +12067,12 @@ export async function fetchServerCharacterSearchResults(searchQuery) {
         entitiesFilter.setServerSearchResults({ searchValue: searchQuery, favOnly, characterScores, groupScores, total });
 
         // The client's own list/grid pagination (printCharacters(), Characters_PerPage) already shows a
-        // "rangeStart-rangeEnd .. N" navigator, but N there is just `items.length` - at most `total` capped
-        // at the server's page-fetch limit (see paginateSearchResults()'s JSDoc in characters.js), not the real
-        // match count. Without this, a broad query that matches more than that limit looks like it matched
-        // *exactly* the limit, with no indication anything was left out.
-        if (total > items.length) {
-            resultCount.text(t`Showing ${items.length} of ${total} matches`).show();
+        // "rangeStart-rangeEnd .. N" navigator, but N there is just `rows.length` - at most `total` capped
+        // at this call's own pageSize, not necessarily the real match count. Without this, a broad query that
+        // matches more than that limit looks like it matched *exactly* the limit, with no indication anything
+        // was left out.
+        if (total > rows.length) {
+            resultCount.text(t`Showing ${rows.length} of ${total} matches`).show();
         } else {
             resultCount.text(t`${total} ${total === 1 ? 'match' : 'matches'}`).show();
         }

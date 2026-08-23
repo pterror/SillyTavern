@@ -825,13 +825,16 @@ export async function searchCharacters(handle, directories, searchTerm, maxRows,
  * how a caller that needs the *whole* matched set (not just a relevance-ranked page of it - e.g. sort:'random'
  * combined with filter.search, design doc §5.3 decision 23) should size this.
  * @param {boolean} [favOnly] Forwarded to runIdSearch() - see that function's doc comment.
- * @returns {Promise<{ ids: string[], total: number, backend: 'tantivy' | 'native' | 'wasm' | 'unavailable' }>}
- * `ids` in relevance order (best match first), the true total match count (independent of `maxRows`), and which
- * engine tier produced them.
+ * @returns {Promise<{ ids: string[], scoresById: Map<string, number>, total: number, backend: 'tantivy' | 'native' | 'wasm' | 'unavailable' }>}
+ * `ids` in relevance order (best match first), `scoresById` the same hits keyed by id (ascending-is-better, the
+ * Fuse/BM25 convention this codebase already uses elsewhere) - needed by a caller that has to merge this result
+ * against a *different* index's relevance order (characters+groups search, `/query`'s `filter.includeGroups`
+ * branch, characters.js) where rank alone from each side isn't enough to interleave correctly, only the actual
+ * score values are - the true total match count (independent of `maxRows`), and which engine tier produced them.
  */
 export async function searchCharacterIds(handle, directories, searchTerm, maxRows, favOnly) {
     const { hits, total, backend } = await runIdSearch(handle, directories, searchTerm, maxRows, favOnly);
-    return { ids: hits.map(hit => hit.id), total, backend };
+    return { ids: hits.map(hit => hit.id), scoresById: new Map(hits.map(hit => [hit.id, hit.score])), total, backend };
 }
 
 /**
