@@ -315,9 +315,12 @@ function findReflinkablePrefixOffsetFromChunks(chunks) {
  * should end up, byte-for-byte, as the new file's image data).
  * @param {string} destPath Absolute path to write the result to. May already exist.
  * @param {string} data Character data to embed (same contract as write()).
+ * @param {string|null} [crossReflinkCandidatePath] Absolute path to a DIFFERENT character's current file that
+ * a caller believes might share content with this write (see writeCardFromChunks()'s own doc comment for the
+ * verification this gets put through before ever being trusted).
  * @returns {Promise<{reflinked: boolean}>} Whether the reflink-preserving fast path was used.
  */
-export async function writeCardToFile(sourcePath, destPath, data) {
+export async function writeCardToFile(sourcePath, destPath, data, crossReflinkCandidatePath = null) {
     const srcBuf = await fs.promises.readFile(sourcePath);
 
     // Extract srcBuf's chunks exactly once and reuse the same list for both the rewritten-buffer build
@@ -326,7 +329,7 @@ export async function writeCardToFile(sourcePath, destPath, data) {
     // identical bytes) back to back. See spliceCardDataIntoChunks()'s own doc comment for why that
     // duplicate extract() was a measured, real cost, not a theoretical one.
     const chunks = extract(new Uint8Array(srcBuf));
-    return writeCardFromChunks(sourcePath, destPath, srcBuf, chunks, data);
+    return writeCardFromChunks(sourcePath, destPath, srcBuf, chunks, data, crossReflinkCandidatePath);
 }
 
 /**
@@ -346,12 +349,55 @@ export async function writeCardToFile(sourcePath, destPath, data) {
  * place by spliceCardDataIntoChunks() - callers that still need the original list untouched must extract their
  * own copy first.
  * @param {string} data Character data to embed (same contract as write()).
+ * @param {string|null} [crossReflinkCandidatePath] Absolute path to a DIFFERENT character's current file
+ * that a caller (character-metadata-db.js's `content_identity_hash` index, via characters.js's live write
+ * path) believes might carry the same content as this write - tried BEFORE `sourcePath` itself, since a
+ * successful cross-character reflink is the only outcome of this function that actually converges two
+ * independently-stored files onto shared extents (a self-reflink from `sourcePath` never does: `sourcePath`
+ * is either about to be overwritten in place, or was never sharing extents with anything else to begin
+ * with, so it can't reduce total disk usage the way linking to an unrelated already-live file can).
+ *
+ * `content_identity_hash` is computed purely from the character's JSON (fav/chat/create_date stripped) -
+ * see computeContentIdentityHash()'s own doc comment. It says NOTHING about whether the candidate's actual
+ * AVATAR IMAGE bytes match this write's intended image (from `sourcePath`/`srcBuf`) - two characters can
+ * have byte-identical personality JSON with completely different portraits. Trusting the hash match alone
+ * would silently swap the wrong picture onto `destPath`. So this candidate is never trusted on the hash
+ * match alone: exactly the same byte-level prefix verification reclaimReflinkPrefix() applies to a frozen
+ * import source gets applied here too, against the candidate's OWN current on-disk bytes, before it's ever
+ * used as a reflink source. If that verification fails (different portrait, ineligible chunk layout, file
+ * went missing, whatever) this silently declines the candidate and falls through to the ordinary
+ * self/full-write path below - never a partial or guessed write.
+ *
+ * Both `sourcePath` and any `crossReflinkCandidatePath` are only ever reflinked FROM (via
+ * writeSharedPrefixThenAppend(), which clones into a fresh same-directory temp file, truncates/appends
+ * there, then atomically renames that temp file over `destPath`) - neither is ever opened for writing
+ * itself. That's what keeps this safe even though a cross-character candidate is, unlike
+ * reclaimReflinkPrefix()'s frozen import source, a live file some OTHER request could edit at any time: an
+ * edit to the candidate later runs through this exact same clone-into-temp-then-rename shape, so it only
+ * ever replaces the candidate's OWN inode, never mutates bytes `destPath` is now sharing extents with (COW
+ * on top of "never write in place" - two independent safety properties, not one relying on the other).
  * @returns {Promise<{reflinked: boolean}>} Whether the reflink-preserving fast path was used.
  */
-export async function writeCardFromChunks(sourcePath, destPath, srcBuf, chunks, data) {
+export async function writeCardFromChunks(sourcePath, destPath, srcBuf, chunks, data, crossReflinkCandidatePath = null) {
     const offset = findReflinkablePrefixOffsetFromChunks(chunks);
     spliceCardDataIntoChunks(chunks, data);
     const outputImage = Buffer.from(encode(chunks));
+
+    if (crossReflinkCandidatePath && crossReflinkCandidatePath !== sourcePath) {
+        try {
+            const crossBuf = await fs.promises.readFile(crossReflinkCandidatePath);
+            const crossOffset = findReflinkablePrefixOffset(crossBuf);
+            const crossVerified = crossOffset !== null && crossOffset <= crossBuf.length && crossOffset <= outputImage.length
+                && Buffer.compare(outputImage.subarray(0, crossOffset), crossBuf.subarray(0, crossOffset)) === 0;
+
+            if (crossVerified) {
+                await writeSharedPrefixThenAppend(crossReflinkCandidatePath, destPath, outputImage, crossOffset);
+                return { reflinked: true };
+            }
+        } catch (error) {
+            console.debug(`character-card-parser: cross-character reflink candidate ${crossReflinkCandidatePath} unusable for ${destPath}, falling back.`, /** @type {any} */ (error)?.message ?? error);
+        }
+    }
 
     const prefixVerified = offset !== null && offset <= srcBuf.length && offset <= outputImage.length
         && Buffer.compare(outputImage.subarray(0, offset), srcBuf.subarray(0, offset)) === 0;
