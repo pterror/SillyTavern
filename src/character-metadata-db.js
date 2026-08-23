@@ -158,7 +158,7 @@ const SCHEMA_SQL = `
         shallow_json   TEXT NOT NULL,
         rev            INTEGER NOT NULL,
         -- active_chat (2026-08, chat-pointer db migration - docs/design/character-chat-pointer-db-migration.md):
-        -- which chat file is "currently open" for this character, mirroring fav's own db-authoritative shape
+        -- which chat file is "currently open" for this character, mirroring \`fav\`'s own db-authoritative shape
         -- exactly (see writeRowSync()'s doc comment on both). NULL means "no signal yet" - either this row
         -- predates the column, or the one-time backfill (backfillActiveChatFromCards() below) hasn't reached it
         -- yet - never "confirmed no chat"; see writeRowSync()'s own null-vs-non-null handling of this column.
