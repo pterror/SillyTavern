@@ -190,6 +190,10 @@ import {
     createTimeout,
     getStringHash,
 } from './scripts/utils.js';
+// Imported directly from hash-utils.js (not re-exported via utils.js like getStringHash) so this doesn't widen
+// utils.js's re-export surface - a mocked utils.js in tests/utils-findchar.test.js stubs hash-utils.js with only
+// getStringHash, and this stays independent of that.
+import { hashSettingsKeys } from './scripts/hash-utils.js';
 import { debounce_timeout, GENERATION_TYPE_TRIGGERS, IGNORE_SYMBOL, inject_ids, MEDIA_DISPLAY, MEDIA_SOURCE, MEDIA_TYPE, OVERSWIPE_BEHAVIOR, SCROLL_BEHAVIOR, SWIPE_DIRECTION, SWIPE_SOURCE, SWIPE_STATE } from './scripts/constants.js';
 
 import { cancelDebouncedMetadataSave, doDailyExtensionUpdatesCheck, extension_settings, initExtensions, loadExtensionSettings, runGenerationInterceptors } from './scripts/extensions.js';
@@ -8895,6 +8899,57 @@ export async function saveSettings(loopCounter = 0) {
         console.error('Error saving settings:', error);
         toastr.error(t`Check the server connection and reload the page to prevent data loss.`, t`Settings could not be saved`);
     }
+}
+
+//MARK: savePartialSettings()
+/**
+ * Sends only the given top-level settings keys to be merged into the server's settings.json (read-modify-write)
+ * instead of the full ~148KB blob saveSettings() sends every time. New, additive capability -
+ * saveSettings()/saveSettingsDebounced() are unchanged and remain the path virtually every call site uses;
+ * nothing is required to migrate to this. No existing call site currently does: saveSettings() rebuilds its
+ * whole payload from scratch on every call (see its own doc comment) and doesn't track which key(s) it actually
+ * touched, so wiring any of the 679 saveSettingsDebounced() call sites to use this would need each one to start
+ * tracking that itself - a separate, larger piece of work than this function's existence, and not done here.
+ *
+ * Conflict check is per-key (see hashSettingsKeys in hash-utils.js), not saveSettings()'s whole-file
+ * knownServerSettingsHash: hashes only the keys actually being sent, computed fresh from this client's current
+ * in-memory `settings` object (its own last known-good server state, same invariant knownServerSettingsHash
+ * relies on). This means two concurrent partial updates to genuinely disjoint keys can both succeed server-side;
+ * only a real overlap on the same key(s) gets rejected - deliberately different from (and better-fitting than)
+ * full saves' single whole-file hash, which would reject on any concurrent change regardless of overlap.
+ * @param {Record<string, unknown>} partialSettings Top-level settings keys to merge; only these keys change.
+ * @returns {Promise<boolean>} True if the update was applied, false if it was rejected due to a conflict.
+ */
+export async function savePartialSettings(partialSettings) {
+    const keys = Object.keys(partialSettings);
+    const expectedHashes = hashSettingsKeys(settings ?? {}, keys);
+
+    const result = await fetch('/api/settings/save-partial', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ keys: partialSettings, expectedHashes }),
+        cache: 'no-cache',
+    });
+
+    if (result.status === 409) {
+        const data = await result.json().catch(() => ({}));
+        // Same reasoning as saveSettings()'s 409 handling: don't retry with the same (now-stale) keys, and don't
+        // try to auto-reapply anything on top of a refreshed baseline - both risk re-clobbering the other
+        // session's write in a subtler way. Refetch and let the caller/user redo the change instead.
+        console.warn('Partial settings save rejected, conflicting keys:', data.conflictingKeys);
+        toastr.warning(t`Settings were changed in another tab or device. Refreshing - please reapply your change.`, t`Settings save rejected`);
+        await getSettings();
+        return false;
+    }
+
+    if (!result.ok) {
+        throw new Error(`Failed to save partial settings: ${result.statusText}`);
+    }
+
+    // The server merged these keys into the on-disk state as sent (no server-side transformation of the
+    // values), so this client's own view can adopt them directly without refetching.
+    Object.assign(settings, partialSettings);
+    return true;
 }
 
 /**

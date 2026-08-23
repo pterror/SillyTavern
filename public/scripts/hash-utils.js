@@ -32,3 +32,28 @@ export function getStringHash(str, seed = 0) {
 
     return 4294967296 * (2097151 & h2) + (h1 >>> 0);
 }
+
+/**
+ * Hashes each of the given top-level keys of a settings-shaped object independently (JSON.stringify(value, null,
+ * 4) per key, then getStringHash), rather than hashing the whole object as one string. This is the shallow,
+ * one-level "merkle" shape optimistic-concurrency checks need for partial/delta updates: comparing a *map* of
+ * per-key hashes instead of one whole-object hash means two concurrent updates to genuinely disjoint keys can
+ * both succeed - only a real overlap on the same key(s) needs to conflict. A whole-object hash can't make that
+ * distinction; any concurrent change anywhere invalidates it, which defeats a chunk of the point of a partial-
+ * update mechanism whose actual data model (see settings.js) is already a flat dict of independent subsystems.
+ *
+ * A key missing from `obj` hashes to 0 (JSON.stringify(undefined) is `undefined`, not a string, and
+ * getStringHash's own non-string fallback returns 0) - so two sides that both lack some key agree on its hash
+ * without either needing to special-case "key doesn't exist yet".
+ * @param {Record<string, unknown>|null|undefined} obj Parsed settings-shaped object (or null/undefined, treated as empty)
+ * @param {string[]} keys Top-level keys to hash
+ * @returns {Record<string, number>} Map of key -> hash of that key's current value
+ */
+export function hashSettingsKeys(obj, keys) {
+    /** @type {Record<string, number>} */
+    const result = {};
+    for (const key of keys) {
+        result[key] = getStringHash(JSON.stringify(obj?.[key], null, 4));
+    }
+    return result;
+}

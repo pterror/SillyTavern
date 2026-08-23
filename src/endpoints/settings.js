@@ -11,7 +11,7 @@ import { getConfigValue, generateTimestamp, removeOldBackups } from '../util.js'
 import { getAllUserHandles, getUserDirectories } from '../users.js';
 import { getFileNameValidationFunction } from '../middleware/validateFileName.js';
 import { mergeTagsIntoSnapshot, splitTagsFromSnapshot } from './tags.js';
-import { getStringHash } from '../../public/scripts/hash-utils.js';
+import { getStringHash, hashSettingsKeys } from '../../public/scripts/hash-utils.js';
 
 const ENABLE_EXTENSIONS = !!getConfigValue('extensions.enabled', true, 'boolean');
 const ENABLE_EXTENSIONS_AUTO_UPDATE = !!getConfigValue('extensions.autoUpdate', true, 'boolean');
@@ -253,6 +253,77 @@ router.post('/save', function (request, response) {
         }
 
         writeFileAtomicSync(pathToSettings, JSON.stringify(request.body, null, 4), 'utf8');
+        triggerAutoSave(request.user.profile.handle);
+        response.send({ result: 'ok' });
+    } catch (err) {
+        console.error(err);
+        response.send(err);
+    }
+});
+
+/**
+ * Partial-update alternative to /save: merges only the given top-level keys into the existing settings.json
+ * (read-modify-write) instead of requiring the full ~148KB blob every time. New, additive capability - /save is
+ * unchanged and stays the path virtually every caller uses; nothing is required to migrate. Legal because
+ * settings.json's top-level shape is already a flat dict of independent subsystems (power_user,
+ * extension_settings, world_info_settings, ...) with /save as its only writer - "merge only the keys present in
+ * the request" has a clean, unambiguous meaning at that level.
+ *
+ * Conflict check is per-key (see hashSettingsKeys), not the whole-file X-Settings-Hash /save uses - a
+ * whole-file hash would reject this call on *any* concurrent change anywhere, even to a completely unrelated
+ * key, which would defeat a chunk of the point of a partial-update mechanism given the flat-independent-
+ * subsystems shape above. Per-key hashing lets two concurrent partial updates to genuinely disjoint keys both
+ * succeed; only a real overlap gets rejected. expectedHashes is optional, same backward-compat stance as
+ * X-Settings-Hash: omit it and the merge proceeds unconditionally.
+ *
+ * Concurrency safety for the read-modify-write itself: this handler is synchronous start to finish
+ * (readFileSync below, writeFileAtomicSync at the end, no `await` anywhere in between), so nothing else can run
+ * on this process's event loop between the read and the write - Node never starts a second request's handler
+ * body until the first one's synchronous code has fully returned, so two concurrent /save-partial calls can't
+ * interleave their read-modify-write halves. The hash check only protects against a *stale* client; this
+ * synchronous-handler property is what protects two fresh, hash-valid requests from racing each other on the
+ * read (whichever one's handler runs first will have already changed the on-disk hash by the time the second
+ * one's per-key check runs, so a genuine overlap still gets caught even under a race). This guarantee is
+ * specific to a single Node process - if this server ever runs clustered across multiple worker processes, it
+ * would need real cross-process file locking instead.
+ */
+router.post('/save-partial', function (request, response) {
+    try {
+        const pathToSettings = path.join(request.user.directories.root, SETTINGS_FILE);
+
+        const { keys, expectedHashes } = request.body ?? {};
+        if (typeof keys !== 'object' || keys === null || Array.isArray(keys)) {
+            return response.status(400).send({
+                result: 'error',
+                error: 'Partial update body must include a "keys" object of top-level settings keys to merge.',
+            });
+        }
+
+        const currentContent = fs.existsSync(pathToSettings) ? fs.readFileSync(pathToSettings, 'utf8') : '';
+        let currentSettings = {};
+        if (currentContent) {
+            try {
+                currentSettings = JSON.parse(currentContent);
+            } catch (err) {
+                console.error('Could not parse current settings.json for partial merge', err);
+                return response.status(500).send({ result: 'error', error: 'Current settings.json is not valid JSON, cannot merge.' });
+            }
+        }
+
+        if (expectedHashes && typeof expectedHashes === 'object' && !Array.isArray(expectedHashes)) {
+            const actualHashes = hashSettingsKeys(currentSettings, Object.keys(expectedHashes));
+            const conflictingKeys = Object.keys(expectedHashes).filter(key => actualHashes[key] !== expectedHashes[key]);
+            if (conflictingKeys.length > 0) {
+                return response.status(409).send({
+                    result: 'conflict',
+                    error: 'Some of the settings keys in this update were changed by another session since this client last saw them.',
+                    conflictingKeys,
+                });
+            }
+        }
+
+        const mergedSettings = { ...currentSettings, ...keys };
+        writeFileAtomicSync(pathToSettings, JSON.stringify(mergedSettings, null, 4), 'utf8');
         triggerAutoSave(request.user.profile.handle);
         response.send({ result: 'ok' });
     } catch (err) {
