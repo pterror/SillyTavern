@@ -159,6 +159,137 @@ body.charListGrid #rm_print_characters_block .ch_additional_info {
     display: none;
 }
 
+/*
+ * Character gallery view: fullscreen, chub.ai-style tile grid for the character list, toggled via the button
+ * below #rm_button_characters (see doCharGalleryViewSwitch() in script.js). Deliberately reuses the exact same
+ * DOM the sidebar list already renders (#rm_print_characters_block, the .character_select/.group_select rows
+ * from printCharacters()) - this is a layout-only mode, not a second render path, so it stays correct for
+ * search/sort/pagination/keyed-diff re-renders with zero extra wiring.
+ *
+ * #right-nav-panel already renders as a fixed-position side drawer (.fillRight, style.css) - going fullscreen
+ * is just widening/heightening that same box to the viewport instead of re-parenting anything.
+ */
+
+.ch_creator {
+    /* Only meaningful once cards have room to show it - hidden outside gallery view so list/grid mode (and any
+       row reused across a mode switch) never has to think about it. */
+    display: none;
+}
+
+body.charGalleryView #right-nav-panel.fillRight.openDrawer {
+    left: 0;
+    right: 0;
+    width: 100vw;
+    width: 100dvw;
+    max-width: 100vw;
+    max-width: 100dvw;
+    height: 100vh;
+    height: 100dvh;
+    max-height: 100vh;
+    max-height: 100dvh;
+    border-radius: 0;
+    margin: 0;
+}
+
+body.charGalleryView #rm_print_characters_block {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    align-items: stretch;
+    gap: 15px;
+    padding: 10px 15px 15px;
+}
+
+body.charGalleryView #rm_print_characters_block .bogus_folder_select,
+body.charGalleryView #rm_print_characters_block .character_select,
+body.charGalleryView #rm_print_characters_block .group_select {
+    width: auto;
+    max-width: unset;
+    height: auto;
+    flex-direction: column;
+    align-items: stretch;
+    overflow: visible;
+    background-color: var(--SmartThemeBotMesBlurTintColor);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 10px;
+    padding: 10px;
+    position: relative;
+}
+
+body.charGalleryView #rm_print_characters_block .bogus_folder_select .avatar,
+body.charGalleryView #rm_print_characters_block .character_select .avatar,
+body.charGalleryView #rm_print_characters_block .group_select .avatar {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 2 / 3;
+    align-self: center;
+    flex: unset;
+}
+
+body.charGalleryView #rm_print_characters_block .avatar img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+body.charGalleryView #rm_print_characters_block .character_select_container,
+body.charGalleryView #rm_print_characters_block .group_select_container {
+    width: 100%;
+    max-width: unset;
+    justify-content: flex-start;
+}
+
+body.charGalleryView #rm_print_characters_block .character_name_block,
+body.charGalleryView #rm_print_characters_block .group_name_block {
+    width: 100%;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0;
+}
+
+body.charGalleryView #rm_print_characters_block .ch_name {
+    font-size: calc(var(--mainFontSize) * 1.1);
+    font-weight: bold;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
+body.charGalleryView #rm_print_characters_block .ch_creator {
+    display: block;
+    opacity: 0.7;
+}
+
+body.charGalleryView #rm_print_characters_block .ch_description {
+    display: -webkit-box;
+    -webkit-line-clamp: 4;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: pre-line;
+    opacity: 0.85;
+    margin-top: 4px;
+}
+
+body.charGalleryView #rm_print_characters_block .tags_inline {
+    flex-wrap: wrap;
+    margin-top: auto;
+    padding-top: 6px;
+}
+
+/* Favorite badge: the base template ships this hidden via an inline style (renderCharacterBlock in script.js)
+   and relies on the .is_fav avatar outline/gold name instead for list/grid view - gallery cards have enough
+   room to also show the star itself, top-right corner of the card. */
+body.charGalleryView #rm_print_characters_block .character_select.is_fav .ch_fav_icon,
+body.charGalleryView #rm_print_characters_block .group_select.is_fav .ch_fav_icon {
+    display: inline-block !important;
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    margin: 0;
+    padding: 0;
+    font-size: 18px;
+    order: unset;
+}
+
 /*big avatars mode page-wide changes*/
 
 body.big-avatars .character_select .avatar,

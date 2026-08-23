@@ -124,6 +124,7 @@ export const persona_description_positions = _persona_description_positions;
 
 export const power_user = {
     charListGrid: false,
+    charGalleryView: false,
     tokenizer: tokenizers.BEST_MATCH,
     token_padding: 64,
     collapse_newlines: false,
@@ -2089,6 +2090,7 @@ function toggleMDHotkeyIconDisplay() {
 
 function loadCharListState() {
     document.body.classList.toggle('charListGrid', power_user.charListGrid);
+    document.body.classList.toggle('charGalleryView', power_user.charGalleryView);
 }
 
 export function loadMovingUIState() {

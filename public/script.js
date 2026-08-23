@@ -1170,6 +1170,12 @@ function renderCharacterBlock(template, item, id) {
     const auxFieldValue = (item.data && item.data[auxFieldName]) || '';
     template.find('.character_version').text(auxFieldValue).toggleClass('displayNone', !auxFieldValue);
 
+    // Only surfaced in gallery view (toggle-dependent.css keeps it hidden everywhere else) - list/grid view
+    // weren't asked to grow a new field, and staying hidden-by-default here means this stays inert for either
+    // of them even if the card gets reused across a re-render triggered while gallery view is off.
+    const creator = item.data?.creator || '';
+    template.find('.ch_creator').text(creator ? `by ${creator}` : '').toggleClass('displayNone', !creator);
+
     // Display inline tags. printTagList() clears and rebuilds this container itself, so it's already
     // safe to call against a reused row.
     const tagsElement = template.find('.tags');
@@ -11838,6 +11844,20 @@ function doCharListDisplaySwitch() {
 }
 
 /**
+ * Switches the character list between the sidebar panel and the fullscreen gallery view (chub.ai-style tile
+ * layout, requested so full per-character info has room to render - the sidebar is too width-starved for that,
+ * which is also why grid mode above has to hide most fields). This is a pure rendering/layout toggle: it flips
+ * a body class that toggle-dependent.css keys off of, the same mechanism charListGrid above uses, and reuses
+ * whatever `#rm_print_characters_block` already has rendered into it (printCharacters()'s server-query/
+ * pagination path is untouched - no separate data fetch for this view).
+ */
+function doCharGalleryViewSwitch() {
+    power_user.charGalleryView = !power_user.charGalleryView;
+    document.body.classList.toggle('charGalleryView', power_user.charGalleryView);
+    saveSettingsDebounced();
+}
+
+/**
  * Function to handle the deletion of a character, given a specific popup type and character ID.
  * If popup type equals "del_ch", it will proceed with deletion otherwise it will exit the function.
  * It fetches the delete character route, sending necessary parameters, and in case of success,
@@ -13939,6 +13959,10 @@ jQuery(async function () {
 
     $('#charListGridToggle').on('click', async () => {
         doCharListDisplaySwitch();
+    });
+
+    $('#rm_button_characters_gallery').on('click', async () => {
+        doCharGalleryViewSwitch();
     });
 
     $('#hideCharPanelAvatarButton').on('click', () => {
