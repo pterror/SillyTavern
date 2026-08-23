@@ -3,6 +3,7 @@ import fsPromises from 'node:fs/promises';
 import crypto from 'node:crypto';
 
 import { getConfigValue } from './util.js';
+import { loadReflinkModule } from './reflink-support.js';
 
 /**
  * @typedef {'reflink' | 'hardlink' | 'copy'} CopyMethod
@@ -12,32 +13,6 @@ import { getConfigValue } from './util.js';
  * @typedef {Object} CopyCharacterFileResult
  * @property {CopyMethod} method Which strategy actually produced the file at `targetPath`.
  */
-
-/**
- * Lazily-loaded `@reflink/reflink` native binding, memoized across calls.
- * @type {Promise<null | { reflinkFile: (src: string, dst: string) => Promise<number> }>|null}
- */
-let reflinkModulePromise = null;
-
-/**
- * Loads the `@reflink/reflink` native binding on first use. This is a NAPI-RS binding that ships
- * one prebuilt binary per platform/arch/libc combination as an optional dependency - on a
- * combination it doesn't ship a binary for, `require`-ing it throws *synchronously at module load*
- * (see its `binding.js`). A static top-level `import` of that package would therefore crash every
- * process that pulls this module in on an unsupported platform, not just local-import users, so it's
- * loaded dynamically behind a try/catch instead, and only the first call pays the load cost - later
- * calls reuse the memoized result (including a memoized "unavailable" outcome).
- * @returns {Promise<null | { reflinkFile: (src: string, dst: string) => Promise<number> }>}
- */
-function loadReflinkModule() {
-    if (!reflinkModulePromise) {
-        reflinkModulePromise = import('@reflink/reflink').catch((/** @type {any} */ error) => {
-            console.debug('local-import-copy: @reflink/reflink native binding is unavailable on this platform, falling back to hardlink/copy.', error?.message ?? error);
-            return null;
-        });
-    }
-    return reflinkModulePromise;
-}
 
 /**
  * Copies a character file from `sourcePath` to `targetPath` using the cheapest strategy the

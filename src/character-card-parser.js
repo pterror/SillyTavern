@@ -1,9 +1,13 @@
 import fs from 'node:fs';
+import fsPromises from 'node:fs/promises';
+import crypto from 'node:crypto';
 import { Buffer } from 'node:buffer';
+import { sync as writeFileAtomicSync } from 'write-file-atomic';
 
 import encode from './png/encode.js';
 import extract from 'png-chunks-extract';
 import PNGtext from 'png-chunk-text';
+import { loadReflinkModule } from './reflink-support.js';
 
 /**
  * Writes Character metadata to a PNG image buffer.
@@ -172,4 +176,160 @@ export const parse = async (cardUrl, format) => {
 
     throw new Error('Unsupported format');
 };
+
+/**
+ * Finds the byte offset in `srcBuf` up to which `write()`'s output is guaranteed byte-identical to
+ * `srcBuf` itself - i.e. the end of the last chunk write() leaves untouched, letting a caller reflink
+ * just that prefix instead of paying a full-file copy for bytes that never actually changed.
+ *
+ * write() only ever removes existing 'chara'/'ccv3' tEXt chunks and inserts fresh ones immediately
+ * before IEND (see write()'s own doc comment) - every other chunk (IHDR, IDAT, any unrelated ancillary
+ * chunk) passes through unmodified, in the same order, so the byte range up to the first REMOVED chunk
+ * (or up to IEND itself, if nothing is being removed) is untouched by the rewrite.
+ *
+ * That is only true, though, when the removed chunks form one contiguous run immediately before IEND
+ * with nothing else surviving after them - e.g. a chara chunk sitting BEFORE IDAT (a layout this app
+ * never produces itself, but a foreign tool importing/re-exporting a card could) would mean removing it
+ * shifts every byte that follows, so the "prefix stays identical" guarantee wouldn't hold. This function
+ * detects exactly that condition and returns `null` when it doesn't hold, rather than guess - the caller
+ * is expected to fall back to a full rewrite whenever this returns `null`.
+ * @param {Buffer} srcBuf The source PNG buffer to inspect (NOT the rewritten output - the offset is
+ * computed against the chunk layout as it exists in the source, which write-time verification then
+ * confirms still matches the actual rewritten output's corresponding bytes).
+ * @returns {number | null} Byte offset into `srcBuf` (and, if the layout condition holds, into write()'s
+ * output for the same input) up to which both buffers are guaranteed identical, or `null` if the source's
+ * chunk layout doesn't meet the contiguous-tail condition this optimization depends on.
+ */
+function findReflinkablePrefixOffset(srcBuf) {
+    /** @type {Array<{name: string, data: Uint8Array}>} */
+    let chunks;
+    try {
+        chunks = extract(new Uint8Array(srcBuf));
+    } catch (error) {
+        return null;
+    }
+
+    if (chunks.length === 0 || chunks[chunks.length - 1].name !== 'IEND') {
+        return null;
+    }
+
+    const removeIdxs = [];
+    chunks.forEach((chunk, i) => {
+        if (chunk.name === 'tEXt') {
+            const decoded = PNGtext.decode(chunk.data);
+            if (decoded.keyword.toLowerCase() === 'chara' || decoded.keyword.toLowerCase() === 'ccv3') {
+                removeIdxs.push(i);
+            }
+        }
+    });
+
+    const lastIdx = chunks.length - 1; // IEND's index
+    const sortedRemoveIdxs = [...removeIdxs].sort((a, b) => a - b);
+    const contiguousTail = sortedRemoveIdxs.every((idx, k) => idx === lastIdx - sortedRemoveIdxs.length + k);
+    if (!contiguousTail) {
+        return null;
+    }
+
+    const keepCount = lastIdx - sortedRemoveIdxs.length; // chunks strictly before the removed run (or before IEND, if nothing's removed)
+    let offset = 8; // PNG signature
+    for (let i = 0; i < keepCount; i++) {
+        offset += 12 + chunks[i].data.length; // 4-byte length + 4-byte type + data + 4-byte CRC
+    }
+    return offset;
+}
+
+/**
+ * Writes character metadata into a PNG file on disk, preserving btrfs/XFS reflink extent-sharing with
+ * `sourcePath` for the untouched image-data bytes whenever the source's chunk layout allows it (see
+ * findReflinkablePrefixOffset()) - instead of always paying a full-file rewrite for a change that, in the
+ * common case, only ever touches a few KB of trailing metadata out of a multi-MB card.
+ *
+ * Strategy, cheapest-first, same "always correct even when the shortcut doesn't apply" shape as
+ * local-import-copy.js's copyCharacterFile():
+ *   1. Compute the ordinary rewritten buffer via write() - needed either way, and doubles as the source
+ *      of truth this function verifies the fast path against (never trusts the structural check on its
+ *      own - see below).
+ *   2. If findReflinkablePrefixOffset() finds a safe prefix AND the rewritten buffer's own bytes in that
+ *      range are actually byte-identical to the source's (a real verification, not an assumption from
+ *      the structural check alone), reflink-clone `sourcePath` into a temp file, truncate it down to the
+ *      shared prefix, append just the changed tail, and atomically rename it over `destPath`. Only the
+ *      appended tail is ever a real, disk-cost write.
+ *   3. Otherwise (reflink unavailable/unsupported/fails, or the layout/verification didn't clear step 2),
+ *      fall back to writing the full rewritten buffer with write-file-atomic, identical to what this
+ *      write path did before this optimization existed.
+ * `destPath` may already exist (an edit/re-import overwriting a character's existing avatar) - like
+ * write-file-atomic, this preserves that existing file's mode/uid/gid on the replacement rather than
+ * silently resetting them to the process default.
+ * @param {string} sourcePath Absolute path to the source PNG already on disk (the file whose image data
+ * should end up, byte-for-byte, as the new file's image data).
+ * @param {string} destPath Absolute path to write the result to. May already exist.
+ * @param {string} data Character data to embed (same contract as write()).
+ * @returns {Promise<{reflinked: boolean}>} Whether the reflink-preserving fast path was used.
+ */
+export async function writeCardToFile(sourcePath, destPath, data) {
+    const srcBuf = await fs.promises.readFile(sourcePath);
+    const outputImage = write(srcBuf, data);
+
+    const offset = findReflinkablePrefixOffset(srcBuf);
+    const prefixVerified = offset !== null && offset <= srcBuf.length && offset <= outputImage.length
+        && Buffer.compare(outputImage.subarray(0, offset), srcBuf.subarray(0, offset)) === 0;
+
+    if (prefixVerified) {
+        try {
+            await writeSharedPrefixThenAppend(sourcePath, destPath, outputImage, offset);
+            return { reflinked: true };
+        } catch (error) {
+            console.debug(`character-card-parser: reflink-preserving write failed for ${sourcePath} -> ${destPath}, falling back to a full write.`, /** @type {any} */ (error)?.message ?? error);
+        }
+    }
+
+    writeFileAtomicSync(destPath, outputImage);
+    return { reflinked: false };
+}
+
+/**
+ * The reflink-preserving fast path's actual write, split out of writeCardToFile() for clarity. Reflinks
+ * `sourcePath` into a same-directory temp file (so the closing rename is same-filesystem-atomic, same
+ * reasoning as local-import-copy.js's hardlinkOntoCanonical()), truncates it down to the shared prefix,
+ * appends the already-computed changed tail, matches an existing `destPath`'s mode/uid/gid if there is
+ * one, then renames over `destPath`. Any failure along the way cleans up the abandoned temp file and
+ * rethrows, rather than leaving a stray `.tmp` sibling or a partially-written `destPath` - `destPath`
+ * itself is never touched until the final atomic rename.
+ * @param {string} sourcePath
+ * @param {string} destPath
+ * @param {Buffer} outputImage The full rewritten buffer from write() - only its tail (from `offset`
+ * onward) is actually written; bytes before `offset` come from the reflinked clone instead.
+ * @param {number} offset
+ * @returns {Promise<void>}
+ */
+async function writeSharedPrefixThenAppend(sourcePath, destPath, outputImage, offset) {
+    const reflinkModule = await loadReflinkModule();
+    if (!reflinkModule) {
+        throw new Error('@reflink/reflink native binding is unavailable on this platform.');
+    }
+
+    const tempPath = `${destPath}.${crypto.randomUUID()}.tmp`;
+    try {
+        await reflinkModule.reflinkFile(sourcePath, tempPath);
+        await fsPromises.truncate(tempPath, offset);
+        await fsPromises.appendFile(tempPath, outputImage.subarray(offset));
+
+        // Mirror write-file-atomic's own behavior of preserving an existing target's mode/uid/gid on
+        // replacement, rather than silently resetting them to the process default - see its lib/index.js.
+        try {
+            const existingStat = await fsPromises.stat(destPath);
+            await fsPromises.chmod(tempPath, existingStat.mode);
+            if (process.getuid) {
+                await fsPromises.chown(tempPath, existingStat.uid, existingStat.gid).catch(() => {});
+            }
+        } catch (error) {
+            // destPath doesn't exist yet (the common case - a fresh import) - nothing to preserve.
+        }
+
+        await fsPromises.rename(tempPath, destPath);
+    } catch (error) {
+        await fsPromises.unlink(tempPath).catch(() => {});
+        throw error;
+    }
+}
 
