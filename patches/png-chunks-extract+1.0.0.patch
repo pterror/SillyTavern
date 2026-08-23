@@ -1,0 +1,40 @@
+diff --git a/node_modules/png-chunks-extract/index.js b/node_modules/png-chunks-extract/index.js
+index 28d6674..dc7b834 100644
+--- a/node_modules/png-chunks-extract/index.js
++++ b/node_modules/png-chunks-extract/index.js
+@@ -64,10 +64,15 @@ function extractChunks (data) {
+       break
+     }
+ 
+-    // Read the contents of the chunk out of the main buffer.
+-    for (var i = 4; i < length; i++) {
+-      chunk[i] = data[idx++]
+-    }
++    // Read the contents of the chunk out of the main buffer. rhi.zone patch (2026-08): bulk-copy via
++    // TypedArray.set() (a native memcpy) instead of a byte-at-a-time JS loop - same bytes end up in
++    // `chunk`, but for a multi-MB chunk (e.g. IDAT) the per-byte loop was measured as a real, significant
++    // contributor to writeCardToFile()'s per-file cost on a real corpus (SillyTavern's 2026-08 local-import
++    // perf investigation) - copying byte-by-byte in JS pays per-iteration interpreter/JIT overhead that
++    // .set() skips entirely.
++    var dataLength = length - 4
++    chunk.set(data.subarray(idx, idx + dataLength), 4)
++    idx += dataLength
+ 
+     // Read out the CRC value for comparison.
+     // It's stored as an Int32.
+@@ -85,8 +90,13 @@ function extractChunks (data) {
+     }
+ 
+     // The chunk data is now copied to remove the 4 preceding
+-    // bytes used for the chunk name/type.
+-    var chunkData = new Uint8Array(chunk.buffer.slice(4))
++    // bytes used for the chunk name/type. rhi.zone patch (2026-08): chunk.buffer.slice(4) allocated and
++    // copied a SECOND full-size buffer just to drop the leading 4 name bytes, on top of the bulk copy
++    // above that already built `chunk` fresh. chunk.subarray(4) is a zero-copy VIEW into that same
++    // buffer instead of a second copy - safe because `chunk`'s buffer is freshly allocated per chunk
++    // (never pooled, never shared with `data`/the original PNG buffer, never reused after this point), so
++    // nothing else can mutate it out from under this view.
++    var chunkData = chunk.subarray(4)
+ 
+     chunks.push({
+       name: name,
