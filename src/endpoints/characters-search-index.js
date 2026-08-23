@@ -598,16 +598,63 @@ async function applyIncrementalTantivyChanges(directories, tantivy, index, schem
 }
 
 /**
- * The `build` callback passed to indexCoordinator.getIndex() for the tantivy tier - decides between three paths,
- * in order: update an already-open handle in place, reopen a persisted-on-disk handle and catch it up, or fall
- * back to a full rebuild (buildTantivyIndex()). This is what makes staleness resolve to incremental maintenance
- * by default (design doc §3.2's "the existing full-rebuild path stays, demoted to a repair tool") instead of the
- * pre-existing rmSync-and-reparse-everything behavior.
+ * Opens the persisted on-disk tantivy index AS-IS - no incremental catch-up, no watermark write, just whatever
+ * was last committed to disk (`Index.open()` plus reading the persisted rev/tagsRev meta values) - fast because
+ * it does none of applyIncrementalTantivyChanges()'s work. This is search-index-coordinator.js's `openStale`
+ * hook for the tantivy tier (see runIdSearch() below): on a cold start (this process's first search for this
+ * handle) the coordinator calls this instead of blocking on loadOrUpdateTantivyIndex() below, so a request lands
+ * on whatever the index was caught up to as of the *last* process (or the last catch-up this process), while the
+ * real catch-up runs in the background exactly the same way a warm-stale hit already does.
+ *
+ * THE INCIDENT THIS EXISTS FOR: a boot-time bulk import (local-import-scan.js) runs before any search request
+ * has happened, so the very first search after it is necessarily a cold start with a large backlog of changes -
+ * confirmed as the root cause of an observed 60+ second search request server-side. Before this function existed,
+ * loadOrUpdateTantivyIndex()'s own `previous` - undefined branch did this same reopen-and-immediately-catch-up
+ * inline, which is exactly the blocking shape that produced the incident; splitting "open" from "catch up" here
+ * is what lets the coordinator serve the open step's result immediately and hand the catch-up step to
+ * loadOrUpdateTantivyIndex() (now always called with a real `previous`, or genuinely `undefined` only when there
+ * was nothing to reopen at all) as a background `build()` call instead.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy
+ * @returns {Promise<Awaited<ReturnType<typeof buildTantivyIndex>> | null>} `null` if there's nothing persisted to
+ * reopen (a genuinely fresh install, or a corrupt/unreadable index directory) - the coordinator's cold-start path
+ * falls back to blocking on a full build in that case, same as before this function existed.
+ */
+async function openPersistedTantivyIndexStale(directories, tantivy) {
+    const indexDir = tantivyIndexDir(directories);
+    const persistedRev = await getMetaValue(directories, TANTIVY_INDEX_REV_META_KEY);
+    if (persistedRev === null) {
+        return null;
+    }
+    try {
+        if (!tantivy.Index.exists(indexDir)) {
+            return null;
+        }
+        const index = tantivy.Index.open(indexDir);
+        const schema = index.schema;
+        const persistedTagsRev = Number((await getMetaValue(directories, TANTIVY_INDEX_TAGS_REV_META_KEY)) ?? 0);
+        return { index, schema, close: NOOP_CLOSE, lastRev: Number(persistedRev), lastTagsRev: persistedTagsRev };
+    } catch (err) {
+        console.error(color.red('[search] failed to reopen the persisted character tantivy index, falling back to a full rebuild:'));
+        console.error(color.red(`[search]   ${err.message}`));
+        return null;
+    }
+}
+
+/**
+ * The `build` callback passed to indexCoordinator.getIndex() for the tantivy tier - either updates an
+ * already-open handle in place (`previous` set - the common case, since a cold start now goes through
+ * openPersistedTantivyIndexStale() above first and hands its result here as `previous` too, see runIdSearch())
+ * or falls back to a full rebuild (buildTantivyIndex()) when there's nothing to incrementally update from at
+ * all. This is what makes staleness resolve to incremental maintenance by default (design doc §3.2's "the
+ * existing full-rebuild path stays, demoted to a repair tool") instead of the pre-existing
+ * rmSync-and-reparse-everything behavior.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy
  * @param {Awaited<ReturnType<typeof buildTantivyIndex>> | undefined} previous The currently-live handle for this
- * handle's tantivy index, if this process already has one open (see search-index-coordinator.js's `build`
- * param) - `undefined` on a handle's first-ever call this process.
+ * handle's tantivy index (either an in-process handle, or one openPersistedTantivyIndexStale() just opened) - see
+ * search-index-coordinator.js's `build` param. `undefined` only when there's genuinely nothing on disk to reopen
+ * yet (a fresh install).
  * @returns {Promise<Awaited<ReturnType<typeof buildTantivyIndex>>>}
  */
 async function loadOrUpdateTantivyIndex(directories, tantivy, previous) {
@@ -627,31 +674,10 @@ async function loadOrUpdateTantivyIndex(directories, tantivy, previous) {
             }
             return { ...previous, ...updated };
         }
-    } else {
-        const indexDir = tantivyIndexDir(directories);
-        const persistedRev = await getMetaValue(directories, TANTIVY_INDEX_REV_META_KEY);
-        if (persistedRev !== null) {
-            try {
-                if (tantivy.Index.exists(indexDir)) {
-                    const index = tantivy.Index.open(indexDir);
-                    const schema = index.schema;
-                    const persistedTagsRev = Number((await getMetaValue(directories, TANTIVY_INDEX_TAGS_REV_META_KEY)) ?? 0);
-                    const updated = await applyIncrementalTantivyChanges(directories, tantivy, index, schema, Number(persistedRev), persistedTagsRev);
-                    if (updated) {
-                        await setMetaValue(directories, TANTIVY_INDEX_REV_META_KEY, String(updated.lastRev));
-                        await setMetaValue(directories, TANTIVY_INDEX_TAGS_REV_META_KEY, String(updated.lastTagsRev));
-                        return { index, schema, close: NOOP_CLOSE, ...updated };
-                    }
-                }
-            } catch (err) {
-                console.error(color.red('[search] failed to reopen the persisted character tantivy index for incremental update, falling back to a full rebuild:'));
-                console.error(color.red(`[search]   ${err.message}`));
-            }
-        }
     }
 
-    // Nothing to incrementally update from (first-ever build, a truncated change log, or a reopen that failed) -
-    // buildTantivyIndex() itself persists the new rev/tagsRev watermark.
+    // Nothing to incrementally update from (first-ever build, a truncated change log, or applyIncrementalTantivyChanges()
+    // itself declining) - buildTantivyIndex() itself persists the new rev/tagsRev watermark.
     return buildTantivyIndex(directories, tantivy);
 }
 
@@ -751,7 +777,15 @@ async function runIdSearch(handle, directories, searchTerm, maxRows, favOnly) {
     }
 
     if (engine.tier === 'tantivy') {
-        const tantivyIndex = await indexCoordinator.getIndex(handle, signature, (previous) => loadOrUpdateTantivyIndex(directories, engine.tantivy, previous));
+        const tantivyIndex = await indexCoordinator.getIndex(
+            handle, signature,
+            (previous) => loadOrUpdateTantivyIndex(directories, engine.tantivy, previous),
+            // Cold-start fast path (search-index-coordinator.js's `openStale`) - see openPersistedTantivyIndexStale()'s
+            // doc comment for the incident this closes. Only consulted when this process has no live handle for
+            // `handle` yet at all; every other call (including the very next one right after this) goes through
+            // the `build` callback above like normal.
+            () => openPersistedTantivyIndexStale(directories, engine.tantivy),
+        );
         const query = buildTantivyQuery(engine.tantivy, tantivyIndex.schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS, { favOnly });
         if (!query) {
             return { hits: [], total: 0, backend: 'tantivy' };
