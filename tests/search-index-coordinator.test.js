@@ -139,4 +139,99 @@ describe('createIndexCoordinator()', () => {
         expect(result).toBe(oldDb);
         expect(oldDb.close).not.toHaveBeenCalled();
     });
+
+    describe('cold start with openStale (the fix for the boot-time-bulk-import block)', () => {
+        test('a cold start with a usable openStale() serves it immediately instead of blocking on build()', async () => {
+            const coordinator = createIndexCoordinator();
+            const staleDb = fakeDb('stale');
+            const openStale = jest.fn(() => staleDb);
+            const { promise: buildPromise } = deferred(); // never resolved in this test - would hang if awaited
+            const build = jest.fn(() => buildPromise);
+
+            const result = await coordinator.getIndex('user1', 'sig-a', build, openStale);
+
+            expect(result).toBe(staleDb);
+            expect(openStale).toHaveBeenCalledTimes(1);
+            // build() was kicked off (in the background, catching the stale db up to 'sig-a') but getIndex()
+            // did not wait on it - the deferred build promise above is still unresolved.
+            expect(build).toHaveBeenCalledTimes(1);
+            expect(build).toHaveBeenCalledWith(staleDb);
+        });
+
+        test('the background catch-up kicked off after openStale() swaps in the new db once it resolves', async () => {
+            const coordinator = createIndexCoordinator();
+            const staleDb = fakeDb('stale');
+            const { promise, resolve } = deferred();
+
+            await coordinator.getIndex('user1', 'sig-a', () => promise, () => staleDb);
+
+            const caughtUpDb = fakeDb('caught-up');
+            resolve(caughtUpDb);
+            await waitUntil(() => staleDb.close.mock.calls.length > 0);
+
+            const result = await coordinator.getIndex('user1', 'sig-a', () => {
+                throw new Error('should not rebuild again - already caught up');
+            });
+            expect(result).toBe(caughtUpDb);
+            expect(staleDb.close).toHaveBeenCalledTimes(1);
+        });
+
+        test('an in-place-updated stale db (build() returns the same reference) is not closed out from under itself', async () => {
+            const coordinator = createIndexCoordinator();
+            const staleDb = fakeDb('stale');
+
+            await coordinator.getIndex('user1', 'sig-a', (previous) => previous, () => staleDb);
+            await flushMicrotasks(20);
+
+            const result = await coordinator.getIndex('user1', 'sig-a', () => {
+                throw new Error('should not rebuild again');
+            });
+            expect(result).toBe(staleDb);
+            expect(staleDb.close).not.toHaveBeenCalled();
+        });
+
+        test('openStale() returning nothing falls back to blocking on build(), same as no openStale at all', async () => {
+            const coordinator = createIndexCoordinator();
+            const db = fakeDb('built');
+            const openStale = jest.fn(() => null);
+            const build = jest.fn(() => db);
+
+            const result = await coordinator.getIndex('user1', 'sig-a', build, openStale);
+
+            expect(result).toBe(db);
+            expect(openStale).toHaveBeenCalledTimes(1);
+            expect(build).toHaveBeenCalledTimes(1);
+        });
+
+        test('concurrent cold-start requests for the same handle share one openStale() call and one background build, not one each', async () => {
+            const coordinator = createIndexCoordinator();
+            const staleDb = fakeDb('stale');
+            const openStale = jest.fn(() => staleDb);
+            const { promise: buildPromise } = deferred();
+            const build = jest.fn(() => buildPromise);
+
+            const [result1, result2, result3] = await Promise.all([
+                coordinator.getIndex('user1', 'sig-a', build, openStale),
+                coordinator.getIndex('user1', 'sig-a', build, openStale),
+                coordinator.getIndex('user1', 'sig-a', build, openStale),
+            ]);
+
+            expect(result1).toBe(staleDb);
+            expect(result2).toBe(staleDb);
+            expect(result3).toBe(staleDb);
+            expect(openStale).toHaveBeenCalledTimes(1); // not 3
+            expect(build).toHaveBeenCalledTimes(1); // not 3 - the exact race this coordinator has to close
+        });
+
+        test('a cold start with no openStale at all still blocks on build(), unchanged from before this option existed', async () => {
+            const coordinator = createIndexCoordinator();
+            const db = fakeDb('built');
+            const build = jest.fn(() => db);
+
+            const result = await coordinator.getIndex('user1', 'sig-a', build);
+
+            expect(result).toBe(db);
+            expect(build).toHaveBeenCalledTimes(1);
+        });
+    });
 });
