@@ -870,11 +870,30 @@ export async function setCharacterFav(directories, avatar, fav) {
 }
 
 /**
+ * One `IN (...)` query binds every id in the batch as its own `?` placeholder (see below) - SQLite caps how many
+ * bound parameters a single prepared statement may have (SQLITE_MAX_VARIABLE_NUMBER: 999 on an old/default
+ * build, up to 32766 on others), and this codebase runs against both a native and a wasm SQLite build (see
+ * sqlite-engine.js) with no guarantee both share the same compiled-in limit. Kept well under either so a single
+ * batch never trips it regardless of which engine resolved - this is what makeFavResolver() (
+ * characters-search-index.js) needs for a whole-library id list at full-index-build time, not just the small
+ * per-page list the live `/all` route passes most of the time.
+ */
+const FAV_LOOKUP_BATCH_SIZE = 500;
+
+/**
  * Bulk `fav` lookup for a known set of ids - the batched counterpart to reading `fav` off each row individually,
  * used by the live `/all` route (characters.js) to stamp its already-disk-read `processCharacter()` results with
  * the db's authoritative `fav` value in one query rather than one-per-character. Ids with no tracked row are
  * simply absent from the result (caller's job to decide a fallback - see that route for why "not tracked yet"
  * means "the file is still the source", not "false").
+ *
+ * `ids` is chunked into FAV_LOOKUP_BATCH_SIZE-sized `IN (...)` queries (see that constant's doc comment) rather
+ * than one query binding the whole list - makeFavResolver()'s full-index-build caller (characters-search-index.js)
+ * passes every avatar in the library at once, and an unchunked query there throws `SqliteError: too many SQL
+ * variables` once the library is large enough to exceed SQLite's bound-parameter limit (confirmed against this
+ * install's real 326k-character library: `POST /api/characters/all` with a `search` term crashed with exactly
+ * that error, uncaught past this function, whenever the search-index build needed a full rebuild - not a
+ * RangeError, so the route's own catch block's `overflow` flag stayed `false`).
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string[]} ids Avatar filenames
  * @returns {Promise<{[id: string]: boolean}>}
@@ -883,13 +902,15 @@ export async function getCharacterFavsByIds(directories, ids) {
     const entry = await getEntry(directories);
     if (!entry || !Array.isArray(ids) || ids.length === 0) return {};
 
-    const placeholders = ids.map(() => '?').join(',');
-    const rows = entry.db.all(`SELECT id, fav FROM characters WHERE id IN (${placeholders})`, ids);
-
     /** @type {{[id: string]: boolean}} */
     const result = {};
-    for (const row of rows) {
-        result[row.id] = !!row.fav;
+    for (let i = 0; i < ids.length; i += FAV_LOOKUP_BATCH_SIZE) {
+        const batch = ids.slice(i, i + FAV_LOOKUP_BATCH_SIZE);
+        const placeholders = batch.map(() => '?').join(',');
+        const rows = entry.db.all(`SELECT id, fav FROM characters WHERE id IN (${placeholders})`, batch);
+        for (const row of rows) {
+            result[row.id] = !!row.fav;
+        }
     }
     return result;
 }
