@@ -160,35 +160,33 @@ body.charListGrid #rm_print_characters_block .ch_additional_info {
 }
 
 /*
- * Character gallery view: fullscreen, chub.ai-style tile grid for the character list, toggled via the button
+ * Character gallery view: a centered, chub.ai-style tile grid for the character list, toggled via the button
  * below #rm_button_characters (see doCharGalleryViewSwitch() in script.js). Deliberately reuses the exact same
  * DOM the sidebar list already renders (#rm_print_characters_block, the .character_select/.group_select rows
  * from printCharacters()) - this is a layout-only mode, not a second render path, so it stays correct for
  * search/sort/pagination/keyed-diff re-renders with zero extra wiring.
  *
- * #right-nav-panel already renders as a fixed-position side drawer (.fillRight, style.css) - going fullscreen
- * is just widening/heightening that same box to the viewport instead of re-parenting anything.
+ * Not edge-to-edge: width is capped at the same --sheldWidth the rest of the app's center column already uses
+ * (#sheld/#top-bar, style.css) - `min(chat_width vw, chat_width_max ch)`, power_user.chat_width/chat_width_max,
+ * written onto :root by getChatWidthValue() in power-user.js. Reusing that variable means gallery view
+ * automatically tracks whatever width the user already configured for their main content column instead of
+ * introducing a second, competing width setting - and centers with the same `margin: 0 auto` + `left/right: 0`
+ * trick #sheld uses, overriding .fillRight's side-gutter positioning (style.css) for just this mode. Height
+ * still goes full viewport (minus the top bar) - only the width claim was scoped down to match the owner's
+ * "reuse the existing center-section width" request, height wasn't part of that ask.
  */
-
-.ch_creator {
-    /* Only meaningful once cards have room to show it - hidden outside gallery view so list/grid mode (and any
-       row reused across a mode switch) never has to think about it. */
-    display: none;
-}
 
 body.charGalleryView #right-nav-panel.fillRight.openDrawer {
     left: 0;
     right: 0;
-    width: 100vw;
-    width: 100dvw;
-    max-width: 100vw;
-    max-width: 100dvw;
-    height: 100vh;
-    height: 100dvh;
-    max-height: 100vh;
-    max-height: 100dvh;
-    border-radius: 0;
-    margin: 0;
+    width: var(--sheldWidth);
+    max-width: var(--sheldWidth);
+    margin: 0 auto;
+    top: var(--topBarBlockSize);
+    height: calc(100vh - var(--topBarBlockSize));
+    height: calc(100dvh - var(--topBarBlockSize));
+    max-height: calc(100vh - var(--topBarBlockSize));
+    max-height: calc(100dvh - var(--topBarBlockSize));
 }
 
 body.charGalleryView #rm_print_characters_block {
@@ -253,8 +251,14 @@ body.charGalleryView #rm_print_characters_block .ch_name {
     overflow-wrap: anywhere;
 }
 
-body.charGalleryView #rm_print_characters_block .ch_creator {
-    display: block;
+/* The "Char List Subheader" is the app's existing mechanism for showing a character's creator next to its name
+   (Settings > User Settings > "Char List Subheader" > "Created by", power_user.aux_field - script.js's
+   renderCharacterBlock() already reads it into this same .character_version element for every view). It's
+   opt-in and already renders in gallery view unmodified; the only thing gallery mode needs to do is stop
+   constraining it to the narrow-sidebar-row sizing (max-width: 50%, style.css) now that the card has room. */
+body.charGalleryView #rm_print_characters_block .character_version,
+body.charGalleryView #rm_print_characters_block .ch_avatar_url {
+    max-width: 100%;
     opacity: 0.7;
 }
 

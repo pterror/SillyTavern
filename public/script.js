@@ -1170,12 +1170,6 @@ function renderCharacterBlock(template, item, id) {
     const auxFieldValue = (item.data && item.data[auxFieldName]) || '';
     template.find('.character_version').text(auxFieldValue).toggleClass('displayNone', !auxFieldValue);
 
-    // Only surfaced in gallery view (toggle-dependent.css keeps it hidden everywhere else) - list/grid view
-    // weren't asked to grow a new field, and staying hidden-by-default here means this stays inert for either
-    // of them even if the card gets reused across a re-render triggered while gallery view is off.
-    const creator = item.data?.creator || '';
-    template.find('.ch_creator').text(creator ? `by ${creator}` : '').toggleClass('displayNone', !creator);
-
     // Display inline tags. printTagList() clears and rebuilds this container itself, so it's already
     // safe to call against a reused row.
     const tagsElement = template.find('.tags');
