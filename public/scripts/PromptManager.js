@@ -779,8 +779,16 @@ class PromptManager {
 
         // Re-render when the character gets edited.
         eventSource.on(event_types.CHARACTER_EDITED, (event) => {
+            // Unlike handleCharacterSelected/handleGroupSelected (which can add a default prompt
+            // order for a character that doesn't have one yet), handleCharacterUpdated only
+            // re-points activeCharacter at the freshly-saved character data - it never mutates
+            // promptOrder or anything else this service persists. CHARACTER_EDITED fires on every
+            // saveCharacterDebounced() flush (i.e. on essentially every edit to the character's
+            // definitions - description, personality, scenario, first message, example dialogue,
+            // etc.), so unconditionally saving here fired a real settings save on every such edit
+            // with nothing to actually persist.
             this.handleCharacterUpdated(event);
-            this.saveServiceSettings().then(() => this.renderDebounced());
+            this.renderDebounced();
         });
 
         // Re-render when the group changes.
