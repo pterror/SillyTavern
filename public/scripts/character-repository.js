@@ -44,10 +44,13 @@ import { charactersStore, getRequestHeaders, unshallowCharacter } from '../scrip
  * the same sorted/paginated result, and `rows` becomes `Array<{type: 'character', item: Character} | {type:
  * 'group', item: Group}>` instead - see `normalizeQueryRow()` below for the one place callers should go to tell
  * the two apart, rather than re-deriving the discriminator ad hoc. Composes with `filter.tags` (a folder is just
- * a tag - `tags.include=[folderId]`, and a folder can contain groups too, via `group_tags`), but NOT with
- * `filter.search`: a non-empty `search` excludes groups from the merged result server-side regardless of this
- * flag (no group full-text index exists), so search stays on its separate, pre-existing path
- * (`fetchServerCharacterSearchResults()`/`entitiesFilter.searchFilter()`, script.js) - design doc §5.
+ * a tag - `tags.include=[folderId]`, and a folder can contain groups too, via `group_tags`) AND with
+ * `filter.search`: a non-empty `search` DOES include groups in the merged result when this flag is set - groups
+ * have their own full-text index (server's groups-search-index.js, mirroring the character one) and the server
+ * merges both indexes' relevance-ordered matches before answering (src/endpoints/characters.js, the `/query`
+ * route's `hasSearch && includeGroups` branch). An earlier version of this doc claimed the opposite ("no group
+ * full-text index exists") and attributed that exclusion to an owner decision the owner never actually made -
+ * see that route's own doc comment for the git-history trace.
  */
 
 /**

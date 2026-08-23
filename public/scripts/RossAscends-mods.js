@@ -22,6 +22,7 @@ import {
     isSwipingAllowed,
     characterToEntity,
     groupToEntity,
+    entitiesFilter,
 } from '../script.js';
 
 import {
@@ -326,6 +327,16 @@ async function RA_autoloadchat() {
  * field has no server equivalent (`create_date`/`data_size` - see `isServerQueryableSort()`,
  * character-repository.js) - same documented scope boundary as `getEntitiesList()`'s server-query path
  * (script.js), not a special case invented here.
+ *
+ * Mirrors the active search term (`FILTER_TYPES.SEARCH`, filters.js) into both branches, so at scale (a favorites
+ * list too large to browse unfiltered - the owner's own real install has ~3,900 favorited characters) the strip
+ * reads as "favorites matching the current search" rather than an unfiltered slice that ignores whatever the
+ * user just typed into the main list's search box. The server-query branch passes `filter.search` straight
+ * through to `/query` for the character half (same narrowed-then-sorted-then-limited query the main list itself
+ * now issues for search - see `canUseServerQueryForEntitiesList()`, script.js); the local-groups half and the
+ * fully-local fallback branch both narrow by search via `entitiesFilter.searchFilter()`, the same score-cache/
+ * fuzzy-match mechanism the main list's own local fallback already uses, rather than re-deriving a second one
+ * here.
  */
 export async function favsToHotswap() {
     const container = $('#right-nav-panel .hotswap');
@@ -336,6 +347,17 @@ export async function favsToHotswap() {
 
     const isRandom = power_user.sort_order === 'random';
     const sortField = isRandom ? 'random' : power_user.sort_field;
+    // Dynamic import, not a static top-level one: RossAscends-mods.js and filters.js already sit on a cycle
+    // through power-user.js (filters.js -> power-user.js -> script.js -> RossAscends-mods.js) - a *static*
+    // `import { FILTER_TYPES } from './filters.js'` here reorders when filters.js first gets pulled into the
+    // graph and reproduces the exact `FilterHelper`/`FILTER_TYPES` TDZ crash already fixed once for tags.js
+    // (commit f30735376) and character-repository.js's `charactersStore` (see that module's `store` getter
+    // doc comment) - confirmed via a real headless-browser load, not just reasoned about. By the time this
+    // function actually runs (a real UI interaction, well after every module has finished evaluating), the
+    // module is already resident in the loader's cache, so this resolves synchronously in practice; it just
+    // doesn't participate in the static import graph's evaluation-order dance.
+    const { FILTER_TYPES } = await import('./filters.js');
+    const searchTerm = entitiesFilter.getFilterData(FILTER_TYPES.SEARCH) || '';
 
     let favs;
     if (isServerQueryableSort(sortField)) {
@@ -345,15 +367,29 @@ export async function favsToHotswap() {
             sortOrder: power_user.sort_order === 'desc' ? 'desc' : 'asc',
             randomSeed: isRandom ? getRandomSortSeed(accountStorage) : undefined,
         });
-        const { rows: favCharacterRows = [] } = await characterRepository.query({ fav: true }, sort, 1, FAVS_LIMIT, ['rows']);
+        const filter = searchTerm ? { fav: true, search: searchTerm } : { fav: true };
+        const { rows: favCharacterRows = [] } = await characterRepository.query(filter, sort, 1, FAVS_LIMIT, ['rows']);
         const favCharacterEntities = favCharacterRows.map(item => characterToEntity(item));
-        const favGroupEntities = groups.filter(x => x.fav || x.fav == 'true').map(item => groupToEntity(item));
+        let favGroupEntities = groups.filter(x => x.fav || x.fav == 'true').map(item => groupToEntity(item));
+        if (searchTerm) {
+            // The character half above already asked the server to narrow by `filter.search` directly - running
+            // a second, client-side fuzzy pass over rows the server already resolved would risk exactly the
+            // stale two-search-engines divergence this function's own doc comment (and the main list's own
+            // `canUseServerQueryForEntitiesList()`, script.js) both call out. Groups still only ever come from
+            // the local resident array here (unchanged from before this search-mirroring addition), so
+            // narrowing them by search has to happen client-side - `entitiesFilter.searchFilter()` is the same
+            // score-cache/fuzzy mechanism the main list's own local fallback path already relies on for this.
+            favGroupEntities = entitiesFilter.searchFilter(favGroupEntities);
+        }
 
         favs = [...favCharacterEntities, ...favGroupEntities];
         sortEntitiesList(favs, false);
         favs = favs.slice(0, FAVS_LIMIT);
     } else {
-        const entities = await getEntitiesList({ doFilter: false });
+        let entities = await getEntitiesList({ doFilter: false });
+        if (searchTerm) {
+            entities = entitiesFilter.searchFilter(entities);
+        }
         favs = entities.filter(x => x.item.fav || x.item.fav == 'true').slice(0, FAVS_LIMIT);
     }
 

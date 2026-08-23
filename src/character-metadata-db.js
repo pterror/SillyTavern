@@ -269,8 +269,10 @@ const SCHEMA_SQL = `
     -- group's id is stable for its whole lifetime (see groups.js's /create - it's minted once and never changes
     -- on rename), so there is no group equivalent of renameCharacterRow()/date_added carry-forward - date_added
     -- write-once still applies (see GROUP_UPSERT_SQL below), it just never needs a rename-time correction.
-    -- Groups have no 'world' (no lorebook binding concept) and no full-text index (see queryEntities()'s header
-    -- for why filter.search never reaches this table), so those two are simply absent here.
+    -- Groups have no 'world' column (no lorebook binding concept), so it's simply absent here. They DO have a
+    -- separate full-text index (groups-search-index.js, its own tantivy/SQLite FTS5 index, mirroring
+    -- characters-search-index.js) - that index lives outside this table entirely (same as the characters search
+    -- index lives outside the characters table above), which is why searching it isn't a column here either.
     CREATE TABLE IF NOT EXISTS groups (
         id             TEXT PRIMARY KEY,
         name           TEXT NOT NULL,
@@ -522,6 +524,36 @@ function migrateAvatarIdentityColumn(db) {
     db.exec('CREATE INDEX IF NOT EXISTS idx_characters_avatar_identity_hash ON characters(avatar_identity_hash)');
 }
 
+/**
+ * Adds `duplicate_of` to an existing `local_import_mtimes` table that predates it. Same ALTER-if-missing shape
+ * as migrateContentHashColumn() above, for the same reason (SQLite has no `ADD COLUMN IF NOT EXISTS`, and this
+ * table's own `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL deliberately still only declares the original
+ * `source_path`/`mtime_ms` shape - matching every other migrate*Column() function's pattern here rather than
+ * duplicating the new column in two places that could drift).
+ *
+ * `duplicate_of` records which character id a source file was recognized as a duplicate OF, for the two
+ * local-import-scan.js call sites that persist a row for a file that was never itself imported (an exact
+ * content_hash match, or the expensive content-identity fallback match) - see setLocalImportMtime()'s own doc
+ * comment for why this now happens at all (2026-08 real-corpus investigation: previously these two call sites
+ * used a deliberately in-memory-only record specifically so a stale skip could never survive the matched
+ * character disappearing - persisting the mtime without also tracking what it depends on would have silently
+ * reintroduced that exact bug). deleteRowSync() below cascades a character deletion into deleting every
+ * local_import_mtimes row that named it as duplicate_of, which is what makes persisting these safe: the row
+ * that made the skip valid is gone, so the skip goes with it, and the source file falls back to a fresh
+ * dedup-check on its very next scan pass - restoring the original safety property, not weakening it, while
+ * still letting every source file that already IS a genuine, still-valid duplicate skip its full read+hash on
+ * every restart instead of paying that cost forever (a real, measured cost - see reconcile()'s own doc comment
+ * on the ~301k-file corpus this design targets, where duplicates are a large fraction of the total).
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ */
+function migrateLocalImportMtimesDuplicateOfColumn(db) {
+    const columns = db.all('PRAGMA table_info(local_import_mtimes)');
+    if (!columns.some(c => c.name === 'duplicate_of')) {
+        db.exec('ALTER TABLE local_import_mtimes ADD COLUMN duplicate_of TEXT');
+    }
+    db.exec('CREATE INDEX IF NOT EXISTS idx_local_import_mtimes_duplicate_of ON local_import_mtimes(duplicate_of)');
+}
+
 // computeContentIdentityHash() itself now lives in character-card-normalize.js (imported above, 2026-08
 // local-import worker-pool work moved it there so a worker_threads worker can import it without dragging
 // this module's own top-level getConfigValue() calls - which require CONFIG_PATH, per-thread state a worker
@@ -626,6 +658,7 @@ async function getEntry(directories) {
     migrateContentHashColumn(db);
     migrateContentIdentityColumns(db);
     migrateAvatarIdentityColumn(db);
+    migrateLocalImportMtimesDuplicateOfColumn(db);
     migrateGroupsColumns(db, directories);
     // Design doc §5.3, decisions 8/13: random-sort order is a per-query `ORDER BY <hash>(id, seed)`, never a
     // materialized column (a materialized seeded column is O(users × rerolls) to maintain - see the decision's
@@ -771,6 +804,12 @@ function writeRowSync(db, row, tagIds) {
 function deleteRowSync(db, id) {
     db.run('DELETE FROM characters WHERE id = @id', { id });
     db.run('DELETE FROM character_tags WHERE character_id = @id', { id });
+    // Cascades into local_import_mtimes: any source file persisted as a duplicate-of THIS character (see
+    // setLocalImportMtime()'s own doc comment and migrateLocalImportMtimesDuplicateOfColumn()'s) had its skip
+    // record's validity depend on this row still existing - deleting it here, in the same place every OTHER
+    // consequence of a character disappearing is already handled, is what keeps that skip from silently
+    // outliving the row it was conditioned on.
+    db.run('DELETE FROM local_import_mtimes WHERE duplicate_of = @id', { id });
     db.run('INSERT INTO changes (id, op) VALUES (@id, @op)', { id, op: 'delete' });
 }
 
@@ -1811,20 +1850,26 @@ export async function getAllLocalImportMtimes(directories) {
  * file - the write-through counterpart to getAllLocalImportMtimes()'s bulk read. A no-op (fail-open) if the
  * metadata store is unavailable, same posture as setLocalImportSkip(): losing this write only means the file
  * gets re-read/re-hashed (wastefully, never incorrectly) on the next restart, not a correctness problem.
+ *
+ * `duplicateOf`, when given, records that this row's validity depends on character id `duplicateOf` still
+ * existing - see migrateLocalImportMtimesDuplicateOfColumn()'s doc comment for the full story and
+ * deleteRowSync() for the cascade that keeps this safe. Omitted (or null) for an ordinary "this file WAS itself
+ * imported" record, which has no such dependency.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} sourcePath Absolute path to the discovered source file
  * @param {number} mtimeMs The file's mtimeMs as of the pass that just processed it
+ * @param {string|null} [duplicateOf] Character id this source file was recognized as a duplicate of, if any
  * @returns {Promise<void>}
  */
-export async function setLocalImportMtime(directories, sourcePath, mtimeMs) {
+export async function setLocalImportMtime(directories, sourcePath, mtimeMs, duplicateOf = null) {
     const entry = await getEntry(directories);
     if (!entry) return;
 
     entry.db.run(
-        `INSERT INTO local_import_mtimes (source_path, mtime_ms)
-         VALUES (@sourcePath, @mtimeMs)
-         ON CONFLICT(source_path) DO UPDATE SET mtime_ms = excluded.mtime_ms`,
-        { sourcePath, mtimeMs },
+        `INSERT INTO local_import_mtimes (source_path, mtime_ms, duplicate_of)
+         VALUES (@sourcePath, @mtimeMs, @duplicateOf)
+         ON CONFLICT(source_path) DO UPDATE SET mtime_ms = excluded.mtime_ms, duplicate_of = excluded.duplicate_of`,
+        { sourcePath, mtimeMs, duplicateOf },
     );
 }
 
@@ -2778,14 +2823,17 @@ const DEFAULT_QUERY_LIMIT = 500;
 
 /**
  * The groups-side WHERE clause for queryEntities() below - the group equivalent of buildWhereClause(), restricted
- * to what a group row actually has. Two filter keys buildWhereClause() accepts are deliberately absent here,
- * both by owner decision (see the design doc extension this module's header references):
+ * to what a group row actually has. Two filter keys buildWhereClause() accepts are deliberately absent from this
+ * function's own parameter list:
  *   - `world`: groups have no lorebook binding, so a `filter.world` request simply never narrows the groups arm
  *     of a merged query - a `{filter: {world: 'X', includeGroups: true}}` request matches world-X characters
  *     PLUS every group that otherwise passes the rest of the filter, not "nothing, since no group has a world".
- *   - `search`: queryEntities() is never called at all when `filter.search` is non-empty - see that function's
- *     own header for why (the /query route in characters.js routes a search request through the pre-existing
- *     queryCharacters() instead, characters-only, and only wraps the result in `{type, item}` shape).
+ *   - `search`: not because a search request skips this table - groups have their own full-text index
+ *     (groups-search-index.js) and a `filter.search` + `filter.includeGroups: true` request on `/query` does
+ *     reach queryEntities() below now. It's absent from *this function's* parameter list because the /query
+ *     route (characters.js) already resolves `filter.search` into a plain `ids` list (via searchCharacterIds()/
+ *     searchGroupIds(), merged) before calling queryEntities() - by the time this function runs, "search" has
+ *     already become an ordinary id restriction, same shape as an explicit `filter.ids` request.
  * @param {object} filter
  * @param {{ include?: string[], exclude?: string[], mode?: 'and'|'or' }} [filter.tags]
  * @param {boolean} [filter.fav]
@@ -2850,11 +2898,18 @@ function buildGroupWhereClause({ tags, fav, excludeIds, ids } = {}) {
  * `ORDER BY RANDHASH(id, ?)` - a plain `ORDER BY date_added` would have worked unwrapped, but `RANDHASH(id, ?)`
  * would not, and this function needs one code path that works for both).
  *
- * NEVER called when `filter.search` is non-empty (see the /query route in characters.js) - groups have no
- * full-text index and this extension does not add one (owner decision), so a search request is answered entirely
- * by queryCharacters(), characters-only, with the result wrapped into `{type: 'character', item}` shape by the
- * caller. That also means this function never needs an `idOrder`/`sortField === 'search'` branch the way
- * queryCharacters() does.
+ * DOES get called when `filter.search` is non-empty and `filter.includeGroups: true` (see the /query route in
+ * characters.js) - an earlier version of this comment claimed groups have no full-text index and that search
+ * therefore never reached this function, attributing that scope boundary to an "owner decision". That was never
+ * actually decided by the owner (traced via git history to 3f33c5611's commit message, which introduced the
+ * claim with no linked discussion - a prior agent's own unilateral call, written up as a decision someone else
+ * made) and it was also factually wrong about the codebase: groups-search-index.js already builds a persistent
+ * tantivy/FTS5 index for groups, the same infrastructure characters-search-index.js provides, and the
+ * pre-existing `/all` route's own search handling already uses it. The /query route resolves `filter.search`
+ * into a merged, relevance-ordered `ids` list from both indexes (searchCharacterIds()/searchGroupIds()) before
+ * calling this function - this function itself never needs an `idOrder`/`sortField === 'search'` branch (unlike
+ * queryCharacters()) because the caller handles relevance ordering in JS when `sort.field === 'search'`, the
+ * same way it already resolves the id list itself.
  *
  * Characters are re-materialized from `shallow_json` exactly as queryCharacters() already does. Groups are NOT
  * hydrated here at all - only `id`/`type` come back for a group row, bounded to this page's rows. The caller

@@ -303,3 +303,35 @@ export async function searchGroups(handle, directories, searchTerm, maxRows, fav
         backend: engine.sqlite.kind,
     };
 }
+
+/**
+ * Fuzzy-searches a user's groups and returns just the matched ids (plus their scores), in relevance order - the
+ * id-only counterpart to searchGroups() above, mirroring characters-search-index.js's searchCharacterIds() for
+ * the same reason: `POST /api/characters/query`'s `filter.search` + `filter.includeGroups` handling
+ * (characters.js) resolves group rows itself from the phase-1 metadata store (queryEntities()), it doesn't need
+ * this function's full group JSON - just which ids matched and how they rank, to intersect/merge against the
+ * candidate set the same way the characters side already does.
+ *
+ * Unlike characters-search-index.js's `searchCharacterIds()`, this one does not skip a per-hit disk read to get
+ * there - it just discards `item` from `searchGroups()`'s own already-in-memory result. At the group counts this
+ * install actually has (tens, not tens of thousands - see the design note this function's caller cites), that's
+ * not worth a second, parallel id-only tantivy/SQLite query path; `searchCharacterIds()`'s id-only path exists
+ * because characters-search-index.js's own header documents a *measured* per-hit disk-read cost at real character
+ * library sizes (24k+ cards) that groups, structurally, never reach the way characters can (a group is hand
+ * -created, not imported in bulk from card packs).
+ * @param {string} handle User handle
+ * @param {import('../users.js').UserDirectoryList} directories User directories
+ * @param {string} searchTerm Search term
+ * @param {number} [maxRows] Forwarded to searchGroups().
+ * @param {boolean} [favOnly] Forwarded to searchGroups().
+ * @returns {Promise<{ ids: string[], scoresById: Map<string, number>, total: number, backend: 'tantivy' | 'native' | 'wasm' | 'unavailable' }>}
+ */
+export async function searchGroupIds(handle, directories, searchTerm, maxRows, favOnly) {
+    const { results, total, backend } = await searchGroups(handle, directories, searchTerm, maxRows, favOnly);
+    return {
+        ids: results.map(r => r.item.id),
+        scoresById: new Map(results.map(r => [r.item.id, r.score])),
+        total,
+        backend,
+    };
+}

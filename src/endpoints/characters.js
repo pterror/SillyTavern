@@ -28,7 +28,7 @@ import { ByafParser } from '../byaf.js';
 import { CharXParser, persistCharXAssets } from '../charx.js';
 import cacheBuster from '../middleware/cacheBuster.js';
 import { searchCharacters, searchCharacterIds, rebuildCharacterSearchIndex, SEARCH_ID_CAP } from './characters-search-index.js';
-import { searchGroups } from './groups-search-index.js';
+import { searchGroups, searchGroupIds } from './groups-search-index.js';
 import { getGroupsData, getGroupsByIds } from './groups.js';
 import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, setCharacterFav, getCharacterFavsByIds } from '../character-metadata-db.js';
 
@@ -1808,13 +1808,15 @@ const MAX_QUERY_PAGE_SIZE = 2000;
  * exactly what it always has; this is the compatibility bar the implementation is built to hold, not a
  * best-effort goal.
  *
- * `filter.search` + `filter.includeGroups: true`: groups have no full-text index and this extension does not add
- * one (owner decision - see character-metadata-db.js's queryEntities() header). A non-empty `filter.search`
- * therefore always routes through the pre-existing, characters-only queryCharacters() call below regardless of
- * `includeGroups` - the result is simply wrapped into `{type: 'character', item}` shape when `includeGroups` was
- * requested, so the response envelope stays consistent, but no group can ever appear in a search result. Not an
- * error - matching the existing `sort.field: 'search'` rule's own "requires, doesn't merely permit" documentation
- * style, this is a hard scope boundary, not a fallback.
+ * `filter.search` + `filter.includeGroups: true`: groups DO have a full-text index (groups-search-index.js,
+ * already used by the pre-existing `/all` route's own `search`+`includeGroups` handling) - an earlier version of
+ * this comment claimed otherwise and called it an "owner decision"; that characterization was never actually
+ * made by the owner (traced via git history/commit message on 3f33c5611, which introduced the claim - it
+ * reads as a prior agent's own unilateral scope call, written up as if it were a decision someone else made).
+ * A non-empty `filter.search` with `includeGroups: true` now searches both indexes (searchCharacterIds()/
+ * searchGroupIds()) and merges the two relevance-ordered id sets before resolving rows from queryEntities()'s
+ * UNION ALL, the same characters+groups merge-by-score shape the `/all` route's paginateSearchResults() already
+ * established - see the route body below.
  *
  * `filter.tags.include` composes with `includeGroups` for free (no separate mechanism): character_tags and
  * group_tags are both indexed by tag_id, so a `{filter: {tags: {include: [folderId]}}, includeGroups: true}`
@@ -1824,6 +1826,35 @@ const MAX_QUERY_PAGE_SIZE = 2000;
  * @param  {import("express").Response} response The HTTP response object.
  * @return {void}
  */
+/**
+ * Turns queryEntities()'s (character-metadata-db.js) raw UNION ALL rows into the `/query` route's wire shape -
+ * `{type: 'character', item}` rows already carry their full item from `shallow_json`, but a group row only
+ * carries its own SQL-side columns (`id`/`fav`/`date_added`/`date_last_chat`/`chat_size`) and needs its actual
+ * group JSON hydrated separately (getGroupsByIds() - bounded to just this result's group ids, never a
+ * whole-directory read) before it can go out. Shared by the plain browse/sort `includeGroups` path and the
+ * search+`includeGroups` path below so the hydration/stamping/dropped-group logic can't drift between the two.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {{type: 'character'|'group', id: string, fav: boolean, date_added: number, date_last_chat: number, chat_size: number, item: object|null}[]} rows
+ * @returns {{type: 'character'|'group', item: object}[]}
+ */
+function hydrateEntityRows(directories, rows) {
+    const groupIds = rows.filter(r => r.type === 'group').map(r => r.id);
+    const groupsById = groupIds.length > 0 ? getGroupsByIds(directories, groupIds) : {};
+    return rows.map(r => {
+        if (r.type === 'character') {
+            return { type: 'character', item: r.item };
+        }
+        const group = groupsById[r.id];
+        if (!group) {
+            // The metadata row exists but the group's JSON file doesn't (deleted out from under a stale row, or
+            // unreadable) - drop it rather than shipping a null item the client isn't expecting. Rare and
+            // self-correcting: the next /delete or /edit reconciles the metadata row against reality.
+            return null;
+        }
+        return { type: 'group', item: { ...group, fav: r.fav, date_added: r.date_added, date_last_chat: r.date_last_chat, chat_size: r.chat_size } };
+    }).filter(Boolean);
+}
+
 router.post('/query', async function (request, response) {
     try {
         const body = request.body ?? {};
@@ -1879,41 +1910,110 @@ router.post('/query', async function (request, response) {
         // `~` prefix, never a bare-but-silently-truncated number).
         let approxTotal = false;
 
+        // Populated only in the hasSearch+includeGroups branch below - the merged relevance order both types'
+        // rows get JS-sorted by when sort.field === 'search' (no SQL column for text relevance exists, same
+        // reason queryCharacters()'s own 'search' branch reorders in JS instead of pushing it to SQL).
+        let combinedScoresById = null;
+
         if (hasSearch) {
             const handle = request.user.profile.handle;
             // 'search' sort only needs a relevance-ordered page-sized window (runIdSearch()'s own doc comment on
             // why tantivy's payload shrink makes this cheap either way); any other sort needs the *whole*
             // matched candidate set (bounded by SEARCH_ID_CAP) since ordering doesn't come from relevance rank -
             // see SEARCH_ID_CAP's doc comment (characters-search-index.js) for why sort:'random' + search is
-            // exactly the case this matters for (decision 23).
+            // exactly the case this matters for (decision 23). Applied per-source (characters and, when
+            // includeGroups, groups) rather than as a shared budget - same as the pre-existing `/all` route's
+            // `searchFetchLimit`, reused unmodified for both searchCharacters()/searchGroups() calls there.
             const idFetchCap = sort.field === 'search' ? offset + pageSize : SEARCH_ID_CAP;
             const favOnly = filter.fav === true;
             const searchResult = await searchCharacterIds(handle, request.user.directories, searchTerm, idFetchCap, favOnly);
-            searchBackend = searchResult.backend;
 
             // filter.ids (an explicit "resolve exactly these ids" request) and filter.search both restrict the
             // candidate set - when both are present they intersect, not override each other. Order is preserved
             // from the search engine's relevance ranking either way (queryCharacters()'s 'search' branch uses
             // this same array as idOrder; other sort fields ignore order here and let SQL ORDER BY decide it).
+            // Applied to both types when includeGroups is active - filter.ids restricts the result to specific
+            // rows regardless of type, so it isn't just a characters-only restriction once groups are in play.
             const explicitIds = Array.isArray(filter.ids) ? new Set(filter.ids) : null;
             const effectiveIds = explicitIds ? searchResult.ids.filter(id => explicitIds.has(id)) : searchResult.ids;
 
-            approxTotal = searchResult.total > idFetchCap;
-            queryParams = { ...queryParams, ids: effectiveIds, idOrder: searchResult.ids };
+            let groupSearchResult = { ids: [], scoresById: new Map(), total: 0, backend: 'tantivy' };
+            let effectiveGroupIds = [];
+            if (includeGroups) {
+                groupSearchResult = await searchGroupIds(handle, request.user.directories, searchTerm, idFetchCap, favOnly);
+                effectiveGroupIds = explicitIds ? groupSearchResult.ids.filter(id => explicitIds.has(id)) : groupSearchResult.ids;
+            }
 
-            if (effectiveIds.length === 0) {
+            // Character and group search resolve their engine tier independently but always agree in practice
+            // (both go through the same process-wide resolveSearchEngine() cache) - report whichever is worse,
+            // matching the `/all` route's identical BACKEND_SEVERITY comparison, in case they ever don't.
+            const BACKEND_SEVERITY = { tantivy: 0, native: 1, wasm: 2, unavailable: 3 };
+            searchBackend = includeGroups && BACKEND_SEVERITY[groupSearchResult.backend] > BACKEND_SEVERITY[searchResult.backend]
+                ? groupSearchResult.backend
+                : searchResult.backend;
+
+            approxTotal = searchResult.total > idFetchCap || (includeGroups && groupSearchResult.total > idFetchCap);
+
+            if (effectiveIds.length === 0 && effectiveGroupIds.length === 0) {
                 const rev = (await queryCharacters(request.user.directories, { ids: [], wantRows: false, wantTotal: false }))?.rev ?? 0;
                 const payload = { rev, searchBackend };
                 if (wantRows) payload.rows = [];
                 if (wantTotal) payload.total = 0;
                 return response.send(payload);
             }
+
+            if (includeGroups) {
+                // Groups have their own full-text index (groups-search-index.js) - a search+includeGroups
+                // request resolves both id sets, then answers from queryEntities()'s UNION ALL restricted to
+                // their union, instead of the characters-only queryCharacters() path below.
+                combinedScoresById = new Map([...searchResult.scoresById, ...groupSearchResult.scoresById]);
+                const combinedIds = [...effectiveIds, ...effectiveGroupIds];
+                const entityParams = {
+                    tags: filter.tags, fav: filter.fav, excludeIds: filter.excludeIds,
+                    ids: combinedIds, wantRows, wantTotal,
+                };
+                if (sort.field === 'search') {
+                    // No SQL column for relevance - fetch every matched row unbounded (LIMIT sized to the full
+                    // candidate set, itself already bounded per-source by idFetchCap above) so the JS reorder+
+                    // slice below sees the true top-K, not an arbitrary id-ordered window sliced before relevance
+                    // was ever applied. Mirrors queryCharacters()'s own 'search' branch (character-metadata-db.js).
+                    entityParams.offset = 0;
+                    entityParams.limit = combinedIds.length;
+                } else {
+                    // A non-relevance sort composes with search narrowing (decision 23) - SQL can do the
+                    // ORDER BY/LIMIT/OFFSET directly across the UNION once restricted to the matched id set, no
+                    // JS reorder needed.
+                    entityParams.sortField = sort.field;
+                    entityParams.sortOrder = sort.order;
+                    entityParams.seed = seed;
+                    entityParams.offset = offset;
+                    entityParams.limit = pageSize;
+                }
+                const result = await queryEntities(request.user.directories, entityParams);
+                if (result === null) {
+                    return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
+                }
+
+                let rows = result.rows;
+                if (sort.field === 'search' && wantRows) {
+                    // No SQL column for relevance - queryEntities() above returned every matched row (id-order
+                    // only), reorder by the merged score map and slice here in JS, mirroring
+                    // queryCharacters()'s own 'search' branch.
+                    rows = rows.slice().sort((a, b) => combinedScoresById.get(a.id) - combinedScoresById.get(b.id)).slice(offset, offset + pageSize);
+                }
+
+                const payload = { rev: result.rev };
+                if (wantTotal) payload.total = approxTotal ? `~${result.total}` : result.total;
+                if (wantRows) payload.rows = hydrateEntityRows(request.user.directories, rows);
+                if (searchBackend !== undefined) payload.searchBackend = searchBackend;
+                return response.send(payload);
+            }
+
+            queryParams = { ...queryParams, ids: effectiveIds, idOrder: searchResult.ids };
         }
 
-        // filter.includeGroups (owner decision extending the design doc's §5 contract to groups - see this
-        // route's own doc comment above): a search request always answers from queryCharacters() (characters-only
-        // - groups have no full-text index, see queryEntities()'s header), so only a non-search request with
-        // includeGroups actually reaches queryEntities()'s UNION ALL path.
+        // A non-search request with includeGroups reaches queryEntities()'s UNION ALL path directly (the
+        // hasSearch+includeGroups case above already returned before reaching here).
         if (!hasSearch && includeGroups) {
             const result = await queryEntities(request.user.directories, queryParams);
             if (result === null) {
@@ -1922,28 +2022,7 @@ router.post('/query', async function (request, response) {
 
             const payload = { rev: result.rev };
             if (wantTotal) payload.total = result.total;
-            if (wantRows) {
-                // Hydrate just this page's group ids (getGroupsByIds() - bounded by pageSize, never a
-                // whole-directory read) and stamp queryEntities()'s own fav/date_added/date_last_chat/chat_size
-                // onto each one, so what's displayed always agrees with what the page was actually sorted by
-                // (see queryEntities()'s header on why hydration doesn't re-derive these from a live stat).
-                const groupIds = result.rows.filter(r => r.type === 'group').map(r => r.id);
-                const groupsById = groupIds.length > 0 ? getGroupsByIds(request.user.directories, groupIds) : {};
-                payload.rows = result.rows.map(r => {
-                    if (r.type === 'character') {
-                        return { type: 'character', item: r.item };
-                    }
-                    const group = groupsById[r.id];
-                    if (!group) {
-                        // The metadata row exists but the group's JSON file doesn't (deleted out from under a
-                        // stale row, or unreadable) - drop it rather than shipping a null item the client isn't
-                        // expecting. Rare and self-correcting: the next /delete or /edit reconciles the metadata
-                        // row against reality.
-                        return null;
-                    }
-                    return { type: 'group', item: { ...group, fav: r.fav, date_added: r.date_added, date_last_chat: r.date_last_chat, chat_size: r.chat_size } };
-                }).filter(Boolean);
-            }
+            if (wantRows) payload.rows = hydrateEntityRows(request.user.directories, result.rows);
             return response.send(payload);
         }
 
@@ -1953,8 +2032,12 @@ router.post('/query', async function (request, response) {
             return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
         }
 
+        // includeGroups is always false by the time control reaches here - both the hasSearch+includeGroups
+        // branch (queryEntities()'s UNION ALL, above) and the !hasSearch+includeGroups branch each already
+        // returned their own response before this point, so this is unconditionally the characters-only,
+        // bare-Character[] shape (search or not).
         const payload = { rev: result.rev };
-        if (wantRows) payload.rows = includeGroups ? result.rows.map(item => ({ type: 'character', item })) : result.rows;
+        if (wantRows) payload.rows = result.rows;
         if (wantTotal) payload.total = approxTotal ? `~${result.total}` : result.total;
         if (searchBackend !== undefined) payload.searchBackend = searchBackend;
         return response.send(payload);
