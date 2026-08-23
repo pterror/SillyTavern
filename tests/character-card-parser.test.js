@@ -166,3 +166,72 @@ describe('readCharaChunkPristine() - recovering a poisoned row\'s pre-mutation c
         expect(() => cardParser.readCharaChunkPristine(BLANK_PNG)).toThrow();
     });
 });
+
+describe('computeAvatarIdentityHashFromChunks() - avatar-identity fingerprint', () => {
+    test('is stable across a tEXt-chunk-only edit (same pixels, different embedded card data)', () => {
+        const withCardA = cardParser.write(BLANK_PNG, JSON.stringify({ name: 'Alice' }));
+        const withCardB = cardParser.write(BLANK_PNG, JSON.stringify({ name: 'Bob', spec: 'chara_card_v3', extra: 'field' }));
+
+        const hashA = cardParser.computeAvatarIdentityHashFromChunks(extract(new Uint8Array(withCardA)));
+        const hashB = cardParser.computeAvatarIdentityHashFromChunks(extract(new Uint8Array(withCardB)));
+
+        // Both started from the exact same BLANK_PNG pixels - only the embedded tEXt card data differs -
+        // splicing only ever touches tEXt chunks (see spliceCardDataIntoChunks()), so IDAT is untouched by
+        // either write, and the avatar-identity hash must agree despite the two files' bytes differing overall.
+        expect(hashA).toBe(hashB);
+    });
+
+    test('differs when the actual pixel data (IDAT) differs, even with identical embedded card data', () => {
+        const cardData = JSON.stringify({ name: 'Same Text' });
+
+        const chunksA = extract(new Uint8Array(BLANK_PNG));
+        const withCardA = cardParser.write(BLANK_PNG, cardData);
+
+        // A genuinely different image - IDAT bytes mutated - same fixture shape used elsewhere in this suite
+        // for "these are actually different pictures" tests.
+        const differentImageChunks = extract(new Uint8Array(BLANK_PNG));
+        const idat = differentImageChunks.find(c => c.name === 'IDAT');
+        idat.data = new Uint8Array(idat.data);
+        idat.data[0] ^= 0xff;
+        const differentImage = Buffer.from(encode(differentImageChunks));
+        const withCardB = cardParser.write(differentImage, cardData);
+
+        const hashA = cardParser.computeAvatarIdentityHashFromChunks(extract(new Uint8Array(withCardA)));
+        const hashB = cardParser.computeAvatarIdentityHashFromChunks(extract(new Uint8Array(withCardB)));
+
+        expect(hashA).not.toBe(hashB);
+        // Sanity: chunksA is unused directly (extracted only to document the starting point above) - silence
+        // an otherwise-unused-variable concern without pretending it's asserted on.
+        expect(chunksA.length).toBeGreaterThan(0);
+    });
+
+    test('computeDefaultAvatarIdentityHash() is cached and matches computing it from the same asset directly', async () => {
+        const fs = await import('node:fs');
+        const path = await import('node:path');
+        const { fileURLToPath } = await import('node:url');
+        const { DEFAULT_AVATAR_PATH } = await import('../src/constants.js');
+        // DEFAULT_AVATAR_PATH is repo-root-relative (see other test files' own cwd notes on this same
+        // constant) - resolved here against this test file's own location rather than process.cwd(), so this
+        // test's own expected-value computation doesn't depend on which directory jest happened to be invoked
+        // from.
+        const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+        const buf = fs.readFileSync(path.join(repoRoot, DEFAULT_AVATAR_PATH));
+        const expected = cardParser.computeAvatarIdentityHashFromChunks(extract(new Uint8Array(buf)));
+
+        // computeDefaultAvatarIdentityHash() itself (character-card-parser.js) reads DEFAULT_AVATAR_PATH
+        // relative to process.cwd() - correct in production (the real server always launches from the repo
+        // root) but sensitive to whatever cwd another test file running in this same worker process left
+        // behind (several already chdir() as part of their own DEFAULT_AVATAR_PATH-relative-read setup - see
+        // characters-cross-reflink.test.js/local-import-scan.test.js's own notes on this same constant). This
+        // test owns that dependency locally rather than assuming a cwd it doesn't control.
+        const originalCwd = process.cwd();
+        process.chdir(repoRoot);
+        try {
+            expect(cardParser.computeDefaultAvatarIdentityHash()).toBe(expected);
+            // Calling it again returns the exact same (cached) value, not a fresh recomputation that happens to agree.
+            expect(cardParser.computeDefaultAvatarIdentityHash()).toBe(expected);
+        } finally {
+            process.chdir(originalCwd);
+        }
+    });
+});

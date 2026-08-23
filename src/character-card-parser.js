@@ -8,6 +8,68 @@ import encode from './png/encode.js';
 import extract from 'png-chunks-extract';
 import PNGtext from 'png-chunk-text';
 import { loadReflinkModule } from './reflink-support.js';
+import { DEFAULT_AVATAR_PATH } from './constants.js';
+
+/**
+ * sha256 over a PNG's concatenated IDAT chunk payload bytes, in file order - see character-metadata-db.js's
+ * SCHEMA_SQL comment on `avatar_identity_hash` for the full rationale. Deliberately IDAT-payload bytes (the
+ * still-compressed pixel stream, exactly as extract() already handed back to every other chunk-list consumer
+ * in this module), not a full decode-to-pixels hash: this fork already tried "decode/re-encode the avatar on
+ * every write" once (the old unconditional Jimp re-encode this module's write() header describes retiring)
+ * and it was a real, removed cost - reintroducing a full zlib-inflate+unfilter pass here, unconditionally, on
+ * every content-identity-hash computation across an 80k+-character corpus would be the same regression
+ * again. IDAT-payload hashing is cheap (the chunk list is already extracted for every caller of this
+ * function - no extra I/O or decode step) and is stable across exactly the class of encoder-side change this
+ * feature was motivated by (2026-08: a copy-loop bug + CRC library swap that changed re-encoded PNGs' exact
+ * output bytes without touching pixel content) - both of those altered how OTHER chunks/CRCs were
+ * reconstructed, never the IDAT payload itself, which encode.js writes through unchanged when the source
+ * chunk list's IDAT entries are reused verbatim (see spliceCardDataIntoChunks(), which only ever touches tEXt
+ * chunks). It is NOT immune to a genuine re-encode that picks different zlib compression/filter settings for
+ * identical pixels - that would require a real decode-to-pixels hash, deliberately not implemented here for
+ * the cost reason above; a future need for that stronger guarantee should introduce it as an opt-in, not
+ * fold it into this hash silently.
+ * @param {Array<{name: string, data: Uint8Array}>} chunks Already-extracted chunk list (read-only - never
+ * mutated).
+ * @returns {string} sha256 hex digest
+ */
+export function computeAvatarIdentityHashFromChunks(chunks) {
+    const hash = crypto.createHash('sha256');
+    for (const chunk of chunks) {
+        if (chunk.name === 'IDAT') hash.update(chunk.data);
+    }
+    return hash.digest('hex');
+}
+
+/**
+ * computeAvatarIdentityHashFromChunks() for the one fixed, bundled asset (constants.js's DEFAULT_AVATAR_PATH)
+ * every json/yaml import without its own embedded image is written through - genuinely the same avatar bytes
+ * every time (this app never mutates that asset at runtime), so this is computed at most once per process and
+ * cached forever, not re-read/re-extracted/re-hashed per candidate the way a real per-character avatar is.
+ * @returns {string} sha256 hex digest
+ */
+export function computeDefaultAvatarIdentityHash() {
+    if (defaultAvatarIdentityHashCache === null) {
+        const buf = fs.readFileSync(DEFAULT_AVATAR_PATH);
+        defaultAvatarIdentityHashCache = computeAvatarIdentityHashFromChunks(extract(new Uint8Array(buf)));
+    }
+    return defaultAvatarIdentityHashCache;
+}
+/** @type {string | null} */
+let defaultAvatarIdentityHashCache = null;
+
+/**
+ * computeAvatarIdentityHashFromChunks() over an already-built PNG buffer that has no pre-existing extracted
+ * chunk list yet - characters.js's writeCharacterData() slow path (Buffer upload, or a crop that legitimately
+ * changes pixels, so there's no on-disk `sourcePath` chunk list to reuse the way writeCardFromChunks() does).
+ * Pays one extract() over `image` - the same one-extra-extract cost every other consumer of this module works
+ * to avoid on the HOT path, but this function is only ever reached off the already-uncommon crop/buffer-upload
+ * branch, not the ordinary reflink fast path.
+ * @param {Buffer} image
+ * @returns {string} sha256 hex digest
+ */
+export function computeAvatarIdentityHashFromImageBuffer(image) {
+    return computeAvatarIdentityHashFromChunks(extract(new Uint8Array(image)));
+}
 
 /**
  * Writes Character metadata to a PNG image buffer.
@@ -149,8 +211,17 @@ export function readFromChunks(chunks) {
  * @returns {string} Character data, exactly as it was written into the 'chara' chunk (or the best available
  * fallback chunk, if 'chara' itself is absent)
  */
-export const readCharaChunkPristine = (image) => {
-    const chunks = extract(new Uint8Array(image));
+/**
+ * The chunk-list half of readCharaChunkPristine() below, factored out the same way spliceCardDataIntoChunks()
+ * was - so a caller that needs BOTH the pristine text AND something else derived from this same PNG's chunk
+ * list (character-metadata-db.js's backfillContentIdentityHashes(), which now also backfills
+ * avatar_identity_hash from computeAvatarIdentityHashFromChunks() of the exact same already-extracted list -
+ * see that function's own call site) pays extract() once instead of once per derived value.
+ * @param {Array<{name: string, data: Uint8Array}>} chunks Already-extracted chunk list (read-only - never
+ * mutated).
+ * @returns {string} Character data, same contract as readCharaChunkPristine().
+ */
+export function readCharaChunkPristineFromChunks(chunks) {
     const textChunks = chunks.filter((chunk) => chunk.name === 'tEXt').map((chunk) => PNGtext.decode(chunk.data));
 
     if (textChunks.length === 0) {
@@ -171,7 +242,12 @@ export const readCharaChunkPristine = (image) => {
 
     console.error('PNG metadata does not contain any character data.');
     throw new Error('No PNG metadata.');
-};
+}
+
+/** @param {Buffer} image PNG image buffer
+ * @returns {string} Character data, exactly as it was written into the 'chara' chunk (or the best available
+ * fallback chunk, if 'chara' itself is absent) */
+export const readCharaChunkPristine = (image) => readCharaChunkPristineFromChunks(extract(new Uint8Array(image)));
 
 /**
  * Promise-based counterpart to parse(), reading a PNG off disk and returning its PRISTINE 'chara' chunk content
@@ -318,7 +394,10 @@ function findReflinkablePrefixOffsetFromChunks(chunks) {
  * @param {string|null} [crossReflinkCandidatePath] Absolute path to a DIFFERENT character's current file that
  * a caller believes might share content with this write (see writeCardFromChunks()'s own doc comment for the
  * verification this gets put through before ever being trusted).
- * @returns {Promise<{reflinked: boolean}>} Whether the reflink-preserving fast path was used.
+ * @returns {Promise<{reflinked: boolean, avatarIdentityHash: string}>} Whether the reflink-preserving fast
+ * path was used, and computeAvatarIdentityHashFromChunks() of the image actually written - see
+ * writeCardFromChunks()'s own doc comment on why this is always safe to compute from `chunks` up front,
+ * regardless of which of the three write branches below ends up taking.
  */
 export async function writeCardToFile(sourcePath, destPath, data, crossReflinkCandidatePath = null) {
     const srcBuf = await fs.promises.readFile(sourcePath);
@@ -376,9 +455,21 @@ export async function writeCardToFile(sourcePath, destPath, data, crossReflinkCa
  * edit to the candidate later runs through this exact same clone-into-temp-then-rename shape, so it only
  * ever replaces the candidate's OWN inode, never mutates bytes `destPath` is now sharing extents with (COW
  * on top of "never write in place" - two independent safety properties, not one relying on the other).
- * @returns {Promise<{reflinked: boolean}>} Whether the reflink-preserving fast path was used.
+ * @returns {Promise<{reflinked: boolean, avatarIdentityHash: string}>} Whether the reflink-preserving fast
+ * path was used, and computeAvatarIdentityHashFromChunks() of the image actually written.
  */
 export async function writeCardFromChunks(sourcePath, destPath, srcBuf, chunks, data, crossReflinkCandidatePath = null) {
+    // Computed from `chunks` BEFORE spliceCardDataIntoChunks() mutates it below, and correct regardless of
+    // which of the three branches beneath this ends up writing: spliceCardDataIntoChunks() only ever touches
+    // tEXt chunks (see its own doc comment), so `chunks`' IDAT entries - and therefore this hash - are exactly
+    // the same whether the eventual write reflinks from `sourcePath`, reflinks from `crossReflinkCandidatePath`
+    // (only ever taken after byte-verifying `outputImage`'s shared prefix against that candidate - see below -
+    // so its stored bytes are provably a match for `outputImage`'s own, i.e. for THIS hash, up to the verified
+    // prefix; IDAT sits inside that prefix on every real card layout this app produces, chara/ccv3 tEXt chunks
+    // always being spliced in immediately before IEND), or falls all the way through to a full write of
+    // `outputImage` itself.
+    const avatarIdentityHash = computeAvatarIdentityHashFromChunks(chunks);
+
     const offset = findReflinkablePrefixOffsetFromChunks(chunks);
     spliceCardDataIntoChunks(chunks, data);
     const outputImage = Buffer.from(encode(chunks));
@@ -392,7 +483,7 @@ export async function writeCardFromChunks(sourcePath, destPath, srcBuf, chunks, 
 
             if (crossVerified) {
                 await writeSharedPrefixThenAppend(crossReflinkCandidatePath, destPath, outputImage, crossOffset);
-                return { reflinked: true };
+                return { reflinked: true, avatarIdentityHash };
             }
         } catch (error) {
             console.debug(`character-card-parser: cross-character reflink candidate ${crossReflinkCandidatePath} unusable for ${destPath}, falling back.`, /** @type {any} */ (error)?.message ?? error);
@@ -405,14 +496,14 @@ export async function writeCardFromChunks(sourcePath, destPath, srcBuf, chunks, 
     if (prefixVerified) {
         try {
             await writeSharedPrefixThenAppend(sourcePath, destPath, outputImage, offset);
-            return { reflinked: true };
+            return { reflinked: true, avatarIdentityHash };
         } catch (error) {
             console.debug(`character-card-parser: reflink-preserving write failed for ${sourcePath} -> ${destPath}, falling back to a full write.`, /** @type {any} */ (error)?.message ?? error);
         }
     }
 
     writeFileAtomicSync(destPath, outputImage);
-    return { reflinked: false };
+    return { reflinked: false, avatarIdentityHash };
 }
 
 /**

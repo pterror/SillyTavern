@@ -169,8 +169,8 @@ export class LocalImportWorkerPool {
      * re-read inside the worker, so the worker never wastes CPU computing an identity hash the config would
      * just have discarded on the main thread anyway.
      * @returns {Promise<
-     *   { contentHash: string, jsonClassification: string | null, identityHash: string | null, needsWrite: false } |
-     *   { contentHash: string, jsonClassification: null, identityHash: string | null, needsWrite: true, rawText: string,
+     *   { contentHash: string, jsonClassification: string | null, identityHash: string | null, avatarIdentityHash: string | null, needsWrite: false } |
+     *   { contentHash: string, jsonClassification: null, identityHash: string | null, avatarIdentityHash: string | null, needsWrite: true, rawText: string,
      *     finish: (outcome: { type: 'no-write' } | { type: 'write', destPath: string, data: string }) => Promise<{ outcome: string, reflinked?: boolean }> }
      * >}
      */
@@ -190,6 +190,7 @@ export class LocalImportWorkerPool {
                         contentHash: result.contentHash,
                         jsonClassification: result.jsonClassification,
                         identityHash: result.identityHash,
+                        avatarIdentityHash: result.avatarIdentityHash,
                         needsWrite: true,
                         rawText: result.rawText,
                         finish: (outcome) => this._finish(id, outcome),
@@ -200,6 +201,7 @@ export class LocalImportWorkerPool {
                         contentHash: result.contentHash,
                         jsonClassification: result.jsonClassification,
                         identityHash: result.identityHash,
+                        avatarIdentityHash: result.avatarIdentityHash,
                         needsWrite: false,
                     });
                 },

@@ -98,7 +98,13 @@ describe('writeCardToFile', () => {
 
         const result = await cardParser.writeCardToFile(sourcePath, destPath, newData);
 
-        expect(result).toEqual({ reflinked: true });
+        expect(result.reflinked).toBe(true);
+        // Splicing only touches tEXt chunks - IDAT (and therefore the avatar-identity hash) is unaffected by
+        // the JSON edit, so this must match computeAvatarIdentityHashFromChunks() of the ORIGINAL source's own
+        // chunks (a fresh extract() here, not reused, so this assertion doesn't just echo the implementation's
+        // own computation back at itself).
+        const sourceChunks = extract(new Uint8Array(fs.readFileSync(sourcePath)));
+        expect(result.avatarIdentityHash).toBe(cardParser.computeAvatarIdentityHashFromChunks(sourceChunks));
         expect(reflinkFileMock).toHaveBeenCalledTimes(1);
         expect(reflinkFileMock.mock.calls[0][0]).toBe(sourcePath);
 
@@ -122,7 +128,7 @@ describe('writeCardToFile', () => {
 
         const result = await cardParser.writeCardToFile(sourcePath, destPath, newData);
 
-        expect(result).toEqual({ reflinked: false });
+        expect(result.reflinked).toBe(false);
         expect(reflinkFileMock).not.toHaveBeenCalled();
 
         const written = fs.readFileSync(destPath);
@@ -136,7 +142,7 @@ describe('writeCardToFile', () => {
 
         const result = await cardParser.writeCardToFile(sourcePath, destPath, newData);
 
-        expect(result).toEqual({ reflinked: false });
+        expect(result.reflinked).toBe(false);
         const written = fs.readFileSync(destPath);
         expect(JSON.parse(Buffer.from(readTextChunks(written).chara, 'base64').toString('utf8'))).toEqual({ name: 'Ghost 2' });
         // No abandoned temp file from the failed attempt.
@@ -149,7 +155,7 @@ describe('writeCardToFile', () => {
 
         const result = await cardParser.writeCardToFile(sourcePath, destPath, newData);
 
-        expect(result).toEqual({ reflinked: true });
+        expect(result.reflinked).toBe(true);
         const written = fs.readFileSync(destPath);
         expect(JSON.parse(Buffer.from(readTextChunks(written).chara, 'base64').toString('utf8'))).toEqual({ name: 'Fresh' });
     });
@@ -171,7 +177,7 @@ describe('writeCardToFile', () => {
         const newData = JSON.stringify({ name: 'Parity Check 2', spec: 'chara_card_v2', data: { description: 'y'.repeat(500) } });
 
         const result = await cardParser.writeCardToFile(sourcePath, destPath, newData);
-        expect(result).toEqual({ reflinked: true });
+        expect(result.reflinked).toBe(true);
 
         const fastPathOutput = fs.readFileSync(destPath);
         const slowPathOutput = cardParser.write(source, newData);

@@ -418,6 +418,88 @@ describe('content_hash / findCharacterIdByContentHash (bulk-import exact-duplica
     });
 });
 
+describe('avatar_identity_hash / findCharacterIdByIdentityHashes (avatar-aware identity dedup)', () => {
+    test('a write with an avatarIdentityHash records it', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000, null, 'avatarhash1');
+        const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+        expect(row.avatar_identity_hash).toBe('avatarhash1');
+    });
+
+    test('a write with no avatarIdentityHash leaves avatar_identity_hash NULL', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+        expect(row.avatar_identity_hash).toBeNull();
+    });
+
+    test('a later ordinary write (no avatarIdentityHash) does not clobber a previously-recorded value - same COALESCE posture as content_hash', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000, null, 'avatarhash1');
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ name: 'Bob Renamed', data: { name: 'Bob Renamed', tags: [], creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } }), 2000);
+
+        const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+        expect(row.name).toBe('Bob Renamed');
+        expect(row.avatar_identity_hash).toBe('avatarhash1');
+    });
+
+    test('findCharacterIdByIdentityHashes requires BOTH hashes to agree - a content-only match is not enough', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000, null, 'avatarhash1');
+        const contentHash = (await metadataDb.getCharacterMetadataRow(directories, 'Bob.png')).content_identity_hash;
+
+        // Same content_identity_hash, DIFFERENT avatar_identity_hash - a real "same text, different portrait"
+        // shape, not a genuine duplicate for this check's purposes.
+        expect(await metadataDb.findCharacterIdByIdentityHashes(directories, contentHash, 'a-different-avatar-hash')).toBeNull();
+        // Both agree - a real match.
+        expect(await metadataDb.findCharacterIdByIdentityHashes(directories, contentHash, 'avatarhash1')).toBe('Bob.png');
+    });
+
+    test('findCharacterIdByIdentityHashes fails open (null) when the candidate avatar hash is unknown, never falls back to a content-only match', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000, null, 'avatarhash1');
+        const contentHash = (await metadataDb.getCharacterMetadataRow(directories, 'Bob.png')).content_identity_hash;
+
+        expect(await metadataDb.findCharacterIdByIdentityHashes(directories, contentHash, null)).toBeNull();
+    });
+
+    test('migrates an existing (pre-avatar_identity_hash) database in place without losing rows', async () => {
+        const { default: Database } = await import('better-sqlite3');
+        const dbPath = path.join(tempDir, 'character-metadata.sqlite');
+        const rawDb = new Database(dbPath);
+        rawDb.exec(`
+            CREATE TABLE characters (
+                id                     TEXT PRIMARY KEY,
+                name                   TEXT NOT NULL,
+                name_fold              TEXT NOT NULL,
+                fav                    INTEGER NOT NULL,
+                date_added             INTEGER NOT NULL,
+                create_date            TEXT,
+                date_last_chat         INTEGER NOT NULL,
+                chat_size              INTEGER NOT NULL,
+                data_size              INTEGER NOT NULL,
+                file_mtime             INTEGER NOT NULL,
+                world                  TEXT,
+                creator                TEXT,
+                version                TEXT,
+                creator_notes          TEXT,
+                shallow_json           TEXT NOT NULL,
+                content_hash           TEXT,
+                content_identity_hash  TEXT,
+                import_poisoned        INTEGER NOT NULL DEFAULT 1,
+                rev                    INTEGER NOT NULL
+            );
+        `);
+        rawDb.prepare(`
+            INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, rev)
+            VALUES ('Preexisting.png', 'Preexisting', 'preexisting', 0, 500, NULL, 0, 0, 0, 500, NULL, NULL, NULL, NULL, '{}', 1)
+        `).run();
+        rawDb.close();
+
+        const preexisting = await metadataDb.getCharacterMetadataRow(directories, 'Preexisting.png');
+        expect(preexisting).toBeDefined();
+        expect(preexisting.avatar_identity_hash).toBeNull();
+
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000, null, 'avatarhash1');
+        expect(await metadataDb.getCharacterMetadataRow(directories, 'Bob.png')).toEqual(expect.objectContaining({ avatar_identity_hash: 'avatarhash1' }));
+    });
+});
+
 describe('content_identity_hash / import_poisoned (unfuck-the-import: cheap dedup groundwork)', () => {
     test('upsertCharacterFromWrite always computes a content_identity_hash and clears import_poisoned', async () => {
         await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);

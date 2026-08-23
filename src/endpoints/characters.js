@@ -17,7 +17,7 @@ import { AVATAR_WIDTH, AVATAR_HEIGHT, DEFAULT_AVATAR_PATH } from '../constants.j
 import { default as validateAvatarUrlMiddleware, getFileNameValidationFunction, forbiddenRegExp } from '../middleware/validateFileName.js';
 import { deepMerge, humanizedDateTime, tryParse, MemoryLimitedMap, getConfigValue, mutateJsonString, clientRelativePath, getUniqueName, sanitizeSafeCharacterReplacements, getArrayBufferSlice, uuidv7 } from '../util.js';
 import { TavernCardValidator } from '../validator/TavernCardValidator.js';
-import { parse, read, write, writeCardToFile } from '../character-card-parser.js';
+import { parse, read, write, writeCardToFile, computeAvatarIdentityHashFromImageBuffer } from '../character-card-parser.js';
 import { getCharaCardV2, convertToV2, readFromV2, charaFormatData, convertWorldInfoToCharacterBook, unsetPrivateFields, omitInstallLocalFields, omitFavField, computeContentIdentityHash } from '../character-card-normalize.js';
 import { calculateChatSize, calculateDataSize, toShallow } from '../character-shallow.js';
 import { invalidateThumbnail, getThumbnailVersion } from './thumbnails.js';
@@ -239,12 +239,18 @@ async function readCharacterData(inputFile, inputFormat = 'png', precomputedStat
  * @param {string} data The Spec-V2 JSON string that was just written
  * @param {string|null} [contentHash] sha256 hex digest of the raw uploaded source-file bytes, when this write
  * came from `/import` - see writeCharacterData()'s own param and upsertCharacterFromWrite()'s doc comment.
+ * @param {string|null} [avatarIdentityHash] computeAvatarIdentityHashFromChunks() of the image bytes actually
+ * written - callers that just performed a real image write (writeCardToFile()/writeCardFromChunks()'s own
+ * return value, or computeAvatarIdentityHashFromImageBuffer() for the crop/buffer-upload path) pass it
+ * through here; a caller with no new image bytes to report (e.g. /rename, which never touches pixels) omits
+ * it - see upsertCharacterFromWrite()'s own doc comment for why `null` there means "don't touch whatever is
+ * already stored", not "clear it".
  * @returns {Promise<void>}
  */
-export async function fireMetadataUpsertHook(directories, avatar, data, contentHash = null) {
+export async function fireMetadataUpsertHook(directories, avatar, data, contentHash = null, avatarIdentityHash = null) {
     try {
         const stat = await fsPromises.stat(path.join(directories.characters, avatar));
-        await upsertCharacterFromWrite(directories, avatar, data, stat.mtimeMs, contentHash);
+        await upsertCharacterFromWrite(directories, avatar, data, stat.mtimeMs, contentHash, avatarIdentityHash);
     } catch (err) {
         console.error('[character-metadata] Failed to update metadata store after a character write (the reconciler will catch it):', err);
     }
@@ -355,8 +361,8 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
         if (!Buffer.isBuffer(inputFile) && crop === undefined) {
             try {
                 const crossReflinkCandidatePath = await findCrossCharacterReflinkCandidate(request.user.directories, `${outputFile}.png`, data);
-                await writeCardToFile(inputFile, outputImagePath, data, crossReflinkCandidatePath);
-                await fireMetadataUpsertHook(request.user.directories, `${outputFile}.png`, data, contentHash);
+                const { avatarIdentityHash } = await writeCardToFile(inputFile, outputImagePath, data, crossReflinkCandidatePath);
+                await fireMetadataUpsertHook(request.user.directories, `${outputFile}.png`, data, contentHash, avatarIdentityHash);
                 return true;
             } catch (error) {
                 console.warn(`writeCardToFile failed for ${inputFile}, falling back to the full read/re-encode path.`, error);
@@ -367,6 +373,10 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
 
         // Get the chunks
         const outputImage = write(inputImage, data);
+        // Slow path (buffer upload, or a crop that legitimately changes pixels) - no on-disk chunk list to
+        // reuse the way the fast path's writeCardToFile() does, so this pays its own extract() over the
+        // already-built `outputImage` - see computeAvatarIdentityHashFromImageBuffer()'s own doc comment.
+        const avatarIdentityHash = computeAvatarIdentityHashFromImageBuffer(outputImage);
 
         writeFileAtomicSync(outputImagePath, outputImage);
 
@@ -377,7 +387,7 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
         // something different (the *same* character continuing to exist under a new id/filename, so date_added
         // must carry over rather than reset, and its chat-stats need recomputing once the chats folder has
         // actually been moved) - see that route for how it corrects this generic row afterward.
-        await fireMetadataUpsertHook(request.user.directories, `${outputFile}.png`, data, contentHash);
+        await fireMetadataUpsertHook(request.user.directories, `${outputFile}.png`, data, contentHash, avatarIdentityHash);
 
         return true;
     } catch (err) {
