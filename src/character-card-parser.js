@@ -200,7 +200,7 @@ export const parse = async (cardUrl, format) => {
  * output for the same input) up to which both buffers are guaranteed identical, or `null` if the source's
  * chunk layout doesn't meet the contiguous-tail condition this optimization depends on.
  */
-function findReflinkablePrefixOffset(srcBuf) {
+export function findReflinkablePrefixOffset(srcBuf) {
     /** @type {Array<{name: string, data: Uint8Array}>} */
     let chunks;
     try {
@@ -330,6 +330,54 @@ async function writeSharedPrefixThenAppend(sourcePath, destPath, outputImage, of
     } catch (error) {
         await fsPromises.unlink(tempPath).catch(() => {});
         throw error;
+    }
+}
+
+/**
+ * Retroactively reclaims reflink extent-sharing for a character file that was already fully written out
+ * (independent bytes, no sharing with its original source) before writeCardToFile() existed - the exact
+ * gap that let a local-import bulk-consume real disk space despite copyCharacterFile()'s staging reflink
+ * succeeding every time (see writeCardToFile()'s own header for the mechanism this repairs).
+ *
+ * Same safety shape as writeCardToFile(), just applied after the fact: `sourcePath` is a candidate
+ * original this repair believes `existingPath` was imported from (the caller is expected to have already
+ * matched them by content_hash - this function does not do that matching itself, only the byte-level
+ * verification of whether the match is actually safe to act on). Never trusts that match on its own -
+ * finds the reflinkable-prefix boundary from `sourcePath`'s own chunk layout, then requires
+ * `existingPath`'s bytes to be LITERALLY IDENTICAL to `sourcePath`'s bytes for that entire prefix before
+ * doing anything. If that verification fails for any reason (wrong match, the file was cropped at import
+ * time so its pixel data genuinely differs, a foreign chunk layout, anything) this declines and leaves
+ * `existingPath` completely untouched, rather than guess.
+ *
+ * When it does proceed: reflinks `sourcePath` into a temp file, truncates to the verified shared prefix,
+ * appends `existingPath`'s OWN current tail bytes verbatim (not a re-derived value - whatever
+ * `existingPath` currently has after that offset is preserved exactly), then atomically renames over
+ * `existingPath`. `existingPath`'s own mode/uid/gid are preserved on the replacement (writeSharedPrefixThenAppend()
+ * always stats and preserves whatever currently exists at the destination it's replacing).
+ * @param {string} existingPath Absolute path to the already-imported character file to repair in place.
+ * @param {string} sourcePath Absolute path to the believed-original source file, still on disk.
+ * @returns {Promise<{reflinked: boolean, reason?: string}>}
+ */
+export async function reclaimReflinkPrefix(existingPath, sourcePath) {
+    const [existingBuf, sourceBuf] = await Promise.all([
+        fs.promises.readFile(existingPath),
+        fs.promises.readFile(sourcePath),
+    ]);
+
+    const offset = findReflinkablePrefixOffset(sourceBuf);
+    const prefixVerified = offset !== null && offset <= existingBuf.length && offset <= sourceBuf.length
+        && Buffer.compare(existingBuf.subarray(0, offset), sourceBuf.subarray(0, offset)) === 0;
+
+    if (!prefixVerified) {
+        return { reflinked: false, reason: 'prefix-mismatch-or-ineligible-layout' };
+    }
+
+    try {
+        await writeSharedPrefixThenAppend(sourcePath, existingPath, existingBuf, offset);
+        return { reflinked: true };
+    } catch (error) {
+        console.debug(`character-card-parser: reclaimReflinkPrefix failed for ${existingPath} <- ${sourcePath}, leaving it untouched.`, /** @type {any} */ (error)?.message ?? error);
+        return { reflinked: false, reason: 'reflink-failed' };
     }
 }
 

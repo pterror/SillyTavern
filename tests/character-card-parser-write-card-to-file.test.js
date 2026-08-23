@@ -178,3 +178,104 @@ describe('writeCardToFile', () => {
         expect(Buffer.compare(fastPathOutput, slowPathOutput)).toBe(0);
     });
 });
+
+describe('reclaimReflinkPrefix', () => {
+    let tempDir;
+    let sourcePath;
+    let existingPath;
+
+    beforeEach(() => {
+        tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-reclaim-reflink-'));
+        sourcePath = path.join(tempDir, 'source.png');
+        existingPath = path.join(tempDir, 'existing.png');
+
+        reflinkFileMock.mockReset();
+        reflinkFileMock.mockImplementation(async (src, dst) => {
+            fs.copyFileSync(src, dst);
+            return 0;
+        });
+    });
+
+    afterEach(() => {
+        jest.restoreAllMocks();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    test('reclaims an already-imported file whose shared prefix genuinely matches its source', async () => {
+        const source = buildSourcePng({ name: 'Original' });
+        fs.writeFileSync(sourcePath, source);
+        // Simulate what writeCharacterData()/write() would have produced before writeCardToFile() existed -
+        // same prefix as source, own independent chara chunk.
+        const alreadyImported = cardParser.write(source, JSON.stringify({ name: 'Imported Copy' }));
+        fs.writeFileSync(existingPath, alreadyImported);
+
+        const result = await cardParser.reclaimReflinkPrefix(existingPath, sourcePath);
+
+        expect(result).toEqual({ reflinked: true });
+        expect(reflinkFileMock).toHaveBeenCalledTimes(1);
+        // Content is byte-identical to what was there before the reclaim - only the on-disk sharing changed.
+        expect(Buffer.compare(fs.readFileSync(existingPath), alreadyImported)).toBe(0);
+    });
+
+    test('declines and leaves the file untouched when the prefix does not actually match (wrong/mismatched source)', async () => {
+        const source = buildSourcePng({ name: 'Original' });
+        fs.writeFileSync(sourcePath, source);
+
+        // A different image (mutated IDAT bytes), not just different metadata - a genuine content_hash
+        // mismatch's real-world shape, since two DIFFERENT images could never share an IDAT prefix.
+        const differentImageChunks = extract(new Uint8Array(BLANK_PNG));
+        const idat = differentImageChunks.find(c => c.name === 'IDAT');
+        idat.data = new Uint8Array(idat.data);
+        idat.data[0] ^= 0xff;
+        const differentImage = Buffer.from(encode(differentImageChunks));
+        const unrelatedImported = cardParser.write(differentImage, JSON.stringify({ name: 'Unrelated' }));
+        fs.writeFileSync(existingPath, unrelatedImported);
+
+        const result = await cardParser.reclaimReflinkPrefix(existingPath, sourcePath);
+
+        expect(result).toEqual({ reflinked: false, reason: 'prefix-mismatch-or-ineligible-layout' });
+        expect(reflinkFileMock).not.toHaveBeenCalled();
+        expect(Buffer.compare(fs.readFileSync(existingPath), unrelatedImported)).toBe(0);
+    });
+
+    test('declines when the candidate source has an ineligible chunk layout (chara chunk before IDAT)', async () => {
+        const source = buildSourcePng({ name: 'Original' }, 'before-idat');
+        fs.writeFileSync(sourcePath, source);
+        const imported = cardParser.write(source, JSON.stringify({ name: 'Imported Copy' }));
+        fs.writeFileSync(existingPath, imported);
+
+        const result = await cardParser.reclaimReflinkPrefix(existingPath, sourcePath);
+
+        expect(result).toEqual({ reflinked: false, reason: 'prefix-mismatch-or-ineligible-layout' });
+        expect(reflinkFileMock).not.toHaveBeenCalled();
+    });
+
+    test('preserves the existing file own current tail bytes verbatim, not a re-derived value', async () => {
+        const source = buildSourcePng({ name: 'Original' });
+        fs.writeFileSync(sourcePath, source);
+        // A ccv3-carrying import - a second tEXt chunk in the tail that reclaim must preserve exactly.
+        const alreadyImported = cardParser.write(source, JSON.stringify({ name: 'V3 Card', spec: 'chara_card_v3', spec_version: '3.0' }));
+        fs.writeFileSync(existingPath, alreadyImported);
+
+        await cardParser.reclaimReflinkPrefix(existingPath, sourcePath);
+
+        const result = fs.readFileSync(existingPath);
+        expect(Buffer.compare(result, alreadyImported)).toBe(0);
+        const chunks = extract(new Uint8Array(result)).filter(c => c.name === 'tEXt');
+        expect(chunks.length).toBe(2); // chara + ccv3, both preserved
+    });
+
+    test('leaves the file untouched when the reflink itself fails', async () => {
+        const source = buildSourcePng({ name: 'Original' });
+        fs.writeFileSync(sourcePath, source);
+        const alreadyImported = cardParser.write(source, JSON.stringify({ name: 'Imported Copy' }));
+        fs.writeFileSync(existingPath, alreadyImported);
+        reflinkFileMock.mockRejectedValueOnce(new Error('reflink unsupported'));
+
+        const result = await cardParser.reclaimReflinkPrefix(existingPath, sourcePath);
+
+        expect(result).toEqual({ reflinked: false, reason: 'reflink-failed' });
+        expect(Buffer.compare(fs.readFileSync(existingPath), alreadyImported)).toBe(0);
+        expect(fs.readdirSync(tempDir).filter(f => f.endsWith('.tmp'))).toEqual([]);
+    });
+});
