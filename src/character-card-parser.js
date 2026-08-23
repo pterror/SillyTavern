@@ -88,7 +88,20 @@ export const write = (image, data) => {
  */
 export const read = (image) => {
     const chunks = extract(new Uint8Array(image));
+    return readFromChunks(chunks);
+};
 
+/**
+ * The chunk-list half of read() above - factored out so a caller that already extracted `image`'s chunks for
+ * some other reason (local-import-worker.js's worker-owned-write pipeline - see writeCardFromChunks()'s own
+ * doc comment for the redundant-extract() this avoids) can reuse that extraction to get the same
+ * ccv3-preferring character data read() always returns, instead of paying extract() a second time over
+ * identical bytes just to read what it already parsed.
+ * @param {Array<{name: string, data: Uint8Array}>} chunks Already-extracted chunk list (read-only - never
+ * mutated).
+ * @returns {string} Character data, same ccv3-preferring contract as read().
+ */
+export function readFromChunks(chunks) {
     const textChunks = chunks.filter((chunk) => chunk.name === 'tEXt').map((chunk) => PNGtext.decode(chunk.data));
 
     if (textChunks.length === 0) {
@@ -110,7 +123,7 @@ export const read = (image) => {
 
     console.error('PNG metadata does not contain any character data.');
     throw new Error('No PNG metadata.');
-};
+}
 
 /**
  * Reads ONLY the 'chara' tEXt chunk, verbatim - never falls through to 'ccv3' the way read() prefers to. This
@@ -313,6 +326,29 @@ export async function writeCardToFile(sourcePath, destPath, data) {
     // identical bytes) back to back. See spliceCardDataIntoChunks()'s own doc comment for why that
     // duplicate extract() was a measured, real cost, not a theoretical one.
     const chunks = extract(new Uint8Array(srcBuf));
+    return writeCardFromChunks(sourcePath, destPath, srcBuf, chunks, data);
+}
+
+/**
+ * The core of writeCardToFile() above, factored out to accept an already-extracted chunk list and the exact
+ * buffer it came from - so a caller that extracted `srcBuf`'s chunks for some OTHER reason already (2026-08
+ * local-import worker-owned-write extension: local-import-worker.js reads a discovered file's bytes exactly
+ * once and reuses that single extraction all the way through hashing, classification, AND this write, rather
+ * than re-reading/re-extracting a staged copy of the identical bytes purely to reach this function - see that
+ * module's own header) never pays extract() a second time over bytes it already has in memory.
+ * writeCardToFile() is now a thin read+extract wrapper around this.
+ * @param {string} sourcePath Absolute path to the PNG `chunks`/`srcBuf` were extracted from - used only as the
+ * reflink-clone source for the fast path (see writeSharedPrefixThenAppend()); never re-read here.
+ * @param {string} destPath Absolute path to write the result to. May already exist.
+ * @param {Buffer} srcBuf The exact bytes `chunks` was extracted from - needed for the fast path's byte-identity
+ * verification and length checks (never trusted on the structural check alone - see this function's own logic).
+ * @param {Array<{name: string, data: Uint8Array}>} chunks Already-extracted chunk list for `srcBuf`. Mutated in
+ * place by spliceCardDataIntoChunks() - callers that still need the original list untouched must extract their
+ * own copy first.
+ * @param {string} data Character data to embed (same contract as write()).
+ * @returns {Promise<{reflinked: boolean}>} Whether the reflink-preserving fast path was used.
+ */
+export async function writeCardFromChunks(sourcePath, destPath, srcBuf, chunks, data) {
     const offset = findReflinkablePrefixOffsetFromChunks(chunks);
     spliceCardDataIntoChunks(chunks, data);
     const outputImage = Buffer.from(encode(chunks));

@@ -241,7 +241,7 @@ async function readCharacterData(inputFile, inputFormat = 'png', precomputedStat
  * came from `/import` - see writeCharacterData()'s own param and upsertCharacterFromWrite()'s doc comment.
  * @returns {Promise<void>}
  */
-async function fireMetadataUpsertHook(directories, avatar, data, contentHash = null) {
+export async function fireMetadataUpsertHook(directories, avatar, data, contentHash = null) {
     try {
         const stat = await fsPromises.stat(path.join(directories.characters, avatar));
         await upsertCharacterFromWrite(directories, avatar, data, stat.mtimeMs, contentHash);
@@ -665,15 +665,35 @@ async function importFromByaf(uploadPath, { request, contentHash }, preservedFil
  * @returns {Promise<string>} Internal name of the character
  */
 async function importFromJson(uploadPath, { request, contentHash }, preservedFileName) {
-    const data = fs.readFileSync(uploadPath, 'utf8');
+    const rawText = fs.readFileSync(uploadPath, 'utf8');
     fs.unlinkSync(uploadPath);
 
-    let jsonData = JSON.parse(data);
+    const data = buildJsonImportData(rawText, request.user.directories);
+    if (data === null) return '';
+
+    const pngName = preservedFileName || mintCharacterId(request.user.directories);
+    const result = await writeCharacterData(DEFAULT_AVATAR_PATH, data, pngName, request, undefined, contentHash);
+    return result ? pngName : '';
+}
+
+/**
+ * Pure (no file I/O, no sqlite) counterpart to importFromJson()'s per-spec business logic above - factored out
+ * so local-import-scan.js's headless pipeline (2026-08 worker-owned-write extension) can drive the identical
+ * spec dispatch/sanitize/normalize logic from a raw JSON text it already has in hand (its worker read the
+ * source file's bytes once and handed the text straight back - see local-import-worker.js's own header) instead
+ * of importFromJson()'s own uploadPath-based flow, which assumes a file on disk to read and delete.
+ * @param {string} rawText Raw JSON text (same contract as fs.readFileSync(uploadPath, 'utf8') above).
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @returns {string | null} The final Spec V2 JSON string ready to embed via write()/writeCardToFile(), or
+ * `null` if `rawText` matches none of the recognized shapes (mirrors importFromJson()'s own '' fallthrough).
+ */
+export function buildJsonImportData(rawText, directories) {
+    let jsonData = JSON.parse(rawText);
 
     if (jsonData.spec !== undefined) {
         console.info(`Importing from ${jsonData.spec} json`);
-        importRisuSprites(request.user.directories, jsonData);
-        // Same pre-mutation snapshot as importFromPng() above, and for the same reason - see its comment.
+        importRisuSprites(directories, jsonData);
+        // Same pre-mutation snapshot as buildPngImportData() below, and for the same reason - see its comment.
         const rawName = jsonData.data?.name || jsonData.name;
         if (jsonData.data?.name) {
             jsonData.data.name = sanitize(jsonData.data.name);
@@ -684,17 +704,13 @@ async function importFromJson(uploadPath, { request, contentHash }, preservedFil
         // Last mutation before stringify - see omitInstallLocalFields()'s own doc comment on why import no
         // longer writes fav/chat into the card at all (the metadata store is authoritative for that state now).
         omitInstallLocalFields(jsonData);
-        const pngName = preservedFileName || mintCharacterId(request.user.directories);
-        const char = JSON.stringify(jsonData);
-        const result = await writeCharacterData(DEFAULT_AVATAR_PATH, char, pngName, request, undefined, contentHash);
-        return result ? pngName : '';
+        return JSON.stringify(jsonData);
     } else if (jsonData.name !== undefined) {
         console.info('Importing from v1 json');
         jsonData.name = sanitize(jsonData.name);
         if (jsonData.creator_notes) {
             jsonData.creator_notes = jsonData.creator_notes.replace('Creator\'s notes go here.', '');
         }
-        const pngName = preservedFileName || mintCharacterId(request.user.directories);
         let char = {
             'name': jsonData.name,
             'description': jsonData.description ?? '',
@@ -710,11 +726,9 @@ async function importFromJson(uploadPath, { request, contentHash }, preservedFil
             'creator': jsonData.creator ?? '',
             'tags': jsonData.tags ?? '',
         };
-        char = convertToV2(char, request.user.directories);
+        char = convertToV2(char, directories);
         omitInstallLocalFields(char);
-        let charJSON = JSON.stringify(char);
-        const result = await writeCharacterData(DEFAULT_AVATAR_PATH, charJSON, pngName, request, undefined, contentHash);
-        return result ? pngName : '';
+        return JSON.stringify(char);
     } else if (jsonData.char_name !== undefined) {
         //json Pygmalion notepad
         console.info('Importing from gradio json');
@@ -722,7 +736,6 @@ async function importFromJson(uploadPath, { request, contentHash }, preservedFil
         if (jsonData.creator_notes) {
             jsonData.creator_notes = jsonData.creator_notes.replace('Creator\'s notes go here.', '');
         }
-        const pngName = preservedFileName || mintCharacterId(request.user.directories);
         let char = {
             'name': jsonData.char_name,
             'description': jsonData.char_persona ?? '',
@@ -738,14 +751,12 @@ async function importFromJson(uploadPath, { request, contentHash }, preservedFil
             'creator': jsonData.creator ?? '',
             'tags': jsonData.tags ?? '',
         };
-        char = convertToV2(char, request.user.directories);
+        char = convertToV2(char, directories);
         omitInstallLocalFields(char);
-        const charJSON = JSON.stringify(char);
-        const result = await writeCharacterData(DEFAULT_AVATAR_PATH, charJSON, pngName, request, undefined, contentHash);
-        return result ? pngName : '';
+        return JSON.stringify(char);
     }
 
-    return '';
+    return null;
 }
 
 /**
@@ -759,7 +770,30 @@ async function importFromPng(uploadPath, { request, contentHash }, preservedFile
     const imgData = await readCharacterData(uploadPath);
     if (imgData === undefined) throw new Error('Failed to read character data');
 
-    let jsonData = JSON.parse(imgData);
+    const data = buildPngImportData(imgData, request.user.directories);
+    if (data === null) return '';
+
+    const pngName = preservedFileName || mintCharacterId(request.user.directories);
+    const result = await writeCharacterData(uploadPath, data, pngName, request, undefined, contentHash);
+    fs.unlinkSync(uploadPath);
+    return result ? pngName : '';
+}
+
+/**
+ * Pure (no file I/O, no sqlite) counterpart to importFromPng()'s per-spec business logic above - factored out
+ * so local-import-scan.js's headless pipeline (2026-08 worker-owned-write extension) can drive the identical
+ * spec dispatch/sanitize/normalize logic from a raw card text its worker already extracted (see
+ * local-import-worker.js's own header: the worker reads a discovered PNG's bytes exactly once, extracts its
+ * chunks once, and hands the decoded 'chara'/'ccv3' text straight back - the same ccv3-preferring read()
+ * readCharacterData() above uses) instead of importFromPng()'s own uploadPath-based flow, which assumes a
+ * staged file on disk to read.
+ * @param {string} rawText Raw embedded card JSON text (same contract as readCharacterData()'s own return value).
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @returns {string | null} The final Spec V2 JSON string ready to embed via writeCardToFile(), or `null` if
+ * `rawText` has neither `spec` nor `name` (mirrors importFromPng()'s own '' fallthrough).
+ */
+export function buildPngImportData(rawText, directories) {
+    let jsonData = JSON.parse(rawText);
 
     // Read the pre-sanitize name once and reuse it for the fallback below - sanitize() below can turn a
     // non-empty-but-all-illegal name (e.g. ".") into an empty string, and re-reading jsonData.data.name AFTER
@@ -772,18 +806,14 @@ async function importFromPng(uploadPath, { request, contentHash }, preservedFile
         jsonData.data.name = sanitize(jsonData.data.name);
     }
     jsonData.name = sanitize(String(rawName || ''));
-    const pngName = preservedFileName || mintCharacterId(request.user.directories);
 
     if (jsonData.spec !== undefined) {
         console.info(`Found a ${jsonData.spec} character file.`);
-        importRisuSprites(request.user.directories, jsonData);
+        importRisuSprites(directories, jsonData);
         jsonData = readFromV2(jsonData);
         jsonData.create_date = new Date().toISOString();
         omitInstallLocalFields(jsonData);
-        const char = JSON.stringify(jsonData);
-        const result = await writeCharacterData(uploadPath, char, pngName, request, undefined, contentHash);
-        fs.unlinkSync(uploadPath);
-        return result ? pngName : '';
+        return JSON.stringify(jsonData);
     } else if (jsonData.name !== undefined) {
         console.info('Found a v1 character file.');
 
@@ -806,15 +836,12 @@ async function importFromPng(uploadPath, { request, contentHash }, preservedFile
             'creator': jsonData.creator ?? '',
             'tags': jsonData.tags ?? '',
         };
-        char = convertToV2(char, request.user.directories);
+        char = convertToV2(char, directories);
         omitInstallLocalFields(char);
-        const charJSON = JSON.stringify(char);
-        const result = await writeCharacterData(uploadPath, charJSON, pngName, request, undefined, contentHash);
-        fs.unlinkSync(uploadPath);
-        return result ? pngName : '';
+        return JSON.stringify(char);
     }
 
-    return '';
+    return null;
 }
 
 export const router = express.Router();
@@ -2105,7 +2132,7 @@ router.post('/chats', validateAvatarUrlMiddleware, async function (request, resp
  * @param {import('../users.js').UserDirectoryList} directories User directories
  * @returns {string} A UUIDv7 string with no existing `<id>.png` in `directories.characters`
  */
-function mintCharacterId(directories) {
+export function mintCharacterId(directories) {
     for (let i = 0; i < 5; i++) {
         const id = uuidv7();
         if (!fs.existsSync(path.join(directories.characters, `${id}.png`))) {

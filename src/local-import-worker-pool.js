@@ -14,8 +14,14 @@ const DEFAULT_POOL_SIZE_CAP = 16;
 /**
  * @typedef {object} WorkerPoolTask
  * @property {number} id
- * @property {(result: any) => void} resolve
- * @property {(err: Error) => void} reject
+ * @property {(result: any) => void} onParsed Called for a 'parsed' phase message (see local-import-worker.js's
+ * two-phase protocol) - resolves runPipeline()'s own promise with a `needsWrite: true` result. Never called for
+ * a task that only ever sends a single 'done' (charx/byaf/yaml, or a jsonClassification skip).
+ * @property {(result: any) => void} onDone Called for the task's current terminal 'done' message. Reassigned by
+ * _finish() to a NEW resolver once a 'parsed'-phase task's finish() is invoked, so the SAME task object keeps
+ * routing messages correctly across both phases.
+ * @property {(err: Error) => void} reject Rejects whichever promise (runPipeline()'s own, or a finish()-created
+ * one) is currently outstanding for this task - reassigned by _finish() the same way onDone is.
  */
 
 /**
@@ -72,11 +78,24 @@ export class LocalImportWorkerPool {
 
         worker.on('message', (result) => {
             const task = slot.currentTask;
-            slot.currentTask = null;
-            this.taskArgsById.delete(result.id);
             if (!task) return; // Stray message after dispose/replacement - nothing to resolve.
+
+            if (result.phase === 'parsed') {
+                // Two-phase task (see local-import-worker.js's own header): the worker is now holding this
+                // file's buffer/chunks, waiting for a follow-up 'continue' message on this SAME id - the slot
+                // stays busy (currentTask untouched, no _pump()) until that arrives and the worker sends its
+                // real terminal 'done'.
+                task.onParsed(result);
+                return;
+            }
+
+            // phase === 'done' - either a single-phase task's only message, or a two-phase task's follow-up
+            // response to _finish()'s 'continue' - either way, this task is now fully resolved and the slot is
+            // free for the next one.
+            slot.currentTask = null;
+            this.taskArgsById.delete(task.id);
             if (result.ok) {
-                task.resolve(result);
+                task.onDone(result);
             } else {
                 task.reject(new Error(result.error));
             }
@@ -128,9 +147,20 @@ export class LocalImportWorkerPool {
     }
 
     /**
-     * Runs one file's CPU-bound pre-import work on whichever worker is next free, queueing if every worker
-     * is currently busy. Resolves with the worker's `{contentHash, jsonClassification, identityHash}`
-     * result, or rejects if that worker threw/crashed while handling this specific file.
+     * Runs one file's ENTIRE CPU-bound pipeline on whichever worker is next free, queueing if every worker is
+     * currently busy - hash/classify/identity (as the original hash-only pool did), PLUS (2026-08 worker-
+     * owned-write extension, png/json only - see local-import-worker.js's own header) the actual write to the
+     * target character file, all against the SAME single in-worker read of `sourcePath`'s bytes.
+     *
+     * Resolves first with either a terminal result (`needsWrite: false` - charx/byaf/yaml, or a
+     * jsonClassification permanent-skip) or a `needsWrite: true` result carrying the worker's already-parsed
+     * `rawText` and a `finish()` callback. The caller (local-import-scan.js's processFile()) is expected to run
+     * its own per-hash-locked sqlite dedup check using `contentHash`/`identityHash` before ever calling
+     * `finish()` - the worker is just sitting there holding this file's buffer/chunks in memory in the
+     * meantime, doing nothing else, exactly as if this were still one synchronous call. `finish()` itself never
+     * needs to be awaited more than once per task and must always be called exactly once for a `needsWrite:
+     * true` result (with `{ type: 'no-write' }` if the caller decides nothing should be written) - never
+     * calling it leaves that worker's slot permanently stuck "busy" for the rest of this pool's lifetime.
      * @param {string} sourcePath
      * @param {string} format
      * @param {import('./users.js').UserDirectoryList} directories
@@ -138,9 +168,13 @@ export class LocalImportWorkerPool {
      * by the caller (local-import-scan.js's processFile()) before dispatch and passed through here, rather than
      * re-read inside the worker, so the worker never wastes CPU computing an identity hash the config would
      * just have discarded on the main thread anyway.
-     * @returns {Promise<{contentHash: string, jsonClassification: string | null, identityHash: string | null}>}
+     * @returns {Promise<
+     *   { contentHash: string, jsonClassification: string | null, identityHash: string | null, needsWrite: false } |
+     *   { contentHash: string, jsonClassification: null, identityHash: string | null, needsWrite: true, rawText: string,
+     *     finish: (outcome: { type: 'no-write' } | { type: 'write', destPath: string, data: string }) => Promise<{ outcome: string, reflinked?: boolean }> }
+     * >}
      */
-    run(sourcePath, format, directories, allowIdentityFallback) {
+    runPipeline(sourcePath, format, directories, allowIdentityFallback) {
         const id = this.nextId++;
         // `directories` is a plain object of path strings (UserDirectoryList - see users.js) - passed through
         // as-is rather than cherry-picking fields, since it's fully structured-cloneable and
@@ -149,7 +183,28 @@ export class LocalImportWorkerPool {
         this.taskArgsById.set(id, { id, sourcePath, format, directories, allowIdentityFallback });
         return new Promise((resolve, reject) => {
             /** @type {WorkerPoolTask} */
-            const task = { id, resolve, reject };
+            const task = {
+                id,
+                onParsed: (result) => {
+                    resolve({
+                        contentHash: result.contentHash,
+                        jsonClassification: result.jsonClassification,
+                        identityHash: result.identityHash,
+                        needsWrite: true,
+                        rawText: result.rawText,
+                        finish: (outcome) => this._finish(id, outcome),
+                    });
+                },
+                onDone: (result) => {
+                    resolve({
+                        contentHash: result.contentHash,
+                        jsonClassification: result.jsonClassification,
+                        identityHash: result.identityHash,
+                        needsWrite: false,
+                    });
+                },
+                reject,
+            };
             const idleSlot = this.slots.find(s => !s.currentTask);
             if (idleSlot) {
                 idleSlot.currentTask = task;
@@ -157,6 +212,36 @@ export class LocalImportWorkerPool {
             } else {
                 this.pending.push(task);
             }
+        });
+    }
+
+    /**
+     * Sends the follow-up 'continue' message for an in-flight two-phase task (see runPipeline()'s own doc
+     * comment) to whichever slot is still holding it, and returns a promise for the final write outcome. Only
+     * ever invoked via a runPipeline() result's own `finish()` closure - never called directly with an
+     * arbitrary id from outside this class.
+     * @param {number} id
+     * @param {{ type: 'no-write' } | { type: 'write', destPath: string, data: string }} outcome
+     * @returns {Promise<{ outcome: string, reflinked?: boolean }>}
+     */
+    _finish(id, outcome) {
+        const slot = this.slots.find(s => s.currentTask?.id === id);
+        return new Promise((resolve, reject) => {
+            if (!slot) {
+                // The worker holding this task crashed (or the pool was disposed) between phase 1 and this
+                // finish() call - see the 'error' handler and dispose(), both of which reject whatever was
+                // outstanding for a task at the time. Nothing to send.
+                reject(new Error(`local-import worker pool: no in-flight task for id ${id} (worker crashed or pool disposed between phases)`));
+                return;
+            }
+            // Rebind this task's resolver/rejector to THIS promise - worker.on('message')'s 'done' branch and
+            // the 'error' handler both just call whatever onDone/reject currently point at, so this is what
+            // makes the eventual response route back here instead of to runPipeline()'s already-settled promise.
+            slot.currentTask.onDone = (result) => resolve({ outcome: result.outcome, reflinked: result.reflinked });
+            slot.currentTask.reject = reject;
+            slot.worker.postMessage(outcome.type === 'write'
+                ? { id, type: 'continue', outcome: 'write', destPath: outcome.destPath, data: outcome.data }
+                : { id, type: 'continue', outcome: 'no-write' });
         });
     }
 
