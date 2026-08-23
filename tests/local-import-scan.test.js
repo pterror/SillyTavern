@@ -140,11 +140,13 @@ describe('scanDirectory (unit: direct directories fixture, no boot wiring)', () 
 
         await localImportScan.scanDirectory(buildState(), directories);
 
-        // A successful import always creates the uploads dir (stageFile() mkdir's it before staging) - so its
-        // absence here would itself be a bug, not a valid "nothing to check" case.
+        // json (like png) goes through the worker-owned-write pipeline (2026-08 extension) - it never stages
+        // via stageFile() at all anymore, so the uploads dir may not even exist. What must still hold, either
+        // way, is the actual invariant this test is named for: no leaked staged copy of the imported file.
         const uploadsDir = path.join(tempDir, '_uploads');
-        expect(fs.existsSync(uploadsDir)).toBe(true);
-        expect(fs.readdirSync(uploadsDir).length).toBe(0);
+        if (fs.existsSync(uploadsDir)) {
+            expect(fs.readdirSync(uploadsDir).length).toBe(0);
+        }
     });
 
     test('never deletes or moves the original source file', async () => {
@@ -218,6 +220,26 @@ describe('scanDirectory (unit: direct directories fixture, no boot wiring)', () 
         await localImportScan.scanDirectory(state, directories);
 
         expect(fs.readdirSync(charactersDir).length).toBe(1);
+    });
+
+    test('dedup: two different PNG source files with byte-identical content only import once, and the worker-owned write path never leaves a second character behind (2026-08 worker-owned-write extension)', async () => {
+        // png (unlike the json variant of this same test above) goes through the worker's two-phase
+        // extract/splice/encode/write pipeline (see local-import-worker.js's own header) - this is the format
+        // this extension's per-hash locking (local-import-scan.js's withPerHashLock()) most needs to hold up
+        // for: two concurrently-dispatched workers both parsing the SAME bytes, then racing to decide whether
+        // to actually write, must still only ever commit one write.
+        const cardBuffer = cardParser.write(BLANK_PNG, JSON.stringify({ spec: 'chara_card_v2', spec_version: '2.0', data: { name: 'Ghost' } }));
+        fs.writeFileSync(path.join(sourceDir, 'ghost.png'), cardBuffer);
+        fs.writeFileSync(path.join(sourceDir, 'ghost-copy.png'), cardBuffer);
+
+        await localImportScan.scanDirectory(buildState(), directories);
+
+        const files = fs.readdirSync(charactersDir);
+        expect(files.length).toBe(1);
+        // The one character that DID get written is a real, readable card - not a half-finished write.
+        const written = fs.readFileSync(path.join(charactersDir, files[0]));
+        const parsed = JSON.parse(cardParser.read(written));
+        expect(parsed.data.name).toBe('Ghost');
     });
 
     test('a source directory that does not exist is skipped without throwing', async () => {

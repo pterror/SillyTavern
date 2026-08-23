@@ -7,7 +7,7 @@ import { getConfigValue, color, mapWithConcurrency } from './util.js';
 import { DEFAULT_USER, UPLOADS_DIRECTORY } from './constants.js';
 import { getUserDirectories } from './users.js';
 import { copyCharacterFile, hardlinkOntoCanonical } from './local-import-copy.js';
-import { importCharacterFileHeadless } from './endpoints/characters.js';
+import { importCharacterFileHeadless, buildPngImportData, buildJsonImportData, mintCharacterId, fireMetadataUpsertHook } from './endpoints/characters.js';
 import { beginBatchImport, endBatchImport, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, getLocalImportSkip, setLocalImportSkip, clearLocalImportSkip, getAllLocalImportMtimes, setLocalImportMtime, clearLocalImportMtime } from './character-metadata-db.js';
 import { attachOverflowWatch, isWindowsOverflowSignal } from './watch-overflow.js';
 import { detectFormat } from './local-import-classify.js';
@@ -32,19 +32,27 @@ import { LocalImportWorkerPool, resolveWorkerPoolSize } from './local-import-wor
  *      optimization layered on top. Its debounced handler runs the exact same per-file logic the periodic scan
  *      uses, so there is only ever one discovery/import code path, just two different triggers for it.
  *
- * DISCOVERED-FILE IMPORT reuses the exact same batched/hash-dedup machinery `/import` and its
- * `/metadata/batch-import/begin|end` counterparts already use for a browser bulk drag-drop import, rather than
- * a parallel implementation of it - a directory scan bringing in many files at once is the same shape of bulk
- * operation:
- *   - copyCharacterFile() (local-import-copy.js) stages the discovered file's bytes into this install's normal
- *     uploads directory (the same directory multer stages a browser upload into) via reflink/hardlink where the
- *     filesystem allows it, falling back to a full copy only if configured to
- *   - importCharacterFileHeadless() (characters.js) drives that staged copy through the identical
- *     format-dispatch table, hash-based exact-duplicate dedup, and writeCharacterData()/metadata-upsert path
- *     `POST /import` uses
- *   - beginBatchImport()/endBatchImport() wrap each scan pass, so a directory holding many files pays one
- *     SQLite transaction/watcher-suspension window per pass instead of one per file, identical to what a bulk
- *     drag-drop import already gets
+ * DISCOVERED-FILE IMPORT reuses the exact same hash-dedup machinery, and (for charx/byaf/yaml only - see below)
+ * the exact same batched staging `/import` and its `/metadata/batch-import/begin|end` counterparts already use
+ * for a browser bulk drag-drop import, rather than a parallel implementation of it:
+ *   - png/json (the two formats a real corpus is overwhelmingly made of - 2026-08 worker-owned-write extension):
+ *     no staging at all. local-import-worker.js's worker pool reads the discovered file's bytes exactly once and
+ *     owns the ENTIRE per-file pipeline itself - hash, classify, and (once processFile()'s per-hash-locked sqlite
+ *     dedup check confirms the file is genuinely new) the extract/splice/encode/write of the final character
+ *     file too, using characters.js's buildPngImportData()/buildJsonImportData() (the same pure per-spec
+ *     business logic importFromPng()/importFromJson() use for `/import`) to build the data to embed. Only the
+ *     post-write fireMetadataUpsertHook() sqlite call happens back on the main thread - see processFile()'s own
+ *     comments for exactly where.
+ *   - charx/byaf/yaml (unchanged from before this extension - see local-import-worker.js's own header on why
+ *     these three are out of scope for it): copyCharacterFile() (local-import-copy.js) stages the discovered
+ *     file's bytes into this install's normal uploads directory (the same directory multer stages a browser
+ *     upload into) via reflink/hardlink where the filesystem allows it, falling back to a full copy only if
+ *     configured to, then importCharacterFileHeadless() (characters.js) drives that staged copy through the
+ *     identical format-dispatch table, hash-based exact-duplicate dedup, and writeCharacterData()/metadata-upsert
+ *     path `POST /import` uses.
+ *   - beginBatchImport()/endBatchImport() wrap each scan pass regardless of format mix, so a directory holding
+ *     many files pays one SQLite transaction/watcher-suspension window per pass instead of one per file,
+ *     identical to what a bulk drag-drop import already gets
  *
  * SINGLE-USER SCOPE (owner decision - this feature targets this fork's personal single-user deployment shape):
  * every discovered file is imported into DEFAULT_USER's library, regardless of `enableUserAccounts`. Extending
@@ -410,21 +418,24 @@ async function processFile(state, filename, directories) {
 
     try {
         // The CPU-bound part of this file's work - read, sha256 hash, (for .json) the not-a-card/wrong-shape
-        // classification, and (unless already short-circuited by that classification, and only if
-        // allowIdentityFallback) the content-identity parse+hash - runs entirely inside a worker thread (see
+        // classification, (unless already short-circuited by that classification, and only if
+        // allowIdentityFallback) the content-identity parse+hash, AND (2026-08 worker-owned-write extension,
+        // png/json only) the eventual extract/splice/encode/write of the imported character file itself - runs
+        // entirely inside a worker thread, reading `sourcePath`'s bytes exactly once (see
         // local-import-worker.js/local-import-worker-pool.js's own headers on why: this was measured as a real,
         // substantial main-thread CPU bottleneck on the owner's real corpus - 2026-08 local-import worker-pool
         // investigation - and every step here is pure/DB-free, so it's safe to run off-thread). Only the
-        // source file PATH crosses into the worker and a small `{contentHash, jsonClassification, identityHash}`
-        // result crosses back - the multi-megabyte file buffer itself never does, in either direction.
+        // source file PATH crosses into the worker on the way in, and only small strings (contentHash,
+        // jsonClassification, identityHash, rawText, and later the final `data`/destPath for the write) cross
+        // either direction after that - the multi-megabyte file buffer/chunk list itself never does.
         //
         // Every sqlite read/write below (getLocalImportSkip already ran above; findCharacterIdByContentHash,
-        // findCharacterIdByContentIdentityHash, setLocalImportSkip, markProcessed, and the actual
-        // stageFile()+importCharacterFileHeadless() write) stays on THIS (main) thread, unchanged from before -
-        // see local-import-worker.js's header for why worker-thread sqlite access would be unsafe here (no WAL
+        // findCharacterIdByContentIdentityHash, setLocalImportSkip, markProcessed, and - once a write actually
+        // lands - fireMetadataUpsertHook()) stays on THIS (main) thread, unchanged from before - see
+        // local-import-worker.js's header for why worker-thread sqlite access would be unsafe here (no WAL
         // journal mode/busy_timeout configured, and scanDirectory() wraps a whole pass in one write transaction
         // via beginBatchImport()/endBatchImport()).
-        const workerResult = await ensureWorkerPool().run(sourcePath, format, directories, allowIdentityFallback);
+        const pipelineResult = await ensureWorkerPool().runPipeline(sourcePath, format, directories, allowIdentityFallback);
 
         // Permanent-skip classification (see local-import-classify.js's classifyJsonCandidate() doc comment):
         // computed in the worker above; acted on here exactly as before - never confused with, or masking, a
@@ -432,8 +443,8 @@ async function processFile(state, filename, directories) {
         // positively determined to be either not valid JSON at all, or valid JSON that isn't a recognized
         // character-card shape; everything else falls through to the exact same import attempt as before, which
         // keeps its own existing retry-on-failure behavior for genuinely transient problems untouched.
-        if (format === 'json' && workerResult.jsonClassification) {
-            const classification = workerResult.jsonClassification;
+        if (format === 'json' && pipelineResult.jsonClassification) {
+            const classification = pipelineResult.jsonClassification;
             const reasonText = classification === 'not-json'
                 ? 'not valid JSON (the content does not look like a character card - possibly a misnamed/mislabeled file, e.g. an image saved with a .json extension)'
                 : 'valid JSON but not a recognized character card shape (no spec/name/char_name field - likely a lorebook/world-info export or other non-character JSON)';
@@ -462,21 +473,26 @@ async function processFile(state, filename, directories) {
             }
         }
 
-        const contentHash = workerResult.contentHash;
+        const contentHash = pipelineResult.contentHash;
 
-        // Everything from here down (dedup-check through the eventual stage+import) is serialized per content
+        // Everything from here down (dedup-check through the eventual write/import) is serialized per content
         // hash via withPerHashLock() (see that function's own doc comment) - concurrent worker dispatch (see
         // scanDirectory()'s mapWithConcurrency() call) means this section can now genuinely run for several
         // DIFFERENT files at once, and if two of those happen to share a content hash, the dedup-check-then-
         // import sequence below is a real TOCTOU race without this: both would find nothing imported yet, and
-        // both would import. Files with different hashes are never blocked by each other.
+        // both would import. Files with different hashes are never blocked by each other. Note this is also
+        // exactly why the worker (for a needsWrite:true pipelineResult) never writes anything on its own before
+        // this lock resolves what to do - see local-import-worker.js's own header on the two-phase protocol
+        // this depends on.
         await withPerHashLock(state, contentHash, async () => {
-            // Cheap pre-copy dedup check: skip staging entirely for a file already in the library. Correctness
-            // of dedup does not depend on this alone - importCharacterFileHeadless() re-checks the same hash
-            // right before actually importing - this also saves the reflink/hardlink/copy work for the common
-            // "rescanning a directory whose files are already all imported" case.
+            // Cheap pre-copy dedup check: skip staging/writing entirely for a file already in the library.
+            // Correctness of dedup does not depend on this alone - importCharacterFileHeadless() (the
+            // charx/byaf/yaml path below) re-checks the same hash right before actually importing - this also
+            // saves the reflink/hardlink/copy/write work for the common "rescanning a directory whose files are
+            // already all imported" case.
             const alreadyImported = await findCharacterIdByContentHash(directories, contentHash);
             if (alreadyImported) {
+                if (pipelineResult.needsWrite) await pipelineResult.finish({ type: 'no-write' });
                 await maybeHardlinkDuplicateSource(sourcePath, alreadyImported, contentHash, directories);
                 // In-memory only, not persisted - see markProcessedInMemoryOnly()'s own doc comment on why a
                 // duplicate match must never be treated as a durable, restart-surviving skip.
@@ -487,14 +503,15 @@ async function processFile(state, filename, directories) {
             // Expensive fallback (see this module's header): only reached once the cheap exact-byte check above
             // has already found nothing. identityHash was computed in the worker above, gated on the exact same
             // allowIdentityFallback flag already read on this thread before dispatch.
-            if (allowIdentityFallback && workerResult.identityHash) {
+            if (allowIdentityFallback && pipelineResult.identityHash) {
                 try {
-                    const identityMatch = await findCharacterIdByContentIdentityHash(directories, workerResult.identityHash);
+                    const identityMatch = await findCharacterIdByContentIdentityHash(directories, pipelineResult.identityHash);
                     if (identityMatch) {
                         // Same treatment as an exact content_hash match above - a real content-hash value is
                         // still passed through to maybeHardlinkDuplicateSource() (it only ever gates on the
                         // config flag, never inspects the hash's own value - see that function's doc comment),
                         // so the on-disk dedup behavior is identical either way.
+                        if (pipelineResult.needsWrite) await pipelineResult.finish({ type: 'no-write' });
                         await maybeHardlinkDuplicateSource(sourcePath, identityMatch, contentHash, directories);
                         // In-memory only - same reasoning as the exact content_hash match above.
                         markProcessedInMemoryOnly(state, filename, stat.mtimeMs);
@@ -508,18 +525,47 @@ async function processFile(state, filename, directories) {
                 }
             }
 
-            const stagedPath = await stageFile(sourcePath);
-            const result = await importCharacterFileHeadless(stagedPath, format, directories, {
-                userHandle: DEFAULT_USER.handle,
-                contentHash,
-            });
+            if (pipelineResult.needsWrite) {
+                // png/json - the worker owns the write (2026-08 worker-owned-write extension). Build the final
+                // card data purely on THIS thread (fast/non-IO business logic - spec dispatch, sanitize,
+                // Risu-sprite side effects, mint id) from the rawText the worker already parsed out of its own
+                // single read/extraction, then hand the worker back the target path + final data so it can
+                // finish extract/splice/encode/write reusing the SAME buffer/chunks it already has - no second
+                // read of sourcePath, ever. See characters.js's buildPngImportData()/buildJsonImportData() -
+                // the exact same pure logic importFromPng()/importFromJson() themselves use for the browser
+                // `/import` route, just fed pre-parsed text instead of a staged file to re-read.
+                const data = format === 'png'
+                    ? buildPngImportData(pipelineResult.rawText, directories)
+                    : buildJsonImportData(pipelineResult.rawText, directories);
 
-            if (!result) {
-                console.warn(`[local-import] Failed to import ${sourcePath} (unrecognized content or import error) - will retry next pass.`);
-            } else if ('duplicateOf' in result) {
-                console.debug(`[local-import] Skipped ${sourcePath} - duplicate of already-imported character ${result.duplicateOf}.`);
+                if (data === null) {
+                    await pipelineResult.finish({ type: 'no-write' });
+                    console.warn(`[local-import] Failed to import ${sourcePath} (unrecognized content or import error) - will retry next pass.`);
+                } else {
+                    const pngName = mintCharacterId(directories);
+                    const destPath = path.join(directories.characters, `${pngName}.png`);
+                    await pipelineResult.finish({ type: 'write', destPath, data });
+                    await fireMetadataUpsertHook(directories, `${pngName}.png`, data, contentHash);
+                    console.log(color.cyan(`[local-import] Imported ${sourcePath} as ${pngName}.png`));
+                }
             } else {
-                console.log(color.cyan(`[local-import] Imported ${sourcePath} as ${result.fileName}.png`));
+                // charx/byaf/yaml - unchanged stage+import path (see local-import-worker.js's own header on why
+                // these three formats are out of scope for the worker-owned write: real archive/YAML parsing
+                // this worker has no reason to duplicate, and none of them reflink from a real per-file source
+                // either way).
+                const stagedPath = await stageFile(sourcePath);
+                const result = await importCharacterFileHeadless(stagedPath, format, directories, {
+                    userHandle: DEFAULT_USER.handle,
+                    contentHash,
+                });
+
+                if (!result) {
+                    console.warn(`[local-import] Failed to import ${sourcePath} (unrecognized content or import error) - will retry next pass.`);
+                } else if ('duplicateOf' in result) {
+                    console.debug(`[local-import] Skipped ${sourcePath} - duplicate of already-imported character ${result.duplicateOf}.`);
+                } else {
+                    console.log(color.cyan(`[local-import] Imported ${sourcePath} as ${result.fileName}.png`));
+                }
             }
 
             await markProcessed(state, directories, sourcePath, filename, stat.mtimeMs);
