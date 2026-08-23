@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
+import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, jest } from '@jest/globals';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -429,6 +429,28 @@ describe('scanDirectory (unit: direct directories fixture, no boot wiring)', () 
             expect(files).toContain('Poisoned.png');
             const newRow = await metadataDb.getCharacterMetadataRow(directories, files.find(f => f !== 'Poisoned.png'));
             expect(newRow.name).toBe('Someone Else');
+        });
+
+        test('reads a newly-discovered source file only once, not twice, even though both the dedup hash and the identity-check parse consume its bytes (2026-08 local-import perf fix - a second fs.promises.readFile of the same source path here used to double every new file\'s disk I/O)', async () => {
+            process.env.SILLYTAVERN_PERFORMANCE_ALLOWEXPENSIVEDUPLICATEFALLBACK = 'true';
+
+            const discoveredBuffer = cardParser.write(BLANK_PNG, JSON.stringify(poisonedCardData()));
+            const sourcePath = path.join(sourceDir, 'discovered.png');
+            fs.writeFileSync(sourcePath, discoveredBuffer);
+
+            const readFileSpy = jest.spyOn(fs.promises, 'readFile');
+            try {
+                await localImportScan.scanDirectory(buildState(), directories);
+            } finally {
+                readFileSpy.mockRestore();
+            }
+
+            const sourceReads = readFileSpy.mock.calls.filter(call => call[0] === sourcePath);
+            expect(sourceReads.length).toBe(1);
+
+            // Sanity: the file was genuinely processed through both the hash-dedup and identity-check code paths
+            // (not skipped for some unrelated reason that would make the single-read count meaningless).
+            expect(fs.readdirSync(charactersDir).length).toBe(1);
         });
     });
 });

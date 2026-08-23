@@ -9,9 +9,9 @@ import { getConfigValue, color } from './util.js';
 import { DEFAULT_USER, UPLOADS_DIRECTORY } from './constants.js';
 import { getUserDirectories } from './users.js';
 import { copyCharacterFile, hardlinkOntoCanonical } from './local-import-copy.js';
-import { hashFileContents, importCharacterFileHeadless } from './endpoints/characters.js';
+import { importCharacterFileHeadless } from './endpoints/characters.js';
 import { beginBatchImport, endBatchImport, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, computeContentIdentityHash } from './character-metadata-db.js';
-import { parse as parseCharacterCard } from './character-card-parser.js';
+import { read as readCharacterCard } from './character-card-parser.js';
 import { getCharaCardV2, convertToV2 } from './character-card-normalize.js';
 
 /**
@@ -211,11 +211,19 @@ async function maybeHardlinkDuplicateSource(sourcePath, characterId, contentHash
 }
 
 /**
- * Non-destructively parses `sourcePath` (never written to, never staged, never consumed) into the same
- * normalized shape computeContentIdentityHash() always hashes from, and returns that hash - or `null` for a
- * format this doesn't (yet) know how to parse without importing it.
+ * Non-destructively parses `sourceBuffer` (the source file's bytes, already read once by the caller - never
+ * written to, never staged, never consumed) into the same normalized shape computeContentIdentityHash() always
+ * hashes from, and returns that hash - or `null` for a format this doesn't (yet) know how to parse without
+ * importing it.
  *
- * PNG and JSON are the trivial cases: parseCharacterCard()/JSON.parse() + getCharaCardV2() is exactly the
+ * Takes the already-read buffer rather than a path/re-reading it from disk: `processFile()` (the only caller)
+ * already reads `sourcePath` in full to compute `contentHash` via sha256 - re-reading the identical bytes here a
+ * second time (this used to call parseCharacterCard()/fsPromises.readFile() directly on the path) was a second
+ * full disk read of every newly-discovered file for no reason, measured as a real contributor to this module's
+ * throughput on the owner's ~300k-file real-world scan (2026-08 local-import perf investigation) - the same
+ * "redo expensive per-item work instead of computing it once" shape as the tags.json bug bootstrapIfNeeded() had.
+ *
+ * PNG and JSON are the trivial cases: readCharacterCard()/JSON.parse() + getCharaCardV2() is exactly the
  * read-off-disk-without-importing pattern character-metadata-db.js's bootstrapIfNeeded()/reconcile() already use
  * to build a metadata row from an arbitrary on-disk card - reused here rather than duplicated. YAML/YML reuses
  * convertToV2() with the same field-shaping importFromYaml() (characters.js) does, minus the actual write - safe
@@ -231,27 +239,27 @@ async function maybeHardlinkDuplicateSource(sourcePath, characterId, contentHash
  * path above still fully covers a byte-identical re-drop of a charx/byaf file either way, and an undetected
  * semantic duplicate here is a false NEGATIVE (a duplicate slips through and gets imported again), never a false
  * positive - see this module's own header on why that's the safe direction to err in.
- * @param {string} sourcePath
+ * @param {Buffer} sourceBuffer The source file's raw bytes, already read by the caller.
  * @param {string} format A formatImportFunctions key (see EXTENSION_TO_FORMAT)
  * @param {import('./users.js').UserDirectoryList} directories
  * @returns {Promise<string | null>}
  */
-async function computeCandidateContentIdentityHash(sourcePath, format, directories) {
+async function computeCandidateContentIdentityHash(sourceBuffer, format, directories) {
     switch (format) {
         case 'png': {
-            const imgData = await parseCharacterCard(sourcePath, 'png');
+            const imgData = readCharacterCard(sourceBuffer);
             if (imgData === undefined) return null;
             const character = getCharaCardV2(JSON.parse(imgData), directories, false);
             return computeContentIdentityHash(character);
         }
         case 'json': {
-            const raw = await fsPromises.readFile(sourcePath, 'utf8');
+            const raw = sourceBuffer.toString('utf8');
             const character = getCharaCardV2(JSON.parse(raw), directories, false);
             return computeContentIdentityHash(character);
         }
         case 'yaml':
         case 'yml': {
-            const raw = await fsPromises.readFile(sourcePath, 'utf8');
+            const raw = sourceBuffer.toString('utf8');
             const yamlData = yaml.parse(raw);
             // Mirrors importFromYaml()'s (characters.js) own field-shaping object, minus everything that
             // function does AFTER building it (sanitize(), writeCharacterData(), the returned file name) - this
@@ -312,7 +320,17 @@ async function processFile(state, filename, directories) {
     }
 
     try {
-        const contentHash = await hashFileContents(sourcePath);
+        // Read the source file's bytes exactly once and reuse the buffer for both the sha256 dedup hash below
+        // and (on the expensive-fallback path further down) the content-identity parse - the fast path used to
+        // call hashFileContents(sourcePath) (a stream read) and then, on the fallback path, re-read the same
+        // path a second time from disk via parseCharacterCard()/fsPromises.readFile(). Two full reads of every
+        // newly-discovered file's bytes for no reason - the same "redo expensive per-item work instead of
+        // computing it once" shape as the tags.json bug bootstrapIfNeeded() had, measured as a real contributor
+        // to this module's throughput on the owner's ~300k-file real-world scan (2026-08 local-import perf
+        // investigation). A plain buffered read (not a stream) also means one read syscall for a typical
+        // multi-MB card instead of the dozens a 64KB-chunked ReadStream issued.
+        const sourceBuffer = await fsPromises.readFile(sourcePath);
+        const contentHash = crypto.createHash('sha256').update(sourceBuffer).digest('hex');
 
         // Cheap pre-copy dedup check: skip staging entirely for a file already in the library. Correctness of
         // dedup does not depend on this - importCharacterFileHeadless() re-checks the same hash right before
@@ -331,7 +349,7 @@ async function processFile(state, filename, directories) {
         // export's own updated doc comment for why.
         if (getConfigValue('performance.allowExpensiveDuplicateFallback', true, 'boolean')) {
             try {
-                const identityHash = await computeCandidateContentIdentityHash(sourcePath, format, directories);
+                const identityHash = await computeCandidateContentIdentityHash(sourceBuffer, format, directories);
                 const identityMatch = identityHash ? await findCharacterIdByContentIdentityHash(directories, identityHash) : null;
                 if (identityMatch) {
                     // Same treatment as an exact content_hash match above - a real content-hash value is still
@@ -365,7 +383,10 @@ async function processFile(state, filename, directories) {
 
         state.lastSeenMtimeMs.set(filename, stat.mtimeMs);
     } catch (err) {
-        console.error(`[local-import] Failed to process ${sourcePath}, will retry next pass:`, err.message);
+        // Logs the full Error (stack included), not just err.message - a message-only line like "Input must be
+        // string" gives no way to tell which of several sanitize()/hash/parse calls in the import path actually
+        // threw, which is exactly what made this bug hard to locate from the running server's output alone.
+        console.error(`[local-import] Failed to process ${sourcePath}, will retry next pass:`, err);
         // Deliberately does NOT update lastSeenMtimeMs on failure, so a transient error (e.g. the file still
         // being written to when this pass caught it) gets retried on the next scan rather than skipped forever.
     }
