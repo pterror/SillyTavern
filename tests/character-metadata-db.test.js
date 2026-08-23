@@ -1247,6 +1247,21 @@ describe('fav is db-authoritative once a character row exists (owner decision - 
         expect(favs).toEqual({ 'Alice.png': true, 'Bob.png': false });
     });
 
+    test('getCharacterFavsByIds() does not throw "too many SQL variables" for an id list past the single-query bound-parameter limit (regression: real-world crash on a 326k-character library - see FAV_LOOKUP_BATCH_SIZE doc comment, character-metadata-db.js)', async () => {
+        const ids = [];
+        for (let i = 0; i < 1500; i++) {
+            const id = `Char${i}.png`;
+            ids.push(id);
+            await metadataDb.upsertCharacterFromWrite(directories, id, cardJson({ fav: i % 2 === 0 }), 1000 + i);
+        }
+
+        const favs = await metadataDb.getCharacterFavsByIds(directories, ids);
+        expect(Object.keys(favs)).toHaveLength(1500);
+        expect(favs['Char0.png']).toBe(true);
+        expect(favs['Char1.png']).toBe(false);
+        expect(favs['Char1499.png']).toBe(false);
+    });
+
     test('reconcile() picking up an externally-touched file does not revert a fav toggle made through setCharacterFav()', async () => {
         const filePath = await writeCardFile('Alice.png', { name: 'Alice', fav: false, data: { name: 'Alice', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
         await metadataDb.bootstrapIfNeeded(directories);
