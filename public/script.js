@@ -134,6 +134,7 @@ import {
     initBookmarks,
     showBookmarksButtons,
     updateBookmarkDisplay,
+    updateBranchNavDisplay,
 } from './scripts/bookmarks.js';
 
 import {
@@ -3370,6 +3371,7 @@ export function updateMessageElement(mes, { messageId = chat.length - 1, message
     mes.title && messageElement.attr('title', mes.title);
     timerValue && messageElement.find('.mes_timer').attr('title', timerTitle).text(timerValue);
     bookmarkLink && updateBookmarkDisplay(messageElement);
+    updateBranchNavDisplay(messageElement, messageId);
 
     if (mes.extra?.bias !== '') {
         const bias = messageFormatting(mes.extra?.bias, '', false, false, -1, {}, false);
