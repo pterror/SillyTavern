@@ -2024,7 +2024,7 @@ export async function replaceCurrentChat() {
             charactersStore.update(getCurrentCharacter().avatar, { chat: `${name2} - ${humanizedDateTime()}` });
             $('#selected_chat_pole').val(getCurrentCharacter().chat);
             saveCharacterDebounced();
-            await getChat();
+            await getChat({ isNewChat: true });
         }
     }
 }
@@ -8255,7 +8255,15 @@ export async function unshallowCharacter(avatar) {
     await getOneCharacter(avatar);
 }
 
-export async function getChat() {
+/**
+ * Fetches the current character's chat from the server and renders it.
+ * @param {object} [options] Additional options.
+ * @param {boolean} [options.isNewChat] True when the caller just assigned a freshly-generated chat
+ * filename that has never been saved (e.g. doNewChat(), or replaceCurrentChat()'s "start new chat"
+ * fallback). Such a filename is *expected* to 404 - it's not a deleted chat being resurrected, it's
+ * a chat that doesn't exist yet - so the "resurrection guard" below must not treat it as one.
+ */
+export async function getChat({ isNewChat = false } = {}) {
     try {
         await unshallowCharacter(getCurrentCharacter()?.avatar);
 
@@ -8270,7 +8278,7 @@ export async function getChat() {
             }),
         });
 
-        if (response.status === 404) {
+        if (response.status === 404 && !isNewChat) {
             // This character's persisted "current chat" pointer names a file that's gone from disk -
             // most likely deleted from another tab/session (or from the chat-select modal while this
             // character was loaded elsewhere) after this session last synced. Falling through to the
@@ -8283,11 +8291,13 @@ export async function getChat() {
             return;
         }
 
-        if (!response.ok) {
+        if (!response.ok && !(isNewChat && response.status === 404)) {
             throw new Error('Chat could not be loaded');
         }
 
-        const data = await response.json();
+        // A brand-new, never-yet-saved chat file legitimately 404s (see the isNewChat check above) -
+        // treat that the same as the "empty/corrupted chat" case below instead of parsing a 404 body.
+        const data = response.ok ? await response.json() : [];
         if (Array.isArray(data) && data.length > 0) {
             /** @type {ChatHeader} */
             const chatHeader = data.shift();
@@ -11421,7 +11431,7 @@ export async function doNewChat({ deleteCurrentChat = false } = {}) {
         const newChatName = `${name2} - ${humanizedDateTime()}`;
         charactersStore.update(getCurrentCharacter().avatar, { chat: newChatName });
         $('#selected_chat_pole').val(newChatName);
-        await getChat();
+        await getChat({ isNewChat: true });
         // getChat() can refetch this character from the server (unshallowCharacter() -> getOneCharacter(), for
         // a shallow-loaded entity) and Object.assign the response onto the in-memory entity - since the chat
         // rename above hasn't been persisted server-side yet at this point, that refetch silently clobbers it
