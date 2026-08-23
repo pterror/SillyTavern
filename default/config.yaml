@@ -297,11 +297,30 @@ localImport:
   # endpoint. Empty by default. This targets this fork's personal single-user deployment shape - every
   # discovered file is imported into the default-user library, regardless of enableUserAccounts.
   directories: []
-  # How often (ms) each configured directory gets rescanned for new/changed files. This is the mandatory
-  # backstop, not watchEnabled's fs.watch below - it always runs regardless of whether the watcher is
-  # enabled or available on this platform, the same way character-metadata-db.js's periodic reconciler
-  # backstops its own directory watcher (see that module's header).
-  scanIntervalMs: 60000
+  # How long (ms) to wait after a full scan pass over every configured directory FINISHES before starting
+  # the next one - not a fixed wall-clock rate: a pass over a very large corpus can itself take far longer
+  # than this value (measured ~23.5 minutes for a real ~301,717-file corpus), so self-pacing off of when
+  # the previous pass actually completed is what keeps passes from piling up concurrently instead of a
+  # fixed-rate timer firing regardless of whether the last pass is still running (see local-import-scan.js's
+  # runScanCycle()).
+  #
+  # With watchEnabled true (the default below), this periodic scan is a BACKSTOP, not the primary discovery
+  # mechanism: fs.watch/inotify can silently drop events under a burst that overflows its ~16384-event queue,
+  # with no error reported and no way to detect it from JS (see character-metadata-db.js's header for the
+  # original finding against the characters directory) - this scan is what guarantees eventual correctness
+  # when that happens. A backstop for an occasional burst-drop failure should run seldom, not continuously -
+  # self-pacing alone doesn't guarantee that (a small interval still lets passes run back-to-back forever) -
+  # so the default here (1 hour) is deliberately well above character-metadata-db.js's own reconciler default
+  # (5 minutes, performance.characterMetadataReconcileIntervalMs): that reconciler scans a bounded internal
+  # table, this one has to list and stat every file in a potentially 300k+-file external directory even in the
+  # cheap steady-state case (files whose mtime is unchanged since the last completed pass, tracked durably
+  # across restarts, are skipped without being re-read/re-hashed - but that per-pass listing/stat cost never
+  # fully disappears), so a less aggressive default cadence is warranted here, not copied verbatim.
+  #
+  # If watchEnabled is false, this periodic scan is no longer just a rare-failure backstop - it's the ONLY
+  # discovery mechanism there is - so lower this to something that reflects how quickly you want a dropped-in
+  # file actually noticed; the 1-hour default above assumes the watcher is doing that job in real time.
+  scanIntervalMs: 3600000
   # Also fs.watch() each configured directory as a latency optimization on top of the periodic scan
   # above. Never required for correctness: fs.watch/inotify can silently drop events under burst load
   # with no error reported (see character-metadata-db.js's header for the same finding against the

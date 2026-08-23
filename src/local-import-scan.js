@@ -10,7 +10,7 @@ import { DEFAULT_USER, UPLOADS_DIRECTORY } from './constants.js';
 import { getUserDirectories } from './users.js';
 import { copyCharacterFile, hardlinkOntoCanonical } from './local-import-copy.js';
 import { importCharacterFileHeadless } from './endpoints/characters.js';
-import { beginBatchImport, endBatchImport, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, computeContentIdentityHash } from './character-metadata-db.js';
+import { beginBatchImport, endBatchImport, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, computeContentIdentityHash, getLocalImportSkip, setLocalImportSkip, clearLocalImportSkip, getAllLocalImportMtimes, setLocalImportMtime, clearLocalImportMtime } from './character-metadata-db.js';
 import { read as readCharacterCard } from './character-card-parser.js';
 import { getCharaCardV2, convertToV2 } from './character-card-normalize.js';
 
@@ -91,7 +91,13 @@ const EXTENSION_TO_FORMAT = {
  * an efficiency-only skip cache (mirrors reconcile()'s stored file_mtime comparison in character-metadata-db.js):
  * skipping a file whose mtime hasn't changed since last processed avoids re-hashing/re-checking it on every
  * pass, but is never relied on for correctness - content-hash dedup makes reprocessing a file always safe, just
- * wasteful, so a cold-started (in-memory, not persisted) cache losing its state on restart is harmless.
+ * wasteful. This Map itself is in-memory-only and starts empty every process start, but initializeLocalImportScan()
+ * warms it from character-metadata-db.js's persisted `local_import_mtimes` table (getAllLocalImportMtimes())
+ * before the first pass runs, and processFile() writes through to that table (setLocalImportMtime()) whenever it
+ * updates this Map - so the skip DOES survive a restart in practice, it just isn't this Map's own job to persist
+ * it. A directory scanned via scanDirectory() directly with a hand-built, never-warmed state (e.g. a test, or a
+ * config/directories change this process hasn't restarted for) simply starts that one state cold, same as
+ * before - never incorrect, only ever a first-pass cost.
  * @property {fs.FSWatcher | null} watcher
  * @property {Map<string, NodeJS.Timeout>} watchTimers Per-filename debounce timers, mirrors
  * character-metadata-db.js's watchTimers.
@@ -100,7 +106,17 @@ const EXTENSION_TO_FORMAT = {
 /** @type {DirectoryScanState[]} */
 let scanStates = [];
 /** @type {NodeJS.Timeout | null} */
-let scanInterval = null;
+let scanTimeout = null;
+/** Set true by disposeLocalImportScan() to tell a scan cycle already in flight (see runScanCycle()) to stop
+ * rescheduling itself once its current pass finishes, rather than only clearing scanTimeout - a pass can be
+ * mid-flight (not yet at its own reschedule point) when dispose is called, and without this flag it would still
+ * queue one more scanTimeout right after a disposed instance's teardown. */
+let disposed = false;
+/** @type {Promise<void> | null} The in-flight (or most recently completed) full pass over every configured
+ * directory - see runScanCycle(). Exported via waitForCurrentScanPass() below purely for tests/observability
+ * (e.g. "has the initial post-restart pass finished yet") - production code (server-main.js) never awaits this,
+ * that is the whole point of backgrounding it (see initializeLocalImportScan()'s own doc comment). */
+let currentPassPromise = null;
 
 /**
  * @param {string} filename
@@ -289,6 +305,95 @@ async function computeCandidateContentIdentityHash(sourceBuffer, format, directo
 }
 
 /**
+ * Cheap, non-destructive pre-check for a `.json`-extension candidate - run BEFORE any staging/import machinery
+ * touches the file, so it can tell "this file's content will never be a character card" apart from "the import
+ * pipeline itself failed on it for some other reason" (see processFile()'s own comment on why that distinction
+ * is what decides retry-forever vs skip-once). Two real corpus-hygiene shapes get recognized here, both drawn
+ * from an actual owner-reported case (see local-import-scan.test.js):
+ *   - 'not-json': the bytes aren't valid JSON at all - e.g. a PNG file that got misnamed/mislabeled with a
+ *     `.json` extension.
+ *   - 'unrecognized-shape': valid JSON, but not any of the three shapes importFromJson() (characters.js)
+ *     actually dispatches on (ccv2/v3's top-level `spec`, v1's `name`, or Pygmalion's `char_name`) - deliberately
+ *     mirrors that function's own dispatch conditions exactly, rather than a separate/looser notion of "looks
+ *     like a card", so this can never disagree with what importFromJson() would actually have done. e.g. a
+ *     lorebook/world-info export that happens to sit in the same corpus directory as real character cards.
+ * Returns `null` for anything else - including a shape this function doesn't specifically recognize but that
+ * importFromJson() might still handle - meaning "don't pre-emptively skip, let the normal import attempt run
+ * and speak for itself".
+ * @param {Buffer} sourceBuffer The source file's raw bytes, already read by the caller.
+ * @returns {'not-json' | 'unrecognized-shape' | null}
+ */
+function classifyJsonCandidate(sourceBuffer) {
+    let parsed;
+    try {
+        parsed = JSON.parse(sourceBuffer.toString('utf8'));
+    } catch {
+        return 'not-json';
+    }
+
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        return 'unrecognized-shape';
+    }
+
+    // Mirrors importFromJson()'s (characters.js) own dispatch conditions exactly - see that function.
+    if (parsed.spec !== undefined || parsed.name !== undefined || parsed.char_name !== undefined) {
+        return null;
+    }
+
+    return 'unrecognized-shape';
+}
+
+/**
+ * Records that `filename` has been processed as of `mtimeMs` in both the in-memory skip cache and its persisted
+ * counterpart (see DirectoryScanState.lastSeenMtimeMs's own doc comment on why there are two) - every call site
+ * in processFile() that used to only update the in-memory Map now goes through here instead, so the two never
+ * drift apart. The persisted write is fire-and-forget/best-effort (see setLocalImportMtime()'s own doc comment
+ * on why a failure here is never a correctness problem, only a lost efficiency gain on the next restart).
+ * @param {DirectoryScanState} state
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} sourcePath
+ * @param {string} filename
+ * @param {number} mtimeMs
+ */
+async function markProcessed(state, directories, sourcePath, filename, mtimeMs) {
+    state.lastSeenMtimeMs.set(filename, mtimeMs);
+    // Awaited, not fire-and-forget: the underlying write is a single synchronous better-sqlite3 call under an
+    // async wrapper (see setLocalImportMtime()), so awaiting it costs nothing real, and NOT awaiting it left a
+    // dangling promise per file with no guaranteed completion order relative to whatever runs next (a scan pass
+    // moving on to the next file, a test's own assertions, disposeMetadataStores() closing the db handle out
+    // from under a still-pending write) - caught a real cross-test race in practice, not a theoretical one. The
+    // try/catch (not a rejection the caller sees) keeps this a pure efficiency write: a failure here only costs
+    // a wasted re-read on the next restart, never a wrong result now.
+    try {
+        await setLocalImportMtime(directories, sourcePath, mtimeMs);
+    } catch (err) {
+        console.debug(`[local-import] Failed to persist processed-mtime record for ${sourcePath} (will just be re-processed on the next restart, not incorrectly):`, err.message);
+    }
+}
+
+/**
+ * Records that `filename` has been processed as of `mtimeMs` in the in-memory skip cache ONLY - deliberately
+ * NOT persisted (unlike markProcessed()) - for the two "recognized as a duplicate of some OTHER already-imported
+ * character" outcomes (an exact content_hash match, or the expensive content-identity fallback match). Found via
+ * a real reproduction, not theorized: a duplicate match's validity depends on that OTHER character's row still
+ * existing, which can stop being true later (e.g. character-metadata-db.js's reconcile() deletes a row once its
+ * own file goes missing on disk - a real, ordinary occurrence, not an edge case). Persisting THIS file's mtime
+ * across a restart in that case would make a fresh, warmed DirectoryScanState (see warmMtimeCache()) skip
+ * re-checking it forever via the plain mtime-unchanged fast path, even after the character it was a duplicate
+ * OF no longer exists to be a duplicate of - silently losing the source file's only path back into the library.
+ * The in-memory-only record still gets the SAME-run efficiency win markProcessed() does (two back-to-back passes
+ * within one boot won't re-hash this file either), it just doesn't survive a restart - the exact same posture
+ * every mtime skip had before local_import_mtimes existed at all, so this is a narrowing of the new feature's
+ * scope to the cases it's actually safe for, not a regression relative to before that feature landed.
+ * @param {DirectoryScanState} state
+ * @param {string} filename
+ * @param {number} mtimeMs
+ */
+function markProcessedInMemoryOnly(state, filename, mtimeMs) {
+    state.lastSeenMtimeMs.set(filename, mtimeMs);
+}
+
+/**
  * Discovers-and-imports one file if it looks new/changed and isn't already in the library (by content hash).
  * Shared by both the periodic scan and the (optional) fs.watch handler - see this module's header on why there
  * is only ever one such code path.
@@ -297,6 +402,37 @@ async function computeCandidateContentIdentityHash(sourceBuffer, format, directo
  * @param {import('./users.js').UserDirectoryList} directories
  * @returns {Promise<void>}
  */
+/**
+ * Tidies up stale local_import_skips/local_import_mtimes rows (and the in-memory lastSeenMtimeMs entry) once
+ * `filename` is known to be genuinely gone from `state.sourceDir` - shared by processFile()'s own ENOENT branch
+ * (a file removed WITHIN this pass, between readdir() listing it and stat()'ing it - a narrow race) and
+ * scanDirectory()'s post-readdir sweep (a file removed BETWEEN passes entirely - the ordinary case, and the one
+ * ENOENT alone can never catch: readdir() simply never lists a file that's already gone by the time it runs, so
+ * processFile() is never even called for it, and a durable skip/mtime row for it would otherwise survive
+ * forever). Neither table records a file's format, so this always attempts the local_import_skips clear too
+ * (a no-op DELETE if there was never a row there - see clearLocalImportSkip()'s own idempotent DELETE) rather
+ * than requiring the caller to know/pass the format.
+ * @param {DirectoryScanState} state
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} filename
+ * @returns {Promise<void>} Never throws - each clear is independently best-effort (see clearLocalImportMtime()'s
+ * and clearLocalImportSkip()'s own doc comments on why a failure here is never a correctness problem).
+ */
+async function cleanupRemovedFile(state, directories, filename) {
+    state.lastSeenMtimeMs.delete(filename);
+    const sourcePath = path.join(state.sourceDir, filename);
+    try {
+        await clearLocalImportMtime(directories, sourcePath);
+    } catch (clearErr) {
+        console.debug(`[local-import] Failed to clear stale local_import_mtimes record for ${sourcePath}:`, clearErr.message);
+    }
+    try {
+        await clearLocalImportSkip(directories, sourcePath);
+    } catch (clearErr) {
+        console.debug(`[local-import] Failed to clear stale local_import_skips record for ${sourcePath}:`, clearErr.message);
+    }
+}
+
 async function processFile(state, filename, directories) {
     const format = detectFormat(filename);
     if (!format) return;
@@ -307,8 +443,11 @@ async function processFile(state, filename, directories) {
         stat = await fsPromises.stat(sourcePath);
     } catch (err) {
         if (err.code === 'ENOENT') {
-            state.lastSeenMtimeMs.delete(filename);
-            return; // Removed between listing and stat'ing, or a watcher event for a since-deleted file.
+            // Removed between listing and stat'ing (within THIS pass), or a watcher event for a since-deleted
+            // file - see cleanupRemovedFile()'s own doc comment on why the far more common "removed since the
+            // last pass entirely" case is handled separately, in scanDirectory()'s post-readdir sweep, not here.
+            await cleanupRemovedFile(state, directories, filename);
+            return;
         }
         throw err;
     }
@@ -317,6 +456,22 @@ async function processFile(state, filename, directories) {
 
     if (state.lastSeenMtimeMs.get(filename) === stat.mtimeMs) {
         return; // Unchanged since the last pass that processed it - see lastSeenMtimeMs's own doc comment.
+    }
+
+    // Durable "never importable" check (see character-metadata-db.js's local_import_skips SCHEMA_SQL comment):
+    // only meaningful for .json (classifyJsonCandidate() below is the only classifier that populates this table
+    // so far). Gated on the file's CURRENT mtime matching the mtime the skip was recorded against - a file that
+    // has since changed (e.g. the owner turned a stray lorebook export into a real character card) naturally
+    // falls through to a fresh classification/import attempt below instead of staying permanently skipped.
+    if (format === 'json') {
+        const existingSkip = await getLocalImportSkip(directories, sourcePath);
+        if (existingSkip && existingSkip.mtimeMs === stat.mtimeMs) {
+            // Already positively classified and logged once when the skip was first recorded - nothing new to
+            // report. Still mark this pass so next pass's cheap early-return above short-circuits this
+            // same lookup too, exactly like a successful import's own bookkeeping.
+            await markProcessed(state, directories, sourcePath, filename, stat.mtimeMs);
+            return;
+        }
     }
 
     try {
@@ -330,6 +485,44 @@ async function processFile(state, filename, directories) {
         // investigation). A plain buffered read (not a stream) also means one read syscall for a typical
         // multi-MB card instead of the dozens a 64KB-chunked ReadStream issued.
         const sourceBuffer = await fsPromises.readFile(sourcePath);
+
+        // Permanent-skip classification (see classifyJsonCandidate()'s own doc comment): runs on the raw bytes
+        // alone, before any staging/import machinery is touched, so it can never be confused with - or mask - a
+        // real failure IN that machinery. Only ever short-circuits format 'json' candidates that are positively
+        // determined here to be either not valid JSON at all, or valid JSON that isn't a recognized character-
+        // card shape; everything else (including every other format, and any json this doesn't recognize as
+        // one of those two failure shapes) falls through to the exact same import attempt as before, which
+        // keeps its own existing retry-on-failure behavior for genuinely transient problems untouched.
+        if (format === 'json') {
+            const classification = classifyJsonCandidate(sourceBuffer);
+            if (classification) {
+                const reasonText = classification === 'not-json'
+                    ? 'not valid JSON (the content does not look like a character card - possibly a misnamed/mislabeled file, e.g. an image saved with a .json extension)'
+                    : 'valid JSON but not a recognized character card shape (no spec/name/char_name field - likely a lorebook/world-info export or other non-character JSON)';
+                console.warn(color.yellow(`[local-import] Permanently skipping ${sourcePath}: ${reasonText}. Will not retry unless the file changes.`));
+                await setLocalImportSkip(directories, sourcePath, stat.mtimeMs, classification);
+                await markProcessed(state, directories, sourcePath, filename, stat.mtimeMs);
+                return;
+            }
+
+            // Reaching here for a .json candidate means: this file is NOT skip-worthy at its current bytes -
+            // either it never was, or (the case this specifically guards) it WAS previously skip-classified at
+            // an older mtime and has since been edited into something classifyJsonCandidate() no longer
+            // rejects (e.g. a stray lorebook export the owner turned into a real character card). The mtime-gated
+            // early-return above already established any existingSkip row here is for a DIFFERENT (stale) mtime
+            // if one exists at all - clear it unconditionally (a no-op DELETE if there was never a row) so a
+            // file that's since become genuinely importable doesn't keep carrying a skip record from before it
+            // changed. Without this, getLocalImportSkip() would keep returning that stale row forever, even
+            // though its own mtime-match gate means it can no longer actually SHORT-CIRCUIT anything - purely a
+            // leftover, misleading record, not a functional bug on its own, but real hygiene debt every corpus
+            // edit-in-place would accumulate.
+            try {
+                await clearLocalImportSkip(directories, sourcePath);
+            } catch (clearErr) {
+                console.debug(`[local-import] Failed to clear stale local_import_skips record for ${sourcePath}:`, clearErr.message);
+            }
+        }
+
         const contentHash = crypto.createHash('sha256').update(sourceBuffer).digest('hex');
 
         // Cheap pre-copy dedup check: skip staging entirely for a file already in the library. Correctness of
@@ -339,7 +532,9 @@ async function processFile(state, filename, directories) {
         const alreadyImported = await findCharacterIdByContentHash(directories, contentHash);
         if (alreadyImported) {
             await maybeHardlinkDuplicateSource(sourcePath, alreadyImported, contentHash, directories);
-            state.lastSeenMtimeMs.set(filename, stat.mtimeMs);
+            // In-memory only, not persisted - see markProcessedInMemoryOnly()'s own doc comment on why a
+            // duplicate match must never be treated as a durable, restart-surviving skip.
+            markProcessedInMemoryOnly(state, filename, stat.mtimeMs);
             return;
         }
 
@@ -357,7 +552,8 @@ async function processFile(state, filename, directories) {
                     // never inspects the hash's own value - see that function's doc comment), so the on-disk
                     // dedup behavior is identical either way.
                     await maybeHardlinkDuplicateSource(sourcePath, identityMatch, contentHash, directories);
-                    state.lastSeenMtimeMs.set(filename, stat.mtimeMs);
+                    // In-memory only - same reasoning as the exact content_hash match above.
+                    markProcessedInMemoryOnly(state, filename, stat.mtimeMs);
                     return;
                 }
             } catch (err) {
@@ -381,7 +577,7 @@ async function processFile(state, filename, directories) {
             console.log(color.cyan(`[local-import] Imported ${sourcePath} as ${result.fileName}.png`));
         }
 
-        state.lastSeenMtimeMs.set(filename, stat.mtimeMs);
+        await markProcessed(state, directories, sourcePath, filename, stat.mtimeMs);
     } catch (err) {
         // Logs the full Error (stack included), not just err.message - a message-only line like "Input must be
         // string" gives no way to tell which of several sanitize()/hash/parse calls in the import path actually
@@ -397,6 +593,15 @@ async function processFile(state, filename, directories) {
  * beginBatchImport()/endBatchImport() (same machinery a bulk drag-drop import already uses - see this module's
  * header) so a directory holding many files pays one SQLite transaction/watcher-suspension window for the whole
  * pass rather than one per file.
+ *
+ * Also sweeps for files removed since the LAST pass that saw them (as opposed to processFile()'s own ENOENT
+ * branch, which only ever catches a file removed WITHIN this same pass, between readdir() listing it and
+ * stat()'ing it - readdir() below simply never lists a file that was already gone before it ran, so
+ * processFile() is never even called for it, and a durable local_import_skips/local_import_mtimes row for it
+ * would otherwise survive forever - a real, ordinary occurrence for a corpus directory's normal churn, not an
+ * edge case). Computed as "every filename lastSeenMtimeMs knows about that ISN'T in this pass's fresh readdir()
+ * listing" - lastSeenMtimeMs already IS this state's "files we've seen and are tracking" set, so no separate
+ * bookkeeping is needed to know what to check for absence.
  * @param {DirectoryScanState} state
  * @param {import('./users.js').UserDirectoryList} directories
  * @returns {Promise<void>}
@@ -417,6 +622,17 @@ export async function scanDirectory(state, directories) {
 
     await beginBatchImport(directories);
     try {
+        const entrySet = new Set(entries);
+        // Snapshotted before the main loop below, which mutates lastSeenMtimeMs as it goes - this sweep is only
+        // ever about files this pass's own readdir() never saw at all, not ones the main loop below discovers
+        // are newly-added.
+        const previouslyTracked = [...state.lastSeenMtimeMs.keys()];
+        for (const filename of previouslyTracked) {
+            if (!entrySet.has(filename)) {
+                await cleanupRemovedFile(state, directories, filename);
+            }
+        }
+
         for (const filename of entries) {
             await processFile(state, filename, directories);
         }
@@ -469,11 +685,99 @@ function stopWatcherFor(state) {
 }
 
 /**
+ * Warms one directory's DirectoryScanState.lastSeenMtimeMs from character-metadata-db.js's persisted
+ * `local_import_mtimes` table (see that table's SCHEMA_SQL comment and lastSeenMtimeMs's own doc comment) -
+ * called once per state, before its first pass, so a server restart doesn't force a full read+hash+dedup-check
+ * of every unchanged file in the corpus. `allMtimes` is one bulk-loaded Map covering every configured directory
+ * for this user (not just this one) - filtered here to this state's own sourceDir - so initializeLocalImportScan()
+ * only pays for one SELECT total across however many directories are configured, not one per directory.
+ * @param {DirectoryScanState} state
+ * @param {Map<string, number>} allMtimes source_path -> mtimeMs, as returned by getAllLocalImportMtimes()
+ */
+function warmMtimeCache(state, allMtimes) {
+    const prefix = state.sourceDir.endsWith(path.sep) ? state.sourceDir : state.sourceDir + path.sep;
+    for (const [sourcePath, mtimeMs] of allMtimes) {
+        if (!sourcePath.startsWith(prefix)) continue;
+        state.lastSeenMtimeMs.set(path.basename(sourcePath), mtimeMs);
+    }
+}
+
+/**
+ * Runs one full pass over every configured directory, then - unless disposeLocalImportScan() has since been
+ * called - schedules the NEXT pass `scanIntervalMs` after THIS one finishes, and recurses.
+ *
+ * Deliberately self-pacing rather than a fixed-rate `setInterval` (which is what this used to be): a fixed-rate
+ * timer fires again on the wall clock regardless of whether the previous pass is still running, and for a
+ * corpus the size of the owner's real one (~301,717 files, measured ~214 files/sec post the read-once fix -
+ * i.e. ~23.5 minutes for one full pass) that is nowhere close to a 60-second default interval, so passes would
+ * pile up concurrently forever with no idle time ever. Concretely, that's not just wasteful: two overlapping
+ * scanDirectory() calls both wrap themselves in beginBatchImport()/endBatchImport() (character-metadata-db.js),
+ * whose batch-mode guard is idempotent (a second concurrent beginBatchImport() call is a no-op against an
+ * already-active batch) - so the FIRST pass's endBatchImport() would flush/reconcile/resume the watcher while
+ * the SECOND pass is still mid-flight actively writing through the same batch state, and that second pass's own
+ * endBatchImport() would then itself be a no-op (batch already cleared), silently skipping its own
+ * flush/reconcile. A structural correctness bug on top of the wasted CPU, not just extra wasted CPU. Because
+ * scanStates is only ever driven by this one recursive call chain, and the next pass is only ever scheduled
+ * from a `.finally` that runs after the previous pass's promise has already settled, there is no code path
+ * through which two passes can be in flight at once - no separate "is a scan running" flag is needed to prevent
+ * it, it's true by construction.
+ *
+ * `scanIntervalMs` therefore means "wait this long after the PREVIOUS pass completes", not "fire every N ms
+ * regardless" - same config key, same default, adapted semantics. For a fast-changing small corpus this is
+ * indistinguishable from the old fixed-rate behavior (passes finish near-instantly, so the two are the same up
+ * to rounding); it only diverges - correctly - once a pass takes longer than the configured interval.
+ * @param {import('./users.js').UserDirectoryList} userDirectories
+ * @param {number} scanIntervalMs
+ * @returns {Promise<void>} Resolves once this one pass (not future rescheduled passes) completes - see
+ * currentPassPromise/waitForCurrentScanPass() for why that's still exposed despite production never awaiting it.
+ */
+async function runScanCycle(userDirectories, scanIntervalMs) {
+    const pass = (async () => {
+        for (const state of scanStates) {
+            await scanDirectory(state, userDirectories).catch(err => {
+                console.error(`[local-import] Periodic scan failed for ${state.sourceDir}:`, err);
+            });
+        }
+    })();
+    currentPassPromise = pass;
+    await pass;
+
+    if (disposed) return;
+    scanTimeout = setTimeout(() => {
+        runScanCycle(userDirectories, scanIntervalMs);
+    }, scanIntervalMs);
+    // Same reasoning as character-metadata-db.js's reconcileInterval: unref() so this timer is never the reason
+    // the process can't exit.
+    scanTimeout.unref?.();
+}
+
+/**
+ * Resolves once the currently in-flight (or most recently completed, if none is in flight) full scan pass
+ * finishes. Exists for tests/observability only - see currentPassPromise's own doc comment on why production
+ * code never calls this: awaiting a pass over a large real corpus is exactly the boot-blocking behavior this
+ * module no longer does.
+ * @returns {Promise<void>}
+ */
+export async function waitForCurrentScanPass() {
+    await currentPassPromise;
+}
+
+/**
  * Server-boot entry point, meant to be called once alongside character-metadata-db.js's
  * initializeMetadataStores() (see server-main.js). Reads `localImport.directories`/`enabled`/`scanIntervalMs`/
- * `watchEnabled` from config.yaml, starts one periodic-scan interval covering every configured directory plus
- * (if enabled) one fs.watch per directory, and runs one scan pass immediately rather than waiting for the first
- * interval tick.
+ * `watchEnabled` from config.yaml, warms each configured directory's mtime-skip cache from the persisted
+ * `local_import_mtimes` table (warmMtimeCache()), starts (if enabled) one fs.watch per directory, and kicks off
+ * the self-pacing scan cycle (runScanCycle()) covering every configured directory.
+ *
+ * Deliberately does NOT await that scan cycle's first pass before returning: the OLD synchronous-initial-scan
+ * behavior meant server-main.js's `preSetupTasks()` - which this is awaited from, and which itself gates the
+ * server ever calling `listen()` - blocked server startup entirely on a full pass over whatever's configured,
+ * which for the owner's real ~301,717-file corpus measures ~23.5 minutes on EVERY restart, cold-cache or not.
+ * This mirrors initializeMetadataStores()'s own already-established precedent one call above this one in
+ * preSetupTasks() ("Deliberately not awaited beyond schema creation... a large library's bootstrap backfill must
+ * never delay the server actually starting to listen") - the same reasoning applies here, just to a different
+ * subsystem's boot-time backfill. Tests that need to observe the initial pass's result use
+ * waitForCurrentScanPass().
  *
  * A no-op (and never touches `directories`, uploads, or the watcher) when `enabled` is false or the configured
  * `directories` list is empty - this feature is entirely inert on an install that hasn't opted into it.
@@ -481,6 +785,7 @@ function stopWatcherFor(state) {
  */
 export async function initializeLocalImportScan() {
     disposeLocalImportScan(); // Idempotent re-init, same convention as re-running this at boot would need.
+    disposed = false;
 
     const enabled = getConfigValue('localImport.enabled', true, 'boolean');
     const directories = getConfigValue('localImport.directories', [], null);
@@ -500,38 +805,34 @@ export async function initializeLocalImportScan() {
         watchTimers: new Map(),
     }));
 
+    const allMtimes = await getAllLocalImportMtimes(userDirectories);
     for (const state of scanStates) {
+        warmMtimeCache(state, allMtimes);
         if (watchEnabled) {
             startWatcherFor(state, userDirectories);
         }
-        await scanDirectory(state, userDirectories).catch(err => {
-            console.error(`[local-import] Initial scan failed for ${state.sourceDir}:`, err);
-        });
     }
 
-    scanInterval = setInterval(() => {
-        for (const state of scanStates) {
-            scanDirectory(state, userDirectories).catch(err => {
-                console.error(`[local-import] Periodic scan failed for ${state.sourceDir}:`, err);
-            });
-        }
-    }, scanIntervalMs);
-    // Same reasoning as character-metadata-db.js's reconcileInterval: unref() so this timer is never the reason
-    // the process can't exit.
-    scanInterval.unref?.();
+    // Not awaited - see this function's own doc comment on why the initial pass must never block server startup.
+    runScanCycle(userDirectories, scanIntervalMs).catch(err => {
+        console.error('[local-import] Scan cycle crashed unexpectedly:', err);
+    });
 }
 
 /**
- * Graceful-shutdown / test-teardown counterpart to initializeLocalImportScan(): closes every watcher and clears
- * the scan interval. Mirrors character-metadata-db.js's disposeMetadataStores().
+ * Graceful-shutdown / test-teardown counterpart to initializeLocalImportScan(): closes every watcher, tells any
+ * in-flight scan cycle to stop rescheduling itself once its current pass finishes, and clears the pending
+ * reschedule timer if one is set. Mirrors character-metadata-db.js's disposeMetadataStores().
  */
 export function disposeLocalImportScan() {
+    disposed = true;
     for (const state of scanStates) {
         stopWatcherFor(state);
     }
     scanStates = [];
-    if (scanInterval) {
-        clearInterval(scanInterval);
-        scanInterval = null;
+    currentPassPromise = null;
+    if (scanTimeout) {
+        clearTimeout(scanTimeout);
+        scanTimeout = null;
     }
 }
