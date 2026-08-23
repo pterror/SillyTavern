@@ -458,6 +458,45 @@ describe('avatar_identity_hash / findCharacterIdByIdentityHashes (avatar-aware i
         expect(await metadataDb.findCharacterIdByIdentityHashes(directories, contentHash, null)).toBeNull();
     });
 
+    test('when the MATCHING ROW has NULL avatar_identity_hash (never backfilled), a real duplicate is still found via byte-level fallback, not silently missed (2026-08 incident regression)', async () => {
+        // A real PNG on disk whose row was written WITHOUT an avatarIdentityHash (e.g. bootstrap/reconcile on an
+        // install predating this column) - avatar_identity_hash stays NULL exactly like an unbackfilled row.
+        const filePath = await writeCardFile('Bob.png');
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+        expect(row.avatar_identity_hash).toBeNull();
+
+        // The candidate's own avatar hash, computed fresh the same way the real import pipeline would - matches
+        // Bob.png's actual on-disk avatar bytes since writeCardFile() wrote it from the same base image.
+        const buffer = await fs.promises.readFile(filePath);
+        const extract = (await import('png-chunks-extract')).default;
+        const candidateAvatarHash = cardParser.computeAvatarIdentityHashFromChunks(extract(new Uint8Array(buffer)));
+
+        const match = await metadataDb.findCharacterIdByIdentityHashes(directories, row.content_identity_hash, candidateAvatarHash);
+        expect(match).toBe('Bob.png');
+
+        // Opportunistic self-heal: the fallback's own read should have backfilled the row so it never needs
+        // this slow path again.
+        const rowAfter = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+        expect(rowAfter.avatar_identity_hash).toBe(candidateAvatarHash);
+    });
+
+    test('when the MATCHING ROW has NULL avatar_identity_hash but the candidate is genuinely a DIFFERENT portrait, the fallback does not falsely merge them', async () => {
+        await writeCardFile('Bob.png');
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+        expect(row.avatar_identity_hash).toBeNull();
+
+        const match = await metadataDb.findCharacterIdByIdentityHashes(directories, row.content_identity_hash, 'a-genuinely-different-avatar-hash');
+        expect(match).toBeNull();
+
+        // Still opportunistically backfilled with Bob.png's REAL hash (not the candidate's), even though this
+        // particular candidate didn't match it.
+        const rowAfter = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+        expect(rowAfter.avatar_identity_hash).toEqual(expect.any(String));
+        expect(rowAfter.avatar_identity_hash).not.toBe('a-genuinely-different-avatar-hash');
+    });
+
     test('migrates an existing (pre-avatar_identity_hash) database in place without losing rows', async () => {
         const { default: Database } = await import('better-sqlite3');
         const dbPath = path.join(tempDir, 'character-metadata.sqlite');
