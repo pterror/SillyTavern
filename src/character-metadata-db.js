@@ -307,6 +307,48 @@ const SCHEMA_SQL = `
     );
     CREATE INDEX IF NOT EXISTS idx_id_migration_new ON id_migration(new_id);
     CREATE INDEX IF NOT EXISTS idx_id_migration_completed ON id_migration(completed);
+
+    -- local-import-scan.js's durable "this source file has been positively determined to never be importable"
+    -- record - source_path is the discovered file's full absolute path (not just its basename: multiple
+    -- configured localImport.directories can share a filename, and this table is keyed per-DEFAULT_USER, not
+    -- per-directory, so the full path is the only thing that's actually unique). Exists so a genuinely
+    -- non-character file (invalid JSON entirely, e.g. a misnamed PNG; or valid JSON that isn't any recognized
+    -- character-card shape, e.g. a lorebook/world-info export sharing a corpus directory with real cards) gets
+    -- classified and logged ONCE, rather than re-attempting and re-logging a failed import every single scan
+    -- pass forever, including across server restarts (unlike DirectoryScanState.lastSeenMtimeMs, which is
+    -- in-memory-only and exists purely as a same-process efficiency cache - this table is the actual mechanism
+    -- that stops the retry loop from resuming on every boot).
+    -- mtime_ms records the file's mtimeMs AT THE TIME it was classified - a lookup only treats the skip as
+    -- still valid when the file's CURRENT mtime still matches, so an owner editing/replacing a skipped file
+    -- (e.g. turning a stray lorebook export into an actual character card) naturally invalidates the skip and
+    -- gets a fresh classification attempt on the very next pass, no explicit cache-busting needed. This is also
+    -- what tells a permanent non-importability apart from a transient one: this row is only ever written from a
+    -- pure, non-destructive, in-memory content classification (JSON.parse + shape check) run BEFORE any staging
+    -- or import machinery is touched - a real bug in the import code itself, or a file mid-write, never reaches
+    -- this table at all and keeps the pre-existing "retry every pass" behavior untouched.
+    CREATE TABLE IF NOT EXISTS local_import_skips (
+        source_path TEXT PRIMARY KEY,
+        mtime_ms    INTEGER NOT NULL,
+        reason      TEXT NOT NULL,
+        checked_at  INTEGER NOT NULL
+    );
+
+    -- local-import-scan.js's durable per-file "already processed at this mtime" record - the persisted
+    -- counterpart to DirectoryScanState.lastSeenMtimeMs (in-memory-only, cold on every restart - see that
+    -- field's own doc comment). Without this, a server restart forces a full read+hash+dedup-check of every
+    -- file in every configured directory even when nothing changed since the last boot, because the in-memory
+    -- skip cache always starts empty (measured ~23 minutes for a real ~301k-file corpus - 2026-08 local-import
+    -- perf investigation). This table lets that skip survive a restart: on boot, local-import-scan.js bulk-loads
+    -- every row for a configured directory into a fresh state's lastSeenMtimeMs before the first pass runs, so a
+    -- file whose on-disk mtime still matches its recorded row is skipped in O(1) (a stat, no read/hash/import)
+    -- exactly like an in-process rescan already does - this only extends that same existing, efficiency-only,
+    -- never-relied-on-for-correctness semantics across a restart, it does not change what "unchanged" means.
+    -- Same source_path-is-the-key shape as local_import_skips, for the same reason (multiple configured
+    -- directories can share a filename; this table is keyed per-DEFAULT_USER, not per-directory).
+    CREATE TABLE IF NOT EXISTS local_import_mtimes (
+        source_path TEXT PRIMARY KEY,
+        mtime_ms    INTEGER NOT NULL
+    );
 `;
 
 const UPSERT_SQL = `
@@ -1585,6 +1627,122 @@ export async function findCharacterIdByContentIdentityHash(directories, hash) {
 
     const row = entry.db.get('SELECT id FROM characters WHERE content_identity_hash = @hash', { hash });
     return row ? row.id : null;
+}
+
+/**
+ * Looks up local-import-scan.js's durable "never importable" record for one source file (see this module's
+ * SCHEMA_SQL comment on `local_import_skips`).
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} sourcePath Absolute path to the discovered source file
+ * @returns {Promise<{ mtimeMs: number, reason: string } | null>} `null` if no skip is recorded, OR if the
+ * metadata store itself is unavailable (fail-open, matching this module's convention elsewhere - callers must
+ * treat that as "can't determine, don't skip", not as "confirmed not skipped").
+ */
+export async function getLocalImportSkip(directories, sourcePath) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    const row = entry.db.get('SELECT mtime_ms, reason FROM local_import_skips WHERE source_path = @sourcePath', { sourcePath });
+    return row ? { mtimeMs: Number(row.mtime_ms), reason: row.reason } : null;
+}
+
+/**
+ * Records (or refreshes) local-import-scan.js's durable "never importable" classification for one source file.
+ * A no-op (fail-open) if the metadata store is unavailable - the caller's already-emitted one-time log line is
+ * the only record that exists in that case, and the file falls back to the pre-existing "retry every pass"
+ * behavior, which is wasteful but never incorrect.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} sourcePath Absolute path to the discovered source file
+ * @param {number} mtimeMs The file's mtimeMs at the moment it was classified (see this column's SCHEMA_SQL comment)
+ * @param {string} reason Short machine-readable classification tag (e.g. 'not-json', 'unrecognized-shape')
+ * @returns {Promise<void>}
+ */
+export async function setLocalImportSkip(directories, sourcePath, mtimeMs, reason) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+
+    entry.db.run(
+        `INSERT INTO local_import_skips (source_path, mtime_ms, reason, checked_at)
+         VALUES (@sourcePath, @mtimeMs, @reason, @checkedAt)
+         ON CONFLICT(source_path) DO UPDATE SET
+            mtime_ms = excluded.mtime_ms,
+            reason = excluded.reason,
+            checked_at = excluded.checked_at`,
+        { sourcePath, mtimeMs, reason, checkedAt: Date.now() },
+    );
+}
+
+/**
+ * Clears a source file's local-import-skip record, if any - called once local-import-scan.js observes the file
+ * itself is gone (ENOENT), so this table doesn't accumulate rows for files that no longer exist on disk. A
+ * no-op (fail-open) if the metadata store is unavailable.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} sourcePath Absolute path to the discovered source file
+ * @returns {Promise<void>}
+ */
+export async function clearLocalImportSkip(directories, sourcePath) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+
+    entry.db.run('DELETE FROM local_import_skips WHERE source_path = @sourcePath', { sourcePath });
+}
+
+/**
+ * Bulk-loads every persisted `local_import_mtimes` row for this user (see this module's SCHEMA_SQL comment on
+ * that table) into a single Map, so local-import-scan.js can warm a fresh DirectoryScanState.lastSeenMtimeMs
+ * with ONE query at boot instead of one lookup per file - mirrors reconcile()'s own
+ * `SELECT id, file_mtime FROM characters` -> Map bulk-load pattern for the same reason (a per-file round trip
+ * for a ~300k-file corpus would itself be a real cost, even though each individual lookup is cheap).
+ * Not scoped to one configured directory - local-import-scan.js filters the returned Map to the source_path
+ * prefixes it cares about, same as this table isn't partitioned by directory (see SCHEMA_SQL comment).
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<Map<string, number>>} source_path -> mtimeMs. Empty (not null) if the metadata store is
+ * unavailable - fail-open, matching this module's convention elsewhere: an empty cache just means every file
+ * looks new, which is always safe (if wasteful), never incorrect.
+ */
+export async function getAllLocalImportMtimes(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return new Map();
+
+    const rows = entry.db.all('SELECT source_path, mtime_ms FROM local_import_mtimes');
+    return new Map(rows.map(row => [row.source_path, Number(row.mtime_ms)]));
+}
+
+/**
+ * Records (or refreshes) local-import-scan.js's durable "already processed at this mtime" record for one source
+ * file - the write-through counterpart to getAllLocalImportMtimes()'s bulk read. A no-op (fail-open) if the
+ * metadata store is unavailable, same posture as setLocalImportSkip(): losing this write only means the file
+ * gets re-read/re-hashed (wastefully, never incorrectly) on the next restart, not a correctness problem.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} sourcePath Absolute path to the discovered source file
+ * @param {number} mtimeMs The file's mtimeMs as of the pass that just processed it
+ * @returns {Promise<void>}
+ */
+export async function setLocalImportMtime(directories, sourcePath, mtimeMs) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+
+    entry.db.run(
+        `INSERT INTO local_import_mtimes (source_path, mtime_ms)
+         VALUES (@sourcePath, @mtimeMs)
+         ON CONFLICT(source_path) DO UPDATE SET mtime_ms = excluded.mtime_ms`,
+        { sourcePath, mtimeMs },
+    );
+}
+
+/**
+ * Clears a source file's persisted mtime record, if any - called once local-import-scan.js observes the file
+ * itself is gone (ENOENT), so this table doesn't accumulate rows for files that no longer exist on disk, same
+ * hygiene reasoning as clearLocalImportSkip(). A no-op (fail-open) if the metadata store is unavailable.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} sourcePath Absolute path to the discovered source file
+ * @returns {Promise<void>}
+ */
+export async function clearLocalImportMtime(directories, sourcePath) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+
+    entry.db.run('DELETE FROM local_import_mtimes WHERE source_path = @sourcePath', { sourcePath });
 }
 
 /**

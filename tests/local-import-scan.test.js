@@ -453,6 +453,137 @@ describe('scanDirectory (unit: direct directories fixture, no boot wiring)', () 
             expect(fs.readdirSync(charactersDir).length).toBe(1);
         });
     });
+
+    describe('permanently skipping non-character .json files (2026-08 retry-loop fix)', () => {
+        // Two real cases pulled straight from an owner's live corpus-directory logs: a genuinely non-character
+        // JSON file (a lorebook/world-info export) sitting alongside real character cards, and a completely
+        // different file (PNG binary content) that got misnamed/mislabeled with a `.json` extension. Both used
+        // to fail import on every single scan pass forever, spamming the log - see local-import-scan.js's
+        // classifyJsonCandidate() for the fix.
+        let warnSpy;
+
+        beforeEach(() => {
+            warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+        });
+
+        afterEach(() => {
+            warnSpy.mockRestore();
+        });
+
+        test('PNG-content-with-.json-extension: not valid JSON at all - skipped, not imported, logged once, and never re-attempted on a later pass', async () => {
+            // A minimal real PNG signature + IHDR-ish bytes, exactly the "binary content, .json extension"
+            // shape the owner's logs showed (JSON.parse choking on the '\x89PNG' signature byte).
+            const misnamedPath = path.join(sourceDir, 'Nirana.json');
+            fs.writeFileSync(misnamedPath, BLANK_PNG);
+
+            const state = buildState();
+            await localImportScan.scanDirectory(state, directories);
+
+            expect(fs.readdirSync(charactersDir).length).toBe(0);
+            expect(fs.existsSync(misnamedPath)).toBe(true); // never touched/consumed
+
+            const skip = await metadataDb.getLocalImportSkip(directories, misnamedPath);
+            expect(skip).not.toBeNull();
+            expect(skip.reason).toBe('not-json');
+
+            const permSkipWarnings = warnSpy.mock.calls.filter(call => String(call[0]).includes('Permanently skipping'));
+            expect(permSkipWarnings.length).toBe(1);
+
+            // A second pass over the SAME in-memory state must not re-attempt or re-log - lastSeenMtimeMs's
+            // own cheap early-return already short-circuits this.
+            await localImportScan.scanDirectory(state, directories);
+            expect(warnSpy.mock.calls.filter(call => String(call[0]).includes('Permanently skipping')).length).toBe(1);
+        });
+
+        test('valid JSON but not a recognized character-card shape (e.g. a lorebook/world-info export) - skipped, not imported, logged once', async () => {
+            const lorePath = path.join(sourceDir, 'Nirana Lore Extension - Elvish Culture.json');
+            fs.writeFileSync(lorePath, JSON.stringify({
+                entries: { 0: { key: ['elves'], content: 'The Elvish people of Nirana...' } },
+                originalData: {},
+            }));
+
+            await localImportScan.scanDirectory(buildState(), directories);
+
+            expect(fs.readdirSync(charactersDir).length).toBe(0);
+            expect(fs.existsSync(lorePath)).toBe(true);
+
+            const skip = await metadataDb.getLocalImportSkip(directories, lorePath);
+            expect(skip).not.toBeNull();
+            expect(skip.reason).toBe('unrecognized-shape');
+
+            const permSkipWarnings = warnSpy.mock.calls.filter(call => String(call[0]).includes('Permanently skipping'));
+            expect(permSkipWarnings.length).toBe(1);
+        });
+
+        test('the skip survives a fresh in-memory scan state (simulated server restart) - only the durable metadata-db record, not the in-memory lastSeenMtimeMs cache, is what actually stops the retry loop', async () => {
+            const lorePath = path.join(sourceDir, 'lore.json');
+            fs.writeFileSync(lorePath, JSON.stringify({ entries: {} }));
+
+            await localImportScan.scanDirectory(buildState(), directories); // first "boot"
+            expect(warnSpy.mock.calls.filter(call => String(call[0]).includes('Permanently skipping')).length).toBe(1);
+
+            // A brand new state (empty lastSeenMtimeMs Map) is exactly what a real server restart produces -
+            // local-import-scan.js never persists that map itself (see its own doc comment on it being a
+            // cold-started, in-memory-only efficiency cache).
+            await localImportScan.scanDirectory(buildState(), directories); // second "boot"
+
+            // No new "Permanently skipping" log and still nothing imported - the durable local_import_skips
+            // record (keyed on the file's unchanged mtime) is what caught it this time, not the in-memory map.
+            expect(warnSpy.mock.calls.filter(call => String(call[0]).includes('Permanently skipping')).length).toBe(1);
+            expect(fs.readdirSync(charactersDir).length).toBe(0);
+        });
+
+        test('a previously-skipped file that is edited into a real character card gets a fresh classification attempt and imports normally', async () => {
+            const filePath = path.join(sourceDir, 'maybe-a-character.json');
+            fs.writeFileSync(filePath, JSON.stringify({ entries: {} })); // starts out as a lorebook-shaped file
+
+            const state = buildState();
+            await localImportScan.scanDirectory(state, directories);
+            expect(fs.readdirSync(charactersDir).length).toBe(0);
+            expect((await metadataDb.getLocalImportSkip(directories, filePath)).reason).toBe('unrecognized-shape');
+
+            // The owner (or some other process) rewrites the same path into an actual v1 character card. Force a
+            // distinct mtime so this isn't short-circuited by either skip cache before the content is re-read.
+            await new Promise(resolve => setTimeout(resolve, 10));
+            fs.writeFileSync(filePath, JSON.stringify({ name: 'Reclassified', description: 'now a real character' }));
+
+            await localImportScan.scanDirectory(state, directories);
+
+            expect(fs.readdirSync(charactersDir).length).toBe(1);
+            expect(await metadataDb.getLocalImportSkip(directories, filePath)).toBeNull();
+        });
+
+        test('a source file removed after being skipped has its durable skip record cleaned up, not left dangling forever', async () => {
+            const filePath = path.join(sourceDir, 'temporary-lore.json');
+            fs.writeFileSync(filePath, JSON.stringify({ entries: {} }));
+
+            const state = buildState();
+            await localImportScan.scanDirectory(state, directories);
+            expect(await metadataDb.getLocalImportSkip(directories, filePath)).not.toBeNull();
+
+            fs.rmSync(filePath);
+            await localImportScan.scanDirectory(state, directories);
+
+            expect(await metadataDb.getLocalImportSkip(directories, filePath)).toBeNull();
+        });
+
+        test('this fix is scoped to .json only: a different format that fails for a non-content reason keeps the pre-existing retry-every-pass behavior, and is never recorded as a permanent skip', async () => {
+            // Not a real PNG at all (no signature, no chunks) - importFromPng() throws "Failed to read character
+            // data", which is caught by processFile()'s own outer catch (a genuine import-machinery failure, not
+            // a content pre-check) and deliberately retried forever, exactly as before this fix.
+            const brokenPngPath = path.join(sourceDir, 'broken.png');
+            fs.writeFileSync(brokenPngPath, Buffer.from('this is not a png'));
+
+            const state = buildState();
+            await localImportScan.scanDirectory(state, directories);
+            await localImportScan.scanDirectory(state, directories);
+
+            expect(fs.readdirSync(charactersDir).length).toBe(0);
+            expect(fs.existsSync(brokenPngPath)).toBe(true);
+            // No local_import_skips row - this failure mode is untouched by classifyJsonCandidate() (json-only).
+            expect(await metadataDb.getLocalImportSkip(directories, brokenPngPath)).toBeNull();
+        });
+    });
 });
 
 describe('initializeLocalImportScan / disposeLocalImportScan (config wiring)', () => {
@@ -525,12 +656,16 @@ describe('initializeLocalImportScan / disposeLocalImportScan (config wiring)', (
         expect(fs.readdirSync(userCharactersDir).length).toBe(0);
     });
 
-    test('enabled with a configured directory imports the default-user library synchronously on boot', async () => {
+    test('enabled with a configured directory imports the default-user library once the background initial scan completes (2026-08 boot-non-blocking fix: initializeLocalImportScan() itself resolves BEFORE the scan runs)', async () => {
         writeJsonCharacterFile(sourceDir, 'ghost.json');
         process.env.SILLYTAVERN_LOCALIMPORT_ENABLED = 'true';
         process.env.SILLYTAVERN_LOCALIMPORT_DIRECTORIES = JSON.stringify([sourceDir]);
 
         await localImportScan.initializeLocalImportScan();
+        // initializeLocalImportScan() deliberately does not wait for the scan itself (see its own doc comment on
+        // why a full pass must never block server startup) - waitForCurrentScanPass() is the test-only way to
+        // observe "the initial pass has now finished".
+        await localImportScan.waitForCurrentScanPass();
 
         const files = fs.readdirSync(userCharactersDir);
         expect(files.length).toBe(1);
@@ -544,8 +679,112 @@ describe('initializeLocalImportScan / disposeLocalImportScan (config wiring)', (
         process.env.SILLYTAVERN_LOCALIMPORT_DIRECTORIES = JSON.stringify([sourceDir]);
 
         await localImportScan.initializeLocalImportScan();
+        await localImportScan.waitForCurrentScanPass();
         await localImportScan.initializeLocalImportScan();
+        await localImportScan.waitForCurrentScanPass();
 
         expect(fs.readdirSync(userCharactersDir).length).toBe(1);
+    });
+
+    test('initializeLocalImportScan() itself resolves without waiting for the initial scan pass to finish (boot must never block on a full corpus pass)', async () => {
+        writeJsonCharacterFile(sourceDir, 'ghost.json');
+        process.env.SILLYTAVERN_LOCALIMPORT_ENABLED = 'true';
+        process.env.SILLYTAVERN_LOCALIMPORT_DIRECTORIES = JSON.stringify([sourceDir]);
+
+        // A readFile that never resolves stands in for "a pass that's still running" - if initializeLocalImportScan()
+        // itself waited on the scan, this test would hang and fail on Jest's default timeout.
+        const readFileSpy = jest.spyOn(fs.promises, 'readFile').mockImplementation(() => new Promise(() => {}));
+        try {
+            await expect(localImportScan.initializeLocalImportScan()).resolves.toBeUndefined();
+        } finally {
+            readFileSpy.mockRestore();
+        }
+    });
+
+    test('a restart (fresh in-memory state) does not re-read a source file whose mtime is unchanged since the last completed pass, thanks to the persisted local_import_mtimes record (2026-08 boot-cost fix)', async () => {
+        const filePath = writeJsonCharacterFile(sourceDir, 'ghost.json');
+        process.env.SILLYTAVERN_LOCALIMPORT_ENABLED = 'true';
+        process.env.SILLYTAVERN_LOCALIMPORT_DIRECTORIES = JSON.stringify([sourceDir]);
+
+        await localImportScan.initializeLocalImportScan(); // first "boot"
+        await localImportScan.waitForCurrentScanPass();
+        expect(fs.readdirSync(userCharactersDir).length).toBe(1);
+
+        // Simulate a server restart: dispose (as a real shutdown would) and re-initialize. This constructs a
+        // brand new, empty-Map DirectoryScanState internally - the ONLY thing that can make the second pass skip
+        // re-reading ghost.json's unchanged bytes is the persisted local_import_mtimes record surviving the
+        // "restart", not any in-memory cache (which never survives this).
+        localImportScan.disposeLocalImportScan();
+
+        const readFileSpy = jest.spyOn(fs.promises, 'readFile');
+        try {
+            await localImportScan.initializeLocalImportScan(); // second "boot"
+            await localImportScan.waitForCurrentScanPass();
+        } finally {
+            readFileSpy.mockRestore();
+        }
+
+        const sourceReads = readFileSpy.mock.calls.filter(call => call[0] === filePath);
+        expect(sourceReads.length).toBe(0);
+        // Still exactly one character - the file was recognized as unchanged, not re-imported as a duplicate.
+        expect(fs.readdirSync(userCharactersDir).length).toBe(1);
+    });
+
+    test('a file that changes while the server is down (different mtime) IS re-read and re-processed on the next boot, despite the persisted mtime record for its old mtime', async () => {
+        // Deliberately NOT the shared writeJsonCharacterFile() default content ('Ghost'/'A local-import test
+        // character', which several sibling tests in this describe block also import verbatim) - this block's
+        // own beforeAll note explains why every test here shares one dataRoot/db (getUserDirectories()
+        // memoization), and afterEach only clears files from userCharactersDir, never the underlying DB rows a
+        // completed import leaves behind - so a byte-identical import in an EARLIER test leaves an orphaned
+        // (file-gone, row-still-there) content_hash match that a later test's own identical content would
+        // collide with on its very first pass (findCharacterIdByContentHash() has no way to know the row is
+        // stale - only the NEXT reconcile() pass cleans it up, one pass later than this test can afford to
+        // wait for). Unique content sidesteps the whole class of collision rather than relying on pass timing.
+        const filePath = writeJsonCharacterFile(sourceDir, 'ghost.json', { name: 'Ghost Restart Test Original' });
+        process.env.SILLYTAVERN_LOCALIMPORT_ENABLED = 'true';
+        process.env.SILLYTAVERN_LOCALIMPORT_DIRECTORIES = JSON.stringify([sourceDir]);
+
+        await localImportScan.initializeLocalImportScan();
+        await localImportScan.waitForCurrentScanPass();
+        localImportScan.disposeLocalImportScan();
+
+        // Force a distinct mtime, same as the in-memory-cache equivalent test does, so this isn't short-circuited
+        // before the content is even re-read.
+        await new Promise(resolve => setTimeout(resolve, 10));
+        fs.writeFileSync(filePath, JSON.stringify({ name: 'Ghost Restart Test Edited' }));
+
+        await localImportScan.initializeLocalImportScan();
+        await localImportScan.waitForCurrentScanPass();
+
+        // The changed file's new content was recognized as a genuinely different character, not skipped.
+        const files = fs.readdirSync(userCharactersDir);
+        expect(files.length).toBe(2);
+    });
+
+    test('scanIntervalMs paces the NEXT pass after the previous one completes, not on a fixed wall-clock rate (self-pacing, not setInterval)', async () => {
+        process.env.SILLYTAVERN_LOCALIMPORT_ENABLED = 'true';
+        process.env.SILLYTAVERN_LOCALIMPORT_DIRECTORIES = JSON.stringify([sourceDir]);
+        process.env.SILLYTAVERN_LOCALIMPORT_SCANINTERVALMS = '1000';
+
+        jest.useFakeTimers();
+        try {
+            await localImportScan.initializeLocalImportScan();
+            await localImportScan.waitForCurrentScanPass(); // initial (empty-directory) pass completes
+            expect(fs.readdirSync(userCharactersDir).length).toBe(0);
+
+            // A file dropped in now must NOT be picked up before a full scanIntervalMs has elapsed since the
+            // pass that just finished - proving there's no immediately-pending timer left over from a
+            // fixed-rate scheduling scheme.
+            writeJsonCharacterFile(sourceDir, 'ghost.json');
+            await jest.advanceTimersByTimeAsync(500);
+            expect(fs.readdirSync(userCharactersDir).length).toBe(0);
+
+            // Advancing past the full interval fires the rescheduled pass, which now picks the file up.
+            await jest.advanceTimersByTimeAsync(600);
+            await localImportScan.waitForCurrentScanPass();
+            expect(fs.readdirSync(userCharactersDir).length).toBe(1);
+        } finally {
+            jest.useRealTimers();
+        }
     });
 });
