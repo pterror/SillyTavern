@@ -9553,7 +9553,13 @@ export function select_selected_character(avatar, { switchMenu = true } = {}) {
     const chid = editedEntity ? characters.indexOf(editedEntity) : -1;
     eventSource.emit(event_types.CHARACTER_EDITOR_OPENED, chid);
 
-    saveSettingsDebounced();
+    // This function only populates DOM fields from already-persisted character data and reads/toggles UI
+    // state - it never mutates active_character or anything else the settings payload includes, so there's
+    // nothing here that needs saving. It runs both when switching to a different character (where the
+    // .character_select click handler in RossAscends-mods.js already calls saveSettingsDebounced() after
+    // setActiveCharacter()) and, via the "already selected" branch of selectCharacterByAvatar(), on a plain
+    // re-click of the character that's already open - which used to unconditionally queue a settings save on
+    // every such re-open with nothing new to persist.
 }
 
 /**
