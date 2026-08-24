@@ -1010,6 +1010,14 @@ export function setWorldInfoSettings(settings, data) {
 
     $('#world_info_sort_order').val(accountStorage.getItem(SORT_ORDER_KEY) || '0');
     $('#world_info').trigger('change');
+
+    // Restore last-selected lorebook in the editor dropdown
+    if (power_user.wi_last_editor_book) {
+        const lastBookIndex = world_names.indexOf(power_user.wi_last_editor_book);
+        if (lastBookIndex !== -1) {
+            $('#world_editor_select').val(lastBookIndex);
+        }
+    }
     $('#world_editor_select').trigger('change');
 
     eventSource.on(event_types.CHAT_CHANGED, async () => {
@@ -6229,9 +6237,13 @@ export function initWorldInfo() {
         const selectedIndex = String($('#world_editor_select').find(':selected').val());
 
         if (selectedIndex === '') {
+            power_user.wi_last_editor_book = '';
+            saveSettingsDebounced();
             await hideWorldEditor();
         } else {
             const worldName = world_names[selectedIndex];
+            power_user.wi_last_editor_book = worldName;
+            saveSettingsDebounced();
             showWorldEditor(worldName);
         }
     });

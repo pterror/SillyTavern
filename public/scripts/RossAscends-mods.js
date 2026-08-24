@@ -521,8 +521,8 @@ function OpenNavPanels() {
             $('#leftNavDrawerIcon').trigger('click');
         }
 
-        //auto-open WI if locked and previously open
-        if (accountStorage.getItem('WINavLockOn') == 'true' && accountStorage.getItem('WINavOpened') == 'true') {
+        //auto-open WI if previously open
+        if (accountStorage.getItem('WINavOpened') == 'true') {
             console.debug('RA -- clicking WI to open');
             $('#WIDrawerIcon').trigger('click');
         }
@@ -902,9 +902,9 @@ export function initRossMods() {
         } else { accountStorage.setItem('LNavOpened', 'false'); }
     });
 
-    //save state of Left nav being open or closed
-    $('#WorldInfo').on('click', function () {
-        if (!$('#WorldInfo').hasClass('openIcon')) {
+    //save state of WI nav being open or closed
+    $('#WIDrawerIcon').on('click', function () {
+        if (!$('#WIDrawerIcon').hasClass('openIcon')) {
             accountStorage.setItem('WINavOpened', 'true');
         } else { accountStorage.setItem('WINavOpened', 'false'); }
     });
