@@ -670,7 +670,7 @@ async function connectClickHandler() {
     extension_settings.apiUrl = baseUrl;
     const testApiKey = $('#extensions_api_key').val();
     extension_settings.apiKey = String(testApiKey);
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
     await connectToApi(baseUrl);
 }
 
@@ -682,7 +682,7 @@ function autoConnectInputHandler() {
         $('#extensions_connect').trigger('click');
     }
 
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 async function addExtensionsButtonAndMenu() {
@@ -724,7 +724,7 @@ async function addExtensionsButtonAndMenu() {
 
 function notifyUpdatesInputHandler() {
     extension_settings.notifyUpdates = !!$('#extensions_notify_updates').prop('checked');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 
     if (extension_settings.notifyUpdates) {
         checkForExtensionUpdates(true);

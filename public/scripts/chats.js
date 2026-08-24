@@ -1226,7 +1226,7 @@ async function downloadAttachment(attachment) {
 function enableAttachment(attachment, callback) {
     ensureAttachmentsExist();
     extension_settings.disabled_attachments = extension_settings.disabled_attachments.filter(url => url !== attachment.url);
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
     callback();
 }
 
@@ -1238,7 +1238,7 @@ function enableAttachment(attachment, callback) {
 function disableAttachment(attachment, callback) {
     ensureAttachmentsExist();
     extension_settings.disabled_attachments.push(attachment.url);
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
     callback();
 }
 
@@ -1298,7 +1298,7 @@ export async function deleteAttachment(attachment, source, callback, confirm = t
     switch (source) {
         case 'global':
             extension_settings.attachments = extension_settings.attachments.filter((a) => a.url !== attachment.url);
-            saveSettingsDebounced();
+            saveSettingsDebounced('extension_settings');
             break;
         case 'chat':
             chat_metadata.attachments = chat_metadata.attachments.filter((a) => a.url !== attachment.url);
@@ -1311,7 +1311,7 @@ export async function deleteAttachment(attachment, source, callback, confirm = t
 
     if (Array.isArray(extension_settings.disabled_attachments) && extension_settings.disabled_attachments.includes(attachment.url)) {
         extension_settings.disabled_attachments = extension_settings.disabled_attachments.filter(url => url !== attachment.url);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     }
 
     const silent = confirm === false;
@@ -1732,7 +1732,7 @@ export async function uploadFileAttachmentToServer(file, target) {
     switch (target) {
         case ATTACHMENT_SOURCE.GLOBAL:
             extension_settings.attachments.push(attachment);
-            saveSettingsDebounced();
+            saveSettingsDebounced('extension_settings');
             break;
         case ATTACHMENT_SOURCE.CHAT:
             chat_metadata.attachments.push(attachment);
@@ -1740,7 +1740,7 @@ export async function uploadFileAttachmentToServer(file, target) {
             break;
         case ATTACHMENT_SOURCE.CHARACTER:
             extension_settings.character_attachments[getCurrentCharacter()?.avatar].push(attachment);
-            saveSettingsDebounced();
+            saveSettingsDebounced('extension_settings');
             break;
     }
 
@@ -2304,7 +2304,7 @@ export function initChatUtilities() {
         if (!entityId) return;
         power_user.external_media_allowed_overrides.push(entityId);
         power_user.external_media_forbidden_overrides = power_user.external_media_forbidden_overrides.filter((v) => v !== entityId);
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
         reloadCurrentChat();
     });
     $(document).on('input', '#forbid_media_override_forbidden', function () {
@@ -2312,7 +2312,7 @@ export function initChatUtilities() {
         if (!entityId) return;
         power_user.external_media_forbidden_overrides.push(entityId);
         power_user.external_media_allowed_overrides = power_user.external_media_allowed_overrides.filter((v) => v !== entityId);
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
         reloadCurrentChat();
     });
     $(document).on('input', '#forbid_media_override_global', function () {
@@ -2320,7 +2320,7 @@ export function initChatUtilities() {
         if (!entityId) return;
         power_user.external_media_allowed_overrides = power_user.external_media_allowed_overrides.filter((v) => v !== entityId);
         power_user.external_media_forbidden_overrides = power_user.external_media_forbidden_overrides.filter((v) => v !== entityId);
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
         reloadCurrentChat();
     });
 

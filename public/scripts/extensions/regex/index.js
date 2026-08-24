@@ -184,7 +184,7 @@ class RegexPresetManager {
 
             await this.applyPreset(selectedPresetId);
             extension_settings.regex_presets.forEach(p => { p.isSelected = p.id === selectedPresetId; });
-            saveSettingsDebounced();
+            saveSettingsDebounced('extension_settings');
             this.updateStoredState(selectedPresetId);
         });
 
@@ -442,7 +442,7 @@ class RegexPresetManager {
         }
 
         extension_settings.regex_presets.forEach(p => { p.isSelected = p.id === id; });
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
 
         toastr.success(isUpdate ? t`Regex preset updated` : t`Regex preset saved`);
     }
@@ -469,7 +469,7 @@ class RegexPresetManager {
 
         // Select the first preset if any exist
         extension_settings.regex_presets.forEach((p, i) => { p.isSelected = i === 0; });
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
 
         toastr.success(t`Regex preset deleted`);
     }
@@ -551,7 +551,7 @@ async function saveRegexScript(regexScript, existingScriptIndex, scriptType, sav
     }
 
     if (saveSettings) {
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
         await loadRegexScripts();
 
         // Reload the current chat to undo previous markdown
@@ -595,7 +595,7 @@ async function deleteRegexScript(id, scriptType, saveSettings = true) {
                 break;
         }
         if (saveSettings) {
-            saveSettingsDebounced();
+            saveSettingsDebounced('extension_settings');
             await loadRegexScripts();
         }
     }
@@ -1271,7 +1271,7 @@ async function onRegexDebuggerOpenClick() {
         }
         await saveScriptsByType(newPresetScripts, SCRIPT_TYPES.PRESET);
 
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
         await loadRegexScripts();
         toastr.success(t`Regex script order saved!`);
 
@@ -1409,7 +1409,7 @@ function migrateSettings() {
     });
 
     if (performSave) {
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     }
 }
 
@@ -1522,7 +1522,7 @@ async function onRegexImportObjectChange(regexScript, scriptType) {
                 break;
         }
 
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
         await loadRegexScripts();
         toastr.success(t`Regex script "${regexScript.scriptName}" imported.`);
     } catch (error) {
@@ -1811,7 +1811,7 @@ export async function init() {
             await saveScriptsByType(scriptsOfType, scriptType);
         }
 
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
         await loadRegexScripts();
 
         // Reload the current chat to undo previous markdown
@@ -1835,7 +1835,7 @@ export async function init() {
             await moveRegexScript(script, toType, getScriptType(script), false);
         }
 
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
         await loadRegexScripts();
 
         // Reload the current chat to undo previous markdown
@@ -1890,7 +1890,7 @@ export async function init() {
         for (const script of scripts) {
             await deleteRegexScript(script.id, getScriptType(script), false);
         }
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
         await loadRegexScripts();
         await reloadCurrentChat();
     });
@@ -1941,7 +1941,7 @@ export async function init() {
                 });
 
                 await setter(newScripts);
-                saveSettingsDebounced();
+                saveSettingsDebounced('extension_settings');
 
                 console.debug(`Regex scripts in ${selector} reordered`);
                 await reloadCurrentChat();
@@ -1970,7 +1970,7 @@ export async function init() {
             disallowScopedScripts(character);
         }
 
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
         reloadCurrentChat();
     });
 
@@ -1984,7 +1984,7 @@ export async function init() {
             disallowPresetScripts(getCurrentPresetAPI(), name);
         }
 
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
         reloadCurrentChat();
     });
 

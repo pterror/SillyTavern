@@ -250,7 +250,7 @@ function getTagFilterVisibility(type) {
 function setTagFilterVisibility(type, visible) {
     const settingKey = getTagFilterVisibilitySetting(type);
     power_user[settingKey] = visible;
-    saveSettingsDebounced();
+    saveSettingsDebounced('power_user');
 }
 
 /** @enum {number} */
@@ -1060,14 +1060,14 @@ async function seedTagMapForResidentEntities() {
 function renameTagKey(oldKey, newKey) {
     // Fuse-index invalidation is handled by the tagMapStore.onChange subscriber (rebuildTagStores()).
     tagMapStore.renameKey(oldKey, newKey);
-    saveSettingsDebounced();
+    saveSettingsDebounced('power_user');
 }
 
 function createTagMapFromList(listElement, key) {
     const tagIds = [...($(listElement).find('.tag').map((_, el) => $(el).attr('id')))];
     // Fuse-index invalidation is handled by the tagMapStore.onChange subscriber (rebuildTagStores()).
     tagMapStore.setKey(key, tagIds);
-    saveSettingsDebounced();
+    saveSettingsDebounced('power_user');
 }
 
 /**
@@ -1253,7 +1253,7 @@ export function addTagsToEntity(tag, entityId, { tagListSelector = null, tagList
     // hundreds of rows) if the current view could actually change as a result - otherwise just patch the
     // affected row(s) and the tag filter buttons in place.
     redrawAfterTagChange(tags.map(t => t.id), affectedKeys, usageFlips);
-    saveSettingsDebounced();
+    saveSettingsDebounced('power_user');
 
     // We should manually add the selected tag to the print tag function, so we cover places where the tag list did not automatically include it
     tagListOptions.addTag = tags;
@@ -1387,7 +1387,7 @@ export function removeTagFromEntity(tag, entityId, { tagListSelector = null, tag
 
     // Save and redraw
     redrawAfterTagChange([tag.id], affectedKeys, new Map([[tag.id, wasLastUse]]));
-    saveSettingsDebounced();
+    saveSettingsDebounced('power_user');
 
     // We don't reprint the lists, we can just remove the html elements from them.
     if (tagListSelector) {
@@ -1612,7 +1612,7 @@ async function showTagImportPopup(character, existingTags, newTags, folderTags) 
             if (!setting) return;
             power_user.tag_import_setting = setting;
             $('#tag_import_setting').val(power_user.tag_import_setting);
-            saveSettingsDebounced();
+            saveSettingsDebounced('power_user');
             console.log('Remembered tag import setting:', Object.entries(tag_import_setting).find(x => x[1] === setting)[0], setting);
         }
     }
@@ -2411,7 +2411,7 @@ async function onViewTagsListClick() {
     $sortModeSelect.on('change', function () {
         const newMode = $(this).val().toString();
         power_user.tag_sort_mode = newMode;
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
         printViewTagList(tagContainer);
     });
 
@@ -2448,7 +2448,7 @@ function makeTagListDraggable(tagContainer) {
 
         // If the order of tags in display has changed, we need to redraw some UI elements. Do it debounced so it doesn't block and you can drag multiple tags.
         printCharactersDebounced();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     };
 
     // @ts-ignore
@@ -2640,7 +2640,7 @@ async function onTagRestoreFileSelect(e) {
 
     $('#tag_view_restore_input').val('');
     printCharactersDebounced();
-    saveSettingsDebounced();
+    saveSettingsDebounced('power_user');
 
     // Reprint the tag management popup, without having it to be opened again
     const tagContainer = $('#tag_view_list .tag_view_list_tags');
@@ -2709,7 +2709,7 @@ async function onTagsPruneClick() {
     }
 
     printCharactersDebounced();
-    saveSettingsDebounced();
+    saveSettingsDebounced('power_user');
 
     // Reprint the tag management popup, without having it to be opened again
     const tagContainer = $('#tag_view_list .tag_view_list_tags');
@@ -2728,7 +2728,7 @@ function onTagCreateClick() {
     flashHighlight(tagElement);
 
     printCharactersDebounced();
-    saveSettingsDebounced();
+    saveSettingsDebounced('power_user');
 
     toastr.success('Tag created', 'Create Tag');
 }
@@ -2793,7 +2793,7 @@ function appendViewTagToList(list, tag, count) {
         hideToggle.toggleClass('fa-eye', !tag.is_hidden_on_character_card);
         hideToggle.attr('title', getHideTooltip());
         printCharactersDebounced();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     list.append(template);
@@ -2831,7 +2831,7 @@ function onTagAsFolderClick() {
 
     // If folder display has changed, we have to redraw the character list, otherwise this folders state would not change
     printCharactersDebounced();
-    saveSettingsDebounced();
+    saveSettingsDebounced('power_user');
 }
 
 function updateDrawTagFolder(element, tag) {
@@ -2890,7 +2890,7 @@ async function onTagDeleteClick() {
     toastr.success(`'${tag.name}' deleted${mergeTagId ? ` and merged into '${tagsStore.get(mergeTagId).name}'` : ''}`, 'Delete Tag');
 
     printCharactersDebounced();
-    saveSettingsDebounced();
+    saveSettingsDebounced('power_user');
 
     applyCharacterTagsToMessageDivs();
 }
@@ -2902,7 +2902,7 @@ function onTagRenameInput() {
     tagsStore.update(id, { name: newName });
     $(this).attr('dirty', '');
     $(`.tag[id="${id}"] .tag_name`).text(newName);
-    saveSettingsDebounced();
+    saveSettingsDebounced('power_user');
 
     applyCharacterTagsToMessageDivs();
 }
@@ -2932,7 +2932,7 @@ function onTagColorize(evt, colorField, cssProperty) {
 
     $(evt.target).closest('.tag_view_item').find('.tag_view_name').css(cssProperty, newColor);
     tagsStore.update(id, { [colorField]: newColor });
-    saveSettingsDebounced();
+    saveSettingsDebounced('power_user');
 
     // Debounce redrawing color of the tag in other elements
     debouncedTagColoring(id, cssProperty, newColor);

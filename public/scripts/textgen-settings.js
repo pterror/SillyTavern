@@ -383,7 +383,7 @@ async function selectPreset(name) {
     setGenerationParamsFromPreset(preset);
     BIAS_CACHE.delete(BIAS_KEY);
     displayLogitBias(preset.logit_bias, BIAS_KEY);
-    saveSettingsDebounced();
+    saveSettingsDebounced('textgenerationwebui_settings');
 }
 
 export function formatTextGenURL(value) {
@@ -507,7 +507,7 @@ function toggleBannedStringsKillSwitch(isEnabled, title) {
     $('#send_banned_tokens_textgenerationwebui').prop('checked', isEnabled);
     $('#send_banned_tokens_label').find('.menu_button').toggleClass('toggleEnabled', isEnabled).prop('title', title);
     textgenerationwebui_settings.send_banned_tokens = isEnabled;
-    saveSettingsDebounced();
+    saveSettingsDebounced('textgenerationwebui_settings');
 }
 
 /**
@@ -566,7 +566,7 @@ export async function loadTextGenSettings(data, loadedSettings) {
         const control = $(selector);
         control.val(textgenerationwebui_settings.server_urls[type] ?? '').on('input', function () {
             textgenerationwebui_settings.server_urls[type] = String($(this).val()).trim();
-            saveSettingsDebounced();
+            saveSettingsDebounced('textgenerationwebui_settings');
         });
     }
 
@@ -828,14 +828,14 @@ export function initTextGenSettings() {
             });
             textgenerationwebui_settings.sampler_order = order;
             console.log('Samplers reordered:', textgenerationwebui_settings.sampler_order);
-            saveSettingsDebounced();
+            saveSettingsDebounced('textgenerationwebui_settings');
         },
     });
 
     $('#koboldcpp_default_order').on('click', function () {
         textgenerationwebui_settings.sampler_order = KOBOLDCPP_ORDER;
         sortKoboldItemsByOrder(textgenerationwebui_settings.sampler_order);
-        saveSettingsDebounced();
+        saveSettingsDebounced('textgenerationwebui_settings');
     });
 
     $('#llamacpp_samplers_sortable').sortable({
@@ -847,7 +847,7 @@ export function initTextGenSettings() {
             });
             textgenerationwebui_settings.samplers = order;
             console.log('Samplers reordered:', textgenerationwebui_settings.samplers);
-            saveSettingsDebounced();
+            saveSettingsDebounced('textgenerationwebui_settings');
         },
     });
 
@@ -855,7 +855,7 @@ export function initTextGenSettings() {
         sortLlamacppItemsByOrder(LLAMACPP_DEFAULT_ORDER);
         textgenerationwebui_settings.samplers = LLAMACPP_DEFAULT_ORDER;
         console.log('Default samplers order loaded:', textgenerationwebui_settings.samplers);
-        saveSettingsDebounced();
+        saveSettingsDebounced('textgenerationwebui_settings');
     });
 
     $('#sampler_priority_container').sortable({
@@ -867,7 +867,7 @@ export function initTextGenSettings() {
             });
             textgenerationwebui_settings.sampler_priority = order;
             console.log('Samplers reordered:', textgenerationwebui_settings.sampler_priority);
-            saveSettingsDebounced();
+            saveSettingsDebounced('textgenerationwebui_settings');
         },
     });
 
@@ -880,7 +880,7 @@ export function initTextGenSettings() {
             });
             textgenerationwebui_settings.samplers_priorities = order;
             console.log('Samplers reordered:', textgenerationwebui_settings.samplers_priorities);
-            saveSettingsDebounced();
+            saveSettingsDebounced('textgenerationwebui_settings');
         },
     });
 
@@ -897,21 +897,21 @@ export function initTextGenSettings() {
             textgenerationwebui_settings.json_schema = null;
         }
 
-        saveSettingsDebounced();
+        saveSettingsDebounced('textgenerationwebui_settings');
     });
 
     $('#textgenerationwebui_default_order').on('click', function () {
         sortOobaItemsByOrder(OOBA_DEFAULT_ORDER);
         textgenerationwebui_settings.sampler_priority = OOBA_DEFAULT_ORDER;
         console.log('Default samplers order loaded:', textgenerationwebui_settings.sampler_priority);
-        saveSettingsDebounced();
+        saveSettingsDebounced('textgenerationwebui_settings');
     });
 
     $('#aphrodite_default_order').on('click', function () {
         sortAphroditeItemsByOrder(APHRODITE_DEFAULT_ORDER);
         textgenerationwebui_settings.samplers_priorities = APHRODITE_DEFAULT_ORDER;
         console.log('Default samplers order loaded:', textgenerationwebui_settings.samplers_priorities);
-        saveSettingsDebounced();
+        saveSettingsDebounced('textgenerationwebui_settings');
     });
 
     $('#textgen_type').on('change', function () {
@@ -948,7 +948,7 @@ export function initTextGenSettings() {
             $('#api_button_textgenerationwebui').trigger('click');
         }
 
-        saveSettingsDebounced();
+        saveSettingsDebounced('textgenerationwebui_settings');
     });
 
     $('#settings_preset_textgenerationwebui').on('change', async function () {
@@ -1054,7 +1054,7 @@ export function initTextGenSettings() {
                     $(this).val(-1);
                 }
             }
-            saveSettingsDebounced();
+            saveSettingsDebounced('textgenerationwebui_settings');
         });
     }
 
@@ -1071,7 +1071,7 @@ export function initTextGenSettings() {
         textgenerationwebui_settings.openrouter_providers = selectedProviders;
 
         updateOpenRouterProvidersWarning('#openrouter_providers_text');
-        saveSettingsDebounced();
+        saveSettingsDebounced('textgenerationwebui_settings');
     });
 
     $('#openrouter_allow_fallbacks_textgenerationwebui').on('input', function () {
@@ -1088,7 +1088,7 @@ export function initTextGenSettings() {
 
         textgenerationwebui_settings.openrouter_quantizations = selectedQuantizations;
 
-        saveSettingsDebounced();
+        saveSettingsDebounced('textgenerationwebui_settings');
     });
 
     $('#api_button_textgenerationwebui').on('click', async function (e) {
@@ -1118,7 +1118,7 @@ export function initTextGenSettings() {
 
         validateTextGenUrl();
         startStatusLoading();
-        saveSettingsDebounced();
+        saveSettingsDebounced('textgenerationwebui_settings');
         getStatusTextgen();
     });
 }

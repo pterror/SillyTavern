@@ -124,7 +124,7 @@ function setNoteRoleCommand(_, text) {
 }
 
 function updateSettings() {
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
     loadSettings();
     setFloatingPrompt();
 }
@@ -167,7 +167,7 @@ async function onExtensionFloatingPositionInput(e) {
 
 async function onDefaultPositionInput(e) {
     extension_settings.note.defaultPosition = Number(e.target.value);
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 async function onDefaultDepthInput() {
@@ -179,12 +179,12 @@ async function onDefaultDepthInput() {
     }
 
     extension_settings.note.defaultDepth = value;
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 async function onDefaultIntervalInput() {
     extension_settings.note.defaultInterval = Number($(this).val());
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onExtensionFloatingRoleInput(e) {
@@ -194,7 +194,7 @@ function onExtensionFloatingRoleInput(e) {
 
 function onExtensionDefaultRoleInput(e) {
     extension_settings.note.defaultRole = Number(e.target.value);
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 async function onExtensionFloatingCharPositionInput(e) {

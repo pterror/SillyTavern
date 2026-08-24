@@ -199,7 +199,7 @@ class PresetManager {
                 power_user.show_user_prompt_bias = data.show ?? false;
                 $('#start_reply_with').val(power_user.user_prompt_bias);
                 $('#chat-show-reply-prefix-checkbox').prop('checked', power_user.show_user_prompt_bias);
-                return saveSettingsDebounced();
+                return saveSettingsDebounced('power_user');
             },
             isValid: (data) => PresetManager.isPossiblyStartReplyWithData(data),
         },

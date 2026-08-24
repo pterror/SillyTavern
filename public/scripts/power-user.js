@@ -470,7 +470,7 @@ function makePersonasCompatProxy() {
                 eventSource.emit(event_types.PERSONA_CREATED, { avatarId: prop, name, description: '', title: '' })
                     .catch(err => console.error('PERSONA_CREATED listener failed', err));
             }
-            saveSettingsDebounced();
+            saveSettingsDebounced('power_user');
             return true;
         },
         deleteProperty(target, prop) {
@@ -478,7 +478,7 @@ function makePersonasCompatProxy() {
             const entity = personaStore.get(prop);
             if (entity) {
                 personaStore.remove(prop);
-                saveSettingsDebounced();
+                saveSettingsDebounced('power_user');
                 eventSource.emit(event_types.PERSONA_DELETED, { avatarId: prop, name: entity.name })
                     .catch(err => console.error('PERSONA_DELETED listener failed', err));
             }
@@ -493,7 +493,7 @@ function makePersonasCompatProxy() {
  * one's get() returns the *live* PersonaRecord itself rather than a projected copy (it does carry a `name`
  * field the old shape never had, which nothing reads for the absence of) - the old descriptions dict was
  * always mutated in place by callers (`power_user.persona_descriptions[id].title = x`, `.connections = [...]`,
- * etc, each followed by its own explicit saveSettingsDebounced()), and a copy would silently discard those
+ * etc, each followed by its own explicit saveSettingsDebounced('power_user')), and a copy would silently discard those
  * writes since they'd land on a throwaway object instead of the store. Returning the live record instead means
  * nested in-place mutation keeps working exactly as it always did (still requires the caller to save/emit
  * itself, same as before - this proxy doesn't add auto-save on nested mutation, since it has no way to observe
@@ -529,7 +529,7 @@ function makePersonaDescriptionsCompatProxy() {
                     avatarId: prop, name: '', description: value?.description ?? '', title: value?.title ?? '',
                 }).catch(err => console.error('PERSONA_CREATED listener failed', err));
             }
-            saveSettingsDebounced();
+            saveSettingsDebounced('power_user');
             return true;
         },
         deleteProperty(target, prop) {
@@ -542,7 +542,7 @@ function makePersonaDescriptionsCompatProxy() {
             const entity = personaStore.get(prop);
             if (entity) {
                 personaStore.remove(prop);
-                saveSettingsDebounced();
+                saveSettingsDebounced('power_user');
                 eventSource.emit(event_types.PERSONA_DELETED, { avatarId: prop, name: entity.name })
                     .catch(err => console.error('PERSONA_DELETED listener failed', err));
             }
@@ -1246,7 +1246,7 @@ function switchMovingUI() {
         if (Object.keys(power_user.movingUIState).length !== 0) {
             power_user.movingUIState = {};
             resetMovablePanels();
-            saveSettingsDebounced();
+            saveSettingsDebounced('power_user');
         }
     }
 }
@@ -1702,7 +1702,7 @@ async function applyMovingUIPreset(name) {
 
     console.log('MovingUI Preset applied: ' + name);
     loadMovingUIState();
-    saveSettingsDebounced();
+    saveSettingsDebounced('power_user');
 }
 
 /**
@@ -2139,7 +2139,7 @@ function loadMaxContextUnlocked() {
     $('#max_context_unlocked').on('change', function () {
         power_user.max_context_unlocked = !!$(this).prop('checked');
         switchMaxContextSize();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
     switchMaxContextSize();
 }
@@ -2294,7 +2294,7 @@ async function loadContextSettings() {
             if (!CSS.supports('field-sizing', 'content') && $(this).is('textarea')) {
                 await resetScrollHeight($(this));
             }
-            saveSettingsDebounced();
+            saveSettingsDebounced('power_user');
         });
 
         if (control.trigger) {
@@ -2360,7 +2360,7 @@ async function loadContextSettings() {
 
         updateBindModelTemplatesState();
 
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 }
 
@@ -2811,7 +2811,7 @@ async function deleteTheme() {
         themes.splice(themeIndex, 1);
         $(`#themes option[value="${themeName}"]`).remove();
         power_user.theme = themes[0]?.name;
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
         if (power_user.theme) {
             applyTheme(power_user.theme);
         }
@@ -2864,7 +2864,7 @@ async function importTheme(file) {
     option.value = parsed.name;
     option.innerText = parsed.name;
     $('#themes').append(option);
-    saveSettingsDebounced();
+    saveSettingsDebounced('power_user');
     toastr.success(parsed.name, 'Theme imported');
 }
 
@@ -2916,7 +2916,7 @@ async function saveTheme(name = undefined, theme = undefined) {
     }
 
     power_user.theme = name;
-    saveSettingsDebounced();
+    saveSettingsDebounced('power_user');
 
     return theme;
 }
@@ -3023,7 +3023,7 @@ async function saveMovingUI() {
         }
 
         power_user.movingUIPreset = name;
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     } else {
         toastr.error('Failed to save MovingUI state.');
         console.error('MovingUI could not be saved', response);
@@ -3101,7 +3101,7 @@ async function resetMovablePanels(type) {
         $('#movingUIPresets option[value="Default"]').prop('selected', true);
     }
 
-    saveSettingsDebounced();
+    saveSettingsDebounced('power_user');
     await eventSource.emit(event_types.MOVABLE_PANELS_RESET);
 
     eventSource.once(event_types.SETTINGS_UPDATED, () => {
@@ -3384,7 +3384,7 @@ async function setThemeCallback(_, themeName) {
     power_user.theme = theme.name;
     applyTheme(theme.name);
     $('#themes').val(theme.name);
-    saveSettingsDebounced();
+    saveSettingsDebounced('power_user');
     return '';
 }
 
@@ -3408,7 +3408,7 @@ async function setmovingUIPreset(_, text) {
     power_user.movingUIPreset = preset.name;
     applyMovingUIPreset(preset.name);
     $('#movingUIPresets').val(preset.name);
-    saveSettingsDebounced();
+    saveSettingsDebounced('power_user');
     return '';
 }
 
@@ -3610,7 +3610,7 @@ jQuery(() => {
         } else {
             console.debug('aborting MUI reset', Object.keys(power_user.movingUIState).length);
         }
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
         coreTruthWinWidth = window.innerWidth;
         coreTruthWinHeight = window.innerHeight;
     });
@@ -3618,7 +3618,7 @@ jQuery(() => {
     // Settings that go to settings.json
     $('#collapse-newlines-checkbox').on('change', function () {
         power_user.collapse_newlines = !!$(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     // include newline is the child of trim sentences
@@ -3626,19 +3626,19 @@ jQuery(() => {
     // if trim sentences is unchecked, include newline must be unchecked
     $('#trim_sentences_checkbox').on('change', function () {
         power_user.trim_sentences = !!$(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#single_line').on('input', function () {
         const value = !!$(this).prop('checked');
         power_user.single_line = value;
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#context_derived').on('input', function () {
         const value = !!$(this).prop('checked');
         power_user.context_derived = value;
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#context_derived').on('change', function () {
@@ -3648,7 +3648,7 @@ jQuery(() => {
     $('#instruct_derived').on('input', function () {
         const value = !!$(this).prop('checked');
         power_user.instruct_derived = value;
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#instruct_derived').on('change', function () {
@@ -3658,7 +3658,7 @@ jQuery(() => {
     $('#context_size_derived').on('input', function () {
         const value = !!$(this).prop('checked');
         power_user.context_size_derived = value;
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#context_size_derived').on('change', function () {
@@ -3672,7 +3672,7 @@ jQuery(() => {
 
     $('#bind_model_templates').on('input', function () {
         if (bindModelTemplates(power_user, online_status)) {
-            saveSettingsDebounced();
+            saveSettingsDebounced('power_user');
         }
     });
 
@@ -3680,39 +3680,39 @@ jQuery(() => {
 
     $('#always-force-name2-checkbox').on('change', function () {
         power_user.always_force_name2 = !!$(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#markdown_escape_strings').on('input', function () {
         power_user.markdown_escape_strings = String($(this).val());
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
         reloadMarkdownProcessor();
     });
 
     $('#start_reply_with').on('input', function () {
         power_user.user_prompt_bias = String($(this).val());
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#chat-show-reply-prefix-checkbox').on('change', function () {
         power_user.show_user_prompt_bias = !!$(this).prop('checked');
         reloadCurrentChat();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#auto_continue_enabled').on('change', function () {
         power_user.auto_continue.enabled = $(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#auto_continue_allow_chat_completions').on('change', function () {
         power_user.auto_continue.allow_chat_completions = !!$(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#auto_continue_target_length').on('input', function () {
         power_user.auto_continue.target_length = Number($(this).val());
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#example_messages_behavior').on('change', function () {
@@ -3737,37 +3737,37 @@ jQuery(() => {
         console.debug('power_user.pin_examples', power_user.pin_examples);
         console.debug('power_user.strip_examples', power_user.strip_examples);
 
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#fast_ui_mode').on('change', function () {
         power_user.fast_ui_mode = $(this).prop('checked');
         switchUiMode();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#waifuMode').on('change', () => {
         power_user.waifuMode = !!$('#waifuMode').prop('checked');
         switchWaifuMode();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#customCSS').on('input', () => {
         power_user.custom_css = String($('#customCSS').val());
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
         applyCustomCSS();
     });
 
     $('#movingUImode').on('change', function () {
         power_user.movingUI = $(this).prop('checked');
         switchMovingUI();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#noShadowsmode').on('change', function () {
         power_user.noShadows = $(this).prop('checked');
         applyNoShadows();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#movingUIreset').on('click', resetMovablePanels);
@@ -3776,68 +3776,68 @@ jQuery(() => {
         const value = $(this).find(':selected').val();
         power_user.avatar_style = Number(value);
         applyAvatarStyle();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#chat_display').on('change', function () {
         const value = $(this).find(':selected').val();
         power_user.chat_display = Number(value);
         applyChatDisplay();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#toastr_position').on('change', function () {
         const value = $(this).find(':selected').val();
         power_user.toastr_position = String(value);
         applyToastrPosition();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#chat_width_slider').on('input', function (e, data) {
         const applyMode = data?.forced ? 'forced' : 'normal';
         power_user.chat_width = Number($(this).val());
         applyChatWidth(applyMode);
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
         setHotswapsDebounced();
     });
 
     $('#chat_width_max').on('input', function () {
         power_user.chat_width_max = Number($(this).val());
         applyChatWidth('forced');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
         setHotswapsDebounced();
     });
 
     $('#chat_truncation').on('input', function () {
         power_user.chat_truncation = Number($('#chat_truncation').val());
         $('#chat_truncation_counter').val(power_user.chat_truncation);
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#streaming_fps').on('input', function () {
         power_user.streaming_fps = Number($('#streaming_fps').val());
         $('#streaming_fps_counter').val(power_user.streaming_fps);
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#smooth_streaming').on('input', function () {
         power_user.smooth_streaming = !!$(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#smooth_streaming_no_think').on('input', function () {
         power_user.smooth_streaming_no_think = !!$(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#smooth_streaming_speed').on('input', function () {
         power_user.smooth_streaming_speed = Number($('#smooth_streaming_speed').val());
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#stream_fade_in').on('input', function () {
         power_user.stream_fade_in = !!$(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('input[name="font_scale"]').on('input', async function (e, data) {
@@ -3845,88 +3845,88 @@ jQuery(() => {
         power_user.font_scale = Number($(this).val());
         $('#font_scale_counter').val(power_user.font_scale);
         applyFontScale(applyMode);
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('input[name="blur_strength"]').on('input', async function (e) {
         power_user.blur_strength = Number($(this).val());
         $('#blur_strength_counter').val(power_user.blur_strength);
         applyBlurStrength();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('input[name="shadow_width"]').on('input', async function (e) {
         power_user.shadow_width = Number($(this).val());
         $('#shadow_width_counter').val(power_user.shadow_width);
         applyShadowWidth();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#main-text-color-picker').on('change', (/** @type {ColorPickerEvent} */ evt) => {
         power_user.main_text_color = evt.detail.rgba;
         applyThemeColor('main');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#italics-color-picker').on('change', (/** @type {ColorPickerEvent} */ evt) => {
         power_user.italics_text_color = evt.detail.rgba;
         applyThemeColor('italics');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#underline-color-picker').on('change', (/** @type {ColorPickerEvent} */ evt) => {
         power_user.underline_text_color = evt.detail.rgba;
         applyThemeColor('underline');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#quote-color-picker').on('change', (/** @type {ColorPickerEvent} */ evt) => {
         power_user.quote_text_color = evt.detail.rgba;
         applyThemeColor('quote');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#blur-tint-color-picker').on('change', (/** @type {ColorPickerEvent} */ evt) => {
         power_user.blur_tint_color = evt.detail.rgba;
         applyThemeColor('blurTint');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#chat-tint-color-picker').on('change', (/** @type {ColorPickerEvent} */ evt) => {
         power_user.chat_tint_color = evt.detail.rgba;
         applyThemeColor('chatTint');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#user-mes-blur-tint-color-picker').on('change', (/** @type {ColorPickerEvent} */ evt) => {
         power_user.user_mes_blur_tint_color = evt.detail.rgba;
         applyThemeColor('userMesBlurTint');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#bot-mes-blur-tint-color-picker').on('change', (/** @type {ColorPickerEvent} */ evt) => {
         power_user.bot_mes_blur_tint_color = evt.detail.rgba;
         applyThemeColor('botMesBlurTint');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#shadow-color-picker').on('change', (/** @type {ColorPickerEvent} */ evt) => {
         power_user.shadow_color = evt.detail.rgba;
         applyThemeColor('shadow');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#border-color-picker').on('change', (/** @type {ColorPickerEvent} */ evt) => {
         power_user.border_color = evt.detail.rgba;
         applyThemeColor('border');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#themes').on('change', function () {
         const themeSelected = String($(this).find(':selected').val());
         power_user.theme = themeSelected;
         applyTheme(themeSelected);
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#movingUIPresets').on('change', async function () {
@@ -3934,7 +3934,7 @@ jQuery(() => {
         const movingUIPresetSelected = String($(this).find(':selected').val());
         power_user.movingUIPreset = movingUIPresetSelected;
         applyMovingUIPreset(movingUIPresetSelected);
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#ui-preset-save-button').on('click', () => saveTheme());
@@ -3944,28 +3944,28 @@ jQuery(() => {
 
     $('#never_resize_avatars').on('input', function () {
         power_user.never_resize_avatars = !!$(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#show_card_avatar_urls').on('input', function () {
         power_user.show_card_avatar_urls = !!$(this).prop('checked');
         printCharactersDebounced();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#play_message_sound').on('input', function () {
         power_user.play_message_sound = !!$(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#play_sound_unfocused').on('input', function () {
         power_user.play_sound_unfocused = !!$(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#auto_save_msg_edits').on('input', function () {
         power_user.auto_save_msg_edits = !!$(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#character_sort_order').on('change', function () {
@@ -3978,7 +3978,7 @@ jQuery(() => {
         }
         updateRandomSortRerollVisibility();
         printCharactersDebounced();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     // Random sort persists its order (seeded hash, not a fresh shuffle - see random-sort.js), so it needs an
@@ -3994,12 +3994,12 @@ jQuery(() => {
 
     $('#gestures-checkbox').on('change', function () {
         power_user.gestures = !!$('#gestures-checkbox').prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#auto_swipe').on('input', function () {
         power_user.auto_swipe = !!$(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#auto_swipe_blacklist').on('input', function () {
@@ -4008,14 +4008,14 @@ jQuery(() => {
             .map(str => str.trim())
             .filter(str => str);
         console.log('power_user.auto_swipe_blacklist', power_user.auto_swipe_blacklist);
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#auto_swipe_minimum_length').on('input', function () {
         const number = Number($(this).val());
         if (!isNaN(number)) {
             power_user.auto_swipe_minimum_length = number;
-            saveSettingsDebounced();
+            saveSettingsDebounced('power_user');
         }
     });
 
@@ -4023,41 +4023,41 @@ jQuery(() => {
         const number = Number($(this).val());
         if (!isNaN(number)) {
             power_user.auto_swipe_blacklist_threshold = number;
-            saveSettingsDebounced();
+            saveSettingsDebounced('power_user');
         }
     });
 
     $('#auto_fix_generated_markdown').on('input', function () {
         power_user.auto_fix_generated_markdown = !!$(this).prop('checked');
         reloadCurrentChat();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#console_log_prompts').on('input', function () {
         power_user.console_log_prompts = !!$(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#request_token_probabilities').on('input', function () {
         power_user.request_token_probabilities = !!$(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#show_group_chat_queue').on('input', function () {
         power_user.show_group_chat_queue = !!$(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#auto_scroll_chat_to_bottom').on('input', function () {
         power_user.auto_scroll_chat_to_bottom = !!$(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#tokenizer').on('change', function () {
         const value = $(this).find(':selected').val();
         power_user.tokenizer = Number(value);
         BIAS_CACHE.clear();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
 
         // Trigger character editor re-tokenize
         forceCharacterEditorTokenize();
@@ -4066,12 +4066,12 @@ jQuery(() => {
     $('#send_on_enter').on('change', function () {
         const value = $(this).find(':selected').val();
         power_user.send_on_enter = Number(value);
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#confirm_message_delete').on('input', function () {
         power_user.confirm_message_delete = !!$(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#reload_chat').on('click', async function () {
@@ -4086,53 +4086,53 @@ jQuery(() => {
     $('#allow_name1_display').on('input', function () {
         power_user.allow_name1_display = !!$(this).prop('checked');
         reloadCurrentChat();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#allow_name2_display').on('input', function () {
         power_user.allow_name2_display = !!$(this).prop('checked');
         reloadCurrentChat();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#token_padding').on('input', function () {
         power_user.token_padding = Number($(this).val());
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#messageTimerEnabled').on('input', function () {
         const value = !!$(this).prop('checked');
         power_user.timer_enabled = value;
         switchTimer();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#messageTimestampsEnabled').on('input', function () {
         const value = !!$(this).prop('checked');
         power_user.timestamps_enabled = value;
         switchTimestamps();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#messageModelIconEnabled').on('input', function () {
         const value = !!$(this).prop('checked');
         power_user.timestamp_model_icon = value;
         switchIcons();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#messageTokensEnabled').on('input', function () {
         const value = !!$(this).prop('checked');
         power_user.message_token_count_enabled = value;
         switchTokenCount();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#expandMessageActions').on('input', function () {
         const value = !!$(this).prop('checked');
         power_user.expand_message_actions = value;
         switchMessageActions();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#enableZenSliders').on('input', function () {
@@ -4145,7 +4145,7 @@ jQuery(() => {
         }
         power_user.enableZenSliders = value;
         switchZenSliders();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#enableLabMode').on('input', function (event, { fromInit = false } = {}) {
@@ -4159,97 +4159,97 @@ jQuery(() => {
 
         power_user.enableLabMode = value;
         switchLabMode({ noReset: fromInit });
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#mesIDDisplayEnabled').on('input', function () {
         const value = !!$(this).prop('checked');
         power_user.mesIDDisplay_enabled = value;
         switchMesIDDisplay();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#hideChatAvatarsEnabled').on('input', function () {
         const value = !!$(this).prop('checked');
         power_user.hideChatAvatars_enabled = value;
         switchHideChatAvatars();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#hotswapEnabled').on('input', function () {
         const value = !!$(this).prop('checked');
         power_user.hotswap_enabled = value;
         switchHotswap();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#prefer_character_prompt').on('input', function () {
         const value = !!$(this).prop('checked');
         power_user.prefer_character_prompt = value;
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#prefer_character_jailbreak').on('input', function () {
         const value = !!$(this).prop('checked');
         power_user.prefer_character_jailbreak = value;
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#continue_on_send').on('input', function () {
         const value = !!$(this).prop('checked');
         power_user.continue_on_send = value;
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#quick_continue').on('input', function () {
         const value = !!$(this).prop('checked');
         power_user.quick_continue = value;
         $('#mes_continue').css('display', value ? '' : 'none');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#quick_impersonate').on('input', function () {
         const value = !!$(this).prop('checked');
         power_user.quick_impersonate = value;
         $('#mes_impersonate').css('display', value ? '' : 'none');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#trim_spaces').on('input', function () {
         const value = !!$(this).prop('checked');
         power_user.trim_spaces = value;
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#relaxed_api_urls').on('input', function () {
         const value = !!$(this).prop('checked');
         power_user.relaxed_api_urls = value;
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#world_import_dialog').on('input', function () {
         const value = !!$(this).prop('checked');
         power_user.world_import_dialog = value;
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#enable_auto_select_input').on('input', function () {
         const value = !!$(this).prop('checked');
         power_user.enable_auto_select_input = value;
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#enable_md_hotkeys').on('input', function () {
         const value = !!$(this).prop('checked');
         power_user.enable_md_hotkeys = value;
         toggleMDHotkeyIconDisplay();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#spoiler_free_mode').on('input', function () {
         power_user.spoiler_free_mode = !!$(this).prop('checked');
         switchSpoilerMode();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#spoiler_free_desc_button').on('click', function (e) {
@@ -4260,43 +4260,43 @@ jQuery(() => {
 
     $('#custom_stopping_strings').on('input', function () {
         power_user.custom_stopping_strings = String($(this).val()).trim();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#custom_stopping_strings_macro').on('change', function () {
         power_user.custom_stopping_strings_macro = !!$(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#fuzzy_search_checkbox').on('input', function () {
         power_user.fuzzy_search = !!$(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#persona_show_notifications').on('input', function () {
         power_user.persona_show_notifications = !!$(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#persona_allow_multi_connections').on('input', function () {
         power_user.persona_allow_multi_connections = !!$(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#persona_auto_lock').on('input', function () {
         power_user.persona_auto_lock = !!$(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#encode_tags').on('input', async function () {
         power_user.encode_tags = !!$(this).prop('checked');
         await reloadCurrentChat();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#experimental_macro_engine').on('input', function () {
         power_user.experimental_macro_engine = !!$(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
 
         // Check if the app is ready before showing the toast
         if (!settingsReady) {
@@ -4318,7 +4318,7 @@ jQuery(() => {
 
     $('#disable_group_trimming').on('input', function () {
         power_user.disable_group_trimming = !!$(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#debug_menu').on('click', function () {
@@ -4328,60 +4328,60 @@ jQuery(() => {
     $('#bogus_folders').on('input', function () {
         power_user.bogus_folders = !!$(this).prop('checked');
         printCharactersDebounced();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#zoomed_avatar_magnification').on('input', function () {
         power_user.zoomed_avatar_magnification = !!$(this).prop('checked');
         printCharactersDebounced();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#aux_field').on('change', function () {
         const value = $(this).find(':selected').val();
         power_user.aux_field = String(value);
         printCharactersDebounced();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#tag_import_setting').on('change', function () {
         const value = $(this).find(':selected').val();
         power_user.tag_import_setting = Number(value);
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#stscript_autocomplete_state').on('input', function () {
         power_user.stscript.autocomplete.state = Number($(this).val());
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#stscript_autocomplete_autoHide').on('input', function () {
         power_user.stscript.autocomplete.autoHide = !!$(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#stscript_autocomplete_showInAllMacroFields').on('input', function () {
         power_user.stscript.autocomplete.showInAllMacroFields = !!$(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#stscript_matching').on('change', function () {
         const value = $(this).find(':selected').val();
         power_user.stscript.matching = String(value);
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#stscript_autocomplete_style').on('change', function () {
         const value = $(this).find(':selected').val();
         power_user.stscript.autocomplete.style = String(value);
         document.body.setAttribute('data-stscript-style', power_user.stscript.autocomplete.style);
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#stscript_autocomplete_select').on('change', function () {
         const value = $(this).find(':selected').val();
         power_user.stscript.autocomplete.select = parseInt(String(value));
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#stscript_autocomplete_font_scale').on('input', function () {
@@ -4390,7 +4390,7 @@ jQuery(() => {
         power_user.stscript.autocomplete.font.scale = Number(value);
         document.body.style.setProperty('--ac-font-scale', value.toString());
         window.dispatchEvent(new Event('resize', { bubbles: true }));
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
     $('#stscript_autocomplete_font_scale_counter').on('input', function () {
         const value = $(this).val();
@@ -4398,7 +4398,7 @@ jQuery(() => {
         power_user.stscript.autocomplete.font.scale = Number(value);
         document.body.style.setProperty('--ac-font-scale', value.toString());
         window.dispatchEvent(new Event('resize', { bubbles: true }));
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#stscript_autocomplete_width_left').on('input', function () {
@@ -4406,7 +4406,7 @@ jQuery(() => {
         power_user.stscript.autocomplete.width.left = Number(value);
         /**@type {HTMLElement}*/(this.closest('.doubleRangeInputContainer')).style.setProperty('--value', value.toString());
         window.dispatchEvent(new Event('resize', { bubbles: true }));
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#stscript_autocomplete_width_right').on('input', function () {
@@ -4414,69 +4414,69 @@ jQuery(() => {
         power_user.stscript.autocomplete.width.right = Number(value);
         /**@type {HTMLElement}*/(this.closest('.doubleRangeInputContainer')).style.setProperty('--value', value.toString());
         window.dispatchEvent(new Event('resize', { bubbles: true }));
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#stscript_parser_flag_strict_escaping').on('click', function () {
         const value = $(this).prop('checked');
         power_user.stscript.parser.flags[PARSER_FLAG.STRICT_ESCAPING] = value;
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#stscript_parser_flag_replace_getvar').on('click', function () {
         const value = $(this).prop('checked');
         power_user.stscript.parser.flags[PARSER_FLAG.REPLACE_GETVAR] = value;
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#restore_user_input').on('input', function () {
         power_user.restore_user_input = !!$(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#reduced_motion').on('input', function () {
         power_user.reduced_motion = !!$(this).prop('checked');
         switchReducedMotion();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#compact_input_area').on('input', function () {
         power_user.compact_input_area = !!$(this).prop('checked');
         switchCompactInputArea();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#show_swipe_num_all_messages').on('input', function () {
         power_user.show_swipe_num_all_messages = !!$(this).prop('checked');
         switchSwipeNumAllMessages();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#auto-connect-checkbox').on('input', function () {
         power_user.auto_connect = !!$(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#auto-load-chat-checkbox').on('input', function () {
         power_user.auto_load_chat = !!$(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#forbid_external_media').on('input', function () {
         power_user.forbid_external_media = !!$(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
         reloadCurrentChat();
     });
 
     $('#pin_styles').on('input', function () {
         power_user.pin_styles = !!$(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
         applyStylePins();
     });
 
     $('#click_to_edit').on('input', function () {
         power_user.click_to_edit = !!$(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#ui_preset_import_button').on('click', function () {
@@ -4505,7 +4505,7 @@ jQuery(() => {
 
     $('#media_display').on('input', async function () {
         power_user.media_display = $(this).val().toString();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
         if (isMediaDisplayReloadNeeded()) {
             await reloadCurrentChat();
         }
@@ -4513,7 +4513,7 @@ jQuery(() => {
 
     $('#image_overswipe').on('input', function () {
         power_user.image_overswipe = $(this).val().toString();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $(document).on('click', '#debug_table [data-debug-function]', function () {
@@ -4855,7 +4855,7 @@ jQuery(() => {
             });
             power_user.custom_stopping_strings = JSON.stringify(parsedValue);
             $('#custom_stopping_strings').val(power_user.custom_stopping_strings);
-            saveSettingsDebounced();
+            saveSettingsDebounced('power_user');
 
             return power_user.custom_stopping_strings;
         },
@@ -4902,7 +4902,7 @@ jQuery(() => {
 
             power_user.user_prompt_bias = String(value ?? '');
             $('#start_reply_with').val(power_user.user_prompt_bias);
-            saveSettingsDebounced();
+            saveSettingsDebounced('power_user');
 
             return power_user.user_prompt_bias;
         },

@@ -89,7 +89,7 @@ function initSettings() {
         }
     }
     if (shouldSave) {
-        context.saveSettingsDebounced();
+        context.saveSettingsDebounced('extension_settings');
     }
 }
 
@@ -191,7 +191,7 @@ async function deleteGalleryItem(url) {
 function setSortOrder(order) {
     const context = SillyTavern.getContext();
     context.extensionSettings.gallery.sort = order;
-    context.saveSettingsDebounced();
+    context.saveSettingsDebounced('extension_settings');
 }
 
 /**
@@ -592,7 +592,7 @@ function updateGalleryFolder(newUrl) {
         // Custom folder name is provided, set the override
         context.extensionSettings.gallery.folders[avatar] = newUrl;
     }
-    context.saveSettingsDebounced();
+    context.saveSettingsDebounced('extension_settings');
 }
 
 /**
@@ -615,7 +615,7 @@ function restoreGalleryFolder() {
         throw new Error('No folder override found');
     }
     delete context.extensionSettings.gallery.folders[avatar];
-    context.saveSettingsDebounced();
+    context.saveSettingsDebounced('extension_settings');
 }
 
 /**
@@ -832,7 +832,7 @@ export async function init() {
         if (galleryFolder) {
             context.extensionSettings.gallery.folders[newAvatar] = galleryFolder;
             delete context.extensionSettings.gallery.folders[oldAvatar];
-            context.saveSettingsDebounced();
+            context.saveSettingsDebounced('extension_settings');
         }
     });
     eventSource.on(event_types.CHARACTER_DELETED, (data) => {
@@ -840,7 +840,7 @@ export async function init() {
         if (!avatar) return;
         const context = SillyTavern.getContext();
         delete context.extensionSettings.gallery.folders[avatar];
-        context.saveSettingsDebounced();
+        context.saveSettingsDebounced('extension_settings');
     });
     eventSource.on(event_types.CHARACTER_MANAGEMENT_DROPDOWN, (selectedOptionId) => {
         if (selectedOptionId === 'show_char_gallery') {

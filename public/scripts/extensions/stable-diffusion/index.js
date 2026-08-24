@@ -630,7 +630,7 @@ function addPromptTemplates() {
             .attr('rows', 3)
             .val(prompt).on('input', () => {
                 extension_settings.sd.prompts[name] = textarea.val();
-                saveSettingsDebounced();
+                saveSettingsDebounced('extension_settings');
             });
         const button = $('<button></button>')
             .addClass('menu_button fa-solid fa-undo')
@@ -642,7 +642,7 @@ function addPromptTemplates() {
                 if (String(name) === String(generationMode.TOOL)) {
                     registerFunctionTool();
                 }
-                saveSettingsDebounced();
+                saveSettingsDebounced('extension_settings');
             });
         const container = $('<div></div>')
             .addClass('title_restorable')
@@ -655,22 +655,22 @@ function addPromptTemplates() {
 
 function onInteractiveModeInput() {
     extension_settings.sd.interactive_mode = !!$(this).prop('checked');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onMultimodalCaptioningInput() {
     extension_settings.sd.multimodal_captioning = !!$(this).prop('checked');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onSnapInput() {
     extension_settings.sd.snap = !!$(this).prop('checked');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onMinimalPromptProcessing() {
     extension_settings.sd.minimal_prompt_processing = !!$(this).prop('checked');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onStyleSelect() {
@@ -685,7 +685,7 @@ function onStyleSelect() {
     $('#sd_prompt_prefix').val(styleObject.prefix).trigger('input');
     $('#sd_negative_prompt').val(styleObject.negative).trigger('input');
     extension_settings.sd.style = selectedStyle;
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 async function onDeleteStyleClick() {
@@ -721,7 +721,7 @@ async function onDeleteStyleClick() {
         $('#sd_style').val('');
     }
 
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 async function onSaveStyleClick() {
@@ -742,7 +742,7 @@ async function onSaveStyleClick() {
         existingStyle.prefix = prefix;
         existingStyle.negative = negative;
         $('#sd_style').val(name);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
         return;
     }
 
@@ -759,7 +759,7 @@ async function onSaveStyleClick() {
     option.selected = true;
     $('#sd_style').append(option);
     $('#sd_style').val(styleObject.name);
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 async function onRenameStyleClick() {
@@ -801,7 +801,7 @@ async function onRenameStyleClick() {
         $('#sd_style').append(option);
     }
 
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 /**
@@ -916,7 +916,7 @@ async function adjustElementScrollHeight() {
 async function onCharacterPromptInput() {
     const key = getCharaFilename(null, { manualAvatarKey: getCurrentCharacter()?.avatar });
     extension_settings.sd.character_prompts[key] = $('#sd_character_prompt').val();
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
     writePromptFieldsDebounced(getCurrentCharacter()?.avatar);
     if (CSS.supports('field-sizing', 'content')) return;
     await resetScrollHeight($(this));
@@ -925,7 +925,7 @@ async function onCharacterPromptInput() {
 async function onCharacterNegativePromptInput() {
     const key = getCharaFilename(null, { manualAvatarKey: getCurrentCharacter()?.avatar });
     extension_settings.sd.character_negative_prompts[key] = $('#sd_character_negative_prompt').val();
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
     writePromptFieldsDebounced(getCurrentCharacter()?.avatar);
     if (CSS.supports('field-sizing', 'content')) return;
     await resetScrollHeight($(this));
@@ -984,79 +984,79 @@ function combinePrefixes(str1, str2, macro = '') {
 
 function onRefineModeInput() {
     extension_settings.sd.refine_mode = !!$('#sd_refine_mode').prop('checked');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onFreeExtendInput() {
     extension_settings.sd.free_extend = !!$('#sd_free_extend').prop('checked');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onWandVisibleInput() {
     extension_settings.sd.wand_visible = !!$('#sd_wand_visible').prop('checked');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onCommandVisibleInput() {
     extension_settings.sd.command_visible = !!$('#sd_command_visible').prop('checked');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onInteractiveVisibleInput() {
     extension_settings.sd.interactive_visible = !!$('#sd_interactive_visible').prop('checked');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onToolVisibleInput() {
     extension_settings.sd.tool_visible = !!$('#sd_tool_visible').prop('checked');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onClipSkipInput() {
     extension_settings.sd.clip_skip = Number($('#sd_clip_skip').val());
     $('#sd_clip_skip_value').val(extension_settings.sd.clip_skip);
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onSeedInput() {
     extension_settings.sd.seed = Number($('#sd_seed').val());
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onScaleInput() {
     extension_settings.sd.scale = Number($('#sd_scale').val());
     $('#sd_scale_value').val(extension_settings.sd.scale.toFixed(1));
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onStepsInput() {
     extension_settings.sd.steps = Number($('#sd_steps').val());
     $('#sd_steps_value').val(extension_settings.sd.steps);
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 async function onPromptPrefixInput() {
     extension_settings.sd.prompt_prefix = $('#sd_prompt_prefix').val();
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
     if (CSS.supports('field-sizing', 'content')) return;
     await resetScrollHeight($(this));
 }
 
 async function onNegativePromptInput() {
     extension_settings.sd.negative_prompt = $('#sd_negative_prompt').val();
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
     if (CSS.supports('field-sizing', 'content')) return;
     await resetScrollHeight($(this));
 }
 
 function onSamplerChange() {
     extension_settings.sd.sampler = $('#sd_sampler').find(':selected').val();
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onADetailerFaceChange() {
     extension_settings.sd.adetailer_face = !!$('#sd_adetailer_face').prop('checked');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 const resolutionOptions = {
@@ -1107,19 +1107,19 @@ function onResolutionChange() {
 
 function onSchedulerChange() {
     extension_settings.sd.scheduler = $('#sd_scheduler').find(':selected').val();
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onWidthInput() {
     extension_settings.sd.width = Number($('#sd_width').val());
     $('#sd_width_value').val(extension_settings.sd.width);
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onHeightInput() {
     extension_settings.sd.height = Number($('#sd_height').val());
     $('#sd_height_value').val(extension_settings.sd.height);
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onSwapDimensionsClick() {
@@ -1129,7 +1129,7 @@ function onSwapDimensionsClick() {
     extension_settings.sd.height = h;
     $('#sd_width').val(w).trigger('input');
     $('#sd_height').val(h).trigger('input');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 async function onSourceChange() {
@@ -1139,7 +1139,7 @@ async function onSourceChange() {
     extension_settings.sd.scheduler = null;
     extension_settings.sd.vae = null;
     toggleSourceControls();
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
     await loadSettingOptions();
 }
 
@@ -1150,23 +1150,23 @@ async function onComfyTypeChange() {
 
 function onFunctionToolInput() {
     extension_settings.sd.function_tool = !!$(this).prop('checked');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
     registerFunctionTool();
 }
 
 async function onOpenAiStyleSelect() {
     extension_settings.sd.openai_style = String($('#sd_openai_style').find(':selected').val());
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 async function onOpenAiQualitySelect() {
     extension_settings.sd.openai_quality = String($('#sd_openai_quality').find(':selected').val());
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 async function onOpenAiDurationSelect() {
     extension_settings.sd.openai_duration = String($('#sd_openai_duration').find(':selected').val());
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 async function onViewAnlasClick() {
@@ -1185,12 +1185,12 @@ async function onViewAnlasClick() {
 
 function onNovelAnlasGuardInput() {
     extension_settings.sd.novel_anlas_guard = !!$('#sd_novel_anlas_guard').prop('checked');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onNovelSmInput() {
     extension_settings.sd.novel_sm = !!$('#sd_novel_sm').prop('checked');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 
     if (!extension_settings.sd.novel_sm) {
         $('#sd_novel_sm_dyn').prop('checked', false).prop('disabled', true).trigger('input');
@@ -1201,135 +1201,135 @@ function onNovelSmInput() {
 
 function onNovelSmDynInput() {
     extension_settings.sd.novel_sm_dyn = !!$('#sd_novel_sm_dyn').prop('checked');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onNovelDecrisperInput() {
     extension_settings.sd.novel_decrisper = !!$('#sd_novel_decrisper').prop('checked');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onNovelVarietyBoostInput() {
     extension_settings.sd.novel_variety_boost = !!$('#sd_novel_variety_boost').prop('checked');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onPollinationsEnhanceInput() {
     extension_settings.sd.pollinations_enhance = !!$('#sd_pollinations_enhance').prop('checked');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onHordeNsfwInput() {
     extension_settings.sd.horde_nsfw = !!$(this).prop('checked');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onHordeKarrasInput() {
     extension_settings.sd.horde_karras = !!$(this).prop('checked');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onHordeSanitizeInput() {
     extension_settings.sd.horde_sanitize = !!$(this).prop('checked');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onRestoreFacesInput() {
     extension_settings.sd.restore_faces = !!$(this).prop('checked');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onHighResFixInput() {
     extension_settings.sd.enable_hr = !!$(this).prop('checked');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onAutoUrlInput() {
     extension_settings.sd.auto_url = $('#sd_auto_url').val();
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onAutoAuthInput() {
     extension_settings.sd.auto_auth = $('#sd_auto_auth').val();
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onSdcppUrlInput() {
     extension_settings.sd.sdcpp_url = $('#sd_sdcpp_url').val();
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onVladUrlInput() {
     extension_settings.sd.vlad_url = $('#sd_vlad_url').val();
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onVladAuthInput() {
     extension_settings.sd.vlad_auth = $('#sd_vlad_auth').val();
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onDrawthingsUrlInput() {
     extension_settings.sd.drawthings_url = $('#sd_drawthings_url').val();
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onDrawthingsAuthInput() {
     extension_settings.sd.drawthings_auth = $('#sd_drawthings_auth').val();
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onHrUpscalerChange() {
     extension_settings.sd.hr_upscaler = $('#sd_hr_upscaler').find(':selected').val();
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onHrScaleInput() {
     extension_settings.sd.hr_scale = Number($('#sd_hr_scale').val());
     $('#sd_hr_scale_value').val(extension_settings.sd.hr_scale.toFixed(1));
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onDenoisingStrengthInput() {
     extension_settings.sd.denoising_strength = Number($('#sd_denoising_strength').val());
     $('#sd_denoising_strength_value').val(extension_settings.sd.denoising_strength.toFixed(2));
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onHrSecondPassStepsInput() {
     extension_settings.sd.hr_second_pass_steps = Number($('#sd_hr_second_pass_steps').val());
     $('#sd_hr_second_pass_steps_value').val(extension_settings.sd.hr_second_pass_steps);
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onComfyUrlInput() {
     extension_settings.sd.comfy_url = String($('#sd_comfy_url').val());
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onComfyRunPodUrlInput() {
     extension_settings.sd.comfy_runpod_url = String($('#sd_comfy_runpod_url').val());
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onHFModelInput() {
     extension_settings.sd.huggingface_model_id = $('#sd_huggingface_model_id').val();
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onComfyWorkflowChange() {
     extension_settings.sd.comfy_workflow = $('#sd_comfy_workflow').find(':selected').val();
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onBflUpsamplingInput() {
     extension_settings.sd.bfl_upsampling = !!$('#sd_bfl_upsampling').prop('checked');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onStabilityStylePresetChange() {
     extension_settings.sd.stability_style_preset = String($('#sd_stability_style_preset').val());
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 async function changeComfyWorkflow(_, name) {
@@ -1337,7 +1337,7 @@ async function changeComfyWorkflow(_, name) {
     if ($(`#sd_comfy_workflow > [value="${name}"]`).length > 0) {
         extension_settings.sd.comfy_workflow = name;
         $('#sd_comfy_workflow').val(extension_settings.sd.comfy_workflow);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     } else {
         toastr.error(`ComfyUI Workflow "${name}" does not exist.`);
     }
@@ -1487,7 +1487,7 @@ async function validateComfyRunPodUrl() {
 async function onModelChange() {
     const selectedModel = $('#sd_model').find(':selected');
     extension_settings.sd.model = selectedModel.val();
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 
     if (extension_settings.sd.model && extension_settings.sd.source === sources.electronhub) {
         const cachedModel = selectedModel.data('model');
@@ -2060,7 +2060,7 @@ function ensureElectronHubQualitySelect(models) {
 
         if (!qualities || qualities.length === 0) {
             extension_settings.sd.electronhub_quality = undefined;
-            saveSettingsDebounced();
+            saveSettingsDebounced('extension_settings');
             return;
         }
 
@@ -2076,7 +2076,7 @@ function ensureElectronHubQualitySelect(models) {
             const first = String(qualities[0]);
             extension_settings.sd.electronhub_quality = first;
             $select.val(first);
-            saveSettingsDebounced();
+            saveSettingsDebounced('extension_settings');
         }
     } catch (e) {
         console.error(e);
@@ -4805,7 +4805,7 @@ async function onComfyOpenWorkflowEditorClick() {
             el.find('.sd_comfy_workflow_editor_custom_final').text(`"%${this.value}%"`);
             el.attr('data-placeholder', `${this.value}`);
             checkPlaceholders();
-            saveSettingsDebounced();
+            saveSettingsDebounced('extension_settings');
         });
         el.find('.sd_comfy_workflow_editor_custom_replace').val(placeholder.replace);
         el.find('.sd_comfy_workflow_editor_custom_replace').on('input', function () {
@@ -4813,12 +4813,12 @@ async function onComfyOpenWorkflowEditorClick() {
                 return;
             }
             placeholder.replace = this.value;
-            saveSettingsDebounced();
+            saveSettingsDebounced('extension_settings');
         });
         el.find('.sd_comfy_workflow_editor_custom_remove').on('click', () => {
             el.remove();
             extension_settings.sd.comfy_placeholders.splice(extension_settings.sd.comfy_placeholders.indexOf(placeholder));
-            saveSettingsDebounced();
+            saveSettingsDebounced('extension_settings');
         });
     };
     $('#sd_comfy_workflow_editor_placeholder_add').on('click', () => {
@@ -4831,7 +4831,7 @@ async function onComfyOpenWorkflowEditorClick() {
         };
         extension_settings.sd.comfy_placeholders.push(placeholder);
         addPlaceholderDom(placeholder);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     (extension_settings.sd.comfy_placeholders ?? []).forEach(placeholder => {
         addPlaceholderDom(placeholder);
@@ -4875,7 +4875,7 @@ async function onComfyNewWorkflowClick() {
         const text = await response.text();
         toastr.error(`Failed to save workflow.\n\n${text}`);
     }
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
     await loadComfyWorkflows();
     await delay(200);
     await onComfyOpenWorkflowEditorClick();
@@ -4949,7 +4949,7 @@ async function onComfyRenameWorkflowClick() {
     }
 
     extension_settings.sd.comfy_workflow = newName;
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
     await loadComfyWorkflows();
 }
 
@@ -5519,7 +5519,7 @@ export async function init() {
             } finally {
                 if (Object.keys(currentSettings).length) {
                     Object.assign(extension_settings.sd, currentSettings);
-                    saveSettingsDebounced();
+                    saveSettingsDebounced('extension_settings');
                 }
             }
         },
@@ -5883,26 +5883,26 @@ export async function init() {
 
     $('#sd_google_api').on('input', function () {
         extension_settings.sd.google_api = String($(this).val());
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#sd_google_enhance').on('input', function () {
         extension_settings.sd.google_enhance = $(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#sd_google_duration').on('input', function () {
         extension_settings.sd.google_duration = Number($(this).val());
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#sd_models_refresh').on('click', async () => {
         await loadModels();
     });
     $('#sd_electronhub_quality').on('change', function () {
         extension_settings.sd.electronhub_quality = String($(this).val());
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#sd_openai_quality_gpt').on('input', function () {
         extension_settings.sd.openai_quality_gpt = String($(this).val());
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
 
     if (!CSS.supports('field-sizing', 'content')) {

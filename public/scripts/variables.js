@@ -129,7 +129,7 @@ export function setGlobalVariable(name, value, args = {}) {
     } else {
         extension_settings.variables.global[name] = value;
     }
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
     return value;
 }
 
@@ -612,7 +612,7 @@ export function deleteGlobalVariable(name) {
     }
 
     delete extension_settings.variables.global[name];
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
     return '';
 }
 
