@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeAll, beforeEach, afterEach } from '@jest/globals';
+import { describe, test, expect, beforeAll, beforeEach, afterEach, jest } from '@jest/globals';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -253,9 +253,17 @@ describe('reconcile', () => {
     test('discovers a file written directly to disk (no write-path hook) with date_added = now, not ctimeMs', async () => {
         await metadataDb.bootstrapIfNeeded(directories); // establishes the "already bootstrapped" baseline
 
-        const before = Date.now();
         const filePath = await writeCardFile('DroppedIn.png');
         const stat = await fs.promises.stat(filePath);
+        // A real gap before capturing `before`/calling reconcile() - without it, ctimeMs and reconcile()'s own
+        // Date.now() land within sub-millisecond of each other on a fast local filesystem (confirmed: ctimeMs
+        // carries a fractional-ms component, and this whole sequence - write, stat, reconcile, read - routinely
+        // completes in under 1ms), so `Math.round(ctimeMs)` and `date_added` collide often enough to flake this
+        // assertion depending on incidental timing elsewhere in the suite. The test's actual intent (date_added
+        // is a fresh "now" timestamp, not the file's ctime) needs genuine separation between the two instants to
+        // check for real.
+        await new Promise(resolve => setTimeout(resolve, 5));
+        const before = Date.now();
 
         await metadataDb.reconcile(directories);
         const row = await metadataDb.getCharacterMetadataRow(directories, 'DroppedIn.png');
@@ -287,6 +295,64 @@ describe('reconcile', () => {
         const second = await metadataDb.getCharacterMetadataRow(directories, 'Alice.png');
 
         expect(second.date_added).toBe(first.date_added);
+    });
+
+    // Regression coverage for the chunked/mapWithConcurrency rewrite (2026-08-24: the previous shape was a
+    // plain sequential `for (const file of files) { await fsPromises.stat(...) }`, one stat in flight at a
+    // time - correct, but it meant reconcile()'s unconditional every-boot cost never shrank the way
+    // bootstrapIfNeeded()/the backfills do, and measured out to a ~10-minute silent stall at the owner's real
+    // ~286,715-card library). Concurrency only changes how many stat()/parse() calls are in flight at once; it
+    // must not change which rows end up changed vs. left alone.
+    test('under concurrent stat/parse, only the actually-touched files among many get re-upserted - untouched ones keep their original date_added', async () => {
+        const names = Array.from({ length: 20 }, (_, i) => `Card${i}.png`);
+        for (const name of names) {
+            await writeCardFile(name, { name });
+        }
+        await metadataDb.bootstrapIfNeeded(directories);
+
+        const before = await Promise.all(names.map(name => metadataDb.getCharacterMetadataRow(directories, name)));
+
+        // Touch only the even-indexed files' mtimes (and content, via a fresh write) - the odd ones must survive
+        // the concurrent reconcile pass completely untouched.
+        const touched = names.filter((_, i) => i % 2 === 0);
+        for (const name of touched) {
+            await new Promise(resolve => setTimeout(resolve, 5)); // ensure a distinct mtime tick
+            await writeCardFile(name, { name, data: { name, description: 'updated', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+        }
+
+        await metadataDb.reconcile(directories);
+
+        for (let i = 0; i < names.length; i++) {
+            const row = await metadataDb.getCharacterMetadataRow(directories, names[i]);
+            if (i % 2 === 0) {
+                expect(row.file_mtime).not.toBe(before[i].file_mtime);
+            } else {
+                expect(row.date_added).toBe(before[i].date_added);
+                expect(row.file_mtime).toBe(before[i].file_mtime);
+            }
+        }
+    });
+
+    test('a quiet pass over an already-settled library logs nothing; a pass that finds real changes logs a completion summary', async () => {
+        await writeCardFile('Alice.png');
+        await metadataDb.bootstrapIfNeeded(directories);
+
+        const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+        try {
+            await metadataDb.reconcile(directories); // nothing changed since bootstrap
+            const quietCalls = logSpy.mock.calls.filter(args => String(args[0]).includes('[character-metadata] Reconcile'));
+            expect(quietCalls).toHaveLength(0);
+
+            logSpy.mockClear();
+            await new Promise(resolve => setTimeout(resolve, 5));
+            await writeCardFile('Alice.png', { data: { name: 'Alice', description: 'changed', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+            await metadataDb.reconcile(directories);
+            const summaryCalls = logSpy.mock.calls.filter(args => String(args[0]).includes('[character-metadata] Reconcile complete'));
+            expect(summaryCalls).toHaveLength(1);
+            expect(String(summaryCalls[0][0])).toMatch(/updated 1/);
+        } finally {
+            logSpy.mockRestore();
+        }
     });
 });
 
