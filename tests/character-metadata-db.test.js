@@ -429,6 +429,34 @@ describe('reconcile', () => {
             const afterTrigger = await metadataDb.getCharacterMetadataRow(directories, 'Alice.png');
             expect(afterTrigger.file_mtime).not.toBe(before.file_mtime);
         });
+
+        // Cross-platform safety net (2026-08-24, pushed for after "have you actually verified directory mtime is
+        // a reliable signal on macOS/Windows/network filesystems, not just linux"): it wasn't fully verifiable
+        // for every real deployment target (NFS in particular has a documented client-side directory-attribute
+        // cache that can briefly serve a stale mtime), so the watermark also expires on its own after
+        // RECONCILE_FAST_PATH_MAX_AGE_MS, independent of whether the mtime comparison says "unchanged".
+        test('the fast path stops trusting an unchanged-but-stale watermark once RECONCILE_FAST_PATH_MAX_AGE_MS has passed', async () => {
+            await writeCardFile('Alice.png');
+            await metadataDb.bootstrapIfNeeded(directories);
+
+            // Backdate the watermark this call persists - the directory itself is never touched between the two
+            // reconcile() calls below, so only the age bound (not the mtime comparison) can be what forces the
+            // second call to actually scan.
+            const dateSpy = jest.spyOn(Date, 'now').mockReturnValue(Date.now() - 2 * 60 * 60 * 1000);
+            try {
+                await metadataDb.reconcile(directories); // establishes a 2-hour-old watermark
+            } finally {
+                dateSpy.mockRestore();
+            }
+
+            const readdirSpy = jest.spyOn(fs.promises, 'readdir');
+            try {
+                await metadataDb.reconcile(directories);
+                expect(readdirSpy).toHaveBeenCalled(); // aged out - the fast path did NOT skip the scan
+            } finally {
+                readdirSpy.mockRestore();
+            }
+        });
     });
 });
 
