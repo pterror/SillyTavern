@@ -8106,8 +8106,8 @@ export function ensureSwipes(message) {
         return updated;
     }
 
-    //Small system messages and user messages should not have swipes.
-    if (message?.is_user || message?.extra?.isSmallSys) {
+    //Small system messages should not have swipes.
+    if (message?.extra?.isSmallSys) {
         return updated;
     }
 
@@ -10862,9 +10862,7 @@ export function isMessageSwipeable(messageId, message = undefined) {
             //Small system messages cannot be swiped.
             !(message?.extra?.isSmallSys) &&
             //Some messages, like the welcome screen, are not swipeable.
-            !(message?.extra?.swipeable === false) &&
-            //User messages are not swipeable.
-            !message.is_user
+            !(message?.extra?.swipeable === false)
         )
     ) {
         // The message is swipeable.
@@ -10900,6 +10898,8 @@ export function getOverswipeBehavior(messageId, message = undefined) {
     else if (isGreeting && isPristine) return OVERSWIPE_BEHAVIOR.PRISTINE_GREETING;
     //Non-user and non-prompt hidden messages will regenerate.
     else if (!message?.is_user && !message?.is_system) return OVERSWIPE_BEHAVIOR.REGENERATE;
+    //User messages will open the editor on a new, empty swipe.
+    else if (message?.is_user) return OVERSWIPE_BEHAVIOR.EDIT_GENERATE;
     //By default, all other messages will loop. Their swipe chevrons will only be shown if there is more than one swipe.
     else { return OVERSWIPE_BEHAVIOR.LOOP; }
 }
@@ -12095,6 +12095,20 @@ export async function swipe(event, direction, { source, repeated, message = chat
                 //Generate.
                 await animateSwipe(run_generate);
                 await endSwipe();
+                return;
+            } else if (overswipe == OVERSWIPE_BEHAVIOR.EDIT_GENERATE) {
+                //Create a new, empty swipe and open the editor for the user to fill in, instead of generating.
+                const newSwipes = [...chat[mesId].swipes, ''];
+                const newSwipeInfo = [...(chat[mesId].swipe_info || []), {
+                    send_date: getMessageTimeStamp(),
+                    gen_started: undefined,
+                    gen_finished: undefined,
+                    extra: {},
+                }];
+                updateMessage(mesId, { swipes: newSwipes, swipe_info: newSwipeInfo });
+                await standardSwipe(newSwipeId);
+                // Open the message editor on the new empty swipe.
+                await messageEdit(mesId);
                 return;
             } else if (overswipe == OVERSWIPE_BEHAVIOR.LOOP || overswipe == OVERSWIPE_BEHAVIOR.PRISTINE_GREETING) {
                 // Loop to the first swipe.

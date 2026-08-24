@@ -754,6 +754,60 @@ export async function branchChat(mesId, { swipeId = null } = {}) {
     return fileName;
 }
 
+/**
+ * Creates a fork (branch) from the message with the given ID and navigates to it.
+ * This is the merged checkpoint+branch action: branching is the primary behavior, and the
+ * fork point is automatically labeled with the branch name so it can still be found again
+ * on the source chat, the same way a checkpoint used to work.
+ * @param {number} mesId Message ID
+ * @param {{swipeId?: number|null}} [options={}] Branch options
+ * @returns {Promise<string?>} Branch file name
+ */
+export async function forkChat(mesId, { swipeId = null } = {}) {
+    if (getSelectionState().type === 'none') {
+        toastr.info('No character selected.', 'Create Fork');
+        return null;
+    }
+
+    const lastMes = chat[mesId];
+    const nodeId = lastMes?.node_id;
+
+    const fileName = await createBranch(mesId, { swipeId });
+    if (!fileName) {
+        return null;
+    }
+
+    // Label the fork point with the branch name, so it also acts as a checkpoint on the source chat.
+    if (isTreeStored() && !selected_group && nodeId) {
+        const character = getCurrentCharacter();
+        await fetch('/api/chats/label', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({
+                avatar_url: character?.avatar,
+                node_id: nodeId,
+                label: fileName,
+            }),
+        });
+
+        if (typeof lastMes.extra !== 'object') {
+            lastMes.extra = {};
+        }
+        lastMes.extra.bookmark_link = fileName;
+        updateBookmarkDisplay($(`.mes[mesid="${mesId}"]`), fileName);
+    }
+
+    await saveItemizedPrompts(fileName);
+
+    if (selected_group) {
+        await openGroupChat(selected_group, fileName);
+    } else {
+        await openCharacterChat(fileName);
+    }
+
+    return fileName;
+}
+
 function registerBookmarksSlashCommands() {
     /**
      * Validates a message ID. (Is a number, exists as a message)
@@ -1008,14 +1062,7 @@ export function initBookmarks() {
     $(document).on('click', '.mes_create_bookmark', async function () {
         const mesId = $(this).closest('.mes').attr('mesid');
         if (mesId !== undefined) {
-            await createNewBookmark(Number(mesId));
-        }
-    });
-
-    $(document).on('click', '.mes_create_branch', async function () {
-        const mesId = $(this).closest('.mes').attr('mesid');
-        if (mesId !== undefined) {
-            await branchChat(Number(mesId));
+            await forkChat(Number(mesId));
         }
     });
 
