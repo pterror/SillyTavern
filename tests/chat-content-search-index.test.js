@@ -108,6 +108,12 @@ describe('chat-content-search-index.js', () => {
         expect(resolved[0].match_count).toBe(2);
         expect(resolved[0].best_score).toBe(1);
         expect(resolved[0].message_count).toBe(3);
+        // The client (public/script.js's displayChats()) renders this straight into the chat-list row - has to
+        // be a human-readable string like every other /api/chats/search result already carries, not the raw
+        // byte count chat-metadata-db.js's row stores it as (a real bug this test would have caught: an earlier
+        // version of this function left it `undefined`, which the client would have rendered as literal "(undefined,").
+        expect(typeof resolved[0].file_size).toBe('string');
+        expect(resolved[0].file_size).not.toBe('undefined');
     });
 
     test('resolveHitsToChats drops a hit whose chat has since been deleted from the metadata store', async () => {

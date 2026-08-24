@@ -526,7 +526,7 @@ export async function getChatInfo(pathToFile, additionalData = {}, withMetadata 
  * @param {boolean} withMetadata
  * @returns {Promise<ChatInfo>}
  */
-async function getOrComputeChatInfo(directories, pathToFile, mtimeMs, additionalData = {}, withMetadata = false) {
+export async function getOrComputeChatInfo(directories, pathToFile, mtimeMs, additionalData = {}, withMetadata = false) {
     const row = await getChatRow(directories, pathToFile);
 
     if (row && row.mtime === Math.round(mtimeMs)) {

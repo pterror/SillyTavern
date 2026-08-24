@@ -9,7 +9,7 @@ import {
 import { buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch } from './tantivy-search.js';
 import { getTantivyModule } from './tantivy-engine.js';
 import { createIndexCoordinator } from './search-index-coordinator.js';
-import { tryParse, color } from '../util.js';
+import { tryParse, color, formatBytes } from '../util.js';
 
 /**
  * A per-user, per-message tantivy full-text index over chat content - the real content-search half of owner
@@ -506,7 +506,11 @@ export async function resolveHitsToChats(directories, hits) {
         results.push({
             file_path: filePath,
             file_name: row.file_name.replace(/\.jsonl$/, ''),
-            file_size: undefined,
+            // The client (public/script.js's displayChats()) renders this directly into the chat-list row
+            // ("(12.3 KB, 5 messages)") - has to be the same human-readable formatted string every other
+            // /api/chats/search result already carries (getOrComputeChatInfo()/getChatInfo() both format via
+            // this same formatBytes()), not the raw byte count chat-metadata-db.js's row stores it as.
+            file_size: formatBytes(row.file_size),
             message_count: row.message_count,
             last_mes: row.last_mes,
             preview_message: row.preview ?? '',
