@@ -15,6 +15,7 @@ import {
     buildAvatarList,
     selectCharacterByAvatar,
     eventSource,
+    event_types,
     menu_type,
     substituteParams,
     sendTextareaMessage,
@@ -288,10 +289,19 @@ async function RA_autoloadchat() {
         if (activeCharacterEntity) {
             await selectCharacterByAvatar(activeCharacterEntity.avatar);
             applyTagsOnCharacterSelect();
-        } else {
+        } else if (charactersStore.size > 0) {
+            // Only reset if characters have actually been loaded (store is populated).
+            // If the store is empty, character data hasn't arrived yet (boot-residency
+            // decoupling runs getCharacters() in the background) — resetting here would
+            // permanently lose which character was open.
             setActiveCharacter(null);
             saveSettingsDebounced();
             console.warn(`Currently active character with ID ${active_character} not found. Resetting to no active character.`);
+        } else {
+            // Characters haven't loaded yet. Retry once APP_READY fires (after
+            // characterResidencyPromise resolves and the store is populated).
+            console.debug(`[RA_autoloadchat] Character store empty, deferring auto-load for ${active_character}`);
+            eventSource.once(event_types.APP_READY, () => RA_autoloadchat());
         }
     }
 
@@ -780,7 +790,12 @@ export function initRossMods() {
     checkStatusDebounced();
 
     if (power_user.auto_load_chat) {
-        RA_autoloadchat();
+        // Boot-residency decoupling (see script.js's comment above `characterResidencyPromise`): `characters`/
+        // `charactersStore` are not guaranteed populated yet when `initRossMods()` runs (it's called before
+        // `characterResidencyPromise` is awaited). `event_types.APP_READY` is the documented point where full
+        // character/group residency is guaranteed, so wait for it here instead of calling `RA_autoloadchat()`
+        // immediately - otherwise a not-yet-loaded `active_character` reads as "not found" and gets wiped.
+        eventSource.once(event_types.APP_READY, () => RA_autoloadchat());
     }
 
     if (power_user.auto_connect) {

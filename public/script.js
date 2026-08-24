@@ -1237,7 +1237,7 @@ async function getHiddenBlock(hidden) {
  */
 function renderCharacterBlock(template, item, id) {
     let this_avatar = default_avatar;
-    if (item.avatar != 'none') {
+    if (item.avatar && item.avatar != 'none') {
         // The gallery-style browsing view displays card art at a size where the 96x144 thumbnail would be
         // visibly upscaled, so always use the original image via /characters/<file> (the same path the
         // zoomed-avatar viewer uses). Lazy loading (loading="lazy" below) ensures only visible cards fetch.
@@ -2774,6 +2774,9 @@ export async function clearChat({ clearData = false } = {}) {
 }
 
 export async function deleteLastMessage() {
+    if (this_edit_mes_id !== undefined && Number(this_edit_mes_id) === chat.length - 1) {
+        closeMessageEditor();
+    }
     deleteItemizedPromptForMessage(chat.length - 1);
     chat.length = chat.length - 1;
     chatElement.children('.mes').last().remove();
@@ -2846,6 +2849,12 @@ export async function deleteMessage(id, swipeDeletionIndex = undefined, askConfi
     const firstMessageId = getMessageDeletionStartId(id, deleteToolCalls);
     const messageIds = Array.from({ length: id - firstMessageId + 1 }, (_, index) => id - index);
 
+    // If the message being edited is about to be removed, close the editor first while its
+    // DOM element and chat entry still exist, so the editor UI gets restored properly.
+    if (this_edit_mes_id !== undefined && messageIds.includes(Number(this_edit_mes_id))) {
+        closeMessageEditor();
+    }
+
     // Delete from the end so earlier indices remain stable.
     for (const messageId of messageIds) {
         chat.splice(messageId, 1);
@@ -2858,10 +2867,6 @@ export async function deleteMessage(id, swipeDeletionIndex = undefined, askConfi
     const startIndex = firstMessageId <= minId ? firstMessageId : null;
     updateViewMessageIds(startIndex);
     saveChatDebounced();
-
-    if (this_edit_mes_id === id) {
-        this_edit_mes_id = undefined;
-    }
 
     refreshSwipeButtons();
 
