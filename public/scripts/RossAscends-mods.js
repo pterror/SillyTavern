@@ -53,6 +53,7 @@ import { kai_settings } from './kai-settings.js';
 var RPanelPin = document.getElementById('rm_button_panel_pin');
 var LPanelPin = document.getElementById('lm_button_panel_pin');
 var WIPanelPin = document.getElementById('WI_panel_pin');
+var CharInfoPanelPin = document.getElementById('charInfo_button_panel_pin');
 
 var RightNavPanel = document.getElementById('right-nav-panel');
 var RightNavDrawerIcon = document.getElementById('rightNavDrawerIcon');
@@ -60,6 +61,8 @@ var LeftNavPanel = document.getElementById('left-nav-panel');
 var LeftNavDrawerIcon = document.getElementById('leftNavDrawerIcon');
 var WorldInfo = document.getElementById('WorldInfo');
 var WIDrawerIcon = document.getElementById('WIDrawerIcon');
+var CharInfoPanel = document.getElementById('char-info-panel');
+var CharInfoDrawerIcon = document.getElementById('charInfoDrawerIcon');
 
 var SelectedCharacterTab = document.getElementById('rm_button_selected_ch');
 
@@ -803,7 +806,10 @@ export function initRossMods() {
             $(RightNavPanel).removeClass('pinnedOpen');
             $(RightNavDrawerIcon).removeClass('drawerPinnedOpen');
 
-            if ($(RightNavPanel).hasClass('openDrawer') && $('.openDrawer').length > 1) {
+            // #char-info-panel coexists with #right-nav-panel independent of pinning (see ensureDrawerOpen/
+            // doNavbarIconClick in script.js), so it staying open isn't a leftover of this pin and shouldn't
+            // count toward "was this only open because something else pinned it" here.
+            if ($(RightNavPanel).hasClass('openDrawer') && $('.openDrawer').not(CharInfoPanel).length > 1) {
                 const toggle = $('#unimportantYes');
                 doNavbarIconClick.call(toggle);
             }
@@ -841,6 +847,24 @@ export function initRossMods() {
             if ($(WorldInfo).hasClass('openDrawer') && $('.openDrawer').length > 1) {
                 console.debug('closing WI after lock removal');
                 const toggle = $('#WI-SP-button>.drawer-toggle');
+                doNavbarIconClick.call(toggle);
+            }
+        }
+    });
+
+    $(CharInfoPanelPin).on('click', function () {
+        accountStorage.setItem('CharInfoNavLockOn', $(CharInfoPanelPin).prop('checked'));
+        if ($(CharInfoPanelPin).prop('checked') == true) {
+            $(CharInfoPanel).addClass('pinnedOpen');
+            $(CharInfoDrawerIcon).addClass('drawerPinnedOpen');
+        } else {
+            $(CharInfoPanel).removeClass('pinnedOpen');
+            $(CharInfoDrawerIcon).removeClass('drawerPinnedOpen');
+
+            // See the RightNavPanel pin handler above - #right-nav-panel coexisting is independent of this
+            // pin, not a leftover of it.
+            if ($(CharInfoPanel).hasClass('openDrawer') && $('.openDrawer').not(RightNavPanel).length > 1) {
+                const toggle = $('#charInfoHolder>.drawer-toggle');
                 doNavbarIconClick.call(toggle);
             }
         }
@@ -884,6 +908,13 @@ export function initRossMods() {
             console.debug('setting pin class via checkbox state');
             $(WorldInfo).addClass('pinnedOpen');
             $(WIDrawerIcon).addClass('drawerPinnedOpen');
+        }
+
+        // read the state of Character Info Lock and apply to char-info-panel classlist
+        $(CharInfoPanelPin).prop('checked', accountStorage.getItem('CharInfoNavLockOn') === 'true');
+        if ($(CharInfoPanelPin).prop('checked')) {
+            $(CharInfoPanel).addClass('pinnedOpen');
+            $(CharInfoDrawerIcon).addClass('drawerPinnedOpen');
         }
     }
 

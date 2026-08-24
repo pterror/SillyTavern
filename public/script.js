@@ -9752,14 +9752,14 @@ function applyMessageEdit(div) {
         newSwipes[mes.swipe_id] = text;
         editUpdates.swipes = newSwipes;
     }
+
+    // Set bias on extra (must be included in the same updateMessage call since extra is frozen)
+    const biasValue = (mes?.is_system || mes?.is_user || mes.extra?.type === system_message_types.NARRATOR)
+        ? (bias ?? null) : null;
+    editUpdates.extra = { ...(mes.extra || {}), bias: biasValue };
+
     updateMessage(mesId, editUpdates);
     mes = chat[mesId];
-
-    if (mes?.is_system || mes?.is_user || mes.extra?.type === system_message_types.NARRATOR) {
-        mes.extra.bias = bias ?? null;
-    } else {
-        mes.extra.bias = null;
-    }
 
     chat_metadata.tainted = true;
 
@@ -10202,6 +10202,41 @@ async function displayChats(searchQuery, currentChat, displayName, avatarImg, se
     }
 }
 
+// #right-nav-panel and #char-info-panel are both .fillRight - pinning lets one stay open while the other
+// opens alongside it, and with panel translucency enabled two overlapping .fillRight panels would blend into
+// an unreadable mess. Only one is ever visually "front" at a time; the other stays logically open (state,
+// scroll position, DOM all preserved) but is hidden via the .frontFillRight CSS rule in toggle-dependent.css.
+function activateFillRightDrawer(contentId) {
+    document.querySelectorAll('.fillRight').forEach(el => el.classList.remove('frontFillRight'));
+    document.getElementById(contentId)?.classList.add('frontFillRight');
+}
+
+function ensureDrawerOpen(drawerId) {
+    const drawer = document.getElementById(drawerId);
+    if (!drawer) return;
+    const content = drawer.querySelector('.drawer-content');
+    const icon = drawer.querySelector('.drawer-icon');
+    if (content && !content.classList.contains('openDrawer')) {
+        // #right-nav-panel and #char-info-panel (both .fillRight) are meant to coexist - opening one
+        // shouldn't close the other, pinned or not, since .frontFillRight/.fillRightIcon already keep only
+        // one of them visually in front. Opening any other (non-fillRight) drawer still closes both, as before.
+        const isFillRight = content.classList.contains('fillRight');
+        document.querySelectorAll('.openDrawer:not(.pinnedOpen)').forEach(el => {
+            if (isFillRight && el.classList.contains('fillRight')) return;
+            el.classList.replace('openDrawer', 'closedDrawer');
+        });
+        document.querySelectorAll('.openIcon:not(.drawerPinnedOpen)').forEach(el => {
+            if (isFillRight && el.classList.contains('fillRightIcon')) return;
+            el.classList.replace('openIcon', 'closedIcon');
+        });
+        content.classList.replace('closedDrawer', 'openDrawer');
+        if (icon) icon.classList.replace('closedIcon', 'openIcon');
+    }
+    if (content && content.classList.contains('fillRight')) {
+        activateFillRightDrawer(content.id);
+    }
+}
+
 /**
  * Switches which #right-nav-panel menu is visible. Only one is ever shown at once - with panel
  * translucency enabled, two overlapping menus would blend into an unreadable mess - but hiding a menu
@@ -10222,7 +10257,14 @@ export function selectRightMenuWithAnimation(selectedMenuId) {
     // Track which sub-view is active so CSS can scope gallery-mode styling to only fire when the
     // character list is showing (not when character edit or group chat views are active).
     document.getElementById('right-nav-panel')?.setAttribute('data-active-menu', normalizedId || '');
-    document.querySelectorAll('#right-nav-panel .right_menu').forEach((menu) => {
+    document.getElementById('char-info-panel')?.setAttribute('data-active-menu', normalizedId || '');
+    const charInfoMenus = ['rm_ch_create_block', 'rm_group_chats_block'];
+    if (charInfoMenus.includes(normalizedId)) {
+        ensureDrawerOpen('charInfoHolder');
+    } else if (normalizedId === 'rm_characters_block') {
+        ensureDrawerOpen('rightNavHolder');
+    }
+    document.querySelectorAll('#right-nav-panel .right_menu, #char-info-panel .right_menu').forEach((menu) => {
         $(menu).css('display', 'none');
 
         if (normalizedId && normalizedId === menu.id) {
@@ -12706,8 +12748,11 @@ export async function doNavbarIconClick() {
     const targetDrawerID = $(this).parent().find('.drawer-content').attr('id');
 
     if (!drawerWasOpenAlready) {
-        const $openDrawers = $('.openDrawer:not(.pinnedOpen)');
-        const $openIcons = $('.openIcon:not(.drawerPinnedOpen)');
+        // See ensureDrawerOpen's comment: the two .fillRight drawers coexist, so opening one of them must
+        // not sweep-close the other (pinned or not) here either.
+        const isFillRight = drawer.hasClass('fillRight');
+        const $openDrawers = $('.openDrawer:not(.pinnedOpen)').not(isFillRight ? '.fillRight' : []);
+        const $openIcons = $('.openIcon:not(.drawerPinnedOpen)').not(isFillRight ? '.fillRightIcon' : []);
         for (const iconEl of $openIcons) {
             $(iconEl).toggleClass('closedIcon openIcon');
         }
@@ -12725,6 +12770,14 @@ export async function doNavbarIconClick() {
             $('#rm_print_characters_block').trigger('scroll');
         }
 
+        if (targetDrawerID === 'char-info-panel' && getSelectionState().type === 'none') {
+            select_rm_create();
+        }
+
+        if (drawer.hasClass('fillRight')) {
+            activateFillRightDrawer(targetDrawerID);
+        }
+
         // Set the height of "autoSetHeight" textareas within the drawer to their scroll height
         if (!CSS.supports('field-sizing', 'content')) {
             const textareas = $(this).closest('.drawer').find('.drawer-content textarea.autoSetHeight');
@@ -12733,6 +12786,12 @@ export async function doNavbarIconClick() {
             }
         }
     } else if (drawerWasOpenAlready) {
+        // For fillRight drawers that are open but behind (not frontFillRight), bring to front
+        // instead of closing - the user is switching between the two right-side panels.
+        if (drawer.hasClass('fillRight') && !drawer.hasClass('frontFillRight')) {
+            activateFillRightDrawer(targetDrawerID);
+            return;
+        }
         icon.toggleClass('closedIcon openIcon');
         drawer.toggleClass('closedDrawer openDrawer');
     }
@@ -14638,20 +14697,31 @@ jQuery(async function () {
         }
     });
 
+    // Grid/list toggle: in fullscreen mode, toggles charGalleryGrid (body class + setting).
+    // In sidebar mode, toggles charListGrid (existing behavior).
     $('#charListGridToggle').on('click', async () => {
-        doCharListDisplaySwitch();
+        const panel = document.getElementById('right-nav-panel');
+        const isFullscreen = panel && panel.classList.contains('galleryFullscreen');
+        if (isFullscreen) {
+            power_user.charGalleryGrid = !power_user.charGalleryGrid;
+            document.body.classList.toggle('charGalleryGrid', power_user.charGalleryGrid);
+        } else {
+            doCharListDisplaySwitch();
+        }
+        saveSettingsDebounced();
     });
 
     $('#galleryFullscreenToggle').on('click', () => {
         const panel = document.getElementById('right-nav-panel');
         if (panel) {
-            panel.classList.toggle('galleryFullscreen');
-            // Swap icon between expand (enter fullscreen) and compress (exit fullscreen)
+            power_user.charGalleryFullscreen = !power_user.charGalleryFullscreen;
+            panel.classList.toggle('galleryFullscreen', power_user.charGalleryFullscreen);
             const btn = document.getElementById('galleryFullscreenToggle');
             if (btn) {
-                btn.classList.toggle('fa-expand', !panel.classList.contains('galleryFullscreen'));
-                btn.classList.toggle('fa-compress', panel.classList.contains('galleryFullscreen'));
+                btn.classList.toggle('fa-expand', !power_user.charGalleryFullscreen);
+                btn.classList.toggle('fa-compress', power_user.charGalleryFullscreen);
             }
+            saveSettingsDebounced();
         }
     });
 

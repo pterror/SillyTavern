@@ -370,6 +370,7 @@
     }
 
     #right-nav-panel,
+    #char-info-panel,
     #left-nav-panel,
     #floatingPrompt,
     #cfgConfig,
@@ -396,7 +397,8 @@
     }
 
     #left-nav-panel:not(.openDrawer),
-    #right-nav-panel:not(.openDrawer) {
+    #right-nav-panel:not(.openDrawer),
+    #char-info-panel:not(.openDrawer) {
         height: 0;
     }
 
@@ -413,7 +415,8 @@
         height: min-content;
     }
 
-    #right-nav-panel h4 {
+    #right-nav-panel h4,
+    #char-info-panel h4 {
         margin: 5px auto;
     }
 
