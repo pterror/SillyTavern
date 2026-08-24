@@ -1,6 +1,6 @@
 import { Fuse } from '../lib.js';
 
-import { saveSettings, substituteParams, getRequestHeaders, chat_metadata, characters, charactersStore, getCurrentCharacter, saveCharacterDebounced, menu_type, eventSource, event_types, getExtensionPromptByName, saveMetadata, getCurrentChatId, extension_prompt_roles, create_save, createOrEditCharacter, name1, getOneCharacter, select_selected_character } from '../script.js';
+import { saveSettings, saveSettingsDebounced, substituteParams, getRequestHeaders, chat_metadata, characters, charactersStore, getCurrentCharacter, saveCharacterDebounced, menu_type, eventSource, event_types, getExtensionPromptByName, saveMetadata, getCurrentChatId, extension_prompt_roles, create_save, createOrEditCharacter, name1, getOneCharacter, select_selected_character } from '../script.js';
 import { download, debounce, initScrollHeight, resetScrollHeight, parseJsonFile, extractDataFromPng, getFileBuffer, getCharaFilename, getSortableDelay, escapeRegex, PAGINATION_TEMPLATE, navigation_option, waitUntilCondition, isTrueBoolean, setValueByPath, flashHighlight, select2ModifyOptions, getSelect2OptionId, dynamicSelect2DataViaAjax, highlightRegex, select2ChoiceClickSubscribe, isFalseBoolean, getSanitizedFilename, checkOverwriteExistingData, getStringHash, parseStringArray, cancelDebounce, findChar, onlyUnique, equalsIgnoreCaseAndAccents, uuidv4, normalizeArray, getUniqueName, logSlashCommandWarn, addLongPressEvent, escapeHtml, setInfoBlock, clearInfoBlock } from './utils.js';
 import { extension_settings, getContext } from './extensions.js';
 import { NOTE_MODULE_NAME, metadata_keys, shouldWIAddPrompt } from './authors-note.js';
@@ -83,10 +83,6 @@ export let world_info_character_strategy = world_info_insertion_strategy.charact
 export let world_info_budget_cap = 0;
 export let world_info_max_recursion_steps = 0;
 const saveWorldDebounced = debounce(async (name, data) => await _save(name, data), debounce_timeout.relaxed);
-const saveSettingsDebounced = debounce(() => {
-    Object.assign(world_info, { globalSelect: selected_world_info });
-    saveSettings();
-}, debounce_timeout.relaxed);
 const sortFn = (a, b) => b.order - a.order;
 let updateEditor = (navigation, flashOnNav = true) => { console.debug('Triggered WI navigation', navigation, flashOnNav); };
 
@@ -795,6 +791,7 @@ class WorldInfoTimedEffects {
 }
 
 export function getWorldInfoSettings() {
+    Object.assign(world_info, { globalSelect: selected_world_info });
     return {
         world_info,
         world_info_depth,
@@ -851,7 +848,7 @@ export function updateWorldInfoSettings(settings, activeWorldInfo) {
         selected_world_info = activeWorldInfo;
     }
 
-    saveSettingsDebounced();
+    saveSettingsDebounced('world_info_settings');
 }
 
 export const world_info_position = {
@@ -1109,7 +1106,7 @@ function registerWorldInfoSlashCommands() {
             const newName = await createWorldWithName(name, `Persona Book ${name1}`.replace(/[^a-z0-9 -]/gi, '_').replace(/_{2,}/g, '_').substring(0, 64));
             power_user.persona_description_lorebook = newName;
             setPersonaDescription();
-            saveSettingsDebounced();
+            saveSettingsDebounced('power_user');
             return newName;
         }
 
@@ -2355,7 +2352,7 @@ async function displayWorldEntries(name, data, navigation = navigation_option.no
                 }
             });
 
-            saveSettingsDebounced();
+            saveSettingsDebounced('world_info_settings');
         }
 
         // Selected world_info automatically refreshes
@@ -3577,7 +3574,7 @@ export async function getWorldEntry(name, data, entry) {
         // Key input switch
         editTemplate.find('.switch_input_type_icon').on('click', function () {
             power_user.wi_key_input_plaintext = !power_user.wi_key_input_plaintext;
-            saveSettingsDebounced();
+            saveSettingsDebounced('power_user');
             const uid = ($(this).parents('.world_entry')).data('uid');
             updateEditor(uid, false);
             $(`.world_entry[uid="${uid}"] .inline-drawer-icon`).trigger('click');
@@ -4254,7 +4251,7 @@ async function updateWorldInfoLinks(oldName, newName, { retargetPersonaLore } = 
             tempCharLore.push(newName);
             charLore.extraBooks = tempCharLore;
         });
-        saveSettingsDebounced();
+        saveSettingsDebounced('world_info_settings');
     }
 
     // Update link for active persona
@@ -4263,7 +4260,7 @@ async function updateWorldInfoLinks(oldName, newName, { retargetPersonaLore } = 
         getOrCreatePersonaDescriptor();
         personaStore.update(user_avatar, { lorebook: newName });
         setPersonaDescription();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     }
 
     // Update links for other personas
@@ -4274,7 +4271,7 @@ async function updateWorldInfoLinks(oldName, newName, { retargetPersonaLore } = 
         const record = personaStore.get(persona);
         if (record.lorebook === oldName) {
             personaStore.update(persona, { lorebook: newName });
-            saveSettingsDebounced();
+            saveSettingsDebounced('power_user');
         }
     });
 
@@ -4377,7 +4374,7 @@ export async function deleteWorldInfo(worldInfoName) {
     const existingWorldIndex = selected_world_info.findIndex((e) => e === worldInfoName);
     if (existingWorldIndex !== -1) {
         selected_world_info.splice(existingWorldIndex, 1);
-        saveSettingsDebounced();
+        saveSettingsDebounced('world_info_settings');
     }
 
     await updateWorldInfoList();
@@ -4398,7 +4395,7 @@ export async function deleteWorldInfo(worldInfoName) {
             personaStore.update(user_avatar, { lorebook: '' });
         }
         $('#persona_lore_button').toggleClass('world_set', false);
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     }
 
     return true;
@@ -5859,7 +5856,7 @@ export function onWorldInfoChange(args, text) {
         selected_world_info = tempWorldInfo;
     }
 
-    saveSettingsDebounced();
+    saveSettingsDebounced('world_info_settings');
     eventSource.emit(event_types.WORLDINFO_SETTINGS_UPDATED);
     return '';
 }
@@ -6190,7 +6187,7 @@ function updateAuxBooks(fileName, computeNext) {
     }
 
     Object.assign(world_info, { charLore });
-    saveSettingsDebounced();
+    saveSettingsDebounced('world_info_settings');
 }
 
 export function initWorldInfo() {
@@ -6238,18 +6235,18 @@ export function initWorldInfo() {
 
         if (selectedIndex === '') {
             power_user.wi_last_editor_book = '';
-            saveSettingsDebounced();
+            saveSettingsDebounced('power_user');
             await hideWorldEditor();
         } else {
             const worldName = world_names[selectedIndex];
             power_user.wi_last_editor_book = worldName;
-            saveSettingsDebounced();
+            saveSettingsDebounced('power_user');
             showWorldEditor(worldName);
         }
     });
 
     const saveSettings = () => {
-        saveSettingsDebounced();
+        saveSettingsDebounced('world_info_settings');
         eventSource.emit(event_types.WORLDINFO_SETTINGS_UPDATED);
     };
 
@@ -6311,12 +6308,12 @@ export function initWorldInfo() {
 
     $('#world_info_overflow_alert').on('change', function () {
         world_info_overflow_alert = !!$(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('world_info_settings');
     });
 
     $('#world_info_use_group_scoring').on('change', function () {
         world_info_use_group_scoring = !!$(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('world_info_settings');
     });
 
     $('#world_info_budget_cap').on('input', function () {

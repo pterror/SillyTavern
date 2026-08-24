@@ -1347,7 +1347,7 @@ async function loadRemoteEmbeddingModels(source) {
         if (!settings[settingsKey] && models.length) {
             settings[settingsKey] = models[0][valueProperty];
             Object.assign(extension_settings.vectors, settings);
-            saveSettingsDebounced();
+            saveSettingsDebounced('extension_settings');
         }
         select.val(settings[settingsKey]);
     }
@@ -1744,126 +1744,126 @@ export async function init() {
     $('#vectors_enabled_chats').prop('checked', settings.enabled_chats).on('input', () => {
         settings.enabled_chats = $('#vectors_enabled_chats').prop('checked');
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
         toggleSettings();
     });
     $('#vectors_keep_hidden').prop('checked', settings.keep_hidden).on('input', () => {
         settings.keep_hidden = !!$('#vectors_keep_hidden').prop('checked');
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#vectors_enabled_files').prop('checked', settings.enabled_files).on('input', () => {
         settings.enabled_files = $('#vectors_enabled_files').prop('checked');
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
         toggleSettings();
     });
     $('#vectors_source').val(settings.source).on('change', () => {
         settings.source = String($('#vectors_source').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
         toggleSettings();
     });
     $('#vector_altEndpointUrl_enabled').prop('checked', settings.use_alt_endpoint).on('input', () => {
         settings.use_alt_endpoint = $('#vector_altEndpointUrl_enabled').prop('checked');
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#vector_altEndpoint_address').val(settings.alt_endpoint_url).on('change', () => {
         settings.alt_endpoint_url = String($('#vector_altEndpoint_address').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#vectors_togetherai_model').val(settings.togetherai_model).on('change', () => {
         settings.togetherai_model = String($('#vectors_togetherai_model').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#vectors_openai_model').val(settings.openai_model).on('change', () => {
         settings.openai_model = String($('#vectors_openai_model').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#vectors_electronhub_model').val(settings.electronhub_model).on('change', () => {
         settings.electronhub_model = String($('#vectors_electronhub_model').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#vectors_chutes_model').val(settings.chutes_model).on('change', () => {
         settings.chutes_model = String($('#vectors_chutes_model').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#vectors_nanogpt_model').val(settings.nanogpt_model).on('change', () => {
         settings.nanogpt_model = String($('#vectors_nanogpt_model').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#vectors_siliconflow_model').val(settings.siliconflow_model).on('change', () => {
         settings.siliconflow_model = String($('#vectors_siliconflow_model').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#vectors_workers_ai_model').val(settings.workers_ai_model).on('change', () => {
         settings.workers_ai_model = String($('#vectors_workers_ai_model').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#vectors_openrouter_model').val(settings.openrouter_model).on('change', () => {
         settings.openrouter_model = String($('#vectors_openrouter_model').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#vectors_cohere_model').val(settings.cohere_model).on('change', () => {
         settings.cohere_model = String($('#vectors_cohere_model').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#vectors_ollama_model').val(settings.ollama_model).on('input', () => {
         settings.ollama_model = String($('#vectors_ollama_model').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#vectors_vllm_model').val(settings.vllm_model).on('input', () => {
         settings.vllm_model = String($('#vectors_vllm_model').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#vectors_ollama_keep').prop('checked', settings.ollama_keep).on('input', () => {
         settings.ollama_keep = $('#vectors_ollama_keep').prop('checked');
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#vectors_template').val(settings.template).on('input', () => {
         settings.template = String($('#vectors_template').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#vectors_depth').val(settings.depth).on('input', () => {
         settings.depth = Number($('#vectors_depth').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#vectors_protect').val(settings.protect).on('input', () => {
         settings.protect = Number($('#vectors_protect').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#vectors_insert').val(settings.insert).on('input', () => {
         settings.insert = Number($('#vectors_insert').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#vectors_query').val(settings.query).on('input', () => {
         settings.query = Number($('#vectors_query').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $(`input[name="vectors_position"][value="${settings.position}"]`).prop('checked', true);
     $('input[name="vectors_position"]').on('change', () => {
         settings.position = Number($('input[name="vectors_position"]:checked').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#vectors_vectorize_all').on('click', onVectorizeAllClick);
     $('#vectors_purge').on('click', onPurgeClick);
@@ -1874,167 +1874,167 @@ export async function init() {
     $('#vectors_size_threshold').val(settings.size_threshold).on('input', () => {
         settings.size_threshold = Number($('#vectors_size_threshold').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
 
     $('#vectors_chunk_size').val(settings.chunk_size).on('input', () => {
         settings.chunk_size = Number($('#vectors_chunk_size').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
 
     $('#vectors_chunk_count').val(settings.chunk_count).on('input', () => {
         settings.chunk_count = Number($('#vectors_chunk_count').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
 
     $('#vectors_include_wi').prop('checked', settings.include_wi).on('input', () => {
         settings.include_wi = !!$('#vectors_include_wi').prop('checked');
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
 
     $('#vectors_summarize').prop('checked', settings.summarize).on('input', () => {
         settings.summarize = !!$('#vectors_summarize').prop('checked');
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
 
     $('#vectors_summarize_user').prop('checked', settings.summarize_sent).on('input', () => {
         settings.summarize_sent = !!$('#vectors_summarize_user').prop('checked');
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
 
     $('#vectors_summary_source').val(settings.summary_source).on('change', () => {
         settings.summary_source = String($('#vectors_summary_source').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
 
     $('#vectors_summary_prompt').val(settings.summary_prompt).on('input', () => {
         settings.summary_prompt = String($('#vectors_summary_prompt').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
 
     $('#vectors_summary_retries').val(settings.summary_retries).on('input', () => {
         const parsed = Number($('#vectors_summary_retries').val());
         settings.summary_retries = Number.isFinite(parsed) && parsed >= 1 ? Math.floor(parsed) : 1;
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
 
     $('#vectors_summary_threshold').val(settings.summary_threshold).on('input', () => {
         const parsed = Number($('#vectors_summary_threshold').val());
         settings.summary_threshold = Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 0;
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
 
     $('#vectors_message_chunk_size').val(settings.message_chunk_size).on('input', () => {
         settings.message_chunk_size = Number($('#vectors_message_chunk_size').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
 
     $('#vectors_size_threshold_db').val(settings.size_threshold_db).on('input', () => {
         settings.size_threshold_db = Number($('#vectors_size_threshold_db').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
 
     $('#vectors_chunk_size_db').val(settings.chunk_size_db).on('input', () => {
         settings.chunk_size_db = Number($('#vectors_chunk_size_db').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
 
     $('#vectors_chunk_count_db').val(settings.chunk_count_db).on('input', () => {
         settings.chunk_count_db = Number($('#vectors_chunk_count_db').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
 
     $('#vectors_overlap_percent').val(settings.overlap_percent).on('input', () => {
         settings.overlap_percent = Number($('#vectors_overlap_percent').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
 
     $('#vectors_overlap_percent_db').val(settings.overlap_percent_db).on('input', () => {
         settings.overlap_percent_db = Number($('#vectors_overlap_percent_db').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
 
     $('#vectors_file_template_db').val(settings.file_template_db).on('input', () => {
         settings.file_template_db = String($('#vectors_file_template_db').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
 
     $(`input[name="vectors_file_position_db"][value="${settings.file_position_db}"]`).prop('checked', true);
     $('input[name="vectors_file_position_db"]').on('change', () => {
         settings.file_position_db = Number($('input[name="vectors_file_position_db"]:checked').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
 
     $('#vectors_file_depth_db').val(settings.file_depth_db).on('input', () => {
         settings.file_depth_db = Number($('#vectors_file_depth_db').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
 
     $('#vectors_file_depth_role_db').val(settings.file_depth_role_db).on('input', () => {
         settings.file_depth_role_db = Number($('#vectors_file_depth_role_db').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
 
     $('#vectors_translate_files').prop('checked', settings.translate_files).on('input', () => {
         settings.translate_files = !!$('#vectors_translate_files').prop('checked');
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
 
     $('#vectors_enabled_world_info').prop('checked', settings.enabled_world_info).on('input', () => {
         settings.enabled_world_info = !!$('#vectors_enabled_world_info').prop('checked');
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
         toggleSettings();
     });
 
     $('#vectors_enabled_for_all').prop('checked', settings.enabled_for_all).on('input', () => {
         settings.enabled_for_all = !!$('#vectors_enabled_for_all').prop('checked');
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
 
     $('#vectors_max_entries').val(settings.max_entries).on('input', () => {
         settings.max_entries = Number($('#vectors_max_entries').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
 
     $('#vectors_score_threshold').val(settings.score_threshold).on('input', () => {
         settings.score_threshold = Number($('#vectors_score_threshold').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
 
     $('#vectors_force_chunk_delimiter').val(settings.force_chunk_delimiter).on('input', () => {
         settings.force_chunk_delimiter = String($('#vectors_force_chunk_delimiter').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
 
     $('#vectors_only_custom_boundary').prop('checked', settings.only_custom_boundary).on('input', () => {
         settings.only_custom_boundary = !!$('#vectors_only_custom_boundary').prop('checked');
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
 
     $('#vectors_ollama_pull').on('click', (e) => {
@@ -2059,7 +2059,7 @@ export async function init() {
     $('#vectors_webllm_model').on('input', () => {
         settings.webllm_model = String($('#vectors_webllm_model').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
 
     $('#vectors_webllm_load').on('click', async () => {
@@ -2071,7 +2071,7 @@ export async function init() {
     $('#vectors_google_model').val(settings.google_model).on('input', () => {
         settings.google_model = String($('#vectors_google_model').val());
         Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
 
     $('#api_key_nomicai').toggleClass('success', !!secret_state[SECRET_KEYS.NOMICAI]);

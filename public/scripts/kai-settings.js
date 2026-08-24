@@ -456,7 +456,7 @@ export function initKoboldSettings() {
             const formattedValue = slider.format(value);
             slider.setValue(value);
             $(slider.counterId).val(formattedValue);
-            saveSettingsDebounced();
+            saveSettingsDebounced('kai_settings');
         });
     });
 
@@ -472,7 +472,7 @@ export function initKoboldSettings() {
             $('#api_url_text').val(value);
             kai_settings.api_server = value;
             startStatusLoading();
-            saveSettingsDebounced();
+            saveSettingsDebounced('kai_settings');
             getStatusKobold();
         }
     });
@@ -480,13 +480,13 @@ export function initKoboldSettings() {
     $('#streaming_kobold').on('input', function () {
         const value = !!$(this).prop('checked');
         kai_settings.streaming_kobold = value;
-        saveSettingsDebounced();
+        saveSettingsDebounced('kai_settings');
     });
 
     $('#use_default_badwordsids').on('input', function () {
         const value = !!$(this).prop('checked');
         kai_settings.use_default_badwordsids = value;
-        saveSettingsDebounced();
+        saveSettingsDebounced('kai_settings');
     });
 
     $('#kobold_order').sortable({
@@ -498,14 +498,14 @@ export function initKoboldSettings() {
             });
             kai_settings.sampler_order = order;
             console.log('Samplers reordered:', kai_settings.sampler_order);
-            saveSettingsDebounced();
+            saveSettingsDebounced('kai_settings');
         },
     });
 
     $('#samplers_order_recommended').on('click', function () {
         kai_settings.sampler_order = KOBOLDCPP_ORDER;
         sortItemsByOrder(kai_settings.sampler_order);
-        saveSettingsDebounced();
+        saveSettingsDebounced('kai_settings');
     });
 
     $('#settings_preset').on('change', async function () {
@@ -529,7 +529,7 @@ export function initKoboldSettings() {
                 .css('opacity', 0.5)
                 .sortable('disable');
         }
-        saveSettingsDebounced();
+        saveSettingsDebounced('kai_settings');
         await eventSource.emit(event_types.PRESET_CHANGED, { apiId: 'kobold', name: kai_settings.preset_settings });
     });
 }

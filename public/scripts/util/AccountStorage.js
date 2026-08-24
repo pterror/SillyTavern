@@ -74,7 +74,7 @@ class AccountStorage {
         if (!Object.hasOwn(this.#state, MIGRATED_MARKER)) {
             this.#migrateLocalStorage();
             this.#state[MIGRATED_MARKER] = '1';
-            saveSettingsDebounced();
+            saveSettingsDebounced('accountStorage');
         }
 
         this.#ready = true;
@@ -110,7 +110,7 @@ class AccountStorage {
         }
 
         this.#state[key] = String(value);
-        saveSettingsDebounced();
+        saveSettingsDebounced('accountStorage');
     }
 
     /**
@@ -127,7 +127,7 @@ class AccountStorage {
         }
 
         delete this.#state[key];
-        saveSettingsDebounced();
+        saveSettingsDebounced('accountStorage');
     }
 
     /**

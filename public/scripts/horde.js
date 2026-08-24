@@ -428,25 +428,25 @@ export function initHorde() {
             $('#adjustedHordeParams').text(t`Context` + ': --, ' + t`Response` + ': --');
         }
 
-        saveSettingsDebounced();
+        saveSettingsDebounced('horde_settings');
     });
 
     $('#horde_auto_adjust_response_length').on('input', function () {
         horde_settings.auto_adjust_response_length = !!$(this).prop('checked');
         setContextSizePreview();
-        saveSettingsDebounced();
+        saveSettingsDebounced('horde_settings');
     });
 
     $('#horde_auto_adjust_context_length').on('input', function () {
         horde_settings.auto_adjust_context_length = !!$(this).prop('checked');
         setContextSizePreview();
-        saveSettingsDebounced();
+        saveSettingsDebounced('horde_settings');
     });
 
     $('#horde_trusted_workers_only').on('input', function () {
         horde_settings.trusted_workers_only = !!$(this).prop('checked');
         setContextSizePreview();
-        saveSettingsDebounced();
+        saveSettingsDebounced('horde_settings');
     });
 
     $('#horde_api_key_button').on('click', async function () {

@@ -142,7 +142,7 @@ export async function saveScriptsByType(scripts, scriptType) {
     switch (scriptType) {
         case SCRIPT_TYPES.GLOBAL:
             extension_settings.regex = scripts;
-            saveSettingsDebounced();
+            saveSettingsDebounced('extension_settings');
             break;
         case SCRIPT_TYPES.SCOPED:
             await writeExtensionField(getCurrentCharacter()?.avatar, 'regex_scripts', scripts);
@@ -182,7 +182,7 @@ export function allowScopedScripts(character) {
     }
     if (!extension_settings.character_allowed_regex.includes(avatar)) {
         extension_settings.character_allowed_regex.push(avatar);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     }
 }
 
@@ -202,7 +202,7 @@ export function disallowScopedScripts(character) {
     const index = extension_settings.character_allowed_regex.indexOf(avatar);
     if (index !== -1) {
         extension_settings.character_allowed_regex.splice(index, 1);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     }
 }
 
@@ -234,7 +234,7 @@ export function allowPresetScripts(apiId, presetName) {
     }
     if (!extension_settings.preset_allowed_regex[apiId].includes(presetName)) {
         extension_settings.preset_allowed_regex[apiId].push(presetName);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     }
 }
 
@@ -254,7 +254,7 @@ export function disallowPresetScripts(apiId, presetName) {
     const index = extension_settings.preset_allowed_regex[apiId].indexOf(presetName);
     if (index !== -1) {
         extension_settings.preset_allowed_regex[apiId].splice(index, 1);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     }
 }
 

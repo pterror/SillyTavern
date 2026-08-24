@@ -76,7 +76,7 @@ function onServerConnectClick() {
             server.lastConnection = Date.now();
         }
 
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 }
 

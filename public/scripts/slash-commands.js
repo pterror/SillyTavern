@@ -3610,7 +3610,7 @@ export function initDefaultSlashCommands() {
             // 'none' value must be coerced to an empty string
             oai_settings.custom_prompt_post_processing = stringValue === 'none' ? '' : stringValue;
             $('#custom_prompt_post_processing').val(oai_settings.custom_prompt_post_processing);
-            saveSettingsDebounced();
+            saveSettingsDebounced('oai_settings');
 
             return oai_settings.custom_prompt_post_processing;
         },

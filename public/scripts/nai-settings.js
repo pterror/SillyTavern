@@ -672,7 +672,7 @@ function saveSamplingOrder() {
     });
     nai_settings.order = order;
     console.log('Samplers reordered:', nai_settings.order);
-    saveSettingsDebounced();
+    saveSettingsDebounced('nai_settings');
 }
 
 /**
@@ -833,13 +833,13 @@ export function parseNovelAILogprobs(data) {
 
 $('#nai_preamble_textarea').on('input', function () {
     nai_settings.preamble = String($('#nai_preamble_textarea').val());
-    saveSettingsDebounced();
+    saveSettingsDebounced('nai_settings');
 });
 
 $('#nai_preamble_restore').on('click', function () {
     nai_settings.preamble = default_preamble;
     $('#nai_preamble_textarea').val(nai_settings.preamble);
-    saveSettingsDebounced();
+    saveSettingsDebounced('nai_settings');
 });
 
 export async function getStatusNovel() {
@@ -865,7 +865,7 @@ export function initNovelAISettings() {
             const formattedValue = slider.format(value);
             slider.setValue(value);
             $(slider.counterId).val(formattedValue);
-            saveSettingsDebounced();
+            saveSettingsDebounced('nai_settings');
         });
     });
 
@@ -890,19 +890,19 @@ export function initNovelAISettings() {
         nai_settings.preset_settings_novel = $('#settings_preset_novel').find(':selected').text();
         const preset = novelai_settings[novelai_setting_names[nai_settings.preset_settings_novel]];
         loadNovelPreset(preset);
-        saveSettingsDebounced();
+        saveSettingsDebounced('nai_settings');
         await eventSource.emit(event_types.PRESET_CHANGED, { apiId: 'novel', name: nai_settings.preset_settings_novel });
     });
 
     $('#streaming_novel').on('input', function () {
         const value = !!$(this).prop('checked');
         nai_settings.streaming_novel = value;
-        saveSettingsDebounced();
+        saveSettingsDebounced('nai_settings');
     });
 
     $('#model_novel_select').on('change', function () {
         nai_settings.model_novel = String($('#model_novel_select').find(':selected').val());
-        saveSettingsDebounced();
+        saveSettingsDebounced('nai_settings');
 
         // Update the selected preset to something appropriate
         const default_preset = default_presets[nai_settings.model_novel];
@@ -913,12 +913,12 @@ export function initNovelAISettings() {
 
     $('#nai_prefix').on('change', function () {
         nai_settings.prefix = String($('#nai_prefix').find(':selected').val());
-        saveSettingsDebounced();
+        saveSettingsDebounced('nai_settings');
     });
 
     $('#phrase_rep_pen_novel').on('change', function () {
         nai_settings.phrase_rep_pen = String($('#phrase_rep_pen_novel').find(':selected').val());
-        saveSettingsDebounced();
+        saveSettingsDebounced('nai_settings');
     });
 
     $('#novel_order').sortable({

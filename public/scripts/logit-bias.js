@@ -42,7 +42,7 @@ export function displayLogitBias(logitBias, containerSelector) {
             });
             logitBias.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
             console.log('Logit bias reordered:', logitBias);
-            saveSettingsDebounced();
+            saveSettingsDebounced('oai_settings');
         },
     });
 
@@ -59,7 +59,7 @@ export function createNewLogitBiasEntry(logitBias, containerSelector) {
     logitBias.push(entry);
     BIAS_CACHE.delete(containerSelector);
     createLogitBiasListItem(entry, logitBias, containerSelector);
-    saveSettingsDebounced();
+    saveSettingsDebounced('oai_settings');
 }
 
 /**
@@ -75,12 +75,12 @@ function createLogitBiasListItem(entry, logitBias, containerSelector) {
     template.find('.logit_bias_text').val(entry.text).on('input', function () {
         entry.text = $(this).val();
         BIAS_CACHE.delete(containerSelector);
-        saveSettingsDebounced();
+        saveSettingsDebounced('oai_settings');
     });
     template.find('.logit_bias_value').val(entry.value).on('input', function () {
         entry.value = Number($(this).val());
         BIAS_CACHE.delete(containerSelector);
-        saveSettingsDebounced();
+        saveSettingsDebounced('oai_settings');
     });
     template.find('.logit_bias_remove').on('click', function () {
         $(this).closest('.logit_bias_form').remove();
@@ -89,7 +89,7 @@ function createLogitBiasListItem(entry, logitBias, containerSelector) {
             logitBias.splice(index, 1);
         }
         BIAS_CACHE.delete(containerSelector);
-        saveSettingsDebounced();
+        saveSettingsDebounced('oai_settings');
     });
     $(containerSelector).find('.logit_bias_list').prepend(template);
 }

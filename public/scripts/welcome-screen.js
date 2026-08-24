@@ -480,7 +480,7 @@ async function openRecentCharacterChat(avatarId, fileName) {
     try {
         await selectCharacterByAvatar(avatarId);
         setActiveCharacter(avatarId);
-        saveSettingsDebounced();
+        saveSettingsDebounced('active_character', 'active_group');
         const currentChatId = getCurrentChatId();
         if (currentChatId === fileName) {
             console.debug(`Chat ${fileName} is already open.`);
@@ -508,7 +508,7 @@ async function openRecentGroupChat(groupId, fileName) {
     try {
         await openGroupById(groupId);
         setActiveGroup(groupId);
-        saveSettingsDebounced();
+        saveSettingsDebounced('active_character', 'active_group');
         const currentChatId = getCurrentChatId();
         if (currentChatId === fileName) {
             console.debug(`Chat ${fileName} is already open.`);

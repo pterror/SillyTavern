@@ -726,7 +726,7 @@ export async function init() {
             return;
         }
         extension_settings.translate.auto_mode = event.target.value;
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#translation_provider').on('change', (event) => {
         if (!(event.target instanceof HTMLSelectElement)) {
@@ -734,21 +734,21 @@ export async function init() {
         }
         extension_settings.translate.provider = event.target.value;
         showKeysButton();
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#translation_target_language').on('change', (event) => {
         if (!(event.target instanceof HTMLSelectElement)) {
             return;
         }
         extension_settings.translate.target_language = event.target.value;
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#deepl_api_endpoint').on('change', (event) => {
         if (!(event.target instanceof HTMLSelectElement)) {
             return;
         }
         extension_settings.translate.deepl_endpoint = event.target.value;
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $(document).on('click', '.mes_translate', onMessageTranslateClick);
 

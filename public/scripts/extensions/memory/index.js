@@ -247,7 +247,7 @@ function onSummarySourceChange(event) {
     const value = event.target.value;
     extension_settings.memory.source = value;
     switchSourceControls(value);
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function switchSourceControls(value) {
@@ -260,27 +260,27 @@ function switchSourceControls(value) {
 function onMemoryFrozenInput() {
     const value = Boolean($(this).prop('checked'));
     extension_settings.memory.memoryFrozen = value;
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onMemorySkipWIANInput() {
     const value = Boolean($(this).prop('checked'));
     extension_settings.memory.SkipWIAN = value;
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onMemoryPromptWordsInput() {
     const value = $(this).val();
     extension_settings.memory.promptWords = Number(value);
     $('#memory_prompt_words_value').text(extension_settings.memory.promptWords);
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onMemoryPromptIntervalInput() {
     const value = $(this).val();
     extension_settings.memory.promptInterval = Number(value);
     $('#memory_prompt_interval_value').text(extension_settings.memory.promptInterval);
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onMemoryPromptRestoreClick() {
@@ -290,63 +290,63 @@ function onMemoryPromptRestoreClick() {
 function onMemoryPromptInput() {
     const value = $(this).val();
     extension_settings.memory.prompt = value;
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onMemoryTemplateInput() {
     const value = $(this).val();
     extension_settings.memory.template = value;
     reinsertMemory();
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onMemoryDepthInput() {
     const value = $(this).val();
     extension_settings.memory.depth = Number(value);
     reinsertMemory();
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onMemoryRoleInput() {
     const value = $(this).val();
     extension_settings.memory.role = Number(value);
     reinsertMemory();
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onMemoryPositionChange(e) {
     const value = e.target.value;
     extension_settings.memory.position = value;
     reinsertMemory();
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onMemoryIncludeWIScanInput() {
     const value = !!$(this).prop('checked');
     extension_settings.memory.scan = value;
     reinsertMemory();
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onMemoryPromptWordsForceInput() {
     const value = $(this).val();
     extension_settings.memory.promptForceWords = Number(value);
     $('#memory_prompt_words_force_value').text(extension_settings.memory.promptForceWords);
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onOverrideResponseLengthInput() {
     const value = $(this).val();
     extension_settings.memory.overrideResponseLength = Number(value);
     $('#memory_override_response_length_value').text(extension_settings.memory.overrideResponseLength);
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onMaxMessagesPerRequestInput() {
     const value = $(this).val();
     extension_settings.memory.maxMessagesPerRequest = Number(value);
     $('#memory_max_messages_per_request_value').text(extension_settings.memory.maxMessagesPerRequest);
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 /**
@@ -947,7 +947,7 @@ function onMemoryContentInput() {
 function onMemoryPromptBuilderInput(e) {
     const value = Number(e.target.value);
     extension_settings.memory.prompt_builder = value;
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function reinsertMemory() {

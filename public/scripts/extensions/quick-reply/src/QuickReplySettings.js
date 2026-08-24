@@ -70,7 +70,7 @@ export class QuickReplySettings {
 
     save() {
         extension_settings.quickReplyV2 = this.toJSON();
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
         if (this.chatConfig) {
             chat_metadata.quickReply = this.chatConfig.toJSON();
             saveMetadataDebounced();

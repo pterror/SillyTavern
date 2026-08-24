@@ -212,7 +212,7 @@ function cleanUpAttachments() {
         });
     }
     if (shouldSaveSettings) {
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     }
 }
 
@@ -225,7 +225,7 @@ function cleanUpCharacterAttachments(data) {
     if (!avatar) return;
     if (Array.isArray(extension_settings?.character_attachments?.[avatar])) {
         delete extension_settings.character_attachments[avatar];
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     }
 }
 
@@ -239,7 +239,7 @@ function handleCharacterRename(oldAvatar, newAvatar) {
     if (Array.isArray(extension_settings?.character_attachments?.[oldAvatar])) {
         extension_settings.character_attachments[newAvatar] = extension_settings.character_attachments[oldAvatar];
         delete extension_settings.character_attachments[oldAvatar];
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     }
 }
 

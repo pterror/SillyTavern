@@ -342,7 +342,7 @@ async function deleteConnectionProfile() {
 
     extension_settings.connectionManager.profiles.splice(index, 1);
     extension_settings.connectionManager.selectedProfile = null;
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 
     await eventSource.emit(event_types.CONNECTION_PROFILE_DELETED, profile);
 }
@@ -730,7 +730,7 @@ export async function init() {
 
         const profileId = selectedProfile.value;
         extension_settings.connectionManager.selectedProfile = profileId;
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
         await renderDetailsContent(detailsContent);
 
         toggleProfileSpecificButtons();
@@ -774,7 +774,7 @@ export async function init() {
         }
         extension_settings.connectionManager.profiles.push(profile);
         extension_settings.connectionManager.selectedProfile = profile.id;
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
         renderConnectionProfiles(profiles);
         await renderDetailsContent(detailsContent);
         await eventSource.emit(event_types.CONNECTION_PROFILE_CREATED, profile);
@@ -792,7 +792,7 @@ export async function init() {
         const oldProfile = structuredClone(profile);
         await updateConnectionProfile(profile);
         await renderDetailsContent(detailsContent);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
         await eventSource.emit(event_types.CONNECTION_PROFILE_UPDATED, oldProfile, profile);
         await eventSource.emit(event_types.CONNECTION_PROFILE_LOADED, profile.name);
         toastr.success('Connection profile updated', '', { timeOut: 1500 });
@@ -875,7 +875,7 @@ export async function init() {
             profile.name = newName;
         }
 
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
         await eventSource.emit(event_types.CONNECTION_PROFILE_UPDATED, oldProfile, profile);
         renderConnectionProfiles(profiles);
         await renderDetailsContent(detailsContent);
@@ -990,7 +990,7 @@ export async function init() {
             }
             extension_settings.connectionManager.profiles.push(profile);
             extension_settings.connectionManager.selectedProfile = profile.id;
-            saveSettingsDebounced();
+            saveSettingsDebounced('extension_settings');
             renderConnectionProfiles(profiles);
             await renderDetailsContent(detailsContent);
             await eventSource.emit(event_types.CONNECTION_PROFILE_CREATED, profile);
@@ -1011,7 +1011,7 @@ export async function init() {
             const oldProfile = structuredClone(profile);
             await updateConnectionProfile(profile);
             await renderDetailsContent(detailsContent);
-            saveSettingsDebounced();
+            saveSettingsDebounced('extension_settings');
             await eventSource.emit(event_types.CONNECTION_PROFILE_UPDATED, oldProfile, profile);
             return profile.name;
         },

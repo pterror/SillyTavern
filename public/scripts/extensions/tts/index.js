@@ -927,7 +927,7 @@ function onRefreshClick() {
         // updateVoiceMap()
     ]).then(() => {
         extension_settings.tts[ttsProviderName] = ttsProvider.settings;
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
         setTtsStatus('Successfully applied settings', true);
         console.info(`Saved settings ${ttsProviderName} ${JSON.stringify(ttsProvider.settings)}`);
         initVoiceMap();
@@ -944,82 +944,82 @@ function onEnableClick() {
         ':checked',
     );
     updateUiAudioPlayState();
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
     $('body').toggleClass('tts', extension_settings.tts.enabled);
 }
 
 
 function onAutoGenerationClick() {
     extension_settings.tts.auto_generation = !!$('#tts_auto_generation').prop('checked');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 
 function onPeriodicAutoGenerationClick() {
     extension_settings.tts.periodic_auto_generation = !!$('#tts_periodic_auto_generation').prop('checked');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onNarrateByParagraphsClick() {
     extension_settings.tts.narrate_by_paragraphs = !!$('#tts_narrate_by_paragraphs').prop('checked');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 
 function onNarrateDialoguesClick() {
     extension_settings.tts.narrate_dialogues_only = !!$('#tts_narrate_dialogues').prop('checked');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onNarrateUserClick() {
     extension_settings.tts.narrate_user = !!$('#tts_narrate_user').prop('checked');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onNarrateQuotedClick() {
     extension_settings.tts.narrate_quoted_only = !!$('#tts_narrate_quoted').prop('checked');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 
 function onNarrateTranslatedOnlyClick() {
     extension_settings.tts.narrate_translated_only = !!$('#tts_narrate_translated_only').prop('checked');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onSkipCodeblocksClick() {
     extension_settings.tts.skip_codeblocks = !!$('#tts_skip_codeblocks').prop('checked');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onSkipTagsClick() {
     extension_settings.tts.skip_tags = !!$('#tts_skip_tags').prop('checked');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 function onPassAsterisksClick() {
     extension_settings.tts.pass_asterisks = !!$('#tts_pass_asterisks').prop('checked');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
     console.log('setting pass asterisks', extension_settings.tts.pass_asterisks);
 }
 
 function onMultiVoiceClick() {
     extension_settings.tts.multi_voice_enabled = !!$('#tts_multi_voice_enabled').prop('checked');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
     // Reinitialize voice map to show/hide voices
     initVoiceMap();
 }
 
 function onApplyRegexChange() {
     extension_settings.tts.apply_regex = !!$('#tts_apply_regex').prop('checked');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
     $('#tts_regex_block').toggle(extension_settings.tts.apply_regex);
     updateRegexPatternWarning();
 }
 
 function onRegexPatternChange() {
     extension_settings.tts.regex_pattern = $('#tts_regex_pattern').val().toString();
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
     updateRegexPatternWarning();
 }
 
@@ -1081,7 +1081,7 @@ function onTtsProviderChange() {
 export function saveTtsProviderSettings() {
     extension_settings.tts[ttsProviderName] = ttsProvider.settings;
     updateVoiceMap();
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
     console.info(`Saved settings ${ttsProviderName} ${JSON.stringify(ttsProvider.settings)}`);
 }
 
@@ -1384,7 +1384,7 @@ function updateVoiceMap() {
         extension_settings.tts[ttsProviderName].voiceMap = {};
     }
     Object.assign(extension_settings.tts[ttsProviderName].voiceMap, voiceMap);
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 class VoiceMapEntry {
@@ -1556,7 +1556,7 @@ export async function init() {
             const formattedValue = Number(value).toFixed(2);
             extension_settings.tts.playback_rate = value;
             $('#playback_rate_counter').val(formattedValue);
-            saveSettingsDebounced();
+            saveSettingsDebounced('extension_settings');
         });
 
         $('#tts_voices').on('click', onTtsVoicesClick);

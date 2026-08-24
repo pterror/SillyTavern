@@ -804,44 +804,44 @@ function loadReasoningSettings() {
     UI.$addToPrompts.prop('checked', power_user.reasoning.add_to_prompts);
     UI.$addToPrompts.on('change', function () {
         power_user.reasoning.add_to_prompts = !!$(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     UI.$prefix.val(power_user.reasoning.prefix);
     UI.$prefix.on('input', function () {
         power_user.reasoning.prefix = String($(this).val());
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     UI.$suffix.val(power_user.reasoning.suffix);
     UI.$suffix.on('input', function () {
         power_user.reasoning.suffix = String($(this).val());
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     UI.$separator.val(power_user.reasoning.separator);
     UI.$separator.on('input', function () {
         power_user.reasoning.separator = String($(this).val());
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     UI.$maxAdditions.val(power_user.reasoning.max_additions);
     UI.$maxAdditions.on('input', function () {
         power_user.reasoning.max_additions = Number($(this).val());
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     UI.$autoParse.prop('checked', power_user.reasoning.auto_parse);
     UI.$autoParse.on('change', function () {
         power_user.reasoning.auto_parse = !!$(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     UI.$autoExpand.prop('checked', power_user.reasoning.auto_expand);
     UI.$autoExpand.on('change', function () {
         power_user.reasoning.auto_expand = !!$(this).prop('checked');
         toggleReasoningAutoExpand();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
     toggleReasoningAutoExpand();
 
@@ -849,7 +849,7 @@ function loadReasoningSettings() {
     UI.$showHidden.on('change', function () {
         power_user.reasoning.show_hidden = !!$(this).prop('checked');
         $('#chat').attr('data-show-hidden-reasoning', power_user.reasoning.show_hidden ? 'true' : null);
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
     $('#chat').attr('data-show-hidden-reasoning', power_user.reasoning.show_hidden ? 'true' : null);
 
@@ -869,7 +869,7 @@ function loadReasoningSettings() {
         power_user.reasoning.suffix = template.suffix;
         power_user.reasoning.separator = template.separator;
 
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 }
 
@@ -1694,7 +1694,7 @@ export async function loadReasoningTemplates(data) {
             power_user.reasoning.name = '';
         }
 
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     }
 
     UI.$select.val(power_user.reasoning.name);

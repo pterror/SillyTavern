@@ -1785,7 +1785,7 @@ async function onClickExpressionAddCustom() {
     // Add custom expression into settings
     extension_settings.expressions.custom.push(expressionName);
     await renderAdditionalExpressionSettings();
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 
     // Force refresh sprites list
     expressionsList = null;
@@ -1818,7 +1818,7 @@ async function onClickExpressionRemoveCustom() {
         extension_settings.expressions.fallback_expression = DEFAULT_FALLBACK_EXPRESSION;
     }
     await renderAdditionalExpressionSettings();
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 
     // Force refresh sprites list
     expressionsList = null;
@@ -1835,7 +1835,7 @@ function onExpressionApiChanged() {
         expressionsList = null;
         spriteCache = {};
         moduleWorker();
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     }
 }
 
@@ -1867,7 +1867,7 @@ async function onExpressionFallbackChanged() {
         await sendExpressionCall(spriteFolderName, expression, { force: true });
     }
 
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 /**
@@ -2055,7 +2055,7 @@ async function onClickExpressionOverrideButton() {
         console.debug(`Added/edited expression override for character with filename ${avatarFileName} to folder ${overridePath}`);
     }
 
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 
     // Refresh sprites list. Assume the override path has been properly handled.
     try {
@@ -2080,7 +2080,7 @@ async function onClickExpressionOverrideRemoveAllButton() {
     }
 
     extension_settings.expressionOverrides = [];
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 
     console.debug('All expression image overrides have been cleared.');
 
@@ -2218,7 +2218,7 @@ async function fetchImagesNoCache() {
 function migrateSettings() {
     if (extension_settings.expressions.api === undefined) {
         extension_settings.expressions.api = EXPRESSION_API.none;
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     }
 
     if (Object.keys(extension_settings.expressions).includes('local')) {
@@ -2227,27 +2227,27 @@ function migrateSettings() {
         }
 
         delete extension_settings.expressions.local;
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     }
 
     if (extension_settings.expressions.llmPrompt === undefined) {
         extension_settings.expressions.llmPrompt = DEFAULT_LLM_PROMPT;
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     }
 
     if (extension_settings.expressions.allowMultiple === undefined) {
         extension_settings.expressions.allowMultiple = true;
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     }
 
     if (extension_settings.expressions.showDefault && extension_settings.expressions.fallback_expression) {
         extension_settings.expressions.showDefault = false;
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     }
 
     if (extension_settings.expressions.promptType === undefined) {
         extension_settings.expressions.promptType = PROMPT_TYPE.raw;
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     }
 }
 
@@ -2278,19 +2278,19 @@ export async function init() {
         $('#expression_upload_pack_button').on('click', onClickExpressionUploadPackButton);
         $('#expression_translate').prop('checked', extension_settings.expressions.translate).on('input', function () {
             extension_settings.expressions.translate = !!$(this).prop('checked');
-            saveSettingsDebounced();
+            saveSettingsDebounced('extension_settings');
         });
         $('#expressions_allow_multiple').prop('checked', extension_settings.expressions.allowMultiple).on('input', function () {
             extension_settings.expressions.allowMultiple = !!$(this).prop('checked');
-            saveSettingsDebounced();
+            saveSettingsDebounced('extension_settings');
         });
         $('#expressions_reroll_if_same').prop('checked', extension_settings.expressions.rerollIfSame).on('input', function () {
             extension_settings.expressions.rerollIfSame = !!$(this).prop('checked');
-            saveSettingsDebounced();
+            saveSettingsDebounced('extension_settings');
         });
         $('#expressions_filter_available').prop('checked', extension_settings.expressions.filterAvailable).on('input', function () {
             extension_settings.expressions.filterAvailable = !!$(this).prop('checked');
-            saveSettingsDebounced();
+            saveSettingsDebounced('extension_settings');
         });
         $('#expression_override_cleanup_button').on('click', onClickExpressionOverrideRemoveAllButton);
         $(document).on('dragstart', '.expression', (e) => {
@@ -2309,20 +2309,20 @@ export async function init() {
         $('#expression_llm_prompt').val(extension_settings.expressions.llmPrompt ?? '');
         $('#expression_llm_prompt').on('input', function () {
             extension_settings.expressions.llmPrompt = String($(this).val());
-            saveSettingsDebounced();
+            saveSettingsDebounced('extension_settings');
         });
         $('#expression_llm_prompt_restore').on('click', function () {
             $('#expression_llm_prompt').val(DEFAULT_LLM_PROMPT);
             extension_settings.expressions.llmPrompt = DEFAULT_LLM_PROMPT;
-            saveSettingsDebounced();
+            saveSettingsDebounced('extension_settings');
         });
         $('#expression_prompt_raw').on('input', function () {
             extension_settings.expressions.promptType = PROMPT_TYPE.raw;
-            saveSettingsDebounced();
+            saveSettingsDebounced('extension_settings');
         });
         $('#expression_prompt_full').on('input', function () {
             extension_settings.expressions.promptType = PROMPT_TYPE.full;
-            saveSettingsDebounced();
+            saveSettingsDebounced('extension_settings');
         });
         $(`input[name="expression_prompt_type"][value="${extension_settings.expressions.promptType}"]`).prop('checked', true);
         $('.expression_prompt_type_block').toggle(extension_settings.expressions.api === EXPRESSION_API.llm);

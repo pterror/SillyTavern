@@ -29,7 +29,7 @@ const settingType = {
 
 // Used for character and chat CFG values
 function updateSettings() {
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
     loadSettings();
 }
 
@@ -223,7 +223,7 @@ async function initialLoadSettings() {
     extension_settings[extensionName] = extension_settings[extensionName] || {};
     if (Object.keys(extension_settings[extensionName]).length === 0) {
         Object.assign(extension_settings[extensionName], defaultSettings);
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     }
 
     // Set global CFG values on load
@@ -268,7 +268,7 @@ function migrateSettings() {
     }
 
     if (performSettingsSave) {
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     }
 
     if (performMetaSave) {
@@ -322,17 +322,17 @@ export function initCfg() {
     $('#global_cfg_guidance_scale').on('input', function () {
         extension_settings.cfg.global.guidance_scale = Number($(this).val());
         $('#global_cfg_guidance_scale_counter').val(extension_settings.cfg.global.guidance_scale.toFixed(2));
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
 
     $('#global_cfg_negative_prompt').on('input', function () {
         extension_settings.cfg.global.negative_prompt = $(this).val();
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
 
     $('#global_cfg_positive_prompt').on('input', function () {
         extension_settings.cfg.global.positive_prompt = $(this).val();
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
 
     $('input[name="cfg_prompt_combine"]').on('input', function () {

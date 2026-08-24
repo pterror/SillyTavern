@@ -399,7 +399,7 @@ async function getCaptionForFile(file, prompt, quiet) {
 
 function onRefineModeInput() {
     extension_settings.caption.refine_mode = $('#caption_refine_mode').prop('checked');
-    saveSettingsDebounced();
+    saveSettingsDebounced('extension_settings');
 }
 
 /**
@@ -656,27 +656,27 @@ export async function init() {
     $('#caption_source').on('change', async () => {
         extension_settings.caption.source = String($('#caption_source').val());
         await switchMultimodalBlocks();
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#caption_prompt').on('input', () => {
         extension_settings.caption.prompt = String($('#caption_prompt').val());
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#caption_template').on('input', () => {
         extension_settings.caption.template = String($('#caption_template').val());
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#caption_allow_reverse_proxy').on('input', () => {
         extension_settings.caption.allow_reverse_proxy = $('#caption_allow_reverse_proxy').prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#caption_prompt_ask').on('input', () => {
         extension_settings.caption.prompt_ask = $('#caption_prompt_ask').prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#caption_auto_mode').on('input', () => {
         extension_settings.caption.auto_mode = !!$('#caption_auto_mode').prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#caption_ollama_pull').on('click', (e) => {
         const selectedModel = extension_settings.caption.multimodal_model;
@@ -691,36 +691,36 @@ export async function init() {
         extension_settings.caption.multimodal_api = api;
         extension_settings.caption.multimodal_model = '';
         await switchMultimodalBlocks();
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#caption_multimodal_model').on('change', () => {
         extension_settings.caption.multimodal_model = String($('#caption_multimodal_model').val());
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#caption_altEndpoint_url').val(extension_settings.caption.alt_endpoint_url).on('input', () => {
         extension_settings.caption.alt_endpoint_url = String($('#caption_altEndpoint_url').val());
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#caption_altEndpoint_enabled').prop('checked', !!(extension_settings.caption.alt_endpoint_enabled)).on('input', () => {
         extension_settings.caption.alt_endpoint_enabled = !!$('#caption_altEndpoint_enabled').prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#caption_show_in_chat').prop('checked', !!(extension_settings.caption.show_in_chat)).on('input', () => {
         extension_settings.caption.show_in_chat = !!$('#caption_show_in_chat').prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#caption_ollama_custom_model').val(extension_settings.caption.ollama_custom_model || '').on('input', () => {
         extension_settings.caption.ollama_custom_model = String($('#caption_ollama_custom_model').val()).trim();
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#caption_custom_model').val(extension_settings.caption.custom_model || '').on('input', () => {
         extension_settings.caption.custom_model = String($('#caption_custom_model').val()).trim();
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
     $('#caption_refresh_models').on('click', async () => {
         extension_settings.caption.multimodal_model = '';
         await switchMultimodalBlocks();
-        saveSettingsDebounced();
+        saveSettingsDebounced('extension_settings');
     });
 
     const onMessageEvent = async (/** @type {number} */ messageId) => {

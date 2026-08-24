@@ -205,7 +205,7 @@ function applyThumbnailColumns(count) {
     $('#bg_thumb_zoom_in').prop('disabled', newCount <= THUMBNAIL_COLUMNS_MIN);
     $('#bg_thumb_zoom_out').prop('disabled', newCount >= THUMBNAIL_COLUMNS_MAX);
 
-    saveSettingsDebounced();
+    saveSettingsDebounced('background');
 }
 
 export function loadBackgroundSettings(settings) {
@@ -1448,7 +1448,7 @@ async function setBackground(bg, url) {
     }
     background_settings.name = bg;
     background_settings.url = url;
-    saveSettingsDebounced();
+    saveSettingsDebounced('background');
 }
 
 async function delBackground(bg) {
@@ -1806,7 +1806,7 @@ export function initBackgrounds() {
     $('#bg-filter').on('input', () => debouncedOnBackgroundFilterInput());
     $('#bg-sort').on('change', function () {
         background_settings.sortOrder = String($(this).val());
-        saveSettingsDebounced();
+        saveSettingsDebounced('background');
         // Re-render both galleries with new sort order (respecting active folder filter)
         renderSystemBackgrounds(getFilteredImages());
         renderChatBackgrounds();
@@ -1843,12 +1843,12 @@ export function initBackgrounds() {
     $('#background_fitting').on('input', function () {
         background_settings.fitting = String($(this).val());
         setFittingClass(background_settings.fitting);
-        saveSettingsDebounced();
+        saveSettingsDebounced('background');
     });
 
     $('#background_thumbnails_animation').on('input', async function () {
         background_settings.animation = !!$(this).prop('checked');
-        saveSettingsDebounced();
+        saveSettingsDebounced('background');
 
         // Refresh background thumbnails
         await getBackgrounds();
