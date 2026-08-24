@@ -8252,23 +8252,24 @@ export function syncSwipeToMes(messageId = null, swipeId = null, targetMessage =
         return false;
     }
 
+    // isChatResident: true when operating on the live chat array (use updateMessage for frozen
+    // messages), false when called with an external targetMessage (e.g. a cloned snapshot in
+    // getBranchChatSnapshot) that can be mutated directly.
+    const isChatResident = !targetMessage;
+    const resolvedMessageId = messageId ?? chat.length - 1;
+
     if (!targetMessage) {
-        const targetMessageId = messageId ?? chat.length - 1;
-        if (targetMessageId >= chat.length || targetMessageId < 0) {
+        if (resolvedMessageId >= chat.length || resolvedMessageId < 0) {
             console.warn(`[syncSwipeToMes] Invalid message ID: ${messageId}`);
             return false;
         }
 
-        targetMessage = chat[targetMessageId];
+        targetMessage = chat[resolvedMessageId];
     }
 
     if (!targetMessage) {
         return false;
     }
-
-    // Resolve the actual array index so we can use updateMessage for chat-resident messages
-    const resolvedMessageId = targetMessage ? null : (messageId ?? chat.length - 1);
-    const isChatResident = !targetMessage; // true if operating on the actual chat array
 
     if (swipeId !== null) {
         if (isNaN(swipeId) || swipeId < 0) {
