@@ -219,6 +219,7 @@ export const power_user = {
     trim_spaces: true,
     relaxed_api_urls: false,
     world_import_dialog: true,
+    wi_last_editor_book: '',
     enable_auto_select_input: false,
     enable_md_hotkeys: false,
     tag_import_setting: tag_import_setting.ASK,
@@ -2091,6 +2092,9 @@ function toggleMDHotkeyIconDisplay() {
 function loadCharListState() {
     document.body.classList.toggle('charListGrid', power_user.charListGrid);
     document.body.classList.toggle('charGalleryView', power_user.charGalleryView);
+    // Gallery icon in the top bar uses the same openIcon/closedIcon pattern as other drawer icons.
+    $('#galleryNavDrawerIcon').toggleClass('closedIcon', !power_user.charGalleryView)
+        .toggleClass('openIcon', !!power_user.charGalleryView);
 }
 
 export function loadMovingUIState() {
