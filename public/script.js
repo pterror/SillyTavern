@@ -2121,13 +2121,17 @@ function workerComputeDigests(worker, nodes) {
  * takes is NOT fixed - it adapts to how deep the actual divergence sits, and to corpus size (see
  * character-metadata-digest-worker.js's own header on the O(log_N(corpusSize / leafThreshold)) depth).
  *
- * ADAPTIVE THRESHOLD: if more than MAX_DESCEND_NODES nodes need expanding at any descent level, abort and
- * clear the cache for full resync. This threshold is response-size-driven, not corruption-rate-driven: a
- * bucket-count threshold (e.g. ">50% of root children mismatch") fires at just ~177 uniformly-distributed
- * corrupted records regardless of corpus size (because ~177 records saturate all 256 hash buckets), which is
- * clearly still "isolated drift" territory. The node-count cap instead directly prevents the pathological case
- * where descending into tens of thousands of leaf groups would generate a multi-GB JSON response the browser
- * can't handle — 1024 nodes × ~153 records/leaf × ~200 bytes/record ≈ 31 MB at 10M scale, large but safe.
+ * ADAPTIVE THRESHOLD: if total nodes to expand at any descent level exceeds MAX_TOTAL_DESCEND_NODES (100K),
+ * abort and clear the cache for full resync. This is ~1% of a 10M corpus — above that, the total wire cost of
+ * tree descent (~200 MB leaf data + ~800 MB intermediate children data + 100 server-side table scans) exceeds
+ * what a full cache-clear + cold resync costs. Requests are batched (DESCEND_BATCH_SIZE=1000) to keep each
+ * individual response under ~8 MB, so the cap isn't about single-response size limits (those are handled by
+ * batching), it's about total protocol cost.
+ *
+ * Why NOT a bucket-mismatch-percentage threshold: a naive ">50% of root children mismatch" fires at just ~177
+ * uniformly-distributed corrupted records regardless of corpus size (because ~177 records saturate all 256
+ * hash buckets), which is clearly still "isolated drift" territory. The node-count cap at 100K instead
+ * tolerates up to ~1% corruption before giving up.
  *
  * Never awaited by its caller (fetchCharactersDelta()) - runs after the delta sync has already returned, so it
  * never adds latency to boot or any other getCharacters() call.
@@ -2138,12 +2142,21 @@ async function verifyCharacterCacheDigest() {
     hasVerifiedCharacterCacheDigestThisSession = true;
 
     const branching = DEFAULT_DIGEST_BUCKET_COUNT;
-    const leafThreshold = DEFAULT_DIGEST_BUCKET_COUNT;
-    /** Max nodes to expand at any single descent level before aborting to full resync. 1024 = 4 full level-0
-     * subtrees' worth of level-1 children. At 10M records this caps the leaf response at ~31 MB — see the
-     * ADAPTIVE THRESHOLD doc comment above for the full reasoning on why this is response-size-driven, not a
-     * bucket-mismatch-percentage heuristic. */
-    const MAX_DESCEND_NODES = 1024;
+    /** Lower than branching on purpose: 32 pushes the tree to depth 3 at 10M records (leaf groups of ~1 record
+     * each instead of ~153), so 10K mismatched leaf nodes produce ~2 MB of member data, not ~300 MB. At 326k
+     * records the tree stays at depth 2 (leaf groups of ~5, well under 32). */
+    const leafThreshold = 32;
+    /** Max nodes per single tree-descend request. Keeps each response under ~8 MB (children: 1000 × 256 × 32
+     * bytes; leaves: 1000 × 32 × 200 bytes). When more nodes need expanding, the client splits them into
+     * sequential batches of this size. */
+    const DESCEND_BATCH_SIZE = 1000;
+    /** Hard cap on total nodes to expand at any single descent level. If the total exceeds this, the cache has
+     * widespread divergence that tree descent can't repair more cheaply than a full resync. At 10M records with
+     * leafThreshold=32, each leaf node contains ~1 record, so this allows up to ~100K individual-record repairs
+     * (1% of 10M). Above that, the number of server-side table scans (one per batch × ceil(100K/1000) = 100
+     * scans) and total wire cost (~200 MB of leaf data + ~800 MB of intermediate children data) exceeds what a
+     * full cache-clear + cold resync costs. */
+    const MAX_TOTAL_DESCEND_NODES = 100000;
 
     // Compute local tree (persistent worker) - fingerprint extraction + canonicalization + hashing for the WHOLE
     // cache runs on character-digest-worker.js (see that module's own header and computeLocalCharacterDigest()'s),
@@ -2163,57 +2176,69 @@ async function verifyCharacterCacheDigest() {
         const allLeaves = [];
 
         while (currentNodes.length > 0) {
-            const response = await fetch('/api/characters/tree-descend', {
-                method: 'POST',
-                headers: getRequestHeaders(),
-                body: JSON.stringify({ branching, leafThreshold, nodes: currentNodes }),
-            });
-            if (!response.ok) {
-                throw new Error(`Tree-descend failed: ${response.statusText}`);
+            // Batch the descent requests to keep each individual response under ~8 MB (children: 1000 × 256 ×
+            // 32 bytes = 8 MB; leaves: 1000 × 32 × 200 = 6.4 MB). Without batching, 10K+ nodes in a single
+            // request would produce a response too large for the browser to parse as JSON.
+            const allResults = [];
+            for (let b = 0; b < currentNodes.length; b += DESCEND_BATCH_SIZE) {
+                const batch = currentNodes.slice(b, b + DESCEND_BATCH_SIZE);
+                const response = await fetch('/api/characters/tree-descend', {
+                    method: 'POST',
+                    headers: getRequestHeaders(),
+                    body: JSON.stringify({ branching, leafThreshold, nodes: batch }),
+                });
+                if (!response.ok) {
+                    throw new Error(`Tree-descend failed: ${response.statusText}`);
+                }
+                const { results } = await response.json();
+                allResults.push(...results);
             }
-            const { results } = await response.json();
 
             const nextNodes = [];
 
-            for (const result of results) {
+            // Collect all children-type results that need local digest comparison. For nodes deeper than level
+            // 0, batch the workerComputeDigests calls to avoid one message-round-trip per node.
+            const childrenResults = allResults.filter(r => r.type !== 'leaves');
+            for (const result of allResults) {
                 if (result.type === 'leaves') {
                     allLeaves.push(result);
-                    continue;
                 }
+            }
 
-                // type === 'children': compare against local digests for this node. Root (path.length === 0)
-                // already has its children from computeLocalCharacterDigest()'s initial pass; anything deeper
-                // asks the still-alive worker to fold one for this specific node.
-                let localDigests;
-                if (result.path.length === 0) {
-                    localDigests = localChildren;
-                } else {
-                    const workerResults = await workerComputeDigests(worker, [{ path: result.path }]);
-                    localDigests = workerResults[0].children;
-                }
-
-                // Compare children
-                let mismatchCount = 0;
-                for (let i = 0; i < branching; i++) {
-                    const sf = result.children[i]?.fav ?? { hi: 0, lo: 0 };
-                    const lf = localDigests[i]?.fav ?? { hi: 0, lo: 0 };
-                    const ss = result.children[i]?.fields ?? { hi: 0, lo: 0 };
-                    const ls = localDigests[i]?.fields ?? { hi: 0, lo: 0 };
-                    if (!digestsEqual(sf, lf) || !digestsEqual(ss, ls)) {
-                        nextNodes.push({ path: [...result.path, i] });
-                        mismatchCount++;
+            if (childrenResults.length > 0) {
+                // Compute local digests for all non-root children results in one worker call
+                const deeperNodes = childrenResults.filter(r => r.path.length > 0);
+                let localDigestsByPath = new Map();
+                if (deeperNodes.length > 0) {
+                    const workerResults = await workerComputeDigests(worker, deeperNodes.map(r => ({ path: r.path })));
+                    for (const wr of workerResults) {
+                        localDigestsByPath.set(wr.path.join(','), wr.children);
                     }
                 }
 
-                // (mismatch counting for the per-level adaptive threshold happens below, after all
-                // results at this level have been processed into nextNodes)
+                for (const result of childrenResults) {
+                    const localDigests = result.path.length === 0
+                        ? localChildren
+                        : localDigestsByPath.get(result.path.join(','));
+
+                    if (!localDigests) continue;
+
+                    for (let i = 0; i < branching; i++) {
+                        const sf = result.children[i]?.fav ?? { hi: 0, lo: 0 };
+                        const lf = localDigests[i]?.fav ?? { hi: 0, lo: 0 };
+                        const ss = result.children[i]?.fields ?? { hi: 0, lo: 0 };
+                        const ls = localDigests[i]?.fields ?? { hi: 0, lo: 0 };
+                        if (!digestsEqual(sf, lf) || !digestsEqual(ss, ls)) {
+                            nextNodes.push({ path: [...result.path, i] });
+                        }
+                    }
+                }
             }
 
-            // ADAPTIVE THRESHOLD: if the number of nodes to expand exceeds the safe cap, the cache has too
-            // much divergence for tree descent to handle without generating a dangerously large response at the
-            // next level. Clear and resync instead.
-            if (nextNodes.length > MAX_DESCEND_NODES) {
-                console.warn(`Tree descent: ${nextNodes.length} mismatched nodes at depth ${nextNodes[0].path.length} exceeds cap of ${MAX_DESCEND_NODES} - clearing cache for full resync.`);
+            // ADAPTIVE THRESHOLD: if total nodes to expand exceeds the hard cap, tree descent can't repair
+            // this much divergence more cheaply than a full resync (see MAX_TOTAL_DESCEND_NODES's own comment).
+            if (nextNodes.length > MAX_TOTAL_DESCEND_NODES) {
+                console.warn(`Tree descent: ${nextNodes.length} mismatched nodes at depth ${nextNodes[0].path.length} exceeds cap of ${MAX_TOTAL_DESCEND_NODES} - clearing cache for full resync.`);
                 await clearCharacterCache();
                 await setCachedRev(0);
                 return;
