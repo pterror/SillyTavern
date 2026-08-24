@@ -234,6 +234,7 @@ import { initLogprobs, saveLogprobsForActiveMessage } from './scripts/logprobs.j
 import { FILTER_STATES, FILTER_TYPES, FilterHelper, isFilterState } from './scripts/filters.js';
 import { characterRepository, buildCharacterQuery, isServerQueryableSort, normalizeQueryRow } from './scripts/character-repository.js';
 import { getRandomSortSeed } from './scripts/random-sort.js';
+import { openRightMenu, closeRightMenu } from './scripts/right-menu-state.js';
 import { getCfgPrompt, getGuidanceScale, initCfg } from './scripts/cfg-scale.js';
 import {
     force_output_sequence,
@@ -9565,17 +9566,28 @@ async function displayChats(searchQuery, currentChat, displayName, avatarImg, se
     }
 }
 
+/**
+ * Switches which #right-nav-panel menu is visible. Only one is ever shown at once - with panel
+ * translucency enabled, two overlapping menus would blend into an unreadable mess - but hiding a menu
+ * here does not close it: menus other than the one becoming visible keep whatever logical "open" state
+ * right-menu-state.js has for them (and keep their DOM state too, since display:none doesn't destroy
+ * elements). Only closeRightMenu() actually closes one, for the rarer case where its underlying data
+ * stopped being valid.
+ * @param {string} selectedMenuId The menu to show, e.g. 'rm_ch_create_block'.
+ */
 export function selectRightMenuWithAnimation(selectedMenuId) {
     const displayModes = {
         'rm_group_chats_block': 'flex',
         'rm_api_block': 'grid',
         'rm_characters_block': 'flex',
     };
-    $('#result_info').toggle(selectedMenuId === 'rm_ch_create_block');
+    const normalizedId = selectedMenuId ? selectedMenuId.replace('#', '') : null;
+    $('#result_info').toggle(normalizedId === 'rm_ch_create_block');
     document.querySelectorAll('#right-nav-panel .right_menu').forEach((menu) => {
         $(menu).css('display', 'none');
 
-        if (selectedMenuId && selectedMenuId.replace('#', '') === menu.id) {
+        if (normalizedId && normalizedId === menu.id) {
+            openRightMenu(normalizedId);
             const mode = displayModes[menu.id] ?? 'block';
             $(menu).css('display', mode);
             $(menu).css('opacity', 0.0);
@@ -11846,6 +11858,9 @@ export async function closeCurrentChat() {
         chat_metadata = {};
         selected_button = 'characters';
         $('#rm_button_selected_ch').children('h2').text('');
+        // The character/chat this panel was showing no longer applies once the chat is closed, so this
+        // is a real close (not just switching the visible menu away) - see right-menu-state.js.
+        closeRightMenu('rm_ch_create_block');
         select_rm_characters();
         await eventSource.emit(event_types.CHAT_CHANGED, getCurrentChatId());
         return true;
@@ -12004,6 +12019,9 @@ async function removeCharacterFromUI(removedCharacters = []) {
     await clearChat();
     $('#character_cross').trigger('click');
     resetChatState();
+    // The character(s) the create/edit panel may have been showing no longer exist, so this is a real
+    // close (not just switching the visible menu away) - see right-menu-state.js.
+    closeRightMenu('rm_ch_create_block');
     $(document.getElementById('rm_button_selected_ch')).children('h2').text('');
     restoreNeutralChat();
     await getCharacters({ silent: removedCharacters.length > 0 });
