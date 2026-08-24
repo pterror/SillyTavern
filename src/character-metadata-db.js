@@ -183,6 +183,8 @@ const SCHEMA_SQL = `
     CREATE INDEX IF NOT EXISTS idx_characters_name_fold ON characters(name_fold);
     CREATE INDEX IF NOT EXISTS idx_characters_date_added ON characters(date_added);
     CREATE INDEX IF NOT EXISTS idx_characters_date_last_chat ON characters(date_last_chat);
+    CREATE INDEX IF NOT EXISTS idx_characters_create_date ON characters(create_date);
+    CREATE INDEX IF NOT EXISTS idx_characters_data_size ON characters(data_size);
     CREATE INDEX IF NOT EXISTS idx_characters_chat_size ON characters(chat_size);
     CREATE INDEX IF NOT EXISTS idx_characters_fav_name_fold ON characters(fav, name_fold);
     CREATE INDEX IF NOT EXISTS idx_characters_world ON characters(world);
@@ -3017,6 +3019,26 @@ const QUERYABLE_SORT_COLUMNS = {
     date_last_chat: 'date_last_chat',
     chat_size: 'chat_size',
     fav: 'fav',
+    // `create_date` is a real, indexed column (the card's own self-reported creation date - see buildRow()/
+    // SCHEMA_SQL) that was simply left off this lookup table and characters.js's QUERY_SORT_FIELDS allowlist -
+    // not a naming mismatch (processCharacter() already exposes this exact field name as `character.create_date`,
+    // and the client already sends `sort.field: "create_date"` expecting it to work), just a genuine gap. Text-
+    // sorted (SQLite's default TEXT collation) rather than parsed as a date, same as every other caller of this
+    // column already assumes (buildRow() stores it as whatever ISO-ish string the card provided, never validated
+    // or normalized) - good enough for relative ordering across the overwhelming majority of real cards, which
+    // all use ISO 8601-shaped strings that happen to sort correctly as plain text too.
+    create_date: 'create_date',
+    // Same gap, same shape: `data_size` ("Most/Least tokens" in the client's sort dropdown) is a real, stored
+    // column (see buildRow()/SCHEMA_SQL - `calculateDataSize()`'s byte count of the card's own `data` object,
+    // characters.js) that was simply never wired into this table or characters.js's QUERY_SORT_FIELDS allowlist.
+    // character-repository.js used to keep its own client-side mirror of "which fields the server supports"
+    // (QUERYABLE_CLIENT_SORT_FIELDS), which had documented this as "no server column at all" and twice drifted
+    // out of sync with reality (this gap, and the matching `data_size` one below). That mirror is gone now (see
+    // `isServerQueryableSort()`'s doc comment, character-repository.js) - the client attempts `/query`
+    // unconditionally and treats this table (via the route's own `400 invalid-sort-field` response) as the sole
+    // source of truth for which `sort.field` values actually work, so a future gap like this one can no longer
+    // cause silent client-side drift, only a real (if temporary) rejection until this table is updated.
+    data_size: 'data_size',
 };
 
 /**

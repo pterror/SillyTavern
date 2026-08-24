@@ -25,7 +25,7 @@ import { RA_CountCharTokens, humanizedDateTime, dragElement, favsToHotswap, getM
 import { power_user, loadMovingUIState, sortEntitiesList, invalidateGroupsFuseIndex } from './power-user.js';
 import { debounce_timeout } from './constants.js';
 import { getRandomSortSeed } from './random-sort.js';
-import { characterRepository, buildCharacterQuery, isServerQueryableSort } from './character-repository.js';
+import { characterRepository, buildCharacterQuery, isServerQueryableSort, isInvalidSortFieldError } from './character-repository.js';
 import { checkCharactersExistOrNull } from './character-existence-check.js';
 
 import {
@@ -1740,15 +1740,18 @@ function isGroupMember(group, avatarId) {
 }
 
 /**
- * Whether `getGroupCharacters()`'s non-member candidate set can be built from the server `/query` endpoint
- * (design doc §5/§6, §4.1's `getGroupCharacters` row) instead of scanning the resident `characters` array -
- * mirrors `canUseServerQueryForEntitiesList()` in script.js (see its doc comment for the full reasoning): an
- * active search term stays on the pre-existing local path, since group-candidate search runs through the same
+ * Whether `getGroupCharacters()`'s non-member candidate set should even ATTEMPT the server `/query` endpoint
+ * (design doc §5/§6, §4.1's `getGroupCharacters` row) instead of going straight to scanning the resident
+ * `characters` array - mirrors `canUseServerQueryForEntitiesList()` in script.js (see its doc comment for the
+ * full reasoning, including why this is "attempt" rather than a guaranteed-safe pre-check now): an active
+ * search term stays on the pre-existing local path, since group-candidate search runs through the same
  * fuzzy/score-cache pipeline (`groupCandidatesFilter`/`FilterHelper.searchFilter()`) the server's FTS/tantivy
  * backend does not necessarily agree with, and narrowing the candidate set by the "wrong" search engine before
- * that pass runs risks silently dropping a match. Group candidates carry no tag/fav filter UI of their own
- * (only search, via `groupCandidatesFilter.setFilterData(FILTER_TYPES.SEARCH, ...)`), so unlike the main
- * entities list this does not need to special-case those.
+ * that pass runs risks silently dropping a match - that's an actual client-side precondition, not a stand-in
+ * for "does the server support this sort column", so it stays a pre-check. Group candidates carry no tag/fav
+ * filter UI of their own (only search, via `groupCandidatesFilter.setFilterData(FILTER_TYPES.SEARCH, ...)`), so
+ * unlike the main entities list this does not need to special-case those. `getGroupCharacters()` catches
+ * `isInvalidSortFieldError()` from the actual attempt and falls back to the local scan for that case.
  * @returns {boolean}
  */
 function canUseServerQueryForGroupCandidates() {
@@ -1780,19 +1783,23 @@ export function buildGroupCandidateQuery(excludeIds) {
  * Gets group characters based on filters.
  *
  * The non-member (candidate) path backs the "add member" picker over the entire non-member library (design
- * doc §4.1), so it goes through `characterRepository.queryAll()` with `excludeIds` set to the current members
- * instead of scanning the resident `characters` array whenever the current filter/sort state supports it (see
- * `canUseServerQueryForGroupCandidates()`); an active search term keeps the pre-existing fully-local path,
- * matching `getEntitiesList()`'s documented search carve-out in script.js. The member path is bounded by the
- * group's own member count regardless (not the library), so it stays resolved through `resolveGroupMembers()`
- * rather than a resident-array scan - avoiding the same non-resident-member holes `getGroupMembers()` was fixed
- * for (design doc §6), without needing a server query of its own.
+ * doc §4.1), so it attempts `characterRepository.queryAll()` with `excludeIds` set to the current members
+ * instead of scanning the resident `characters` array whenever the current filter/sort state is a candidate for
+ * it (see `canUseServerQueryForGroupCandidates()`); an active search term keeps the pre-existing fully-local
+ * path, matching `getEntitiesList()`'s documented search carve-out in script.js. A `400 invalid-sort-field`
+ * response from that attempt (`isInvalidSortFieldError()`) also falls back to the same local scan - the server's
+ * own rejection is the only thing this checks for a column the client doesn't have a query answer for, not a
+ * client-side field-name list (see `isServerQueryableSort()`'s doc comment, character-repository.js); any other
+ * failure (network error, a 500, ...) propagates normally. The member path is bounded by the group's own member
+ * count regardless (not the library), so it stays resolved through `resolveGroupMembers()` rather than a
+ * resident-array scan - avoiding the same non-resident-member holes `getGroupMembers()` was fixed for (design
+ * doc §6), without needing a server query of its own.
  * @param {object} param
  * @param {boolean} [param.doFilter=false] Whether to apply filters
  * @param {boolean} [param.onlyMembers=false] Whether to include only group members
  * @returns {Promise<Array<{item: Character, id: string, type: string}>>} Array of group character objects
  */
-async function getGroupCharacters({ doFilter = false, onlyMembers = false } = {}) {
+export async function getGroupCharacters({ doFilter = false, onlyMembers = false } = {}) {
     function applyFilterAndSort(results, filter, filterSelector) {
         let filtered = results;
         if (doFilter) {
@@ -1840,9 +1847,14 @@ async function getGroupCharacters({ doFilter = false, onlyMembers = false } = {}
     if (!onlyMembers) {
         if (doFilter && canUseServerQueryForGroupCandidates()) {
             const { filter, sort } = buildGroupCandidateQuery(membersArray);
-            const rows = await characterRepository.queryAll(filter, sort);
-            const results = rows.map((x) => ({ item: x, id: x.avatar, type: 'character' }));
-            return applyFilterAndSort(results, groupCandidatesFilter, '#rm_group_filter');
+            try {
+                const rows = await characterRepository.queryAll(filter, sort);
+                const results = rows.map((x) => ({ item: x, id: x.avatar, type: 'character' }));
+                return applyFilterAndSort(results, groupCandidatesFilter, '#rm_group_filter');
+            } catch (error) {
+                if (!isInvalidSortFieldError(error)) throw error;
+                // Falls through to the local scan below.
+            }
         }
         const results = characters
             .filter((x) => isGroupMember(thisGroup, x.avatar) == onlyMembers)

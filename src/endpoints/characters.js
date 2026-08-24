@@ -1846,7 +1846,7 @@ router.post('/metadata/batch-import/end', async function (request, response) {
 // input* before ever calling into the metadata module - a distinct concern from that module's own "which SQL
 // column does this map to". 'random' and 'search' are real, handled values (see the route below), not rejected -
 // they just don't map to a QUERYABLE_SORT_COLUMNS entry, since neither is a plain column sort.
-const QUERY_SORT_FIELDS = new Set(['name', 'date_added', 'date_last_chat', 'chat_size', 'fav', 'random', 'search']);
+const QUERY_SORT_FIELDS = new Set(['name', 'date_added', 'date_last_chat', 'chat_size', 'fav', 'create_date', 'data_size', 'random', 'search']);
 
 // page/pageSize bounds for "/query" - page/pageSize is the doc's §5 contract shape (not offset/limit, which is
 // queryCharacters()'s own internal shape - this route is where the translation happens). The upper bound on

@@ -232,7 +232,7 @@ import { registerPromptManagerMigration } from './scripts/PromptManager.js';
 import { getRegexedString, regex_placement } from './scripts/extensions/regex/engine.js';
 import { initLogprobs, saveLogprobsForActiveMessage } from './scripts/logprobs.js';
 import { FILTER_STATES, FILTER_TYPES, FilterHelper, isFilterState } from './scripts/filters.js';
-import { characterRepository, buildCharacterQuery, isServerQueryableSort, normalizeQueryRow } from './scripts/character-repository.js';
+import { characterRepository, buildCharacterQuery, isServerQueryableSort, isInvalidSortFieldError, normalizeQueryRow } from './scripts/character-repository.js';
 import { getRandomSortSeed } from './scripts/random-sort.js';
 import { openRightMenu, closeRightMenu } from './scripts/right-menu-state.js';
 import { getCfgPrompt, getGuidanceScale, initCfg } from './scripts/cfg-scale.js';
@@ -647,7 +647,24 @@ export const DEFAULT_SAVE_EDIT_TIMEOUT = debounce_timeout.relaxed;
 /** @type {debounce_timeout} The debounce timeout used for printing. debounce_timeout.quick: 100 ms */
 export const DEFAULT_PRINT_TIMEOUT = debounce_timeout.quick;
 
-export const saveSettingsDebounced = debounce((loopCounter = 0) => saveSettings(loopCounter), DEFAULT_SAVE_EDIT_TIMEOUT);
+const _debouncedSaveImpl = debounce(() => saveSettings(), DEFAULT_SAVE_EDIT_TIMEOUT);
+/**
+ * Debounced settings save. When called with top-level settings key name(s) (the keys of the settings payload
+ * object that the surrounding code just mutated), accumulates them and fires a partial save via
+ * /api/settings/save-partial when the debounce triggers - sending only the named keys instead of the full
+ * ~148KB blob. When called with no arguments (backward compat for unmigrated call sites or direct
+ * saveSettings() callers), triggers a full save via /api/settings/save as before.
+ *
+ * Multiple calls within the debounce window merge their keys: saveSettingsDebounced('power_user') followed by
+ * saveSettingsDebounced('oai_settings') within the same window sends both keys in a single partial save.
+ * @param {...string} keys Top-level payload key name(s) that were mutated (e.g. 'power_user', 'oai_settings')
+ */
+export function saveSettingsDebounced(...keys) {
+    for (const key of keys) {
+        if (typeof key === 'string') pendingSettingsKeys.add(key);
+    }
+    _debouncedSaveImpl();
+}
 export const saveCharacterDebounced = debounce(() => $('#create_button').trigger('click'), DEFAULT_SAVE_EDIT_TIMEOUT);
 
 /**
@@ -857,6 +874,15 @@ let lastSavedSettingsHash = null;
  * @type {number|null}
  */
 let knownServerSettingsHash = null;
+/**
+ * Top-level settings keys accumulated since the last debounced save fired. When saveSettingsDebounced() is
+ * called with key name(s), they're collected here; when the debounce triggers, saveSettings() drains this set
+ * and sends only those keys via /api/settings/save-partial instead of the full ~148KB blob. Empty means no
+ * caller specified keys (backward compat / unmigrated call site), which falls through to the full /save path.
+ */
+const pendingSettingsKeys = new Set();
+/** Module-scope retry counter for TempResponseLength customization, replacing the old loopCounter parameter. */
+let _saveRetryCounter = 0;
 export let amount_gen = 80; //default max length of AI generated responses
 export let max_context = 2048;
 
@@ -1465,77 +1491,11 @@ export async function printCharacters(fullRefresh = false) {
         },
     };
 
-    if (canUseServerQueryForEntitiesList()) {
-        // Real server-side pagination (design doc §6/§9 phase 5): the character+group rows for the visible
-        // page come from one `/query` request per page turn, not from re-slicing a fully materialized array.
-        // Bogus-folder tag tiles are the one deliberate exception - they're computed locally, once per
-        // full render, and prepended only to page 1 rather than forced through the server query. Two reasons:
-        // folders are pinned to a fixed small prefix by `sortEntitiesList()` (never part of the sortable
-        // character+group continuum §5 describes, so there's no "page 2 of folders" to ask the server for),
-        // and their member counts/nesting already require the local tag-membership computation
-        // `getFolderTileEntities()` shares with `getEntitiesList()`. Net effect, disclosed rather than hidden:
-        // when folders are open, page 1 shows `pageSize` characters/groups *plus* however many folder tiles
-        // matched, i.e. folders no longer eat into the page-size budget the way the old static-array slice
-        // silently did (a folder tile used to occupy one of the `pageSize` slots on whichever page it landed
-        // on). "Open a folder" itself needs no special-casing here: an open bogus folder is just a selected tag
-        // in `entitiesFilter`'s TAG filter data, which `buildCharacterQueryFromCurrentFilterState()` already
-        // threads into `filter.tags.include` - so it composes with `includeGroups` and paginates for free,
-        // including group folder members (`group_tags`), instead of the old "dump every member of the open
-        // folder into the static dataSource regardless of the outer pagination" behavior.
-        const folderTiles = await getFolderTileEntities();
-        const { filter, sort } = buildCharacterQueryFromCurrentFilterState({ includeGroups: true });
-
-        // Server total for the character+group match set (may be an approximate `~`-prefixed count - design
-        // doc §5 decision 6 - which is fine for the "N hidden" badge and for pagination.js's own page-count
-        // math, both of which only need an honest approximation, never a bare-but-truncated number). Updated by
-        // `ajaxFunction` on every page fetch; read by the callback's `getMatchTotal` and by
-        // `totalNumberLocator`. Folder tiles are added back in because the pre-existing formula's `entities`
-        // array (see the fallback branch below) always included them too.
-        let matchTotal = 0;
-
-        $('#rm_print_characters_pagination').pagination({
-            ...sharedPaginationOptions,
-            dataSource: SERVER_PAGINATED_DATA_SOURCE,
-            locator: 'rows',
-            // Seed pagination.js's dynamic-total boot math with the last real total we saw (see
-            // saveCharactersTotal's own doc comment above) - without this, `self.getTotalNumber()` reads 0 until
-            // the first ajax response of *this* reconstruction lands, which clamps the boot page request (and the
-            // synchronous pre-ajax render) down to page 1 / "0 of 0" no matter what `pageNumber` says.
-            // `resetPageNumberOnInit: false` is the other half: pagination.js's own init path force-overwrites the
-            // requested page to 1 whenever a `totalNumberLocator` is present, independent of the totalNumber seed.
-            // Together they let a debounced re-render (search keystroke, tag toggle, sort/filter change - anything
-            // that reconstructs this plugin without an explicit fullRefresh) re-request the page the user was
-            // actually on instead of silently bouncing them back to page 1 with a momentary empty flash.
-            totalNumber: saveCharactersTotal || undefined,
-            resetPageNumberOnInit: false,
-            totalNumberLocator: function (/** @type {{total: number|string}} */ response) {
-                const parsed = Number(String(response.total).replace(/^~/, ''));
-                return Number.isFinite(parsed) ? parsed : 0;
-            },
-            ajaxFunction: function (ajaxParams) {
-                const page = ajaxParams.data.pageNumber;
-                const requestedPageSize = ajaxParams.data.pageSize;
-                characterRepository.query(filter, sort, page, requestedPageSize, ['rows', 'total'])
-                    .then(result => {
-                        const rows = Array.isArray(result.rows) ? result.rows : [];
-                        const pageEntities = rows.map(row => queryRowToEntity(row));
-                        const parsedTotal = Number(String(result.total ?? 0).replace(/^~/, ''));
-                        saveCharactersTotal = Number.isFinite(parsedTotal) ? parsedTotal : 0;
-                        matchTotal = saveCharactersTotal + folderTiles.length;
-                        const combined = page === 1 ? [...folderTiles, ...pageEntities] : pageEntities;
-                        ajaxParams.success({ rows: combined, total: result.total });
-                    })
-                    .catch(error => {
-                        console.error('[printCharacters] server-paginated /query failed:', error);
-                        ajaxParams.error(error);
-                    });
-            },
-            callback: makePageCallback(() => matchTotal),
-        });
-    } else {
-        // Pre-existing fully-local path, preserved exactly: an active search term, an unsupported sort field,
-        // or any other case `canUseServerQueryForEntitiesList()` declines - the whole filtered/sorted candidate
-        // set is materialized client-side and the plugin slices it in memory on page turn.
+    // Pre-existing fully-local path, preserved exactly: an active search term with no queryable state, an
+    // `isInvalidSortFieldError()` rejection from the server branch below (a sort field the server genuinely
+    // doesn't have a column for), or any other case `canUseServerQueryForEntitiesList()` declines - the whole
+    // filtered/sorted candidate set is materialized client-side and the plugin slices it in memory on page turn.
+    async function renderLocalPaginated() {
         const entities = await getEntitiesList({ doFilter: true });
 
         // When a search term is active, `entities` was narrowed by `entitiesFilter.serverSearchResults`
@@ -1566,6 +1526,113 @@ export async function printCharacters(fullRefresh = false) {
                 },
             callback: makePageCallback(() => entities.length),
         });
+    }
+
+    if (canUseServerQueryForEntitiesList()) {
+        // Real server-side pagination (design doc §6/§9 phase 5): the character+group rows for the visible
+        // page come from one `/query` request per page turn, not from re-slicing a fully materialized array.
+        // Bogus-folder tag tiles are the one deliberate exception - they're computed locally, once per
+        // full render, and prepended only to page 1 rather than forced through the server query. Two reasons:
+        // folders are pinned to a fixed small prefix by `sortEntitiesList()` (never part of the sortable
+        // character+group continuum §5 describes, so there's no "page 2 of folders" to ask the server for),
+        // and their member counts/nesting already require the local tag-membership computation
+        // `getFolderTileEntities()` shares with `getEntitiesList()`. Net effect, disclosed rather than hidden:
+        // when folders are open, page 1 shows `pageSize` characters/groups *plus* however many folder tiles
+        // matched, i.e. folders no longer eat into the page-size budget the way the old static-array slice
+        // silently did (a folder tile used to occupy one of the `pageSize` slots on whichever page it landed
+        // on). "Open a folder" itself needs no special-casing here: an open bogus folder is just a selected tag
+        // in `entitiesFilter`'s TAG filter data, which `buildCharacterQueryFromCurrentFilterState()` already
+        // threads into `filter.tags.include` - so it composes with `includeGroups` and paginates for free,
+        // including group folder members (`group_tags`), instead of the old "dump every member of the open
+        // folder into the static dataSource regardless of the outer pagination" behavior.
+        const { filter, sort } = buildCharacterQueryFromCurrentFilterState({ includeGroups: true });
+
+        // `canUseServerQueryForEntitiesList()` above is only an "attempt" signal now (see its doc comment) - it
+        // no longer guarantees the server actually has a column for the current sort field. Rather than let a
+        // rejection surface per page-turn deep inside pagination.js's `ajaxFunction` (where the only thing this
+        // code could do about it is show an error state - a real regression from the old pre-check, which never
+        // attempted a field it didn't already know was safe), probe with the page-1 request up front: if the
+        // server accepts it, hand that already-fetched page straight to `ajaxFunction` below (so this probe
+        // never costs a second, wasted round-trip on the common path) and build the server-paginated widget; if
+        // it rejects with `isInvalidSortFieldError()`, fall back to `renderLocalPaginated()` before ever touching
+        // the pagination.js plugin, exactly like `getEntitiesList()`'s own fallback. A rejection on a *later*
+        // page turn (filter/sort didn't change between page 1 and then) would mean the server's answer changed
+        // out from under an already-committed widget - not the drift scenario this fallback exists for - so that
+        // case still just surfaces as an error, unchanged from before.
+        const folderTiles = await getFolderTileEntities();
+        /** @type {Awaited<ReturnType<typeof characterRepository.query>>|undefined} */
+        let firstPage;
+        /** @type {unknown} */
+        let firstPageError;
+        try {
+            firstPage = await characterRepository.query(filter, sort, 1, pageSize, ['rows', 'total']);
+        } catch (error) {
+            if (!isInvalidSortFieldError(error)) throw error;
+            firstPageError = error;
+        }
+
+        if (firstPageError !== undefined) {
+            await renderLocalPaginated();
+        } else {
+            // Server total for the character+group match set (may be an approximate `~`-prefixed count - design
+            // doc §5 decision 6 - which is fine for the "N hidden" badge and for pagination.js's own page-count
+            // math, both of which only need an honest approximation, never a bare-but-truncated number). Updated
+            // by `ajaxFunction` on every page fetch; read by the callback's `getMatchTotal` and by
+            // `totalNumberLocator`. Folder tiles are added back in because the pre-existing formula's `entities`
+            // array (see the fallback branch below) always included them too.
+            let matchTotal = 0;
+            // Serves the already-fetched probe result to `ajaxFunction`'s very first call instead of
+            // re-fetching - consumed (set to `undefined`) after that one use; every later call (page turn, size
+            // change) fetches for real.
+            let pendingFirstPage = firstPage;
+
+            $('#rm_print_characters_pagination').pagination({
+                ...sharedPaginationOptions,
+                dataSource: SERVER_PAGINATED_DATA_SOURCE,
+                locator: 'rows',
+                // Seed pagination.js's dynamic-total boot math with the last real total we saw (see
+                // saveCharactersTotal's own doc comment above) - without this, `self.getTotalNumber()` reads 0
+                // until the first ajax response of *this* reconstruction lands, which clamps the boot page
+                // request (and the synchronous pre-ajax render) down to page 1 / "0 of 0" no matter what
+                // `pageNumber` says. `resetPageNumberOnInit: false` is the other half: pagination.js's own init
+                // path force-overwrites the requested page to 1 whenever a `totalNumberLocator` is present,
+                // independent of the totalNumber seed. Together they let a debounced re-render (search
+                // keystroke, tag toggle, sort/filter change - anything that reconstructs this plugin without an
+                // explicit fullRefresh) re-request the page the user was actually on instead of silently
+                // bouncing them back to page 1 with a momentary empty flash.
+                totalNumber: saveCharactersTotal || undefined,
+                resetPageNumberOnInit: false,
+                totalNumberLocator: function (/** @type {{total: number|string}} */ response) {
+                    const parsed = Number(String(response.total).replace(/^~/, ''));
+                    return Number.isFinite(parsed) ? parsed : 0;
+                },
+                ajaxFunction: function (ajaxParams) {
+                    const page = ajaxParams.data.pageNumber;
+                    const requestedPageSize = ajaxParams.data.pageSize;
+                    const resultPromise = (page === 1 && requestedPageSize === pageSize && pendingFirstPage)
+                        ? Promise.resolve(pendingFirstPage)
+                        : characterRepository.query(filter, sort, page, requestedPageSize, ['rows', 'total']);
+                    pendingFirstPage = undefined;
+                    resultPromise
+                        .then(result => {
+                            const rows = Array.isArray(result.rows) ? result.rows : [];
+                            const pageEntities = rows.map(row => queryRowToEntity(row));
+                            const parsedTotal = Number(String(result.total ?? 0).replace(/^~/, ''));
+                            saveCharactersTotal = Number.isFinite(parsedTotal) ? parsedTotal : 0;
+                            matchTotal = saveCharactersTotal + folderTiles.length;
+                            const combined = page === 1 ? [...folderTiles, ...pageEntities] : pageEntities;
+                            ajaxParams.success({ rows: combined, total: result.total });
+                        })
+                        .catch(error => {
+                            console.error('[printCharacters] server-paginated /query failed:', error);
+                            ajaxParams.error(error);
+                        });
+                },
+                callback: makePageCallback(() => matchTotal),
+            });
+        }
+    } else {
+        await renderLocalPaginated();
     }
 
     favsToHotswap();
@@ -1649,13 +1716,19 @@ function isSearchSortSelected() {
 
 /**
  * Whether the character+group candidate set (`getEntitiesList()`) and the visible page
- * (`printCharacters()`'s pagination controller) can be built from the server `/query` endpoint (design doc
- * §5/§6, `filter.includeGroups: true`) instead of the fully-local `characters`/`groups` arrays. Deliberately
- * conservative - see the doc comments below and character-repository.js's
- * `QUERYABLE_CLIENT_SORT_FIELDS`/`isServerQueryableSort()`. Groups being queryable through the same endpoint
- * (`includeGroups`) doesn't change *when* this returns true, only what the caller does with a `true` answer -
- * the eligibility conditions below are about the sort/search state, which is orthogonal to whether groups are
- * merged in.
+ * (`printCharacters()`'s pagination controller) should even ATTEMPT the server `/query` endpoint (design doc
+ * §5/§6, `filter.includeGroups: true`) instead of going straight to the fully-local `characters`/`groups`
+ * arrays. This is no longer "can", in the sense of a guaranteed-safe pre-check - it's "should try": the actual
+ * answer to whether the server supports the current `sort.field` comes back from the server itself (a real
+ * `400 { reason: 'invalid-sort-field' }` response), not from anything predicted here. See
+ * `isServerQueryableSort()`'s doc comment (character-repository.js) for why the client stopped keeping its own
+ * copy of that knowledge. Every caller of this function attempts the server query when it returns `true` and
+ * catches that specific rejection (`isInvalidSortFieldError()`) to fall back to the pre-existing local path -
+ * see `getEntitiesList()` below and `printCharacters()`'s server-paginated branch.
+ *
+ * Groups being queryable through the same endpoint (`includeGroups`) doesn't change *when* this returns true,
+ * only what the caller does with a `true` answer - the eligibility conditions below are about the sort/search
+ * state, which is orthogonal to whether groups are merged in.
  *
  * An active search term no longer excludes this path (it used to - see git history around this comment for the
  * old rationale, and the `/query` route's own doc comment in characters.js for why it stopped applying): this
@@ -1666,9 +1739,9 @@ function isSearchSortSelected() {
  * own full-text index wired into `/query`'s `filter.search` + `filter.includeGroups` handling (see that route's
  * doc comment), so `filter.search` here and the old `/all`-based search are the exact same underlying indexes,
  * not two that could silently diverge. `fetchServerCharacterSearchResults()`/`serverSearchResults` still exist -
- * they now call `/query` themselves (see that function's doc comment) - but only matter for a caller whose sort
- * field isn't server-queryable at all (the `isServerQueryableSort(sortField)` check below, independent of
- * search), which still needs the pre-existing fully-local fallback and its own score cache.
+ * they now call `/query` themselves (see that function's doc comment) - but only matter for a caller that
+ * caught an `isInvalidSortFieldError()` rejection for its sort field (independent of search), which still needs
+ * the pre-existing fully-local fallback and its own score cache.
  *
  * `isSearchSortSelected()` is still checked, but no longer disqualifies outright - `sort.field: 'search'`
  * requires a non-empty search term (mirrors the `/query` route's own "requires, doesn't merely permit" rule),
@@ -1809,7 +1882,7 @@ function filterAndSortEntities(rawEntities, { doFilter = false, doSort = true } 
  *
  * The character+group portion of the candidate set is built two ways depending on `doFilter` and the current
  * filter/sort state (design doc §6, phase 5):
- * - `doFilter: true` and `canUseServerQueryForEntitiesList()` says yes: one merged call -
+ * - `doFilter: true` and `canUseServerQueryForEntitiesList()` says to attempt it: one merged call -
  *   `characterRepository.queryAll(filter, sort)` with `filter.includeGroups: true` - already narrowed by the
  *   active tag/fav filters (including an open bogus folder, since that's just a selected tag - see
  *   `buildCharacterQueryFromCurrentFilterState()`'s doc comment) and in the active sort order, straight from the
@@ -1820,25 +1893,35 @@ function filterAndSortEntities(rawEntities, { doFilter = false, doSort = true } 
  *   `/query` does not and cannot answer (design doc §5: folders aren't part of the sortable character+group
  *   continuum at all - `sortEntitiesList()` always pins them to the top in their own order, independent of
  *   `sort_field`/`sort_order`).
- * - Otherwise (an active search term, an unsupported sort field like `create_date`/`data_size`, or
- *   `doFilter: false`): the pre-existing fully-local path - `characters.map(...)` + `groups.map(...)` over the
- *   whole resident arrays, filtered/sorted entirely client-side exactly as before this change.
+ *   If that call rejects with `isInvalidSortFieldError()` - the current sort field genuinely has no server
+ *   column - this falls back to the local path below instead of throwing; any other failure (network error, a
+ *   500, ...) propagates normally, same as it always has.
+ * - Otherwise (an active search term-less non-eligible state, `doFilter: false`, or a caught
+ *   `isInvalidSortFieldError()`): the pre-existing fully-local path - `characters.map(...)` + `groups.map(...)`
+ *   over the whole resident arrays, filtered/sorted entirely client-side exactly as before this change.
  * @param {object} param0 - Optional parameters
  * @param {boolean} [param0.doFilter] - Whether this entity list should already be filtered based on the global filters
  * @param {boolean} [param0.doSort] - Whether the entity list should be sorted when returned
  * @returns {Promise<Entity[]>} All entities
  */
 export async function getEntitiesList({ doFilter = false, doSort = true } = {}) {
-    const characterAndGroupEntities = doFilter && canUseServerQueryForEntitiesList()
-        ? await (async () => {
+    let characterAndGroupEntities;
+    if (doFilter && canUseServerQueryForEntitiesList()) {
+        try {
             const { filter, sort } = buildCharacterQueryFromCurrentFilterState({ includeGroups: true });
             const rows = await characterRepository.queryAll(filter, sort);
-            return rows.map(row => queryRowToEntity(row));
-        })()
-        : [
+            characterAndGroupEntities = rows.map(row => queryRowToEntity(row));
+        } catch (error) {
+            if (!isInvalidSortFieldError(error)) throw error;
+            characterAndGroupEntities = undefined;
+        }
+    }
+    if (characterAndGroupEntities === undefined) {
+        characterAndGroupEntities = [
             ...characters.map(item => characterToEntity(item)),
             ...groups.map(item => groupToEntity(item)),
         ];
+    }
 
     const rawEntities = [
         ...characterAndGroupEntities,
@@ -8547,20 +8630,20 @@ export async function renameCharacter(name = null, { silent = false, renameChats
             const charLore = world_info.charLore?.find(x => x.name == oldName);
             if (charLore) {
                 charLore.name = newName;
-                saveSettingsDebounced();
+                saveSettingsDebounced('world_info_settings');
             }
 
             // Char-bound Author's Notes
             const charNote = extension_settings.note.chara?.find(x => x.name == oldName);
             if (charNote) {
                 charNote.name = newName;
-                saveSettingsDebounced();
+                saveSettingsDebounced('extension_settings');
             }
 
             // Update active character, if the current one was the currently active one
             if (active_character === oldAvatar) {
                 active_character = newAvatar;
-                saveSettingsDebounced();
+                saveSettingsDebounced('active_character');
             }
 
             await eventSource.emit(event_types.CHARACTER_RENAMED, oldAvatar, newAvatar);
@@ -8774,8 +8857,6 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
     };
 
     try {
-        const tClientStart = performance.now();
-
         // Slim wire protocol: for tree-stored chats (not custom snapshots like branch creation),
         // replace unchanged messages with lightweight stubs to minimize wire payload.
         const isTreeChat = !!metadata?._tree_stored && !Array.isArray(chatData);
@@ -8788,20 +8869,13 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
             avatar_url: getCurrentCharacter().avatar,
             force: force,
         });
-        const tStringify = performance.now();
         const saveChatRequest = await compressRequest({
             method: 'POST',
             cache: 'no-cache',
             headers: getRequestHeaders(),
             body: bodyJson,
         });
-        const tCompress = performance.now();
         const result = await fetch('/api/chats/save', saveChatRequest);
-        const tFetch = performance.now();
-
-        const stubCount = isTreeChat ? payloadMessages.filter(m => m._unchanged).length : 0;
-        const fullCount = payloadMessages.length - stubCount;
-        console.debug(`[save-perf] saveChat client: bodyBytes=${bodyJson.length} stubs=${stubCount} full=${fullCount} stringify=${(tStringify - tClientStart).toFixed(1)}ms compress=${(tCompress - tStringify).toFixed(1)}ms fetch=${(tFetch - tCompress).toFixed(1)}ms total=${(tFetch - tClientStart).toFixed(1)}ms`);
 
         if (result.ok) {
             const data = await result.json().catch(() => null);
@@ -9348,7 +9422,7 @@ export function setUserName(value, { toastPersonaNameChange = true } = {}) {
     if (toastPersonaNameChange && power_user.persona_show_notifications && !isPersonaPanelOpen()) {
         toastr.success(t`Your messages will now be sent as ${name1}`, t`Persona Changed`);
     }
-    saveSettingsDebounced();
+    saveSettingsDebounced('username');
 }
 
 async function doOnboarding(avatarId) {
@@ -9529,7 +9603,7 @@ export async function getSettings(initLoaderHandle = null) {
 }
 
 //MARK: saveSettings()
-export async function saveSettings(loopCounter = 0) {
+export async function saveSettings() {
     if (!settingsReady) {
         console.warn('Settings not ready, scheduling another save');
         saveSettingsDebounced();
@@ -9538,14 +9612,20 @@ export async function saveSettings(loopCounter = 0) {
 
     const MAX_RETRIES = 3;
     if (TempResponseLength.isCustomized()) {
-        if (loopCounter < MAX_RETRIES) {
+        if (_saveRetryCounter < MAX_RETRIES) {
             console.warn('Response length is currently being overridden, scheduling another save');
-            saveSettingsDebounced(++loopCounter);
+            _saveRetryCounter++;
+            saveSettingsDebounced();
             return;
         }
         console.error('Response length is currently being overridden, but the save loop has reached the maximum number of retries');
         TempResponseLength.restore(null);
     }
+    _saveRetryCounter = 0;
+
+    // Drain accumulated keys before the async gap - anything added after this point belongs to the next save.
+    const dirtyKeys = pendingSettingsKeys.size > 0 ? [...pendingSettingsKeys] : null;
+    pendingSettingsKeys.clear();
 
     const payload = {
         firstRun: firstRun,
@@ -9572,65 +9652,91 @@ export async function saveSettings(loopCounter = 0) {
         selected_proxy: selected_proxy,
     };
 
-    // Central dirty-check: skip the POST (and the server-side write-file-atomic disk write it triggers) if the
-    // payload is byte-identical to the last one this session actually saved. Cheaper than a deep-equal since
-    // JSON.stringify(payload) already has to be computed for the request body regardless; hashing that string
-    // avoids holding two ~150KB strings just to compare them. If an object's key insertion order happened to
-    // shift between calls the hash would differ even though nothing meaningful changed - that only costs one
-    // extra (harmless) save, never data loss, so this doesn't need canonical/sorted-key serialization - see
-    // character-card-normalize.js's canonicalStringify for why that one *does* need it (content-identity hashing
-    // across independently-imported copies, not this-session-only dirty-checking).
     const payloadString = JSON.stringify(payload);
     const payloadHash = getStringHash(payloadString);
     if (payloadHash === lastSavedSettingsHash) {
         return;
     }
 
-    // Canonical on-disk form (matches what the server writes/reads - see /api/settings/save), needed so the
-    // conflict-detection hash we send/store lines up byte-for-byte with what the server will hash. Computed
-    // separately from payloadString above (which stays compact) so today's already-shipped same-session dirty
-    // check keeps working unchanged.
-    const canonicalSettingsString = JSON.stringify(payload, null, 4);
-
-    try {
-        const headers = getRequestHeaders();
-        if (knownServerSettingsHash !== null) {
-            headers['X-Settings-Hash'] = String(knownServerSettingsHash);
+    if (dirtyKeys) {
+        // Partial save path: send only the keys that were explicitly marked dirty.
+        const partialPayload = {};
+        for (const key of dirtyKeys) {
+            if (key in payload) partialPayload[key] = payload[key];
         }
-        const saveSettingsRequest = await compressRequest({
-            method: 'POST',
-            headers: headers,
-            body: payloadString,
-            cache: 'no-cache',
-        });
-        const result = await fetch('/api/settings/save', saveSettingsRequest);
 
-        if (result.status === 409) {
-            // Another tab/device wrote settings since we last loaded or saved them - our view was stale, so the
-            // server rejected this write instead of silently overwriting that other change. Re-sync from the
-            // server's actual current state rather than retrying with the same (now-outdated) payload, which
-            // would just re-attempt the same clobber. The user's pending change isn't reapplied automatically:
-            // settings saves are normally one small toggle at a time, not accumulated work, and blindly
-            // replaying "whatever this tab's in-memory state was" on top of a refreshed baseline risks silently
-            // re-clobbering whatever the other session just wrote in a subtler way. Telling the user and letting
-            // them redo the one thing they changed is simpler and can't lose someone else's write.
-            console.warn('Settings save rejected: local view of settings was stale, refreshing from server.');
-            toastr.warning(t`Settings were changed in another tab or device. Refreshing - please reapply your change.`, t`Settings save rejected`);
-            await getSettings();
+        if (Object.keys(partialPayload).length === 0) {
             return;
         }
 
-        if (!result.ok) {
-            throw new Error(`Failed to save settings: ${result.statusText}`);
-        }
+        const expectedHashes = hashSettingsKeys(settings ?? {}, Object.keys(partialPayload));
 
-        settings = payload;
-        lastSavedSettingsHash = payloadHash;
-        knownServerSettingsHash = getStringHash(canonicalSettingsString);
-        await eventSource.emit(event_types.SETTINGS_UPDATED);
-    } catch (error) {
-        console.error('Error saving settings:', error);
-        toastr.error(t`Check the server connection and reload the page to prevent data loss.`, t`Settings could not be saved`);
+        try {
+            const result = await fetch('/api/settings/save-partial', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ keys: partialPayload, expectedHashes }),
+                cache: 'no-cache',
+            });
+
+            if (result.status === 409) {
+                const data = await result.json().catch(() => ({}));
+                console.warn('Partial settings save rejected, conflicting keys:', data.conflictingKeys);
+                toastr.warning(t`Settings were changed in another tab or device. Refreshing - please reapply your change.`, t`Settings save rejected`);
+                await getSettings();
+                return;
+            }
+
+            if (!result.ok) {
+                throw new Error(`Failed to save partial settings: ${result.statusText}`);
+            }
+
+            // Adopt the saved keys into the local settings mirror so subsequent per-key hashes stay current.
+            Object.assign(settings, partialPayload);
+            lastSavedSettingsHash = payloadHash;
+            // Keep the whole-file hash in sync for any remaining full-save callers during the migration.
+            knownServerSettingsHash = getStringHash(JSON.stringify(settings, null, 4));
+            await eventSource.emit(event_types.SETTINGS_UPDATED);
+        } catch (error) {
+            console.error('Error saving settings:', error);
+            toastr.error(t`Check the server connection and reload the page to prevent data loss.`, t`Settings could not be saved`);
+        }
+    } else {
+        // Full save path (backward compat for callers that didn't specify keys).
+        const canonicalSettingsString = JSON.stringify(payload, null, 4);
+
+        try {
+            const headers = getRequestHeaders();
+            if (knownServerSettingsHash !== null) {
+                headers['X-Settings-Hash'] = String(knownServerSettingsHash);
+            }
+            const saveSettingsRequest = await compressRequest({
+                method: 'POST',
+                headers: headers,
+                body: payloadString,
+                cache: 'no-cache',
+            });
+            const result = await fetch('/api/settings/save', saveSettingsRequest);
+
+            if (result.status === 409) {
+                console.warn('Settings save rejected: local view of settings was stale, refreshing from server.');
+                toastr.warning(t`Settings were changed in another tab or device. Refreshing - please reapply your change.`, t`Settings save rejected`);
+                await getSettings();
+                return;
+            }
+
+            if (!result.ok) {
+                throw new Error(`Failed to save settings: ${result.statusText}`);
+            }
+
+            settings = payload;
+            lastSavedSettingsHash = payloadHash;
+            knownServerSettingsHash = getStringHash(canonicalSettingsString);
+            await eventSource.emit(event_types.SETTINGS_UPDATED);
+        } catch (error) {
+            console.error('Error saving settings:', error);
+            toastr.error(t`Check the server connection and reload the page to prevent data loss.`, t`Settings could not be saved`);
+        }
     }
 }
 
@@ -11077,14 +11183,12 @@ export async function saveMetadata() {
 }
 
 export async function saveChatConditional() {
-    const t0 = performance.now();
     try {
         await waitUntilCondition(() => !isChatSaving, DEFAULT_SAVE_EDIT_TIMEOUT, 100);
     } catch {
         console.warn('Timeout waiting for chat to save');
         return;
     }
-    const tWait = performance.now();
 
     try {
         cancelDebouncedChatSave();
@@ -11104,8 +11208,6 @@ export async function saveChatConditional() {
         console.error('Error saving chat', error);
     } finally {
         isChatSaving = false;
-        const tDone = performance.now();
-        console.debug(`[save-perf] saveChatConditional: wait=${(tWait - t0).toFixed(1)}ms save=${(tDone - tWait).toFixed(1)}ms total=${(tDone - t0).toFixed(1)}ms messages=${chat.length} caller=${new Error().stack?.split('\n')[2]?.trim()}`);
     }
 }
 
@@ -11518,7 +11620,7 @@ export async function createOrEditCharacter(e) {
                 const charLore = world_info.charLore ?? [];
                 charLore.push({ name: fileName, extraBooks: create_save.extra_books });
                 Object.assign(world_info, { charLore: charLore });
-                saveSettingsDebounced();
+                saveSettingsDebounced('world_info_settings');
             }
             create_save.extra_books = [];
 
@@ -12612,7 +12714,7 @@ export async function updateRemoteChatName(avatar, newName) {
 function doCharListDisplaySwitch() {
     power_user.charListGrid = !power_user.charListGrid;
     document.body.classList.toggle('charListGrid', power_user.charListGrid);
-    saveSettingsDebounced();
+    saveSettingsDebounced('power_user');
 }
 
 /**
@@ -12970,9 +13072,9 @@ let lastKnownSearchBackend = null;
  * that order - the endpoint doesn't expose the underlying relevance score directly, and rank alone is enough for
  * both consumers: searchFilter()'s membership check (does a cached score exist at all) and sortEntitiesList()'s
  * ascending sort. This still matters even though the main list itself now renders straight from `/query`'s own
- * rows (not through this scoring path) - it's what keeps a caller whose *sort field* isn't server-queryable (an
- * `isServerQueryableSort()` failure, not a search one - `canUseServerQueryForEntitiesList()`, script.js) working
- * on its own pre-existing fully-local fallback while a search term is also active.
+ * rows (not through this scoring path) - it's what keeps a caller whose *sort field* got rejected by the server
+ * (a caught `isInvalidSortFieldError()`, not a search one - `canUseServerQueryForEntitiesList()`, script.js)
+ * working on its own pre-existing fully-local fallback while a search term is also active.
  *
  * The response also carries `searchBackend` ('tantivy'|'native'|'wasm'|'unavailable' - see the `/query` route and
  * search-engine.js). Previously a degraded backend only ever showed up as a server console warning; this surfaces
@@ -13229,7 +13331,7 @@ jQuery(async function () {
         } else {
             hideSwipeButtons();
         }
-        saveSettingsDebounced();
+        saveSettingsDebounced('swipes');
     });
 
     ///// SWIPE BUTTON CLICKS ///////
@@ -13906,7 +14008,7 @@ jQuery(async function () {
     $('#main_api').on('change', async function () {
         cancelStatusCheck('Canceled because main api changed');
         changeMainAPI();
-        saveSettingsDebounced();
+        saveSettingsDebounced('main_api');
         await eventSource.emit(event_types.MAIN_API_CHANGED, { apiId: main_api });
     });
 
@@ -13956,7 +14058,7 @@ jQuery(async function () {
             const formattedValue = slider.format(value);
             slider.setValue(value);
             $(slider.counterId).val(formattedValue);
-            saveSettingsDebounced();
+            saveSettingsDebounced('amount_gen', 'max_context');
         });
     });
 
@@ -14745,7 +14847,7 @@ jQuery(async function () {
         } else {
             doCharListDisplaySwitch();
         }
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $('#galleryFullscreenToggle').on('click', () => {
@@ -14758,7 +14860,7 @@ jQuery(async function () {
                 btn.classList.toggle('fa-expand', !power_user.charGalleryFullscreen);
                 btn.classList.toggle('fa-compress', power_user.charGalleryFullscreen);
             }
-            saveSettingsDebounced();
+            saveSettingsDebounced('power_user');
         }
     });
 

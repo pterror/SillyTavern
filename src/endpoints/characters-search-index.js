@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 
 import {
     getTagDefinitions, getEntityTagIdsForMany, getTagsRevision,
@@ -96,19 +97,56 @@ import { getConfigValue, mapWithConcurrency, color } from '../util.js';
  *   *rename* (not an assignment change - see decision log) bumps `tags_rev` without producing any `changes` row,
  *   so applyIncrementalTantivyChanges() also re-indexes every currently-tagged character
  *   (getAllTaggedCharacterIds()) whenever `tags_rev` moved, an index-only SQL query independent of library size.
+ * - "FULL REBUILD" IS NOT A SEPARATE CODE PATH ANYMORE: a first-ever index build is just incremental maintenance
+ *   starting from an empty index at rev 0/tagsRev 0 - getChangesSince(directories, 0) already returns the entire
+ *   library as `op: 'upsert'` entries per its own documented contract, so running
+ *   applyIncrementalTantivyChanges() against a brand-new empty index with sinceRev=0 IS a full build, through the
+ *   exact same code that handles every later incremental catch-up. rebuildTantivyIndexFromScratch() below is that
+ *   "fresh empty index + incremental-from-rev-0" sequence, factored into one shared helper, because it turns out
+ *   to be needed in three places that used to each think of themselves as doing something different: a genuinely
+ *   fresh install (nothing persisted yet), recovering from a persisted index that can't be trusted (corrupt, or -
+ *   now - a schema-version mismatch, see openPersistedTantivyIndexStale()), and rebuildCharacterSearchIndex()'s
+ *   explicit owner-triggered repair endpoint. All three are really asking for the same thing: "throw away
+ *   whatever's on disk and build a guaranteed-correct index" - none of them need a bespoke full-scan
+ *   implementation to get it. Every fresh build goes through an atomic build-into-a-temp-directory-then-swap
+ *   (see rebuildTantivyIndexFromScratch()'s and buildTantivyIndexFromFilesystemScan()'s own doc comments) rather
+ *   than wiping the real index directory in place, so a build that fails partway never leaves a half-written or
+ *   missing index where a previously-working one used to be.
+ * - THE ONE GENUINE EXCEPTION: buildTantivyIndexFromFilesystemScan() below - a full filesystem scan
+ *   (readCharacterBatches()) reading character PNGs directly off disk, the same shape this module always used for
+ *   character data. This can't be expressed as "incremental from rev 0" because it doesn't go through
+ *   applyIncrementalTantivyChanges() at all: that function (and therefore rebuildTantivyIndexFromScratch()) reads
+ *   getChangesSince(), which depends on the phase-1 metadata store - so when that store itself is unavailable
+ *   (getCurrentRev() returns `null`), there is no change log to be incremental against, full stop, regardless of
+ *   starting rev. This is loadOrUpdateTantivyIndex()'s narrow top-of-function fallback, not something any of the
+ *   three cases above ever need.
  * - REPAIR, NOT DEFAULT: rebuildCharacterSearchIndex() (exported below) is the only remaining caller of a genuine
  *   full rebuild for characters, wired to an explicit `POST /api/characters/search-index/rebuild` endpoint
  *   (characters.js) - a directory-mtime change (or, now, any content/tag change at all) can no longer trigger
  *   one implicitly. The very first index build for a fresh install still has to be a full pass (nothing to
  *   incrementally update from), and a persisted-index reopen that fails for any reason (corrupt directory, a
- *   truncated change log with nothing incremental to catch up from) also falls back to a full rebuild - both are
- *   loadOrUpdateTantivyIndex()'s job, not something a caller has to know to ask for separately.
+ *   schema-version mismatch, a truncated change log with nothing incremental to catch up from) also falls back to
+ *   a full rebuild - both are loadOrUpdateTantivyIndex()'s job, not something a caller has to know to ask for
+ *   separately.
  */
 
 // Column order/weights mirror fuzzySearchCharacters() in public/scripts/power-user.js (and this file's
 // original Fuse-based version) so a result ranks similarly to what the same term produced there.
 const BM25_INDEXED_COLUMNS = ['name', 'resolved_tags', 'description', 'mes_example', 'scenario', 'personality', 'first_mes', 'creator_notes', 'creator', 'tags', 'alternate_greetings'];
 const BM25_WEIGHTS = [20, 10, 3, 3, 2, 2, 2, 2, 1, 1, 1];
+
+/**
+ * Manually-bumped identifier for the shape of the tantivy schema characterToTantivyDoc() builds documents against
+ * (buildTantivySchema(), tantivy-search.js - itself derived from BM25_INDEXED_COLUMNS plus DATA_FIELD/FAV_FIELD).
+ * Bump this by hand whenever that shape changes meaningfully enough that a persisted index built under the old
+ * shape can no longer be trusted (a field added/removed/retokenized) - same manually-bumped-constant pattern as
+ * webpack.config.js's FRONTEND_CACHE_VERSION, and for the same reason: there's no way to derive "is this old index
+ * still compatible" automatically from the schema definition alone, so a human has to say so. Persisted alongside
+ * a built index (TANTIVY_INDEX_SCHEMA_VERSION_META_KEY below) and checked by openPersistedTantivyIndexStale() -
+ * a mismatch there is treated exactly like a corrupt or missing index (nothing usable persisted), which naturally
+ * routes into a fresh rebuild the same way those already do, without needing a separate branch anywhere else.
+ */
+const TANTIVY_SCHEMA_VERSION = 1;
 
 // `label:value` search syntax (see search-query.js) - maps a friendly label to the real FTS5 column-filter
 // expression it becomes. `tag:`/`tags:` searches BOTH tag-ish columns via FTS5's `{col1 col2}:` group syntax,
@@ -204,6 +242,9 @@ const DEFAULT_TANTIVY_MAX_ROWS = 500;
 // key/value table shared with the metadata store's own bootstrap_completed/tags_rev keys.
 const TANTIVY_INDEX_REV_META_KEY = 'tantivy_char_index_rev';
 const TANTIVY_INDEX_TAGS_REV_META_KEY = 'tantivy_char_index_tags_rev';
+// The TANTIVY_SCHEMA_VERSION a persisted index was built under - see that constant's own doc comment for why this
+// exists and how openPersistedTantivyIndexStale() uses it.
+const TANTIVY_INDEX_SCHEMA_VERSION_META_KEY = 'tantivy_char_index_schema_version';
 
 // Fallback cap for callers that need the *whole* (or a generous approximation of the whole) matched-id set, not
 // just a relevance-ranked page of it - specifically sort:'random' combined with filter.search (design doc §5.3,
@@ -399,10 +440,11 @@ async function buildSqliteIndex(directories, engine) {
 const NOOP_CLOSE = () => { /* no explicit close API on this binding's Index */ };
 
 /**
- * One character's tantivy document, factored out so buildTantivyIndex() (full build) and
- * applyIncrementalTantivyChanges() (incremental update) build byte-identical documents from the same inputs -
- * a full rebuild and an incremental catch-up for the same character must never disagree about what its indexed
- * fields are.
+ * One character's tantivy document, factored out so buildTantivyIndexFromFilesystemScan() (the metadata-store-
+ * unavailable full scan) and applyIncrementalTantivyChanges() (incremental update - which is also what every
+ * other fresh build now goes through, see rebuildTantivyIndexFromScratch()) build byte-identical documents from
+ * the same inputs - a full rebuild and an incremental catch-up for the same character must never disagree about
+ * what its indexed fields are.
  * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy
  * @param {import('@oxdev03/node-tantivy-binding').Schema} schema
  * @param {object} character A full (non-shallow) processed character (processCharacter()'s `shallow: false` shape)
@@ -441,39 +483,210 @@ function tantivyIndexDir(directories) {
 }
 
 /**
- * (Re)builds the persistent on-disk tantivy index for a user's characters FROM SCRATCH - the tantivy-tier
- * equivalent of buildSqliteIndex() above, reusing the exact same batched-read discipline
- * (readCharacterBatches(), INDEX_BUILD_BATCH_SIZE/INDEX_BUILD_READ_CONCURRENCY/CHECKPOINT_EVERY_N_BATCHES) for
- * the same OOM-avoidance reasons documented on those constants - a tantivy IndexWriter can still accumulate an
- * unbounded amount of unflushed state if fed the entire library in one go, so periodic writer.commit() calls
- * here play the same role periodic db.checkpoint() calls do for the SQLite tier.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @returns {string} A fresh, unique sibling directory to build a new tantivy index into, on the same filesystem
+ * as tantivyIndexDir() (both live under `directories.root/search-index`) so swapTantivyIndexIntoPlace() below can
+ * move it into place with a single atomic fs.renameSync rather than a cross-filesystem copy.
+ */
+function tantivyIndexTempDir(directories) {
+    return path.join(directories.root, 'search-index', `characters-tantivy.rebuild-${crypto.randomUUID()}`);
+}
+
+/**
+ * Removes any `characters-tantivy.rebuild-*`/`characters-tantivy.old-*` sibling directories left behind under
+ * `directories.root/search-index` - debris from a build-into-temp-then-swap (see swapTantivyIndexIntoPlace() and
+ * its callers below) that crashed or was killed mid-build, before the swap that would have cleaned them up ever
+ * ran. Run defensively at the start of every fresh build, not just after a crash is suspected - a leftover temp
+ * directory costs nothing to remove if there isn't one (fs.rmSync with `force: true` on a nonexistent path is a
+ * no-op), and it's cheap insurance against disk usage silently growing across repeated crashed attempts.
+ * @param {import('../users.js').UserDirectoryList} directories
+ */
+function cleanupStaleTantivyRebuildTempDirs(directories) {
+    const dbDir = path.join(directories.root, 'search-index');
+    if (!fs.existsSync(dbDir)) {
+        return;
+    }
+    for (const entry of fs.readdirSync(dbDir)) {
+        if (entry.startsWith('characters-tantivy.rebuild-') || entry.startsWith('characters-tantivy.old-')) {
+            fs.rmSync(path.join(dbDir, entry), { recursive: true, force: true });
+        }
+    }
+}
+
+/**
+ * Atomically swaps a freshly-built tantivy index (built into `tempDir` - a sibling of the real index directory
+ * produced by tantivyIndexTempDir() above, never the real directory itself) into place at `indexDir`, the path
+ * every reader (openPersistedTantivyIndexStale(), tantivy.Index.exists/open) actually looks at. This replaces the
+ * old buildTantivyIndex()'s "rmSync the real directory, then rebuild in place" approach specifically so a build
+ * that fails or crashes partway through never leaves `indexDir` missing, empty, or half-written where a
+ * previously-working persisted index used to be - every caller below finishes building and committing a complete
+ * index in `tempDir` *before* this function is ever called, so nothing here can observe or propagate a
+ * partial build.
  *
- * NOT the default response to staleness anymore (design doc §3.2/§3.3 item 3) - loadOrUpdateTantivyIndex()
- * below only falls back to this when there's nothing to incrementally update from (no persisted index, a
- * truncated change log, or a corrupt/unreadable persisted index), or when rebuildCharacterSearchIndex()'s
- * explicit repair endpoint asks for it directly. Records the change-log rev and tags_rev in effect *before*
- * scanning the directory (not after) as the "caught up to" watermark, so a write landing mid-build is treated as
- * a change still pending for the next incremental pass rather than silently missed.
+ * The old directory (if any) is moved aside with its own renameSync first, then the new one is renamed into
+ * place, then the old one is removed - two renames (both fast, metadata-only operations on the same filesystem)
+ * rather than one, so there's never a window where `indexDir` doesn't exist at all while an old, fully-valid
+ * index sits under a temporary name instead of just being deleted outright before the new one is confirmed in
+ * place.
+ * @param {string} indexDir The real, persistent tantivy index directory (tantivyIndexDir()).
+ * @param {string} tempDir A fully-built index directory (tantivyIndexTempDir()) ready to become the new `indexDir`.
+ */
+function swapTantivyIndexIntoPlace(indexDir, tempDir) {
+    if (fs.existsSync(indexDir)) {
+        const oldDir = `${indexDir}.old-${crypto.randomUUID()}`;
+        fs.renameSync(indexDir, oldDir);
+        fs.renameSync(tempDir, indexDir);
+        fs.rmSync(oldDir, { recursive: true, force: true });
+    } else {
+        fs.renameSync(tempDir, indexDir);
+    }
+}
+
+/**
+ * Reopens a tantivy `Index` handle at `dir` fresh via `tantivy.Index.open()`, discarding whatever `Index` object a
+ * caller built it with. Every fresh-build function below MUST call this on `indexDir` immediately after
+ * swapTantivyIndexIntoPlace() and hand back the reopened handle, not the original one it built into `tempDir` -
+ * confirmed by direct reproduction: this binding's `Index` object carries the directory path it was constructed
+ * with forward into every later operation that needs to re-touch the on-disk lock/segment files (a subsequent
+ * `.writer()` call, in particular - exactly what applyIncrementalTantivyChanges() issues on every later
+ * incremental catch-up against whatever handle a fresh build returns as the new "live" index). An `Index` built
+ * against `tempDir` and then silently moved out from under it by fs.renameSync (the "old-directory-only" half of
+ * the point of building into a temp dir at all) keeps pointing at the now-nonexistent `tempDir` path for that
+ * later work, so a real fav/search-content update lands on a directory nothing reads from anymore and the caller
+ * observes it as "the incremental catch-up silently did nothing" - not an exception, just a change that never
+ * takes effect. Reopening at the real, final path here is what keeps every fresh build's returned handle correct
+ * for as long as it stays the coordinator's live entry (search-index-coordinator.js), the same way
+ * openPersistedTantivyIndexStale()'s own `Index.open()` call already is.
+ * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy
+ * @param {string} dir
+ * @returns {{ index: import('@oxdev03/node-tantivy-binding').Index, schema: import('@oxdev03/node-tantivy-binding').Schema }}
+ */
+function reopenTantivyIndexAt(tantivy, dir) {
+    const index = tantivy.Index.open(dir);
+    return { index, schema: index.schema };
+}
+
+/**
+ * Creates a brand-new, empty tantivy index at `dir` (which must not already exist as a populated index - callers
+ * always pass a freshly-created temp directory) - just the schema-and-Index setup step, factored out because both
+ * rebuildTantivyIndexFromScratch() and buildTantivyIndexFromFilesystemScan() below need exactly this before they
+ * diverge on how they populate it (incremental-from-rev-0 vs. a raw filesystem scan).
+ * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy
+ * @param {string} dir
+ * @returns {{ index: import('@oxdev03/node-tantivy-binding').Index, schema: import('@oxdev03/node-tantivy-binding').Schema }}
+ */
+function createEmptyTantivyIndexAt(tantivy, dir) {
+    fs.mkdirSync(dir, { recursive: true });
+    const schema = buildTantivySchema(tantivy, BM25_INDEXED_COLUMNS);
+    const index = new tantivy.Index(schema, dir, false);
+    return { index, schema };
+}
+
+/**
+ * Builds a genuinely fresh tantivy index for a user's characters by reading the phase-1 metadata store's own
+ * change log from the very beginning (`sinceRev`/`sinceTagsRev` of 0) against a brand-new empty index - the
+ * "first-ever index creation is just incremental update from an empty starting state, not conceptually
+ * different" idea this module's header describes: getChangesSince(directories, 0) already returns the entire
+ * library as `op: 'upsert'` entries per its own documented contract, so applyIncrementalTantivyChanges() run this
+ * way IS a full build, through the exact same code path every later incremental catch-up uses - not a second,
+ * parallel implementation to keep in sync with it.
+ *
+ * This is the single shared helper behind every case that needs a genuinely fresh, guaranteed-correct index:
+ * loadOrUpdateTantivyIndex()'s fallback when there's nothing to incrementally update an already-open handle from
+ * (no persisted index, a corrupt one, or a schema-version mismatch - see openPersistedTantivyIndexStale()), and
+ * rebuildCharacterSearchIndex()'s explicit owner-triggered repair endpoint. Both are really asking for the same
+ * thing - "throw away whatever's on disk and build a correct index" - so both call this instead of each keeping
+ * their own full-rebuild implementation.
+ *
+ * If the metadata store turns out to be unavailable right now (getCurrentRev() returns `null`), there is no
+ * change log to be incremental against at all, regardless of starting rev - this redirects to
+ * buildTantivyIndexFromFilesystemScan() for that case rather than silently building an empty index, so this
+ * function stays correct even when called from a context (rebuildCharacterSearchIndex()'s repair endpoint) that
+ * doesn't already know whether the store is up.
+ *
+ * Builds into a temp directory and atomically swaps it into place (swapTantivyIndexIntoPlace()) rather than
+ * touching the real index directory until the new one is fully committed and verified-open - see that function's
+ * doc comment for why.
  * @param {import('../users.js').UserDirectoryList} directories User directories
  * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy The resolved tantivy module (tantivy-engine.js)
  * @returns {Promise<{ index: import('@oxdev03/node-tantivy-binding').Index, schema: import('@oxdev03/node-tantivy-binding').Schema, close: () => void, lastRev: number | null, lastTagsRev: number | null }>}
  * The freshly built, open index handle, plus the rev/tagsRev watermark it was built against (`null` if the
  * metadata store was unavailable at the time - matches getFreshnessSignature()'s own fallback).
  */
-async function buildTantivyIndex(directories, tantivy) {
-    const lastRev = await getCurrentRev(directories);
-    const lastTagsRev = await getTagsRevision(directories);
+async function rebuildTantivyIndexFromScratch(directories, tantivy) {
+    if (await getCurrentRev(directories) === null) {
+        return buildTantivyIndexFromFilesystemScan(directories, tantivy);
+    }
 
     const dbDir = path.join(directories.root, 'search-index');
     if (!fs.existsSync(dbDir)) {
         fs.mkdirSync(dbDir, { recursive: true });
     }
-    const indexDir = tantivyIndexDir(directories);
-    fs.rmSync(indexDir, { recursive: true, force: true });
-    fs.mkdirSync(indexDir, { recursive: true });
+    cleanupStaleTantivyRebuildTempDirs(directories);
 
-    const schema = buildTantivySchema(tantivy, BM25_INDEXED_COLUMNS);
-    const index = new tantivy.Index(schema, indexDir, false);
+    const indexDir = tantivyIndexDir(directories);
+    const tempDir = tantivyIndexTempDir(directories);
+    const { index, schema } = createEmptyTantivyIndexAt(tantivy, tempDir);
+
+    // sinceRev/sinceTagsRev of 0 against a brand-new empty index - see this function's own doc comment for why
+    // that's a full build, not a special case. `updated` can still come back `null` here if the metadata store
+    // went away in between the getCurrentRev() check above and this call (a narrow race, not the common case) -
+    // in that event there's nothing indexed yet in `tempDir`, so falling back to the filesystem-scan path (which
+    // starts its own fresh build from scratch) is correct rather than swapping in an empty index.
+    const updated = await applyIncrementalTantivyChanges(directories, tantivy, index, schema, 0, 0);
+    if (!updated) {
+        return buildTantivyIndexFromFilesystemScan(directories, tantivy);
+    }
+
+    swapTantivyIndexIntoPlace(indexDir, tempDir);
+    // Reopen at the real path - see reopenTantivyIndexAt()'s doc comment for why the `index` built into `tempDir`
+    // above can't just keep being used after the rename.
+    const reopened = reopenTantivyIndexAt(tantivy, indexDir);
+
+    await setMetaValue(directories, TANTIVY_INDEX_REV_META_KEY, String(updated.lastRev));
+    await setMetaValue(directories, TANTIVY_INDEX_TAGS_REV_META_KEY, String(updated.lastTagsRev));
+    await setMetaValue(directories, TANTIVY_INDEX_SCHEMA_VERSION_META_KEY, String(TANTIVY_SCHEMA_VERSION));
+
+    return { ...reopened, close: NOOP_CLOSE, lastRev: updated.lastRev, lastTagsRev: updated.lastTagsRev };
+}
+
+/**
+ * Builds a genuinely fresh tantivy index for a user's characters by reading every character PNG directly off disk
+ * (readCharacterBatches()) rather than through the phase-1 metadata store's change log - the one case that
+ * structurally cannot go through rebuildTantivyIndexFromScratch()/applyIncrementalTantivyChanges() above, because
+ * that path depends on getChangesSince(), which depends on the metadata store itself. When the store is
+ * unavailable (getCurrentRev() returns `null`) there is no change log to be incremental against at all, so a raw
+ * filesystem scan is the only way to index anything in that state - this is loadOrUpdateTantivyIndex()'s narrow
+ * top-of-function fallback, and rebuildTantivyIndexFromScratch()'s own redirect target when it discovers the
+ * store went unavailable out from under it.
+ *
+ * Reuses the exact same batched-read discipline (readCharacterBatches(), INDEX_BUILD_BATCH_SIZE/
+ * INDEX_BUILD_READ_CONCURRENCY/CHECKPOINT_EVERY_N_BATCHES) buildSqliteIndex() does, for the same OOM-avoidance
+ * reasons documented on those constants - a tantivy IndexWriter can still accumulate an unbounded amount of
+ * unflushed state if fed the entire library in one go, so periodic writer.commit() calls here play the same role
+ * periodic db.checkpoint() calls do for the SQLite tier.
+ *
+ * Since the metadata store is unavailable whenever this runs, there is no rev/tags_rev to record - the returned
+ * watermark is always `null`/`null`, and no meta values get written (setMetaValue() would no-op against an
+ * unavailable store anyway, but this function doesn't even try, since there's genuinely nothing valid to persist
+ * yet). Still builds into a temp directory and atomically swaps it into place (swapTantivyIndexIntoPlace()) rather
+ * than wiping the real index directory in place, for the same partial-build-safety reason every other fresh-build
+ * path here does, even though this path is rarer.
+ * @param {import('../users.js').UserDirectoryList} directories User directories
+ * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy The resolved tantivy module (tantivy-engine.js)
+ * @returns {Promise<{ index: import('@oxdev03/node-tantivy-binding').Index, schema: import('@oxdev03/node-tantivy-binding').Schema, close: () => void, lastRev: null, lastTagsRev: null }>}
+ * The freshly built, open index handle. `lastRev`/`lastTagsRev` are always `null` - see above.
+ */
+async function buildTantivyIndexFromFilesystemScan(directories, tantivy) {
+    const dbDir = path.join(directories.root, 'search-index');
+    if (!fs.existsSync(dbDir)) {
+        fs.mkdirSync(dbDir, { recursive: true });
+    }
+    cleanupStaleTantivyRebuildTempDirs(directories);
+
+    const indexDir = tantivyIndexDir(directories);
+    const tempDir = tantivyIndexTempDir(directories);
+    const { index, schema } = createEmptyTantivyIndexAt(tantivy, tempDir);
     const writer = index.writer();
 
     const avatars = fs.readdirSync(directories.characters).filter(file => file.endsWith('.png'));
@@ -507,20 +720,23 @@ async function buildTantivyIndex(directories, tantivy) {
     // is the one binding-exposed call that actually finalizes and releases the lock on a predictable schedule.
     writer.waitMergingThreads();
 
-    if (lastRev !== null) {
-        await setMetaValue(directories, TANTIVY_INDEX_REV_META_KEY, String(lastRev));
-        await setMetaValue(directories, TANTIVY_INDEX_TAGS_REV_META_KEY, String(lastTagsRev ?? 0));
-    }
+    swapTantivyIndexIntoPlace(indexDir, tempDir);
+    // Reopen at the real path - see reopenTantivyIndexAt()'s doc comment for why the `index` built into `tempDir`
+    // above can't just keep being used after the rename.
+    const reopened = reopenTantivyIndexAt(tantivy, indexDir);
 
-    return { index, schema, close: NOOP_CLOSE, lastRev, lastTagsRev };
+    return { ...reopened, close: NOOP_CLOSE, lastRev: null, lastTagsRev: null };
 }
 
 /**
  * Applies every character change since `sinceRev` (design doc §3.3 item 3's "a changed card is one
- * delete-plus-add, not a rebuild") to an already-open tantivy index/writer, in place - the incremental
- * alternative to buildTantivyIndex()'s full rescan. Delete-then-add for every touched id, including updates
- * (not just genuine deletes): tantivy has no update-in-place (design doc §3's probe finding), so a changed row
- * costs exactly the same as a new one either way.
+ * delete-plus-add, not a rebuild") to an already-open tantivy index/writer, in place - both the incremental
+ * catch-up alternative to a full rescan for an already-populated index, AND (called with `sinceRev`/
+ * `sinceTagsRev` of 0 against a brand-new empty index - see rebuildTantivyIndexFromScratch()) the mechanism a
+ * genuinely fresh build now goes through too, since getChangesSince(directories, 0) already returns the whole
+ * library as `op: 'upsert'` entries. Delete-then-add for every touched id, including updates (not just genuine
+ * deletes): tantivy has no update-in-place (design doc §3's probe finding), so a changed row costs exactly the
+ * same as a new one either way - including, for a from-rev-0 call, every row in the library.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy
  * @param {import('@oxdev03/node-tantivy-binding').Index} index An already-open index (freshly built this
@@ -589,8 +805,8 @@ async function applyIncrementalTantivyChanges(directories, tantivy, index, schem
         index.reload();
         // Releases this writer's lock before it's possible for a later call (another incremental catch-up
         // against this same long-lived `index` handle, or a background rebuild racing in - see
-        // search-index-coordinator.js) to request a new one - see buildTantivyIndex()'s matching comment for why
-        // `commit()` alone leaves the lock held.
+        // search-index-coordinator.js) to request a new one - see buildTantivyIndexFromFilesystemScan()'s
+        // matching comment for why `commit()` alone leaves the lock held.
         writer.waitMergingThreads();
     }
 
@@ -614,11 +830,18 @@ async function applyIncrementalTantivyChanges(directories, tantivy, index, schem
  * is what lets the coordinator serve the open step's result immediately and hand the catch-up step to
  * loadOrUpdateTantivyIndex() (now always called with a real `previous`, or genuinely `undefined` only when there
  * was nothing to reopen at all) as a background `build()` call instead.
+ *
+ * Also the schema-version gate: a persisted index built under an older TANTIVY_SCHEMA_VERSION than this running
+ * process expects can't be trusted to mean what its documents look like it means (a field's tokenizer/indexing
+ * config, or the set of fields, may have changed since it was built) - so a mismatch here is treated exactly like
+ * a corrupt or missing index (return `null`), which already naturally routes into a fresh rebuild via
+ * loadOrUpdateTantivyIndex()'s existing empty-`previous` fallback, with no separate branch needed anywhere else.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy
- * @returns {Promise<Awaited<ReturnType<typeof buildTantivyIndex>> | null>} `null` if there's nothing persisted to
- * reopen (a genuinely fresh install, or a corrupt/unreadable index directory) - the coordinator's cold-start path
- * falls back to blocking on a full build in that case, same as before this function existed.
+ * @returns {Promise<Awaited<ReturnType<typeof rebuildTantivyIndexFromScratch>> | null>} `null` if there's nothing
+ * usable persisted to reopen (a genuinely fresh install, a corrupt/unreadable index directory, or one built under
+ * a different schema version) - the coordinator's cold-start path falls back to blocking on a full build in that
+ * case, same as before this function existed.
  */
 async function openPersistedTantivyIndexStale(directories, tantivy) {
     const indexDir = tantivyIndexDir(directories);
@@ -632,6 +855,12 @@ async function openPersistedTantivyIndexStale(directories, tantivy) {
         }
         const index = tantivy.Index.open(indexDir);
         const schema = index.schema;
+
+        const persistedSchemaVersion = await getMetaValue(directories, TANTIVY_INDEX_SCHEMA_VERSION_META_KEY);
+        if (Number(persistedSchemaVersion) !== TANTIVY_SCHEMA_VERSION) {
+            return null;
+        }
+
         const persistedTagsRev = Number((await getMetaValue(directories, TANTIVY_INDEX_TAGS_REV_META_KEY)) ?? 0);
         return { index, schema, close: NOOP_CLOSE, lastRev: Number(persistedRev), lastTagsRev: persistedTagsRev };
     } catch (err) {
@@ -645,24 +874,28 @@ async function openPersistedTantivyIndexStale(directories, tantivy) {
  * The `build` callback passed to indexCoordinator.getIndex() for the tantivy tier - either updates an
  * already-open handle in place (`previous` set - the common case, since a cold start now goes through
  * openPersistedTantivyIndexStale() above first and hands its result here as `previous` too, see runIdSearch())
- * or falls back to a full rebuild (buildTantivyIndex()) when there's nothing to incrementally update from at
- * all. This is what makes staleness resolve to incremental maintenance by default (design doc §3.2's "the
- * existing full-rebuild path stays, demoted to a repair tool") instead of the pre-existing
- * rmSync-and-reparse-everything behavior.
+ * or falls back to a genuinely fresh build (rebuildTantivyIndexFromScratch()) when there's nothing to
+ * incrementally update from at all - no persisted index, one that failed to reopen, or one openPersistedTantivyIndexStale()
+ * rejected for a schema-version mismatch. This is what makes staleness resolve to incremental maintenance by
+ * default (design doc §3.2's "the existing full-rebuild path stays, demoted to a repair tool") instead of the
+ * pre-existing rmSync-and-reparse-everything behavior - and, since rebuildTantivyIndexFromScratch() itself is just
+ * "fresh empty index + incremental catch-up from rev 0" (this module's header), even that fallback no longer means
+ * a structurally different code path, just a different starting point for the same one.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy
- * @param {Awaited<ReturnType<typeof buildTantivyIndex>> | undefined} previous The currently-live handle for this
- * handle's tantivy index (either an in-process handle, or one openPersistedTantivyIndexStale() just opened) - see
- * search-index-coordinator.js's `build` param. `undefined` only when there's genuinely nothing on disk to reopen
- * yet (a fresh install).
- * @returns {Promise<Awaited<ReturnType<typeof buildTantivyIndex>>>}
+ * @param {Awaited<ReturnType<typeof rebuildTantivyIndexFromScratch>> | undefined} previous The currently-live
+ * handle for this handle's tantivy index (either an in-process handle, or one openPersistedTantivyIndexStale()
+ * just opened) - see search-index-coordinator.js's `build` param. `undefined` only when there's genuinely nothing
+ * on disk to reopen yet (a fresh install).
+ * @returns {Promise<Awaited<ReturnType<typeof rebuildTantivyIndexFromScratch>>>}
  */
 async function loadOrUpdateTantivyIndex(directories, tantivy, previous) {
     // No change log to incrementally read from at all (metadata store unavailable) - getFreshnessSignature()'s
     // matching mtime-based fallback means this gets called on *every* directory-mtime change in that state, and
-    // a full rebuild is the only thing that can possibly be correct without a change log.
+    // a full filesystem scan (the one case that can't be expressed as "incremental from rev 0" - see this
+    // module's header) is the only thing that can possibly be correct without a change log.
     if (await getCurrentRev(directories) === null) {
-        return buildTantivyIndex(directories, tantivy);
+        return buildTantivyIndexFromFilesystemScan(directories, tantivy);
     }
 
     if (previous?.index) {
@@ -671,14 +904,17 @@ async function loadOrUpdateTantivyIndex(directories, tantivy, previous) {
             if (updated.lastRev !== null) {
                 await setMetaValue(directories, TANTIVY_INDEX_REV_META_KEY, String(updated.lastRev));
                 await setMetaValue(directories, TANTIVY_INDEX_TAGS_REV_META_KEY, String(updated.lastTagsRev));
+                await setMetaValue(directories, TANTIVY_INDEX_SCHEMA_VERSION_META_KEY, String(TANTIVY_SCHEMA_VERSION));
             }
             return { ...previous, ...updated };
         }
     }
 
-    // Nothing to incrementally update from (first-ever build, a truncated change log, or applyIncrementalTantivyChanges()
-    // itself declining) - buildTantivyIndex() itself persists the new rev/tagsRev watermark.
-    return buildTantivyIndex(directories, tantivy);
+    // Nothing to incrementally update an already-open handle from (first-ever build, a truncated change log, or
+    // applyIncrementalTantivyChanges() itself declining) - rebuildTantivyIndexFromScratch() below is the shared
+    // "fresh empty index + incremental catch-up from rev 0" sequence (this module's header), and itself persists
+    // the new rev/tagsRev/schema-version watermark.
+    return rebuildTantivyIndexFromScratch(directories, tantivy);
 }
 
 /**
@@ -879,6 +1115,10 @@ export async function searchCharacterIds(handle, directories, searchTerm, maxRow
  * correctness in normal operation - loadOrUpdateTantivyIndex() already falls back to a full rebuild whenever
  * incremental maintenance genuinely can't proceed - this exists for an owner who wants to force one anyway (a
  * corrupted index suspected, or recovering from an incident) without waiting for the next staleness check.
+ * For the tantivy tier this is the same rebuildTantivyIndexFromScratch() (fresh empty index + incremental catch-up
+ * from rev 0) every other genuinely-fresh build goes through - see this module's header - rather than a bespoke
+ * "repair" implementation; it just calls it unconditionally instead of waiting for loadOrUpdateTantivyIndex() to
+ * decide one's needed.
  * @param {string} handle User handle
  * @param {import('../users.js').UserDirectoryList} directories User directories
  * @returns {Promise<{ ok: boolean, backend: 'tantivy' | 'native' | 'wasm' | 'unavailable' }>}
@@ -891,7 +1131,7 @@ export async function rebuildCharacterSearchIndex(handle, directories) {
 
     const signature = await getFreshnessSignature(directories);
     if (engine.tier === 'tantivy') {
-        await indexCoordinator.forceRebuild(handle, signature, () => buildTantivyIndex(directories, engine.tantivy));
+        await indexCoordinator.forceRebuild(handle, signature, () => rebuildTantivyIndexFromScratch(directories, engine.tantivy));
         return { ok: true, backend: 'tantivy' };
     }
 

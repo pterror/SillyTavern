@@ -66,13 +66,28 @@ jest.unstable_mockModule('../public/scripts/random-sort.js', () => ({
     getRandomSortSeed: jest.fn(() => 42),
 }));
 
-// buildCharacterQuery/isServerQueryableSort are re-implemented minimally here (they're pure, and the real
-// versions live in character-repository.js which itself depends on script.js) - this mock is what
-// getGroupCharacters()'s buildGroupCandidateQuery() and canUseServerQueryForGroupCandidates() actually call.
+// buildCharacterQuery/isServerQueryableSort/CharacterQueryError/isInvalidSortFieldError are re-implemented
+// minimally here (they're pure, and the real versions live in character-repository.js which itself depends on
+// script.js) - this mock is what getGroupCharacters()'s buildGroupCandidateQuery() and
+// canUseServerQueryForGroupCandidates() actually call. `queryAllMock` backs `characterRepository.queryAll()`,
+// the candidate-path call `getGroupCharacters()` attempts and falls back from on a caught
+// `isInvalidSortFieldError()` - see the "getGroupCharacters() candidates" describe block below.
+const queryAllMock = jest.fn();
+
+class CharacterQueryError extends Error {
+    constructor(message, { status, reason } = {}) {
+        super(message);
+        this.name = 'CharacterQueryError';
+        this.status = status;
+        this.reason = reason;
+    }
+}
+
 jest.unstable_mockModule('../public/scripts/character-repository.js', () => ({
     characterRepository: {
         exists: existsMock,
         getMany: getManyMock,
+        queryAll: queryAllMock,
     },
     buildCharacterQuery: ({ sortField, sortOrder = 'asc', randomSeed } = {}) => {
         const filter = {};
@@ -81,7 +96,11 @@ jest.unstable_mockModule('../public/scripts/character-repository.js', () => ({
         else if (sortField) sort = { field: sortField, order: sortOrder };
         return { filter, sort };
     },
-    isServerQueryableSort: (sortField) => sortField === 'random' || ['name', 'date_last_chat', 'chat_size', 'fav'].includes(sortField),
+    // Mirrors the real function's current contract (character-repository.js): true for everything except
+    // 'search' - the client no longer pre-validates individual column names against a hand-maintained list.
+    isServerQueryableSort: (sortField) => sortField !== 'search',
+    CharacterQueryError,
+    isInvalidSortFieldError: (error) => error instanceof CharacterQueryError && error.reason === 'invalid-sort-field',
 }));
 
 jest.unstable_mockModule('../public/script.js', () => ({
@@ -214,11 +233,13 @@ let getGroupMembers;
 let groupsStore;
 /** @type {typeof import('../public/scripts/group-chats.js').buildGroupCandidateQuery} */
 let buildGroupCandidateQuery;
+/** @type {typeof import('../public/scripts/group-chats.js').getGroupCharacters} */
+let getGroupCharacters;
 /** @type {typeof import('../public/scripts/power-user.js').power_user} */
 let power_user;
 
 beforeAll(async () => {
-    ({ validateGroup, getGroupMembers, groupsStore, buildGroupCandidateQuery } = await import('../public/scripts/group-chats.js'));
+    ({ validateGroup, getGroupMembers, groupsStore, buildGroupCandidateQuery, getGroupCharacters } = await import('../public/scripts/group-chats.js'));
     ({ power_user } = await import('../public/scripts/power-user.js'));
 });
 
@@ -389,5 +410,62 @@ describe('buildGroupCandidateQuery()', () => {
         const { sort } = buildGroupCandidateQuery([]);
 
         expect(sort).toEqual({ field: 'random', order: 'asc', seed: 42 });
+    });
+});
+
+describe('getGroupCharacters() candidates', () => {
+    // canUseServerQueryForGroupCandidates() reads `$('#character_sort_order option[data-field="search"]').is(':selected')`
+    // - the module-wide chainable jQuery stand-in (top of this file) makes every jQuery call return a truthy
+    // Proxy, including `.is(...)`, which would make that check always short-circuit to "no search sort
+    // selected... wait, selected" and always decline the server path. This block swaps in a narrower `$` for
+    // just that one selector so the candidates path can actually be exercised, and restores the original after.
+    const originalDollar = global.$;
+
+    beforeEach(() => {
+        power_user.sort_field = 'name';
+        power_user.sort_order = 'asc';
+        queryAllMock.mockReset();
+        global.$ = (selector) => {
+            if (selector === '#character_sort_order option[data-field="search"]') {
+                return { is: () => false };
+            }
+            return originalDollar(selector);
+        };
+    });
+
+    afterEach(() => {
+        global.$ = originalDollar;
+    });
+
+    test('doFilter: true with a queryable sort attempts characterRepository.queryAll() and uses its rows', async () => {
+        const remote = { avatar: 'remote.png', name: 'Remote' };
+        queryAllMock.mockResolvedValue([remote]);
+
+        const result = await getGroupCharacters({ doFilter: true, onlyMembers: false });
+
+        expect(queryAllMock).toHaveBeenCalledTimes(1);
+        expect(result).toEqual([{ item: remote, id: 'remote.png', type: 'character' }]);
+    });
+
+    test('a 400 invalid-sort-field rejection falls back to the local resident character scan', async () => {
+        addResidentCharacter('alice.png', 'Alice');
+        queryAllMock.mockRejectedValue(new CharacterQueryError('bad field', { status: 400, reason: 'invalid-sort-field' }));
+
+        const result = await getGroupCharacters({ doFilter: true, onlyMembers: false });
+
+        expect(queryAllMock).toHaveBeenCalledTimes(1);
+        expect(result).toEqual([{ item: charactersById.get('alice.png'), id: 'alice.png', type: 'character' }]);
+    });
+
+    test('a different server rejection (e.g. a 500) propagates instead of silently falling back', async () => {
+        queryAllMock.mockRejectedValue(new CharacterQueryError('server exploded', { status: 500, reason: 'internal-error' }));
+
+        await expect(getGroupCharacters({ doFilter: true, onlyMembers: false })).rejects.toThrow('server exploded');
+    });
+
+    test('a network-level failure propagates instead of silently falling back', async () => {
+        queryAllMock.mockRejectedValue(new TypeError('Failed to fetch'));
+
+        await expect(getGroupCharacters({ doFilter: true, onlyMembers: false })).rejects.toThrow('Failed to fetch');
     });
 });
