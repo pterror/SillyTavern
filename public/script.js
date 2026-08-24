@@ -443,86 +443,102 @@ export let chat = [];
 // ---------------------------------------------------------------------------
 
 /**
- * Snapshot: maps node_id -> message reference, taken after load/save.
- * Reference equality against the snapshot is the change-detection mechanism.
- * @type {Map<string, object>}
+ * FNV-1a 32-bit hash of a message's serialized content, excluding tree-internal fields.
+ * Used as the safety net in change detection: reference equality is the fast path
+ * (catches all mutations via updateMessage), and the hash catches any in-place nested
+ * mutations that bypass updateMessage (rendering code that touches msg.extra.*, etc.).
+ * @param {object} msg
+ * @returns {number}
  */
-const _messageSnapshots = new Map();
-
-/**
- * Deep-freezes an object and all nested objects/arrays. After freezing, any attempt
- * to mutate a property at any level throws a TypeError, enforcing the immutable-message
- * contract all the way down.
- * @param {*} obj
- * @returns {*} The same object, now frozen
- */
-function deepFreeze(obj) {
-    if (obj === null || typeof obj !== 'object') return obj;
-    if (Object.isFrozen(obj)) return obj;
-    Object.freeze(obj);
-    for (const val of Object.values(obj)) {
-        if (val !== null && typeof val === 'object') {
-            deepFreeze(val);
-        }
+function _messageContentHash(msg) {
+    const obj = { ...msg };
+    delete obj.node_id;
+    delete obj._unchanged;
+    if (obj.extra && typeof obj.extra === 'object') {
+        obj.extra = { ...obj.extra };
+        delete obj.extra.branches;
+        delete obj.extra.bookmark_link;
     }
-    return obj;
+    const str = JSON.stringify(obj);
+    let hash = 0x811c9dc5;
+    for (let i = 0; i < str.length; i++) {
+        hash ^= str.charCodeAt(i);
+        hash = Math.imul(hash, 0x01000193);
+    }
+    return hash >>> 0;
 }
 
 /**
  * The single write path for chat messages. Replaces the message at `mesId` with a
- * new deep-frozen object incorporating the given updates. Any attempt to mutate the
- * message at any nesting level throws TypeError — this is the only correct way to
- * change a message.
+ * new shallow-frozen object incorporating the given updates. Top-level property writes
+ * throw TypeError, enforcing that mutations go through this function.
+ *
+ * Shallow freeze (not deep): rendering/display code incidentally touches nested message
+ * properties (media arrays, swipe_info, extra fields). Deep freeze crashes on those sites
+ * and the surface area is too large to convert in one pass. The hash safety net in
+ * _buildSlimPayload catches any nested in-place mutations that shallow freeze misses.
  *
  * @param {number} mesId Index in the chat array
  * @param {object} updates Partial message to shallow-merge (use spread for nested objects)
  * @returns {object} The new frozen message
- *
- * @example
- * // Simple property update:
- * updateMessage(id, { mes: 'new text' });
- *
- * // Nested object update (must spread the nested object):
- * updateMessage(id, { extra: { ...chat[id].extra, token_count: 42 } });
- *
- * // Array element update (must clone the array):
- * const newSwipes = [...chat[id].swipes];
- * newSwipes[idx] = 'new swipe text';
- * updateMessage(id, { swipes: newSwipes });
  */
 export function updateMessage(mesId, updates) {
     const old = chat[mesId];
     if (!old) return old;
-    const result = deepFreeze({ ...old, ...updates });
+    const result = Object.freeze({ ...old, ...updates });
     chat[mesId] = result;
     return result;
 }
 
 /**
- * Snapshots current message references for change detection.
+ * Snapshots current message references AND content hashes for change detection.
+ * Reference equality is the fast path; hash comparison is the safety net for
+ * in-place nested mutations.
+ * @type {Map<string, { ref: object, hash: number }>}
+ */
+const _messageSnapshots = new Map();
+
+/**
+ * Takes a snapshot of all messages with node_id.
  * Called after loading a chat and after each successful save.
  */
 function _snapshotMessages() {
     _messageSnapshots.clear();
     for (const msg of chat) {
         if (msg.node_id) {
-            _messageSnapshots.set(msg.node_id, msg);
+            _messageSnapshots.set(msg.node_id, { ref: msg, hash: _messageContentHash(msg) });
         }
     }
 }
 
 /**
- * Builds a slim payload: unchanged messages (same reference as snapshot) become stubs,
- * changed/new messages are sent with full content.
+ * Builds a slim payload: unchanged messages become stubs, changed/new messages
+ * are sent with full content.
+ *
+ * Change detection is two-tier:
+ * 1. Reference inequality (msg !== snapshot.ref) → definitely changed (via updateMessage)
+ *    → send full content, no hash needed
+ * 2. Reference equality (msg === snapshot.ref) → probably unchanged, but verify with hash
+ *    to catch in-place nested mutations that bypassed updateMessage
+ *    → hash matches: truly unchanged → stub
+ *    → hash differs: silently mutated → send full content
+ *
  * @param {object[]} messages
  * @returns {object[]}
  */
 function _buildSlimPayload(messages) {
     return messages.map(msg => {
-        if (msg.node_id && _messageSnapshots.get(msg.node_id) === msg) {
-            return { node_id: msg.node_id, _unchanged: true };
-        }
-        return msg;
+        if (!msg.node_id) return msg;
+        const snap = _messageSnapshots.get(msg.node_id);
+        if (!snap) return msg;
+
+        // Fast path: reference changed → definitely modified
+        if (snap.ref !== msg) return msg;
+
+        // Safety net: same reference, verify content hash
+        if (_messageContentHash(msg) !== snap.hash) return msg;
+
+        return { node_id: msg.node_id, _unchanged: true };
     });
 }
 
@@ -1247,13 +1263,10 @@ async function getHiddenBlock(hidden) {
 function renderCharacterBlock(template, item, id) {
     let this_avatar = default_avatar;
     if (item.avatar != 'none') {
-        // Gallery view shows the full character card art at a size where the 96x144 thumbnail would be visibly
-        // upscaled, so use the original image via /characters/<file> (the same path the zoomed-avatar viewer
-        // uses). The regular list/grid views stay on the small thumbnail, which is more than adequate at their
-        // display size and avoids loading hundreds of full-size images in the sidebar.
-        this_avatar = power_user.charGalleryView
-            ? `/characters/${encodeURIComponent(item.avatar)}`
-            : getThumbnailUrl('avatar', item.avatar);
+        // The gallery-style browsing view displays card art at a size where the 96x144 thumbnail would be
+        // visibly upscaled, so always use the original image via /characters/<file> (the same path the
+        // zoomed-avatar viewer uses). Lazy loading (loading="lazy" below) ensures only visible cards fetch.
+        this_avatar = `/characters/${encodeURIComponent(item.avatar)}`;
     }
     template.attr({ 'data-avatar': item.avatar });
     // loading="lazy": without this, every rendered card's <img> starts fetching its thumbnail immediately -
@@ -9098,7 +9111,7 @@ export async function getChat({ isNewChat = false } = {}) {
             // Freeze messages loaded from tree DB: immutable values, replaced only via updateMessage()
             if (chat_metadata?._tree_stored) {
                 for (let i = 0; i < chat.length; i++) {
-                    chat[i] = deepFreeze(chat[i]);
+                    chat[i] = Object.freeze(chat[i]);
                 }
                 _snapshotMessages();
             }
@@ -9214,9 +9227,16 @@ export async function openCharacterChat(file_name) {
     await clearChat({ clearData: true });
     charactersStore.update(getCurrentCharacter().avatar, { chat: file_name });
     chat_metadata = {};
-    await getChat();
-    $('#selected_chat_pole').val(file_name);
-    await saveActiveChat(getCurrentCharacter().avatar, file_name);
+
+    // saveActiveChat must run even if getChat fails (rendering errors, tree migration issues,
+    // etc.) — otherwise "which chat was open" is lost on reload. The active-chat pointer is
+    // the character's own metadata, independent of whether the chat content loaded cleanly.
+    try {
+        await getChat();
+    } finally {
+        $('#selected_chat_pole').val(file_name);
+        await saveActiveChat(getCurrentCharacter().avatar, file_name);
+    }
 }
 
 ////////// OPTIMZED MAIN API CHANGE FUNCTION ////////////
@@ -10224,6 +10244,9 @@ export function selectRightMenuWithAnimation(selectedMenuId) {
     };
     const normalizedId = selectedMenuId ? selectedMenuId.replace('#', '') : null;
     $('#result_info').toggle(normalizedId === 'rm_ch_create_block');
+    // Track which sub-view is active so CSS can scope gallery-mode styling to only fire when the
+    // character list is showing (not when character edit or group chat views are active).
+    document.getElementById('right-nav-panel')?.setAttribute('data-active-menu', normalizedId || '');
     document.querySelectorAll('#right-nav-panel .right_menu').forEach((menu) => {
         $(menu).css('display', 'none');
 
@@ -12539,21 +12562,6 @@ function doCharListDisplaySwitch() {
 }
 
 /**
- * Sets the character list gallery view (chub.ai-style fullscreen tile grid) to the given state. Gallery and
- * Characters are peer tabs in the top bar (#galleryNavDrawerIcon / #rightNavDrawerIcon inside #rightNavHolder).
- * The layout itself is pure CSS (body.charGalleryView, keyed off in toggle-dependent.css) - no separate data
- * fetch, it reuses whatever #rm_print_characters_block already has rendered.
- * @param {boolean} enabled Whether gallery view should be active.
- */
-function setCharGalleryView(enabled) {
-    power_user.charGalleryView = enabled;
-    document.body.classList.toggle('charGalleryView', enabled);
-    // Swap icon state: gallery icon bright when gallery is active, characters icon bright otherwise.
-    $('#galleryNavDrawerIcon').toggleClass('closedIcon', !enabled).toggleClass('openIcon', enabled);
-    saveSettingsDebounced();
-}
-
-/**
  * Function to handle the deletion of a character, given a specific popup type and character ID.
  * If popup type equals "del_ch", it will proceed with deletion otherwise it will exit the function.
  * It fetches the delete character route, sending necessary parameters, and in case of success,
@@ -14659,37 +14667,16 @@ jQuery(async function () {
         doCharListDisplaySwitch();
     });
 
-    // Gallery top-bar tab: opens the right-nav-panel in fullscreen gallery mode. Not a .drawer-toggle
-    // element (doNavbarIconClick doesn't handle it) - we manually open/close the panel via the standard
-    // drawer-toggle trigger, with a coordination flag so the right-nav drawer's own click handler knows
-    // not to clear gallery mode when the click was gallery-initiated.
-    let _galleryTriggeredDrawerClick = false;
-
-    $('#galleryNavToggle').on('click', async () => {
-        const panelOpen = $('#right-nav-panel').hasClass('openDrawer');
-        const galleryActive = power_user.charGalleryView;
-
-        _galleryTriggeredDrawerClick = true;
-        if (galleryActive && panelOpen) {
-            // Already in gallery with panel open - close it (toggle behavior)
-            setCharGalleryView(false);
-            $('#unimportantYes').trigger('click');
-        } else {
-            if (!panelOpen) {
-                $('#unimportantYes').trigger('click');
+    $('#galleryFullscreenToggle').on('click', () => {
+        const panel = document.getElementById('right-nav-panel');
+        if (panel) {
+            panel.classList.toggle('galleryFullscreen');
+            // Swap icon between expand (enter fullscreen) and compress (exit fullscreen)
+            const btn = document.getElementById('galleryFullscreenToggle');
+            if (btn) {
+                btn.classList.toggle('fa-expand', !panel.classList.contains('galleryFullscreen'));
+                btn.classList.toggle('fa-compress', panel.classList.contains('galleryFullscreen'));
             }
-            setCharGalleryView(true);
-            selected_button = 'characters';
-            select_rm_characters();
-        }
-        _galleryTriggeredDrawerClick = false;
-    });
-
-    // When the Characters drawer icon is clicked directly by the user (not triggered by the gallery
-    // handler), clear gallery mode so the panel shows the normal sidebar character list.
-    $('#unimportantYes').on('click', () => {
-        if (!_galleryTriggeredDrawerClick) {
-            setCharGalleryView(false);
         }
     });
 
