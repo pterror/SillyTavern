@@ -14,7 +14,7 @@ const WORKER_MODULE_PATH = fileURLToPath(new URL('./character-metadata-digest-wo
  * The `await` here is real async - Node's event loop keeps servicing every other request while this worker
  * computes its result off-thread; nothing about this call ties up the main thread's event loop the way the
  * inline synchronous loop this replaces did.
- * @param {{ type: 'state-digest', dbPath: string, bucketCount: number } | { type: 'bucket-members', dbPath: string, bucket: number, bucketCount: number } | { type: 'tree-digest', dbPath: string, branching: number } | { type: 'tree-resolve', dbPath: string, targetLeaves: { l0: number, l1: number }[], branching: number }} task
+ * @param {{ type: 'state-digest', dbPath: string, bucketCount: number } | { type: 'bucket-members', dbPath: string, bucket: number, bucketCount: number } | { type: 'tree-descend', dbPath: string, nodes: { path: number[] }[], branching: number, leafThreshold: number }} task
  * @returns {Promise<any>} Whatever the worker's `result` field was for this task (`null` if the metadata store
  * turned out to be unavailable inside the worker - same contract getStateDigest()/getBucketMembers() already
  * have for their callers). For a `'state-digest'` task, `result` is
@@ -23,10 +23,9 @@ const WORKER_MODULE_PATH = fileURLToPath(new URL('./character-metadata-digest-wo
  * `'bucket-members'` task, `result` is `{ members: { id: string, favHash: number, fieldsHash: number, fav:
  * boolean }[] }` - `fav` is the row's actual current value, so a fav-only mismatch can be repaired with no
  * further fetch.
- * For a `'tree-digest'` task, `result` is `{ children: {fav,fields}[], subtrees: {fav,fields}[] }` - the
- * hierarchical 2-level hash tree (see character-metadata-digest-worker.js's own header). For a `'tree-resolve'`
- * task, `result` is `{ leaves: { path: number[], members: object[] }[] }` - full member data (including
- * fingerprint values) for each requested leaf group.
+ * For a `'tree-descend'` task, `result` is `{ results: { path: number[], type: 'children'|'leaves', children?:
+ * {fav,fields}[], members?: object[] }[] }` - one entry per requested node, either its children hashes (subtree
+ * larger than `leafThreshold`) or its full leaf member data (including fingerprint values) for direct repair.
  */
 export function runDigestWorkerTask(task) {
     return new Promise((resolve, reject) => {

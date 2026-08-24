@@ -3527,9 +3527,9 @@ export async function getChangesSince(directories, sinceRev) {
 }
 
 /**
- * SUPERSEDED by the 2-level hash-tree approach (`getTreeDigest()`/`resolveTreeLeaves()` below) - kept for now,
- * not yet deleted, but no longer wired into any endpoint or client. See getTreeDigest()'s own doc comment for
- * why the flat-bucket shape this implements was replaced.
+ * SUPERSEDED by treeDescend() below (recursive hash-tree descent) - kept for now, not yet deleted, but no
+ * longer wired into any endpoint or client. See treeDescend()'s own doc comment for why the flat-bucket shape
+ * this implements was replaced.
  *
  * `POST /api/characters/state-digest`: the anti-entropy check on the character cache itself (see
  * public/scripts/hash-utils.js's own header on the bucketed-digest approach this follows, and on WHY it's built
@@ -3575,8 +3575,8 @@ export async function getStateDigest(directories, bucketCount = DEFAULT_DIGEST_B
 }
 
 /**
- * SUPERSEDED by the 2-level hash-tree approach (`resolveTreeLeaves()` below) - kept for now, not yet deleted,
- * but no longer wired into any endpoint or client.
+ * SUPERSEDED by treeDescend() below (recursive hash-tree descent) - kept for now, not yet deleted, but no
+ * longer wired into any endpoint or client.
  *
  * `POST /api/characters/bucket-members`: the repair half of the state-digest check above - once a client has
  * found (via getStateDigest()) that ITS locally-computed digest for bucket `bucket` disagrees with the
@@ -3603,36 +3603,13 @@ export async function getBucketMembers(directories, bucket, bucketCount = DEFAUL
 }
 
 /**
- * POST /api/characters/tree-digest: builds the full 2-level hash tree. Supersedes getStateDigest()'s flat-bucket
- * approach with true pinpointing - a flat bucket table can only ever say "this bucket disagrees", forcing a full
- * bucket-members fetch (library size / bucketCount ids) to find out which record(s) actually diverged inside it.
- * The 2-level tree subdivides each level-0 bucket into a further 256-way split (level-1), so once a mismatched
- * level-0 node is found, the client already has (from this same response's `subtrees`) enough information to
- * compare level-1 hashes locally and only ask the server to resolve the specific leaf groups (~corpusSize / 256^2
- * records each) that actually disagree - see resolveTreeLeaves() below.
- * Returns { children, subtrees } where children is the 256 level-0 hashes and subtrees is the full 65K-entry
- * level-1 data for the main thread to cache.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {number} [branching]
- * @returns {Promise<{ children: { fav: {hi:number,lo:number}, fields: {hi:number,lo:number} }[], subtrees: { fav: {hi:number,lo:number}, fields: {hi:number,lo:number} }[] } | null>}
+ * POST /api/characters/tree-descend: recursive hash-tree descent. Given tree-node paths to expand, scans the
+ * characters table and for each node returns either children hashes (if the subtree is larger than
+ * leafThreshold) or leaf member data with fingerprint values (if small enough to resolve directly).
+ * Stateless - each call is independent, no caching between requests.
  */
-export async function getTreeDigest(directories, branching = DEFAULT_DIGEST_BUCKET_COUNT) {
+export async function treeDescend(directories, nodes, branching = DEFAULT_DIGEST_BUCKET_COUNT, leafThreshold = DEFAULT_DIGEST_BUCKET_COUNT) {
     const entry = await getEntry(directories);
     if (!entry) return null;
-    return runDigestWorkerTask({ type: 'tree-digest', dbPath: getDbPath(directories), branching });
-}
-
-/**
- * POST /api/characters/tree-resolve: resolves specific leaf groups to their full member data.
- * Used after the client has compared level-0 hashes (from getTreeDigest) and then compared level-1 hashes
- * (from the cached subtrees), identifying which specific leaf groups have mismatched hashes.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {{ l0: number, l1: number }[]} targetLeaves
- * @param {number} [branching]
- * @returns {Promise<{ leaves: { path: number[], members: object[] }[] } | null>}
- */
-export async function resolveTreeLeaves(directories, targetLeaves, branching = DEFAULT_DIGEST_BUCKET_COUNT) {
-    const entry = await getEntry(directories);
-    if (!entry) return null;
-    return runDigestWorkerTask({ type: 'tree-resolve', dbPath: getDbPath(directories), targetLeaves, branching });
+    return runDigestWorkerTask({ type: 'tree-descend', dbPath: getDbPath(directories), nodes, branching, leafThreshold });
 }

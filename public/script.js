@@ -2029,14 +2029,15 @@ let hasVerifiedCharacterCacheDigestThisSession = false;
 const DIGEST_WORKER_SEND_CHUNK_SIZE = 2000;
 
 /**
- * Runs character-digest-worker.js (see that module's own header for the full protocol/rationale) over
- * `localCharacters`, off this (the browser's main) thread. Sends the cache's entries to the worker in chunks,
- * yielding back to this thread's own event loop between sends, rather than one `postMessage` call carrying the
- * entire cache at once - keeps this thread responsive to input/rendering for the whole duration, not just free
- * of the CPU-bound fingerprint/hash work itself, which is character-digest-worker.js's job.
+ * Starts a persistent character-digest-worker.js worker (see that module's own header for the full protocol/
+ * rationale), sends it `localCharacters` in chunks off this (the browser's main) thread, and resolves once the
+ * worker's initial level-0 tree is ready - WITHOUT terminating the worker, unlike the fixed-depth-2 approach this
+ * replaces. The worker stays alive so the recursive descent in verifyCharacterCacheDigest() can keep asking it
+ * (via workerComputeDigests() below) for children digests at whatever deeper tree nodes the server's own descent
+ * turns up as mismatched - the caller owns terminating it once the descent is done.
  * @param {Map<string, object>} localCharacters
  * @param {number} branching
- * @returns {Promise<{ children: {fav: {hi:number,lo:number}, fields: {hi:number,lo:number}}[], subtrees: {fav: {hi:number,lo:number}, fields: {hi:number,lo:number}}[], localFavHashes: Map<string, number>, localFieldsHashes: Map<string, number> }>}
+ * @returns {Promise<{ children: {fav: {hi:number,lo:number}, fields: {hi:number,lo:number}}[], localFavHashes: Map<string, number>, localFieldsHashes: Map<string, number>, worker: Worker }>}
  */
 function computeLocalCharacterDigest(localCharacters, branching) {
     return new Promise((resolve, reject) => {
@@ -2046,13 +2047,16 @@ function computeLocalCharacterDigest(localCharacters, branching) {
             reject(new Error(event.message ?? 'character-digest-worker.js failed'));
         };
         worker.onmessage = (event) => {
-            worker.terminate();
-            resolve({
-                children: event.data.children,
-                subtrees: event.data.subtrees,
-                localFavHashes: new Map(event.data.localFavHashes),
-                localFieldsHashes: new Map(event.data.localFieldsHashes),
-            });
+            if (event.data.type === 'ready') {
+                // Don't terminate - the worker stays alive for follow-up 'compute-digests' requests as the
+                // descent goes deeper. The caller is responsible for terminate()'ing it when done.
+                resolve({
+                    children: event.data.children,
+                    localFavHashes: new Map(event.data.localFavHashes),
+                    localFieldsHashes: new Map(event.data.localFieldsHashes),
+                    worker,
+                });
+            }
         };
 
         (async () => {
@@ -2069,31 +2073,61 @@ function computeLocalCharacterDigest(localCharacters, branching) {
 }
 
 /**
+ * Asks the still-alive character-digest-worker.js worker (from computeLocalCharacterDigest()) to compute
+ * children digests for specific tree nodes, one level deeper than whatever it's already computed - used by
+ * verifyCharacterCacheDigest()'s recursive descent once the server's own `/tree-descend` response says a node
+ * needs expanding beyond level 0.
+ * @param {Worker} worker
+ * @param {{ path: number[] }[]} nodes
+ * @returns {Promise<{ path: number[], children: { fav: {hi:number,lo:number}, fields: {hi:number,lo:number} }[] }[]>}
+ */
+function workerComputeDigests(worker, nodes) {
+    return new Promise((resolve, reject) => {
+        const handler = (event) => {
+            if (event.data.type === 'digests') {
+                worker.removeEventListener('message', handler);
+                resolve(event.data.results);
+            }
+        };
+        worker.addEventListener('message', handler);
+        worker.onerror = (event) => {
+            worker.removeEventListener('message', handler);
+            reject(new Error(event.message ?? 'worker compute-digests failed'));
+        };
+        worker.postMessage({ type: 'compute-digests', nodes });
+    });
+}
+
+/**
  * Anti-entropy check for the character cache (see character-metadata-digest-worker.js's own header for the
- * server-side hierarchical hash-tree shape, and character-metadata-db.js's getTreeDigest()/resolveTreeLeaves()
- * for the server half). `/api/characters/changes`'s rev cursor tells a client what's mutated SINCE it last
- * synced, but has no way to notice a cursor that LOOKS caught-up while the actual cached content has quietly
- * diverged - e.g. a character-cache.js write that silently failed (saveCachedCharacters() logs and swallows
- * per-entry errors rather than aborting the sync), or a browser evicting part of this origin's IndexedDB under
- * storage pressure.
+ * server-side recursive hash-tree shape, and character-metadata-db.js's treeDescend() for the server half).
+ * `/api/characters/changes`'s rev cursor tells a client what's mutated SINCE it last synced, but has no way to
+ * notice a cursor that LOOKS caught-up while the actual cached content has quietly diverged - e.g. a
+ * character-cache.js write that silently failed (saveCachedCharacters() logs and swallows per-entry errors
+ * rather than aborting the sync), or a browser evicting part of this origin's IndexedDB under storage pressure.
  *
  * Deliberately built on content hashes (hash-utils.js's `contentHashOf()`), computed fresh from whatever's
  * actually sitting in the cache right now (getAllCachedCharacters()), never from a separately-stored per-record
  * value this function would otherwise have to trust.
  *
- * TREE DESCENT, not flat-bucket repair: RT 1 (`/tree-digest`) fetches the server's 256 level-0 hashes and
- * compares them against a locally-computed tree (character-digest-worker.js). On a match (the overwhelmingly
- * common case), this is the entire cost - one small fixed-size request. On a level-0 mismatch, this function
- * doesn't fetch that whole bucket's members the way the old flat-bucket check did - it already has the local
- * level-1 subtree hashes for every mismatched level-0 node (computeLocalCharacterDigest() computed the full tree
- * locally up front), so RT 2 (`/tree-resolve`) sends just those mismatched subtrees' level-1 hashes and lets the
- * server localize the mismatch down to individual ~branching^2-sized leaf groups before returning any member
- * data at all - true pinpointing, not "fetch the whole bucket and diff locally".
+ * GENUINELY RECURSIVE DESCENT, not a fixed 2-level tree: the client calls `/api/characters/tree-descend`
+ * repeatedly, once per descent level, expanding whichever nodes mismatched at the previous level, until every
+ * mismatch is either resolved to individual records (`type: 'leaves'`) or the loop runs out of nodes to expand.
+ * RT 1 asks for the root (`path: []`); the server replies with either `children` (if the corpus is bigger than
+ * leafThreshold) or `leaves` directly. Every subsequent RT expands exactly the child indices whose digests
+ * disagreed with this client's own locally-computed digests for that node - level 0 comes for free from
+ * computeLocalCharacterDigest()'s initial pass, and any deeper level is computed on demand by asking the still-
+ * alive worker (workerComputeDigests()) rather than recomputing from scratch. The number of round trips this
+ * takes is NOT fixed - it adapts to how deep the actual divergence sits, and to corpus size (see
+ * character-metadata-digest-worker.js's own header on the O(log_N(corpusSize / leafThreshold)) depth).
  *
- * ADAPTIVE THRESHOLD: if more than half of the 256 level-0 nodes mismatch, per-leaf tree descent stops making
- * sense - that many top-level mismatches means the cache isn't suffering isolated drift, it's fundamentally
- * wrong (e.g. built against a since-replaced database), and walking the tree leaf-by-leaf would cost more than
- * just clearing the cache and letting the next getCharacters() call do a full cold resync.
+ * ADAPTIVE THRESHOLD: if more than MAX_DESCEND_NODES nodes need expanding at any descent level, abort and
+ * clear the cache for full resync. This threshold is response-size-driven, not corruption-rate-driven: a
+ * bucket-count threshold (e.g. ">50% of root children mismatch") fires at just ~177 uniformly-distributed
+ * corrupted records regardless of corpus size (because ~177 records saturate all 256 hash buckets), which is
+ * clearly still "isolated drift" territory. The node-count cap instead directly prevents the pathological case
+ * where descending into tens of thousands of leaf groups would generate a multi-GB JSON response the browser
+ * can't handle — 1024 nodes × ~153 records/leaf × ~200 bytes/record ≈ 31 MB at 10M scale, large but safe.
  *
  * Never awaited by its caller (fetchCharactersDelta()) - runs after the delta sync has already returned, so it
  * never adds latency to boot or any other getCharacters() call.
@@ -2104,163 +2138,189 @@ async function verifyCharacterCacheDigest() {
     hasVerifiedCharacterCacheDigestThisSession = true;
 
     const branching = DEFAULT_DIGEST_BUCKET_COUNT;
+    const leafThreshold = DEFAULT_DIGEST_BUCKET_COUNT;
+    /** Max nodes to expand at any single descent level before aborting to full resync. 1024 = 4 full level-0
+     * subtrees' worth of level-1 children. At 10M records this caps the leaf response at ~31 MB — see the
+     * ADAPTIVE THRESHOLD doc comment above for the full reasoning on why this is response-size-driven, not a
+     * bucket-mismatch-percentage heuristic. */
+    const MAX_DESCEND_NODES = 1024;
 
-    // RT 1: fetch server's level-0 tree hashes
-    const digestResponse = await fetch('/api/characters/tree-digest', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({ branching }),
-    });
-    if (!digestResponse.ok) {
-        throw new Error(`Failed to fetch tree digest: ${digestResponse.statusText}`);
-    }
-    const { children: serverChildren } = await digestResponse.json();
-
-    // Compute local tree. Fingerprint extraction + canonicalization + hashing for the WHOLE cache runs on
-    // character-digest-worker.js (see that module's own header and computeLocalCharacterDigest()'s), not inline
-    // here - a real 326k-character cache measured multiple seconds of this on the main thread (2026-08
-    // state-digest perf investigation), which on a browser main thread means a frozen UI for that whole span,
-    // not just a delay.
+    // Compute local tree (persistent worker) - fingerprint extraction + canonicalization + hashing for the WHOLE
+    // cache runs on character-digest-worker.js (see that module's own header and computeLocalCharacterDigest()'s),
+    // not inline here - a real 326k-character cache measured multiple seconds of this on the main thread (2026-08
+    // state-digest perf investigation), which on a browser main thread means a frozen UI for that whole span, not
+    // just a delay.
     const localCharacters = await getAllCachedCharacters();
-    const { children: localChildren, subtrees: localSubtrees, localFavHashes, localFieldsHashes } =
+    const { children: localChildren, localFavHashes, localFieldsHashes, worker } =
         await computeLocalCharacterDigest(localCharacters, branching);
 
-    // Compare level-0 children
-    const mismatchedL0 = [];
-    for (let i = 0; i < branching; i++) {
-        const sf = serverChildren[i]?.fav ?? { hi: 0, lo: 0 };
-        const lf = localChildren[i]?.fav ?? { hi: 0, lo: 0 };
-        const ss = serverChildren[i]?.fields ?? { hi: 0, lo: 0 };
-        const ls = localChildren[i]?.fields ?? { hi: 0, lo: 0 };
-        if (!digestsEqual(sf, lf) || !digestsEqual(ss, ls)) {
-            mismatchedL0.push(i);
-        }
-    }
+    try {
+        // RT 1: request root expansion from server, then keep descending into whatever mismatches until nothing's
+        // left to expand.
+        let currentNodes = [{ path: [] }];
 
-    if (mismatchedL0.length === 0) {
-        return;
-    }
+        // Collect all leaf results across descent levels
+        const allLeaves = [];
 
-    // ADAPTIVE THRESHOLD: if >50% of level-0 children mismatch, the cache is fundamentally wrong. Abort tree
-    // descent and fall back to full cache clear + resync.
-    if (mismatchedL0.length > branching / 2) {
-        console.warn(`Character cache drift detected in ${mismatchedL0.length}/${branching} tree nodes (>50%) - cache is fundamentally wrong, clearing for full resync.`);
-        await clearCharacterCache();
-        await setCachedRev(0);
-        // Trigger a full re-fetch on next getCharacters() call
-        return;
-    }
+        while (currentNodes.length > 0) {
+            const response = await fetch('/api/characters/tree-descend', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ branching, leafThreshold, nodes: currentNodes }),
+            });
+            if (!response.ok) {
+                throw new Error(`Tree-descend failed: ${response.statusText}`);
+            }
+            const { results } = await response.json();
 
-    console.warn(`Character cache drift detected in ${mismatchedL0.length}/${branching} level-0 tree node(s) - descending to locate diverged records.`);
+            const nextNodes = [];
 
-    // RT 2: send mismatched level-0 subtrees + client's level-1 hashes -> server compares, returns leaf members
-    const subtreesRequest = mismatchedL0.map(l0 => ({
-        index: l0,
-        clientChildren: Array.from({ length: branching }, (_, l1) => {
-            const idx = l0 * branching + l1;
-            return {
-                fav: localSubtrees[idx]?.fav ?? { hi: 0, lo: 0 },
-                fields: localSubtrees[idx]?.fields ?? { hi: 0, lo: 0 },
-            };
-        }),
-    }));
+            for (const result of results) {
+                if (result.type === 'leaves') {
+                    allLeaves.push(result);
+                    continue;
+                }
 
-    const resolveResponse = await fetch('/api/characters/tree-resolve', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({ branching, subtrees: subtreesRequest }),
-    });
-    if (!resolveResponse.ok) {
-        throw new Error(`Failed to resolve tree leaves: ${resolveResponse.statusText}`);
-    }
-    const { leaves } = await resolveResponse.json();
+                // type === 'children': compare against local digests for this node. Root (path.length === 0)
+                // already has its children from computeLocalCharacterDigest()'s initial pass; anything deeper
+                // asks the still-alive worker to fold one for this specific node.
+                let localDigests;
+                if (result.path.length === 0) {
+                    localDigests = localChildren;
+                } else {
+                    const workerResults = await workerComputeDigests(worker, [{ path: result.path }]);
+                    localDigests = workerResults[0].children;
+                }
 
-    // Process leaf members: compare per-record hashes, identify drift, collect repair data
-    const toRemove = [];
-    /** @type {Map<string, object>} avatar -> patched character - repair here PATCHES the existing cached copy
-     * rather than re-fetching it whole: finalizeFetchedCharacter() is deliberately NOT called during this
-     * repair - the cached name was already DOMPurify-sanitized when first cached, and its chat field is a
-     * client-side synthesis with no server equivalent (see characterDigestFingerprint()'s own doc comment on why
-     * `chat` isn't part of this digest at all), so there is nothing for it to redo here. */
-    const patched = new Map();
+                // Compare children
+                let mismatchCount = 0;
+                for (let i = 0; i < branching; i++) {
+                    const sf = result.children[i]?.fav ?? { hi: 0, lo: 0 };
+                    const lf = localDigests[i]?.fav ?? { hi: 0, lo: 0 };
+                    const ss = result.children[i]?.fields ?? { hi: 0, lo: 0 };
+                    const ls = localDigests[i]?.fields ?? { hi: 0, lo: 0 };
+                    if (!digestsEqual(sf, lf) || !digestsEqual(ss, ls)) {
+                        nextNodes.push({ path: [...result.path, i] });
+                        mismatchCount++;
+                    }
+                }
 
-    for (const leaf of leaves) {
-        const [l0, l1] = leaf.path;
-        const serverIdsInLeaf = new Set();
-
-        for (const member of leaf.members) {
-            serverIdsInLeaf.add(member.id);
-            const localFav = localFavHashes.get(member.id);
-            const localFields = localFieldsHashes.get(member.id);
-
-            const favDrift = localFav !== member.favHash;
-            const fieldsDrift = localFields !== member.fieldsHash;
-
-            if (!favDrift && !fieldsDrift) continue; // this record is fine
-
-            // Get the cached character to patch
-            const character = localCharacters.get(member.id);
-            if (!character) continue; // record exists on server but not locally - will be caught by change-feed
-
-            const fp = member.fingerprint;
-            if (fieldsDrift) {
-                // Patch ALL fingerprint fields (includes fav)
-                character.name = fp.name;
-                character.fav = fp.fav;
-                character.tags = fp.tags;
-                character.data = character.data || {};
-                character.data.name = fp.data?.name;
-                character.data.character_version = fp.data?.character_version;
-                character.data.creator = fp.data?.creator;
-                character.data.tags = fp.data?.tags;
-                character.data.creator_notes = fp.data?.creator_notes;
-                character.data.extensions = character.data.extensions || {};
-                character.data.extensions.fav = fp.data?.extensions?.fav;
-                character.data.extensions.world = fp.data?.extensions?.world;
-            } else if (favDrift) {
-                // Fav-only drift: patch just fav fields
-                character.fav = fp.fav;
-                character.data = character.data || {};
-                character.data.extensions = character.data.extensions || {};
-                character.data.extensions.fav = fp.data?.extensions?.fav;
+                // (mismatch counting for the per-level adaptive threshold happens below, after all
+                // results at this level have been processed into nextNodes)
             }
 
-            patched.set(member.id, character);
+            // ADAPTIVE THRESHOLD: if the number of nodes to expand exceeds the safe cap, the cache has too
+            // much divergence for tree descent to handle without generating a dangerously large response at the
+            // next level. Clear and resync instead.
+            if (nextNodes.length > MAX_DESCEND_NODES) {
+                console.warn(`Tree descent: ${nextNodes.length} mismatched nodes at depth ${nextNodes[0].path.length} exceeds cap of ${MAX_DESCEND_NODES} - clearing cache for full resync.`);
+                await clearCharacterCache();
+                await setCachedRev(0);
+                return;
+            }
+
+            if (nextNodes.length > 0) {
+                console.warn(`Tree descent: ${nextNodes.length} mismatched node(s) at depth ${nextNodes[0].path.length}, descending further.`);
+            }
+
+            currentNodes = nextNodes;
         }
 
-        // Detect locally-cached records that the server doesn't have in this leaf group
-        for (const [id] of localCharacters) {
-            if (treeNodeAt(id, 0, branching) === l0 && treeNodeAt(id, 1, branching) === l1 && !serverIdsInLeaf.has(id)) {
-                toRemove.push(id);
+        // Process all collected leaf results: compare per-record hashes, identify drift, collect repair data
+        const toRemove = [];
+        /** @type {Map<string, object>} avatar -> patched character - repair here PATCHES the existing cached copy
+         * rather than re-fetching it whole: finalizeFetchedCharacter() is deliberately NOT called during this
+         * repair - the cached name was already DOMPurify-sanitized when first cached, and its chat field is a
+         * client-side synthesis with no server equivalent (see characterDigestFingerprint()'s own doc comment on
+         * why `chat` isn't part of this digest at all), so there is nothing for it to redo here. */
+        const patched = new Map();
+
+        for (const leaf of allLeaves) {
+            const serverIdsInLeaf = new Set();
+
+            for (const member of leaf.members) {
+                serverIdsInLeaf.add(member.id);
+                const localFav = localFavHashes.get(member.id);
+                const localFields = localFieldsHashes.get(member.id);
+
+                const favDrift = localFav !== member.favHash;
+                const fieldsDrift = localFields !== member.fieldsHash;
+
+                if (!favDrift && !fieldsDrift) continue; // this record is fine
+
+                // Get the cached character to patch
+                const character = localCharacters.get(member.id);
+                if (!character) continue; // record exists on server but not locally - will be caught by change-feed
+
+                const fp = member.fingerprint;
+                if (fieldsDrift) {
+                    // Patch ALL fingerprint fields (includes fav)
+                    character.name = fp.name;
+                    character.fav = fp.fav;
+                    character.tags = fp.tags;
+                    character.data = character.data || {};
+                    character.data.name = fp.data?.name;
+                    character.data.character_version = fp.data?.character_version;
+                    character.data.creator = fp.data?.creator;
+                    character.data.tags = fp.data?.tags;
+                    character.data.creator_notes = fp.data?.creator_notes;
+                    character.data.extensions = character.data.extensions || {};
+                    character.data.extensions.fav = fp.data?.extensions?.fav;
+                    character.data.extensions.world = fp.data?.extensions?.world;
+                } else if (favDrift) {
+                    // Fav-only drift: patch just fav fields
+                    character.fav = fp.fav;
+                    character.data = character.data || {};
+                    character.data.extensions = character.data.extensions || {};
+                    character.data.extensions.fav = fp.data?.extensions?.fav;
+                }
+
+                patched.set(member.id, character);
+            }
+
+            // Detect locally-cached records that the server doesn't have in this leaf group
+            for (const [id] of localCharacters) {
+                let inSubtree = true;
+                for (let l = 0; l < leaf.path.length; l++) {
+                    if (treeNodeAt(id, l, branching) !== leaf.path[l]) {
+                        inSubtree = false;
+                        break;
+                    }
+                }
+                if (inSubtree && !serverIdsInLeaf.has(id)) {
+                    toRemove.push(id);
+                }
             }
         }
-    }
 
-    // Apply repairs
-    if (toRemove.length > 0) {
-        await removeCachedCharacters(toRemove);
-    }
-
-    if (patched.size > 0) {
-        await saveCachedCharacters(Array.from(patched, ([avatar, character]) => ({ avatar, character })));
-    }
-
-    if (patched.size > 0 || toRemove.length > 0) {
-        // Patch the live in-memory list too, not just the IndexedDB cache - otherwise a repair that happens
-        // after fetchCharactersDelta() already returned (this function is deliberately fire-and-forget, see its
-        // own doc comment) would fix the cache for NEXT boot but leave the currently-rendered `characters` array
-        // and search/sort index silently stale until something else happens to reload it.
-        for (const id of toRemove) {
-            const index = characters.findIndex(c => c.avatar === id);
-            if (index !== -1) characters.splice(index, 1);
+        // Apply repairs
+        if (toRemove.length > 0) {
+            await removeCachedCharacters(toRemove);
         }
-        for (const [avatar, character] of patched) {
-            const index = characters.findIndex(c => c.avatar === avatar);
-            if (index !== -1) characters[index] = character;
-            else characters.push(character);
+
+        if (patched.size > 0) {
+            await saveCachedCharacters(Array.from(patched, ([avatar, character]) => ({ avatar, character })));
         }
-        charactersStore.reindex();
-        await printCharacters(true);
+
+        if (patched.size > 0 || toRemove.length > 0) {
+            // Patch the live in-memory list too, not just the IndexedDB cache - otherwise a repair that happens
+            // after fetchCharactersDelta() already returned (this function is deliberately fire-and-forget, see
+            // its own doc comment) would fix the cache for NEXT boot but leave the currently-rendered
+            // `characters` array and search/sort index silently stale until something else happens to reload it.
+            for (const id of toRemove) {
+                const index = characters.findIndex(c => c.avatar === id);
+                if (index !== -1) characters.splice(index, 1);
+            }
+            for (const [avatar, character] of patched) {
+                const index = characters.findIndex(c => c.avatar === avatar);
+                if (index !== -1) characters[index] = character;
+                else characters.push(character);
+            }
+            charactersStore.reindex();
+            await printCharacters(true);
+        }
+    } finally {
+        worker.terminate();
     }
 }
 
