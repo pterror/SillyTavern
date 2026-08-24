@@ -1245,7 +1245,13 @@ async function getHiddenBlock(hidden) {
 function renderCharacterBlock(template, item, id) {
     let this_avatar = default_avatar;
     if (item.avatar != 'none') {
-        this_avatar = getThumbnailUrl('avatar', item.avatar);
+        // Gallery view shows the full character card art at a size where the 96x144 thumbnail would be visibly
+        // upscaled, so use the original image via /characters/<file> (the same path the zoomed-avatar viewer
+        // uses). The regular list/grid views stay on the small thumbnail, which is more than adequate at their
+        // display size and avoids loading hundreds of full-size images in the sidebar.
+        this_avatar = power_user.charGalleryView
+            ? `/characters/${encodeURIComponent(item.avatar)}`
+            : getThumbnailUrl('avatar', item.avatar);
     }
     template.attr({ 'data-avatar': item.avatar });
     // loading="lazy": without this, every rendered card's <img> starts fetching its thumbnail immediately -
@@ -2981,7 +2987,7 @@ export function messageFormatting(mes, ch_name, isSystem, isUser, messageId, san
         const chatMessage = chat[messageId];
         mes = substituteParams(mes, undefined, ch_name);
         if (chatMessage && chatMessage.mes === mesBeforeReplace && chatMessage.extra?.display_text !== mesBeforeReplace) {
-            chatMessage.mes = mes;
+            updateMessage(Number(messageId), { mes });
         }
     }
 
@@ -5619,7 +5625,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         if (prevFinished && prevStarted) {
             const timePassed = Number(prevFinished) - Number(prevStarted);
             generation_started = new Date(Date.now() - timePassed);
-            lastMessage.gen_started = generation_started;
+            updateMessage(chat.length - 1, { gen_started: generation_started });
         }
     }
 
@@ -5995,10 +6001,10 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 
             if (isInstruct) {
                 const originalMessage = String(coreChat[j].mes ?? '');
-                coreChat[j].mes = originalMessage.replaceAll(FORMAT_TOKEN, '') + FORMAT_TOKEN;
+                // Work on a temporary shallow copy so we don't mutate the (possibly frozen) original
+                const tempMsg = { ...coreChat[j], mes: originalMessage.replaceAll(FORMAT_TOKEN, '') + FORMAT_TOKEN };
                 // Reformat with the last output sequence (if any)
-                chat2[i] = formatMessageHistoryItem(coreChat[j], isInstruct, force_output_sequence.LAST);
-                coreChat[j].mes = originalMessage;
+                chat2[i] = formatMessageHistoryItem(tempMsg, isInstruct, force_output_sequence.LAST);
             }
 
             chat2[i] = chat2[i].includes(FORMAT_TOKEN)
@@ -7109,11 +7115,19 @@ export async function sendMessageAsUser(messageText, messageBias, insertAt = nul
         await eventSource.emit(event_types.USER_MESSAGE_RENDERED, insertAt);
     } else {
         chat.push(message);
-        await saveChatConditional();
         const chat_id = (chat.length - 1);
-        await eventSource.emit(event_types.MESSAGE_SENT, chat_id);
+
+        // Render the message immediately — don't wait for the save round-trip.
         addOneMessage(message);
+        await eventSource.emit(event_types.MESSAGE_SENT, chat_id);
         await eventSource.emit(event_types.USER_MESSAGE_RENDERED, chat_id);
+
+        // Fire save in the background. The isChatSaving lock serializes this with
+        // any subsequent save (e.g. save #2 after the AI response), so save #2's
+        // waitUntilCondition() will wait for this to finish before proceeding.
+        // If this save fails, the message stays in chat[] without a node_id, and
+        // the next save will send it as full content — self-healing, no data loss.
+        saveChatConditional();
     }
 
     return message;
@@ -7844,7 +7858,8 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
         [type, getMessage, fromStreaming, title, swipes, reasoning, imageUrls, reasoningSignature] = arguments;
     }
 
-    const lastMessage = chat[chat.length - 1];
+    let lastMessage = chat[chat.length - 1];
+    const lastMesId = chat.length - 1;
 
     if (type != 'append' && type != 'continue' && type != 'appendFinal' && chat.length && (lastMessage.swipe_id === undefined ||
         lastMessage.is_user)) {
@@ -7852,12 +7867,14 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
     }
 
     if (chat.length && (!lastMessage.extra || typeof lastMessage.extra !== 'object')) {
-        lastMessage.extra = {};
+        updateMessage(lastMesId, { extra: {} });
+        lastMessage = chat[lastMesId];
     }
 
     // Coerce null/undefined to empty string
     if (chat.length && !lastMessage.extra.reasoning) {
-        lastMessage.extra.reasoning = '';
+        updateMessage(lastMesId, { extra: { ...lastMessage.extra, reasoning: '' } });
+        lastMessage = chat[lastMesId];
     }
 
     if (!reasoning) {
@@ -7868,71 +7885,100 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
     const generationFinished = new Date();
     if (type === 'swipe') {
         oldMessage = lastMessage.mes;
-        lastMessage.swipes.length++;
+        // Extend swipes array length by one (for the new swipe slot)
+        const newSwipes = [...(lastMessage.swipes || []), undefined];
+        updateMessage(lastMesId, { swipes: newSwipes });
+        lastMessage = chat[lastMesId];
+
         if (lastMessage.swipe_id === lastMessage.swipes.length - 1) {
-            lastMessage.title = title;
-            lastMessage.mes = getMessage;
-            lastMessage.gen_started = generation_started;
-            lastMessage.gen_finished = generationFinished;
-            lastMessage.send_date = getMessageTimeStamp();
-            lastMessage.extra.api = getGeneratingApi();
-            lastMessage.extra.model = getGeneratingModel();
-            lastMessage.extra.reasoning = reasoning;
-            lastMessage.extra.reasoning_duration = null;
-            lastMessage.extra.reasoning_signature = reasoningSignature;
-            await processImageAttachment(lastMessage, { imageUrls });
-            if (power_user.message_token_count_enabled) {
-                const tokenCountText = (reasoning || '') + lastMessage.mes;
-                lastMessage.extra.token_count = await getTokenCountAsync(tokenCountText, 0);
+            const newExtra = {
+                ...lastMessage.extra,
+                api: getGeneratingApi(), model: getGeneratingModel(),
+                reasoning, reasoning_duration: null, reasoning_signature: reasoningSignature,
+            };
+            updateMessage(lastMesId, {
+                title, mes: getMessage,
+                gen_started: generation_started, gen_finished: generationFinished,
+                send_date: getMessageTimeStamp(), extra: newExtra,
+            });
+            lastMessage = chat[lastMesId];
+            // processImageAttachment mutates — clone, process, apply back
+            if (imageUrls?.length) {
+                const mutableMsg = structuredClone(lastMessage);
+                await processImageAttachment(mutableMsg, { imageUrls });
+                updateMessage(lastMesId, { extra: mutableMsg.extra });
+                lastMessage = chat[lastMesId];
             }
-            const chat_id = (chat.length - 1);
+            if (power_user.message_token_count_enabled) {
+                const tokenCountText = (reasoning || '') + chat[lastMesId].mes;
+                updateMessage(lastMesId, { extra: { ...chat[lastMesId].extra, token_count: await getTokenCountAsync(tokenCountText, 0) } });
+                lastMessage = chat[lastMesId];
+            }
+            const chat_id = lastMesId;
             !fromStreaming && await eventSource.emit(event_types.MESSAGE_RECEIVED, chat_id, type);
             addOneMessage(chat[chat_id], { type: 'swipe' });
             !fromStreaming && await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, chat_id, type);
         } else {
-            lastMessage.mes = getMessage;
+            updateMessage(lastMesId, { mes: getMessage });
+            lastMessage = chat[lastMesId];
         }
     } else if (type === 'append' || type === 'continue') {
         console.debug('Trying to append.');
         oldMessage = lastMessage.mes;
-        lastMessage.title = title;
-        lastMessage.mes += getMessage;
-        lastMessage.gen_started = generation_started;
-        lastMessage.gen_finished = generationFinished;
-        lastMessage.send_date = getMessageTimeStamp();
-        lastMessage.extra.api = getGeneratingApi();
-        lastMessage.extra.model = getGeneratingModel();
-        lastMessage.extra.reasoning = reasoning;
-        lastMessage.extra.reasoning_duration = null;
-        lastMessage.extra.reasoning_signature = reasoningSignature;
-        await processImageAttachment(lastMessage, { imageUrls });
-        if (power_user.message_token_count_enabled) {
-            const tokenCountText = (reasoning || '') + lastMessage.mes;
-            lastMessage.extra.token_count = await getTokenCountAsync(tokenCountText, 0);
+        const newExtra = {
+            ...lastMessage.extra,
+            api: getGeneratingApi(), model: getGeneratingModel(),
+            reasoning, reasoning_duration: null, reasoning_signature: reasoningSignature,
+        };
+        updateMessage(lastMesId, {
+            title, mes: lastMessage.mes + getMessage,
+            gen_started: generation_started, gen_finished: generationFinished,
+            send_date: getMessageTimeStamp(), extra: newExtra,
+        });
+        lastMessage = chat[lastMesId];
+        if (imageUrls?.length) {
+            const mutableMsg = structuredClone(lastMessage);
+            await processImageAttachment(mutableMsg, { imageUrls });
+            updateMessage(lastMesId, { extra: mutableMsg.extra });
+            lastMessage = chat[lastMesId];
         }
-        const chat_id = (chat.length - 1);
+        if (power_user.message_token_count_enabled) {
+            const tokenCountText = (reasoning || '') + chat[lastMesId].mes;
+            updateMessage(lastMesId, { extra: { ...chat[lastMesId].extra, token_count: await getTokenCountAsync(tokenCountText, 0) } });
+            lastMessage = chat[lastMesId];
+        }
+        const chat_id = lastMesId;
         !fromStreaming && await eventSource.emit(event_types.MESSAGE_RECEIVED, chat_id, type);
         addOneMessage(chat[chat_id], { type: 'swipe' });
         !fromStreaming && await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, chat_id, type);
     } else if (type === 'appendFinal') {
         oldMessage = lastMessage.mes;
         console.debug('Trying to appendFinal.');
-        lastMessage.title = title;
-        lastMessage.mes = getMessage;
-        lastMessage.gen_started = generation_started;
-        lastMessage.gen_finished = generationFinished;
-        lastMessage.send_date = getMessageTimeStamp();
-        lastMessage.extra.api = getGeneratingApi();
-        lastMessage.extra.model = getGeneratingModel();
-        lastMessage.extra.reasoning += reasoning;
-        lastMessage.extra.reasoning_signature = reasoningSignature;
-        await processImageAttachment(lastMessage, { imageUrls });
+        const newExtra = {
+            ...lastMessage.extra,
+            api: getGeneratingApi(), model: getGeneratingModel(),
+            reasoning: (lastMessage.extra.reasoning || '') + reasoning,
+            reasoning_signature: reasoningSignature,
+        };
+        updateMessage(lastMesId, {
+            title, mes: getMessage,
+            gen_started: generation_started, gen_finished: generationFinished,
+            send_date: getMessageTimeStamp(), extra: newExtra,
+        });
+        lastMessage = chat[lastMesId];
+        if (imageUrls?.length) {
+            const mutableMsg = structuredClone(lastMessage);
+            await processImageAttachment(mutableMsg, { imageUrls });
+            updateMessage(lastMesId, { extra: mutableMsg.extra });
+            lastMessage = chat[lastMesId];
+        }
         // We don't know if the reasoning duration extended, so we don't update it here on purpose.
         if (power_user.message_token_count_enabled) {
-            const tokenCountText = (reasoning || '') + lastMessage.mes;
-            lastMessage.extra.token_count = await getTokenCountAsync(tokenCountText, 0);
+            const tokenCountText = (reasoning || '') + chat[lastMesId].mes;
+            updateMessage(lastMesId, { extra: { ...chat[lastMesId].extra, token_count: await getTokenCountAsync(tokenCountText, 0) } });
+            lastMessage = chat[lastMesId];
         }
-        const chat_id = (chat.length - 1);
+        const chat_id = lastMesId;
         !fromStreaming && await eventSource.emit(event_types.MESSAGE_RECEIVED, chat_id, type);
         addOneMessage(chat[chat_id], { type: 'swipe' });
         !fromStreaming && await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, chat_id, type);
@@ -7981,29 +8027,42 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
         !fromStreaming && await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, chat_id, type);
     }
 
-    const item = chat[chat.length - 1];
+    const itemId = chat.length - 1;
+    let item = chat[itemId];
+
     if (item.swipe_info === undefined) {
-        item.swipe_info = [];
-    }
-    if (item.swipe_id !== undefined) {
+        if (item.swipe_id !== undefined) {
+            const swipeId = item.swipe_id;
+            const newSwipes = [...(item.swipes || [])];
+            newSwipes[swipeId] = item.mes;
+            const newSwipeInfo = [];
+            newSwipeInfo[swipeId] = {
+                send_date: item.send_date, gen_started: item.gen_started,
+                gen_finished: item.gen_finished, extra: structuredClone(item.extra),
+            };
+            updateMessage(itemId, { swipes: newSwipes, swipe_info: newSwipeInfo });
+        } else {
+            updateMessage(itemId, {
+                swipe_id: 0,
+                swipes: [item.mes],
+                swipe_info: [{
+                    send_date: item.send_date, gen_started: item.gen_started,
+                    gen_finished: item.gen_finished, extra: structuredClone(item.extra),
+                }],
+            });
+        }
+        item = chat[itemId];
+    } else if (item.swipe_id !== undefined) {
         const swipeId = item.swipe_id;
-        item.swipes[swipeId] = item.mes;
-        item.swipe_info[swipeId] = {
-            send_date: item.send_date,
-            gen_started: item.gen_started,
-            gen_finished: item.gen_finished,
-            extra: structuredClone(item.extra),
+        const newSwipes = [...item.swipes];
+        newSwipes[swipeId] = item.mes;
+        const newSwipeInfo = [...item.swipe_info];
+        newSwipeInfo[swipeId] = {
+            send_date: item.send_date, gen_started: item.gen_started,
+            gen_finished: item.gen_finished, extra: structuredClone(item.extra),
         };
-    } else {
-        item.swipe_id = 0;
-        item.swipes = [];
-        item.swipes[0] = item.mes;
-        item.swipe_info[0] = {
-            send_date: item.send_date,
-            gen_started: item.gen_started,
-            gen_finished: item.gen_finished,
-            extra: structuredClone(item.extra),
-        };
+        updateMessage(itemId, { swipes: newSwipes, swipe_info: newSwipeInfo });
+        item = chat[itemId];
     }
 
     if (Array.isArray(swipes) && swipes.length > 0) {
@@ -8012,15 +8071,16 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
         delete swipeInfoExtra.reasoning;
         delete swipeInfoExtra.reasoning_duration;
         const swipeInfo = {
-            send_date: item.send_date,
-            gen_started: item.gen_started,
-            gen_finished: item.gen_finished,
-            extra: swipeInfoExtra,
+            send_date: item.send_date, gen_started: item.gen_started,
+            gen_finished: item.gen_finished, extra: swipeInfoExtra,
         };
         const swipeInfoArray = Array(swipes.length).fill().map(() => structuredClone(swipeInfo));
         parseReasoningInSwipes(swipes, swipeInfoArray, item.extra?.reasoning_duration);
-        item.swipes.push(...swipes);
-        item.swipe_info.push(...swipeInfoArray);
+        updateMessage(itemId, {
+            swipes: [...(item.swipes || []), ...swipes],
+            swipe_info: [...(item.swipe_info || []), ...swipeInfoArray],
+        });
+        item = chat[itemId];
     }
 
     statMesProcess(item, type, getCurrentCharacter(), oldMessage);
@@ -12459,16 +12519,18 @@ function doCharListDisplaySwitch() {
 }
 
 /**
- * Switches the character list between the sidebar panel and the fullscreen gallery view (chub.ai-style tile
- * layout, requested so full per-character info has room to render - the sidebar is too width-starved for that,
- * which is also why grid mode above has to hide most fields). This is a pure rendering/layout toggle: it flips
- * a body class that toggle-dependent.css keys off of, the same mechanism charListGrid above uses, and reuses
- * whatever `#rm_print_characters_block` already has rendered into it (printCharacters()'s server-query/
- * pagination path is untouched - no separate data fetch for this view).
+ * Sets the character list gallery view (chub.ai-style fullscreen tile grid) to the given state. This is a
+ * tab-style control: the gallery button and the characters button in #CharListButtonAndHotSwaps act as
+ * mutually exclusive tabs, with .active toggled on whichever is current. The layout itself is pure CSS
+ * (body.charGalleryView, keyed off in toggle-dependent.css) - no separate data fetch, it reuses whatever
+ * #rm_print_characters_block already has rendered.
+ * @param {boolean} enabled Whether gallery view should be active.
  */
-function doCharGalleryViewSwitch() {
-    power_user.charGalleryView = !power_user.charGalleryView;
-    document.body.classList.toggle('charGalleryView', power_user.charGalleryView);
+function setCharGalleryView(enabled) {
+    power_user.charGalleryView = enabled;
+    document.body.classList.toggle('charGalleryView', enabled);
+    $('#rm_button_characters_gallery').toggleClass('active', enabled);
+    $('#rm_button_characters').toggleClass('active', !enabled);
     saveSettingsDebounced();
 }
 
@@ -13100,6 +13162,7 @@ jQuery(async function () {
         selectRightMenuWithAnimation('rm_api_block');
     });
     $('#rm_button_characters').on('click', function () {
+        setCharGalleryView(false);
         selected_button = 'characters';
         select_rm_characters();
     });
@@ -14579,7 +14642,9 @@ jQuery(async function () {
     });
 
     $('#rm_button_characters_gallery').on('click', async () => {
-        doCharGalleryViewSwitch();
+        setCharGalleryView(true);
+        selected_button = 'characters';
+        select_rm_characters();
     });
 
     $('#hideCharPanelAvatarButton').on('click', () => {

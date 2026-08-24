@@ -580,9 +580,18 @@ export async function getOrComputeChatInfo(directories, pathToFile, mtimeMs, add
  * @param {boolean} [isGroup=false]
  * @returns {Promise<boolean>}
  */
+/** Cache of ownerIds confirmed as tree-migrated. Keyed by `${directories.root}\0${ownerId}`. */
+const treeMigratedCache = new Set();
+
 async function ensureTreeMigrated(directories, ownerId, isGroup = false) {
+    const cacheKey = `${directories.root}\0${ownerId}`;
+    if (treeMigratedCache.has(cacheKey)) return true;
+
     if (!await isTreeAvailable(directories)) return false;
-    if (await isTreeMigrated(directories, ownerId)) return true;
+    if (await isTreeMigrated(directories, ownerId)) {
+        treeMigratedCache.add(cacheKey);
+        return true;
+    }
 
     const chatDir = isGroup
         ? directories.groupChats
@@ -590,12 +599,14 @@ async function ensureTreeMigrated(directories, ownerId, isGroup = false) {
 
     if (!fs.existsSync(chatDir)) {
         // No chat directory yet (brand new character) — tree is ready for new chats, no migration needed
+        treeMigratedCache.add(cacheKey);
         return true;
     }
 
     const hasJsonlFiles = fs.readdirSync(chatDir).some(f => f.endsWith('.jsonl'));
     if (!hasJsonlFiles) {
         // No existing JSONL files to migrate — tree DB is ready for new chats
+        treeMigratedCache.add(cacheKey);
         return true;
     }
 
@@ -604,7 +615,9 @@ async function ensureTreeMigrated(directories, ownerId, isGroup = false) {
         if (result.errors.length > 0) {
             console.error('[message-tree] Migration errors:', result.errors);
         }
-        return result.migrated > 0 || await isTreeMigrated(directories, ownerId);
+        const migrated = result.migrated > 0 || await isTreeMigrated(directories, ownerId);
+        if (migrated) treeMigratedCache.add(cacheKey);
+        return migrated;
     } catch (err) {
         console.error('[message-tree] Migration failed, falling back to JSONL:', err);
         return false;
@@ -708,10 +721,14 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
         }
 
         // Tree DB path: if the character is migrated (or can be migrated now), save to tree
+        const tTreeStart = performance.now();
         const useTree = await ensureTreeMigrated(request.user.directories, cardName);
+        const tMigrationCheck = performance.now();
         if (useTree) {
             const result = await saveChatToTree(request.user.directories, cardName, chatName, chatData, false);
+            const tTreeSave = performance.now();
             if (result) {
+                console.debug(`[save-perf] /save tree path: migrationCheck=${(tMigrationCheck - tTreeStart).toFixed(1)}ms treeSave=${(tTreeSave - tMigrationCheck).toFixed(1)}ms total=${(tTreeSave - tTreeStart).toFixed(1)}ms`);
                 return response.send({
                     ok: true,
                     integrity: result.integrity,

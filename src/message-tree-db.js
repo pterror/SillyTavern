@@ -483,6 +483,7 @@ export async function loadBranch(directories, ownerId, branchName) {
  *   into the chat array so subsequent saves can identify them as existing (prevents duplicate inserts).
  */
 export async function saveChatToTree(directories, ownerId, chatName, chatData, isGroup = false) {
+    const t0 = performance.now();
     const entry = await getEntry(directories);
     if (!entry) return null;
 
@@ -552,10 +553,58 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
             }
         });
 
+        const tDone = performance.now();
+        console.debug(`[save-perf] saveChatToTree (new branch): messages=${messages.length} inserted=${assignedNodeIds.length} total=${(tDone - t0).toFixed(1)}ms`);
         return { integrity: nextIntegrity, assignedNodeIds };
     }
 
-    // Existing branch — diff against current path
+    // Existing branch — check for the fast append-only path first.
+    // When every existing message is an unchanged stub and only new messages (no node_id) appear
+    // at the tail, we can skip the O(N) recursive CTE entirely: just INSERT the new rows chained
+    // off branch.leaf_id and UPDATE the branch pointer.
+    const tPreDiff = performance.now();
+
+    // Find the index where new (non-stub, no node_id) messages begin at the tail
+    let appendStart = messages.length;
+    for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i]._unchanged || messages[i].node_id) break;
+        appendStart = i;
+    }
+    const hasNewTail = appendStart < messages.length;
+    const allPrecedingAreStubs = hasNewTail && messages.slice(0, appendStart).every(m => m._unchanged && m.node_id);
+
+    if (hasNewTail && allPrecedingAreStubs) {
+        // Fast path: pure append — skip the recursive CTE
+        entry.db.transaction(() => {
+            let parentId = branch.leaf_id;
+            for (let i = appendStart; i < messages.length; i++) {
+                const msg = messages[i];
+                const id = newId();
+                assignedNodeIds.push({ index: i, node_id: id });
+                const content = sanitizeForStorage(msg);
+                insertMessageSync(entry.db, {
+                    id,
+                    parentId,
+                    ownerId,
+                    content,
+                    label: msg.extra?.bookmark_link || null,
+                    createdAt: now,
+                });
+                parentId = id;
+            }
+            const lastMsg = messages[messages.length - 1];
+            const lastMes = extractLastMes(sanitizeForStorage(lastMsg));
+            updateBranchLeafSync(entry.db, branch.id, parentId, messages.length, lastMes);
+            updateBranchMetadataSync(entry.db, branch.id, metadataJson);
+        });
+
+        const tDone = performance.now();
+        const newCount = messages.length - appendStart;
+        console.debug(`[save-perf] saveChatToTree (append fast path): messages=${messages.length} appended=${newCount} total=${(tDone - t0).toFixed(1)}ms`);
+        return { integrity: nextIntegrity, assignedNodeIds };
+    }
+
+    // Full diff path — need the recursive CTE to resolve existing messages
     entry.db.transaction(() => {
         const currentPath = getPathSync(entry.db, branch.leaf_id);
 
@@ -624,6 +673,11 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
         updateBranchMetadataSync(entry.db, branch.id, metadataJson);
     });
 
+    const tDone = performance.now();
+    const stubCount = messages.filter(m => m._unchanged).length;
+    const insertCount = assignedNodeIds.length;
+    const updateCount = messages.length - stubCount - insertCount;
+    console.debug(`[save-perf] saveChatToTree (full diff): messages=${messages.length} stubs=${stubCount} inserts=${insertCount} updates=${updateCount} diffSetup=${(tPreDiff - t0).toFixed(1)}ms transaction=${(tDone - tPreDiff).toFixed(1)}ms total=${(tDone - t0).toFixed(1)}ms`);
     return { integrity: nextIntegrity, assignedNodeIds };
 }
 
