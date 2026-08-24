@@ -1666,34 +1666,94 @@ export async function reconcile(directories) {
         }
     }
 
-    // Files that are new or whose mtime disagrees with what's stored - bounded rate via a yield every batch, so
-    // a large library's reconcile pass doesn't hog the event loop for the entire scan.
-    let processedSinceYield = 0;
-    for (const file of files) {
-        try {
-            const filePath = path.join(directories.characters, file);
-            const stat = await fsPromises.stat(filePath);
-            const storedMtime = existingMtimeById.get(file);
-            if (storedMtime !== undefined && storedMtime === stat.mtimeMs) {
-                continue; // unchanged since last reconcile - nothing to do
-            }
+    // Chunked + BOOTSTRAP_READ_CONCURRENCY-bounded, same shape as bootstrapIfNeeded()'s own mapWithConcurrency
+    // loop just above in this file - NOT the same as it used to be here. The previous shape was a plain
+    // sequential `for (const file of files) { await fsPromises.stat(...) }`, one stat in flight at a time, and
+    // this function runs unconditionally on EVERY boot (unlike bootstrapIfNeeded()/the two backfills below,
+    // which all shrink toward near-zero work once caught up, via a completion flag or a narrowing WHERE clause -
+    // reconcile() has neither by design, see this function's own header). At the owner's real ~286,715-card
+    // library, that one-in-flight-at-a-time stat loop measured out to a ~10-minute, completely silent boot
+    // stall (2026-08-24 investigation, reproduced from the observed gap between local-import's own log lines
+    // and backfillContentIdentityHashes()'s first progress line - reconcile() sits in the bootstrap chain
+    // between them and had zero logging of its own). Batching the stats behind mapWithConcurrency doesn't change
+    // what gets skipped - the per-file mtime-unchanged fast path below is untouched - only how many stat() calls
+    // are in flight at once on the way there.
+    //
+    // Progress logging matches the throttled BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS shape bootstrapIfNeeded() and
+    // both backfills already use below - this pass previously had none at all, indistinguishable from a hang at
+    // this library size. Unlike those three (each a one-time-per-boot or one-time-ever pass), this one also
+    // runs on every periodic reconcile interval forever, so the completion summary only logs when there's
+    // something worth reporting: the pass actually crossed the progress-log threshold (worth confirming it
+    // finished), or it found real changes to apply. A quiet periodic pass over an already-settled library stays
+    // exactly as silent as it always was.
+    const reconcileStart = Date.now();
+    let lastProgressLog = reconcileStart;
+    let processedFiles = 0;
+    let changedFiles = 0;
+    let loggedProgress = false;
 
-            const imgData = await parseCharacterCard(filePath, 'png');
-            if (imgData === undefined) continue;
-            const character = getCharaCardV2(JSON.parse(imgData), directories, false);
-            const { chatSize, dateLastChat } = calculateChatSize(path.join(directories.chats, file.replace(/\.png$/, '')));
-            const row = buildRow(file, character, { dateAddedCandidate: Date.now(), fileMtime: stat.mtimeMs, chatSize, dateLastChat });
-            const tagIds = getTagIdsFor(directories, file);
-            applyOrBuffer(entry, row, tagIds);
-        } catch (err) {
-            console.error(`[character-metadata] Reconcile failed to process ${file}, will retry next pass:`, err.message);
+    for (let i = 0; i < files.length; i += BATCH_FLUSH_SIZE) {
+        const chunkFiles = files.slice(i, i + BATCH_FLUSH_SIZE);
+        const chunkResults = await mapWithConcurrency(chunkFiles, BOOTSTRAP_READ_CONCURRENCY, async (file) => {
+            try {
+                const filePath = path.join(directories.characters, file);
+                const stat = await fsPromises.stat(filePath);
+                const storedMtime = existingMtimeById.get(file);
+                if (storedMtime !== undefined && storedMtime === stat.mtimeMs) {
+                    return null; // unchanged since last reconcile - nothing to do
+                }
+
+                const imgData = await parseCharacterCard(filePath, 'png');
+                if (imgData === undefined) return null;
+                const character = getCharaCardV2(JSON.parse(imgData), directories, false);
+                const { chatSize, dateLastChat } = calculateChatSize(path.join(directories.chats, file.replace(/\.png$/, '')));
+                const row = buildRow(file, character, { dateAddedCandidate: Date.now(), fileMtime: stat.mtimeMs, chatSize, dateLastChat });
+                const tagIds = getTagIdsFor(directories, file);
+                return { row, tagIds };
+            } catch (err) {
+                console.error(`[character-metadata] Reconcile failed to process ${file}, will retry next pass:`, err.message);
+                return null;
+            }
+        });
+
+        for (const result of chunkResults) {
+            if (result) {
+                applyOrBuffer(entry, result.row, result.tagIds);
+                changedFiles++;
+            }
         }
 
-        processedSinceYield++;
-        if (processedSinceYield >= BATCH_FLUSH_SIZE) {
-            processedSinceYield = 0;
+        processedFiles += chunkFiles.length;
+
+        const now = Date.now();
+        if (now - lastProgressLog >= BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS) {
+            const elapsedSec = (now - reconcileStart) / 1000;
+            const rate = processedFiles / elapsedSec;
+            const remaining = files.length - processedFiles;
+            const etaSec = rate > 0 ? Math.round(remaining / rate) : null;
+            console.log(color.cyan(`[character-metadata] Reconcile progress: ${processedFiles}/${files.length} (${rate.toFixed(1)} files/sec, ETA ${etaSec === null ? 'unknown' : `${etaSec}s`})`));
+            lastProgressLog = now;
+            loggedProgress = true;
+        }
+
+        // Yield the event loop between chunks - same rate-bounding intent the previous per-file yield had, just
+        // now once per BATCH_FLUSH_SIZE-sized chunk instead of once per file, since a chunk's stats now resolve
+        // concurrently rather than one at a time. Only when there's a next chunk to get to, though - unlike the
+        // old per-file counter (which, for any library under BATCH_FLUSH_SIZE files, never actually reached the
+        // threshold and so never yielded at all), a per-chunk yield fires on every chunk including the very
+        // last/only one unless guarded here. A trailing yield with no more work queued behind it doesn't rate-
+        // bound anything - it's just a real setImmediate wait that hangs indefinitely under `jest.useFakeTimers()`
+        // (several local-import-scan.js callers of this function's transitive write path run under exactly that -
+        // confirmed via reproduction: this exact unguarded yield is what turned three of those into 5-second
+        // timeouts before this guard was added).
+        if (i + BATCH_FLUSH_SIZE < files.length) {
             await new Promise(resolve => setImmediate(resolve));
         }
+    }
+
+    if (loggedProgress || changedFiles > 0) {
+        const totalSec = (Date.now() - reconcileStart) / 1000;
+        console.log(color.cyan(`[character-metadata] Reconcile complete: scanned ${files.length} file(s), updated ${changedFiles}, in ${totalSec.toFixed(1)}s.`));
     }
 
     // If batch mode is active, applyOrBuffer() above buffered rather than wrote - flush now so this reconcile
