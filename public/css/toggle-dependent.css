@@ -15,6 +15,7 @@
    activateFillRightDrawer in script.js) stays logically open but is hidden here. */
 .fillRight.openDrawer:not(.frontFillRight) {
     visibility: hidden;
+    transition: visibility 0s !important;
 }
 
 body.tts .mes[is_system="true"] .mes_narrate {
