@@ -298,10 +298,15 @@ async function RA_autoloadchat() {
             saveSettingsDebounced();
             console.warn(`Currently active character with ID ${active_character} not found. Resetting to no active character.`);
         } else {
-            // Characters haven't loaded yet. Retry once APP_READY fires (after
-            // characterResidencyPromise resolves and the store is populated).
-            console.debug(`[RA_autoloadchat] Character store empty, deferring auto-load for ${active_character}`);
-            eventSource.once(event_types.APP_READY, () => RA_autoloadchat());
+            // Characters haven't loaded yet. Poll briefly until the store is populated
+            // (typically <1s once getCharacters() completes), then retry. This is faster
+            // than waiting for APP_READY which gates on the full library load + tag seed.
+            console.debug(`[RA_autoloadchat] Character store empty, polling for ${active_character}`);
+            const poll = setInterval(() => {
+                if (charactersStore.size === 0) return;
+                clearInterval(poll);
+                RA_autoloadchat();
+            }, 50);
         }
     }
 
@@ -790,12 +795,7 @@ export function initRossMods() {
     checkStatusDebounced();
 
     if (power_user.auto_load_chat) {
-        // Boot-residency decoupling (see script.js's comment above `characterResidencyPromise`): `characters`/
-        // `charactersStore` are not guaranteed populated yet when `initRossMods()` runs (it's called before
-        // `characterResidencyPromise` is awaited). `event_types.APP_READY` is the documented point where full
-        // character/group residency is guaranteed, so wait for it here instead of calling `RA_autoloadchat()`
-        // immediately - otherwise a not-yet-loaded `active_character` reads as "not found" and gets wiped.
-        eventSource.once(event_types.APP_READY, () => RA_autoloadchat());
+        RA_autoloadchat();
     }
 
     if (power_user.auto_connect) {
@@ -888,15 +888,9 @@ export function initRossMods() {
     if (!isMobile()) { //only read/set pin states on non-mobile devices
         // read the state of right Nav Lock and apply to rightnav classlist
         $(RPanelPin).prop('checked', accountStorage.getItem('NavLockOn') == 'true');
-        if (accountStorage.getItem('NavLockOn') == 'true') {
-            //console.log('setting pin class via local var');
-            $(RightNavPanel).addClass('pinnedOpen');
-            $(RightNavDrawerIcon).addClass('drawerPinnedOpen');
-        }
         if ($(RPanelPin).prop('checked')) {
-            console.debug('setting pin class via checkbox state');
-            $(RightNavPanel).addClass('pinnedOpen');
-            $(RightNavDrawerIcon).addClass('drawerPinnedOpen');
+            $(RightNavPanel).addClass('pinnedOpen openDrawer').removeClass('closedDrawer');
+            $(RightNavDrawerIcon).addClass('drawerPinnedOpen openIcon').removeClass('closedIcon');
         }
         // read the state of left Nav Lock and apply to leftnav classlist
         $(LPanelPin).prop('checked', accountStorage.getItem('LNavLockOn') === 'true');
@@ -928,8 +922,15 @@ export function initRossMods() {
         // read the state of Character Info Lock and apply to char-info-panel classlist
         $(CharInfoPanelPin).prop('checked', accountStorage.getItem('CharInfoNavLockOn') === 'true');
         if ($(CharInfoPanelPin).prop('checked')) {
-            $(CharInfoPanel).addClass('pinnedOpen');
-            $(CharInfoDrawerIcon).addClass('drawerPinnedOpen');
+            $(CharInfoPanel).addClass('pinnedOpen openDrawer').removeClass('closedDrawer');
+            $(CharInfoDrawerIcon).addClass('drawerPinnedOpen openIcon').removeClass('closedIcon');
+        }
+
+        // Restore which fillRight panel was last in front
+        const savedFront = accountStorage.getItem('FillRightFront');
+        if (savedFront) {
+            document.querySelectorAll('.fillRight').forEach(el => el.classList.remove('frontFillRight'));
+            document.getElementById(savedFront)?.classList.add('frontFillRight');
         }
     }
 
