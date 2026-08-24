@@ -344,12 +344,8 @@ describe('reconcile', () => {
             expect(quietCalls).toHaveLength(0);
 
             logSpy.mockClear();
-            // A NEW file, not an in-place rewrite of Alice.png - by this point a directory-mtime watermark is
-            // already persisted (the reconcile() call just above), so an in-place edit to an existing filename
-            // would now hit the fast path below and never even reach the scan (see the dedicated fast-path tests
-            // - this is the accepted, documented gap). A new file bumps the directory's own mtime (POSIX
-            // link/unlink semantics), which is exactly what the fast path watches for.
-            await writeCardFile('Bob.png', { name: 'Bob', data: { name: 'Bob', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+            await new Promise(resolve => setTimeout(resolve, 5));
+            await writeCardFile('Alice.png', { data: { name: 'Alice', description: 'changed', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
             await metadataDb.reconcile(directories);
             const summaryCalls = logSpy.mock.calls.filter(args => String(args[0]).includes('[character-metadata] Reconcile complete'));
             expect(summaryCalls).toHaveLength(1);
@@ -357,106 +353,6 @@ describe('reconcile', () => {
         } finally {
             logSpy.mockRestore();
         }
-    });
-
-    // The directory-mtime fast path (2026-08-24, pushed for after concurrency-only was rejected as "still a full
-    // sweep every boot, just faster") - real narrowing, not just faster brute force: a reconcile() pass over an
-    // untouched directory does no readdir/stat-per-file work at all, gated on a single stat() of the directory
-    // itself.
-    describe('directory-mtime fast path', () => {
-        test('a second pass over an untouched directory does not even readdir, let alone stat any character file', async () => {
-            await writeCardFile('Alice.png');
-            await metadataDb.bootstrapIfNeeded(directories);
-            await metadataDb.reconcile(directories); // establishes the watermark
-
-            const readdirSpy = jest.spyOn(fs.promises, 'readdir');
-            const statSpy = jest.spyOn(fs.promises, 'stat');
-            try {
-                await metadataDb.reconcile(directories);
-                expect(readdirSpy).not.toHaveBeenCalled();
-                // The one allowed stat() is the fast-path check against directories.characters itself.
-                for (const call of statSpy.mock.calls) {
-                    expect(call[0]).toBe(charactersDir);
-                }
-            } finally {
-                readdirSpy.mockRestore();
-                statSpy.mockRestore();
-            }
-        });
-
-        test('a file dropped in after the watermark is set is still discovered (directory mtime bumps on create)', async () => {
-            await writeCardFile('Alice.png');
-            await metadataDb.bootstrapIfNeeded(directories);
-            await metadataDb.reconcile(directories); // establishes the watermark
-
-            await writeCardFile('DroppedLater.png');
-            await metadataDb.reconcile(directories);
-
-            expect(await metadataDb.getCharacterMetadataRow(directories, 'DroppedLater.png')).toBeDefined();
-        });
-
-        test('a file removed after the watermark is set is still reconciled away (directory mtime bumps on unlink)', async () => {
-            await writeCardFile('Alice.png');
-            await writeCardFile('Bob.png', { name: 'Bob', data: { name: 'Bob', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
-            await metadataDb.bootstrapIfNeeded(directories);
-            await metadataDb.reconcile(directories); // establishes the watermark
-
-            fs.unlinkSync(path.join(charactersDir, 'Bob.png'));
-            await metadataDb.reconcile(directories);
-
-            expect(await metadataDb.getCharacterMetadataRow(directories, 'Bob.png')).toBeUndefined();
-        });
-
-        test('documented gap: an in-place edit to an existing filename is NOT caught by the fast path until an unrelated create/delete happens', async () => {
-            await writeCardFile('Alice.png');
-            await metadataDb.bootstrapIfNeeded(directories);
-            await metadataDb.reconcile(directories); // establishes the watermark
-            const before = await metadataDb.getCharacterMetadataRow(directories, 'Alice.png');
-
-            await new Promise(resolve => setTimeout(resolve, 5));
-            await writeCardFile('Alice.png', { data: { name: 'Alice', description: 'edited in place', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
-            await metadataDb.reconcile(directories);
-
-            // Not a bug - this is the accepted tradeoff the fast path makes (directory mtime doesn't move for an
-            // open+write+close against an existing path). The row stays exactly as it was before the edit.
-            const afterInPlaceEdit = await metadataDb.getCharacterMetadataRow(directories, 'Alice.png');
-            expect(afterInPlaceEdit.file_mtime).toBe(before.file_mtime);
-
-            // Once something the fast path DOES notice happens (a new file here), the full sweep runs again and
-            // catches up on the in-place edit it previously missed too - the gap is bounded, not permanent.
-            await writeCardFile('Trigger.png', { name: 'Trigger', data: { name: 'Trigger', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
-            await metadataDb.reconcile(directories);
-            const afterTrigger = await metadataDb.getCharacterMetadataRow(directories, 'Alice.png');
-            expect(afterTrigger.file_mtime).not.toBe(before.file_mtime);
-        });
-
-        // Cross-platform safety net (2026-08-24, pushed for after "have you actually verified directory mtime is
-        // a reliable signal on macOS/Windows/network filesystems, not just linux"): it wasn't fully verifiable
-        // for every real deployment target (NFS in particular has a documented client-side directory-attribute
-        // cache that can briefly serve a stale mtime), so the watermark also expires on its own after
-        // RECONCILE_FAST_PATH_MAX_AGE_MS, independent of whether the mtime comparison says "unchanged".
-        test('the fast path stops trusting an unchanged-but-stale watermark once RECONCILE_FAST_PATH_MAX_AGE_MS has passed', async () => {
-            await writeCardFile('Alice.png');
-            await metadataDb.bootstrapIfNeeded(directories);
-
-            // Backdate the watermark this call persists - the directory itself is never touched between the two
-            // reconcile() calls below, so only the age bound (not the mtime comparison) can be what forces the
-            // second call to actually scan.
-            const dateSpy = jest.spyOn(Date, 'now').mockReturnValue(Date.now() - 2 * 60 * 60 * 1000);
-            try {
-                await metadataDb.reconcile(directories); // establishes a 2-hour-old watermark
-            } finally {
-                dateSpy.mockRestore();
-            }
-
-            const readdirSpy = jest.spyOn(fs.promises, 'readdir');
-            try {
-                await metadataDb.reconcile(directories);
-                expect(readdirSpy).toHaveBeenCalled(); // aged out - the fast path did NOT skip the scan
-            } finally {
-                readdirSpy.mockRestore();
-            }
-        });
     });
 });
 
