@@ -33,7 +33,7 @@ import {
     sortEntitiesList,
 } from './power-user.js';
 
-import { characterRepository, buildCharacterQuery, isServerQueryableSort } from './character-repository.js';
+import { characterRepository, buildCharacterQuery, isServerQueryableSort, isInvalidSortFieldError } from './character-repository.js';
 import { getRandomSortSeed } from './random-sort.js';
 import { selected_group, is_group_generating, openGroupById, groups } from './group-chats.js';
 import { applyTagsOnCharacterSelect } from './tags.js';
@@ -319,7 +319,7 @@ async function RA_autoloadchat() {
             applyTagsOnCharacterSelect();
         } else {
             setActiveCharacter(null);
-            saveSettingsDebounced();
+            saveSettingsDebounced('active_character', 'active_group');
             console.warn(`Currently active character with ID ${active_character} not found. Resetting to no active character.`);
         }
     }
@@ -328,12 +328,12 @@ async function RA_autoloadchat() {
         if (active_character) {
             console.warn('Active character and active group are both set. Only active character will be loaded. Resetting active group.');
             setActiveGroup(null);
-            saveSettingsDebounced();
+            saveSettingsDebounced('active_character', 'active_group');
         } else {
             const result = await openGroupById(String(active_group));
             if (!result) {
                 setActiveGroup(null);
-                saveSettingsDebounced();
+                saveSettingsDebounced('active_character', 'active_group');
                 console.warn(`Currently active group with ID ${active_group} not found. Resetting to no active group.`);
             }
         }
@@ -355,10 +355,12 @@ async function RA_autoloadchat() {
  * `FAVS_LIMIT` therefore reproduces exactly what scanning-then-filtering-then-slicing the old fully-local list
  * would have produced.
  *
- * Falls back to the pre-existing fully-local path (`getEntitiesList({ doFilter: false })`) when the current sort
- * field has no server equivalent (`create_date`/`data_size` - see `isServerQueryableSort()`,
- * character-repository.js) - same documented scope boundary as `getEntitiesList()`'s server-query path
- * (script.js), not a special case invented here.
+ * Falls back to the pre-existing fully-local path (`getEntitiesList({ doFilter: false })`) when
+ * `isServerQueryableSort()` (character-repository.js) rules the sort field out up front (`'search'` - not a
+ * plain-column sort, see that function's doc comment), and also when the server query is attempted but rejects
+ * with `400 invalid-sort-field` (`isInvalidSortFieldError()`) - the server's own rejection, not a client-side
+ * field-name list, is what decides that case now. Same documented scope boundary as `getEntitiesList()`'s
+ * server-query path (script.js), not a special case invented here.
  *
  * Mirrors the active search term (`FILTER_TYPES.SEARCH`, filters.js) into both branches, so at scale (a favorites
  * list too large to browse unfiltered - the owner's own real install has ~3,900 favorited characters) the strip
@@ -392,32 +394,40 @@ export async function favsToHotswap() {
     const searchTerm = entitiesFilter.getFilterData(FILTER_TYPES.SEARCH) || '';
 
     let favs;
+    let usedServerQuery = false;
     if (isServerQueryableSort(sortField)) {
-        const { sort } = buildCharacterQuery({
-            fav: true,
-            sortField,
-            sortOrder: power_user.sort_order === 'desc' ? 'desc' : 'asc',
-            randomSeed: isRandom ? getRandomSortSeed(accountStorage) : undefined,
-        });
-        const filter = searchTerm ? { fav: true, search: searchTerm } : { fav: true };
-        const { rows: favCharacterRows = [] } = await characterRepository.query(filter, sort, 1, FAVS_LIMIT, ['rows']);
-        const favCharacterEntities = favCharacterRows.map(item => characterToEntity(item));
-        let favGroupEntities = groups.filter(x => x.fav || x.fav == 'true').map(item => groupToEntity(item));
-        if (searchTerm) {
-            // The character half above already asked the server to narrow by `filter.search` directly - running
-            // a second, client-side fuzzy pass over rows the server already resolved would risk exactly the
-            // stale two-search-engines divergence this function's own doc comment (and the main list's own
-            // `canUseServerQueryForEntitiesList()`, script.js) both call out. Groups still only ever come from
-            // the local resident array here (unchanged from before this search-mirroring addition), so
-            // narrowing them by search has to happen client-side - `entitiesFilter.searchFilter()` is the same
-            // score-cache/fuzzy mechanism the main list's own local fallback path already relies on for this.
-            favGroupEntities = entitiesFilter.searchFilter(favGroupEntities);
-        }
+        try {
+            const { sort } = buildCharacterQuery({
+                fav: true,
+                sortField,
+                sortOrder: power_user.sort_order === 'desc' ? 'desc' : 'asc',
+                randomSeed: isRandom ? getRandomSortSeed(accountStorage) : undefined,
+            });
+            const filter = searchTerm ? { fav: true, search: searchTerm } : { fav: true };
+            const { rows: favCharacterRows = [] } = await characterRepository.query(filter, sort, 1, FAVS_LIMIT, ['rows']);
+            const favCharacterEntities = favCharacterRows.map(item => characterToEntity(item));
+            let favGroupEntities = groups.filter(x => x.fav || x.fav == 'true').map(item => groupToEntity(item));
+            if (searchTerm) {
+                // The character half above already asked the server to narrow by `filter.search` directly - running
+                // a second, client-side fuzzy pass over rows the server already resolved would risk exactly the
+                // stale two-search-engines divergence this function's own doc comment (and the main list's own
+                // `canUseServerQueryForEntitiesList()`, script.js) both call out. Groups still only ever come from
+                // the local resident array here (unchanged from before this search-mirroring addition), so
+                // narrowing them by search has to happen client-side - `entitiesFilter.searchFilter()` is the same
+                // score-cache/fuzzy mechanism the main list's own local fallback path already relies on for this.
+                favGroupEntities = entitiesFilter.searchFilter(favGroupEntities);
+            }
 
-        favs = [...favCharacterEntities, ...favGroupEntities];
-        sortEntitiesList(favs, false);
-        favs = favs.slice(0, FAVS_LIMIT);
-    } else {
+            favs = [...favCharacterEntities, ...favGroupEntities];
+            sortEntitiesList(favs, false);
+            favs = favs.slice(0, FAVS_LIMIT);
+            usedServerQuery = true;
+        } catch (error) {
+            if (!isInvalidSortFieldError(error)) throw error;
+            // Falls through to the fully-local path below, same as an `isServerQueryableSort()` "no" up front.
+        }
+    }
+    if (!usedServerQuery) {
         let entities = await getEntitiesList({ doFilter: false });
         if (searchTerm) {
             entities = entitiesFilter.searchFilter(entities);
@@ -613,7 +623,7 @@ export function dragElement($elmnt) {
             power_user.movingUIState[elmntName].height = height;
             eventSource.emit('resizeUI', elmntName);
         }
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     }
 
     // Helper: Clamp element within viewport
@@ -994,14 +1004,14 @@ export function initRossMods() {
         const characterId = $(this).attr('data-avatar');
         setActiveCharacter(characterId);
         setActiveGroup(null);
-        saveSettingsDebounced();
+        saveSettingsDebounced('active_character', 'active_group');
     });
 
     $(document).on('click', '.group_select', function () {
         const groupId = $(this).attr('data-grid');
         setActiveCharacter(null);
         setActiveGroup(groupId);
-        saveSettingsDebounced();
+        saveSettingsDebounced('active_character', 'active_group');
     });
 
     const cssAutofit = CSS.supports('field-sizing', 'content');

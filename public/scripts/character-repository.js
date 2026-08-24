@@ -88,22 +88,6 @@ const DEFAULT_QUERY_WANT = /** @type {const} */ (['rows', 'total']);
 const QUERY_ALL_PAGE_SIZE = 2000;
 
 /**
- * Client `power_user.sort_field` values that map 1:1, with matching semantics, onto a server `sort.field`
- * column (design doc §5's `QUERYABLE_SORT_COLUMNS` equivalent, mirrored from src/character-metadata-db.js).
- * Deliberately narrower than the full `#character_sort_order` dropdown (public/index.html):
- * - `'create_date'` ("Newest"/"Oldest") sorts by the character card's own `create_date` field (an ISO string a
- *   card can carry from its original creator); the server's `date_added` column is a different value (this
- *   install's own file-add time). They usually agree but are not the same field, so mapping one to the other
- *   would be a silent behavior change, not a preservation - excluded on purpose.
- * - `'data_size'` ("Most/Least tokens") has no server column at all (`QUERYABLE_SORT_COLUMNS` doesn't carry it).
- * Callers whose current sort field isn't in this set (or who have an active search term - see
- * `isServerQueryEligible()`) fall back to the pre-existing fully-local candidate-building path; that fallback is
- * a documented scope boundary (design doc §6/phase 5), not an oversight.
- * @type {ReadonlySet<string>}
- */
-export const QUERYABLE_CLIENT_SORT_FIELDS = new Set(['name', 'date_last_chat', 'chat_size', 'fav']);
-
-/**
  * @typedef {object} CharacterQueryStateInput
  * @property {string} [searchTerm] - current search box value; non-empty disqualifies the server-query fast path
  * (see `isServerQueryEligible()`'s doc comment for why, not just this typedef).
@@ -162,14 +146,33 @@ export function buildCharacterQuery({
 }
 
 /**
- * Whether the current sort state can be answered by the server `/query` endpoint at all - `sortField === 'random'`
- * always qualifies (random needs only a finite seed, checked separately by the caller before it mints a request),
- * anything else must be in `QUERYABLE_CLIENT_SORT_FIELDS`.
+ * Whether `sortField` is even a candidate for the server `/query` path at all. This deliberately does NOT try to
+ * know in advance whether the server actually has a matching column for `sortField` - that used to be
+ * `QUERYABLE_CLIENT_SORT_FIELDS`, a hand-maintained mirror of the server's own `QUERYABLE_SORT_COLUMNS`
+ * (src/character-metadata-db.js) that twice drifted out of sync with it in practice (`create_date`/`data_size`
+ * both went live server-side without this mirror being updated, so every view using either sort silently kept
+ * paying for the fully-local fallback for no reason). The client has no business maintaining a second copy of
+ * "which columns the server supports" at all - the server's own `400 { reason: 'invalid-sort-field' }` response
+ * (see `CharacterQueryError`/`isInvalidSortFieldError()` below) is now the sole source of truth for that
+ * question. Callers attempt the server query unconditionally and treat that specific rejection as the trigger
+ * for the pre-existing local-sort fallback - see `canUseServerQueryForEntitiesList()`/`getEntitiesList()`
+ * (script.js), `canUseServerQueryForGroupCandidates()`/`getGroupCharacters()` (group-chats.js), and
+ * `favsToHotswap()` (RossAscends-mods.js) for that try/catch.
+ *
+ * What's left here is narrower, and neither case is about column support:
+ * - `'search'` isn't a plain-column sort at all - relevance order is answered by the search index directly, a
+ *   different code path than a `sort.field` column (`fetchServerCharacterSearchResults()`/`serverSearchResults`,
+ *   script.js) - excluded here so callers that ask "should I even try `/query` for this sort field" get `false`
+ *   for it rather than sending a request that was never going to be the right mechanism.
+ * - everything else, including `'random'` (which always needs a finite `sort.seed`, minted by the caller via
+ *   `getRandomSortSeed()` before the request goes out - a request-shape concern, not a column-support one, and
+ *   unrelated to this function) and every real or made-up column name: `true` - the caller finds out whether the
+ *   server actually supports it from the response, not from asking here.
  * @param {string|undefined} sortField
  * @returns {boolean}
  */
 export function isServerQueryableSort(sortField) {
-    return sortField === 'random' || QUERYABLE_CLIENT_SORT_FIELDS.has(sortField);
+    return sortField !== 'search';
 }
 
 /**
@@ -189,6 +192,44 @@ export function normalizeQueryRow(row) {
 }
 
 /**
+ * Thrown by `postJson()` for a non-ok response. Carries the parsed JSON body (when the response had one) so
+ * callers can distinguish a specific server-declared rejection - most importantly `reason: 'invalid-sort-field'`,
+ * the trigger for the local-sort fallback (see `isServerQueryableSort()`'s doc comment) - from a generic failure
+ * (network error, a 500, a malformed/empty body) that must NOT be treated the same way. Prefer
+ * `isInvalidSortFieldError()` over checking `.reason` directly at call sites.
+ */
+export class CharacterQueryError extends Error {
+    /**
+     * @param {string} message
+     * @param {object} param1
+     * @param {number} param1.status - HTTP status code.
+     * @param {string} [param1.reason] - the server's `reason` field, when the body was JSON and had one.
+     * @param {any} [param1.body] - the full parsed JSON body, when the response had one; `undefined` if the body
+     * wasn't JSON (or was empty).
+     */
+    constructor(message, { status, reason, body }) {
+        super(message);
+        this.name = 'CharacterQueryError';
+        this.status = status;
+        this.reason = reason;
+        this.body = body;
+    }
+}
+
+/**
+ * Whether `error` is `postJson()` rejecting a `/query` request specifically because `sort.field` isn't one the
+ * server can answer (`400 { reason: 'invalid-sort-field' }`) - the one failure mode call sites should catch and
+ * respond to by falling back to the pre-existing local sort, per `isServerQueryableSort()`'s doc comment. Every
+ * other failure (network error, a 500, a malformed body, a different 400 reason like
+ * `'search-sort-requires-search'`) must propagate normally, not be silently swallowed into the same fallback.
+ * @param {unknown} error
+ * @returns {boolean}
+ */
+export function isInvalidSortFieldError(error) {
+    return error instanceof CharacterQueryError && error.reason === 'invalid-sort-field';
+}
+
+/**
  * @param {string} url
  * @param {object} body
  * @returns {Promise<any>}
@@ -200,14 +241,16 @@ async function postJson(url, body) {
         body: JSON.stringify(body),
     });
     if (!response.ok) {
-        let detail = '';
+        /** @type {any} */
+        let errorBody;
         try {
-            const errorBody = await response.json();
-            detail = errorBody?.message ?? errorBody?.reason ?? '';
+            errorBody = await response.json();
         } catch {
             // Response body wasn't JSON (or was empty) - fall through with just the status.
         }
-        throw new Error(`${url} failed with ${response.status}${detail ? `: ${detail}` : ''}`);
+        const reason = errorBody?.reason;
+        const detail = errorBody?.message ?? reason ?? '';
+        throw new CharacterQueryError(`${url} failed with ${response.status}${detail ? `: ${detail}` : ''}`, { status: response.status, reason, body: errorBody });
     }
     return response.json();
 }
@@ -385,8 +428,27 @@ export class CharacterRepository {
         /** @type {Array<Character|{type: 'character'|'group', item: Character|object}>} */
         const rows = [];
         let page = 1;
+        // `sort.field: 'random'` is deliberately dropped for the actual per-page fetch here (falls through to
+        // the server's default order - the always-present `id ASC` tie-break in queryCharacters()'s ORDER BY,
+        // an indexed primary-key sort real OFFSET pagination can walk cheaply) rather than passed straight
+        // through. Requesting `RANDHASH(id, seed)` order per page is both pointless and, at real library scale,
+        // dangerously expensive here specifically: RANDHASH is a SQL function, not an indexed column, so SQLite
+        // can't use an index to satisfy OFFSET - every single page has to re-evaluate + fully re-sort the ENTIRE
+        // filtered table before it can even apply this page's slice. For a queryAll() loop that's O(pages) full
+        // -table sorts, i.e. quadratic in library size - confirmed (2026-08 getStringHash freeze investigation)
+        // as a multi-minute stall on a ~326k-character install, sampled paused inside getStringHash itself
+        // (hash-utils.js), which RANDHASH is built on (character-metadata-db.js).
+        // It's also provably wasted work: queryAll()'s only two callers that ever pass `sort.field: 'random'`
+        // (script.js's getEntitiesList(), group-chats.js's getGroupCharacters()) both unconditionally re-sort
+        // their result afterward via power-user.js's sortEntitiesList(), which reapplies this exact seeded order
+        // client-side (compareByRandomSeed(), random-sort.js) whenever `power_user.sort_order === 'random'` -
+        // so whatever order the server returned these rows in was always going to be discarded and redone. Any
+        // *future* caller that materializes a queryAll() random-sort result without re-sorting it the same way
+        // would see server-side row order, not seeded-random order - not a behavior change for either of
+        // today's callers, but worth knowing if a new one shows up.
+        const pageSort = sort?.field === 'random' ? undefined : sort;
         for (;;) {
-            const result = await this.query(filter, sort, page, QUERY_ALL_PAGE_SIZE, ['rows']);
+            const result = await this.query(filter, pageSort, page, QUERY_ALL_PAGE_SIZE, ['rows']);
             const pageRows = result.rows ?? [];
             rows.push(...pageRows);
             if (pageRows.length < QUERY_ALL_PAGE_SIZE) break;

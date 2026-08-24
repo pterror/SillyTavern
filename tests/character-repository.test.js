@@ -23,9 +23,13 @@ let buildCharacterQuery;
 let isServerQueryableSort;
 /** @type {typeof import('../public/scripts/character-repository.js').normalizeQueryRow} */
 let normalizeQueryRow;
+/** @type {typeof import('../public/scripts/character-repository.js').CharacterQueryError} */
+let CharacterQueryError;
+/** @type {typeof import('../public/scripts/character-repository.js').isInvalidSortFieldError} */
+let isInvalidSortFieldError;
 
 beforeAll(async () => {
-    ({ CharacterRepository, buildCharacterQuery, isServerQueryableSort, normalizeQueryRow } = await import('../public/scripts/character-repository.js'));
+    ({ CharacterRepository, buildCharacterQuery, isServerQueryableSort, normalizeQueryRow, CharacterQueryError, isInvalidSortFieldError } = await import('../public/scripts/character-repository.js'));
 });
 
 /** Minimal fake of the EntityStore surface CharacterRepository actually uses. */
@@ -452,8 +456,13 @@ describe('query()/queryAll() with includeGroups', () => {
 });
 
 describe('isServerQueryableSort()', () => {
+    // The client no longer keeps its own copy of "which columns the server supports" (that used to be
+    // QUERYABLE_CLIENT_SORT_FIELDS, removed - see this function's doc comment for the drift it caused twice).
+    // It answers "should the caller even attempt /query for this field", which is true for essentially
+    // everything - real column names, made-up ones, 'random' - the server's own 400 invalid-sort-field response
+    // is what actually decides support now (see isInvalidSortFieldError() below).
     test('accepts every column /query can actually sort by (src/character-metadata-db.js QUERYABLE_SORT_COLUMNS)', () => {
-        for (const field of ['name', 'date_last_chat', 'chat_size', 'fav']) {
+        for (const field of ['name', 'date_last_chat', 'chat_size', 'fav', 'create_date', 'data_size']) {
             expect(isServerQueryableSort(field)).toBe(true);
         }
     });
@@ -462,20 +471,92 @@ describe('isServerQueryableSort()', () => {
         expect(isServerQueryableSort('random')).toBe(true);
     });
 
-    test('rejects "create_date" - a different field than the server\'s date_added column (character-repository.js doc comment)', () => {
-        expect(isServerQueryableSort('create_date')).toBe(false);
+    test('accepts an unknown/made-up field name - no client-side allowlist to reject it against anymore, the server\'s own rejection is the authority', () => {
+        expect(isServerQueryableSort('made_up_field')).toBe(true);
     });
 
-    test('rejects "data_size" - no server column exists for it at all', () => {
-        expect(isServerQueryableSort('data_size')).toBe(false);
+    test('accepts undefined - buildCharacterQuery() maps that to no sort at all, which never risks an invalid-sort-field rejection', () => {
+        expect(isServerQueryableSort(undefined)).toBe(true);
     });
 
-    test('rejects "search" - relevance order needs an id list from the search index, not a plain column', () => {
+    test('rejects "search" - relevance order needs an id list from the search index, a completely different code path than a /query sort.field column', () => {
         expect(isServerQueryableSort('search')).toBe(false);
     });
+});
 
-    test('rejects undefined/unknown fields', () => {
-        expect(isServerQueryableSort(undefined)).toBe(false);
-        expect(isServerQueryableSort('made_up_field')).toBe(false);
+describe('CharacterQueryError / isInvalidSortFieldError()', () => {
+    test('query() rejects with a CharacterQueryError carrying status/reason/body on a non-ok response', async () => {
+        const store = makeStore([]);
+        const repo = new CharacterRepository(store);
+        global.fetch.mockResolvedValue({
+            ok: false,
+            status: 400,
+            json: async () => ({ error: true, reason: 'invalid-sort-field' }),
+        });
+
+        let caught;
+        try {
+            await repo.query({}, { field: 'bogus' });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(CharacterQueryError);
+        expect(caught.status).toBe(400);
+        expect(caught.reason).toBe('invalid-sort-field');
+        expect(caught.body).toEqual({ error: true, reason: 'invalid-sort-field' });
+    });
+
+    test('isInvalidSortFieldError() is true only for a caught invalid-sort-field rejection', async () => {
+        const store = makeStore([]);
+        const repo = new CharacterRepository(store);
+        global.fetch.mockResolvedValue({
+            ok: false,
+            status: 400,
+            json: async () => ({ error: true, reason: 'invalid-sort-field' }),
+        });
+
+        try {
+            await repo.query({}, { field: 'bogus' });
+        } catch (error) {
+            expect(isInvalidSortFieldError(error)).toBe(true);
+        }
+        expect.assertions(1);
+    });
+
+    test('isInvalidSortFieldError() is false for a different reason (e.g. a 500, or a reason that is not invalid-sort-field)', async () => {
+        expect(isInvalidSortFieldError(new Error('network down'))).toBe(false);
+        expect(isInvalidSortFieldError(new CharacterQueryError('boom', { status: 500 }))).toBe(false);
+        expect(isInvalidSortFieldError(new CharacterQueryError('boom', { status: 400, reason: 'search-sort-requires-search' }))).toBe(false);
+    });
+
+    test('isInvalidSortFieldError() is false for a genuine 500/server error response', async () => {
+        const store = makeStore([]);
+        const repo = new CharacterRepository(store);
+        global.fetch.mockResolvedValue({
+            ok: false,
+            status: 500,
+            json: async () => ({ error: true, reason: 'internal-error' }),
+        });
+
+        try {
+            await repo.query({}, { field: 'name' });
+        } catch (error) {
+            expect(isInvalidSortFieldError(error)).toBe(false);
+        }
+        expect.assertions(1);
+    });
+
+    test('isInvalidSortFieldError() is false for a network-level failure (fetch itself rejects)', async () => {
+        const store = makeStore([]);
+        const repo = new CharacterRepository(store);
+        global.fetch.mockRejectedValue(new TypeError('Failed to fetch'));
+
+        try {
+            await repo.query({}, { field: 'name' });
+        } catch (error) {
+            expect(error).not.toBeInstanceOf(CharacterQueryError);
+            expect(isInvalidSortFieldError(error)).toBe(false);
+        }
+        expect.assertions(2);
     });
 });
