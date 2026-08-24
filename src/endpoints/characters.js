@@ -30,7 +30,7 @@ import cacheBuster from '../middleware/cacheBuster.js';
 import { searchCharacters, searchCharacterIds, rebuildCharacterSearchIndex, SEARCH_ID_CAP } from './characters-search-index.js';
 import { searchGroups, searchGroupIds } from './groups-search-index.js';
 import { getGroupsData, getGroupsByIds } from './groups.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, resolveFingerprints, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds } from '../character-metadata-db.js';
 import { DEFAULT_DIGEST_BUCKET_COUNT } from '../../public/scripts/hash-utils.js';
 
 // With 100 MB limit it would take roughly 3000 characters to reach this limit
@@ -2318,6 +2318,30 @@ router.post('/tree-descend', async function (request, response) {
         return response.send(result);
     } catch (err) {
         console.error('[characters/tree-descend] Tree-descend failed:', err);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/**
+ * POST /api/characters/fingerprint-values: targeted fetch of fingerprint field values for specific record IDs.
+ * Called after tree-descend has identified the exact drifted records via per-record hash comparison.
+ * Reads from shallow_json in the DB - no processCharacter()/PNG disk reads.
+ */
+router.post('/fingerprint-values', async function (request, response) {
+    try {
+        const ids = Array.isArray(request.body?.ids) ? request.body.ids : [];
+        for (const id of ids) {
+            if (typeof id !== 'string' || forbiddenRegExp.test(id)) {
+                return response.sendStatus(400);
+            }
+        }
+        const result = await resolveFingerprints(request.user.directories, ids);
+        if (result === null) {
+            return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
+        }
+        return response.send(result);
+    } catch (err) {
+        console.error('[characters/fingerprint-values] Fingerprint-values query failed:', err);
         return response.status(500).send({ error: true });
     }
 });

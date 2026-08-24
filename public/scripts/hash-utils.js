@@ -127,6 +127,18 @@ export function canonicalStringify(value) {
  * any realistic character-library size, without needing to tune this per install. */
 export const DEFAULT_DIGEST_BUCKET_COUNT = 256;
 
+/** Default branching factor for the recursive tree-descent anti-entropy protocol (tree-descend). 64 balances
+ * per-level response size against descent depth: at N=64, 10K corrupted records produce a ~14 MB children
+ * response per intermediate level (vs 80 MB at N=256 or 10 MB at N=32), and the tree reaches depth 3 at 10M
+ * records (vs 2 at N=256 or 5 at N=32), giving 3 descent RTs — a good tradeoff between bandwidth and latency
+ * for the high-latency/low-bandwidth mobile-data scenario this protocol is designed for.
+ *
+ * leafThreshold is derived from branching: ceil(branching × 1.5) — the crossover point where returning
+ * per-record hashes (~40 bytes/record in JSON) becomes cheaper than returning branching children hashes
+ * (~60 bytes/child in JSON). This ensures the tree's leaf-level cost never exceeds an equivalent flat
+ * per-record digest. */
+export const DEFAULT_TREE_BRANCHING = 64;
+
 /**
  * Deterministic bucket assignment for one id - the same on client and server (both import this module) is the
  * entire point: neither side ever needs to ask the other "which bucket is this id in", they just agree.
