@@ -450,13 +450,29 @@ export let chat = [];
 const _messageSnapshots = new Map();
 
 /**
+ * Deep-freezes an object and all nested objects/arrays. After freezing, any attempt
+ * to mutate a property at any level throws a TypeError, enforcing the immutable-message
+ * contract all the way down.
+ * @param {*} obj
+ * @returns {*} The same object, now frozen
+ */
+function deepFreeze(obj) {
+    if (obj === null || typeof obj !== 'object') return obj;
+    if (Object.isFrozen(obj)) return obj;
+    Object.freeze(obj);
+    for (const val of Object.values(obj)) {
+        if (val !== null && typeof val === 'object') {
+            deepFreeze(val);
+        }
+    }
+    return obj;
+}
+
+/**
  * The single write path for chat messages. Replaces the message at `mesId` with a
- * new shallow-frozen object incorporating the given updates. Top-level property writes
- * on the frozen object throw TypeError, enforcing that mutations go through this
- * function. Nested objects (extra, swipes, swipe_info) are left unfrozen so that
- * rendering/display code that incidentally touches nested properties (e.g. media
- * attachment processing, swipe info backfill) doesn't crash — only the top-level
- * reference change matters for the wire protocol's change detection.
+ * new deep-frozen object incorporating the given updates. Any attempt to mutate the
+ * message at any nesting level throws TypeError — this is the only correct way to
+ * change a message.
  *
  * @param {number} mesId Index in the chat array
  * @param {object} updates Partial message to shallow-merge (use spread for nested objects)
@@ -477,7 +493,7 @@ const _messageSnapshots = new Map();
 export function updateMessage(mesId, updates) {
     const old = chat[mesId];
     if (!old) return old;
-    const result = Object.freeze({ ...old, ...updates });
+    const result = deepFreeze({ ...old, ...updates });
     chat[mesId] = result;
     return result;
 }
@@ -3259,6 +3275,12 @@ export function ensureMessageMediaIsArray(mes) {
             return;
         }
 
+        // Frozen objects (deep-frozen messages) can't have properties defined on them.
+        // The wrappers were set up pre-freeze during initial load; skip for frozen objects.
+        if (Object.isFrozen(obj)) {
+            return;
+        }
+
         // Define the plain property as a getter/setter that wraps around the array property.
         Object.defineProperty(obj, plainProperty, {
             // Getting the plain property returns the first item in the array property, or undefined if the array is empty.
@@ -3283,6 +3305,11 @@ export function ensureMessageMediaIsArray(mes) {
      * @param {ChatMessageExtra} obj
      */
     function migrateMediaToArray(obj) {
+        // Frozen objects (deep-frozen messages) already had migration applied pre-freeze.
+        if (Object.isFrozen(obj)) {
+            return;
+        }
+
         if (isPlainObjectProperty(obj, 'file')) {
             if (!Array.isArray(obj.files)) {
                 obj.files = [];
@@ -8790,10 +8817,14 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
 
             // Write assigned node_ids back into the chat array so subsequent saves
             // can identify these messages as existing (prevents duplicate inserts).
+            // Must go through updateMessage since the message may be frozen.
             if (Array.isArray(data?.assigned_node_ids)) {
                 for (const { index, node_id } of data.assigned_node_ids) {
                     if (trimmedChat[index]) {
-                        trimmedChat[index].node_id = node_id;
+                        const mesId = chat.indexOf(trimmedChat[index]);
+                        if (mesId >= 0) {
+                            updateMessage(mesId, { node_id });
+                        }
                     }
                 }
             }
@@ -9067,7 +9098,7 @@ export async function getChat({ isNewChat = false } = {}) {
             // Freeze messages loaded from tree DB: immutable values, replaced only via updateMessage()
             if (chat_metadata?._tree_stored) {
                 for (let i = 0; i < chat.length; i++) {
-                    chat[i] = Object.freeze(chat[i]);
+                    chat[i] = deepFreeze(chat[i]);
                 }
                 _snapshotMessages();
             }
@@ -10934,10 +10965,13 @@ export async function deleteSwipe(swipeId = null, messageId = chat.length - 1) {
         return;
     }
 
-    message.swipes.splice(swipeId, 1);
+    // Clone arrays before splicing (originals are frozen)
+    const newSwipes = [...message.swipes];
+    newSwipes.splice(swipeId, 1);
 
-    if (Array.isArray(message.swipe_info) && message.swipe_info.length) {
-        message.swipe_info.splice(swipeId, 1);
+    const newSwipeInfo = Array.isArray(message.swipe_info) ? [...message.swipe_info] : [];
+    if (newSwipeInfo.length) {
+        newSwipeInfo.splice(swipeId, 1);
     }
 
     let newSwipeId;
@@ -10947,14 +10981,14 @@ export async function deleteSwipe(swipeId = null, messageId = chat.length - 1) {
         newSwipeId = currentSwipeId;
     } else {
         // Select the next swipe, or the one before if it was the last one.
-        newSwipeId = Math.min(swipeId, message.swipes.length - 1);
+        newSwipeId = Math.min(swipeId, newSwipes.length - 1);
     }
 
     chat_metadata.tainted = true;
 
     messageId = Number(messageId);
     swipeId = Number(swipeId);
-    updateMessage(messageId, { swipe_id: newSwipeId });
+    updateMessage(messageId, { swipe_id: newSwipeId, swipes: newSwipes, swipe_info: newSwipeInfo });
     await eventSource.emit(event_types.MESSAGE_SWIPE_DELETED, { messageId, swipeId, newSwipeId });
 
     if (swipeId === currentSwipeId) {
