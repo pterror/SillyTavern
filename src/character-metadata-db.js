@@ -3613,3 +3613,20 @@ export async function treeDescend(directories, nodes, branching = DEFAULT_DIGEST
     if (!entry) return null;
     return runDigestWorkerTask({ type: 'tree-descend', dbPath: getDbPath(directories), nodes, branching, leafThreshold });
 }
+
+/**
+ * POST /api/characters/fingerprint-values: targeted fetch of fingerprint field values for specific record ids -
+ * the repair half of tree-descend() above, now that its leaf responses carry only per-record hashes (see that
+ * worker's own header). Called after the client has used tree-descend to narrow drift down to an exact set of
+ * ids via per-record hash comparison; this resolves just those ids' actual fingerprint field values, reading from
+ * `shallow_json` in the DB (no processCharacter()/PNG disk reads).
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string[]} ids
+ * @returns {Promise<{ records: { id: string, fingerprint: object }[] } | null>} `null` if the metadata store is
+ * unavailable.
+ */
+export async function resolveFingerprints(directories, ids) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    return runDigestWorkerTask({ type: 'resolve-fingerprints', dbPath: getDbPath(directories), ids });
+}

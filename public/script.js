@@ -194,7 +194,7 @@ import {
 // Imported directly from hash-utils.js (not re-exported via utils.js like getStringHash) so this doesn't widen
 // utils.js's re-export surface - a mocked utils.js in tests/utils-findchar.test.js stubs hash-utils.js with only
 // getStringHash, and this stays independent of that.
-import { hashSettingsKeys, treeNodeAt, digestsEqual, DEFAULT_DIGEST_BUCKET_COUNT } from './scripts/hash-utils.js';
+import { hashSettingsKeys, treeNodeAt, digestsEqual, DEFAULT_DIGEST_BUCKET_COUNT, DEFAULT_TREE_BRANCHING } from './scripts/hash-utils.js';
 import { debounce_timeout, GENERATION_TYPE_TRIGGERS, IGNORE_SYMBOL, inject_ids, MEDIA_DISPLAY, MEDIA_SOURCE, MEDIA_TYPE, OVERSWIPE_BEHAVIOR, SCROLL_BEHAVIOR, SWIPE_DIRECTION, SWIPE_SOURCE, SWIPE_STATE } from './scripts/constants.js';
 
 import { cancelDebouncedMetadataSave, doDailyExtensionUpdatesCheck, extension_settings, initExtensions, loadExtensionSettings, runGenerationInterceptors } from './scripts/extensions.js';
@@ -2121,17 +2121,18 @@ function workerComputeDigests(worker, nodes) {
  * takes is NOT fixed - it adapts to how deep the actual divergence sits, and to corpus size (see
  * character-metadata-digest-worker.js's own header on the O(log_N(corpusSize / leafThreshold)) depth).
  *
- * ADAPTIVE THRESHOLD: if total nodes to expand at any descent level exceeds MAX_TOTAL_DESCEND_NODES (100K),
- * abort and clear the cache for full resync. This is ~1% of a 10M corpus — above that, the total wire cost of
- * tree descent (~200 MB leaf data + ~800 MB intermediate children data + 100 server-side table scans) exceeds
- * what a full cache-clear + cold resync costs. Requests are batched (DESCEND_BATCH_SIZE=1000) to keep each
- * individual response under ~8 MB, so the cap isn't about single-response size limits (those are handled by
- * batching), it's about total protocol cost.
+ * LEAF RESPONSES ARE HASH-ONLY: `type: 'leaves'` members carry just `{id, favHash, fieldsHash}` (~40 bytes per
+ * record), not fingerprint values - see character-metadata-digest-worker.js's own header on why. After the
+ * descent loop below finishes, drifted ids (those whose local hash disagrees) are collected, and their actual
+ * fingerprint field values are fetched in one targeted follow-up call to `/api/characters/fingerprint-values`
+ * (resolveFingerprints() server-side) - never inline with the leaf response itself.
  *
- * Why NOT a bucket-mismatch-percentage threshold: a naive ">50% of root children mismatch" fires at just ~177
- * uniformly-distributed corrupted records regardless of corpus size (because ~177 records saturate all 256
- * hash buckets), which is clearly still "isolated drift" territory. The node-count cap at 100K instead
- * tolerates up to ~1% corruption before giving up.
+ * NO ABORT CAP: with hash-only leaf responses and leafThreshold derived from the branching factor's per-record
+ * vs per-children-digest crossover (see DEFAULT_TREE_BRANCHING in hash-utils.js), the tree's total cost at
+ * any corruption level is structurally ≤ a flat full digest (transferring per-record hashes for every record).
+ * At low corruption, the tree prunes matching subtrees and costs far less. At high corruption, the tree
+ * converges to exactly the flat digest cost as every subtree is expanded. There is no corruption level where
+ * the tree costs MORE than the simplest possible alternative, so no abort/fallback is needed.
  *
  * Never awaited by its caller (fetchCharactersDelta()) - runs after the delta sync has already returned, so it
  * never adds latency to boot or any other getCharacters() call.
@@ -2141,22 +2142,11 @@ async function verifyCharacterCacheDigest() {
     if (hasVerifiedCharacterCacheDigestThisSession) return;
     hasVerifiedCharacterCacheDigestThisSession = true;
 
-    const branching = DEFAULT_DIGEST_BUCKET_COUNT;
-    /** Lower than branching on purpose: 32 pushes the tree to depth 3 at 10M records (leaf groups of ~1 record
-     * each instead of ~153), so 10K mismatched leaf nodes produce ~2 MB of member data, not ~300 MB. At 326k
-     * records the tree stays at depth 2 (leaf groups of ~5, well under 32). */
-    const leafThreshold = 32;
-    /** Max nodes per single tree-descend request. Keeps each response under ~8 MB (children: 1000 × 256 × 32
-     * bytes; leaves: 1000 × 32 × 200 bytes). When more nodes need expanding, the client splits them into
-     * sequential batches of this size. */
-    const DESCEND_BATCH_SIZE = 1000;
-    /** Hard cap on total nodes to expand at any single descent level. If the total exceeds this, the cache has
-     * widespread divergence that tree descent can't repair more cheaply than a full resync. At 10M records with
-     * leafThreshold=32, each leaf node contains ~1 record, so this allows up to ~100K individual-record repairs
-     * (1% of 10M). Above that, the number of server-side table scans (one per batch × ceil(100K/1000) = 100
-     * scans) and total wire cost (~200 MB of leaf data + ~800 MB of intermediate children data) exceeds what a
-     * full cache-clear + cold resync costs. */
-    const MAX_TOTAL_DESCEND_NODES = 100000;
+    const branching = DEFAULT_TREE_BRANCHING;
+    /** Crossover point where returning per-record hashes (~40 bytes/record in JSON) becomes cheaper than
+     * returning `branching` children hashes (~60 bytes/child in JSON) - see DEFAULT_TREE_BRANCHING's own doc
+     * comment in hash-utils.js. Derived from branching, not a separate constant, so the two stay in lockstep. */
+    const leafThreshold = Math.ceil(branching * 1.5);
 
     // Compute local tree (persistent worker) - fingerprint extraction + canonicalization + hashing for the WHOLE
     // cache runs on character-digest-worker.js (see that module's own header and computeLocalCharacterDigest()'s),
@@ -2176,23 +2166,15 @@ async function verifyCharacterCacheDigest() {
         const allLeaves = [];
 
         while (currentNodes.length > 0) {
-            // Batch the descent requests to keep each individual response under ~8 MB (children: 1000 × 256 ×
-            // 32 bytes = 8 MB; leaves: 1000 × 32 × 200 = 6.4 MB). Without batching, 10K+ nodes in a single
-            // request would produce a response too large for the browser to parse as JSON.
-            const allResults = [];
-            for (let b = 0; b < currentNodes.length; b += DESCEND_BATCH_SIZE) {
-                const batch = currentNodes.slice(b, b + DESCEND_BATCH_SIZE);
-                const response = await fetch('/api/characters/tree-descend', {
-                    method: 'POST',
-                    headers: getRequestHeaders(),
-                    body: JSON.stringify({ branching, leafThreshold, nodes: batch }),
-                });
-                if (!response.ok) {
-                    throw new Error(`Tree-descend failed: ${response.statusText}`);
-                }
-                const { results } = await response.json();
-                allResults.push(...results);
+            const response = await fetch('/api/characters/tree-descend', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ branching, leafThreshold, nodes: currentNodes }),
+            });
+            if (!response.ok) {
+                throw new Error(`Tree-descend failed: ${response.statusText}`);
             }
+            const { results: allResults } = await response.json();
 
             const nextNodes = [];
 
@@ -2235,15 +2217,6 @@ async function verifyCharacterCacheDigest() {
                 }
             }
 
-            // ADAPTIVE THRESHOLD: if total nodes to expand exceeds the hard cap, tree descent can't repair
-            // this much divergence more cheaply than a full resync (see MAX_TOTAL_DESCEND_NODES's own comment).
-            if (nextNodes.length > MAX_TOTAL_DESCEND_NODES) {
-                console.warn(`Tree descent: ${nextNodes.length} mismatched nodes at depth ${nextNodes[0].path.length} exceeds cap of ${MAX_TOTAL_DESCEND_NODES} - clearing cache for full resync.`);
-                await clearCharacterCache();
-                await setCachedRev(0);
-                return;
-            }
-
             if (nextNodes.length > 0) {
                 console.warn(`Tree descent: ${nextNodes.length} mismatched node(s) at depth ${nextNodes[0].path.length}, descending further.`);
             }
@@ -2251,14 +2224,12 @@ async function verifyCharacterCacheDigest() {
             currentNodes = nextNodes;
         }
 
-        // Process all collected leaf results: compare per-record hashes, identify drift, collect repair data
+        // Process all collected leaf results: compare per-record hashes, identify drift by id. Leaf members are
+        // hash-only ({id, favHash, fieldsHash}) - no fingerprint values are carried here (see this function's own
+        // doc comment) - so this pass only decides WHICH ids drifted; their actual field values are fetched in a
+        // single targeted follow-up call below, not per-leaf.
         const toRemove = [];
-        /** @type {Map<string, object>} avatar -> patched character - repair here PATCHES the existing cached copy
-         * rather than re-fetching it whole: finalizeFetchedCharacter() is deliberately NOT called during this
-         * repair - the cached name was already DOMPurify-sanitized when first cached, and its chat field is a
-         * client-side synthesis with no server equivalent (see characterDigestFingerprint()'s own doc comment on
-         * why `chat` isn't part of this digest at all), so there is nothing for it to redo here. */
-        const patched = new Map();
+        const driftedIds = [];
 
         for (const leaf of allLeaves) {
             const serverIdsInLeaf = new Set();
@@ -2268,39 +2239,11 @@ async function verifyCharacterCacheDigest() {
                 const localFav = localFavHashes.get(member.id);
                 const localFields = localFieldsHashes.get(member.id);
 
-                const favDrift = localFav !== member.favHash;
-                const fieldsDrift = localFields !== member.fieldsHash;
+                if (localFav === member.favHash && localFields === member.fieldsHash) continue; // this record is fine
 
-                if (!favDrift && !fieldsDrift) continue; // this record is fine
+                if (!localCharacters.has(member.id)) continue; // record exists on server but not locally - will be caught by change-feed
 
-                // Get the cached character to patch
-                const character = localCharacters.get(member.id);
-                if (!character) continue; // record exists on server but not locally - will be caught by change-feed
-
-                const fp = member.fingerprint;
-                if (fieldsDrift) {
-                    // Patch ALL fingerprint fields (includes fav)
-                    character.name = fp.name;
-                    character.fav = fp.fav;
-                    character.tags = fp.tags;
-                    character.data = character.data || {};
-                    character.data.name = fp.data?.name;
-                    character.data.character_version = fp.data?.character_version;
-                    character.data.creator = fp.data?.creator;
-                    character.data.tags = fp.data?.tags;
-                    character.data.creator_notes = fp.data?.creator_notes;
-                    character.data.extensions = character.data.extensions || {};
-                    character.data.extensions.fav = fp.data?.extensions?.fav;
-                    character.data.extensions.world = fp.data?.extensions?.world;
-                } else if (favDrift) {
-                    // Fav-only drift: patch just fav fields
-                    character.fav = fp.fav;
-                    character.data = character.data || {};
-                    character.data.extensions = character.data.extensions || {};
-                    character.data.extensions.fav = fp.data?.extensions?.fav;
-                }
-
-                patched.set(member.id, character);
+                driftedIds.push(member.id);
             }
 
             // Detect locally-cached records that the server doesn't have in this leaf group
@@ -2318,9 +2261,52 @@ async function verifyCharacterCacheDigest() {
             }
         }
 
-        // Apply repairs
+        // Apply removals before the targeted fingerprint fetch, so a repair that lands after this function's
+        // fire-and-forget caller has already moved on can't race a removal for the same id either way.
         if (toRemove.length > 0) {
             await removeCachedCharacters(toRemove);
+        }
+
+        /** @type {Map<string, object>} avatar -> patched character - repair here PATCHES the existing cached copy
+         * rather than re-fetching it whole: finalizeFetchedCharacter() is deliberately NOT called during this
+         * repair - the cached name was already DOMPurify-sanitized when first cached, and its chat field is a
+         * client-side synthesis with no server equivalent (see characterDigestFingerprint()'s own doc comment on
+         * why `chat` isn't part of this digest at all), so there is nothing for it to redo here. */
+        const patched = new Map();
+
+        if (driftedIds.length > 0) {
+            // Targeted fetch of fingerprint field values for just the drifted records - identified above via
+            // per-record hash comparison, never carried inline with the (hash-only) leaf response itself.
+            const fpResponse = await fetch('/api/characters/fingerprint-values', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ ids: driftedIds }),
+            });
+            if (!fpResponse.ok) {
+                throw new Error(`Fingerprint-values fetch failed: ${fpResponse.statusText}`);
+            }
+            const { records: fpRecords } = await fpResponse.json();
+
+            for (const record of fpRecords) {
+                const character = localCharacters.get(record.id);
+                if (!character) continue;
+
+                const fp = record.fingerprint;
+                character.name = fp.name;
+                character.fav = fp.fav;
+                character.tags = fp.tags;
+                character.data = character.data || {};
+                character.data.name = fp.data?.name;
+                character.data.character_version = fp.data?.character_version;
+                character.data.creator = fp.data?.creator;
+                character.data.tags = fp.data?.tags;
+                character.data.creator_notes = fp.data?.creator_notes;
+                character.data.extensions = character.data.extensions || {};
+                character.data.extensions.fav = fp.data?.extensions?.fav;
+                character.data.extensions.world = fp.data?.extensions?.world;
+
+                patched.set(record.id, character);
+            }
         }
 
         if (patched.size > 0) {

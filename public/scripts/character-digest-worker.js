@@ -1,4 +1,4 @@
-import { getStringHash, treeNodeAt, characterDigestFavHash, characterDigestFieldsHash, emptyDigest, combineDigest, foldDigests, DEFAULT_DIGEST_BUCKET_COUNT } from './hash-utils.js';
+import { getStringHash, treeNodeAt, characterDigestFavHash, characterDigestFieldsHash, emptyDigest, combineDigest, foldDigests, DEFAULT_DIGEST_BUCKET_COUNT, DEFAULT_TREE_BRANCHING } from './hash-utils.js';
 
 /**
  * Module Web Worker (see kokoro.js's `new Worker(new URL(...), { type: 'module' })` for this codebase's existing
@@ -127,7 +127,7 @@ async function handleComputeDigests(nodes) {
 self.addEventListener('message', async (event) => {
     const msg = event.data;
     if (msg.type === 'init') {
-        branching = msg.branching ?? DEFAULT_DIGEST_BUCKET_COUNT;
+        branching = msg.branching ?? DEFAULT_TREE_BRANCHING;
         records.clear();
         return;
     }

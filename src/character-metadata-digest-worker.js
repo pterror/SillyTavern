@@ -33,11 +33,12 @@ import { getStringHash, emptyDigest, combineDigest, foldDigests, characterDigest
 /** Rows processed between yields. */
 const CHUNK_SIZE = 5000;
 
-/** Default leaf threshold — nodes with ≤ this many records return member data directly instead of children
- * hashes. 32 pushes the tree to depth 3 at 10M records (leaf groups of ~1 record each), which at 0.1%
- * corruption gives 10K leaf nodes × ~1 record × 200 bytes = 2 MB of leaf data — far more tolerable than the
- * old 256 threshold's 10K × 153 × 200 = 306 MB. */
-const DEFAULT_LEAF_THRESHOLD = 32;
+/** Default leaf threshold — nodes with ≤ this many records return per-record hash data directly instead of
+ * children digests. Derived from branching: ceil(branching × 1.5) = the crossover where per-record hashes
+ * (~40 bytes/record JSON) are cheaper than children digests (~60 bytes/child JSON). At B=64: threshold=96,
+ * so L2 nodes at 10M (~38 records) are leaves. This ensures tree leaf cost ≤ flat digest cost at every
+ * corruption level — see the module header for the full derivation. */
+const DEFAULT_LEAF_THRESHOLD = 96;
 
 /**
  * @param {string} dbPath
@@ -184,13 +185,18 @@ async function treeDescend(dbPath, nodes, branching, leafThreshold) {
                         const nodeIndices = depthMap.get(key);
                         if (!nodeIndices) continue;
 
+                        // Leaf members carry per-record HASHES only (id + favHash + fieldsHash), NOT
+                        // fingerprint values. This keeps leaf cost linear in records (~40 bytes each) rather
+                        // than 5x more (~200 bytes with fingerprint), so at 100% corruption the total leaf
+                        // data equals a flat full-digest (~400 MB at 10M) instead of blowing up to 2 GB.
+                        // Fingerprint values for the K actually-drifted records are fetched separately via
+                        // 'resolve-fingerprints' after the client has identified them.
                         const parsed = JSON.parse(row.shallow_json);
                         for (const n of nodeIndices) {
                             leafMembers.get(n).push({
                                 id: row.id,
                                 favHash: characterDigestFavHash(parsed),
                                 fieldsHash: characterDigestFieldsHash(parsed),
-                                fingerprint: characterDigestFingerprint(parsed),
                             });
                         }
                     }
@@ -217,6 +223,38 @@ async function treeDescend(dbPath, nodes, branching, leafThreshold) {
     }
 }
 
+/**
+ * Fetches fingerprint field values for a specific set of record IDs. Called AFTER tree-descend has identified
+ * the exact drifted records (via per-record hash comparison in leaf responses). Reads from `shallow_json` in
+ * the DB — no processCharacter()/PNG disk reads.
+ * @param {string} dbPath
+ * @param {string[]} ids Record IDs (avatar filenames) to resolve.
+ */
+async function resolveFingerprints(dbPath, ids) {
+    const db = await openReadOnly(dbPath);
+    if (!db) return null;
+    try {
+        const idSet = new Set(ids);
+        const results = [];
+        // Single scan, filter by id set. For small id sets (<1000) a batched `WHERE id IN (...)` query would be
+        // faster, but the worker doesn't have access to the main thread's prepared-statement cache, and for the
+        // rare anti-entropy repair path, a single sequential scan is simpler and correct.
+        const rows = db.all('SELECT id, shallow_json FROM characters');
+        for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
+            for (let j = i; j < Math.min(i + CHUNK_SIZE, rows.length); j++) {
+                const row = rows[j];
+                if (!idSet.has(row.id)) continue;
+                const parsed = JSON.parse(row.shallow_json);
+                results.push({ id: row.id, fingerprint: characterDigestFingerprint(parsed) });
+            }
+            await new Promise((resolve) => setImmediate(resolve));
+        }
+        return { records: results };
+    } finally {
+        db.close();
+    }
+}
+
 parentPort.on('message', async (msg) => {
     try {
         if (msg.type === 'tree-descend') {
@@ -226,6 +264,11 @@ parentPort.on('message', async (msg) => {
                 msg.branching ?? DEFAULT_DIGEST_BUCKET_COUNT,
                 msg.leafThreshold ?? DEFAULT_LEAF_THRESHOLD,
             );
+            parentPort.postMessage({ id: msg.id, ok: true, result });
+            return;
+        }
+        if (msg.type === 'resolve-fingerprints') {
+            const result = await resolveFingerprints(msg.dbPath, msg.ids ?? []);
             parentPort.postMessage({ id: msg.id, ok: true, result });
             return;
         }
