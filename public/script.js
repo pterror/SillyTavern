@@ -266,7 +266,7 @@ import { appendFileContent, hasPendingFileAttachment, populateFileAttachment, de
 import { getPresetManager, initPresetManager } from './scripts/preset-manager.js';
 import { evaluateMacros, getLastMessageId, initMacros } from './scripts/macros.js';
 import { currentUser, setUserControls } from './scripts/user.js';
-import { diffCharacterManifest, saveCachedCharacters, pruneCharacterCache } from './scripts/character-cache.js';
+import { getCachedRev, setCachedRev, getAllCachedCharacters, saveCachedCharacters, removeCachedCharacters, clearCharacterCache } from './scripts/character-cache.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup, callGenericPopup, fixToastrForDialogs } from './scripts/popup.js';
 import { renderTemplate, renderTemplateAsync } from './scripts/templates.js';
 import { initScrapers } from './scripts/scrapers.js';
@@ -910,12 +910,27 @@ async function firstLoadInit() {
     initTags();
     initBookmarks();
     await getUserAvatars(true, user_avatar);
-    await getCharacters();
-    // Boot-time tag_map seed - must run after getCharacters() (which also awaits getGroups() internally), since
-    // it needs both `characters` and `groups` populated to know which ids to ask /api/tags/for. See
-    // seedTagMapForResidentEntities()'s own doc comment (tags.js) for why this can't happen inside
-    // loadTagsSettings() itself (that runs earlier, via getSettings(), before either array exists).
-    await seedTagMapForResidentEntities();
+    // Boot-residency decoupling (docs/design/boot-residency-decoupling.md): the full character/group fetch and
+    // the tag-map seed that depends on it no longer gate first paint. `printCharacters(true)` right below this
+    // renders via the server-query path (`canUseServerQueryForEntitiesList()`) whenever eligible - the common
+    // boot case (no restored search, a queryable sort field) - which needs no local `characters`/`groups`
+    // residency at all, so it's safe to call before either array is populated. This promise is awaited later,
+    // right before APP_READY, so nothing that genuinely assumes full residency by the time APP_READY fires
+    // (extensions included - see the design doc's §5 "what this doc does not know" on extension compatibility)
+    // observes any behavior change; only the visual first paint moves earlier. Both `getCharacters()` (via its
+    // own trailing `printCharacters(true)`) and `seedTagMapForResidentEntities()` (via `printCharactersDebounced()`
+    // + tag-filter reprints) already redraw themselves once real data lands, so the ineligible-boot-state case
+    // (an active search restored from session, or a non-server-queryable sort field - design doc §3) still
+    // converges to a correct render, just not the very first one.
+    const characterResidencyPromise = (async () => {
+        await getCharacters();
+        // Must run after getCharacters() (which also awaits getGroups() internally), since it needs both
+        // `characters` and `groups` populated to know which ids to ask /api/tags/for. See
+        // seedTagMapForResidentEntities()'s own doc comment (tags.js) for why this can't happen inside
+        // loadTagsSettings() itself (that runs earlier, via getSettings(), before either array exists).
+        await seedTagMapForResidentEntities();
+    })();
+    await printCharacters(true);
     await getBackgrounds();
     await initTokenizers();
     initBackgrounds();
@@ -946,6 +961,11 @@ async function firstLoadInit() {
     await eventSource.emit(event_types.APP_INITIALIZED);
     await initLoaderHandle.hide();
     await fixViewport();
+    // Full character/group residency (and the tag-map seed that depends on it) is awaited here rather than
+    // earlier - see this function's own comment above `characterResidencyPromise` - so APP_READY keeps its
+    // pre-existing guarantee (full residency by the time it fires) even though the splash screen itself no
+    // longer waits on it.
+    await characterResidencyPromise;
     await eventSource.emit(event_types.APP_READY);
 }
 
@@ -1887,35 +1907,67 @@ function finalizeFetchedCharacter(character) {
 }
 
 /**
- * Fetches the current character list via the manifest/delta-cache path: `/api/characters/manifest` for a cheap
- * `[{ avatar, mtime }, ...]` of the whole library, diffed against character-cache.js's IndexedDB cache so only
- * characters that are new or whose mtime changed get fetched (via `/api/characters/batch`) and re-processed
- * (DOMPurify/chat-default) - unchanged characters are reused from cache as-is, both their data and that
- * processing. Throws on any failure (network, non-OK response, etc.) - callers should fall back to the
- * unconditional full-fetch path (fetchAllCharacters()) rather than partially apply a broken delta.
- * @returns {Promise<object[]>} The full, in-manifest-order character list.
+ * Fetches the current character list via the change-feed/delta-cache path: `POST /api/characters/changes` for
+ * a cheap `{ rev, changes: [{id, op}], truncated }` since this cache's last-synced revision (character-cache.js's
+ * `getCachedRev()`), applied on top of whatever's already cached so only characters that are genuinely new or
+ * changed (`op: 'upsert'`) get fetched (via `/api/characters/batch`) and re-processed (DOMPurify/chat-default) -
+ * deleted characters (`op: 'delete'`) are dropped from the cache directly, by id, rather than inferred from
+ * absence in a full snapshot. Replaces the old `/api/characters/manifest` full-library scan entirely: every
+ * real mutation (create/rename/delete/edit) already writes a `changes` row server-side (character-metadata-db.js
+ * `writeRowSync()`, called unconditionally by every write path including the one-time bootstrap backfill - see
+ * that function's own doc comment), so a `sinceRev: 0` cold sync's change list already IS the full current
+ * library, with no separate ground-truth listing needed to know what's been deleted since.
+ *
+ * Throws on any failure (network, non-OK response, etc.) - callers should fall back to the unconditional
+ * full-fetch path (fetchAllCharacters()) rather than partially apply a broken delta.
+ *
+ * Note on ordering: unlike the old manifest-diff scheme (which preserved the server's readdir order), the
+ * returned list's order is cache insertion order, not any particular library order - nothing downstream should
+ * be relying on `characters` array order as meaningful (display always goes through sortEntitiesList()).
+ *
+ * Note on thumbnails: the old `/manifest` response's `thumbnailVersion` field let getThumbnailUrl() skip a
+ * no-cache redirect hop for every character in the library, up front. `/changes` doesn't carry that (it only
+ * knows what changed, not a thumbnail cache-bust token), and `/batch` doesn't return it either - this is a real,
+ * accepted perf regression for cache-hit characters (they fall back to the pre-existing "no cached version"
+ * path getThumbnailUrl() already had before this field existed), not a correctness issue.
+ * @returns {Promise<object[]>} The full character list, cache order (see note above).
  */
 async function fetchCharactersDelta() {
-    const manifestResponse = await fetch('/api/characters/manifest', {
+    const sinceRev = await getCachedRev();
+    const changesResponse = await fetch('/api/characters/changes', {
         method: 'POST',
         headers: getRequestHeaders(),
-        body: JSON.stringify({}),
+        body: JSON.stringify({ sinceRev }),
     });
 
-    if (!manifestResponse.ok) {
-        throw new Error(`Failed to fetch character manifest: ${manifestResponse.statusText}`);
+    if (!changesResponse.ok) {
+        throw new Error(`Failed to fetch character changes: ${changesResponse.statusText}`);
     }
 
-    /** @type {{avatar: string, mtime: number, thumbnailVersion: string|null}[]} */
-    const manifest = await manifestResponse.json();
+    /** @type {{rev: number, changes: {id: string, op: 'upsert'|'delete'}[], truncated: boolean}} */
+    const { rev, changes, truncated } = await changesResponse.json();
 
-    // Hand the avatar thumbnail route its `?v=` up front for every character with a cached thumbnail already,
-    // so getThumbnailUrl() can skip the no-cache redirect hop below (see thumbnailVersionCache's own comment).
-    for (const entry of manifest) {
-        setThumbnailVersion('avatar', entry.avatar, entry.thumbnailVersion);
+    if (truncated) {
+        // sinceRev predates anything the server's change log still has - this cache can no longer be trusted
+        // to catch up incrementally. Wipe it and retry as a fresh sinceRev: 0 sync, whose change list is the
+        // full current library (see this function's own doc comment).
+        await clearCharacterCache();
+        return fetchCharactersDelta();
     }
 
-    const { toFetch, cached } = await diffCharacterManifest(manifest);
+    const toFetch = [];
+    const deleteIds = [];
+    for (const { id, op } of changes) {
+        if (op === 'delete') {
+            deleteIds.push(id);
+        } else {
+            toFetch.push(id);
+        }
+    }
+
+    if (deleteIds.length > 0) {
+        await removeCachedCharacters(deleteIds);
+    }
 
     /** @type {Map<string, object>} */
     const fresh = new Map();
@@ -1939,31 +1991,18 @@ async function fetchCharactersDelta() {
         }
     }
 
-    const mtimeByAvatar = new Map(manifest.map(entry => [entry.avatar, entry.mtime]));
-    const finalCharacters = [];
-    for (const { avatar } of manifest) {
-        const character = fresh.get(avatar) ?? cached.get(avatar);
-        // A missing character here means it failed processCharacter() server-side (corrupt file etc.) and got
-        // filtered out of the batch response - matches /all's own `.filter(c => c.name)` behavior, just applied
-        // per-entry instead of over a bulk array.
-        if (character) {
-            finalCharacters.push(character);
-        }
-    }
-
     if (fresh.size > 0) {
-        await saveCachedCharacters(Array.from(fresh.values(), character => ({
-            avatar: character.avatar,
-            mtime: mtimeByAvatar.get(character.avatar),
-            character,
-        })));
+        await saveCachedCharacters(Array.from(fresh, ([avatar, character]) => ({ avatar, character })));
     }
+    await setCachedRev(rev);
 
-    // Deleted/renamed characters shouldn't linger in the cache forever - safe to do unconditionally since the
-    // returned list above is already derived solely from the current manifest, not from whatever's cached.
-    await pruneCharacterCache(new Set(manifest.map(entry => entry.avatar)));
-
-    return finalCharacters;
+    // The cache is now caught up: everything still in it, plus whatever this pass upserted, minus whatever it
+    // deleted, IS the current library (see this function's own doc comment on why no separate ground-truth
+    // listing is needed). Re-read rather than reconstruct in place so a character that failed
+    // processCharacter() server-side (corrupt file etc., filtered out of the batch response, matching /all's
+    // own `.filter(c => c.name)` behavior) correctly stays absent instead of resurfacing from a stale local var.
+    const allCached = await getAllCachedCharacters();
+    return Array.from(allCached.values());
 }
 
 /**
