@@ -3527,6 +3527,10 @@ export async function getChangesSince(directories, sinceRev) {
 }
 
 /**
+ * SUPERSEDED by the 2-level hash-tree approach (`getTreeDigest()`/`resolveTreeLeaves()` below) - kept for now,
+ * not yet deleted, but no longer wired into any endpoint or client. See getTreeDigest()'s own doc comment for
+ * why the flat-bucket shape this implements was replaced.
+ *
  * `POST /api/characters/state-digest`: the anti-entropy check on the character cache itself (see
  * public/scripts/hash-utils.js's own header on the bucketed-digest approach this follows, and on WHY it's built
  * from content hashes rather than the change-log `rev` counter - a client cache that's silently gone wrong is
@@ -3555,10 +3559,13 @@ export async function getChangesSince(directories, sinceRev) {
  * touches `entry.db`.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {number} [bucketCount]
- * @returns {Promise<{ buckets: { hi: number, lo: number }[] } | null>} `buckets[i]` is the order-independent
- * XOR-fold digest (combineDigest()) of every `{id, contentHashOf(shallow_json)}` pair currently in `characters`
- * whose id hashes to bucket `i` (bucketOf()) - a client folds the same table over its own cache with the same
- * functions and compares position-by-position. `null` if the metadata store is unavailable.
+ * @returns {Promise<{ favBuckets: { hi: number, lo: number }[], contentBuckets: { hi: number, lo: number }[] } | null>}
+ * TWO parallel bucket-digest tables, not one - `favBuckets[i]`/`contentBuckets[i]` are the order-independent
+ * XOR-fold digests (combineDigest()) of every `{id, characterDigestFavHash(shallow_json)}` /
+ * `{id, characterDigestFieldsHash(shallow_json)}` pair currently in `characters` whose id hashes to bucket `i`
+ * (bucketOf()) - split so a client can tell a fav-only mismatch (repairable with zero extra fetch) apart from a
+ * real content-field mismatch. A client folds the same table over its own cache with the same functions and
+ * compares position-by-position, per stream. `null` if the metadata store is unavailable.
  */
 export async function getStateDigest(directories, bucketCount = DEFAULT_DIGEST_BUCKET_COUNT) {
     const entry = await getEntry(directories);
@@ -3568,6 +3575,9 @@ export async function getStateDigest(directories, bucketCount = DEFAULT_DIGEST_B
 }
 
 /**
+ * SUPERSEDED by the 2-level hash-tree approach (`resolveTreeLeaves()` below) - kept for now, not yet deleted,
+ * but no longer wired into any endpoint or client.
+ *
  * `POST /api/characters/bucket-members`: the repair half of the state-digest check above - once a client has
  * found (via getStateDigest()) that ITS locally-computed digest for bucket `bucket` disagrees with the
  * server's, this is what lets it find out exactly which ids in that one bucket actually diverged (by comparing
@@ -3579,12 +3589,50 @@ export async function getStateDigest(directories, bucketCount = DEFAULT_DIGEST_B
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {number} bucket
  * @param {number} [bucketCount]
- * @returns {Promise<{ members: { id: string, contentHash: number }[] } | null>} `null` if the metadata store is
- * unavailable.
+ * @returns {Promise<{ members: { id: string, favHash: number, fieldsHash: number, fav: boolean }[] } | null>}
+ * `favHash`/`fieldsHash` let the client tell which of the two digest streams actually diverged for this id
+ * without a second round trip; `fav` is the row's actual current fav value (straight from `shallow_json`), so a
+ * fav-only mismatch can be repaired directly from this response with no further fetch at all. `null` if the
+ * metadata store is unavailable.
  */
 export async function getBucketMembers(directories, bucket, bucketCount = DEFAULT_DIGEST_BUCKET_COUNT) {
     const entry = await getEntry(directories);
     if (!entry) return null;
 
     return runDigestWorkerTask({ type: 'bucket-members', dbPath: getDbPath(directories), bucket, bucketCount });
+}
+
+/**
+ * POST /api/characters/tree-digest: builds the full 2-level hash tree. Supersedes getStateDigest()'s flat-bucket
+ * approach with true pinpointing - a flat bucket table can only ever say "this bucket disagrees", forcing a full
+ * bucket-members fetch (library size / bucketCount ids) to find out which record(s) actually diverged inside it.
+ * The 2-level tree subdivides each level-0 bucket into a further 256-way split (level-1), so once a mismatched
+ * level-0 node is found, the client already has (from this same response's `subtrees`) enough information to
+ * compare level-1 hashes locally and only ask the server to resolve the specific leaf groups (~corpusSize / 256^2
+ * records each) that actually disagree - see resolveTreeLeaves() below.
+ * Returns { children, subtrees } where children is the 256 level-0 hashes and subtrees is the full 65K-entry
+ * level-1 data for the main thread to cache.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {number} [branching]
+ * @returns {Promise<{ children: { fav: {hi:number,lo:number}, fields: {hi:number,lo:number} }[], subtrees: { fav: {hi:number,lo:number}, fields: {hi:number,lo:number} }[] } | null>}
+ */
+export async function getTreeDigest(directories, branching = DEFAULT_DIGEST_BUCKET_COUNT) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    return runDigestWorkerTask({ type: 'tree-digest', dbPath: getDbPath(directories), branching });
+}
+
+/**
+ * POST /api/characters/tree-resolve: resolves specific leaf groups to their full member data.
+ * Used after the client has compared level-0 hashes (from getTreeDigest) and then compared level-1 hashes
+ * (from the cached subtrees), identifying which specific leaf groups have mismatched hashes.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {{ l0: number, l1: number }[]} targetLeaves
+ * @param {number} [branching]
+ * @returns {Promise<{ leaves: { path: number[], members: object[] }[] } | null>}
+ */
+export async function resolveTreeLeaves(directories, targetLeaves, branching = DEFAULT_DIGEST_BUCKET_COUNT) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    return runDigestWorkerTask({ type: 'tree-resolve', dbPath: getDbPath(directories), targetLeaves, branching });
 }

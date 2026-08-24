@@ -142,6 +142,30 @@ export function bucketOf(id, bucketCount = DEFAULT_DIGEST_BUCKET_COUNT) {
 }
 
 /**
+ * Hierarchical extension of `bucketOf()` - returns the tree-node index at a given level for an id, using
+ * successive bit ranges of the same deterministic hash. Level 0 is exactly `bucketOf(id, branching)` (same low
+ * bits, same assignment), so the flat-bucket scheme is literally level 0 of this tree; higher levels subdivide
+ * each level-0 bucket into finer groups using the next bits of the hash.
+ *
+ * Stable by construction: adding/removing records never changes any other record's tree path, because the path
+ * is derived purely from the id's own hash, with no dependence on the set of other ids present. Same hash →
+ * same path, regardless of corpus size or composition.
+ *
+ * Uses division/modulo rather than bit shifts because `getStringHash()` returns a 53-bit number (not a 32-bit
+ * int), and JavaScript's `>>>` operator truncates to 32 bits. Division stays in safe-integer range for all
+ * levels up to floor(53 / log2(branching)) - at branching=256, that's 6 levels, covering up to 256^6 ≈ 281
+ * trillion leaf nodes, well beyond any realistic corpus size.
+ * @param {string} id
+ * @param {number} level 0-based tree level (0 = same as `bucketOf`)
+ * @param {number} [branching] Must be a positive integer; powers of 2 recommended for clean bit extraction.
+ * @returns {number} Node index at this level (0 to branching-1)
+ */
+export function treeNodeAt(id, level, branching = DEFAULT_DIGEST_BUCKET_COUNT) {
+    const hash = getStringHash(String(id));
+    return Math.floor(hash / Math.pow(branching, level)) % branching;
+}
+
+/**
  * The content-derived fingerprint this whole mechanism is built on (see this section's own header for why it's
  * content, not a stored counter) - a single hash of whatever object it's given, recomputed fresh every call,
  * never persisted anywhere as its own independently-trusted value. Generic on purpose (this module stays
@@ -272,6 +296,122 @@ export function characterDigestContentHash(character) {
 
     let topParts = `"data":{${dataParts}}`;
     if (fav !== undefined) topParts += `,"fav":${JSON.stringify(fav)}`;
+    if (name !== undefined) topParts += `,"name":${JSON.stringify(name)}`;
+    if (tags !== undefined) topParts += `,"tags":${JSON.stringify(tags)}`;
+
+    return getStringHash(`{${topParts}}`);
+}
+
+/**
+ * Picks the fav-group subset of a character's fingerprint: the two fields (`fav`, `data.extensions.fav`) that
+ * change independently via the `setCharacterFav()` endpoint (a DB-only toggle that never touches the PNG),
+ * making them the most common single-field drift vector. Paired with `characterContentFieldsFingerprint()`
+ * below; the two together cover exactly the same fields as `characterDigestFingerprint()` above, just split
+ * into independently-hashable groups so the bucket-digest mechanism can tell a fav-only mismatch apart from a
+ * real content-field mismatch without needing a second round trip to diff individual records.
+ * @param {object} character
+ * @returns {object}
+ */
+export function characterFavFingerprint(character) {
+    return {
+        fav: character?.fav,
+        data: {
+            extensions: {
+                fav: character?.data?.extensions?.fav,
+            },
+        },
+    };
+}
+
+/**
+ * Picks the content-fields-group subset of a character's fingerprint: everything `characterDigestFingerprint()`
+ * covers EXCEPT the fav fields (which go in `characterFavFingerprint()` above). These fields all change
+ * atomically together when the character's PNG card is written, so grouping them into one hash stream means a
+ * mismatch in any of them is detected as "content fields drifted" - which field specifically can be determined
+ * by the targeted-patch repair path without a separate per-field hash (the server returns the actual field
+ * values and the client diffs against its cached copy).
+ * @param {object} character
+ * @returns {object}
+ */
+export function characterContentFieldsFingerprint(character) {
+    return {
+        name: character?.name,
+        tags: character?.tags,
+        data: {
+            name: character?.data?.name,
+            character_version: character?.data?.character_version,
+            creator: character?.data?.creator,
+            tags: character?.data?.tags,
+            creator_notes: character?.data?.creator_notes,
+            extensions: {
+                world: character?.data?.extensions?.world,
+            },
+        },
+    };
+}
+
+/**
+ * Fixed-shape fast path for `contentHashOf(characterFavFingerprint(character))` - same rationale as
+ * `characterDigestContentHash()` above: the generic `canonicalStringify()` pipeline is redundant overhead for a
+ * shape that's known statically. Must stay byte-identical to the generic path (verified in tests).
+ *
+ * Canonical key order: top-level `data` < `fav`; inside `data` only `extensions`; inside `extensions` only `fav`.
+ * @param {object} character
+ * @returns {number}
+ */
+export function characterDigestFavHash(character) {
+    const fav = character?.fav;
+    const extFav = character?.data?.extensions?.fav;
+
+    let extParts = '';
+    if (extFav !== undefined) extParts += `"fav":${JSON.stringify(extFav)}`;
+
+    const dataParts = `"extensions":{${extParts}}`;
+
+    let topParts = `"data":{${dataParts}}`;
+    if (fav !== undefined) topParts += `,"fav":${JSON.stringify(fav)}`;
+
+    return getStringHash(`{${topParts}}`);
+}
+
+/**
+ * Fixed-shape fast path for `contentHashOf(characterContentFieldsFingerprint(character))` - the non-fav
+ * fingerprint fields, same hand-unrolled approach as `characterDigestContentHash()` and
+ * `characterDigestFavHash()`. Must stay byte-identical to the generic path (verified in tests).
+ *
+ * Canonical key order: top-level `data` < `name` < `tags`; inside `data`:
+ * `character_version` < `creator` < `creator_notes` < `extensions` < `name` < `tags`;
+ * inside `extensions` only `world`.
+ * @param {object} character
+ * @returns {number}
+ */
+export function characterDigestFieldsHash(character) {
+    const name = character?.name;
+    const tags = character?.tags;
+    const data = character?.data;
+    const characterVersion = data?.character_version;
+    const creator = data?.creator;
+    const creatorNotes = data?.creator_notes;
+    const dataName = data?.name;
+    const dataTags = data?.tags;
+    const extWorld = data?.extensions?.world;
+
+    let extParts = '';
+    if (extWorld !== undefined) extParts += `"world":${JSON.stringify(extWorld)}`;
+
+    let dataParts = '';
+    const appendData = (key, value) => {
+        if (value === undefined) return;
+        dataParts += (dataParts ? ',' : '') + `${JSON.stringify(key)}:${value}`;
+    };
+    if (characterVersion !== undefined) appendData('character_version', JSON.stringify(characterVersion));
+    if (creator !== undefined) appendData('creator', JSON.stringify(creator));
+    if (creatorNotes !== undefined) appendData('creator_notes', JSON.stringify(creatorNotes));
+    appendData('extensions', `{${extParts}}`);
+    if (dataName !== undefined) appendData('name', JSON.stringify(dataName));
+    if (dataTags !== undefined) appendData('tags', JSON.stringify(dataTags));
+
+    let topParts = `"data":{${dataParts}}`;
     if (name !== undefined) topParts += `,"name":${JSON.stringify(name)}`;
     if (tags !== undefined) topParts += `,"tags":${JSON.stringify(tags)}`;
 

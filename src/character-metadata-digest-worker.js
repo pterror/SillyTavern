@@ -1,40 +1,36 @@
 import { parentPort } from 'node:worker_threads';
 
 import { getSqliteEngine } from './endpoints/sqlite-engine.js';
-import { bucketOf, emptyDigest, combineDigest, characterDigestContentHash, DEFAULT_DIGEST_BUCKET_COUNT } from '../public/scripts/hash-utils.js';
+import { treeNodeAt, emptyDigest, combineDigest, foldDigests, characterDigestFavHash, characterDigestFieldsHash, characterDigestFingerprint, DEFAULT_DIGEST_BUCKET_COUNT } from '../public/scripts/hash-utils.js';
 
 /**
- * worker_threads entry point for character-metadata-db.js's getStateDigest()/getBucketMembers() - the two
- * full-`characters`-table anti-entropy scans behind `POST /api/characters/state-digest` and
- * `POST /api/characters/bucket-members` (see those functions' own doc comments for the full mechanism). Moved
- * off the main thread (2026-08 state-digest perf investigation) because a real 326k-row `characters` table
- * measured ~2.2s of synchronous JS (JSON.parse + fingerprint extraction + hashing) for this scan alone, on top
- * of another ~0.5s for the row fetch itself - on the main Express event loop, that's ~2.7s where every other
- * request on this Node process (chat completions, file writes, everything) queues up behind it. Follows
- * local-import-worker.js's own precedent for why the worker owns its OWN read here rather than the main thread
- * fetching rows and shipping them over `postMessage`: shipping ~326k `{id, shallow_json}` pairs through a
- * structured-clone message would itself cost roughly what the row fetch already costs, for no benefit - a
- * dedicated read-only connection opened right here is simpler and, under this engine's WAL journal mode (see
- * sqlite-engine.js's openNativeDatabase()), safe to run concurrently alongside the main thread's own persistent
- * connection to the same file (multiple readers under WAL never block each other or the main connection).
+ * worker_threads entry point for the hierarchical hash-tree anti-entropy check (POST /api/characters/tree-digest
+ * and POST /api/characters/tree-resolve). Supersedes the previous flat-bucket state-digest/bucket-members
+ * approach with a real 2-level N-ary tree that localizes diverged records through descent rather than
+ * brute-force bucket-member comparison.
  *
- * DELIBERATELY never touches the main thread's persistent `entries` connection cache
- * (character-metadata-db.js's own `getEntry()`) - opens and closes its own handle per call, since this is a
- * rare, on-demand anti-entropy check (once per client page session, not a hot per-request path) rather than
- * something worth keeping a warm pool of workers around for the way local-import-worker-pool.js's high-
- * throughput per-file dispatch does. One spawn-per-call (tens of ms of Worker startup, per that pool's own
- * header) is immaterial next to the multi-second scan it's replacing.
+ * The tree structure: branching-factor-256 (matching the existing DEFAULT_DIGEST_BUCKET_COUNT), 2 levels deep.
+ * Level-0 nodes are exactly the old bucketOf() buckets (treeNodeAt(id, 0) === bucketOf(id)). Level-1 nodes
+ * subdivide each level-0 bucket using the next 8 bits of the id hash. Each leaf group (identified by its
+ * [l0, l1] path) contains roughly corpusSize / 256^2 records (~5 at 326k, ~15 at 1M, ~153 at 10M).
  *
- * CHUNKED, NOT ONE LONG SYNCHRONOUS SWEEP: even though this already runs off the main thread, the per-row
- * hash/fold loop below still yields back to THIS worker's own event loop every CHUNK_SIZE rows (via
- * `setImmediate`) rather than running start-to-finish as one blocking stretch - so a future addition (a
- * cancellation message, a second concurrent request to this same worker) has somewhere to land instead of
- * queuing behind a multi-second synchronous block same as before, just relocated to a different thread.
+ * Deterministic and stable by construction: a record's tree path depends only on its own id hash, never on
+ * other records in the corpus. Adding or removing records changes no existing record's path.
+ *
+ * Two message types:
+ *  - 'tree-digest': full-table scan, builds the 2-level tree, returns level-0 children hashes PLUS the full
+ *    level-1 subtree data for the main thread to cache in memory (~2MB at 10M records) for the subsequent
+ *    tree-resolve call.
+ *  - 'tree-resolve': given a list of specific leaf groups (by [l0, l1] path), scans all records, filters to
+ *    those leaf groups, returns member data including per-record hashes AND full fingerprint field values (so
+ *    the client can repair without any additional fetch).
+ *
+ * Same off-main-thread / WAL-safe / spawn-per-call / chunked-with-yields rationale as the previous worker
+ * implementation - see the old header for the full reasoning on each of those properties (all still apply
+ * unchanged, just operating over a tree structure instead of a flat bucket array).
  */
 
-/** Rows processed between yields - see this module's own header on why the loop yields at all despite already
- * running off the main thread. Large enough that `setImmediate`'s own overhead (a macrotask hop) stays a small
- * fraction of total time (~65 yields for a 326k-row table), small enough that no single yield gap is long. */
+/** Rows processed between yields - see module header. */
 const CHUNK_SIZE = 5000;
 
 /**
@@ -48,52 +44,111 @@ async function openReadOnly(dbPath) {
 }
 
 /**
+ * Builds the full 2-level hash tree over the characters table. Two independent hash streams per node (fav and
+ * fields) so the client can distinguish fav-only drift from content-field drift.
+ *
+ * Returns:
+ * - `children`: branching-length array of level-0 child digests, each `{ fav: {hi,lo}, fields: {hi,lo} }`
+ * - `subtrees`: branching × branching array of level-1 digests (flat index: l0 * branching + l1)
+ *
+ * The level-0 digests are the XOR-fold of their level-1 children (same math as flat-bucket digests, so
+ * level 0 is backward-compatible: treeNodeAt(id, 0) === bucketOf(id)).
  * @param {string} dbPath
- * @param {number} bucketCount
- * @returns {Promise<{ buckets: { hi: number, lo: number }[] } | null>}
+ * @param {number} branching
  */
-async function computeStateDigest(dbPath, bucketCount) {
+async function computeTreeDigest(dbPath, branching) {
     const db = await openReadOnly(dbPath);
     if (!db) return null;
     try {
         const rows = db.all('SELECT id, shallow_json FROM characters');
-        const buckets = Array.from({ length: bucketCount }, () => emptyDigest());
+        const size = branching * branching;
+
+        // Level-1 leaf node digests: flat array indexed by l0 * branching + l1
+        const subtrees = Array.from({ length: size }, () => ({
+            fav: emptyDigest(),
+            fields: emptyDigest(),
+        }));
+
         for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
             for (let j = i; j < Math.min(i + CHUNK_SIZE, rows.length); j++) {
                 const row = rows[j];
-                const idx = bucketOf(row.id, bucketCount);
-                buckets[idx] = combineDigest(buckets[idx], row.id, characterDigestContentHash(JSON.parse(row.shallow_json)));
+                const parsed = JSON.parse(row.shallow_json);
+                const l0 = treeNodeAt(row.id, 0, branching);
+                const l1 = treeNodeAt(row.id, 1, branching);
+                const idx = l0 * branching + l1;
+                const favHash = characterDigestFavHash(parsed);
+                const fieldsHash = characterDigestFieldsHash(parsed);
+                subtrees[idx].fav = combineDigest(subtrees[idx].fav, row.id, favHash);
+                subtrees[idx].fields = combineDigest(subtrees[idx].fields, row.id, fieldsHash);
             }
             await new Promise((resolve) => setImmediate(resolve));
         }
-        return { buckets };
+
+        // Fold level-1 up to level-0 children
+        const children = [];
+        for (let l0 = 0; l0 < branching; l0++) {
+            let fav = emptyDigest();
+            let fields = emptyDigest();
+            for (let l1 = 0; l1 < branching; l1++) {
+                const idx = l0 * branching + l1;
+                fav = foldDigests(fav, subtrees[idx].fav);
+                fields = foldDigests(fields, subtrees[idx].fields);
+            }
+            children.push({ fav, fields });
+        }
+
+        return { children, subtrees };
     } finally {
         db.close();
     }
 }
 
 /**
+ * Resolves specific leaf groups to their full member data: per-record hashes for the client to compare against
+ * its own locally-computed hashes (true pinpointing - the tree descent identified WHICH leaf groups diverged,
+ * and the per-record hashes within those groups identify the exact records), plus full fingerprint field values
+ * for direct repair (no additional fetch needed by the client).
+ *
+ * The fingerprint values in the response are what `characterDigestFingerprint()` extracts from `shallow_json`:
+ * name, fav, tags, data.{name, character_version, creator, tags, creator_notes, extensions.{fav, world}}.
+ * These are ALL the fields the digest mechanism covers, so a client that patches these fields into its cached
+ * copy will bring it into exact agreement with the server's ground truth for those fields.
  * @param {string} dbPath
- * @param {number} bucket
- * @param {number} bucketCount
- * @returns {Promise<{ members: { id: string, contentHash: number }[] } | null>}
+ * @param {{ l0: number, l1: number }[]} targetLeaves Leaf groups to resolve, identified by tree path.
+ * @param {number} branching
  */
-async function computeBucketMembers(dbPath, bucket, bucketCount) {
+async function resolveTreeLeaves(dbPath, targetLeaves, branching) {
     const db = await openReadOnly(dbPath);
     if (!db) return null;
     try {
+        const targetSet = new Set(targetLeaves.map(t => t.l0 * branching + t.l1));
+        /** @type {Map<number, { path: number[], members: object[] }>} */
+        const leafMap = new Map();
+        for (const t of targetLeaves) {
+            leafMap.set(t.l0 * branching + t.l1, { path: [t.l0, t.l1], members: [] });
+        }
+
         const rows = db.all('SELECT id, shallow_json FROM characters');
-        const members = [];
         for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
             for (let j = i; j < Math.min(i + CHUNK_SIZE, rows.length); j++) {
                 const row = rows[j];
-                if (bucketOf(row.id, bucketCount) === bucket) {
-                    members.push({ id: row.id, contentHash: characterDigestContentHash(JSON.parse(row.shallow_json)) });
-                }
+                const l0 = treeNodeAt(row.id, 0, branching);
+                const l1 = treeNodeAt(row.id, 1, branching);
+                const idx = l0 * branching + l1;
+                if (!targetSet.has(idx)) continue;
+
+                const parsed = JSON.parse(row.shallow_json);
+                leafMap.get(idx).members.push({
+                    id: row.id,
+                    favHash: characterDigestFavHash(parsed),
+                    fieldsHash: characterDigestFieldsHash(parsed),
+                    fingerprint: characterDigestFingerprint(parsed),
+                });
             }
             await new Promise((resolve) => setImmediate(resolve));
         }
-        return { members };
+
+        return { leaves: Array.from(leafMap.values()) };
     } finally {
         db.close();
     }
@@ -101,13 +156,13 @@ async function computeBucketMembers(dbPath, bucket, bucketCount) {
 
 parentPort.on('message', async (msg) => {
     try {
-        if (msg.type === 'state-digest') {
-            const result = await computeStateDigest(msg.dbPath, msg.bucketCount);
+        if (msg.type === 'tree-digest') {
+            const result = await computeTreeDigest(msg.dbPath, msg.branching ?? DEFAULT_DIGEST_BUCKET_COUNT);
             parentPort.postMessage({ id: msg.id, ok: true, result });
             return;
         }
-        if (msg.type === 'bucket-members') {
-            const result = await computeBucketMembers(msg.dbPath, msg.bucket, msg.bucketCount);
+        if (msg.type === 'tree-resolve') {
+            const result = await resolveTreeLeaves(msg.dbPath, msg.targetLeaves, msg.branching ?? DEFAULT_DIGEST_BUCKET_COUNT);
             parentPort.postMessage({ id: msg.id, ok: true, result });
             return;
         }
