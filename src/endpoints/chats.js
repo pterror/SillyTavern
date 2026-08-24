@@ -24,6 +24,7 @@ import {
     isPathUnderParent,
 } from '../util.js';
 import { bumpGroupChatStats } from '../character-metadata-db.js';
+import { upsertChatFromSave, upsertChatFromParse, getChatRow, deleteChatRow, renameChatRow } from '../chat-metadata-db.js';
 
 const isBackupEnabled = !!getConfigValue('backups.chat.enabled', true, 'boolean');
 const maxTotalChatBackups = Number(getConfigValue('backups.chat.maxTotalBackups', -1, 'number'));
@@ -508,6 +509,60 @@ export async function getChatInfo(pathToFile, additionalData = {}, withMetadata 
     });
 }
 
+/**
+ * Cache-first counterpart to getChatInfo(): serves a chat's info from chat-metadata-db.js's per-file row when
+ * that row's stored mtime still matches the file's current mtime (no I/O beyond the DB lookup - no readline, no
+ * stat even, since the caller already has `mtimeMs` from its own directory-listing pass), and transparently
+ * falls back to a full getChatInfo() parse (caching the result for next time) on a miss or stale row.
+ *
+ * Never used for a real content-matching search (a `matcher` query) - a cached row only ever holds the LAST
+ * message's preview, not the full chat text, so it can't answer "does this chat contain X" correctly. Callers
+ * that need to run `matcher` must call getChatInfo() directly, same as before this function existed.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {string} pathToFile
+ * @param {number} mtimeMs The file's current mtime, already known by the caller
+ * @param {object} additionalData
+ * @param {boolean} withMetadata
+ * @returns {Promise<ChatInfo>}
+ */
+async function getOrComputeChatInfo(directories, pathToFile, mtimeMs, additionalData = {}, withMetadata = false) {
+    const row = await getChatRow(directories, pathToFile);
+
+    if (row && row.mtime === Math.round(mtimeMs)) {
+        const parsedPath = path.parse(pathToFile);
+        const chatData = {
+            match: true,
+            file_id: parsedPath.name,
+            file_name: parsedPath.base,
+            file_size: formatBytes(row.file_size),
+            chat_items: row.message_count,
+            mes: row.preview ?? '[The chat is empty]',
+            last_mes: row.last_mes ?? mtimeMs,
+            ...additionalData,
+        };
+        if (withMetadata && row.chat_metadata_json) {
+            const parsedMetadata = tryParse(row.chat_metadata_json);
+            if (parsedMetadata) {
+                chatData.chat_metadata = parsedMetadata;
+            }
+        }
+        return chatData;
+    }
+
+    const chatInfo = await getChatInfo(pathToFile, additionalData, withMetadata);
+
+    // Cache the freshly computed info for the next read - not awaited, so a cache miss doesn't pay for the
+    // write on top of the parse it just did. Skipped for a vanished/corrupted file (getChatInfo() returns
+    // `{ match: false }` or `{}` for those, neither of which carries a file_name) - nothing usable to cache.
+    if (chatInfo.file_name) {
+        fs.promises.stat(pathToFile)
+            .then(stats => upsertChatFromParse(directories, pathToFile, stats, chatInfo))
+            .catch(err => console.error('[chat-metadata] Failed to cache chat metadata after parse:', err));
+    }
+
+    return chatInfo;
+}
+
 export const router = express.Router();
 
 // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Error
@@ -541,10 +596,17 @@ class IntegrityMismatchError extends Error {
  * @param {string} handle The users handle, passed to getBackupFunction.
  * @param {string} cardName Passed to backupChat.
  * @param {string} backupDirectory Passed to backupChat.
+ * @param {import('../users.js').UserDirectoryList} [directories] When given, feeds chat-metadata-db.js's
+ * write-path hook (upsertChatFromSave()) right after the write succeeds - the same "hook alongside the slug
+ * rotation, don't duplicate/conflict with it" placement the integrity slug above uses. Computed straight from
+ * `chatData` (already in memory) plus one post-write stat, so it costs no extra parse of the file this call just
+ * wrote. Optional (rather than required) so any caller that genuinely has no directories to offer - none exist
+ * today, both /save and /group/save always have `request.user.directories` - degrades to "metadata store not
+ * updated for this write" instead of throwing.
  * @returns {Promise<string|undefined>} The new integrity slug written to the file, or undefined if integrity
  * tracking is disabled (`backups.chat.checkIntegrity` config) or the chat has no header to carry a slug.
  */
-export async function trySaveChat(chatData, filePath, skipIntegrityCheck = false, handle, cardName, backupDirectory) {
+export async function trySaveChat(chatData, filePath, skipIntegrityCheck = false, handle, cardName, backupDirectory, directories) {
     const doIntegrityCheck = (checkIntegrity && !skipIntegrityCheck);
     const chatIntegritySlug = doIntegrityCheck ? chatData?.[0]?.chat_metadata?.integrity : undefined;
 
@@ -562,6 +624,17 @@ export async function trySaveChat(chatData, filePath, skipIntegrityCheck = false
     const jsonlData = chatData?.map(m => JSON.stringify(m)).join('\n');
     tryWriteFileSync(filePath, jsonlData);
     getBackupFunction(handle, cardName)(backupDirectory, cardName, jsonlData);
+
+    if (directories) {
+        try {
+            const stats = await fs.promises.stat(filePath);
+            const fileSizeBytes = Buffer.byteLength(jsonlData ?? '', 'utf8');
+            await upsertChatFromSave(directories, filePath, chatData, stats.mtimeMs, fileSizeBytes);
+        } catch (err) {
+            console.error('[chat-metadata] Failed to update chat metadata store after save:', err);
+        }
+    }
+
     return nextIntegritySlug;
 }
 
@@ -582,7 +655,7 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
         console.error(`[integrity-debug] POST /save file="${chatFilePath}" force=${!!request.body.force} items=${Array.isArray(chatData) ? chatData.length : 'n/a'} integrity=${chatData?.[0]?.chat_metadata?.integrity} now=${new Date().toISOString()}`);
 
         if (Array.isArray(chatData)) {
-            const integrity = await trySaveChat(chatData, chatFilePath, request.body.force, handle, cardName, request.user.directories.backups);
+            const integrity = await trySaveChat(chatData, chatFilePath, request.body.force, handle, cardName, request.user.directories.backups, request.user.directories);
             return response.send({ ok: true, integrity });
         } else {
             return response.status(400).send({ error: 'The request\'s body.chat is not an array.' });
@@ -679,6 +752,10 @@ router.post('/rename', validateAvatarUrlMiddleware, async function (request, res
         fs.copyFileSync(pathToOriginalFile, pathToRenamedFile);
         fs.unlinkSync(pathToOriginalFile);
         console.info('Successfully renamed chat file.');
+
+        await renameChatRow(request.user.directories, pathToOriginalFile, pathToRenamedFile).catch(err =>
+            console.error('[chat-metadata] Failed to update chat metadata store after rename:', err));
+
         return response.send({ ok: true, sanitizedFileName });
     } catch (error) {
         console.error('Error renaming chat file:', error);
@@ -686,7 +763,7 @@ router.post('/rename', validateAvatarUrlMiddleware, async function (request, res
     }
 });
 
-router.post('/delete', validateAvatarUrlMiddleware, function (request, response) {
+router.post('/delete', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         if (!path.extname(request.body.chatfile)) {
             request.body.chatfile += '.jsonl';
@@ -700,6 +777,8 @@ router.post('/delete', validateAvatarUrlMiddleware, function (request, response)
         }
         //Return success if the file was deleted.
         if (tryDeleteFile(chatFilePath)) {
+            await deleteChatRow(request.user.directories, chatFilePath).catch(err =>
+                console.error('[chat-metadata] Failed to update chat metadata store after delete:', err));
             return response.send({ ok: true });
         } else {
             console.error('The chat file was not deleted.');
@@ -932,7 +1011,7 @@ router.post('/group/info', async (request, response) => {
     }
 });
 
-router.post('/group/delete', (request, response) => {
+router.post('/group/delete', async (request, response) => {
     try {
         if (!request.body || !request.body.id) {
             return response.sendStatus(400);
@@ -943,6 +1022,8 @@ router.post('/group/delete', (request, response) => {
 
         //Return success if the file was deleted.
         if (tryDeleteFile(chatFilePath)) {
+            await deleteChatRow(request.user.directories, chatFilePath).catch(err =>
+                console.error('[chat-metadata] Failed to update chat metadata store after delete:', err));
             return response.send({ ok: true });
         } else {
             console.error('The group chat file was not deleted.');
@@ -966,7 +1047,7 @@ router.post('/group/save', async function (request, response) {
         const chatData = request.body.chat;
 
         if (Array.isArray(chatData)) {
-            const integrity = await trySaveChat(chatData, chatFilePath, request.body.force, handle, String(id), request.user.directories.backups);
+            const integrity = await trySaveChat(chatData, chatFilePath, request.body.force, handle, String(id), request.user.directories.backups, request.user.directories);
 
             // Groups-schema extension write-path hook (owner decision - see character-metadata-db.js's
             // bumpGroupChatStats() for the full rationale): keeps date_last_chat/chat_size fresh the moment a
@@ -1065,8 +1146,20 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
         };
 
         for (const chatFile of chatFiles) {
-            const matcher = query ? hasTextMatch : null;
-            const chatInfo = await getChatInfo(chatFile, {}, false, matcher);
+            let chatInfo;
+            if (query) {
+                // A real content match needs the full text of every message - can't be served from the
+                // metadata store's cached last-message-only preview, so this keeps the original full-file scan.
+                chatInfo = await getChatInfo(chatFile, {}, false, hasTextMatch);
+            } else {
+                // No query: this is pure listing, exactly the cost getOrComputeChatInfo() exists to avoid
+                // paying on every request (see that function's own doc comment).
+                const stats = await fs.promises.stat(chatFile).catch(() => null);
+                if (!stats) {
+                    continue;
+                }
+                chatInfo = await getOrComputeChatInfo(request.user.directories, chatFile, stats.mtimeMs, {}, false);
+            }
             const hasMatch = chatInfo.match || hasTextMatch([chatInfo.file_id ?? '']);
 
             // Skip corrupted or invalid chat files
@@ -1184,8 +1277,8 @@ router.post('/recent', async function (request, response) {
         const jsonFilesPromise = recentChats.map((file) => {
             const withMetadata = !!request.body.metadata;
             return file.groupId
-                ? getChatInfo(file.filePath, { group: file.groupId }, withMetadata)
-                : getChatInfo(file.filePath, { avatar: file.pngFile }, withMetadata);
+                ? getOrComputeChatInfo(request.user.directories, file.filePath, file.mtime, { group: file.groupId }, withMetadata)
+                : getOrComputeChatInfo(request.user.directories, file.filePath, file.mtime, { avatar: file.pngFile }, withMetadata);
         });
 
         const chatData = (await Promise.allSettled(jsonFilesPromise)).filter(x => x.status === 'fulfilled').map(x => x.value);
