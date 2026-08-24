@@ -125,6 +125,8 @@ export const persona_description_positions = _persona_description_positions;
 export const power_user = {
     charListGrid: false,
     charGalleryView: false,
+    charGalleryFullscreen: true,
+    charGalleryGrid: true,
     tokenizer: tokenizers.BEST_MATCH,
     token_padding: 64,
     collapse_newlines: false,
@@ -2091,10 +2093,20 @@ function toggleMDHotkeyIconDisplay() {
 
 function loadCharListState() {
     document.body.classList.toggle('charListGrid', power_user.charListGrid);
-    document.body.classList.toggle('charGalleryView', power_user.charGalleryView);
-    // Gallery icon in the top bar uses the same openIcon/closedIcon pattern as other drawer icons.
-    $('#galleryNavDrawerIcon').toggleClass('closedIcon', !power_user.charGalleryView)
-        .toggleClass('openIcon', !!power_user.charGalleryView);
+    document.body.classList.toggle('charGalleryGrid', power_user.charGalleryGrid);
+    // Gallery-style browsing is the permanent character list view - always on, not a toggle.
+    document.body.classList.add('charGalleryView');
+    // Fullscreen state: persisted via power_user, restored as a class on the panel element.
+    const panel = document.getElementById('right-nav-panel');
+    if (panel) {
+        panel.classList.toggle('galleryFullscreen', power_user.charGalleryFullscreen);
+        // Sync the toggle button icon
+        const btn = document.getElementById('galleryFullscreenToggle');
+        if (btn) {
+            btn.classList.toggle('fa-expand', !power_user.charGalleryFullscreen);
+            btn.classList.toggle('fa-compress', power_user.charGalleryFullscreen);
+        }
+    }
 }
 
 export function loadMovingUIState() {

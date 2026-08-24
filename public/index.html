@@ -6007,14 +6007,14 @@
         </div>
         <div id="rightNavHolder" class="drawer">
             <div id="unimportantYes" class="drawer-toggle drawer-header">
-                <div id="rightNavDrawerIcon" class="drawer-icon fa-solid fa-address-card fa-fw closedIcon" title="Character Management" data-i18n="[title]Character Management">
+                <div id="rightNavDrawerIcon" class="drawer-icon fillRightIcon fa-solid fa-address-card fa-fw closedIcon" title="Character Management" data-i18n="[title]Character Management">
                 </div>
             </div>
-            <nav id="right-nav-panel" class="drawer-content closedDrawer fillRight">
+            <nav id="right-nav-panel" class="drawer-content closedDrawer fillRight galleryFullscreen" data-active-menu="rm_characters_block">
                 <div id="right-nav-panelheader" class="fa-solid fa-grip drag-grabber">
                 </div>
                 <div id="CharListButtonAndHotSwaps" class="flex-container flexnowrap">
-                    <div class="flexFlowColumn flex-container">
+                    <div class="flex-container alignitemscenter flexnowrap">
                         <div id="rm_button_panel_pin_div" class="alignitemsflexstart" title="Locked = Character Management panel will stay open" data-i18n="[title]Locked = Character Management panel will stay open">
                             <input type="checkbox" id="rm_button_panel_pin">
                             <label for="rm_button_panel_pin">
@@ -6022,8 +6022,7 @@
                                 <div class="fa-solid checked fa-lock right_menu_button" alt=""></div>
                             </label>
                         </div>
-                        <div class="right_menu_button fa-solid fa-list-ul" id="rm_button_characters" title="Select/Create Characters" data-i18n="[title]Select/Create Characters"></div>
-                        <div class="right_menu_button fa-solid fa-images" id="rm_button_characters_gallery" title="Toggle gallery view" data-i18n="[title]Toggle gallery view"></div>
+                        <i id="galleryFullscreenToggle" class="fa-solid fa-expand right_menu_button" title="Toggle fullscreen gallery" data-i18n="[title]Toggle fullscreen gallery"></i>
                     </div>
                     <div id="HotSwapWrapper" class="alignitemscenter flex-container margin0auto wide100p">
                         <div class="hotswap avatars_inline scroll-reset-container expander" data-i18n="[no_favs]Favorite characters to add them to HotSwaps" no_favs="Favorite characters to add them to HotSwaps">
@@ -6031,9 +6030,82 @@
                     </div>
                 </div>
 
+                <div class="scrollableInner">
+                    <div id="rm_character_import" class="right_menu" style="display: none;">
+                        <form id="form_import" action="javascript:void(null);" method="post" enctype="multipart/form-data">
+                            <input multiple type="file" id="character_import_file" accept=".json, image/png, .yaml, .yml, .charx, .byaf" name="avatar">
+                            <input id="character_import_file_type" name="file_type" class="text_pole" value="" autocomplete="off">
+                        </form>
+                        <input type="file" id="character_replace_file" accept=".json, image/png, .yaml, .yml, .charx, .byaf" name="replace_avatar" hidden>
+                    </div>
+                    <div name="Character List Panel" id="rm_characters_block" class="right_menu">
+                        <div id="charListFixedTop">
+                            <div id="rm_button_bar">
+                                <div id="rm_button_create" title="Create New Character" data-i18n="[title]Create New Character" class="menu_button fa-solid fa-user-plus"></div>
+                                <div id="character_import_button" title="Import Character from File" data-i18n="[title]Import Character from File" class="menu_button fa-solid fa-file-import"></div>
+                                <div id="external_import_button" title="Import content from external URL" data-i18n="[title]Import content from external URL" class="menu_button fa-solid fa-cloud-arrow-down"></div>
+                                <div id="rm_button_group_chats" title="Create New Chat Group" data-i18n="[title]Create New Chat Group" class="menu_button fa-solid fa-users-gear"></div>
+                                <div id="rm_buttons_container">
+                                    <!-- Container for additional buttons added by extensions -->
+                                </div>
+                                <select id="character_sort_order" class="flex1 text_pole textarea_compact" title="Characters sorting order" data-i18n="[title]Characters sorting order">
+                                    <option data-field="search" data-order="desc" data-i18n="Search" hidden>Search</option>
+                                    <option data-field="name" data-order="asc" data-i18n="A-Z">A-Z</option>
+                                    <option data-field="name" data-order="desc" data-i18n="Z-A">Z-A</option>
+                                    <option data-field="create_date" data-order="desc" data-i18n="Newest">Newest</option>
+                                    <option data-field="create_date" data-order="asc" data-i18n="Oldest">Oldest</option>
+                                    <option data-field="fav" data-order="desc" data-rule="boolean" data-i18n="Favorites">Favorites</option>
+                                    <option data-field="date_last_chat" data-order="desc" data-i18n="Recent">Recent</option>
+                                    <option data-field="chat_size" data-order="desc" data-i18n="Most chats">Most chats</option>
+                                    <option data-field="chat_size" data-order="asc" data-i18n="Least chats">Least chats</option>
+                                    <option data-field="data_size" data-order="desc" data-i18n="Most tokens">Most tokens</option>
+                                    <option data-field="data_size" data-order="asc" data-i18n="Least tokens">Least tokens</option>
+                                    <option data-field="name" data-order="random" data-i18n="Random">Random</option>
+                                </select>
+                                <i id="charListRandomReroll" class="right_menu_button fa-fw fa-solid fa-shuffle" title="Get a new random order" data-i18n="[title]Get a new random order" style="display: none;"></i>
+                                <div id="rm_button_search" class="right_menu_button fa-fw fa-solid fa-search" title="Toggle search bar" data-i18n="[title]Toggle search bar"></div>
+                            </div>
+                            <div id="form_character_search_form">
+                                <div id="character_search_bar_wrapper" class="text_pole textarea_compact width100p">
+                                    <div id="character_search_pills"></div>
+                                    <input id="character_search_bar" type="search" data-i18n="[placeholder]Search... (try tag:foo)" placeholder="Search... (try tag:foo)" />
+                                </div>
+                                <i id="character_search_backend_indicator" class="fa-solid fa-triangle-exclamation warning" style="display: none;"></i>
+                                <small id="character_search_result_count" style="display: none;"></small>
+                            </div>
+                            <div class="rm_tag_controls">
+                                <div class="tags rm_tag_filter"></div>
+                                <div class="tags rm_tag_bogus_drilldown"></div>
+                            </div>
+                        </div>
+
+                        <div id="rm_print_characters_pagination">
+                            <i id="charListGridToggle" class="fa-solid fa-table-cells-large menu_button" title="Toggle character grid view" data-i18n="[title]Toggle character grid view"></i>
+                            <i id="bulkEditButton" class="fa-solid fa-edit menu_button bulkEditButton" title="Bulk edit characters&#13;&#13;Click to toggle characters&#13;Shift + Click to select/deselect a range of characters&#13;Right-click for actions" data-i18n="[title]Bulk_edit_characters"></i>
+                            <div id="bulkSelectedCount" class="bulkEditOptionElement paginationjs-nav"></div>
+                            <i id="bulkSelectAllButton" class="fa-solid fa-check-double menu_button bulkEditOptionElement bulkSelectAllButton" title="Bulk select all characters" data-i18n="[title]Bulk select all characters" style="display: none;"></i>
+                            <i id="bulkDeleteButton" class="fa-solid fa-trash menu_button bulkEditOptionElement bulkDeleteButton" title="Bulk delete characters" data-i18n="[title]Bulk delete characters" style="display: none;"></i>
+                        </div>
+                        <div id="rm_print_characters_block" class="flexFlowColumn"></div>
+                    </div>
+                </div>
+            </nav>
+        </div>
+        <div id="charInfoHolder" class="drawer">
+            <div class="drawer-toggle drawer-header">
+                <div id="charInfoDrawerIcon" class="drawer-icon fillRightIcon fa-solid fa-user-pen fa-fw closedIcon" title="Character Info" data-i18n="[title]Character Info"></div>
+            </div>
+            <div id="char-info-panel" class="drawer-content closedDrawer fillRight">
                 <!-- this div structure must be preserved until group peeking can adjust -->
                 <div id="rm_PinAndTabs">
                     <div id="right-nav-panel-tabs" class="">
+                        <div id="charInfo_button_panel_pin_div" class="alignitemsflexstart" title="Locked = Character Info panel will stay open" data-i18n="[title]Locked = Character Info panel will stay open">
+                            <input type="checkbox" id="charInfo_button_panel_pin">
+                            <label for="charInfo_button_panel_pin">
+                                <div class="fa-solid unchecked fa-unlock right_menu_button" alt=""></div>
+                                <div class="fa-solid checked fa-lock right_menu_button" alt=""></div>
+                            </label>
+                        </div>
                         <div id="rm_button_selected_ch">
                             <h2 class="interactable"></h2>
                         </div>
@@ -6055,7 +6127,6 @@
                     </div>
                 </div>
                 <!-- end group peeking cope structure-->
-
                 <div class="scrollableInner">
                     <div name="Solo Char Create/Edit Panel" id="rm_ch_create_block" class="right_menu flex-container flexFlowColumn" style="display: none;">
                         <form id="form_create" action="javascript:void(null);" method="post" enctype="multipart/form-data">
@@ -6365,65 +6436,8 @@
                             </div>
                         </div>
                     </div>
-                    <div id="rm_character_import" class="right_menu" style="display: none;">
-                        <form id="form_import" action="javascript:void(null);" method="post" enctype="multipart/form-data">
-                            <input multiple type="file" id="character_import_file" accept=".json, image/png, .yaml, .yml, .charx, .byaf" name="avatar">
-                            <input id="character_import_file_type" name="file_type" class="text_pole" value="" autocomplete="off">
-                        </form>
-                        <input type="file" id="character_replace_file" accept=".json, image/png, .yaml, .yml, .charx, .byaf" name="replace_avatar" hidden>
-                    </div>
-                    <div name="Character List Panel" id="rm_characters_block" class="right_menu">
-                        <div id="charListFixedTop">
-                            <div id="rm_button_bar">
-                                <div id="rm_button_create" title="Create New Character" data-i18n="[title]Create New Character" class="menu_button fa-solid fa-user-plus"></div>
-                                <div id="character_import_button" title="Import Character from File" data-i18n="[title]Import Character from File" class="menu_button fa-solid fa-file-import"></div>
-                                <div id="external_import_button" title="Import content from external URL" data-i18n="[title]Import content from external URL" class="menu_button fa-solid fa-cloud-arrow-down"></div>
-                                <div id="rm_button_group_chats" title="Create New Chat Group" data-i18n="[title]Create New Chat Group" class="menu_button fa-solid fa-users-gear"></div>
-                                <div id="rm_buttons_container">
-                                    <!-- Container for additional buttons added by extensions -->
-                                </div>
-                                <select id="character_sort_order" class="flex1 text_pole textarea_compact" title="Characters sorting order" data-i18n="[title]Characters sorting order">
-                                    <option data-field="search" data-order="desc" data-i18n="Search" hidden>Search</option>
-                                    <option data-field="name" data-order="asc" data-i18n="A-Z">A-Z</option>
-                                    <option data-field="name" data-order="desc" data-i18n="Z-A">Z-A</option>
-                                    <option data-field="create_date" data-order="desc" data-i18n="Newest">Newest</option>
-                                    <option data-field="create_date" data-order="asc" data-i18n="Oldest">Oldest</option>
-                                    <option data-field="fav" data-order="desc" data-rule="boolean" data-i18n="Favorites">Favorites</option>
-                                    <option data-field="date_last_chat" data-order="desc" data-i18n="Recent">Recent</option>
-                                    <option data-field="chat_size" data-order="desc" data-i18n="Most chats">Most chats</option>
-                                    <option data-field="chat_size" data-order="asc" data-i18n="Least chats">Least chats</option>
-                                    <option data-field="data_size" data-order="desc" data-i18n="Most tokens">Most tokens</option>
-                                    <option data-field="data_size" data-order="asc" data-i18n="Least tokens">Least tokens</option>
-                                    <option data-field="name" data-order="random" data-i18n="Random">Random</option>
-                                </select>
-                                <i id="charListRandomReroll" class="right_menu_button fa-fw fa-solid fa-shuffle" title="Get a new random order" data-i18n="[title]Get a new random order" style="display: none;"></i>
-                                <div id="rm_button_search" class="right_menu_button fa-fw fa-solid fa-search" title="Toggle search bar" data-i18n="[title]Toggle search bar"></div>
-                            </div>
-                            <div id="form_character_search_form">
-                                <div id="character_search_bar_wrapper" class="text_pole textarea_compact width100p">
-                                    <div id="character_search_pills"></div>
-                                    <input id="character_search_bar" type="search" data-i18n="[placeholder]Search... (try tag:foo)" placeholder="Search... (try tag:foo)" />
-                                </div>
-                                <i id="character_search_backend_indicator" class="fa-solid fa-triangle-exclamation warning" style="display: none;"></i>
-                                <small id="character_search_result_count" style="display: none;"></small>
-                            </div>
-                            <div class="rm_tag_controls">
-                                <div class="tags rm_tag_filter"></div>
-                                <div class="tags rm_tag_bogus_drilldown"></div>
-                            </div>
-                        </div>
-
-                        <div id="rm_print_characters_pagination">
-                            <i id="charListGridToggle" class="fa-solid fa-table-cells-large menu_button" title="Toggle character grid view" data-i18n="[title]Toggle character grid view"></i>
-                            <i id="bulkEditButton" class="fa-solid fa-edit menu_button bulkEditButton" title="Bulk edit characters&#13;&#13;Click to toggle characters&#13;Shift + Click to select/deselect a range of characters&#13;Right-click for actions" data-i18n="[title]Bulk_edit_characters"></i>
-                            <div id="bulkSelectedCount" class="bulkEditOptionElement paginationjs-nav"></div>
-                            <i id="bulkSelectAllButton" class="fa-solid fa-check-double menu_button bulkEditOptionElement bulkSelectAllButton" title="Bulk select all characters" data-i18n="[title]Bulk select all characters" style="display: none;"></i>
-                            <i id="bulkDeleteButton" class="fa-solid fa-trash menu_button bulkEditOptionElement bulkDeleteButton" title="Bulk delete characters" data-i18n="[title]Bulk delete characters" style="display: none;"></i>
-                        </div>
-                        <div id="rm_print_characters_block" class="flexFlowColumn"></div>
-                    </div>
                 </div>
-            </nav>
+            </div>
         </div>
     </div>
     <!-- various fullscreen popups -->
@@ -8233,6 +8247,7 @@
     <script type="module" src="lib/eventemitter.js"></script>
     <script type="module" src="scripts/i18n.js"></script>
     <script type="module" src="script.js"></script>
+    <script>if (typeof EventSource !== 'undefined') new EventSource('/api/browser-heartbeat');</script>
     <script>
         window.addEventListener('load', (event) => {
             const documentHeight = () => {
