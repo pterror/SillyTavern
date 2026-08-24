@@ -93,19 +93,6 @@ const BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS = 5000;
 // need to be aggressive - it exists to catch what the other two mechanisms missed.
 const RECONCILE_INTERVAL_MS = getConfigValue('performance.characterMetadataReconcileIntervalMs', 5 * 60 * 1000, 'number');
 
-// Bounds how long reconcile()'s directory-mtime fast path (see that function's own doc comment) is trusted
-// before a full sweep is forced regardless of what the watermark says. Verified directly only against a local
-// POSIX filesystem (ext4) - real-world reports support the same create/delete/rename-bumps-parent-mtime model on
-// NTFS, and macOS claims POSIX-compliant semantics for both HFS+ and APFS, but neither was independently
-// reproduced here, and a network-mounted characters directory (NFS confirmed via its documented client-side
-// directory-attribute caching, `acdirmax` et al. - SMB/CIFS not specifically checked but plausibly similar) can
-// return a locally-cached, briefly-stale mtime for a change made by another host. This cap makes the fast path
-// self-correcting on any of those regardless of whether the underlying signal turns out to be fully reliable:
-// worst case, a change goes unnoticed for up to this long, never indefinitely. An hour comfortably covers the
-// owner's actual restart cadence (repeated same-session restarts) while bounding real risk to something that
-// would show up within a single work session, not silently forever.
-const RECONCILE_FAST_PATH_MAX_AGE_MS = getConfigValue('performance.characterReconcileFastPathMaxAgeMs', 60 * 60 * 1000, 'number');
-
 // Gates two consumers, both added alongside backfillContentIdentityHashes()/findCharacterIdByContentIdentityHash()
 // below: this module's own one-time backfill pass (which pays the cost described below ONCE per poisoned row,
 // not per comparison - see backfillContentIdentityHashes()'s own header) and local-import-scan.js's processFile()
@@ -1635,13 +1622,8 @@ export async function resyncTags(directories) {
 
 /**
  * The mandatory reconciler backstop (doc §3.2 item 3 / §3.3 item 3's "the reconciler is what makes it safe").
- * Fast-pathed on a directory-mtime watermark (see the check right at the top of the function body for the full
- * reasoning, its named same-filename-in-place-edit gap, and the cross-platform reliability caveat): a no-op,
- * single-stat() return whenever nothing has been created, removed, or renamed directly in
- * `directories.characters` since the last pass that actually walked it AND that pass was recent enough to still
- * be trusted (RECONCILE_FAST_PATH_MAX_AGE_MS). Otherwise walks the
- * full directory (chunked, BOOTSTRAP_READ_CONCURRENCY-bounded - never blocks the event loop for long) and diffs
- * it against the metadata table:
+ * Walks the characters directory with async opendir (never blocks the event loop for long - see the
+ * yield-every-batch loop below) and diffs it against the metadata table:
  *   - a file on disk with no row -> inserted, with date_added = now (this is the "reconciler first saw it"
  *     case from the design doc's §3.1, distinct from bootstrapIfNeeded()'s one-time ctimeMs seeding - by the
  *     time any reconcile() call happens, bootstrap has necessarily already run for this user, or is running
@@ -1670,60 +1652,6 @@ export async function reconcile(directories) {
 
     if (!fs.existsSync(directories.characters)) {
         return;
-    }
-
-    // Fast path: what reconcile() is actually reconciling (see this function's own header) is file
-    // EXISTENCE/IDENTITY - a file appearing, disappearing, or being renamed - not in-place content edits to a
-    // file that keeps its own name. On a POSIX filesystem, only the first kind of change touches the parent
-    // directory's own mtime (link/unlink/rename of a direct child); an ordinary open+write+close against an
-    // EXISTING path does not. So a single stat() on `directories.characters` itself, compared against the value
-    // persisted after the last pass that actually walked the library, tells us whether anything worth a full
-    // per-file walk could possibly have happened at all - skipping straight past the entire readdir+per-file-stat
-    // sweep below (currently the only thing this function does) in the common "nothing changed since last boot"
-    // case, at O(1) cost regardless of library size.
-    //
-    // REAL, NAMED GAP (not hidden): a same-filename in-place edit made by something other than this app while
-    // the server was down (e.g. hand-editing a card's PNG directly with an external tool, keeping its path) does
-    // NOT bump the directory's mtime, so it stays undetected by this fast path until the directory mtime next
-    // legitimately advances for an unrelated reason (a file created/removed/renamed). The old behavior (a full
-    // stat sweep every single pass) had no such gap - full case coverage was reconcile()'s original design intent
-    // per this function's own doc comment above ("a file whose stat().mtimeMs disagrees ... -> re-upserted").
-    // This is a genuine, considered tradeoff (accepted per owner direction 2026-08-24: reconcile()'s real job is
-    // existence/identity tracking, not content-drift detection for a filename nothing else touches), not an
-    // oversight - and it's the only way to structurally narrow this pass rather than just running the same full
-    // sweep faster. The watermark is keyed per-directory (`characters_dir_mtime` in `meta`), so it self-heals:
-    // any create/delete/rename (including ones this same pass makes, e.g. via a batch import landing new files)
-    // naturally invalidates it for the next call.
-    //
-    // CROSS-PLATFORM CAVEAT (checked 2026-08-24, not just assumed): "directory mtime bumps on
-    // create/delete/rename, not on an existing file's in-place edit" is verified directly here only against a
-    // local POSIX filesystem. Independent real-world reports describe the identical model on NTFS. macOS claims
-    // POSIX-compliant semantics for both HFS+ and APFS but that wasn't independently reproduced. exFAT/FAT32
-    // weren't checked either way. A network-mounted characters directory is a real, evidenced risk regardless of
-    // any of that: NFS clients cache a directory's attributes (including mtime) for a bounded window
-    // (`acdirmax`, commonly single-digit seconds up to ~60s by default) before re-fetching from the server, so a
-    // change another host made can briefly read back stale locally - SMB/CIFS wasn't specifically checked but
-    // plausibly has an analogous client-side cache. `fs.stat()` is a thin passthrough to the OS/filesystem
-    // driver; none of this is smoothed over by Node. RECONCILE_FAST_PATH_MAX_AGE_MS (see its own comment above)
-    // is what keeps this safe regardless: the watermark is also invalidated by staleness, not just by mismatch,
-    // so an unreliable-on-some-filesystem mtime signal degrades to "occasionally does one extra full sweep it
-    // didn't strictly need," never to "silently wrong forever."
-    let charactersDirStat;
-    try {
-        charactersDirStat = await fsPromises.stat(directories.characters);
-    } catch {
-        charactersDirStat = null; // Raced with the directory itself vanishing - fall through to the full sweep,
-        // which will find fs.existsSync() was already checked above but readdir below will surface the real error.
-    }
-    if (charactersDirStat) {
-        const watermarkRow = entry.db.get("SELECT value FROM meta WHERE key = 'characters_dir_mtime'");
-        const lastFullSweepRow = entry.db.get("SELECT value FROM meta WHERE key = 'characters_dir_last_full_sweep_at'");
-        const lastFullSweepAt = lastFullSweepRow ? Number(lastFullSweepRow.value) : null;
-        const withinTrustWindow = lastFullSweepAt !== null && (Date.now() - lastFullSweepAt) < RECONCILE_FAST_PATH_MAX_AGE_MS;
-        if (watermarkRow && Number(watermarkRow.value) === charactersDirStat.mtimeMs && withinTrustWindow) {
-            return; // Directory identity is unchanged since the last full pass, and that pass was recent enough
-            // to still be trusted (see RECONCILE_FAST_PATH_MAX_AGE_MS above) - nothing to reconcile.
-        }
     }
 
     const files = (await fsPromises.readdir(directories.characters)).filter(f => f.endsWith('.png'));
@@ -1826,33 +1754,6 @@ export async function reconcile(directories) {
     if (loggedProgress || changedFiles > 0) {
         const totalSec = (Date.now() - reconcileStart) / 1000;
         console.log(color.cyan(`[character-metadata] Reconcile complete: scanned ${files.length} file(s), updated ${changedFiles}, in ${totalSec.toFixed(1)}s.`));
-    }
-
-    // Persist the fast-path watermark against a FRESH stat of the directory (not the one captured before this
-    // sweep started) - bounds the fast path's own TOCTOU window to just this sweep's duration: a create/delete
-    // that raced in while this pass was running is already reflected in `files` (readdir happened after the
-    // pre-sweep stat), and re-statting now means the watermark we persist matches what this pass actually just
-    // reconciled, rather than a value that's already one change behind. Worst case on a lost race is one harmless
-    // extra full sweep next call, never a missed change.
-    try {
-        const freshDirStat = await fsPromises.stat(directories.characters);
-        entry.db.transaction(() => {
-            entry.db.run(
-                "INSERT INTO meta (key, value) VALUES ('characters_dir_mtime', @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                { value: String(freshDirStat.mtimeMs) },
-            );
-            // Companion watermark for RECONCILE_FAST_PATH_MAX_AGE_MS (see its own comment above and the
-            // cross-platform caveat at the top of this function) - stamped every time a full sweep actually
-            // completes, so the fast path's trust in the mtime signal above is itself time-bounded, not
-            // indefinite.
-            entry.db.run(
-                "INSERT INTO meta (key, value) VALUES ('characters_dir_last_full_sweep_at', @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                { value: String(Date.now()) },
-            );
-        });
-    } catch {
-        // Directory vanished between the sweep and here - nothing to persist; next call's fs.existsSync() guard
-        // (or its own stat attempt) handles this normally.
     }
 
     // If batch mode is active, applyOrBuffer() above buffered rather than wrote - flush now so this reconcile
