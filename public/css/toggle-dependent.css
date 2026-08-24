@@ -59,7 +59,20 @@ body.rounded-avatars .avatar img {
 
 /*char list grid mode*/
 
-body.charListGrid #rm_print_characters_block {
+/*
+ * :not(.charGalleryView) on every rule in this block: charListGrid and charGalleryView are independent,
+ * separately-persisted toggles (power_user.charListGrid / power_user.charGalleryView), so both classes can be
+ * on body at once. Before this guard, charListGrid's rules (defined first) and charGalleryView's rules (defined
+ * below) both matched #rm_print_characters_block at equal specificity - source order made gallery's rules win
+ * for properties both blocks set, but any property ONLY charListGrid set (eg. `.ch_additional_info { display:
+ * none }`, which also matches .character_version/.ch_avatar_url since those carry the ch_additional_info class
+ * too) still leaked through untouched, silently breaking gallery view for anyone who also had grid mode on. The
+ * owner's ask was that gallery view renders ONE consistent way regardless of what other toggle state is active
+ * - so grid mode's rules now explicitly stand down whenever gallery view is active, instead of relying on
+ * per-property overrides to fully win the cascade.
+ */
+
+body.charListGrid:not(.charGalleryView) #rm_print_characters_block {
     display: flex;
     gap: 5px;
     flex-wrap: wrap;
@@ -68,9 +81,9 @@ body.charListGrid #rm_print_characters_block {
     align-content: flex-start;
 }
 
-body.charListGrid #rm_print_characters_block .bogus_folder_select,
-body.charListGrid #rm_print_characters_block .character_select,
-body.charListGrid #rm_print_characters_block .group_select,
+body.charListGrid:not(.charGalleryView) #rm_print_characters_block .bogus_folder_select,
+body.charListGrid:not(.charGalleryView) #rm_print_characters_block .character_select,
+body.charListGrid:not(.charGalleryView) #rm_print_characters_block .group_select,
 #user_avatar_block.gridView .avatar-container {
     width: 30%;
     align-items: flex-start;
@@ -81,16 +94,16 @@ body.charListGrid #rm_print_characters_block .group_select,
 }
 
 /* Save a bit of space here */
-body.charListGrid #rm_print_characters_block .character_name_block {
+body.charListGrid:not(.charGalleryView) #rm_print_characters_block .character_name_block {
     gap: 0;
     margin-bottom: 0;
 }
 
-body.charListGrid #rm_print_characters_block .bogus_folder_select .ch_name,
-body.charListGrid #rm_print_characters_block .bogus_folder_select .bogus_folder_counter,
-body.charListGrid #rm_print_characters_block .character_select .ch_name,
-body.charListGrid #rm_print_characters_block .group_select .ch_name,
-body.charListGrid #rm_print_characters_block .group_select .group_select_counter,
+body.charListGrid:not(.charGalleryView) #rm_print_characters_block .bogus_folder_select .ch_name,
+body.charListGrid:not(.charGalleryView) #rm_print_characters_block .bogus_folder_select .bogus_folder_counter,
+body.charListGrid:not(.charGalleryView) #rm_print_characters_block .character_select .ch_name,
+body.charListGrid:not(.charGalleryView) #rm_print_characters_block .group_select .ch_name,
+body.charListGrid:not(.charGalleryView) #rm_print_characters_block .group_select .group_select_counter,
 #user_avatar_block.gridView .avatar-container .ch_name,
 #user_avatar_block.gridView .avatar-container .bogus_folder_counter,
 #user_avatar_block.gridView .avatar-container .group_select_counter,
@@ -101,17 +114,17 @@ body.charListGrid #rm_print_characters_block .group_select .group_select_counter
     font-size: calc(var(--mainFontSize) * .8);
 }
 
-body.charListGrid #rm_print_characters_block .bogus_folder_select .character_name_block,
-body.charListGrid #rm_print_characters_block .character_select .character_name_block,
-body.charListGrid #rm_print_characters_block .group_select .group_name_block,
+body.charListGrid:not(.charGalleryView) #rm_print_characters_block .bogus_folder_select .character_name_block,
+body.charListGrid:not(.charGalleryView) #rm_print_characters_block .character_select .character_name_block,
+body.charListGrid:not(.charGalleryView) #rm_print_characters_block .group_select .group_name_block,
 #user_avatar_block.gridView .avatar-container .character_name_block {
     width: 100%;
     flex-direction: column;
 }
 
-body.charListGrid #rm_print_characters_block .bogus_folder_select .character_select_container,
-body.charListGrid #rm_print_characters_block .character_select .character_select_container,
-body.charListGrid #rm_print_characters_block .group_select .group_select_container,
+body.charListGrid:not(.charGalleryView) #rm_print_characters_block .bogus_folder_select .character_select_container,
+body.charListGrid:not(.charGalleryView) #rm_print_characters_block .character_select .character_select_container,
+body.charListGrid:not(.charGalleryView) #rm_print_characters_block .group_select .group_select_container,
 #user_avatar_block.gridView .avatar-container .character_select_container,
 #user_avatar_block.gridView .avatar-container .group_select_container {
     width: 100%;
@@ -119,7 +132,7 @@ body.charListGrid #rm_print_characters_block .group_select .group_select_contain
     max-width: 100px;
 }
 
-body.charListGrid #rm_print_characters_block .group_select {
+body.charListGrid:not(.charGalleryView) #rm_print_characters_block .group_select {
     width: 30%;
     height: min-content;
     align-items: center !important;
@@ -128,22 +141,22 @@ body.charListGrid #rm_print_characters_block .group_select {
     max-width: 100px;
 }
 
-body.charListGrid #rm_print_characters_block .group_select .group_name_block {
+body.charListGrid:not(.charGalleryView) #rm_print_characters_block .group_select .group_name_block {
     width: 100%;
 }
 
-body.charListGrid #rm_print_characters_block .ch_description,
-body.charListGrid #rm_print_characters_block .tags_inline,
-body.charListGrid #rm_print_characters_block .group_select_block_list,
-body.charListGrid #rm_print_characters_block .ch_avatar_url,
-body.charListGrid #rm_print_characters_block .character_version,
-body.charListGrid #rm_print_characters_block .character_name_block_sub_line,
+body.charListGrid:not(.charGalleryView) #rm_print_characters_block .ch_description,
+body.charListGrid:not(.charGalleryView) #rm_print_characters_block .tags_inline,
+body.charListGrid:not(.charGalleryView) #rm_print_characters_block .group_select_block_list,
+body.charListGrid:not(.charGalleryView) #rm_print_characters_block .ch_avatar_url,
+body.charListGrid:not(.charGalleryView) #rm_print_characters_block .character_version,
+body.charListGrid:not(.charGalleryView) #rm_print_characters_block .character_name_block_sub_line,
 #user_avatar_block.gridView .avatar-container .ch_description,
-body.charListGrid #rm_print_characters_block .bogus_folder_select_back .bogus_folder_back_placeholder {
+body.charListGrid:not(.charGalleryView) #rm_print_characters_block .bogus_folder_select_back .bogus_folder_back_placeholder {
     display: none;
 }
 
-body.charListGrid #rm_print_characters_block .bogus_folder_select_back .avatar {
+body.charListGrid:not(.charGalleryView) #rm_print_characters_block .bogus_folder_select_back .avatar {
     display: flex !important;
 }
 
@@ -155,33 +168,30 @@ body.charListGrid #rm_print_characters_block .ch_add_placeholder {
 }
 */
 
-body.charListGrid #rm_print_characters_block .ch_additional_info {
+body.charListGrid:not(.charGalleryView) #rm_print_characters_block .ch_additional_info {
     display: none;
 }
 
 /*
- * Character gallery view: a centered, chub.ai-style tile grid for the character list, toggled via the button
+ * Character gallery view: a fullscreen, chub.ai-style tile grid for the character list, toggled via the button
  * below #rm_button_characters (see doCharGalleryViewSwitch() in script.js). Deliberately reuses the exact same
  * DOM the sidebar list already renders (#rm_print_characters_block, the .character_select/.group_select rows
  * from printCharacters()) - this is a layout-only mode, not a second render path, so it stays correct for
  * search/sort/pagination/keyed-diff re-renders with zero extra wiring.
  *
- * Not edge-to-edge: width is capped at the same --sheldWidth the rest of the app's center column already uses
- * (#sheld/#top-bar, style.css) - `min(chat_width vw, chat_width_max ch)`, power_user.chat_width/chat_width_max,
- * written onto :root by getChatWidthValue() in power-user.js. Reusing that variable means gallery view
- * automatically tracks whatever width the user already configured for their main content column instead of
- * introducing a second, competing width setting - and centers with the same `margin: 0 auto` + `left/right: 0`
- * trick #sheld uses, overriding .fillRight's side-gutter positioning (style.css) for just this mode. Height
- * still goes full viewport (minus the top bar) - only the width claim was scoped down to match the owner's
- * "reuse the existing center-section width" request, height wasn't part of that ask.
+ * Genuinely edge-to-edge: an earlier pass capped this at --sheldWidth (the main chat column's width variable)
+ * to avoid an edge-to-edge feel, but that was the wrong call for a fullscreen takeover view - reverted, the
+ * panel now claims the full viewport again. Every rule in this block also fires unconditionally whenever
+ * body.charGalleryView is set, regardless of any other view-mode class (see the body.charListGrid:not(
+ * .charGalleryView) guard added above charListGrid's own rules) - one gallery rendering, no second variant.
  */
 
 body.charGalleryView #right-nav-panel.fillRight.openDrawer {
     left: 0;
     right: 0;
-    width: var(--sheldWidth);
-    max-width: var(--sheldWidth);
-    margin: 0 auto;
+    width: 100vw;
+    max-width: 100vw;
+    margin: 0;
     top: var(--topBarBlockSize);
     height: calc(100vh - var(--topBarBlockSize));
     height: calc(100dvh - var(--topBarBlockSize));
@@ -189,38 +199,78 @@ body.charGalleryView #right-nav-panel.fillRight.openDrawer {
     max-height: calc(100dvh - var(--topBarBlockSize));
 }
 
+/* Favorites bar (#HotSwapWrapper's .hotswap row of quick-select avatars): fine at full size in the narrow
+   sidebar where it's one of few things on screen, but in a fullscreen tile grid it was eating a disproportionate
+   strip of vertical space above the cards for what's a secondary shortcut. Reuses the app's own existing
+   small-avatar sizing mechanism (.avatars_inline_small, style.css) instead of introducing a new size scale. */
+body.charGalleryView .hotswap.avatars_inline {
+    margin: 2px 5px;
+    height: calc(var(--avatar-base-height) * var(--inline-avatar-small-factor) + 2 * var(--avatar-base-border-radius));
+    max-height: calc(var(--avatar-base-height) * var(--inline-avatar-small-factor) + 2 * var(--avatar-base-border-radius));
+}
+
+body.charGalleryView .hotswap.avatars_inline .avatar,
+body.charGalleryView .hotswap.avatars_inline .avatar img {
+    width: calc(var(--avatar-base-width) * var(--inline-avatar-small-factor));
+    height: calc(var(--avatar-base-height) * var(--inline-avatar-small-factor));
+}
+
+/* Search bar + result count: #form_character_search_form is already a row flexbox (style.css), but its two
+   main children (#character_search_bar_wrapper, which itself wraps search pills + the text input, and
+   #character_search_result_count) had no explicit no-wrap/basis guard - once the input's search-pill row grew
+   past a couple of tags, or the layout got squeezed, the row would concede height rather than width and the
+   result count ended up pushed onto its own line below the input. Pin both to a single row explicitly so this
+   view never wastes vertical space on that regardless of pill count. */
+body.charGalleryView #form_character_search_form {
+    flex-wrap: nowrap;
+    align-items: center;
+}
+
+body.charGalleryView #character_search_bar_wrapper {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+}
+
+body.charGalleryView #character_search_result_count {
+    flex: 0 0 auto;
+}
+
 body.charGalleryView #rm_print_characters_block {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
     align-items: stretch;
-    gap: 15px;
+    gap: 12px;
     padding: 10px 15px 15px;
 }
 
+/* Cards: side-by-side (avatar thumbnail beside the text column), not avatar-on-top/text-below - the owner
+   flagged the stacked layout as both wasting space and making the avatar read as oversized relative to the
+   name/creator/description/tags next to it. Row layout with a fixed-width thumbnail column fixes both at once. */
 body.charGalleryView #rm_print_characters_block .bogus_folder_select,
 body.charGalleryView #rm_print_characters_block .character_select,
 body.charGalleryView #rm_print_characters_block .group_select {
     width: auto;
     max-width: unset;
     height: auto;
-    flex-direction: column;
+    flex-direction: row;
     align-items: stretch;
     overflow: visible;
     background-color: var(--SmartThemeBotMesBlurTintColor);
     border: 1px solid var(--SmartThemeBorderColor);
     border-radius: 10px;
     padding: 10px;
+    gap: 10px;
     position: relative;
 }
 
 body.charGalleryView #rm_print_characters_block .bogus_folder_select .avatar,
 body.charGalleryView #rm_print_characters_block .character_select .avatar,
 body.charGalleryView #rm_print_characters_block .group_select .avatar {
-    width: 100%;
+    width: 72px;
     height: auto;
     aspect-ratio: 2 / 3;
-    align-self: center;
-    flex: unset;
+    align-self: flex-start;
+    flex: 0 0 auto;
 }
 
 body.charGalleryView #rm_print_characters_block .avatar img {
@@ -229,9 +279,21 @@ body.charGalleryView #rm_print_characters_block .avatar img {
     object-fit: cover;
 }
 
+/* .character_select_container/.group_select_container carry `position: relative` unconditionally (style.css -
+   it's what .character_name_block_sub_line's absolute positioning anchors to for group rows). That made it the
+   containing block for the favorite-badge icon nested inside it too, since CSS `position: absolute` always
+   resolves to the nearest positioned ancestor regardless of which element a rule "means" to anchor to - so the
+   badge's `top/right` below were being measured from the text column (which starts after the avatar in normal
+   flow), not from the card. Forcing this back to `position: static` in gallery view removes it from the
+   containing-block chain, so the badge (and .character_name_block_sub_line, for group rows) resolve against
+   the card itself (.character_select/.group_select, position: relative below) instead - which is what both were
+   actually meant to be positioned against here. */
 body.charGalleryView #rm_print_characters_block .character_select_container,
 body.charGalleryView #rm_print_characters_block .group_select_container {
-    width: 100%;
+    position: static;
+    width: auto;
+    flex: 1 1 auto;
+    min-width: 0;
     max-width: unset;
     justify-content: flex-start;
 }
@@ -264,7 +326,7 @@ body.charGalleryView #rm_print_characters_block .ch_avatar_url {
 
 body.charGalleryView #rm_print_characters_block .ch_description {
     display: -webkit-box;
-    -webkit-line-clamp: 4;
+    -webkit-line-clamp: 3;
     -webkit-box-orient: vertical;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -281,16 +343,17 @@ body.charGalleryView #rm_print_characters_block .tags_inline {
 
 /* Favorite badge: the base template ships this hidden via an inline style (renderCharacterBlock in script.js)
    and relies on the .is_fav avatar outline/gold name instead for list/grid view - gallery cards have enough
-   room to also show the star itself, top-right corner of the card. */
+   room to also show the star itself, top-left corner of the card (over the avatar thumbnail, now that the
+   avatar sits on the left rather than spanning the card's full width). */
 body.charGalleryView #rm_print_characters_block .character_select.is_fav .ch_fav_icon,
 body.charGalleryView #rm_print_characters_block .group_select.is_fav .ch_fav_icon {
     display: inline-block !important;
     position: absolute;
-    top: 8px;
-    right: 8px;
+    top: 6px;
+    left: 6px;
     margin: 0;
     padding: 0;
-    font-size: 18px;
+    font-size: 16px;
     order: unset;
 }
 
