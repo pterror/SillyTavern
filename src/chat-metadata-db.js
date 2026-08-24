@@ -54,7 +54,17 @@ const SCHEMA_SQL = `
         last_mes           TEXT,
         preview            TEXT,
         chat_metadata_json TEXT,
-        rev                INTEGER NOT NULL
+        rev                INTEGER NOT NULL,
+        -- How many of this chat's messages the planned tantivy content index (chat-content-search-index.js) has
+        -- already indexed, as of its own last catch-up pass - -1 means "never indexed" (distinct from a real
+        -- 0-message chat). NOT touched by upsertRow()/deleteChatRow()/renameChatRow() above and NOT logged as a
+        -- change (see setIndexedMessageCount() below) - this is index bookkeeping, not a "this chat changed"
+        -- event, so writing it must never itself bump 'rev' (that would make the content index perpetually see
+        -- its own catch-up as new work to catch up on again). This is what lets that index's incremental catch-up
+        -- add tantivy documents only for messages at index >= this watermark on an ordinary append (the common
+        -- case: sending a message), instead of re-indexing a chat's entire text on every save - see that
+        -- module's own header for the full rationale.
+        indexed_message_count INTEGER NOT NULL DEFAULT -1
     );
     CREATE INDEX IF NOT EXISTS idx_chats_mtime ON chats(mtime);
 
@@ -64,6 +74,16 @@ const SCHEMA_SQL = `
         op        TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_changes_file_path ON changes(file_path);
+
+    -- Generic key/value store, mirroring character-metadata-db.js's own 'meta' table - the planned per-message
+    -- tantivy content index (chat-content-search-index.js) uses this to persist its own "caught up to rev N"
+    -- watermark (same TANTIVY_INDEX_REV_META_KEY pattern that module's character equivalent already uses), so a
+    -- persisted index can be reopened and incrementally caught up instead of rebuilt from scratch on every
+    -- process restart.
+    CREATE TABLE IF NOT EXISTS meta (
+        key   TEXT PRIMARY KEY,
+        value TEXT
+    );
 `;
 
 const UPSERT_SQL = `
@@ -347,6 +367,60 @@ export async function getChangesSince(directories, sinceRev) {
     const entry = await getEntry(directories);
     if (!entry) return [];
     return entry.db.all('SELECT rev, file_path, op FROM changes WHERE rev > @sinceRev ORDER BY rev ASC', { sinceRev });
+}
+
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} filePath
+ * @returns {Promise<number>} How many of this chat's messages chat-content-search-index.js has already indexed
+ * (-1 if never indexed, or if this file isn't tracked at all - both mean "start from scratch").
+ */
+export async function getIndexedMessageCount(directories, filePath) {
+    const entry = await getEntry(directories);
+    if (!entry) return -1;
+    const row = entry.db.get('SELECT indexed_message_count FROM chats WHERE file_path = @filePath', { filePath });
+    return row ? Number(row.indexed_message_count) : -1;
+}
+
+/**
+ * Write-path hook for chat-content-search-index.js's incremental catch-up - records how many messages of this
+ * chat have now been indexed. Deliberately a plain UPDATE with no `changes` table insert (see this column's own
+ * SCHEMA_SQL comment: this is index bookkeeping, not a "chat changed" event, and logging it as one would make
+ * the content index perpetually catch up on its own catch-up). A no-op if the row no longer exists (the chat was
+ * deleted between the catch-up pass reading its change and writing this back) - nothing to update.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} filePath
+ * @param {number} count
+ * @returns {Promise<void>}
+ */
+export async function setIndexedMessageCount(directories, filePath, count) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+    entry.db.run('UPDATE chats SET indexed_message_count = @count WHERE file_path = @filePath', { filePath, count });
+}
+
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} key
+ * @returns {Promise<string | null>}
+ */
+export async function getMetaValue(directories, key) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    const row = entry.db.get('SELECT value FROM meta WHERE key = @key', { key });
+    return row ? row.value : null;
+}
+
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} key
+ * @param {string} value
+ * @returns {Promise<void>}
+ */
+export async function setMetaValue(directories, key, value) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+    entry.db.run('INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value', { key, value });
 }
 
 /**

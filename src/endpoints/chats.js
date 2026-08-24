@@ -25,6 +25,7 @@ import {
 } from '../util.js';
 import { bumpGroupChatStats } from '../character-metadata-db.js';
 import { upsertChatFromSave, upsertChatFromParse, getChatRow, deleteChatRow, renameChatRow } from '../chat-metadata-db.js';
+import { searchChatMessages } from './chat-content-search-index.js';
 
 const isBackupEnabled = !!getConfigValue('backups.chat.enabled', true, 'boolean');
 const maxTotalChatBackups = Number(getConfigValue('backups.chat.maxTotalBackups', -1, 'number'));
@@ -1145,11 +1146,66 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
             return fragments.every(fragment => textArray.some(text => String(text ?? '').toLowerCase().includes(fragment)));
         };
 
+        if (query) {
+            // Real content search: try the tantivy message index first (chat-content-search-index.js) - see
+            // that module's own header for why it's the preferred path (no per-request full-file scan, real
+            // relevance ranking) and why "tantivy unavailable" falls all the way back to the original
+            // getChatInfo()+hasTextMatch scan below rather than returning a degraded/empty result.
+            const contentSearch = await searchChatMessages(request.user.profile.handle, request.user.directories, query);
+
+            if (contentSearch.backend !== 'unavailable') {
+                const scopedFiles = new Set(chatFiles);
+                // The old scan matched EITHER message content OR the chat's own filename (hasTextMatch() was run
+                // against both) - the tantivy index only covers message content (filenames were never indexed),
+                // so filename matches are computed here separately, same cheap in-memory check as before (no I/O
+                // beyond the stat/cache lookup getOrComputeChatInfo() already does), and unioned with the content
+                // hits below to keep that behavior.
+                const contentMatches = contentSearch.results.filter(r => scopedFiles.has(r.file_path));
+                const matchedFilePaths = new Set(contentMatches.map(r => r.file_path));
+
+                for (const chatFile of chatFiles) {
+                    if (matchedFilePaths.has(chatFile)) {
+                        continue;
+                    }
+                    const fileId = path.parse(chatFile).name;
+                    if (!hasTextMatch([fileId])) {
+                        continue;
+                    }
+                    const stats = await fs.promises.stat(chatFile).catch(() => null);
+                    if (!stats) {
+                        continue;
+                    }
+                    const chatInfo = await getOrComputeChatInfo(request.user.directories, chatFile, stats.mtimeMs, {}, false);
+                    if (!chatInfo.file_name) {
+                        continue;
+                    }
+                    results.push({
+                        file_name: chatInfo.file_id,
+                        file_size: chatInfo.file_size,
+                        message_count: chatInfo.chat_items,
+                        last_mes: chatInfo.last_mes,
+                        preview_message: getPreviewMessage(chatInfo.mes),
+                    });
+                }
+
+                for (const match of contentMatches) {
+                    results.push({
+                        file_name: match.file_name,
+                        file_size: match.file_size,
+                        message_count: match.message_count,
+                        last_mes: match.last_mes,
+                        preview_message: getPreviewMessage(match.preview_message),
+                    });
+                }
+
+                return response.send(results);
+            }
+        }
+
         for (const chatFile of chatFiles) {
             let chatInfo;
             if (query) {
-                // A real content match needs the full text of every message - can't be served from the
-                // metadata store's cached last-message-only preview, so this keeps the original full-file scan.
+                // Tantivy unavailable on this install - the original full-file scan, unchanged.
                 chatInfo = await getChatInfo(chatFile, {}, false, hasTextMatch);
             } else {
                 // No query: this is pure listing, exactly the cost getOrComputeChatInfo() exists to avoid
