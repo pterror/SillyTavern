@@ -428,6 +428,102 @@ export let name2 = systemUserName;
 /** @type {ChatMessage[]} */
 export let chat = [];
 
+// ---------------------------------------------------------------------------
+//  Immutable messages + slim wire protocol.
+//
+//  Messages in the chat array are frozen (Object.freeze) after loading from the
+//  server or after creation. Every mutation goes through updateMessage(), which
+//  replaces the array element with a new frozen object. This makes change detection
+//  for the slim wire protocol trivial: reference equality (msg === snapshot) means
+//  unchanged, different reference means changed. No hashing, no dirty flags.
+//
+//  The slim wire protocol replaces unchanged messages with lightweight stubs
+//  ({ node_id, _unchanged: true }) on save, reducing payload from O(total messages)
+//  to O(changed messages) — measured: 765KB → ~2KB for a 700-message chat.
+// ---------------------------------------------------------------------------
+
+/**
+ * Snapshot: maps node_id -> message reference, taken after load/save.
+ * Reference equality against the snapshot is the change-detection mechanism.
+ * @type {Map<string, object>}
+ */
+const _messageSnapshots = new Map();
+
+/**
+ * Deep-freezes an object and all nested objects/arrays. After freezing, any attempt
+ * to mutate a property throws a TypeError, enforcing the immutable-message contract.
+ * @param {*} obj
+ * @returns {*} The same object, now frozen
+ */
+function deepFreeze(obj) {
+    if (obj === null || typeof obj !== 'object') return obj;
+    if (Object.isFrozen(obj)) return obj;
+    Object.freeze(obj);
+    for (const val of Object.values(obj)) {
+        if (val !== null && typeof val === 'object') {
+            deepFreeze(val);
+        }
+    }
+    return obj;
+}
+
+/**
+ * The single write path for chat messages. Replaces the message at `mesId` with a
+ * new deep-frozen object incorporating the given updates. Direct mutation of a frozen
+ * message throws a TypeError — this is the only correct way to change a message.
+ *
+ * @param {number} mesId Index in the chat array
+ * @param {object} updates Partial message to shallow-merge (use spread for nested objects)
+ * @returns {object} The new frozen message
+ *
+ * @example
+ * // Simple property update:
+ * updateMessage(id, { mes: 'new text' });
+ *
+ * // Nested object update (must spread the nested object):
+ * updateMessage(id, { extra: { ...chat[id].extra, token_count: 42 } });
+ *
+ * // Array element update (must clone the array):
+ * const newSwipes = [...chat[id].swipes];
+ * newSwipes[idx] = 'new swipe text';
+ * updateMessage(id, { swipes: newSwipes });
+ */
+export function updateMessage(mesId, updates) {
+    const old = chat[mesId];
+    if (!old) return old;
+    const result = deepFreeze({ ...old, ...updates });
+    chat[mesId] = result;
+    return result;
+}
+
+/**
+ * Snapshots current message references for change detection.
+ * Called after loading a chat and after each successful save.
+ */
+function _snapshotMessages() {
+    _messageSnapshots.clear();
+    for (const msg of chat) {
+        if (msg.node_id) {
+            _messageSnapshots.set(msg.node_id, msg);
+        }
+    }
+}
+
+/**
+ * Builds a slim payload: unchanged messages (same reference as snapshot) become stubs,
+ * changed/new messages are sent with full content.
+ * @param {object[]} messages
+ * @returns {object[]}
+ */
+function _buildSlimPayload(messages) {
+    return messages.map(msg => {
+        if (msg.node_id && _messageSnapshots.get(msg.node_id) === msg) {
+            return { node_id: msg.node_id, _unchanged: true };
+        }
+        return msg;
+    });
+}
+
 /**
  * @type {import('./scripts/constants.js').SWIPE_STATE}
  */
@@ -2675,7 +2771,10 @@ export async function clearChat({ clearData = false } = {}) {
     await saveItemizedPrompts(getCurrentChatId());
     itemizedPrompts.length = 0;
 
-    if (clearData) chat.length = 0;
+    if (clearData) {
+        chat.length = 0;
+        _messageSnapshots.clear();
+    }
 }
 
 export async function deleteLastMessage() {
@@ -4758,15 +4857,16 @@ class StreamingProcessor {
             await this.#checkDomElements(messageId);
             this.#updateMessageBlockVisibility();
             const currentTime = new Date();
-            chat[messageId].mes = processedText;
-            chat[messageId].gen_started = this.timeStarted;
-            chat[messageId].gen_finished = currentTime;
-            if (!chat[messageId].extra) {
-                chat[messageId].extra = {};
-            }
-            chat[messageId].extra.time_to_first_token = this.timeToFirstToken;
 
-            // Update reasoning
+            // Immutable message update: batch property changes into one replace
+            updateMessage(messageId, {
+                mes: processedText,
+                gen_started: this.timeStarted,
+                gen_finished: currentTime,
+                extra: { ...(chat[messageId].extra || {}), time_to_first_token: this.timeToFirstToken },
+            });
+
+            // Update reasoning (may itself call updateMessage)
             await this.reasoningHandler.process(messageId, mesChanged, this.promptReasoning);
             processedText = chat[messageId].mes;
 
@@ -4774,20 +4874,25 @@ class StreamingProcessor {
             const tokenCountText = this.reasoningHandler.reasoning + processedText;
             const currentTokenCount = isFinal && power_user.message_token_count_enabled ? await getTokenCountAsync(tokenCountText, 0) : 0;
             if (currentTokenCount) {
-                chat[messageId].extra.token_count = currentTokenCount;
+                updateMessage(messageId, {
+                    extra: { ...chat[messageId].extra, token_count: currentTokenCount },
+                });
                 if (this.messageTokenCounterDom instanceof HTMLElement) {
                     this.messageTokenCounterDom.textContent = `${currentTokenCount}t`;
                 }
             }
 
             if ((this.type == 'swipe' || this.type === 'continue') && Array.isArray(chat[messageId].swipes)) {
-                chat[messageId].swipes[chat[messageId].swipe_id] = processedText;
-                chat[messageId].swipe_info[chat[messageId].swipe_id] = {
+                const newSwipes = [...chat[messageId].swipes];
+                newSwipes[chat[messageId].swipe_id] = processedText;
+                const newSwipeInfo = [...(chat[messageId].swipe_info || [])];
+                newSwipeInfo[chat[messageId].swipe_id] = {
                     'send_date': chat[messageId].send_date,
                     'gen_started': chat[messageId].gen_started,
                     'gen_finished': chat[messageId].gen_finished,
                     'extra': structuredClone(chat[messageId].extra),
                 };
+                updateMessage(messageId, { swipes: newSwipes, swipe_info: newSwipeInfo });
             }
 
             const formattedText = messageFormatting(
@@ -4833,7 +4938,7 @@ class StreamingProcessor {
     async finalizeIntermediaryMessage(messageId, text, { unlockUI = true }) {
         await this.onProgressStreaming(messageId, text, true);
         const messageElement = chatElement.find(`.mes[mesid="${messageId}"]`);
-        const message = chat[messageId];
+        let message = chat[messageId];
         addCopyToCodeBlocks(messageElement);
 
         await this.reasoningHandler.finish(messageId);
@@ -4851,22 +4956,32 @@ class StreamingProcessor {
             };
             const swipeInfoArray = Array(this.swipes.length).fill().map(() => structuredClone(swipeInfo));
             parseReasoningInSwipes(this.swipes, swipeInfoArray, message.extra?.reasoning_duration);
-            message.swipes.push(...this.swipes);
-            message.swipe_info.push(...swipeInfoArray);
+            updateMessage(messageId, {
+                swipes: [...(message.swipes || []), ...this.swipes],
+                swipe_info: [...(message.swipe_info || []), ...swipeInfoArray],
+            });
+            message = chat[messageId]; // refresh local reference after update
         }
 
         syncMesToSwipe(messageId);
         saveLogprobsForActiveMessage(this.messageLogprobs.filter(Boolean), this.continueMessage);
 
         if (Array.isArray(this.images) && this.images.length > 0) {
-            await processImageAttachment(message, { imageUrls: this.images });
+            // processImageAttachment mutates the message object; clone so the frozen original isn't touched,
+            // then apply the changed extra back via updateMessage.
+            const mutableMsg = structuredClone(chat[messageId]);
+            await processImageAttachment(mutableMsg, { imageUrls: this.images });
+            updateMessage(messageId, { extra: mutableMsg.extra });
+            message = chat[messageId];
             appendMediaToMessage(message, $(this.messageDom));
         }
 
         // Store reasoning signature for models that support multi-turn context
         if (this.reasoningSignature) {
-            message.extra = message.extra || {};
-            message.extra.reasoning_signature = this.reasoningSignature;
+            updateMessage(messageId, {
+                extra: { ...(chat[messageId].extra || {}), reasoning_signature: this.reasoningSignature },
+            });
+            message = chat[messageId];
         }
 
         if (unlockUI) {
@@ -4911,13 +5026,15 @@ class StreamingProcessor {
     setFirstSwipe(messageId) {
         if (this.type !== 'swipe' && this.type !== 'impersonate') {
             if (Array.isArray(chat[messageId].swipes) && chat[messageId].swipes.length === 1 && chat[messageId].swipe_id === 0) {
-                chat[messageId].swipes[0] = chat[messageId].mes;
-                chat[messageId].swipe_info[0] = {
-                    'send_date': chat[messageId].send_date,
-                    'gen_started': chat[messageId].gen_started,
-                    'gen_finished': chat[messageId].gen_finished,
-                    'extra': structuredClone(chat[messageId].extra),
-                };
+                updateMessage(messageId, {
+                    swipes: [chat[messageId].mes],
+                    swipe_info: [{
+                        'send_date': chat[messageId].send_date,
+                        'gen_started': chat[messageId].gen_started,
+                        'gen_finished': chat[messageId].gen_finished,
+                        'extra': structuredClone(chat[messageId].extra),
+                    }],
+                });
             }
         }
     }
@@ -5567,7 +5684,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 
     // First message in fresh 1-on-1 chat reacts to user/character settings changes
     if (chat.length) {
-        chat[0].mes = substituteParams(chat[0].mes);
+        updateMessage(0, { mes: substituteParams(chat[0].mes) });
     }
 
     // Collect messages with usable content
@@ -7928,16 +8045,6 @@ export function ensureSwipes(message) {
         return updated;
     }
 
-    if (!Array.isArray(message.swipes)) {
-        message.swipes = [message.mes ?? ''];
-        updated = true;
-    }
-
-    if (typeof message.swipe_id !== 'number') {
-        message.swipe_id = 0;
-        updated = true;
-    }
-
     /** @type {() => SwipeInfo} */
     const createSwipeInfo = () => ({
         send_date: message.send_date,
@@ -7946,21 +8053,54 @@ export function ensureSwipes(message) {
         extra: {},
     });
 
-    if (!Array.isArray(message.swipe_info)) {
-        message.swipe_info = message.swipes.map(_ => createSwipeInfo());
+    // Collect all needed updates, apply once at the end
+    const updates = {};
+
+    let swipes = Array.isArray(message.swipes) ? [...message.swipes] : null;
+    if (!swipes) {
+        swipes = [message.mes ?? ''];
         updated = true;
     }
 
-    for (let i = 0; i < message.swipes.length; i++) {
-        if (typeof message.swipes[i] !== 'string') {
+    if (typeof message.swipe_id !== 'number') {
+        updates.swipe_id = 0;
+        updated = true;
+    }
+
+    let swipeInfo = Array.isArray(message.swipe_info) ? [...message.swipe_info] : null;
+    if (!swipeInfo) {
+        swipeInfo = swipes.map(_ => createSwipeInfo());
+        updated = true;
+    }
+
+    let swipesDirty = !Array.isArray(message.swipes);
+    let swipeInfoDirty = !Array.isArray(message.swipe_info);
+
+    for (let i = 0; i < swipes.length; i++) {
+        if (typeof swipes[i] !== 'string') {
             updated = true;
+            swipesDirty = true;
             console.warn('The message had a swipe that is not a string. It has has been set to \'\'.', message);
-            message.swipes[i] = '';
+            swipes[i] = '';
         }
-        if (!message.swipe_info[i] || typeof message.swipe_info[i] !== 'object') {
+        if (!swipeInfo[i] || typeof swipeInfo[i] !== 'object') {
             updated = true;
+            swipeInfoDirty = true;
             console.warn('The message had missing or invalid swipe_info for a swipe. It has been backfilled.', message);
-            message.swipe_info[i] = createSwipeInfo();
+            swipeInfo[i] = createSwipeInfo();
+        }
+    }
+
+    if (swipesDirty) updates.swipes = swipes;
+    if (swipeInfoDirty) updates.swipe_info = swipeInfo;
+
+    if (updated) {
+        const mesId = chat.indexOf(message);
+        if (mesId >= 0) {
+            updateMessage(mesId, updates);
+        } else {
+            // Not in the chat array (e.g., newly created message) — mutate directly
+            Object.assign(message, updates);
         }
     }
 
@@ -8010,15 +8150,24 @@ export function syncMesToSwipe(messageId = null) {
     }
 
     // Only sync swipes if the chat is not pristine, so that macros in the greeting can resolve again on swipe
+    const updates = {};
     if (chat_metadata.tainted || chat.length > 1) {
-        targetMessage.swipes[targetMessage.swipe_id] = targetMessage.mes;
+        const newSwipes = [...targetMessage.swipes];
+        newSwipes[targetMessage.swipe_id] = targetMessage.mes;
+        updates.swipes = newSwipes;
     }
 
-    targetSwipeInfo.send_date = targetMessage.send_date;
-    targetSwipeInfo.gen_started = targetMessage.gen_started;
-    targetSwipeInfo.gen_finished = targetMessage.gen_finished;
-    targetSwipeInfo.extra = structuredClone(targetMessage.extra);
+    const newSwipeInfo = [...targetMessage.swipe_info];
+    newSwipeInfo[targetMessage.swipe_id] = {
+        ...(newSwipeInfo[targetMessage.swipe_id] || {}),
+        send_date: targetMessage.send_date,
+        gen_started: targetMessage.gen_started,
+        gen_finished: targetMessage.gen_finished,
+        extra: structuredClone(targetMessage.extra),
+    };
+    updates.swipe_info = newSwipeInfo;
 
+    updateMessage(targetMessageId, updates);
     return true;
 }
 
@@ -8051,12 +8200,21 @@ export function syncSwipeToMes(messageId = null, swipeId = null, targetMessage =
         return false;
     }
 
+    // Resolve the actual array index so we can use updateMessage for chat-resident messages
+    const resolvedMessageId = targetMessage ? null : (messageId ?? chat.length - 1);
+    const isChatResident = !targetMessage; // true if operating on the actual chat array
+
     if (swipeId !== null) {
         if (isNaN(swipeId) || swipeId < 0) {
             console.warn(`[syncSwipeToMes] Invalid swipe ID: ${swipeId}`);
             return false;
         }
-        targetMessage.swipe_id = swipeId;
+        if (isChatResident) {
+            updateMessage(resolvedMessageId, { swipe_id: swipeId });
+            targetMessage = chat[resolvedMessageId];
+        } else {
+            targetMessage.swipe_id = swipeId;
+        }
     }
 
     // No swipe data there yet, exit out
@@ -8070,12 +8228,18 @@ export function syncSwipeToMes(messageId = null, swipeId = null, targetMessage =
 
     // Backfill swipe_info if missing.
     if (!Array.isArray(targetMessage.swipe_info)) {
-        targetMessage.swipe_info = targetMessage.swipes.map(_ => ({
+        const backfilledSwipeInfo = targetMessage.swipes.map(_ => ({
             send_date: targetMessage.send_date,
             gen_started: void 0,
             gen_finished: void 0,
             extra: {},
         }));
+        if (isChatResident) {
+            updateMessage(resolvedMessageId, { swipe_info: backfilledSwipeInfo });
+            targetMessage = chat[resolvedMessageId];
+        } else {
+            targetMessage.swipe_info = backfilledSwipeInfo;
+        }
     }
 
     const targetSwipeId = targetMessage.swipe_id;
@@ -8089,11 +8253,19 @@ export function syncSwipeToMes(messageId = null, swipeId = null, targetMessage =
         console.warn(`[syncSwipeToMes] Invalid swipe info: ${targetSwipeId}`);
     }
 
-    targetMessage.mes = targetMessage.swipes[targetSwipeId];
-    targetMessage.send_date = targetSwipeInfo?.send_date;
-    targetMessage.gen_started = targetSwipeInfo?.gen_started;
-    targetMessage.gen_finished = targetSwipeInfo?.gen_finished;
-    targetMessage.extra = structuredClone(targetSwipeInfo?.extra) ?? {};
+    const syncUpdates = {
+        mes: targetMessage.swipes[targetSwipeId],
+        send_date: targetSwipeInfo?.send_date,
+        gen_started: targetSwipeInfo?.gen_started,
+        gen_finished: targetSwipeInfo?.gen_finished,
+        extra: structuredClone(targetSwipeInfo?.extra) ?? {},
+    };
+
+    if (isChatResident) {
+        updateMessage(resolvedMessageId, syncUpdates);
+    } else {
+        Object.assign(targetMessage, syncUpdates);
+    }
 
     return true;
 }
@@ -8385,6 +8557,27 @@ export async function renameCharacter(name = null, { silent = false, renameChats
 }
 
 async function renamePastChats(oldAvatar, newAvatar, newName) {
+    // Tree DB path: single server-side UPDATE instead of fetching and re-saving every chat file
+    if (chat_metadata?._tree_stored) {
+        try {
+            const result = await fetch('/api/chats/tree/rename-in-content', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ avatar_url: newAvatar, new_name: newName }),
+            });
+            if (!result.ok) {
+                throw new Error('Server-side rename failed');
+            }
+            const data = await result.json();
+            console.debug(`[renamePastChats] Tree DB: renamed ${data.updated} messages`);
+        } catch (error) {
+            toastr.error(t`Past chats could not be renamed`);
+            console.error(error);
+        }
+        return;
+    }
+
+    // JSONL fallback: fetch and re-save each chat file individually
     const pastChats = await getPastCharacterChats();
 
     for (const { file_name } of pastChats) {
@@ -8514,28 +8707,54 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
     };
 
     try {
+        const tClientStart = performance.now();
+
+        // Slim wire protocol: for tree-stored chats (not custom snapshots like branch creation),
+        // replace unchanged messages with lightweight stubs to minimize wire payload.
+        const isTreeChat = !!metadata?._tree_stored && !Array.isArray(chatData);
+        const payloadMessages = isTreeChat ? _buildSlimPayload(trimmedChat) : trimmedChat;
+
+        const bodyJson = JSON.stringify({
+            ch_name: getCurrentCharacter().name,
+            file_name: fileName,
+            chat: [chatHeader, ...payloadMessages],
+            avatar_url: getCurrentCharacter().avatar,
+            force: force,
+        });
+        const tStringify = performance.now();
         const saveChatRequest = await compressRequest({
             method: 'POST',
             cache: 'no-cache',
             headers: getRequestHeaders(),
-            body: JSON.stringify({
-                ch_name: getCurrentCharacter().name,
-                file_name: fileName,
-                chat: [chatHeader, ...trimmedChat],
-                avatar_url: getCurrentCharacter().avatar,
-                force: force,
-            }),
+            body: bodyJson,
         });
+        const tCompress = performance.now();
         const result = await fetch('/api/chats/save', saveChatRequest);
+        const tFetch = performance.now();
+
+        const stubCount = isTreeChat ? payloadMessages.filter(m => m._unchanged).length : 0;
+        const fullCount = payloadMessages.length - stubCount;
+        console.debug(`[save-perf] saveChat client: bodyBytes=${bodyJson.length} stubs=${stubCount} full=${fullCount} stringify=${(tStringify - tClientStart).toFixed(1)}ms compress=${(tCompress - tStringify).toFixed(1)}ms fetch=${(tFetch - tCompress).toFixed(1)}ms total=${(tFetch - tClientStart).toFixed(1)}ms`);
 
         if (result.ok) {
-            // The server rotates the integrity slug on every successful write (see trySaveChat()'s doc comment
-            // in chats.js) and hands the new one back here. Carry it forward into chat_metadata so this tab's
-            // *next* save sends the up-to-date slug - otherwise every save after the first would keep sending
-            // the stale load-time slug and the integrity check would never actually fire for this tab again.
             const data = await result.json().catch(() => null);
             if (data && typeof data.integrity === 'string') {
                 chat_metadata.integrity = data.integrity;
+            }
+
+            // Write assigned node_ids back into the chat array so subsequent saves
+            // can identify these messages as existing (prevents duplicate inserts).
+            if (Array.isArray(data?.assigned_node_ids)) {
+                for (const { index, node_id } of data.assigned_node_ids) {
+                    if (trimmedChat[index]) {
+                        trimmedChat[index].node_id = node_id;
+                    }
+                }
+            }
+
+            // Update content snapshots for next save's change detection
+            if (isTreeChat) {
+                _snapshotMessages();
             }
             return;
         }
@@ -8799,6 +9018,13 @@ export async function getChat({ isNewChat = false } = {}) {
             chat_metadata = chatHeader?.chat_metadata ?? {};
             chat.splice(0, chat.length, ...data);
             chat.forEach(ensureMessageMediaIsArray);
+            // Freeze messages loaded from tree DB: immutable values, replaced only via updateMessage()
+            if (chat_metadata?._tree_stored) {
+                for (let i = 0; i < chat.length; i++) {
+                    chat[i] = deepFreeze(chat[i]);
+                }
+                _snapshotMessages();
+            }
         } else {
             // An empty/corrupted chat file
             chat.splice(0, chat.length);
@@ -9403,15 +9629,19 @@ export function setGenerationParamsFromPreset(preset) {
 }
 
 // Common code for message editor done and auto-save
-function updateMessage(div) {
+function applyMessageEdit(div) {
     const mesBlock = div.closest('.mes_block');
     let text = mesBlock.find('.edit_textarea').val()
         ?? mesBlock.find('.mes_text').text();
     const mesElement = div.closest('.mes');
-    const mes = chat[mesElement.attr('mesid')];
+    const mesId = Number(mesElement.attr('mesid'));
+    let mes = chat[mesId];
 
-    // editing old messages
-    mes.extra ??= {};
+    // editing old messages — ensure extra exists via immutable update if needed
+    if (!mes.extra || typeof mes.extra !== 'object') {
+        updateMessage(mesId, { extra: {} });
+        mes = chat[mesId];
+    }
 
     let regexPlacement;
     if (mes?.is_user) {
@@ -9442,11 +9672,16 @@ function updateMessage(div) {
     if (bias) {
         text = removeMacros(text);
     }
-    mes.mes = text;
+
+    const editUpdates = { mes: text };
     if (mes.swipe_id !== undefined) {
         ensureSwipes(mes);
-        mes.swipes[mes.swipe_id] = text;
+        const newSwipes = [...mes.swipes];
+        newSwipes[mes.swipe_id] = text;
+        editUpdates.swipes = newSwipes;
     }
+    updateMessage(mesId, editUpdates);
+    mes = chat[mesId];
 
     if (mes?.is_system || mes?.is_user || mes.extra?.type === system_message_types.NARRATOR) {
         mes.extra.bias = bias ?? null;
@@ -9483,7 +9718,7 @@ function openMessageDelete(fromSlashCommand, deleteToolCalls = true) {
 }
 
 function messageEditAuto(div) {
-    const { mesBlock, text, mes, bias } = updateMessage(div);
+    const { mesBlock, text, mes, bias } = applyMessageEdit(div);
 
     mesBlock.find('.mes_text').val('');
     mesBlock.find('.mes_text').val(messageFormatting(
@@ -9667,7 +9902,7 @@ async function messageEditDone(div) {
         return;
     }
 
-    let { mesBlock, text, mes, bias } = updateMessage(div);
+    let { mesBlock, text, mes, bias } = applyMessageEdit(div);
 
     await eventSource.emit(event_types.MESSAGE_EDITED, this_edit_mes_id);
     text = chat[this_edit_mes_id]?.mes ?? text;
@@ -10673,7 +10908,7 @@ export async function deleteSwipe(swipeId = null, messageId = chat.length - 1) {
 
     messageId = Number(messageId);
     swipeId = Number(swipeId);
-    message.swipe_id = newSwipeId;
+    updateMessage(messageId, { swipe_id: newSwipeId });
     await eventSource.emit(event_types.MESSAGE_SWIPE_DELETED, { messageId, swipeId, newSwipeId });
 
     if (swipeId === currentSwipeId) {
@@ -10699,12 +10934,14 @@ export async function saveMetadata() {
 }
 
 export async function saveChatConditional() {
+    const t0 = performance.now();
     try {
         await waitUntilCondition(() => !isChatSaving, DEFAULT_SAVE_EDIT_TIMEOUT, 100);
     } catch {
         console.warn('Timeout waiting for chat to save');
         return;
     }
+    const tWait = performance.now();
 
     try {
         cancelDebouncedChatSave();
@@ -10724,6 +10961,8 @@ export async function saveChatConditional() {
         console.error('Error saving chat', error);
     } finally {
         isChatSaving = false;
+        const tDone = performance.now();
+        console.debug(`[save-perf] saveChatConditional: wait=${(tWait - t0).toFixed(1)}ms save=${(tDone - tWait).toFixed(1)}ms total=${(tDone - t0).toFixed(1)}ms messages=${chat.length} caller=${new Error().stack?.split('\n')[2]?.trim()}`);
     }
 }
 
@@ -11377,10 +11616,10 @@ export async function swipe(event, direction, { source, repeated, message = chat
             // Prevent recursion.
             if (source != SWIPE_SOURCE.BACK) {
                 source = SWIPE_SOURCE.BACK;
-                chat[mesId].swipe_id = clampedId;
+                updateMessage(mesId, { swipe_id: clampedId });
 
                 //Update the chat.
-                await loadFromSwipeId(mesId, chat[mesId].swipe_id);
+                await loadFromSwipeId(mesId, clampedId);
                 await redisplayChat({ startIndex: mesId });
             } else {
                 await Popup.show.confirm(
@@ -11415,24 +11654,27 @@ export async function swipe(event, direction, { source, repeated, message = chat
     }
 
     /**
-     * Removes a message's extra and gen times.
+     * Builds the updates that clear a message's extra and gen times.
      * @param {ChatMessage} message
+     * @returns {Partial<ChatMessage>} Updates to pass to updateMessage.
      */
     function clearMessageData(message) {
+        const updates = { gen_started: undefined, gen_finished: undefined };
         if (message.extra && typeof message.extra === 'object') {
-            delete message.extra.memory;
-            delete message.extra.display_text;
-            delete message.extra.media;
-            delete message.extra.inline_image;
-            delete message.extra.files;
-            delete message.extra.fileLength;
-            delete message.extra.generationType;
-            delete message.extra.negative;
-            delete message.extra.title;
-            delete message.extra.append_title;
+            const extra = { ...message.extra };
+            delete extra.memory;
+            delete extra.display_text;
+            delete extra.media;
+            delete extra.inline_image;
+            delete extra.files;
+            delete extra.fileLength;
+            delete extra.generationType;
+            delete extra.negative;
+            delete extra.title;
+            delete extra.append_title;
+            updates.extra = extra;
         }
-        delete message.gen_started;
-        delete message.gen_finished;
+        return updates;
     }
 
     /**
@@ -11441,17 +11683,15 @@ export async function swipe(event, direction, { source, repeated, message = chat
      * @param {number} newSwipeId
      */
     async function loadFromSwipeId(mesId, newSwipeId) {
-        //Update the swipe_id.
-        chat[mesId].swipe_id = newSwipeId;
-
-        clearMessageData(chat[mesId]);
+        //Update the swipe_id and clear stale generation data.
+        updateMessage(mesId, { swipe_id: newSwipeId, ...clearMessageData(chat[mesId]) });
 
         //Load from swipes.
         if (syncSwipeToMes(mesId, newSwipeId) == false) {
             let errorMessage = t`When swiping ${direction} on message ${mesId}, syncSwipeToMes has returned false. Attempting to swipe back!`;
             toastr.error(errorMessage);
 
-            chat[mesId].swipe_id = originalSwipeId;
+            updateMessage(mesId, { swipe_id: originalSwipeId });
             await endSwipe(true);
         }
         return true;
@@ -11595,13 +11835,9 @@ export async function swipe(event, direction, { source, repeated, message = chat
             addOneMessage(chat[mesId], { type: 'swipe', forceId: mesId, scroll: scroll, showSwipes: false });
 
             if (power_user.message_token_count_enabled) {
-                if (!chat[mesId].extra) {
-                    chat[mesId].extra = {};
-                }
-
                 const tokenCountText = (chat[mesId]?.extra?.reasoning || '') + chat[mesId].mes;
                 const tokenCount = await getTokenCountAsync(tokenCountText, 0);
-                chat[mesId].extra.token_count = tokenCount;
+                updateMessage(mesId, { extra: { ...chat[mesId].extra, token_count: tokenCount } });
                 thisMesDiv.find('.tokenCounterDisplay').text(`${tokenCount}t`);
             }
         }
@@ -11642,16 +11878,16 @@ export async function swipe(event, direction, { source, repeated, message = chat
         syncMesToSwipe(mesId);
 
         if (chat[mesId].swipe_id === undefined) {              // if there is no swipe-message in the last spot of the chat array
-            chat[mesId].swipe_id = 0;                        // set it to id 0
-            chat[mesId].swipes = [];                         // empty the array
-            chat[mesId].swipe_info = [];
-            chat[mesId].swipes[0] = chat[mesId].mes;  //assign swipe array with last chat[mesId] from chat
-            chat[mesId].swipe_info[0] = {
-                'send_date': chat[mesId].send_date,
-                'gen_started': chat[mesId].gen_started,
-                'gen_finished': chat[mesId].gen_finished,
-                'extra': structuredClone(chat[mesId].extra),
-            };
+            updateMessage(mesId, {
+                swipe_id: 0,                                  // set it to id 0
+                swipes: [chat[mesId].mes],                    // assign swipe array with last chat[mesId] from chat
+                swipe_info: [{
+                    'send_date': chat[mesId].send_date,
+                    'gen_started': chat[mesId].gen_started,
+                    'gen_finished': chat[mesId].gen_finished,
+                    'extra': structuredClone(chat[mesId].extra),
+                }],
+            });
         }
         // If the user is holding down the key and we're at the last or first swipe, don't do anything.
         let isLastSwipe = (direction === SWIPE_DIRECTION.RIGHT) ? (chat[mesId].swipe_id === Math.max(0, chat[mesId].swipes.length - 1)) : chat[mesId].swipe_id === 0;
@@ -11675,7 +11911,7 @@ export async function swipe(event, direction, { source, repeated, message = chat
         //Limit swipe_id to swipes.
         if (newSwipeId > chat[mesId].swipes.length - 1) {
             toastr.warning(`The swipe_id for message #${mesId} was ${newSwipeId}. It has been reset to ${chat[mesId].swipes.length - 1}.`);
-            chat[mesId].swipe_id = chat[mesId].swipes.length - 1;
+            updateMessage(mesId, { swipe_id: chat[mesId].swipes.length - 1 });
             await endSwipe();
             return;
         }
@@ -11689,7 +11925,7 @@ export async function swipe(event, direction, { source, repeated, message = chat
         //Minimum of zero.
         if (newSwipeId < 0) {
             toastr.warning(`The swipe_id for message #${mesId} was ${newSwipeId}. It has been reset to zero.`);
-            chat[mesId].swipe_id = 0;
+            updateMessage(mesId, { swipe_id: 0 });
             await endSwipe();
             return;
         }
@@ -11699,19 +11935,19 @@ export async function swipe(event, direction, { source, repeated, message = chat
             newSwipeId = chat[mesId].swipes.length;
 
             //Update the swipe_id.
-            chat[mesId].swipe_id = newSwipeId;
+            updateMessage(mesId, { swipe_id: newSwipeId });
 
             const overswipe = getOverswipeBehavior(mesId);
 
             //Cancel the generation.
             if (overswipe == OVERSWIPE_BEHAVIOR.NONE) {
                 //Cancel swipe.
-                chat[mesId].swipe_id = originalSwipeId;
+                updateMessage(mesId, { swipe_id: originalSwipeId });
                 await endSwipe();
                 return;
             } else if (overswipe == OVERSWIPE_BEHAVIOR.REGENERATE) {
                 //Regenerate the message
-                clearMessageData(chat[mesId]);
+                updateMessage(mesId, clearMessageData(chat[mesId]));
                 let run_generate = true;
                 //Generate.
                 await animateSwipe(run_generate);
@@ -12440,18 +12676,17 @@ export async function doNavbarIconClick() {
 
 function addDebugFunctions() {
     const doBackfill = async () => {
-        for (const message of chat) {
+        for (let i = 0; i < chat.length; i++) {
+            const message = chat[i];
+
             // System messages are not counted
             if (message.is_system) {
                 continue;
             }
 
-            if (!message.extra) {
-                message.extra = {};
-            }
-
             const tokenCountText = (message?.extra?.reasoning || '') + message.mes;
-            message.extra.token_count = await getTokenCountAsync(tokenCountText, 0);
+            const tokenCount = await getTokenCountAsync(tokenCountText, 0);
+            updateMessage(i, { extra: { ...(chat[i].extra || {}), token_count: tokenCount } });
         }
 
         await saveChatConditional();

@@ -24,6 +24,7 @@ import { invalidateThumbnail, getThumbnailVersion } from './thumbnails.js';
 import { importRisuSprites } from './sprites.js';
 import { getUserDirectories } from '../users.js';
 import { getChatInfo } from './chats.js';
+import { isMigrated as isTreeMigrated, listBranches as listTreeBranches } from '../message-tree-db.js';
 import { ByafParser } from '../byaf.js';
 import { CharXParser, persistCharXAssets } from '../charx.js';
 import cacheBuster from '../middleware/cacheBuster.js';
@@ -2460,6 +2461,31 @@ router.post('/chats', validateAvatarUrlMiddleware, async function (request, resp
         if (!request.body) return response.sendStatus(400);
 
         const characterDirectory = (request.body.avatar_url).replace('.png', '');
+
+        // Tree DB path: if the character is migrated, list branches from the tree DB
+        if (await isTreeMigrated(request.user.directories, characterDirectory)) {
+            const branches = await listTreeBranches(request.user.directories, characterDirectory);
+
+            if (request.body.simple) {
+                return response.send(branches.map(b => ({ file_name: b.name + '.jsonl', file_id: b.name })));
+            }
+
+            const chatData = branches.map(b => {
+                const meta = b.metadata ? JSON.parse(b.metadata) : {};
+                return {
+                    file_name: b.name + '.jsonl',
+                    file_size: 0,
+                    chat_items: b.message_count,
+                    mes: b.last_mes || '[No messages]',
+                    last_mes: b.created_at,
+                    chat_metadata: request.body.metadata ? meta : undefined,
+                };
+            });
+
+            return response.send(chatData);
+        }
+
+        // JSONL fallback path
         const chatsDirectory = path.join(request.user.directories.chats, characterDirectory);
 
         if (!fs.existsSync(chatsDirectory)) {

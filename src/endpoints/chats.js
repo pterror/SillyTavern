@@ -26,6 +26,13 @@ import {
 import { bumpGroupChatStats } from '../character-metadata-db.js';
 import { upsertChatFromSave, upsertChatFromParse, getChatRow, deleteChatRow, renameChatRow } from '../chat-metadata-db.js';
 import { searchChatMessages } from './chat-content-search-index.js';
+import {
+    isAvailable as isTreeAvailable, isMigrated as isTreeMigrated,
+    saveChatToTree, loadBranch, forkBranch, labelNode,
+    deleteBranch, renameBranch as renameBranchInTree, listBranches,
+    renameCharacterInMessages,
+} from '../message-tree-db.js';
+import { migrateCharacterChats } from '../message-tree-migration.js';
 
 const isBackupEnabled = !!getConfigValue('backups.chat.enabled', true, 'boolean');
 const maxTotalChatBackups = Number(getConfigValue('backups.chat.maxTotalBackups', -1, 'number'));
@@ -564,6 +571,46 @@ export async function getOrComputeChatInfo(directories, pathToFile, mtimeMs, add
     return chatInfo;
 }
 
+/**
+ * Ensures a character's chats are migrated to the tree DB, if the tree DB is available.
+ * Lazy migration: runs on first access per character, so only active characters pay the cost.
+ * Returns true if the character's chats are now in the tree DB, false if JSONL fallback should be used.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {string} ownerId Character avatar (without .png)
+ * @param {boolean} [isGroup=false]
+ * @returns {Promise<boolean>}
+ */
+async function ensureTreeMigrated(directories, ownerId, isGroup = false) {
+    if (!await isTreeAvailable(directories)) return false;
+    if (await isTreeMigrated(directories, ownerId)) return true;
+
+    const chatDir = isGroup
+        ? directories.groupChats
+        : path.join(directories.chats, ownerId);
+
+    if (!fs.existsSync(chatDir)) {
+        // No chat directory yet (brand new character) — tree is ready for new chats, no migration needed
+        return true;
+    }
+
+    const hasJsonlFiles = fs.readdirSync(chatDir).some(f => f.endsWith('.jsonl'));
+    if (!hasJsonlFiles) {
+        // No existing JSONL files to migrate — tree DB is ready for new chats
+        return true;
+    }
+
+    try {
+        const result = await migrateCharacterChats(directories, ownerId, chatDir, isGroup);
+        if (result.errors.length > 0) {
+            console.error('[message-tree] Migration errors:', result.errors);
+        }
+        return result.migrated > 0 || await isTreeMigrated(directories, ownerId);
+    } catch (err) {
+        console.error('[message-tree] Migration failed, falling back to JSONL:', err);
+        return false;
+    }
+}
+
 export const router = express.Router();
 
 // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Error
@@ -608,12 +655,14 @@ class IntegrityMismatchError extends Error {
  * tracking is disabled (`backups.chat.checkIntegrity` config) or the chat has no header to carry a slug.
  */
 export async function trySaveChat(chatData, filePath, skipIntegrityCheck = false, handle, cardName, backupDirectory, directories) {
+    const t0 = performance.now();
     const doIntegrityCheck = (checkIntegrity && !skipIntegrityCheck);
     const chatIntegritySlug = doIntegrityCheck ? chatData?.[0]?.chat_metadata?.integrity : undefined;
 
     if (chatIntegritySlug && !await checkChatIntegrity(filePath, chatIntegritySlug)) {
         throw new IntegrityMismatchError(`Chat integrity check failed for "${filePath}". The expected integrity slug was "${chatIntegritySlug}".`);
     }
+    const tIntegrity = performance.now();
 
     /** @type {string|undefined} */
     let nextIntegritySlug;
@@ -623,8 +672,11 @@ export async function trySaveChat(chatData, filePath, skipIntegrityCheck = false
     }
 
     const jsonlData = chatData?.map(m => JSON.stringify(m)).join('\n');
+    const tSerialize = performance.now();
     tryWriteFileSync(filePath, jsonlData);
+    const tWrite = performance.now();
     getBackupFunction(handle, cardName)(backupDirectory, cardName, jsonlData);
+    const tBackup = performance.now();
 
     if (directories) {
         try {
@@ -635,6 +687,11 @@ export async function trySaveChat(chatData, filePath, skipIntegrityCheck = false
             console.error('[chat-metadata] Failed to update chat metadata store after save:', err);
         }
     }
+    const tMeta = performance.now();
+
+    const messageCount = Array.isArray(chatData) ? chatData.length : 0;
+    const dataBytes = Buffer.byteLength(jsonlData ?? '', 'utf8');
+    console.debug(`[save-perf] trySaveChat: messages=${messageCount} bytes=${dataBytes} integrity=${(tIntegrity - t0).toFixed(1)}ms serialize=${(tSerialize - tIntegrity).toFixed(1)}ms write=${(tWrite - tSerialize).toFixed(1)}ms backup=${(tBackup - tWrite).toFixed(1)}ms metadata=${(tMeta - tBackup).toFixed(1)}ms total=${(tMeta - t0).toFixed(1)}ms`);
 
     return nextIntegritySlug;
 }
@@ -644,23 +701,35 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
         const handle = request.user.profile.handle;
         const cardName = String(request.body.avatar_url).replace('.png', '');
         const chatData = request.body.chat;
-        const chatFileName = `${String(request.body.file_name)}.jsonl`;
+        const chatName = String(request.body.file_name);
+
+        if (!Array.isArray(chatData)) {
+            return response.status(400).send({ error: 'The request\'s body.chat is not an array.' });
+        }
+
+        // Tree DB path: if the character is migrated (or can be migrated now), save to tree
+        const useTree = await ensureTreeMigrated(request.user.directories, cardName);
+        if (useTree) {
+            const result = await saveChatToTree(request.user.directories, cardName, chatName, chatData, false);
+            if (result) {
+                return response.send({
+                    ok: true,
+                    integrity: result.integrity,
+                    assigned_node_ids: result.assignedNodeIds,
+                });
+            }
+            // If saveChatToTree returned null (DB unavailable), fall through to JSONL
+        }
+
+        // JSONL fallback path (non-migrated or tree DB unavailable)
+        const chatFileName = `${sanitize(chatName)}.jsonl`;
         const chatFilePath = path.join(request.user.directories.chats, cardName, sanitize(chatFileName));
         if (!isPathUnderParent(request.user.directories.chats, chatFilePath)) {
             return response.sendStatus(400);
         }
 
-        // TEMP DEBUG (see checkChatIntegrity's matching note): log every /save call so a
-        // genuine double-save for the same filename shows up here even before/without an
-        // integrity mismatch. Remove once root-caused.
-        console.error(`[integrity-debug] POST /save file="${chatFilePath}" force=${!!request.body.force} items=${Array.isArray(chatData) ? chatData.length : 'n/a'} integrity=${chatData?.[0]?.chat_metadata?.integrity} now=${new Date().toISOString()}`);
-
-        if (Array.isArray(chatData)) {
-            const integrity = await trySaveChat(chatData, chatFilePath, request.body.force, handle, cardName, request.user.directories.backups, request.user.directories);
-            return response.send({ ok: true, integrity });
-        } else {
-            return response.status(400).send({ error: 'The request\'s body.chat is not an array.' });
-        }
+        const integrity = await trySaveChat(chatData, chatFilePath, request.body.force, handle, cardName, request.user.directories.backups, request.user.directories);
+        return response.send({ ok: true, integrity });
     } catch (error) {
         if (error instanceof IntegrityMismatchError) {
             console.error(error.message);
@@ -691,31 +760,49 @@ export function getChatData(chatFilePath) {
     return chatData;
 }
 
-router.post('/get', validateAvatarUrlMiddleware, function (request, response) {
+router.post('/get', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const dirName = String(request.body.avatar_url).replace('.png', '');
+        const chatName = String(request.body.file_name || '');
+
+        // Tree DB path
+        const useTree = await ensureTreeMigrated(request.user.directories, dirName);
+        if (useTree && chatName) {
+            const result = await loadBranch(request.user.directories, dirName, chatName);
+            if (result) {
+                // Assemble in the same format as JSONL: [header, ...messages]
+                // _tree_stored flag lets the client use tree-specific APIs (fork, label)
+                /** @type {any} */
+                const header = {
+                    chat_metadata: { ...result.metadata, _tree_stored: true },
+                    user_name: 'unused',
+                    character_name: 'unused',
+                };
+                return response.send([header, ...result.messages]);
+            }
+            // Branch not found in tree — return 404 (same as missing JSONL file)
+            return response.status(404).send({ error: 'not_found' });
+        }
+
+        // JSONL fallback path
         const directoryPath = path.join(request.user.directories.chats, dirName);
         if (!isPathUnderParent(request.user.directories.chats, directoryPath)) {
             return response.sendStatus(400);
         }
         const chatDirExists = fs.existsSync(directoryPath);
 
-        //if no chat dir for the character is found, make one with the character name
         if (!chatDirExists) {
             fs.mkdirSync(directoryPath);
             return response.send({});
         }
 
-        if (!request.body.file_name) {
+        if (!chatName) {
             return response.send({});
         }
 
-        const chatFileName = `${String(request.body.file_name)}.jsonl`;
+        const chatFileName = `${chatName}.jsonl`;
         const chatFilePath = path.join(directoryPath, sanitize(chatFileName));
 
-        // Distinct from "empty/corrupted chat" (which legitimately returns []) - the client uses this
-        // to tell "this chat was deleted out from under me" apart from "this is a genuinely blank
-        // chat", so it doesn't blindly recreate a deleted file under its old name (see getChat()).
         if (!fs.existsSync(chatFilePath)) {
             return response.status(404).send({ error: 'not_found' });
         }
@@ -733,6 +820,20 @@ router.post('/rename', validateAvatarUrlMiddleware, async function (request, res
             return response.sendStatus(400);
         }
 
+        const ownerId = request.body.is_group ? null : String(request.body.avatar_url).replace('.png', '');
+
+        // Tree DB path (solo chats only for now)
+        if (ownerId && await isTreeMigrated(request.user.directories, ownerId)) {
+            const oldName = String(request.body.original_file).replace(/\.jsonl$/, '');
+            const newName = String(request.body.renamed_file).replace(/\.jsonl$/, '');
+            const renamed = await renameBranchInTree(request.user.directories, ownerId, oldName, newName);
+            if (renamed) {
+                return response.send({ ok: true, sanitizedFileName: newName });
+            }
+            return response.status(400).send({ error: true });
+        }
+
+        // JSONL fallback
         const pathToFolder = request.body.is_group
             ? request.user.directories.groupChats
             : path.join(request.user.directories.chats, String(request.body.avatar_url).replace('.png', ''));
@@ -771,12 +872,23 @@ router.post('/delete', validateAvatarUrlMiddleware, async function (request, res
         }
 
         const dirName = String(request.body.avatar_url).replace('.png', '');
+        const chatName = String(request.body.chatfile).replace(/\.jsonl$/, '');
+
+        // Tree DB path
+        if (await isTreeMigrated(request.user.directories, dirName)) {
+            const deleted = await deleteBranch(request.user.directories, dirName, chatName);
+            if (deleted) {
+                return response.send({ ok: true });
+            }
+            return response.sendStatus(400);
+        }
+
+        // JSONL fallback
         const chatFileName = String(request.body.chatfile);
         const chatFilePath = path.join(request.user.directories.chats, dirName, sanitize(chatFileName));
         if (!isPathUnderParent(request.user.directories.chats, chatFilePath)) {
             return response.sendStatus(400);
         }
-        //Return success if the file was deleted.
         if (tryDeleteFile(chatFilePath)) {
             await deleteChatRow(request.user.directories, chatFilePath).catch(err =>
                 console.error('[chat-metadata] Failed to update chat metadata store after delete:', err));
@@ -791,10 +903,165 @@ router.post('/delete', validateAvatarUrlMiddleware, async function (request, res
     }
 });
 
+// ---------------------------------------------------------------------------
+//  Tree-specific endpoints (fork, label, list-branches)
+// ---------------------------------------------------------------------------
+
+/**
+ * Creates a fork (new branch) at a specific message node. O(1) operation — no data is copied.
+ * This is the tree DB equivalent of createBranch() in bookmarks.js, which used to copy the
+ * entire chat prefix into a new JSONL file.
+ */
+router.post('/fork', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const { avatar_url, node_id, branch_name, metadata } = request.body;
+        if (!avatar_url || !node_id || !branch_name) {
+            return response.sendStatus(400);
+        }
+
+        const ownerId = String(avatar_url).replace('.png', '');
+        const result = await forkBranch(
+            request.user.directories,
+            ownerId,
+            String(node_id),
+            String(branch_name),
+            false,
+            metadata || {},
+        );
+
+        if (result) {
+            return response.send({ ok: true, ...result });
+        }
+        return response.status(400).send({ error: 'Fork failed — message node not found.' });
+    } catch (error) {
+        console.error('Error creating fork:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/**
+ * Labels (pins/checkpoints) a message node. Replaces the old checkpoint system where a full
+ * chat copy was made; in the tree model a checkpoint is just a label on an existing node.
+ */
+router.post('/label', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const { node_id, label } = request.body;
+        if (!node_id) {
+            return response.sendStatus(400);
+        }
+
+        const ok = await labelNode(request.user.directories, String(node_id), label || null);
+        return response.send({ ok });
+    } catch (error) {
+        console.error('Error labeling node:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/**
+ * Renames the character name inside all messages for a character, directly in the DB.
+ * Replaces the client-side renamePastChats round-trip-per-chat approach (which fetched and
+ * re-saved every chat file individually) with a single DB operation.
+ */
+router.post('/tree/rename-in-content', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const { avatar_url, new_name } = request.body;
+        if (!avatar_url || !new_name) {
+            return response.sendStatus(400);
+        }
+
+        const ownerId = String(avatar_url).replace('.png', '');
+
+        if (!await isTreeMigrated(request.user.directories, ownerId)) {
+            return response.status(400).send({ error: 'Character not tree-migrated' });
+        }
+
+        const updated = await renameCharacterInMessages(request.user.directories, ownerId, String(new_name));
+        return response.send({ ok: true, updated });
+    } catch (error) {
+        console.error('Error renaming character in messages:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/**
+ * Lists all branches for a character in the tree DB. Supplements the existing chat listing
+ * endpoint in characters.js.
+ */
+router.post('/tree/branches', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const ownerId = String(request.body.avatar_url).replace('.png', '');
+        const branches = await listBranches(request.user.directories, ownerId);
+
+        // Transform to the format the client's chat listing expects
+        const result = branches.map(b => ({
+            file_name: b.name,
+            file_size: 0, // Not meaningful for tree-stored chats
+            message_count: b.message_count,
+            last_mes: b.last_mes || '',
+            chat_metadata: b.metadata ? JSON.parse(b.metadata) : {},
+        }));
+
+        return response.send(result);
+    } catch (error) {
+        console.error('Error listing tree branches:', error);
+        return response.status(500).send([]);
+    }
+});
+
 router.post('/export', validateAvatarUrlMiddleware, async function (request, response) {
     if (!request.body.file || (!request.body.avatar_url && request.body.is_group === false)) {
         return response.sendStatus(400);
     }
+
+    const ownerId = request.body.is_group ? null : String(request.body.avatar_url).replace('.png', '');
+    const chatName = String(request.body.file).replace(/\.jsonl$/, '');
+    const exportfilename = request.body.exportfilename;
+
+    // Tree DB path: generate JSONL from tree data on demand
+    if (ownerId && await isTreeMigrated(request.user.directories, ownerId)) {
+        try {
+            const result = await loadBranch(request.user.directories, ownerId, chatName);
+            if (!result) {
+                return response.status(404).json({ message: `Branch "${chatName}" not found in tree DB.` });
+            }
+
+            const header = { chat_metadata: result.metadata, user_name: 'unused', character_name: 'unused' };
+            const allData = [header, ...result.messages];
+
+            if (request.body.format === 'jsonl') {
+                const jsonl = allData.map(m => {
+                    const clean = { ...m };
+                    delete clean.node_id; // Strip internal tree field from export
+                    return JSON.stringify(clean);
+                }).join('\n');
+                return response.status(200).json({
+                    message: `Chat saved to ${exportfilename}`,
+                    result: jsonl,
+                });
+            }
+
+            // Plain text export
+            let buffer = '';
+            for (const msg of result.messages) {
+                if (msg.is_system) continue;
+                if (msg.mes) {
+                    const name = msg.name;
+                    const message = (msg?.extra?.display_text || msg?.mes || '').replace(/\r?\n/g, '\n');
+                    buffer += `${name}: ${message}\n\n`;
+                }
+            }
+            return response.status(200).json({
+                message: `Chat saved to ${exportfilename}`,
+                result: buffer,
+            });
+        } catch (err) {
+            console.error('Tree chat export failed:', err);
+            return response.sendStatus(400);
+        }
+    }
+
+    // JSONL fallback path
     const pathToFolder = request.body.is_group
         ? request.user.directories.groupChats
         : path.join(request.user.directories.chats, String(request.body.avatar_url).replace('.png', ''));
@@ -802,7 +1069,6 @@ router.post('/export', validateAvatarUrlMiddleware, async function (request, res
     if (!request.body.is_group && !isPathUnderParent(request.user.directories.chats, filename)) {
         return response.sendStatus(400);
     }
-    let exportfilename = request.body.exportfilename;
     if (!fs.existsSync(filename)) {
         const errorMessage = {
             message: `Could not find JSONL file to export. Source chat file: ${filename}.`,
@@ -811,38 +1077,27 @@ router.post('/export', validateAvatarUrlMiddleware, async function (request, res
         return response.status(404).json(errorMessage);
     }
     try {
-        // Short path for JSONL files
         if (request.body.format === 'jsonl') {
             try {
                 const rawFile = fs.readFileSync(filename, 'utf8');
-                const successMessage = {
+                return response.status(200).json({
                     message: `Chat saved to ${exportfilename}`,
                     result: rawFile,
-                };
-
-                console.info(`Chat exported as ${exportfilename}`);
-                return response.status(200).json(successMessage);
+                });
             } catch (err) {
                 console.error(err);
-                const errorMessage = {
+                return response.status(500).json({
                     message: `Could not read JSONL file to export. Source chat file: ${filename}.`,
-                };
-                console.error(errorMessage.message);
-                return response.status(500).json(errorMessage);
+                });
             }
         }
 
         const readStream = fs.createReadStream(filename);
-        const rl = readline.createInterface({
-            input: readStream,
-        });
+        const rl = readline.createInterface({ input: readStream });
         let buffer = '';
         rl.on('line', (line) => {
             const data = JSON.parse(line);
-            // Skip non-printable/prompt-hidden messages
-            if (data.is_system) {
-                return;
-            }
+            if (data.is_system) return;
             if (data.mes) {
                 const name = data.name;
                 const message = (data?.extra?.display_text || data?.mes || '').replace(/\r?\n/g, '\n');
@@ -850,12 +1105,11 @@ router.post('/export', validateAvatarUrlMiddleware, async function (request, res
             }
         });
         rl.on('close', () => {
-            const successMessage = {
+            console.info(`Chat exported as ${exportfilename}`);
+            return response.status(200).json({
                 message: `Chat saved to ${exportfilename}`,
                 result: buffer,
-            };
-            console.info(`Chat exported as ${exportfilename}`);
-            return response.status(200).json(successMessage);
+            });
         });
     } catch (err) {
         console.error('chat export failed.', err);
