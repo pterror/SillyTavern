@@ -450,27 +450,13 @@ export let chat = [];
 const _messageSnapshots = new Map();
 
 /**
- * Deep-freezes an object and all nested objects/arrays. After freezing, any attempt
- * to mutate a property throws a TypeError, enforcing the immutable-message contract.
- * @param {*} obj
- * @returns {*} The same object, now frozen
- */
-function deepFreeze(obj) {
-    if (obj === null || typeof obj !== 'object') return obj;
-    if (Object.isFrozen(obj)) return obj;
-    Object.freeze(obj);
-    for (const val of Object.values(obj)) {
-        if (val !== null && typeof val === 'object') {
-            deepFreeze(val);
-        }
-    }
-    return obj;
-}
-
-/**
  * The single write path for chat messages. Replaces the message at `mesId` with a
- * new deep-frozen object incorporating the given updates. Direct mutation of a frozen
- * message throws a TypeError — this is the only correct way to change a message.
+ * new shallow-frozen object incorporating the given updates. Top-level property writes
+ * on the frozen object throw TypeError, enforcing that mutations go through this
+ * function. Nested objects (extra, swipes, swipe_info) are left unfrozen so that
+ * rendering/display code that incidentally touches nested properties (e.g. media
+ * attachment processing, swipe info backfill) doesn't crash — only the top-level
+ * reference change matters for the wire protocol's change detection.
  *
  * @param {number} mesId Index in the chat array
  * @param {object} updates Partial message to shallow-merge (use spread for nested objects)
@@ -491,7 +477,7 @@ function deepFreeze(obj) {
 export function updateMessage(mesId, updates) {
     const old = chat[mesId];
     if (!old) return old;
-    const result = deepFreeze({ ...old, ...updates });
+    const result = Object.freeze({ ...old, ...updates });
     chat[mesId] = result;
     return result;
 }
@@ -9081,7 +9067,7 @@ export async function getChat({ isNewChat = false } = {}) {
             // Freeze messages loaded from tree DB: immutable values, replaced only via updateMessage()
             if (chat_metadata?._tree_stored) {
                 for (let i = 0; i < chat.length; i++) {
-                    chat[i] = deepFreeze(chat[i]);
+                    chat[i] = Object.freeze(chat[i]);
                 }
                 _snapshotMessages();
             }
@@ -12519,18 +12505,17 @@ function doCharListDisplaySwitch() {
 }
 
 /**
- * Sets the character list gallery view (chub.ai-style fullscreen tile grid) to the given state. This is a
- * tab-style control: the gallery button and the characters button in #CharListButtonAndHotSwaps act as
- * mutually exclusive tabs, with .active toggled on whichever is current. The layout itself is pure CSS
- * (body.charGalleryView, keyed off in toggle-dependent.css) - no separate data fetch, it reuses whatever
- * #rm_print_characters_block already has rendered.
+ * Sets the character list gallery view (chub.ai-style fullscreen tile grid) to the given state. Gallery and
+ * Characters are peer tabs in the top bar (#galleryNavDrawerIcon / #rightNavDrawerIcon inside #rightNavHolder).
+ * The layout itself is pure CSS (body.charGalleryView, keyed off in toggle-dependent.css) - no separate data
+ * fetch, it reuses whatever #rm_print_characters_block already has rendered.
  * @param {boolean} enabled Whether gallery view should be active.
  */
 function setCharGalleryView(enabled) {
     power_user.charGalleryView = enabled;
     document.body.classList.toggle('charGalleryView', enabled);
-    $('#rm_button_characters_gallery').toggleClass('active', enabled);
-    $('#rm_button_characters').toggleClass('active', !enabled);
+    // Swap icon state: gallery icon bright when gallery is active, characters icon bright otherwise.
+    $('#galleryNavDrawerIcon').toggleClass('closedIcon', !enabled).toggleClass('openIcon', enabled);
     saveSettingsDebounced();
 }
 
@@ -13162,7 +13147,6 @@ jQuery(async function () {
         selectRightMenuWithAnimation('rm_api_block');
     });
     $('#rm_button_characters').on('click', function () {
-        setCharGalleryView(false);
         selected_button = 'characters';
         select_rm_characters();
     });
@@ -14641,10 +14625,38 @@ jQuery(async function () {
         doCharListDisplaySwitch();
     });
 
-    $('#rm_button_characters_gallery').on('click', async () => {
-        setCharGalleryView(true);
-        selected_button = 'characters';
-        select_rm_characters();
+    // Gallery top-bar tab: opens the right-nav-panel in fullscreen gallery mode. Not a .drawer-toggle
+    // element (doNavbarIconClick doesn't handle it) - we manually open/close the panel via the standard
+    // drawer-toggle trigger, with a coordination flag so the right-nav drawer's own click handler knows
+    // not to clear gallery mode when the click was gallery-initiated.
+    let _galleryTriggeredDrawerClick = false;
+
+    $('#galleryNavToggle').on('click', async () => {
+        const panelOpen = $('#right-nav-panel').hasClass('openDrawer');
+        const galleryActive = power_user.charGalleryView;
+
+        _galleryTriggeredDrawerClick = true;
+        if (galleryActive && panelOpen) {
+            // Already in gallery with panel open - close it (toggle behavior)
+            setCharGalleryView(false);
+            $('#unimportantYes').trigger('click');
+        } else {
+            if (!panelOpen) {
+                $('#unimportantYes').trigger('click');
+            }
+            setCharGalleryView(true);
+            selected_button = 'characters';
+            select_rm_characters();
+        }
+        _galleryTriggeredDrawerClick = false;
+    });
+
+    // When the Characters drawer icon is clicked directly by the user (not triggered by the gallery
+    // handler), clear gallery mode so the panel shows the normal sidebar character list.
+    $('#unimportantYes').on('click', () => {
+        if (!_galleryTriggeredDrawerClick) {
+            setCharGalleryView(false);
+        }
     });
 
     $('#hideCharPanelAvatarButton').on('click', () => {
