@@ -12,6 +12,7 @@ import {
     setActiveGroup,
     setActiveCharacter,
     getEntitiesList,
+    getRequestHeaders,
     buildAvatarList,
     selectCharacterByAvatar,
     eventSource,
@@ -285,28 +286,41 @@ async function RA_autoloadchat() {
         // active_character is stored as the character's avatar filename (see setActiveCharacter() callers),
         // so this is equivalent to the old `characters.find(x => getTagKeyForEntity(x) === active_character)` -
         // getTagKeyForEntity() resolves any character object in `characters` to its own `.avatar`.
-        const activeCharacterEntity = charactersStore.get(active_character);
+        let activeCharacterEntity = charactersStore.get(active_character);
+
+        // If not in the store yet (boot-residency decoupling runs getCharacters() in the
+        // background), fetch this ONE character directly — a single request for one PNG file,
+        // not waiting for the full library load. This makes restore near-instant regardless
+        // of how many characters the user has.
+        if (!activeCharacterEntity) {
+            try {
+                const resp = await fetch('/api/characters/get', {
+                    method: 'POST',
+                    headers: getRequestHeaders(),
+                    body: JSON.stringify({ avatar_url: active_character }),
+                });
+                if (resp.ok) {
+                    const data = await resp.json();
+                    data.shallow = false;
+                    if (!charactersStore.has(active_character)) {
+                        charactersStore.create(data);
+                    } else {
+                        charactersStore.update(active_character, data);
+                    }
+                    activeCharacterEntity = charactersStore.get(active_character);
+                }
+            } catch (err) {
+                console.error('[RA_autoloadchat] Failed to fetch active character directly:', err);
+            }
+        }
+
         if (activeCharacterEntity) {
             await selectCharacterByAvatar(activeCharacterEntity.avatar);
             applyTagsOnCharacterSelect();
-        } else if (charactersStore.size > 0) {
-            // Only reset if characters have actually been loaded (store is populated).
-            // If the store is empty, character data hasn't arrived yet (boot-residency
-            // decoupling runs getCharacters() in the background) — resetting here would
-            // permanently lose which character was open.
+        } else {
             setActiveCharacter(null);
             saveSettingsDebounced();
             console.warn(`Currently active character with ID ${active_character} not found. Resetting to no active character.`);
-        } else {
-            // Characters haven't loaded yet. Poll briefly until the store is populated
-            // (typically <1s once getCharacters() completes), then retry. This is faster
-            // than waiting for APP_READY which gates on the full library load + tag seed.
-            console.debug(`[RA_autoloadchat] Character store empty, polling for ${active_character}`);
-            const poll = setInterval(() => {
-                if (charactersStore.size === 0) return;
-                clearInterval(poll);
-                RA_autoloadchat();
-            }, 50);
         }
     }
 
