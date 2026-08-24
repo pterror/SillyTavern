@@ -194,7 +194,7 @@ import {
 // Imported directly from hash-utils.js (not re-exported via utils.js like getStringHash) so this doesn't widen
 // utils.js's re-export surface - a mocked utils.js in tests/utils-findchar.test.js stubs hash-utils.js with only
 // getStringHash, and this stays independent of that.
-import { hashSettingsKeys } from './scripts/hash-utils.js';
+import { hashSettingsKeys, bucketOf, digestsEqual, DEFAULT_DIGEST_BUCKET_COUNT } from './scripts/hash-utils.js';
 import { debounce_timeout, GENERATION_TYPE_TRIGGERS, IGNORE_SYMBOL, inject_ids, MEDIA_DISPLAY, MEDIA_SOURCE, MEDIA_TYPE, OVERSWIPE_BEHAVIOR, SCROLL_BEHAVIOR, SWIPE_DIRECTION, SWIPE_SOURCE, SWIPE_STATE } from './scripts/constants.js';
 
 import { cancelDebouncedMetadataSave, doDailyExtensionUpdatesCheck, extension_settings, initExtensions, loadExtensionSettings, runGenerationInterceptors } from './scripts/extensions.js';
@@ -2003,7 +2003,216 @@ async function fetchCharactersDelta() {
     // processCharacter() server-side (corrupt file etc., filtered out of the batch response, matching /all's
     // own `.filter(c => c.name)` behavior) correctly stays absent instead of resurfacing from a stale local var.
     const allCached = await getAllCachedCharacters();
+
+    // Fire-and-forget anti-entropy check (see verifyCharacterCacheDigest()'s own doc comment) - never blocks
+    // this function's return, and never turns into a rejected promise this caller would have to handle: a
+    // cheap way to catch drift the `/changes` cursor itself can't see (a swallowed local write failure, a
+    // partially-evicted browser storage quota, or the server's metadata store having been restored from an
+    // earlier backup) without paying for it on every single getCharacters() call.
+    verifyCharacterCacheDigest().catch(error => console.error('Character cache digest verification failed:', error));
+
     return Array.from(allCached.values());
+}
+
+// Only run the state-digest anti-entropy check once per page session (see verifyCharacterCacheDigest()'s own
+// doc comment on why this doesn't need to run on every getCharacters() call to still catch real drift promptly)
+// - getCharacters() is called far more often than once (boot, chat-reset-to-neutral, every create/rename/
+// duplicate/delete, every character-library nav open per fetchCharactersDelta()'s own header), and re-running a
+// full bucket-digest comparison on every one of those would be pure waste for a check whose whole point is that
+// real drift is rare.
+let hasVerifiedCharacterCacheDigestThisSession = false;
+
+/** Local cache entries sent to character-digest-worker.js per 'chunk' message - see that worker's own header.
+ * Small enough that even a single chunk's `postMessage` structured-clone doesn't itself become a long
+ * synchronous stretch on this thread, large enough to keep message-passing overhead a small fraction of total
+ * time for a real multi-hundred-thousand-character library. */
+const DIGEST_WORKER_SEND_CHUNK_SIZE = 2000;
+
+/**
+ * Runs character-digest-worker.js (see that module's own header for the full protocol/rationale) over
+ * `localCharacters`, off this (the browser's main) thread. Sends the cache's entries to the worker in chunks,
+ * yielding back to this thread's own event loop between sends, rather than one `postMessage` call carrying the
+ * entire cache at once - keeps this thread responsive to input/rendering for the whole duration, not just free
+ * of the CPU-bound fingerprint/hash work itself, which is character-digest-worker.js's job.
+ * @param {Map<string, object>} localCharacters
+ * @param {number} bucketCount
+ * @returns {Promise<{ buckets: {hi: number, lo: number}[], localContentHashes: Map<string, number> }>}
+ */
+function computeLocalCharacterDigest(localCharacters, bucketCount) {
+    return new Promise((resolve, reject) => {
+        const worker = new Worker(new URL('./scripts/character-digest-worker.js', import.meta.url), { type: 'module' });
+        worker.onerror = (event) => {
+            worker.terminate();
+            reject(new Error(event.message ?? 'character-digest-worker.js failed'));
+        };
+        worker.onmessage = (event) => {
+            worker.terminate();
+            resolve({
+                buckets: event.data.buckets,
+                localContentHashes: new Map(event.data.localContentHashes),
+            });
+        };
+
+        (async () => {
+            worker.postMessage({ type: 'init', bucketCount });
+            const entries = Array.from(localCharacters.entries());
+            for (let i = 0; i < entries.length; i += DIGEST_WORKER_SEND_CHUNK_SIZE) {
+                worker.postMessage({ type: 'chunk', entries: entries.slice(i, i + DIGEST_WORKER_SEND_CHUNK_SIZE) });
+                // eslint-disable-next-line no-undef
+                await new Promise((r) => setTimeout(r, 0));
+            }
+            worker.postMessage({ type: 'end' });
+        })();
+    });
+}
+
+/**
+ * Anti-entropy check for the character cache (see public/scripts/hash-utils.js's header for the general
+ * bucketed-digest approach, and character-metadata-db.js's getStateDigest()/getBucketMembers() for the server
+ * half). `/api/characters/changes`'s rev cursor tells a client what's mutated SINCE it last synced, but has no
+ * way to notice a cursor that LOOKS caught-up while the actual cached content has quietly diverged - e.g. a
+ * character-cache.js write that silently failed (saveCachedCharacters() logs and swallows per-entry errors
+ * rather than aborting the sync), or a browser evicting part of this origin's IndexedDB under storage pressure.
+ *
+ * Deliberately built on content hashes (hash-utils.js's `contentHashOf()`), computed fresh from whatever's
+ * actually sitting in the cache right now (getAllCachedCharacters()), never from a separately-stored per-record
+ * value this function would otherwise have to trust. A stored value (a per-record rev, an earlier draft of this
+ * mechanism) is just one more thing that could be wrong in exactly the same way the cached data itself could be
+ * wrong - hashing the actual content directly has nothing else to distrust.
+ *
+ * Cost: one `POST /api/characters/state-digest` request returning a fixed-size (256-entry, ~a few KB) bucket
+ * table - O(1) in library size, nowhere near a full manifest/`/all` re-fetch - compared against a digest this
+ * function computes locally from getAllCachedCharacters() (a local IndexedDB read, no network). On a match
+ * (the overwhelmingly common case), this is the entire cost. Only a genuine mismatch pays anything further: one
+ * `POST /api/characters/bucket-members` request PER MISMATCHED BUCKET (typically 0, rarely more than one or two
+ * even after real drift, since a bucket only mismatches if something inside it actually changed) returning that
+ * bucket's `{id, contentHash}` members (~library size / bucketCount, e.g. ~1300 ids for a 326k-character library
+ * at the default 256 buckets) - diffed locally against the cache's own freshly-recomputed content hashes, then
+ * only the ids that are genuinely missing/stale/extra get repaired via the existing `/api/characters/batch` +
+ * cache-write/cache-remove path, exactly as if they'd arrived as `/changes` entries. A worst-case full-library
+ * repair (every bucket mismatches) is bounded by the same cost `/changes` already pays for a cold sync - this
+ * never re-fetches anything the change feed wouldn't have anyway, it just detects the need without waiting for
+ * the feed to say so.
+ *
+ * Never awaited by its caller (fetchCharactersDelta()) - runs after the delta sync has already returned, so it
+ * never adds latency to boot or any other getCharacters() call.
+ * @returns {Promise<void>}
+ */
+async function verifyCharacterCacheDigest() {
+    if (hasVerifiedCharacterCacheDigestThisSession) return;
+    hasVerifiedCharacterCacheDigestThisSession = true;
+
+    const bucketCount = DEFAULT_DIGEST_BUCKET_COUNT;
+    const digestResponse = await fetch('/api/characters/state-digest', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ bucketCount }),
+    });
+    if (!digestResponse.ok) {
+        throw new Error(`Failed to fetch character state digest: ${digestResponse.statusText}`);
+    }
+    /** @type {{buckets: {hi: number, lo: number}[]}} */
+    const { buckets: serverBuckets } = await digestResponse.json();
+
+    const localCharacters = await getAllCachedCharacters();
+    // Fingerprint extraction + canonicalization + hashing for the WHOLE cache runs on character-digest-worker.js
+    // (see that module's own header and computeLocalCharacterDigest()'s), not inline here - a real 326k-
+    // character cache measured multiple seconds of this on the main thread (2026-08 state-digest perf
+    // investigation), which on a browser main thread means a frozen UI for that whole span, not just a delay.
+    /** @type {Map<string, number>} id -> its content hash, recomputed fresh from what's actually cached right
+     * now - reused below (repair) so a bucket mismatch doesn't need to re-hash the whole bucket's worth of local
+     * entries a second time. */
+    const { buckets: localBuckets, localContentHashes } = await computeLocalCharacterDigest(localCharacters, bucketCount);
+
+    const mismatchedBuckets = [];
+    for (let i = 0; i < bucketCount; i++) {
+        if (!digestsEqual(localBuckets[i], serverBuckets[i])) {
+            mismatchedBuckets.push(i);
+        }
+    }
+
+    if (mismatchedBuckets.length === 0) {
+        return;
+    }
+
+    console.warn(`Character cache drift detected in ${mismatchedBuckets.length}/${bucketCount} state-digest bucket(s) - repairing without a full resync.`);
+
+    const toRefetch = new Set();
+    const toRemove = [];
+    for (const bucket of mismatchedBuckets) {
+        const membersResponse = await fetch('/api/characters/bucket-members', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ bucket, bucketCount }),
+        });
+        if (!membersResponse.ok) {
+            throw new Error(`Failed to fetch bucket members for bucket ${bucket}: ${membersResponse.statusText}`);
+        }
+        /** @type {{members: {id: string, contentHash: number}[]}} */
+        const { members } = await membersResponse.json();
+
+        const serverIdsInBucket = new Set();
+        for (const { id, contentHash } of members) {
+            serverIdsInBucket.add(id);
+            if (localContentHashes.get(id) !== contentHash) {
+                toRefetch.add(id);
+            }
+        }
+        // Anything this bucket's ids should include locally (by the SAME bucketOf() assignment the server just
+        // used) but that the server's member list didn't name is stale - either genuinely deleted server-side
+        // without ever reaching this cache as a `delete` change, or never should have been cached at all.
+        for (const [id] of localCharacters) {
+            if (bucketOf(id, bucketCount) === bucket && !serverIdsInBucket.has(id)) {
+                toRemove.push(id);
+            }
+        }
+    }
+
+    if (toRemove.length > 0) {
+        await removeCachedCharacters(toRemove);
+    }
+
+    const toRefetchList = Array.from(toRefetch);
+    /** @type {Map<string, object>} */
+    const repaired = new Map();
+    for (let i = 0; i < toRefetchList.length; i += CHARACTER_BATCH_CHUNK_SIZE) {
+        const chunk = toRefetchList.slice(i, i + CHARACTER_BATCH_CHUNK_SIZE);
+        const batchResponse = await fetch('/api/characters/batch', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ avatars: chunk }),
+        });
+        if (!batchResponse.ok) {
+            throw new Error(`Failed to fetch character batch during digest repair: ${batchResponse.statusText}`);
+        }
+        const batchData = await batchResponse.json();
+        for (const character of batchData) {
+            finalizeFetchedCharacter(character);
+            repaired.set(character.avatar, character);
+        }
+    }
+
+    if (repaired.size > 0) {
+        await saveCachedCharacters(Array.from(repaired, ([avatar, character]) => ({ avatar, character })));
+    }
+
+    if (repaired.size > 0 || toRemove.length > 0) {
+        // Patch the live in-memory list too, not just the IndexedDB cache - otherwise a repair that happens
+        // after fetchCharactersDelta() already returned (this function is deliberately fire-and-forget, see its
+        // own doc comment) would fix the cache for NEXT boot but leave the currently-rendered `characters` array
+        // and search/sort index silently stale until something else happens to reload it.
+        for (const id of toRemove) {
+            const index = characters.findIndex(c => c.avatar === id);
+            if (index !== -1) characters.splice(index, 1);
+        }
+        for (const character of repaired.values()) {
+            const index = characters.findIndex(c => c.avatar === character.avatar);
+            if (index !== -1) characters[index] = character;
+            else characters.push(character);
+        }
+        charactersStore.reindex();
+        await printCharacters(true);
+    }
 }
 
 /**

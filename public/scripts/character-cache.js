@@ -97,6 +97,13 @@ export async function getAllCachedCharacters() {
  * processed character objects (DOMPurify-sanitized name, defaulted chat, etc. - i.e. exactly what would've been
  * assigned into the `characters` array before this cache existed), since getAllCachedCharacters() returns cache
  * hits as-is with no further processing applied on the next read.
+ *
+ * Deliberately does NOT also store a per-record revision/hash alongside the character data. The state-digest
+ * drift check (script.js's verifyCharacterCacheDigest()) needs to prove this cache's content still matches the
+ * server's - and a value stored here at write time would just be one more thing that could silently go stale or
+ * wrong, exactly like the data it's meant to verify. Instead that check hashes whatever's actually sitting in
+ * `character` at verification time, fresh, every time - see public/scripts/hash-utils.js's header for the full
+ * reasoning on why content-derived hashing is the fix, not a second stored value to trust.
  * @param {{avatar: string, character: object}[]} entries
  */
 export async function saveCachedCharacters(entries) {

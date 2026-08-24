@@ -17,7 +17,8 @@ import { TAGS_FILE } from './constants.js';
 // duplicated so the server's seeded random-sort ordering (design doc §5.3, decision 8/13) can never drift from
 // the client comparator (public/scripts/random-sort.js's compareByRandomSeed()) that decides the *same* ordering
 // for whatever page hasn't round-tripped to the server yet.
-import { getStringHash, bucketOf, emptyDigest, combineDigest, DEFAULT_DIGEST_BUCKET_COUNT } from '../public/scripts/hash-utils.js';
+import { getStringHash, DEFAULT_DIGEST_BUCKET_COUNT } from '../public/scripts/hash-utils.js';
+import { runDigestWorkerTask } from './character-metadata-digest-dispatch.js';
 
 /**
  * Phase 1 of the character-data-residency redesign (see docs/design/character-data-residency-redesign.md, §3):
@@ -3490,7 +3491,7 @@ export async function getCurrentRev(directories) {
  * one) - this only adds the server-side capability.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {number} sinceRev
- * @returns {Promise<{ rev: number, changes: { id: string, op: 'upsert'|'delete', rev: number }[], truncated: boolean } | null>}
+ * @returns {Promise<{ rev: number, changes: { id: string, op: 'upsert'|'delete' }[], truncated: boolean } | null>}
  * `truncated: true` means `sinceRev` predates the oldest change-log row this table still has (nothing prunes the
  * log yet - see this module's header on phase 1's freshness mechanisms - so today this can only trigger for a
  * `sinceRev` that was never valid for this table to begin with, e.g. a cache built against a different user's
@@ -3518,79 +3519,72 @@ export async function getChangesSince(directories, sinceRev) {
     // later Map.set() for the same id always overwrites with the more recent op.
     const latestOpById = new Map();
     for (const row of rawChanges) {
-        // Keep this change-log row's own `rev`, not `maxRev` - a client needs to know exactly which rev each
-        // id was last touched at (character-cache.js's per-record `rev`, used by getStateDigest()/
-        // getBucketMembers() below to prove the client's cached copy of THIS id, specifically, still matches
-        // the server), not just "the feed is caught up to maxRev overall".
-        latestOpById.set(row.id, { op: row.op, rev: Number(row.rev) });
+        latestOpById.set(row.id, row.op);
     }
-    const changes = [...latestOpById.entries()].map(([id, { op, rev }]) => ({ id, op, rev }));
+    const changes = [...latestOpById.entries()].map(([id, op]) => ({ id, op }));
 
     return { rev: maxRev, changes, truncated: false };
 }
 
 /**
- * `POST /api/characters/state-digest`: the anti-entropy check for the `/changes` cursor itself (see
- * public/scripts/hash-utils.js's own header on the bucketed-digest approach this follows - same shape as
- * pt-table-checksum/Cassandra repair/DynamoDB replica checksums, adapted to this table's scale). `/changes`
- * only ever tells a client what's mutated SINCE its last-known rev; it has no way to notice a client whose
- * cursor looks valid (not `truncated`) but whose actual cached content has quietly drifted - a dropped
- * IndexedDB write, partial browser storage eviction, or (rarer) this database having been replaced/restored
- * from an earlier backup so a previously-seen rev number now names a different row. This endpoint is what lets
- * a client CHEAPLY prove (or disprove) "my cache still matches the server", independent of trusting its own
- * cursor.
+ * `POST /api/characters/state-digest`: the anti-entropy check on the character cache itself (see
+ * public/scripts/hash-utils.js's own header on the bucketed-digest approach this follows, and on WHY it's built
+ * from content hashes rather than the change-log `rev` counter - a client cache that's silently gone wrong is
+ * exactly the failure a stored-and-trusted-per-record counter can't be relied on to catch, since the counter
+ * can be just as wrong as the data it's supposed to describe). `/changes` only ever tells a client what
+ * mutated SINCE its last-known rev; it has no way to notice a client whose cursor looks valid (not `truncated`)
+ * but whose actual cached content has quietly drifted - a dropped IndexedDB write, partial browser storage
+ * eviction, or (rarer) this database having been replaced/restored from an earlier backup. This endpoint is
+ * what lets a client CHEAPLY prove (or disprove) "my cache still matches the server", independent of trusting
+ * its own cursor OR any other locally-remembered per-record value.
  *
- * Computed on demand from the `characters` table's own `rev` column (already kept current by every write path -
- * writeRowSync()/setCharacterFav()/setCharacterActiveChat() all set it from the same change-log INSERT's
- * `lastInsertRowid`) rather than incrementally maintained: a full `characters` table scan is cheap here because
- * it only ever touches two skinny indexed columns (`id`, `rev`) and never leaves the server process - nothing
- * like the cost `/all`'s full-library response pays reading/serializing every character's full JSON body over
- * the network. No new schema, no new write-path bookkeeping to keep correct.
+ * Computed on demand from the `characters` table's own `shallow_json` column (already the exact representation
+ * `/api/characters/batch` returns for each id - see that route's own doc comment on why it stamps db-
+ * authoritative fav/active_chat before responding, which is what keeps this equivalence true) rather than
+ * incrementally maintained: a full `characters` table scan, hashing one already-stored TEXT column per row, is
+ * cheap here because it never leaves the server process - nothing like the cost `/all`'s full-library response
+ * pays serializing every character's full JSON body over the network. No new schema, no new write-path
+ * bookkeeping to keep correct - `shallow_json` is already kept current by every write path.
+ *
+ * Runs on character-metadata-digest-worker.js, a dedicated worker_threads worker, not inline on this (the main
+ * Express) thread - see that worker's own header. A real 326k-row table measured ~2.2s of synchronous JS for
+ * this scan alone (2026-08 state-digest perf investigation); run inline, that would stall every other request
+ * this Node process is serving for the same span. `getEntry()` is still called here first (cheap once already
+ * warm) purely to make sure SCHEMA_SQL/the column migrations have actually run against this file at least once
+ * and to resolve `directories.root` - the worker opens its own separate connection for the scan itself, it never
+ * touches `entry.db`.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {number} [bucketCount]
- * @returns {Promise<{ rev: number, buckets: { hi: number, lo: number }[] } | null>} `buckets[i]` is the
- * order-independent XOR-fold digest (combineDigest()) of every `{id, rev}` pair currently in `characters` whose
- * id hashes to bucket `i` (bucketOf()) - a client folds the same table over its own cache with the same
- * function and compares position-by-position. `null` if the metadata store is unavailable.
+ * @returns {Promise<{ buckets: { hi: number, lo: number }[] } | null>} `buckets[i]` is the order-independent
+ * XOR-fold digest (combineDigest()) of every `{id, contentHashOf(shallow_json)}` pair currently in `characters`
+ * whose id hashes to bucket `i` (bucketOf()) - a client folds the same table over its own cache with the same
+ * functions and compares position-by-position. `null` if the metadata store is unavailable.
  */
 export async function getStateDigest(directories, bucketCount = DEFAULT_DIGEST_BUCKET_COUNT) {
     const entry = await getEntry(directories);
     if (!entry) return null;
 
-    const rev = Number(entry.db.get('SELECT COALESCE(MAX(rev), 0) as rev FROM changes')?.rev ?? 0);
-    const buckets = Array.from({ length: bucketCount }, () => emptyDigest());
-    for (const row of entry.db.all('SELECT id, rev FROM characters')) {
-        const idx = bucketOf(row.id, bucketCount);
-        buckets[idx] = combineDigest(buckets[idx], row.id, Number(row.rev));
-    }
-
-    return { rev, buckets };
+    return runDigestWorkerTask({ type: 'state-digest', dbPath: getDbPath(directories), bucketCount });
 }
 
 /**
  * `POST /api/characters/bucket-members`: the repair half of the state-digest check above - once a client has
  * found (via getStateDigest()) that ITS locally-computed digest for bucket `bucket` disagrees with the
- * server's, this is what lets it find out exactly which ids in that one bucket actually diverged, without
- * re-fetching (or even re-listing) anything outside it. Bounded by construction: a bucket holds roughly
- * `library size / bucketCount` ids (~1300 for a 326k-character library at the default 256 buckets), not the
- * whole library.
+ * server's, this is what lets it find out exactly which ids in that one bucket actually diverged (by comparing
+ * `contentHash`, not by re-fetching each one to find out), without re-fetching (or even re-listing) anything
+ * outside it. Bounded by construction: a bucket holds roughly `library size / bucketCount` ids (~1300 for a
+ * 326k-character library at the default 256 buckets), not the whole library.
+ * Runs on character-metadata-digest-worker.js (same rationale as getStateDigest() above - see that function's
+ * own doc comment and the worker's own header) rather than inline on this thread.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {number} bucket
  * @param {number} [bucketCount]
- * @returns {Promise<{ rev: number, members: { id: string, rev: number }[] } | null>} `null` if the metadata
- * store is unavailable.
+ * @returns {Promise<{ members: { id: string, contentHash: number }[] } | null>} `null` if the metadata store is
+ * unavailable.
  */
 export async function getBucketMembers(directories, bucket, bucketCount = DEFAULT_DIGEST_BUCKET_COUNT) {
     const entry = await getEntry(directories);
     if (!entry) return null;
 
-    const rev = Number(entry.db.get('SELECT COALESCE(MAX(rev), 0) as rev FROM changes')?.rev ?? 0);
-    const members = [];
-    for (const row of entry.db.all('SELECT id, rev FROM characters')) {
-        if (bucketOf(row.id, bucketCount) === bucket) {
-            members.push({ id: row.id, rev: Number(row.rev) });
-        }
-    }
-
-    return { rev, members };
+    return runDigestWorkerTask({ type: 'bucket-members', dbPath: getDbPath(directories), bucket, bucketCount });
 }
