@@ -15,6 +15,7 @@ import {
     reloadCurrentChat,
     saveSettingsDebounced,
     saveChatConditional,
+    updateMessage,
     chat_metadata,
     neutralCharacterName,
     updateChatMetadata,
@@ -154,7 +155,7 @@ export async function hideChatMessageRange(start, end, unhide, nameFitler = null
         if (!message) continue;
         if (nameFitler && message.name !== nameFitler) continue;
 
-        message.is_system = hide;
+        updateMessage(messageId, { is_system: hide });
 
         // Also toggle "hidden" state for all visible messages
         const messageBlock = $(`.mes[mesid="${messageId}"]`);
@@ -1072,18 +1073,17 @@ async function switchMessageMediaDisplay(messageId, messageBlock, targetDisplay)
     }
 
     /** @type {ChatMessage} */
-    const message = chat[messageId];
+    let message = chat[messageId];
 
     if (!message) {
         console.warn('Message not found for ID', messageId);
         return;
     }
 
-    if (!message.extra || typeof message.extra !== 'object') {
-        message.extra = {};
-    }
+    const existingExtra = (message.extra && typeof message.extra === 'object') ? message.extra : {};
+    updateMessage(messageId, { extra: { ...existingExtra, media_display: targetDisplay } });
+    message = chat[messageId];
 
-    message.extra.media_display = targetDisplay;
     await saveChatConditional();
     appendMediaToMessage(message, messageBlock, SCROLL_BEHAVIOR.KEEP);
 }

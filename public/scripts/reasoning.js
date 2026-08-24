@@ -1,7 +1,7 @@
 import {
     moment,
 } from '../lib.js';
-import { chat, closeMessageEditor, event_types, eventSource, main_api, messageFormatting, saveChatConditional, saveChatDebounced, saveSettingsDebounced, substituteParams, syncMesToSwipe, updateMessageBlock } from '../script.js';
+import { chat, closeMessageEditor, event_types, eventSource, main_api, messageFormatting, saveChatConditional, saveChatDebounced, saveSettingsDebounced, substituteParams, syncMesToSwipe, updateMessage, updateMessageBlock } from '../script.js';
 import { getRegexedString, regex_placement } from './extensions/regex/engine.js';
 import { getCurrentLocale, t, translate } from './i18n.js';
 import { macros, MacroCategory } from './macros/macro-system.js';
@@ -348,7 +348,7 @@ export class ReasoningHandler {
         if (isNaN(messageId) || !chat[messageId]) return;
 
         if (!chat[messageId].extra) {
-            chat[messageId].extra = {};
+            updateMessage(messageId, { extra: {} });
         }
         const extra = chat[messageId].extra;
 
@@ -421,7 +421,7 @@ export class ReasoningHandler {
 
         // Ensure the chat extra exists
         if (!chat[messageId].extra) {
-            chat[messageId].extra = {};
+            updateMessage(messageId, { extra: {} });
         }
         const extra = chat[messageId].extra;
 
@@ -484,14 +484,14 @@ export class ReasoningHandler {
             return mesChanged;
 
         /** @type {ChatMessage} */
-        const message = chat[messageId];
+        let message = chat[messageId];
         if (!message) return mesChanged;
 
         const parseTarget = promptReasoning?.prefixIncomplete ? (promptReasoning.prefixReasoningFormatted + message.mes) : message.mes;
 
         // If we are done with reasoning parse, we just split the message correctly so the reasoning doesn't show up inside of it.
         if (this.#parsingReasoningMesStartIndex) {
-            message.mes = trimSpaces(parseTarget.slice(this.#parsingReasoningMesStartIndex));
+            updateMessage(messageId, { mes: trimSpaces(parseTarget.slice(this.#parsingReasoningMesStartIndex)) });
             return mesChanged;
         }
 
@@ -512,13 +512,15 @@ export class ReasoningHandler {
 
         // If we are in manual parsing mode, all currently streaming mes tokens will go to the reasoning block
         this.reasoning = parseTarget.slice(power_user.reasoning.prefix.length);
-        message.mes = '';
+        updateMessage(messageId, { mes: '' });
+        message = chat[messageId];
 
         // If the reasoning contains the ending suffix, we cut that off and continue as message streaming
         if (this.reasoning.includes(power_user.reasoning.suffix)) {
             this.reasoning = this.reasoning.slice(0, this.reasoning.indexOf(power_user.reasoning.suffix));
             this.#parsingReasoningMesStartIndex = parseTarget.indexOf(power_user.reasoning.suffix) + power_user.reasoning.suffix.length;
-            message.mes = trimSpaces(parseTarget.slice(this.#parsingReasoningMesStartIndex));
+            updateMessage(messageId, { mes: trimSpaces(parseTarget.slice(this.#parsingReasoningMesStartIndex)) });
+            message = chat[messageId];
             this.#isParsingReasoning = false;
         }
 
@@ -944,17 +946,21 @@ function registerReasoningSlashCommands() {
         ],
         callback: async (args, value) => {
             const messageId = !isNaN(Number(args.at)) ? Number(args.at) : chat.length - 1;
-            const message = chat[messageId];
+            let message = chat[messageId];
             if (!message) {
                 return '';
             }
             // Make sure the message has an extra object
-            if (!message.extra || typeof message.extra !== 'object') {
-                message.extra = {};
-            }
+            const existingExtra = (message.extra && typeof message.extra === 'object') ? message.extra : {};
 
-            message.extra.reasoning = String(value ?? '');
-            message.extra.reasoning_type = ReasoningType.Manual;
+            updateMessage(messageId, {
+                extra: {
+                    ...existingExtra,
+                    reasoning: String(value ?? ''),
+                    reasoning_type: ReasoningType.Manual,
+                },
+            });
+            message = chat[messageId];
             await saveChatConditional();
 
             closeMessageEditor('reasoning');
@@ -1559,7 +1565,7 @@ function registerReasoningAppEvents() {
 
         console.debug('[Reasoning] Auto-parsing reasoning block for message', idx);
         const prefix = type === event_types.MESSAGE_RECEIVED ? PromptReasoning.getLatestPrefix() : '';
-        const message = chat[idx];
+        let message = chat[idx];
 
         if (!message) {
             console.warn('[Reasoning] Message not found', idx);
@@ -1583,23 +1589,27 @@ function registerReasoningAppEvents() {
             return;
         }
 
-        // Make sure the message has an extra object
-        if (!message.extra || typeof message.extra !== 'object') {
-            message.extra = {};
-        }
-
         const contentUpdated = !!parsedReasoning.reasoning || parsedReasoning.content !== message.mes;
+
+        // Make sure the message has an extra object
+        const existingExtra = (message.extra && typeof message.extra === 'object') ? message.extra : {};
+        const extraUpdates = { ...existingExtra };
 
         // If reasoning was found, add it to the message
         if (parsedReasoning.reasoning) {
-            message.extra.reasoning = getRegexedString(parsedReasoning.reasoning, regex_placement.REASONING);
-            message.extra.reasoning_type = ReasoningType.Parsed;
+            extraUpdates.reasoning = getRegexedString(parsedReasoning.reasoning, regex_placement.REASONING);
+            extraUpdates.reasoning_type = ReasoningType.Parsed;
         }
+
+        const updates = { extra: extraUpdates };
 
         // Update the message text if it was changed
         if (parsedReasoning.content !== message.mes) {
-            message.mes = parsedReasoning.content;
+            updates.mes = parsedReasoning.content;
         }
+
+        updateMessage(idx, updates);
+        message = chat[idx];
 
         if (contentUpdated) {
             syncMesToSwipe();

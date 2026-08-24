@@ -180,6 +180,15 @@ function getBranchChatSnapshot(mesId, { swipeId = null } = {}) {
     return snapshot;
 }
 
+/**
+ * Checks if the current chat is stored in the message tree DB (vs flat JSONL files).
+ * Tree-stored chats support O(1) forking and node labeling.
+ * @returns {boolean}
+ */
+function isTreeStored() {
+    return !!chat_metadata?._tree_stored;
+}
+
 // Export is used by Timelines extension. Do not remove.
 export async function createBranch(mesId, { swipeId = null } = {}) {
     if (!chat.length) {
@@ -201,19 +210,10 @@ export async function createBranch(mesId, { swipeId = null } = {}) {
         return;
     }
 
-    // The (mesId, swipeId) pair is the actual fork point: forking a different swipe of the same
-    // message is a different tree node with its own independent sibling group (#branch-nav).
     const resolvedSwipeId = selectedSwipeId ?? Number(lastMes.swipe_id ?? 0);
 
-    // Mint a fresh integrity slug so the branch is distinguishable from its parent (#5942)
-    // fork_point lets a branch find its way back to the exact sibling group it was forked from,
-    // without needing to reconstruct it from the branch's own (possibly extended) length.
-    const newMetadata = { main_chat: mainChatName, integrity: uuidv4(), fork_point: { mesId: Number(mesId), swipeId: resolvedSwipeId } };
-
     function buildBranchName(name, i) {
-        // Strip off existing suffixes, then build new name
         let cleanName = name.replace(/ - Branch #\d+$/, '');
-        // Strip off legacy old name prefix too
         cleanName = cleanName.replace(/^Branch #\d+ - /, '');
         return `${cleanName} - Branch #${i}`;
     }
@@ -224,6 +224,52 @@ export async function createBranch(mesId, { swipeId = null } = {}) {
         toastr.error('Could not generate a unique branch name.', 'Branch creation failed');
         return;
     }
+
+    // Tree DB path: O(1) fork via the fork API — no data is copied
+    if (isTreeStored() && !selected_group && lastMes.node_id) {
+        // If a specific swipe was selected, save the current chat first so the swipe state is
+        // persisted to the tree, then fork at the node.
+        if (selectedSwipeId !== null) {
+            const snapshot = getBranchChatSnapshot(mesId, { swipeId: selectedSwipeId });
+            if (!snapshot) {
+                toastr.warning('Could not prepare the selected swipe for branching.', 'Branch creation failed');
+                return;
+            }
+            await saveChat({ mesId, chatData: snapshot });
+        }
+
+        const character = getCurrentCharacter();
+        const response = await fetch('/api/chats/fork', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({
+                avatar_url: character?.avatar,
+                node_id: lastMes.node_id,
+                branch_name: name,
+                metadata: { ...chat_metadata },
+            }),
+        });
+
+        if (!response.ok) {
+            toastr.error('Fork failed.', 'Branch creation failed');
+            return;
+        }
+
+        // Update local branch tracking for the UI
+        if (typeof lastMes.extra !== 'object') lastMes.extra = {};
+        if (typeof lastMes.extra.branches !== 'object' || Array.isArray(lastMes.extra.branches)) {
+            lastMes.extra.branches = {};
+        }
+        const groupKey = String(resolvedSwipeId);
+        if (!Array.isArray(lastMes.extra.branches[groupKey])) {
+            lastMes.extra.branches[groupKey] = [];
+        }
+        lastMes.extra.branches[groupKey].push(name);
+        return name;
+    }
+
+    // Legacy JSONL path: copy the chat prefix into a new file
+    const newMetadata = { main_chat: mainChatName, integrity: uuidv4(), fork_point: { mesId: Number(mesId), swipeId: resolvedSwipeId } };
 
     const branchChatSnapshot = getBranchChatSnapshot(mesId, { swipeId: selectedSwipeId });
     if (!branchChatSnapshot) {
@@ -236,8 +282,6 @@ export async function createBranch(mesId, { swipeId = null } = {}) {
     } else {
         await saveChat({ chatName: name, withMetadata: newMetadata, mesId, chatData: branchChatSnapshot });
     }
-    // Sibling list for this exact (mesId, swipeId) fork point. Keyed by swipe id because forking a
-    // different swipe of the same message is a different fork point with its own siblings (#branch-nav).
     if (typeof lastMes.extra !== 'object') {
         lastMes.extra = {};
     }
@@ -478,8 +522,48 @@ export async function createNewBookmark(mesId, { forceName = null } = {}) {
         return null;
     }
 
+    // Tree DB path: checkpoint = fork + label (O(1), no data copy)
+    if (isTreeStored() && !selected_group && lastMes.node_id) {
+        const character = getCurrentCharacter();
+
+        // Label the node (the checkpoint name)
+        await fetch('/api/chats/label', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({
+                avatar_url: character?.avatar,
+                node_id: lastMes.node_id,
+                label: name,
+            }),
+        });
+
+        // Create a fork branch (so the checkpoint is openable as a separate chat)
+        const forkResponse = await fetch('/api/chats/fork', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({
+                avatar_url: character?.avatar,
+                node_id: lastMes.node_id,
+                branch_name: name,
+                metadata: { ...chat_metadata },
+            }),
+        });
+
+        if (forkResponse.ok) {
+            lastMes.extra.bookmark_link = name;
+            const mes = $(`.mes[mesid="${mesId}"]`);
+            updateBookmarkDisplay(mes, name);
+            await saveChatConditional();
+            toastr.success('Click the flag icon next to the message to open the checkpoint chat.', 'Create Checkpoint', { timeOut: 10000 });
+            return name;
+        }
+
+        toastr.error('Failed to create checkpoint.', 'Create Checkpoint');
+        return null;
+    }
+
+    // Legacy JSONL path
     const mainChat = selected_group ? groupsStore.get(selected_group)?.chat_id : getCurrentCharacter().chat;
-    // Mint a fresh integrity slug so the checkpoint is distinguishable from its parent (#5942)
     const newMetadata = { main_chat: mainChat, integrity: uuidv4() };
     await saveItemizedPrompts(name);
 
