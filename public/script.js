@@ -10214,6 +10214,7 @@ async function displayChats(searchQuery, currentChat, displayName, avatarImg, se
 function activateFillRightDrawer(contentId) {
     document.querySelectorAll('.fillRight').forEach(el => el.classList.remove('frontFillRight'));
     document.getElementById(contentId)?.classList.add('frontFillRight');
+    accountStorage.setItem('FillRightFront', contentId);
 }
 
 function ensureDrawerOpen(drawerId) {
@@ -10259,17 +10260,33 @@ export function selectRightMenuWithAnimation(selectedMenuId) {
     };
     const normalizedId = selectedMenuId ? selectedMenuId.replace('#', '') : null;
     $('#result_info').toggle(normalizedId === 'rm_ch_create_block');
-    // Track which sub-view is active so CSS can scope gallery-mode styling to only fire when the
-    // character list is showing (not when character edit or group chat views are active).
-    document.getElementById('right-nav-panel')?.setAttribute('data-active-menu', normalizedId || '');
-    document.getElementById('char-info-panel')?.setAttribute('data-active-menu', normalizedId || '');
+    // Find which panel contains the target menu and only hide/show menus within THAT panel.
+    // Now that character-list and character-info live in separate drawers, switching to a menu in
+    // one panel must not touch the other panel's menus (that was hiding #rm_characters_block when
+    // the user opened a character for editing, then leaving it hidden when they came back).
+    const targetMenu = normalizedId ? document.getElementById(normalizedId) : null;
+    const targetPanel = targetMenu?.closest('#right-nav-panel, #char-info-panel');
+    if (targetPanel) {
+        targetPanel.setAttribute('data-active-menu', normalizedId || '');
+    }
     const charInfoMenus = ['rm_ch_create_block', 'rm_group_chats_block'];
     if (charInfoMenus.includes(normalizedId)) {
         ensureDrawerOpen('charInfoHolder');
     } else if (normalizedId === 'rm_characters_block') {
         ensureDrawerOpen('rightNavHolder');
     }
-    document.querySelectorAll('#right-nav-panel .right_menu, #char-info-panel .right_menu').forEach((menu) => {
+    // #right-nav-panel only has one real menu (rm_characters_block) - it never needs hiding.
+    // Only #char-info-panel has multiple menus (rm_ch_create_block, rm_group_chats_block) that
+    // need the hide-all-then-show-one dance. For right-nav-panel, just ensure it's visible.
+    if (targetPanel?.id === 'right-nav-panel') {
+        const charBlock = document.getElementById('rm_characters_block');
+        if (charBlock) {
+            openRightMenu('rm_characters_block');
+            $(charBlock).css('display', displayModes['rm_characters_block'] ?? 'flex');
+        }
+    }
+    const panelSelector = targetPanel?.id === 'char-info-panel' ? '#char-info-panel .right_menu' : null;
+    panelSelector && document.querySelectorAll(panelSelector).forEach((menu) => {
         $(menu).css('display', 'none');
 
         if (normalizedId && normalizedId === menu.id) {
