@@ -30,7 +30,8 @@ import cacheBuster from '../middleware/cacheBuster.js';
 import { searchCharacters, searchCharacterIds, rebuildCharacterSearchIndex, SEARCH_ID_CAP } from './characters-search-index.js';
 import { searchGroups, searchGroupIds } from './groups-search-index.js';
 import { getGroupsData, getGroupsByIds } from './groups.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, getTreeDigest, resolveTreeLeaves, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds } from '../character-metadata-db.js';
+import { DEFAULT_DIGEST_BUCKET_COUNT } from '../../public/scripts/hash-utils.js';
 
 // With 100 MB limit it would take roughly 3000 characters to reach this limit
 const memoryCacheCapacity = getConfigValue('performance.memoryCacheCapacity', '100mb');
@@ -902,6 +903,17 @@ export function buildPngImportData(rawText, directories) {
 }
 
 export const router = express.Router();
+
+/** Cached level-1 subtree data from tree-digest, keyed by user handle. Cleared after tree-resolve or 5-minute timeout. */
+const treeDigestCache = new Map();
+
+// Expire stale tree-digest caches after 5 minutes (tree-resolve never arrived)
+setInterval(() => {
+    const now = Date.now();
+    for (const [handle, entry] of treeDigestCache) {
+        if (now - entry.timestamp > 5 * 60 * 1000) treeDigestCache.delete(handle);
+    }
+}, 60 * 1000);
 
 router.post('/create', getFileNameValidationFunction('file_name'), async function (request, response) {
     try {
@@ -2214,6 +2226,174 @@ router.post('/changes', async function (request, response) {
 });
 
 /**
+ * SUPERSEDED by `/tree-digest`/`/tree-resolve` below (a real 2-level hash tree that pinpoints diverged records
+ * directly, instead of this flat-bucket table needing a full bucket-members fetch just to localize a mismatch).
+ * Kept for now, not yet removed from routing.
+ *
+ * HTTP POST endpoint for "/api/characters/state-digest" - the anti-entropy check on the character cache, run
+ * alongside (not built on top of) the `/changes` cursor (character-metadata-db.js's getStateDigest() has the
+ * full design rationale, including why this is built on content hashes rather than `/changes`' `rev` counter:
+ * same bucketed-checksum shape as pt-table-checksum/Cassandra anti-entropy repair/DynamoDB replica checksums,
+ * but the digest itself proves nothing was silently lost or corrupted BY re-deriving fresh from actual record
+ * content, not by trusting a locally-remembered value). A client that's just caught up via `/changes` calls this
+ * to prove its cache genuinely matches the server - cheap regardless of library size (a fixed-size bucket-digest
+ * table, not a per-character listing).
+ *
+ * Responds with `{ favBuckets: {hi,lo}[], contentBuckets: {hi,lo}[] }` - two parallel bucket-digest tables (see
+ * getStateDigest()'s own doc comment) so the client can tell a fav-only mismatch apart from a real content-field
+ * mismatch without a second round trip.
+ * @param  {import("express").Request} request The HTTP request object.
+ * @param  {import("express").Response} response The HTTP response object.
+ * @return {void}
+ */
+router.post('/state-digest', async function (request, response) {
+    try {
+        const bucketCount = Number.isFinite(Number(request.body?.bucketCount)) && Number(request.body?.bucketCount) > 0
+            ? Math.trunc(Number(request.body.bucketCount))
+            : DEFAULT_DIGEST_BUCKET_COUNT;
+
+        const result = await getStateDigest(request.user.directories, bucketCount);
+        if (result === null) {
+            return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
+        }
+        return response.send(result);
+    } catch (err) {
+        console.error('[characters/state-digest] State-digest query failed:', err);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/**
+ * SUPERSEDED by `/tree-resolve` below - kept for now, not yet removed from routing.
+ *
+ * HTTP POST endpoint for "/api/characters/bucket-members" - the repair half of `/state-digest`: once a client
+ * has found that its own locally-computed digest for one bucket disagrees with the server's, this returns
+ * exactly that bucket's `{id, favHash, fieldsHash, fav}` members (see character-metadata-db.js's
+ * getBucketMembers()) so the client can diff against its own locally-recomputed hashes and repair only the ids
+ * that actually changed, instead of the whole library. `fav` is the row's actual current value, so a fav-only
+ * mismatch can be repaired directly from this response with zero further fetch; a content-fields mismatch
+ * previously repaired via a follow-up `POST /api/characters/fingerprint-values` call (now removed - see
+ * `/tree-resolve` below, which returns fingerprint values inline with the leaf members it resolves).
+ * @param  {import("express").Request} request The HTTP request object.
+ * @param  {import("express").Response} response The HTTP response object.
+ * @return {void}
+ */
+router.post('/bucket-members', async function (request, response) {
+    try {
+        const bucketCount = Number.isFinite(Number(request.body?.bucketCount)) && Number(request.body?.bucketCount) > 0
+            ? Math.trunc(Number(request.body.bucketCount))
+            : DEFAULT_DIGEST_BUCKET_COUNT;
+        const bucket = Number(request.body?.bucket);
+        if (!Number.isFinite(bucket) || bucket < 0 || bucket >= bucketCount) {
+            return response.sendStatus(400);
+        }
+
+        const result = await getBucketMembers(request.user.directories, bucket, bucketCount);
+        if (result === null) {
+            return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
+        }
+        return response.send(result);
+    } catch (err) {
+        console.error('[characters/bucket-members] Bucket-members query failed:', err);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/**
+ * HTTP POST endpoint for "/api/characters/tree-digest" - builds the 2-level hash tree and returns level-0
+ * children hashes. Supersedes `/state-digest`: see getTreeDigest()'s own doc comment (character-metadata-db.js)
+ * for why a flat bucket table can't localize a mismatch beyond "this bucket disagrees" the way a 2-level tree
+ * can. The server caches the level-1 subtree data in memory (`treeDigestCache`, keyed by user handle) for the
+ * subsequent `/tree-resolve` call, so that call doesn't need to re-scan the whole table nor have the client
+ * re-send the (potentially large) level-1 data it already received here.
+ * @param  {import("express").Request} request The HTTP request object.
+ * @param  {import("express").Response} response The HTTP response object.
+ * @return {void}
+ */
+router.post('/tree-digest', async function (request, response) {
+    try {
+        const branching = Number.isFinite(Number(request.body?.branching)) && Number(request.body?.branching) > 0
+            ? Math.trunc(Number(request.body.branching))
+            : DEFAULT_DIGEST_BUCKET_COUNT;
+
+        const result = await getTreeDigest(request.user.directories, branching);
+        if (result === null) {
+            return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
+        }
+        // Cache the subtrees data for this user's subsequent tree-resolve call
+        const handle = request.user.profile?.handle ?? 'default';
+        treeDigestCache.set(handle, { subtrees: result.subtrees, branching, timestamp: Date.now() });
+        // Only send children to the client (subtrees stay server-side)
+        return response.send({ depth: 2, branching, children: result.children });
+    } catch (err) {
+        console.error('[characters/tree-digest] Tree-digest query failed:', err);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/**
+ * HTTP POST endpoint for "/api/characters/tree-resolve" - the client sends mismatched level-0 subtree indices
+ * plus its own level-1 hashes for those subtrees. The server compares against the cached level-1 data from the
+ * preceding `/tree-digest` call, finds the mismatched leaf groups, and resolves them to full member data
+ * (including fingerprint values for direct repair - see resolveTreeLeaves()'s own doc comment in
+ * character-metadata-db.js) via a single further table scan.
+ * @param  {import("express").Request} request The HTTP request object.
+ * @param  {import("express").Response} response The HTTP response object.
+ * @return {void}
+ */
+router.post('/tree-resolve', async function (request, response) {
+    try {
+        const handle = request.user.profile?.handle ?? 'default';
+        const cached = treeDigestCache.get(handle);
+        if (!cached) {
+            return response.status(409).send({ error: true, reason: 'no-cached-tree-digest' });
+        }
+        const { subtrees, branching } = cached;
+        // Clear cache after use (one-shot)
+        treeDigestCache.delete(handle);
+
+        const requestedSubtrees = Array.isArray(request.body?.subtrees) ? request.body.subtrees : [];
+
+        // Compare client's level-1 hashes against server's cached level-1 data
+        // Find mismatched leaf groups
+        const targetLeaves = [];
+        for (const sub of requestedSubtrees) {
+            const l0 = Number(sub.index);
+            if (!Number.isFinite(l0) || l0 < 0 || l0 >= branching) continue;
+            const clientChildren = Array.isArray(sub.clientChildren) ? sub.clientChildren : [];
+
+            for (let l1 = 0; l1 < branching && l1 < clientChildren.length; l1++) {
+                const idx = l0 * branching + l1;
+                const serverFav = subtrees[idx]?.fav ?? { hi: 0, lo: 0 };
+                const serverFields = subtrees[idx]?.fields ?? { hi: 0, lo: 0 };
+                const clientEntry = clientChildren[l1];
+                const clientFav = clientEntry?.fav ?? { hi: 0, lo: 0 };
+                const clientFields = clientEntry?.fields ?? { hi: 0, lo: 0 };
+
+                // If either hash stream mismatches, this leaf group needs resolving
+                if (serverFav.hi !== clientFav.hi || serverFav.lo !== clientFav.lo ||
+                    serverFields.hi !== clientFields.hi || serverFields.lo !== clientFields.lo) {
+                    targetLeaves.push({ l0, l1 });
+                }
+            }
+        }
+
+        if (targetLeaves.length === 0) {
+            return response.send({ leaves: [] });
+        }
+
+        const result = await resolveTreeLeaves(request.user.directories, targetLeaves, branching);
+        if (result === null) {
+            return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
+        }
+        return response.send(result);
+    } catch (err) {
+        console.error('[characters/tree-resolve] Tree-resolve failed:', err);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/**
  * HTTP POST endpoint for the "/api/characters/manifest" route.
  *
  * Lightweight companion to `/all`: returns just `[{ avatar, mtime, thumbnailVersion }, ...]` for every
@@ -2281,6 +2461,19 @@ router.post('/batch', async function (request, response) {
 
         const processingPromises = avatars.map(avatar => processCharacter(avatar, request.user.directories, { shallow: useShallowCharacters }));
         const data = (await Promise.all(processingPromises)).filter(c => c.name);
+        // Same db-authoritative stamp every OTHER character-listing route already applies (/all, /get, the
+        // query path) - fav/active_chat are db-authoritative once a row exists (setCharacterFav()/
+        // setCharacterActiveChat() deliberately never touch the PNG), so without this, a character whose fav
+        // or active chat was toggled purely through those endpoints would come back here still carrying its
+        // stale PNG-embedded value. This route (the one fetchCharactersDelta()'s /changes-driven sync actually
+        // calls for anything new/changed) was the one place this stamp was missing - a gap left by the 2026-08
+        // chat-pointer db migration, which added it everywhere else. Also what makes this endpoint's actual
+        // output match character-metadata-db.js's `shallow_json` column exactly, which the state-digest
+        // integrity check (getStateDigest()/getBucketMembers()) hashes as its ground truth - without this fix,
+        // that check would flag every fav/chat toggle as "cache drift" even though the client's cache was never
+        // wrong, only this endpoint's un-stamped response was.
+        await stampDbFav(request.user.directories, data);
+        await stampDbActiveChat(request.user.directories, data);
         return response.send(data);
     } catch (err) {
         console.error(err);

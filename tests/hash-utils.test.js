@@ -1,5 +1,5 @@
 import { describe, test, expect } from '@jest/globals';
-import { getStringHash, bucketOf, emptyDigest, combineDigest, foldDigests, digestsEqual, contentHashOf, characterDigestFingerprint, characterDigestContentHash, canonicalStringify, DEFAULT_DIGEST_BUCKET_COUNT } from '../public/scripts/hash-utils.js';
+import { getStringHash, bucketOf, treeNodeAt, emptyDigest, combineDigest, foldDigests, digestsEqual, contentHashOf, characterDigestFingerprint, characterDigestContentHash, characterDigestFavHash, characterDigestFieldsHash, characterFavFingerprint, characterContentFieldsFingerprint, canonicalStringify, DEFAULT_DIGEST_BUCKET_COUNT } from '../public/scripts/hash-utils.js';
 
 describe('getStringHash', () => {
     test('is deterministic for the same string and seed', () => {
@@ -42,6 +42,44 @@ describe('bucketOf', () => {
 
     test('defaults bucketCount to DEFAULT_DIGEST_BUCKET_COUNT', () => {
         expect(bucketOf('Alice.png')).toBe(bucketOf('Alice.png', DEFAULT_DIGEST_BUCKET_COUNT));
+    });
+});
+
+describe('treeNodeAt - hierarchical tree-node assignment extending bucketOf()', () => {
+    test('level 0 matches bucketOf()', () => {
+        const ids = ['Alice.png', 'Bob.png', 'Carol.png', 'test-123.png', ''];
+        for (const id of ids) {
+            expect(treeNodeAt(id, 0, 256)).toBe(bucketOf(id, 256));
+        }
+    });
+
+    test('is deterministic', () => {
+        expect(treeNodeAt('Alice.png', 1, 256)).toBe(treeNodeAt('Alice.png', 1, 256));
+    });
+
+    test('different levels give different (usually) indices', () => {
+        // Not guaranteed to differ for every id, but extremely likely for any given id
+        const l0 = treeNodeAt('Alice.png', 0, 256);
+        const l1 = treeNodeAt('Alice.png', 1, 256);
+        const l2 = treeNodeAt('Alice.png', 2, 256);
+        // At least two of three levels should differ for a well-distributed hash
+        const unique = new Set([l0, l1, l2]);
+        expect(unique.size).toBeGreaterThanOrEqual(2);
+    });
+
+    test('result is always in range [0, branching)', () => {
+        const ids = ['Alice.png', 'Bob.png', '', 'a'.repeat(1000)];
+        for (const id of ids) {
+            for (let level = 0; level < 4; level++) {
+                const result = treeNodeAt(id, level, 256);
+                expect(result).toBeGreaterThanOrEqual(0);
+                expect(result).toBeLessThan(256);
+            }
+        }
+    });
+
+    test('default branching matches DEFAULT_DIGEST_BUCKET_COUNT', () => {
+        expect(treeNodeAt('Alice.png', 0)).toBe(treeNodeAt('Alice.png', 0, DEFAULT_DIGEST_BUCKET_COUNT));
     });
 });
 
@@ -189,6 +227,52 @@ describe('characterDigestContentHash - the fixed-shape fast path for contentHash
         expect(characterDigestContentHash(base)).not.toBe(characterDigestContentHash(favToggled));
         expect(characterDigestContentHash(base) === characterDigestContentHash(favToggled))
             .toBe(contentHashOf(characterDigestFingerprint(base)) === contentHashOf(characterDigestFingerprint(favToggled)));
+    });
+});
+
+describe('characterDigestFavHash / characterDigestFieldsHash - per-field-group split of characterDigestContentHash, ' +
+    'see these functions\' own doc comments for why fav is its own stream', () => {
+    const fixtures = [
+        { name: 'Alice', fav: false, tags: ['a', 'b'], data: { name: 'Alice', character_version: '1.0', creator: 'bob', tags: ['a', 'b'], creator_notes: 'hi', extensions: { fav: false, world: 'Wonderland' } } },
+        { name: 'Bo\'b "the builder"', fav: true, tags: ['NSFW'], data: { name: 'Bo\'b', character_version: '', creator: '', tags: [], creator_notes: '"quoted"', extensions: { fav: true, world: '' } } },
+        { name: 'NoData', fav: false, tags: [] },
+        { name: 'PartialData', fav: false, tags: ['x'], data: { name: 'PartialData' } },
+        { name: 'NoExtensions', fav: true, tags: null, data: { name: 'NoExtensions', character_version: '2.0', creator: 'carol', tags: ['y'], creator_notes: '' } },
+        {},
+        { name: 'WithVolatile', fav: false, tags: [], chat: 'just now', chat_size: 1, date_added: 1, create_date: 'x', date_last_chat: 2, data: { name: 'WithVolatile', character_version: '', creator: '', tags: [], creator_notes: '', extensions: { fav: false, world: '' } } },
+    ];
+
+    test('fast path matches generic pipeline for favHash', () => {
+        for (const fixture of fixtures) {
+            expect(characterDigestFavHash(fixture)).toBe(contentHashOf(characterFavFingerprint(fixture)));
+        }
+    });
+
+    test('fast path matches generic pipeline for fieldsHash', () => {
+        for (const fixture of fixtures) {
+            expect(characterDigestFieldsHash(fixture)).toBe(contentHashOf(characterContentFieldsFingerprint(fixture)));
+        }
+    });
+
+    test('null/undefined tolerance', () => {
+        for (const val of [null, undefined]) {
+            expect(characterDigestFavHash(val)).toBe(contentHashOf(characterFavFingerprint(val)));
+            expect(characterDigestFieldsHash(val)).toBe(contentHashOf(characterContentFieldsFingerprint(val)));
+        }
+    });
+
+    test('fav change only affects favHash, not fieldsHash', () => {
+        const base = fixtures[0];
+        const favToggled = { ...base, fav: !base.fav, data: { ...base.data, extensions: { ...base.data.extensions, fav: !base.data.extensions.fav } } };
+        expect(characterDigestFavHash(base)).not.toBe(characterDigestFavHash(favToggled));
+        expect(characterDigestFieldsHash(base)).toBe(characterDigestFieldsHash(favToggled));
+    });
+
+    test('content change only affects fieldsHash, not favHash', () => {
+        const base = fixtures[0];
+        const renamed = { ...base, name: 'Alicia', data: { ...base.data, name: 'Alicia' } };
+        expect(characterDigestFieldsHash(base)).not.toBe(characterDigestFieldsHash(renamed));
+        expect(characterDigestFavHash(base)).toBe(characterDigestFavHash(renamed));
     });
 });
 
