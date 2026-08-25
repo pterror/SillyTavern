@@ -866,9 +866,11 @@ async function getEntry(directories) {
  * @param {string|null} [extra.avatarIdentityHash] computeAvatarIdentityHashFromChunks() of the character's own
  * PNG, or undefined/null from every caller except upsertCharacterFromWrite() - see this column's own SCHEMA_SQL
  * comment.
+ * @param {string[]} [extra.tagIds] Tag ids for the shallow projection - passed by the caller to avoid
+ * an extra per-row query during the 326k-row bootstrap pass.
  * @returns {object} Row fields (minus `rev`)
  */
-function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, dateLastChat, contentHash, contentIdentityHash, avatarIdentityHash }) {
+function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, dateLastChat, contentHash, contentIdentityHash, avatarIdentityHash, tagIds = [] }) {
     const includeCreatorNotes = !!getConfigValue('performance.shallowCharactersIncludeCreatorNotes', false, 'boolean');
     const dataSize = calculateDataSize(character?.data);
     const shallowSource = {
@@ -878,6 +880,7 @@ function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, date
         date_last_chat: dateLastChat,
         chat_size: chatSize,
         data_size: dataSize,
+        tag_ids: tagIds,
     };
     return {
         id,
@@ -991,15 +994,25 @@ function writeRowSync(db, row, tagIds) {
         // row.active_chat exactly as buildRow() computed it. Only a NON-NULL existing value gets forced back,
         // and only when it actually differs from this write's candidate.
         const forceActiveChat = existingRow.active_chat !== null && row.active_chat !== existingRow.active_chat;
+        // tag_ids from character_tags is the source of truth for existing rows, not whatever
+        // buildRow was given (which may have come from tags.json instead of character_tags).
+        const currentTagIds = db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id: row.id }).map(r => r.tag_id);
 
-        if (favChanged || forceActiveChat) {
-            const shallow = JSON.parse(row.shallow_json);
-            const patchedFav = favChanged ? currentFav : row.fav;
-            const patchedActiveChat = forceActiveChat ? existingRow.active_chat : row.active_chat;
-            shallow.fav = !!patchedFav;
-            shallow.chat = patchedActiveChat;
-            row = { ...row, fav: patchedFav, active_chat: patchedActiveChat, shallow_json: JSON.stringify(shallow) };
+        // Always patch tag_ids for existing rows; also patch fav/active_chat when they need forcing.
+        const shallow = JSON.parse(row.shallow_json);
+        shallow.tag_ids = currentTagIds;
+        if (favChanged) {
+            shallow.fav = !!currentFav;
         }
+        if (forceActiveChat) {
+            shallow.chat = existingRow.active_chat;
+        }
+        row = {
+            ...row,
+            fav: favChanged ? currentFav : row.fav,
+            active_chat: forceActiveChat ? existingRow.active_chat : row.active_chat,
+            shallow_json: JSON.stringify(shallow),
+        };
     }
 
     const { lastInsertRowid } = db.run('INSERT INTO changes (id, op, fields) VALUES (@id, @op, @fields)', { id: row.id, op: 'upsert', fields: null });
@@ -1078,8 +1091,8 @@ export async function upsertCharacterFromWrite(directories, avatar, cardJson, fi
     // import_poisoned, see that column's SCHEMA_SQL comment.
     const contentIdentityHash = computeContentIdentityHash(character);
     const { chatSize, dateLastChat } = calculateChatSize(path.join(directories.chats, avatar.replace(/\.png$/, '')));
-    const row = buildRow(avatar, character, { dateAddedCandidate: Date.now(), fileMtime: fileMtimeMs, chatSize, dateLastChat, contentHash, contentIdentityHash, avatarIdentityHash });
     const tagIds = getTagIdsFor(directories, avatar);
+    const row = buildRow(avatar, character, { dateAddedCandidate: Date.now(), fileMtime: fileMtimeMs, chatSize, dateLastChat, contentHash, contentIdentityHash, avatarIdentityHash, tagIds });
 
     applyOrBuffer(entry, row, tagIds);
 }
@@ -1494,8 +1507,9 @@ export async function bootstrapIfNeeded(directories) {
                 if (imgData === undefined) return null;
                 const character = getCharaCardV2(JSON.parse(imgData), directories, false);
                 const { chatSize, dateLastChat } = calculateChatSize(path.join(directories.chats, file.replace(/\.png$/, '')));
-                const row = buildRow(file, character, { dateAddedCandidate: Math.round(stat.ctimeMs), fileMtime: stat.mtimeMs, chatSize, dateLastChat });
-                return { row, tagIds: tag_map[file] ?? [] };
+                const tagIds = tag_map[file] ?? [];
+                const row = buildRow(file, character, { dateAddedCandidate: Math.round(stat.ctimeMs), fileMtime: stat.mtimeMs, chatSize, dateLastChat, tagIds });
+                return { row, tagIds };
             } catch (err) {
                 console.error(`[character-metadata] Bootstrap failed to process ${file}, skipping it this pass (the reconciler will retry it):`, err.message);
                 return null;
@@ -1892,8 +1906,8 @@ export async function reconcile(directories) {
                 if (imgData === undefined) return null;
                 const character = getCharaCardV2(JSON.parse(imgData), directories, false);
                 const { chatSize, dateLastChat } = calculateChatSize(path.join(directories.chats, file.replace(/\.png$/, '')));
-                const row = buildRow(file, character, { dateAddedCandidate: Date.now(), fileMtime: stat.mtimeMs, chatSize, dateLastChat });
                 const tagIds = getTagIdsFor(directories, file);
+                const row = buildRow(file, character, { dateAddedCandidate: Date.now(), fileMtime: stat.mtimeMs, chatSize, dateLastChat, tagIds });
                 return { row, tagIds };
             } catch (err) {
                 console.error(`[character-metadata] Reconcile failed to process ${file}, will retry next pass:`, err.message);
@@ -2019,8 +2033,8 @@ async function handleWatchEvent(entry, filename) {
     if (imgData === undefined) return;
     const character = getCharaCardV2(JSON.parse(imgData), entry.directories, false);
     const { chatSize, dateLastChat } = calculateChatSize(path.join(entry.directories.chats, filename.replace(/\.png$/, '')));
-    const row = buildRow(filename, character, { dateAddedCandidate: Date.now(), fileMtime: stat.mtimeMs, chatSize, dateLastChat });
     const tagIds = getTagIdsFor(entry.directories, filename);
+    const row = buildRow(filename, character, { dateAddedCandidate: Date.now(), fileMtime: stat.mtimeMs, chatSize, dateLastChat, tagIds });
     applyOrBuffer(entry, row, tagIds);
 }
 
@@ -2656,6 +2670,16 @@ export async function assignEntityTag(directories, id, tagId) {
 
     if (entry.db.get('SELECT 1 FROM characters WHERE id = @id', { id })) {
         entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@id, @tagId)', { id, tagId });
+        // Update shallow_json.tag_ids and record a field-level change so the delta sync
+        // path knows only tag_ids changed, not the whole record.
+        const charRow = entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id });
+        if (charRow) {
+            const currentTagIds = entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id }).map(r => r.tag_id);
+            const shallow = JSON.parse(charRow.shallow_json);
+            shallow.tag_ids = currentTagIds;
+            const { lastInsertRowid } = entry.db.run('INSERT INTO changes (id, op, fields) VALUES (@id, @op, @fields)', { id, op: 'upsert', fields: JSON.stringify(['tag_ids']) });
+            entry.db.run('UPDATE characters SET shallow_json = @shallowJson, rev = @rev WHERE id = @id', { id, shallowJson: JSON.stringify(shallow), rev: Number(lastInsertRowid) });
+        }
         bumpTagsRevisionSync(entry.db);
         return 'ok';
     }
@@ -2685,6 +2709,15 @@ export async function unassignEntityTag(directories, id, tagId) {
 
     entry.db.run('DELETE FROM character_tags WHERE character_id = @id AND tag_id = @tagId', { id, tagId });
     entry.db.run('DELETE FROM group_tags WHERE group_id = @id AND tag_id = @tagId', { id, tagId });
+    // Update shallow_json.tag_ids for characters (groups don't have shallow_json/change entries)
+    const charRow = entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id });
+    if (charRow) {
+        const currentTagIds = entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id }).map(r => r.tag_id);
+        const shallow = JSON.parse(charRow.shallow_json);
+        shallow.tag_ids = currentTagIds;
+        const { lastInsertRowid } = entry.db.run('INSERT INTO changes (id, op, fields) VALUES (@id, @op, @fields)', { id, op: 'upsert', fields: JSON.stringify(['tag_ids']) });
+        entry.db.run('UPDATE characters SET shallow_json = @shallowJson, rev = @rev WHERE id = @id', { id, shallowJson: JSON.stringify(shallow), rev: Number(lastInsertRowid) });
+    }
     bumpTagsRevisionSync(entry.db);
     return 'ok';
 }
