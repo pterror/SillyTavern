@@ -23,7 +23,7 @@ import {
     readFirstLine,
     isPathUnderParent,
 } from '../util.js';
-import { bumpGroupChatStats } from '../character-metadata-db.js';
+import { bumpCharacterDateLastChat, bumpGroupChatStats } from '../character-metadata-db.js';
 import { upsertChatFromSave, upsertChatFromParse, getChatRow, deleteChatRow, renameChatRow } from '../chat-metadata-db.js';
 import { searchChatMessages } from './chat-content-search-index.js';
 import {
@@ -713,6 +713,8 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
         if (useTree) {
             const result = await saveChatToTree(request.user.directories, cardName, chatName, chatData, false);
             if (result) {
+                await bumpCharacterDateLastChat(request.user.directories, String(request.body.avatar_url)).catch(err =>
+                    console.error(`Could not bump date_last_chat for ${cardName}:`, err));
                 return response.send({
                     ok: true,
                     integrity: result.integrity,
@@ -730,6 +732,8 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
         }
 
         const integrity = await trySaveChat(chatData, chatFilePath, request.body.force, handle, cardName, request.user.directories.backups, request.user.directories);
+        await bumpCharacterDateLastChat(request.user.directories, String(request.body.avatar_url)).catch(err =>
+            console.error(`Could not bump date_last_chat for ${cardName}:`, err));
         return response.send({ ok: true, integrity });
     } catch (error) {
         if (error instanceof IntegrityMismatchError) {
