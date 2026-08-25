@@ -2960,6 +2960,64 @@ export async function getAssignedTagIds(directories) {
 }
 
 /**
+ * `POST /api/tags/for-all`'s backing query - every entity-to-tag assignment across both `character_tags` and
+ * `group_tags`, in one full-table-scan read rather than a per-entity lookup (unlike getEntityTagIdsForMany(),
+ * which is keyed to a caller-supplied id list). Returned compactly: `avatars`/`tagIds` intern each unique
+ * avatar-or-group-id and tag-id string to an integer index, and `map[i]` lists the tag-id indices assigned to
+ * `avatars[i]` - so a client with N assignments gets N small integers back instead of N repeated id strings.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<{avatars: string[], tagIds: string[], map: number[][]} | null>} `null` if the metadata store
+ * is unavailable.
+ */
+export async function getAllEntityTagAssignments(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    const characterRows = entry.db.all('SELECT character_id, tag_id FROM character_tags');
+
+    // Yield to the event loop between the two scans, same as getEntityTagIdsForMany() does between chunks, so
+    // this full-table read can't starve other requests behind it.
+    await new Promise(resolve => setImmediate(resolve));
+
+    const groupRows = entry.db.all('SELECT group_id, tag_id FROM group_tags');
+
+    /** @type {Map<string, number>} */
+    const avatarIndex = new Map();
+    /** @type {Map<string, number>} */
+    const tagIdIndex = new Map();
+    /** @type {number[][]} */
+    const map = [];
+
+    const addAssignment = (entityId, tagId) => {
+        let entityIdx = avatarIndex.get(entityId);
+        if (entityIdx === undefined) {
+            entityIdx = avatarIndex.size;
+            avatarIndex.set(entityId, entityIdx);
+            map.push([]);
+        }
+        let tagIdx = tagIdIndex.get(tagId);
+        if (tagIdx === undefined) {
+            tagIdx = tagIdIndex.size;
+            tagIdIndex.set(tagId, tagIdx);
+        }
+        map[entityIdx].push(tagIdx);
+    };
+
+    for (const row of characterRows) {
+        addAssignment(row.character_id, row.tag_id);
+    }
+    for (const row of groupRows) {
+        addAssignment(row.group_id, row.tag_id);
+    }
+
+    return {
+        avatars: [...avatarIndex.keys()],
+        tagIds: [...tagIdIndex.keys()],
+        map,
+    };
+}
+
+/**
  * Replaces the entire `tags` table's contents with `tagsArray` - a full replace, not a diff, mirroring exactly
  * what the old `POST /api/tags/save` did to tags.json's `tags` array (a whole-array rewrite), just against a
  * table that costs nothing to rewrite wholesale instead of a multi-megabyte file. Bumps `tags_rev` (see

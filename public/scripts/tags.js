@@ -49,7 +49,7 @@ export {
     chooseBogusFolder,
     getTagBlock,
     loadTagsSettings,
-    ensureTagsForKeys,
+    seedTagMapCompact,
     printTagFilters,
     getTagsList,
     printTagList,
@@ -377,8 +377,6 @@ let tags = [];
  */
 let tag_map = {};
 
-/** Keys whose tag assignments have been fetched from the server and are in tag_map. */
-let fetchedTagKeys = new Set();
 /** Server-loaded set of tag IDs assigned to at least one entity (from tag_usage table, fetched with tag definitions). */
 let serverAssignedTagIds = new Set();
 
@@ -946,8 +944,8 @@ function filterByFolder(filterHelper) {
  * assignments off any single fetchable blob entirely, onto per-user sqlite rows keyed by character avatar/group
  * id. There is nothing to seed it *from* until `characters`/`groups` are actually populated (this runs during
  * settings load, before either of those exist yet) - `tag_map` is left empty here and gets its real content from
- * a per-page batched `POST /api/tags/for` as pages render, see ensureTagsForKeys() below (called from
- * script.js's boot sequence right after `getCharacters()`).
+ * a single compact whole-library fetch, see seedTagMapCompact() below (called from script.js's boot sequence
+ * right after `getCharacters()`).
  *
  * After loading, unconditionally seeds/refreshes the server's tag definitions with whatever ended up in `tags` -
  * this closes the gap between "the server has no definitions yet" and "the next definitions save happens":
@@ -975,7 +973,6 @@ async function loadTagsSettings(settings) {
                 if (cached && cached.mtime === mtime) {
                     tags = cached.tags;
                     tag_map = Object.create(null);
-                    fetchedTagKeys = new Set();
                     serverAssignedTagIds = new Set(cached.assignedTagIds ?? []);
                     rebuildTagStores();
                     invalidateCharactersFuseIndex();
@@ -1015,7 +1012,6 @@ async function loadTagsSettings(settings) {
         tags = settings.tags !== undefined ? settings.tags : DEFAULT_TAGS;
     }
     tag_map = Object.create(null);
-    fetchedTagKeys = new Set();
 
     rebuildTagStores();
     if (tagsFile && Array.isArray(tagsFile.assignedTagIds)) {
@@ -1030,44 +1026,49 @@ async function loadTagsSettings(settings) {
 }
 
 /**
- * Lazy per-page fetch of tag assignments: given a set of entity keys (character avatars / group ids),
- * fetches any that aren't already in tag_map from POST /api/tags/for and patches their visible tag pills.
- * Replaces the old seedTagMapForResidentEntities() boot-time whole-library fetch (phase 5 of the
- * character-data-residency redesign - see that function's former doc comment on why it was a stopgap).
- * @param {string[]} keys Entity keys to ensure tags for
+ * One-time boot seed of the local tag_map from the server, using a compact integer-indexed encoding that
+ * covers the entire library in a single request (~559 KB gzipped for 223k assignments, ~167ms server-side).
+ * The compact shape `{avatars, tagIds, map}` avoids repeating avatar/tag-id strings per-row, so the full
+ * assignment set compresses to a fraction of what the old per-entity JSON format cost.
+ *
+ * Must run after both `characters` and `groups` are populated - called from script.js's boot sequence right
+ * after `await getCharacters()`. The first `printCharacters(true)` (which runs concurrently, before this)
+ * renders without tags; `printCharactersDebounced()` below redraws once real assignments land.
  */
-async function ensureTagsForKeys(keys) {
-    const needed = keys.filter(k => typeof k === 'string' && k.length > 0 && !fetchedTagKeys.has(k));
-    if (needed.length === 0) return;
-
+async function seedTagMapCompact() {
     try {
-        const response = await fetch('/api/tags/for', {
+        const response = await fetch('/api/tags/for-all', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ ids: needed }),
+            body: JSON.stringify({}),
             cache: 'no-cache',
         });
         if (!response.ok) {
             throw new Error(`Failed to load tag assignments: ${response.statusText}`);
         }
 
-        const fetched = await response.json();
-        for (const key of needed) {
-            fetchedTagKeys.add(key);
-        }
-        for (const [key, tagIds] of Object.entries(fetched)) {
-            tag_map[key] = tagIds;
-            if (Array.isArray(tagIds)) {
-                for (const tagId of tagIds) {
-                    tagMapStore.usageCounts.set(tagId, (tagMapStore.usageCounts.get(tagId) ?? 0) + 1);
-                }
-            }
+        const { avatars, tagIds, map } = await response.json();
+
+        // Decode compact integer-indexed format back into the tag_map shape
+        tag_map = Object.create(null);
+        for (let i = 0; i < avatars.length; i++) {
+            tag_map[avatars[i]] = map[i].map(ti => tagIds[ti]);
         }
 
-        updateEntityRowTags(needed);
+        rebuildTagStores();
+        invalidateCharactersFuseIndex();
+        invalidateGroupsFuseIndex();
+
+        // The initial printCharacters(true) already ran with an empty tag_map (this seed runs after it,
+        // by construction) - redraw now that real assignments are known, so tag pills/filters aren't stuck
+        // empty until some unrelated re-render happens to fire.
+        printCharactersDebounced();
+        printTagFilters(tag_filter_type.character);
+        printTagFilters(tag_filter_type.group_members_list);
+        printTagFilters(tag_filter_type.group_candidates_list);
     } catch (error) {
-        console.error('Error loading tag assignments for entities:', error);
-        toastr.warning('Could not load tag data for some characters. Tags may be missing.', 'Tag Loading Error', { timeOut: 10000 });
+        console.error('Error loading tag assignments:', error);
+        toastr.warning('Could not load tag data. Tags may be missing.', 'Tag Loading Error', { timeOut: 10000 });
     }
 }
 

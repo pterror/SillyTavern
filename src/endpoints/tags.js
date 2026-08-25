@@ -4,6 +4,7 @@ import {
     assignEntityTag,
     unassignEntityTag,
     getEntityTagIdsForMany,
+    getAllEntityTagAssignments,
     getAssignedTagIds,
     getAllTagUsage,
     getTagDefinitions,
@@ -153,6 +154,24 @@ router.post('/for', async (request, response) => {
         response.send(result);
     } catch (err) {
         console.error('Could not resolve tags for entities', err);
+        response.sendStatus(500);
+    }
+});
+
+/**
+ * Compact bulk read of every entity-to-tag assignment across `character_tags`/`group_tags`, for callers that
+ * want the whole tag map up front rather than one `/for` batch per id list - see getAllEntityTagAssignments()'s
+ * doc comment (character-metadata-db.js) for the `avatars`/`tagIds`/`map` index-interned response shape.
+ */
+router.post('/for-all', async (request, response) => {
+    try {
+        const result = await getAllEntityTagAssignments(request.user.directories);
+        if (result === null) {
+            return response.status(503).send({ error: 'Character metadata store is unavailable' });
+        }
+        response.send(result);
+    } catch (err) {
+        console.error('Could not load all tag assignments', err);
         response.sendStatus(500);
     }
 });

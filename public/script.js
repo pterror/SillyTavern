@@ -208,7 +208,7 @@ import {
     chooseBogusFolder,
     getTagBlock,
     loadTagsSettings,
-    ensureTagsForKeys,
+    seedTagMapCompact,
     printTagFilters,
     getTagKeyForEntity,
     printTagList,
@@ -1092,11 +1092,15 @@ async function firstLoadInit() {
     // first paint moves earlier. `getCharacters()` (via its own trailing `printCharacters(true)`) already redraws
     // itself once real data lands, so the ineligible-boot-state case (an active search restored from session, or
     // a non-server-queryable sort field - design doc §3) still converges to a correct render, just not the very
-    // first one. Tag assignments are no longer seeded wholesale here at all - `ensureTagsForKeys()`
-    // (tags.js) fetches them per-page instead, called from makePageCallback() once the page's entities are known.
+    // first one. Tag assignments are seeded in bulk via `seedTagMapCompact()` (tags.js), called right after
+    // `getCharacters()` inside this promise — a single compact fetch covering the whole library (~559 KB
+    // gzipped), not blocking first paint since this promise runs concurrently with the initial render.
     let residencyResolved = false;
     const characterResidencyPromise = (async () => {
         await getCharacters();
+        // Must run after getCharacters() (which also awaits getGroups() internally), since the compact
+        // response includes character avatars and group ids that the client needs to decode.
+        await seedTagMapCompact();
     })();
     characterResidencyPromise.then(() => { residencyResolved = true; });
 
@@ -1540,17 +1544,6 @@ export async function printCharacters(fullRefresh = false) {
             localizePagination($('#rm_print_characters_pagination'));
 
             eventSource.emit(event_types.CHARACTER_PAGE_LOADED);
-
-            // Lazy per-page tag fetch: ask the server for tag assignments of just the entities on this
-            // page, then patch their inline tag pills once the response lands. Fire-and-forget (not awaited)
-            // so the page render itself isn't delayed.
-            const entityKeys = data
-                .filter(i => i.type === 'character' || i.type === 'group')
-                .map(i => i.type === 'character' ? i.item?.avatar : String(i.id))
-                .filter(Boolean);
-            if (entityKeys.length > 0) {
-                ensureTagsForKeys(entityKeys);
-            }
         };
     }
 
