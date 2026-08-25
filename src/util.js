@@ -175,29 +175,64 @@ export function delay(ms) {
 }
 
 /**
- * Runs `fn` over `items` with at most `concurrency` calls in flight at once, preserving input order in the
- * returned array. A plain `Promise.all(items.map(fn))` would start every call at once regardless of how large
- * `items` is - fine for small lists, not for whole-library-sized ones where per-call overhead (open file
- * descriptors, etc.) matters. Originally written for characters-search-index.js's index build (see that file's
- * history for the concurrency-plateau measurements this default is based on); factored out here so any other
- * whole-library file-read pass (e.g. character-metadata-db.js's bootstrap) can reuse the exact same bounded-
- * concurrency behavior instead of reimplementing it, sequentially, from scratch.
+ * Runs `fn` over `items` with at most `concurrency` calls in flight at once. A plain `Promise.all(items.map(fn))`
+ * would start every call at once regardless of how large `items` is - fine for small lists, not for whole-
+ * library-sized ones where per-call overhead (open file descriptors, etc.) matters. Originally written for
+ * characters-search-index.js's index build (see that file's history for the concurrency-plateau measurements
+ * this default is based on); factored out here so any other whole-library file-read pass (e.g.
+ * character-metadata-db.js's bootstrap) can reuse the exact same bounded-concurrency behavior instead of
+ * reimplementing it, sequentially, from scratch.
+ *
+ * `items` can be a plain array OR an async-iterable (e.g. what `fs.opendir()` yields) - added so
+ * local-import-scan.js's scanDirectory() can stream directory entries through this instead of having to
+ * `fsPromises.readdir()` the whole directory into one array first just to hand it to this function (see that
+ * call site). Deliberately two DIFFERENT internal strategies, not one unified "shared iterator" implementation
+ * for both, because they have genuinely different correctness requirements:
+ *   - Array input: unchanged from before this async-iterable support existed - each worker claims the next
+ *     index and writes `results[index]`, so **input order is always preserved** in the returned array. This is
+ *     load-bearing for the one caller that needs it (characters-search-index.js's searchCharacters(), whose
+ *     `hits` array is rank-ordered and must come back resolved in that same order) - a shared-iterator/
+ *     push-results-in-completion-order scheme would silently scramble that ranking under concurrency, so array
+ *     input never goes through that path.
+ *   - Async-iterable input: workers pull from one shared iterator (`await iterator.next()` - safe under
+ *     concurrent pulls: each call is a distinct await, and the runtime queues/serializes the underlying reads),
+ *     appending each result as it completes. Order is NOT preserved relative to iteration order here. Safe only
+ *     because every current async-iterable caller (scanDirectory()) discards the return value entirely - if a
+ *     future caller needs both streaming input and preserved output order, this function will need to grow a
+ *     way to say so explicitly rather than assuming one or the other from the input shape.
  * @template T, R
- * @param {T[]} items
+ * @param {T[] | AsyncIterable<T>} items
  * @param {number} concurrency
- * @param {(item: T, index: number) => Promise<R>} fn
+ * @param {(item: T, index: number) => Promise<R>} fn `index` is the input's array index for array input; for
+ * async-iterable input it's just a monotonic per-result counter (no relationship to iteration position is
+ * guaranteed), since no current async-iterable caller reads it.
  * @returns {Promise<R[]>}
  */
 export async function mapWithConcurrency(items, concurrency, fn) {
-    const results = new Array(items.length);
-    let nextIndex = 0;
+    if (Array.isArray(items)) {
+        const results = new Array(items.length);
+        let nextIndex = 0;
+        async function worker() {
+            while (nextIndex < items.length) {
+                const index = nextIndex++;
+                results[index] = await fn(items[index], index);
+            }
+        }
+        const workerCount = Math.max(1, Math.min(concurrency, items.length));
+        await Promise.all(Array.from({ length: workerCount }, worker));
+        return results;
+    }
+
+    const iterator = items[Symbol.asyncIterator]();
+    const results = [];
     async function worker() {
-        while (nextIndex < items.length) {
-            const index = nextIndex++;
-            results[index] = await fn(items[index], index);
+        for (;;) {
+            const { value, done } = await iterator.next();
+            if (done) return;
+            results.push(await fn(value, results.length));
         }
     }
-    const workerCount = Math.max(1, Math.min(concurrency, items.length));
+    const workerCount = Math.max(1, concurrency);
     await Promise.all(Array.from({ length: workerCount }, worker));
     return results;
 }
@@ -625,6 +660,57 @@ export function humanizedDateTime(timestamp = Date.now()) {
         dt[key] = dt[key].toString().padStart(padLength, '0');
     }
     return `${dt.year}-${dt.month}-${dt.day}@${dt.hour}h${dt.minute}m${dt.second}s${dt.millisecond}ms`;
+}
+
+// The three "ST humanized" patterns humanizedDateTime() above has ever produced across this fork's history -
+// mirrors public/scripts/utils.js's own (unexported) parseTimestamp() regex list, which the client already needs
+// to make old create_date values sortable/displayable (moment.js can't parse this shape on its own). Duplicated
+// here (rather than imported) because that module is browser-only (pulls in moment + getCurrentLocale(), a
+// client-side settings read) and this server-side parser only needs the three regexes, not the rest of its file.
+// Keep both lists in sync if a fourth humanized shape is ever found in the wild.
+const HUMANIZED_DATE_PATTERNS = [
+    // 2024-07-12@01h31m37s123ms
+    /^(\d{4})-(\d{1,2})-(\d{1,2})@(\d{1,2})h(\d{1,2})m(\d{1,2})s(\d{1,3})ms$/,
+    // 2024-7-12@01h31m37s
+    /^(\d{4})-(\d{1,2})-(\d{1,2})@(\d{1,2})h(\d{1,2})m(\d{1,2})s$/,
+    // 2024-6-5 @14h 56m 50s 682ms
+    /^(\d{4})-(\d{1,2})-(\d{1,2}) @(\d{1,2})h (\d{1,2})m (\d{1,2})s (\d{1,3})ms$/,
+];
+
+/**
+ * Parses a character card's own self-reported `create_date` field (an arbitrary, card-authored string - see
+ * character-metadata-db.js's SCHEMA_SQL comment on why the `characters.create_date` column stores this as epoch
+ * ms rather than the raw string) into epoch milliseconds.
+ *
+ * Confirmed against this fork's real ~327k-row production character-metadata.sqlite (2026-08 create_date
+ * migration): every non-empty value in that corpus was either directly `Date.parse()`-able (the overwhelming
+ * majority - real ISO 8601 strings) or matched one of the three HUMANIZED_DATE_PATTERNS above (~6% of rows,
+ * produced by humanizedDateTime() at some point in this fork's history before ISO became the default). Zero
+ * genuinely unparseable values were found in that corpus, so this function's `null` return is expected to be rare
+ * in practice - but it is NOT a "should never happen" path: a card authored by unrelated tooling, or hand-edited,
+ * can carry any string at all here, and this function must fail closed (null, not a thrown exception or a bogus
+ * NaN timestamp) rather than assume the corpus this was validated against is exhaustive.
+ * @param {string | number | null | undefined} value
+ * @returns {number | null} Epoch ms, or `null` if `value` is empty/missing or genuinely unparseable.
+ */
+export function parseCreateDateToEpochMs(value) {
+    if (value === null || value === undefined || value === '') return null;
+    if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+    if (typeof value !== 'string') return null;
+
+    const direct = Date.parse(value);
+    if (!Number.isNaN(direct)) return direct;
+
+    for (const pattern of HUMANIZED_DATE_PATTERNS) {
+        const match = value.match(pattern);
+        if (!match) continue;
+        const [, year, month, day, hour, minute, second, ms] = match;
+        const isoCandidate = `${year.padStart(4, '0')}-${month.padStart(2, '0')}-${day.padStart(2, '0')}T${hour.padStart(2, '0')}:${minute.padStart(2, '0')}:${second.padStart(2, '0')}.${(ms ?? '0').padStart(3, '0')}Z`;
+        const parsed = Date.parse(isoCandidate);
+        if (!Number.isNaN(parsed)) return parsed;
+    }
+
+    return null;
 }
 
 export function tryParse(str) {

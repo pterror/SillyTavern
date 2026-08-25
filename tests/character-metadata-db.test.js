@@ -484,6 +484,93 @@ describe('content_hash / findCharacterIdByContentHash (bulk-import exact-duplica
     });
 });
 
+describe('migrateCreateDateColumn (2026-08: create_date TEXT -> INTEGER epoch ms, matching every other timestamp column)', () => {
+    test('migrates an existing (pre-INTEGER create_date) database in place: ISO strings, the ST "humanized" legacy format, and a genuinely unparseable value', async () => {
+        // Simulates an install whose character-metadata.sqlite predates this migration - build the old (TEXT
+        // create_date) table directly, seed rows covering every shape found in this fork's real ~327k-row
+        // production database (2026-08 investigation): a plain ISO 8601 string (the overwhelming majority), the
+        // "ST humanized" format humanizedDateTime() produced before ISO became the default (~6% of that corpus),
+        // NULL (a genuinely-missing create_date), and one deliberately-garbage value to exercise the "genuinely
+        // unparseable" path this fork's own corpus never actually hit.
+        const { default: Database } = await import('better-sqlite3');
+        const dbPath = path.join(tempDir, 'character-metadata.sqlite');
+        const rawDb = new Database(dbPath);
+        rawDb.exec(`
+            CREATE TABLE characters (
+                id             TEXT PRIMARY KEY,
+                name           TEXT NOT NULL,
+                name_fold      TEXT NOT NULL,
+                fav            INTEGER NOT NULL,
+                date_added     INTEGER NOT NULL,
+                create_date    TEXT,
+                date_last_chat INTEGER NOT NULL,
+                chat_size      INTEGER NOT NULL,
+                data_size      INTEGER NOT NULL,
+                file_mtime     INTEGER NOT NULL,
+                world          TEXT,
+                creator        TEXT,
+                version        TEXT,
+                creator_notes  TEXT,
+                shallow_json   TEXT NOT NULL,
+                rev            INTEGER NOT NULL
+            );
+            CREATE INDEX idx_characters_create_date ON characters(create_date);
+        `);
+        const insert = rawDb.prepare(`
+            INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, rev)
+            VALUES (@id, @name, @nameFold, 0, 500, @createDate, 0, 0, 0, 500, NULL, NULL, NULL, NULL, '{}', 1)
+        `);
+        insert.run({ id: 'Iso.png', name: 'Iso', nameFold: 'iso', createDate: '2024-07-12T01:31:37.123Z' });
+        insert.run({ id: 'Humanized.png', name: 'Humanized', nameFold: 'humanized', createDate: '2024-6-5 @14h 56m 50s 682ms' });
+        insert.run({ id: 'Missing.png', name: 'Missing', nameFold: 'missing', createDate: null });
+        insert.run({ id: 'Garbage.png', name: 'Garbage', nameFold: 'garbage', createDate: 'not a date at all' });
+        rawDb.close();
+
+        const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+        // Any exported call routes through getEntry(), which runs migrateCreateDateColumn() before returning.
+        const isoRow = await metadataDb.getCharacterMetadataRow(directories, 'Iso.png');
+        const humanizedRow = await metadataDb.getCharacterMetadataRow(directories, 'Humanized.png');
+        const missingRow = await metadataDb.getCharacterMetadataRow(directories, 'Missing.png');
+        const garbageRow = await metadataDb.getCharacterMetadataRow(directories, 'Garbage.png');
+
+        expect(isoRow.create_date).toBe(Date.parse('2024-07-12T01:31:37.123Z'));
+        expect(humanizedRow.create_date).toBe(Date.parse('2024-06-05T14:56:50.682Z'));
+        expect(missingRow.create_date).toBeNull();
+        // A genuinely unparseable value is NULLed, same as a missing one - not silently special-cased, and
+        // loudly flagged rather than swallowed (the "flag anything that can't be migrated cleanly" instruction).
+        expect(garbageRow.create_date).toBeNull();
+        expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('not a date at all'));
+
+        errorSpy.mockRestore();
+
+        // The column itself is genuinely INTEGER now, not just holding numbers under a TEXT affinity (which
+        // would silently reintroduce the original TEXT-collation sort bug - see this column's own SCHEMA_SQL
+        // comment) - and a fresh write through the ordinary path still works against the migrated table.
+        const { default: Database2 } = await import('better-sqlite3');
+        const checkDb = new Database2(dbPath, { readonly: true });
+        const col = checkDb.prepare('PRAGMA table_info(characters)').all().find(c => c.name === 'create_date');
+        expect(col.type).toBe('INTEGER');
+        checkDb.close();
+
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        const bobRow = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+        expect(bobRow.create_date).toBe(Date.parse('2024-01-01T00:00:00.000Z'));
+    });
+
+    test('a second migration pass on an already-migrated table is a no-op (idempotent)', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        const before = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+
+        // Forces a fresh getEntry() call (and therefore a fresh migrateCreateDateColumn() run) against the same
+        // on-disk file, the same way a server restart would - not just a second call reusing the cached handle.
+        metadataDb.disposeMetadataStores();
+        const after = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+
+        expect(after.create_date).toBe(before.create_date);
+    });
+});
+
 describe('avatar_identity_hash / findCharacterIdByIdentityHashes (avatar-aware identity dedup)', () => {
     test('a write with an avatarIdentityHash records it', async () => {
         await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000, null, 'avatarhash1');
