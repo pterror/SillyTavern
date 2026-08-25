@@ -115,10 +115,10 @@ router.post('/get', async (request, response) => {
 /**
  * Lightweight freshness check for the client's tags cache (see loadTagsSettings() in tags.js) - `tags_rev`
  * (character-metadata-db.js) replaces tags.json's own mtime as the "has anything changed" signal now that
- * there's no file to stat. Bumped by any tag definition save or any assign/unassign (see getTagsRevision()'s
- * doc comment for the full list of writers), matching the old whole-file "invalidate everything on any change"
- * granularity - tag edits are still far less frequent/voluminous than character edits, so this coarseness is
- * still an acceptable tradeoff, same reasoning as before the sqlite migration.
+ * there's no file to stat. It's a sha256 content hash of the definitions table, recomputed on any tag
+ * definition save or assign/unassign path (see getTagsRevision()'s doc comment for the full list of callers),
+ * but only actually changes when definitions change - assignment-only operations leave the hash unchanged, so
+ * the client cache stays valid through tag/untag activity that doesn't touch definitions.
  *
  * Returns `{ mtime: null }` if the metadata store is unavailable (matches `/get`'s `{ tags: null }`).
  */
