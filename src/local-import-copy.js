@@ -1,6 +1,5 @@
 import fs from 'node:fs';
 import fsPromises from 'node:fs/promises';
-import crypto from 'node:crypto';
 
 import { getConfigValue } from './util.js';
 import { loadReflinkModule } from './reflink-support.js';
@@ -69,35 +68,15 @@ export async function copyCharacterFile(sourcePath, targetPath) {
     return { method: 'copy' };
 }
 
-/**
- * Replaces `sourcePath`'s content IN PLACE with a hardlink to `targetPath` - used by the local-import
- * scan's opt-in `localImport.hardlinkDuplicateSourceFiles` feature to deduplicate a scanned source
- * directory itself once a file in it is confirmed to be a byte-identical duplicate of an
- * already-imported character (see local-import-scan.js's caller for that confirmation).
- *
- * Can't just `fs.link(targetPath, sourcePath)` directly - like copyCharacterFile() above, `fs.link`
- * fails loudly (EEXIST) against a path that already exists, and `sourcePath` legitimately already
- * exists here (it's the duplicate file being replaced, not created fresh). Instead: hardlink to a
- * fresh temp path next to `sourcePath` (guaranteed same directory, hence same filesystem, as
- * `sourcePath`, so the follow-up rename is atomic), then `fsPromises.rename()` that temp path over
- * `sourcePath`. A same-filesystem rename is atomic, so there is never a window where `sourcePath` is
- * missing or only partially replaced: a crash before the rename leaves the original `sourcePath`
- * completely untouched (the abandoned temp file is the only artifact), and a crash after leaves it
- * already-replaced - no in-between state either way.
- * @param {string} sourcePath Absolute path to the source file to replace. Must already exist.
- * @param {string} targetPath Absolute path to the canonical file to hardlink to. Must already exist,
- * on the same filesystem as `sourcePath` (an EXDEV from the initial `fs.link` propagates to the
- * caller unchanged, same as copyCharacterFile()'s hardlink stage - it is the caller's job to decide
- * whether cross-device is a real error or just "this feature doesn't apply here").
- * @returns {Promise<void>}
- */
-export async function hardlinkOntoCanonical(sourcePath, targetPath) {
-    const tempPath = `${sourcePath}.${crypto.randomUUID()}.tmp`;
-    await fsPromises.link(targetPath, tempPath);
-    try {
-        await fsPromises.rename(tempPath, sourcePath);
-    } catch (error) {
-        await fsPromises.unlink(tempPath).catch(() => {});
-        throw error;
-    }
-}
+// NOTE: this module used to also export hardlinkOntoCanonical(sourcePath, targetPath), which replaced a
+// duplicate SOURCE file's own directory entry in place with a hardlink to the canonical already-imported
+// character file. It was removed (2026-08 real-corpus investigation) because that direction is backwards
+// for this feature's actual purpose: `sourcePath` here is a file inside the user's own external,
+// supposedly-immutable source archive, and hardlinking it onto `targetPath` destroys the archive file's
+// independent identity - its own inode is gone, replaced by one shared with (and thereafter vulnerable to
+// mutation from) the app-managed canonical file. Confirmed against a real ~300k-file archive: tens of
+// thousands of source files already had their own directory entry replaced this way, silently, by this
+// function. local-import-scan.js's maybeReflinkDuplicateTarget() now uses
+// character-card-parser.js's reclaimReflinkPrefix() instead, which only ever reflinks the CANONICAL file
+// (inside this install's own data directory) to share extents with the source - `sourcePath`'s own
+// directory entry/inode is never opened for writing, so the archive stays genuinely untouched.
