@@ -49,7 +49,7 @@ export {
     chooseBogusFolder,
     getTagBlock,
     loadTagsSettings,
-    seedTagMapCompact,
+    seedTagMapFromRecords,
     printTagFilters,
     getTagsList,
     printTagList,
@@ -944,7 +944,7 @@ function filterByFolder(filterHelper) {
  * assignments off any single fetchable blob entirely, onto per-user sqlite rows keyed by character avatar/group
  * id. There is nothing to seed it *from* until `characters`/`groups` are actually populated (this runs during
  * settings load, before either of those exist yet) - `tag_map` is left empty here and gets its real content from
- * a single compact whole-library fetch, see seedTagMapCompact() below (called from script.js's boot sequence
+ * a single compact whole-library fetch, see seedTagMapFromRecords() below (called from script.js's boot sequence
  * right after `getCharacters()`).
  *
  * After loading, unconditionally seeds/refreshes the server's tag definitions with whatever ended up in `tags` -
@@ -1026,33 +1026,44 @@ async function loadTagsSettings(settings) {
 }
 
 /**
- * One-time boot seed of the local tag_map from the server, using a compact integer-indexed encoding that
- * covers the entire library in a single request (~559 KB gzipped for 223k assignments, ~167ms server-side).
- * The compact shape `{avatars, tagIds, map}` avoids repeating avatar/tag-id strings per-row, so the full
- * assignment set compresses to a fraction of what the old per-entity JSON format cost.
+ * Builds the local tag_map from character records (which now carry tag_ids in their shallow projection,
+ * part of the field-granular sync migration) and a lightweight group-tag fetch. Replaces the old
+ * seedTagMapCompact() which fetched ALL assignments (characters + groups) via /api/tags/for-all -
+ * character tags now flow through the delta sync's field-level change path instead.
  *
- * Must run after both `characters` and `groups` are populated - called from script.js's boot sequence right
- * after `await getCharacters()`. The first `printCharacters(true)` (which runs concurrently, before this)
- * renders without tags; `printCharactersDebounced()` below redraws once real assignments land.
+ * Must run after both `characters` and `groups` are populated - called from script.js's boot sequence
+ * right after `await getCharacters()`.
  */
-async function seedTagMapCompact() {
+async function seedTagMapFromRecords() {
     try {
-        const response = await fetch('/api/tags/for-all', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({}),
-            cache: 'no-cache',
-        });
-        if (!response.ok) {
-            throw new Error(`Failed to load tag assignments: ${response.statusText}`);
+        // Build tag_map for characters from their tag_ids field (now part of shallow_json,
+        // synced via the field-granular delta path instead of a separate bulk fetch).
+        tag_map = Object.create(null);
+        for (const char of characters) {
+            if (char.avatar && Array.isArray(char.tag_ids)) {
+                tag_map[char.avatar] = char.tag_ids;
+            }
         }
 
-        const { avatars, tagIds, map } = await response.json();
-
-        // Decode compact integer-indexed format back into the tag_map shape
-        tag_map = Object.create(null);
-        for (let i = 0; i < avatars.length; i++) {
-            tag_map[avatars[i]] = map[i].map(ti => tagIds[ti]);
+        // Fetch group tag assignments separately - groups don't carry tag_ids in their records
+        // (they're a small user-curated set, not the 300k+ character corpus this optimization
+        // targets), so a single /api/tags/for call with all group ids is cheap.
+        const groupIds = groups.map(g => g.id).filter(Boolean);
+        if (groupIds.length > 0) {
+            const response = await fetch('/api/tags/for', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ ids: groupIds }),
+                cache: 'no-cache',
+            });
+            if (response.ok) {
+                const groupTags = await response.json();
+                for (const [id, tagIds] of Object.entries(groupTags)) {
+                    if (Array.isArray(tagIds) && tagIds.length > 0) {
+                        tag_map[id] = tagIds;
+                    }
+                }
+            }
         }
 
         rebuildTagStores();
@@ -1067,7 +1078,7 @@ async function seedTagMapCompact() {
         printTagFilters(tag_filter_type.group_members_list);
         printTagFilters(tag_filter_type.group_candidates_list);
     } catch (error) {
-        console.error('Error loading tag assignments:', error);
+        console.error('Error building tag map from records:', error);
         toastr.warning('Could not load tag data. Tags may be missing.', 'Tag Loading Error', { timeOut: 10000 });
     }
 }

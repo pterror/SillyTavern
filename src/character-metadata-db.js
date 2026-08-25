@@ -1809,6 +1809,59 @@ export async function backfillActiveChatFromCards(directories) {
 }
 
 /**
+ * One-time backfill of `tag_ids` into `shallow_json` for characters that predate the field's addition.
+ * Every new write naturally includes tag_ids (buildRow/toShallow/writeRowSync handle it), but characters
+ * whose shallow_json was built before that code landed have no tag_ids field. This reads each such
+ * character's current tag assignments from character_tags (the source of truth since phase 3), patches
+ * tag_ids into shallow_json, and emits a field-level change entry so the client's delta sync picks it
+ * up as a targeted tag_ids fetch (~11.5MB for 314k records) instead of a whole-record refetch (~314MB).
+ *
+ * Batched and yielding, same shape as backfillContentIdentityHashes(): BATCH_FLUSH_SIZE rows per
+ * transaction, setImmediate() between batches so other requests aren't starved. Runs once per boot
+ * (gated by whether any rows actually need it); a row patched by this function is never patched again
+ * (the NOT LIKE guard in the SELECT won't match it afterward).
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<void>}
+ */
+export async function backfillTagIdsInShallowJson(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+
+    const { count } = entry.db.get("SELECT COUNT(*) as count FROM characters WHERE shallow_json NOT LIKE '%\"tag_ids\":%'") ?? { count: 0 };
+    if (count === 0) return;
+
+    console.log(color.cyan(`[character-metadata] Backfilling tag_ids into shallow_json for ${count} character(s)...`));
+    let processed = 0;
+
+    while (true) {
+        const batch = entry.db.all(
+            "SELECT id, shallow_json FROM characters WHERE shallow_json NOT LIKE '%\"tag_ids\":%' LIMIT @limit",
+            { limit: BATCH_FLUSH_SIZE },
+        );
+        if (batch.length === 0) break;
+
+        entry.db.transaction(() => {
+            for (const row of batch) {
+                try {
+                    const tagIds = entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id: row.id }).map(r => r.tag_id);
+                    const shallow = JSON.parse(row.shallow_json);
+                    shallow.tag_ids = tagIds;
+                    const { lastInsertRowid } = entry.db.run('INSERT INTO changes (id, op, fields) VALUES (@id, @op, @fields)', { id: row.id, op: 'upsert', fields: JSON.stringify(['tag_ids']) });
+                    entry.db.run('UPDATE characters SET shallow_json = @shallowJson, rev = @rev WHERE id = @id', { id: row.id, shallowJson: JSON.stringify(shallow), rev: Number(lastInsertRowid) });
+                } catch (err) {
+                    console.error(`[character-metadata] Failed to backfill tag_ids for ${row.id}:`, err.message);
+                }
+            }
+        });
+
+        processed += batch.length;
+        await new Promise(resolve => setImmediate(resolve));
+    }
+
+    console.log(color.cyan(`[character-metadata] tag_ids shallow_json backfill complete (${processed} character(s)).`));
+}
+
+/**
  * Diffs tags.json's tag_map against the character_tags table and applies only the delta, rather than a full
  * delete-everything-reinsert-everything pass - at 300k+ characters with an already-populated table, most rows
  * agree between passes, so this keeps a routine reconcile cheap. tags.json stays the write source of truth in
@@ -2112,6 +2165,7 @@ export async function initializeMetadataStores(directoriesList) {
             .then(() => bootstrapGroupsIfNeeded(directories))
             .then(() => migrateTagsJsonIfNeeded(directories))
             .then(() => backfillCardTagsIfNeeded(directories))
+            .then(() => backfillTagIdsInShallowJson(directories))
             .then(() => reconcile(directories))
             // Runs LAST in the chain, after reconcile() - so this pass sees the maximal set of poisoned rows a
             // single boot can discover (reconcile() may itself have just poisoned-inserted rows for files
