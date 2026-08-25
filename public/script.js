@@ -9598,6 +9598,37 @@ export async function getSettings(initLoaderHandle = null) {
         }
     }
     await validateDisabledSamplers();
+
+    // Seed the dirty-check baseline from the state we just loaded so the first saveSettings()
+    // call doesn't waste a round trip re-writing the exact same payload it just received. If any
+    // init code between here and the first save actually mutates a settings variable, the hash
+    // will differ and the save will correctly proceed; this only suppresses the no-op case.
+    const bootPayload = JSON.stringify({
+        firstRun: firstRun,
+        accountStorage: accountStorage.getState(),
+        currentVersion: currentVersion,
+        username: name1,
+        active_character: active_character,
+        active_group: active_group,
+        user_avatar: user_avatar,
+        amount_gen: amount_gen,
+        max_context: max_context,
+        main_api: main_api,
+        world_info_settings: getWorldInfoSettings(),
+        textgenerationwebui_settings: textgen_settings,
+        swipes: swipes,
+        horde_settings: horde_settings,
+        power_user: power_user,
+        extension_settings: extension_settings,
+        nai_settings: nai_settings,
+        kai_settings: kai_settings,
+        oai_settings: oai_settings,
+        background: background_settings,
+        proxies: proxies,
+        selected_proxy: selected_proxy,
+    });
+    lastSavedSettingsHash = getStringHash(bootPayload);
+
     settingsReady = true;
     await eventSource.emit(event_types.SETTINGS_LOADED);
 }
