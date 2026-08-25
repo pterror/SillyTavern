@@ -108,9 +108,16 @@ export async function getAllCachedCharacters() {
  */
 export async function saveCachedCharacters(entries) {
     const store = getCharacterCacheStore();
-    await Promise.all(entries.map(({ avatar, character }) =>
-        store.setItem(avatar, { character }).catch(error =>
-            console.error(`Failed to cache character data for ${avatar}:`, error))));
+    // Batched to avoid overwhelming IndexedDB with hundreds of thousands of concurrent writes
+    // (a one-time tag_ids backfill across 314k records would otherwise fire 314k concurrent
+    // setItem calls via Promise.all, making the browser unresponsive for seconds).
+    const SAVE_BATCH = 500;
+    for (let i = 0; i < entries.length; i += SAVE_BATCH) {
+        const batch = entries.slice(i, i + SAVE_BATCH);
+        await Promise.all(batch.map(({ avatar, character }) =>
+            store.setItem(avatar, { character }).catch(error =>
+                console.error(`Failed to cache character data for ${avatar}:`, error))));
+    }
 }
 
 /**

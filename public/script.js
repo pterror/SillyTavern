@@ -2284,6 +2284,7 @@ async function fetchCharactersDelta() {
                 }
 
                 const batchData = await batchResponse.json();
+                const batchMerged = [];
                 for (const partial of batchData) {
                     const avatar = partial.avatar;
                     // Merge: overlay fetched fields onto the existing cached record, keyed by
@@ -2298,10 +2299,16 @@ async function fetchCharactersDelta() {
                             }
                         }
                         fresh.set(avatar, existing);
+                        batchMerged.push({ avatar, character: existing });
                     }
                     // If no existing record to merge into (field-level change for a record not in
                     // cache - shouldn't happen normally), skip - the anti-entropy check or next
                     // full sync will catch it.
+                }
+                // Save field-level merges incrementally per batch to avoid accumulating
+                // hundreds of thousands of entries for one bulk IndexedDB write at the end.
+                if (batchMerged.length > 0) {
+                    await saveCachedCharacters(batchMerged);
                 }
             }
         }
