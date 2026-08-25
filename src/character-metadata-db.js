@@ -1444,8 +1444,8 @@ function flushBatch(entry) {
  * event per file. While active for a user:
  *   - the directory watcher is suspended (a burst of hundreds of thousands of creates is exactly the scenario
  *     the design doc measured inotify's queue silently overflowing at 16384 events under - see this module's
- *     header - so there is nothing useful for the watcher to do here anyway; the reconciler forced at
- *     endBatchImport() is what actually catches anything the suspended watcher would have)
+ *     header - so there is nothing useful for the watcher to do here anyway; the periodic reconcile interval
+ *     catches anything the suspended watcher would have)
  *   - write-path hook calls buffer into a pending map instead of writing immediately, flushed in
  *     BATCH_FLUSH_SIZE-row transactions (applyOrBuffer()/flushBatch() above)
  * Idempotent: calling this again while already active is a no-op (returns the existing batch state rather than
@@ -1462,9 +1462,10 @@ export async function beginBatchImport(directories) {
 }
 
 /**
- * Ends batch-import mode: flushes whatever's still buffered, forces one reconcile pass (the safety net for
- * anything that happened to this directory *outside* the write-path hooks while the watcher was suspended - a
- * file dropped in by hand mid-import, for instance), then resumes the watcher.
+ * Ends batch-import mode: flushes whatever's still buffered and resumes the file watcher. Does NOT force an
+ * immediate reconcile - every file that went through write-path hooks during the batch already has its metadata
+ * row, and the periodic reconcile interval (RECONCILE_INTERVAL_MS) serves as the safety net for anything that
+ * appeared/changed outside the write-path hooks while the watcher was suspended.
  * @param {import('./users.js').UserDirectoryList} directories
  * @returns {Promise<void>}
  */
@@ -1474,7 +1475,14 @@ export async function endBatchImport(directories) {
 
     flushBatch(entry);
     entry.batch = null;
-    await reconcile(directories);
+    // Watcher resumes immediately so new events going forward are caught. No immediate reconcile -
+    // every file that went through the write-path hooks during batch mode already has its metadata
+    // row. The reconcile's role (catching files that appeared/changed/disappeared WITHOUT going
+    // through write-path hooks - e.g. hand-dropped during the batch window) is handled by the
+    // periodic interval (RECONCILE_INTERVAL_MS). A full-library sweep here was proportional to
+    // library size (~326k files, 0.9s) rather than to what changed, and stacked when the import
+    // scanner ran back-to-back passes from continuous mirroring - causing multi-minute event-loop
+    // stalls at this library scale.
     startWatcher(entry);
 }
 
