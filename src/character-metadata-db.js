@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import _ from 'lodash';
 
-import { color, getConfigValue, mapWithConcurrency } from './util.js';
+import { color, getConfigValue, mapWithConcurrency, parseCreateDateToEpochMs } from './util.js';
 import extract from 'png-chunks-extract';
 import { parse as parseCharacterCard, readCharaChunkPristineFromChunks, computeAvatarIdentityHashFromChunks } from './character-card-parser.js';
 import { getCharaCardV2, computeContentIdentityHash } from './character-card-normalize.js';
@@ -147,7 +147,20 @@ const SCHEMA_SQL = `
         name_fold      TEXT NOT NULL,
         fav            INTEGER NOT NULL,
         date_added     INTEGER NOT NULL,
-        create_date    TEXT,
+        -- Epoch ms, same convention as every other timestamp-shaped column in this schema (date_added,
+        -- date_last_chat, file_mtime, mtime_ms on the two mtime-tracking tables below) - NOT the raw string a
+        -- character card's own create_date field carries (that stays whatever the card provided, unparsed and
+        -- unvalidated, in the card's own JSON/PNG chunk and in shallow_json's embedded copy below; this column
+        -- is purely this table's own internal sort/index representation of it). Parsed via
+        -- parseCreateDateToEpochMs() (util.js) at every write (buildRow() below) - NULL if the card's value is
+        -- missing or genuinely unparseable. Before 2026-08 this column was TEXT, storing the card's raw string
+        -- and relying on SQLite's default TEXT collation to sort it (good enough only because the overwhelming
+        -- majority of real cards happen to use ISO 8601 strings, which sort correctly as plain text too) - see
+        -- migrateCreateDateColumn() below for the one-time backfill that converted an existing install's rows,
+        -- and queryEntities()'s own doc comment for the interleaved characters+groups sort bug this TEXT/INTEGER
+        -- mismatch caused (a group's real creation time, date_added, was already INTEGER, so a mixed-type UNION
+        -- ORDER BY silently misordered every group to one end regardless of its actual creation time).
+        create_date    INTEGER,
         date_last_chat INTEGER NOT NULL,
         chat_size      INTEGER NOT NULL,
         data_size      INTEGER NOT NULL,
@@ -606,6 +619,72 @@ function migrateActiveChatColumn(db) {
 }
 
 /**
+ * Converts an existing `characters` table's `create_date` column from TEXT (its shape before 2026-08) to
+ * INTEGER epoch ms, matching every other timestamp-shaped column in this schema - see that column's own
+ * SCHEMA_SQL comment for why. Unlike every other `migrate*Column()` function above, this isn't adding a missing
+ * column (SCHEMA_SQL's `CREATE TABLE IF NOT EXISTS` already declares `create_date` on every install, old or
+ * new) - it's changing an EXISTING column's declared type, which SQLite has no direct `ALTER COLUMN` for. The
+ * approach: add a new INTEGER column, backfill it from the old TEXT column in JS (SQL alone can't reproduce
+ * parseCreateDateToEpochMs()'s "ST humanized" regex fallback - see that function's own doc comment), then
+ * `DROP COLUMN` the old one and `RENAME COLUMN` the new one into its place (both supported since SQLite
+ * 3.35.0/3.25.0 respectively - confirmed against the 3.49.2 this fork's better-sqlite3 bundles; the wasm
+ * fallback engine, sqlite-engine.js, bundles a comparably modern SQLite too).
+ *
+ * Detection uses `PRAGMA table_info(characters)`'s own `type` field (SQLite reports back exactly the declared
+ * type string from whichever CREATE/ALTER last set it) rather than a meta-table flag - a plain 'INTEGER' means
+ * either a brand-new install (SCHEMA_SQL already declares it that way) or an already-migrated one; either way
+ * there is nothing left to do, so this function no-ops on every call after its first.
+ *
+ * Confirmed against this fork's real ~327k-row production database (2026-08 investigation): every single
+ * non-NULL, non-empty existing value parsed cleanly, either as a direct ISO 8601 string (~94%) or via one of
+ * parseCreateDateToEpochMs()'s "ST humanized" patterns (~6%, humanizedDateTime()'s own historical output format
+ * for this field) - zero rows were genuinely unparseable garbage. This function still has to handle that case
+ * for any OTHER install (create_date is a card-authored field, not schema-validated), so a row whose value
+ * doesn't parse gets `NULL` (matching how a genuinely-missing create_date already behaves), and every such row
+ * (not just a truncated sample) is logged loudly rather than silently swallowed, so an owner can see the real
+ * scope if their own install turns out to differ from this one.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ */
+function migrateCreateDateColumn(db) {
+    const columns = db.all('PRAGMA table_info(characters)');
+    const createDateColumn = columns.find(c => c.name === 'create_date');
+    if (!createDateColumn || createDateColumn.type === 'INTEGER') return;
+
+    const rows = db.all('SELECT id, create_date FROM characters WHERE create_date IS NOT NULL');
+
+    // Dropped and recreated after the column swap below (SQLite refuses to DROP COLUMN while an index still
+    // references it - confirmed by direct testing).
+    db.exec('DROP INDEX IF EXISTS idx_characters_create_date');
+    db.exec('ALTER TABLE characters ADD COLUMN create_date_ms INTEGER');
+
+    const update = db.prepare('UPDATE characters SET create_date_ms = @createDateMs WHERE id = @id');
+    const unparseable = [];
+    db.transaction(() => {
+        for (const row of rows) {
+            const ms = parseCreateDateToEpochMs(row.create_date);
+            if (ms === null) {
+                unparseable.push({ id: row.id, value: row.create_date });
+                continue; // create_date_ms stays NULL for this row, same as a genuinely-missing create_date.
+            }
+            update.run({ id: row.id, createDateMs: ms });
+        }
+    })();
+
+    if (unparseable.length > 0) {
+        console.error(color.yellow(
+            `[character-metadata] create_date migration: ${unparseable.length} of ${rows.length} row(s) had a ` +
+            'create_date value that could not be parsed as a date (neither ISO 8601 nor the ST "humanized" ' +
+            'format) and were set to NULL instead. Affected rows: ' +
+            JSON.stringify(unparseable),
+        ));
+    }
+
+    db.exec('ALTER TABLE characters DROP COLUMN create_date');
+    db.exec('ALTER TABLE characters RENAME COLUMN create_date_ms TO create_date');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_characters_create_date ON characters(create_date)');
+}
+
+/**
  * Adds `duplicate_of` to an existing `local_import_mtimes` table that predates it. Same ALTER-if-missing shape
  * as migrateContentHashColumn() above, for the same reason (SQLite has no `ADD COLUMN IF NOT EXISTS`, and this
  * table's own `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL deliberately still only declares the original
@@ -740,6 +819,7 @@ async function getEntry(directories) {
     migrateContentIdentityColumns(db);
     migrateAvatarIdentityColumn(db);
     migrateActiveChatColumn(db);
+    migrateCreateDateColumn(db);
     migrateLocalImportMtimesDuplicateOfColumn(db);
     migrateGroupsColumns(db, directories);
     // Design doc §5.3, decisions 8/13: random-sort order is a per-query `ORDER BY <hash>(id, seed)`, never a
@@ -789,7 +869,14 @@ function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, date
         name_fold: foldName(character.name),
         fav: character.fav ? 1 : 0,
         date_added: dateAddedCandidate,
-        create_date: character.create_date ?? null,
+        // Parsed from the card's own raw string (or number/undefined) into epoch ms - see this column's own
+        // SCHEMA_SQL comment. Every caller of buildRow() passes `character.create_date` straight from a
+        // just-parsed card, so this is the ONE place (besides migrateCreateDateColumn()'s one-time backfill)
+        // that ever needs to run this parse - shallow_json below keeps the card's original raw string via
+        // `shallowSource`'s `...character` spread, untouched by this conversion (see toShallow()'s own doc
+        // comment on why the shallow projection must still show the client the card's own value, not this
+        // column's internal representation).
+        create_date: parseCreateDateToEpochMs(character.create_date),
         date_last_chat: dateLastChat,
         chat_size: chatSize,
         data_size: dataSize,
@@ -2718,6 +2805,23 @@ function resolveGroupForChat(directories, chatId) {
 }
 
 /**
+ * Write-path hook for chats.js's /save route - bumps date_last_chat on every individual-character
+ * chat save, the same way bumpGroupChatStats() does for groups. Without this, date_last_chat is
+ * only refreshed when the character card itself is re-saved (via calculateChatSize() inside
+ * upsertCharacterFromWrite()), leaving the "recent" sort stale after every chat interaction.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} avatar Avatar filename (e.g. `Alice.png`)
+ * @returns {Promise<void>}
+ */
+export async function bumpCharacterDateLastChat(directories, avatar) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+
+    const now = Date.now();
+    entry.db.run('UPDATE characters SET date_last_chat = @now WHERE id = @id', { now, id: avatar });
+}
+
+/**
  * Write-path hook for chats.js's `/group/save` route, called with the just-saved chat's own id after the write
  * succeeds - keeps `date_last_chat`/`chat_size` fresh the same way character writes keep those columns fresh for
  * characters (upsertCharacterFromWrite()'s own calculateChatSize() call). Resolves the owning group via
@@ -3019,14 +3123,14 @@ const QUERYABLE_SORT_COLUMNS = {
     date_last_chat: 'date_last_chat',
     chat_size: 'chat_size',
     fav: 'fav',
-    // `create_date` is a real, indexed column (the card's own self-reported creation date - see buildRow()/
-    // SCHEMA_SQL) that was simply left off this lookup table and characters.js's QUERY_SORT_FIELDS allowlist -
-    // not a naming mismatch (processCharacter() already exposes this exact field name as `character.create_date`,
-    // and the client already sends `sort.field: "create_date"` expecting it to work), just a genuine gap. Text-
-    // sorted (SQLite's default TEXT collation) rather than parsed as a date, same as every other caller of this
-    // column already assumes (buildRow() stores it as whatever ISO-ish string the card provided, never validated
-    // or normalized) - good enough for relative ordering across the overwhelming majority of real cards, which
-    // all use ISO 8601-shaped strings that happen to sort correctly as plain text too.
+    // `create_date` is a real, indexed column (the card's own self-reported creation date, parsed to epoch ms -
+    // see buildRow()/SCHEMA_SQL/parseCreateDateToEpochMs()) that was simply left off this lookup table and
+    // characters.js's QUERY_SORT_FIELDS allowlist - not a naming mismatch (processCharacter() already exposes
+    // this exact field name as `character.create_date`, and the client already sends `sort.field: "create_date"`
+    // expecting it to work), just a genuine gap. Sorts numerically as ordinary epoch ms, same as every other
+    // timestamp column here (date_added, date_last_chat) - it was TEXT-collated until the 2026-08
+    // migrateCreateDateColumn() fix (see that function's own doc comment and this column's SCHEMA_SQL comment),
+    // which is also what let queryEntities() below drop its strftime() workaround for interleaving groups.
     create_date: 'create_date',
     // Same gap, same shape: `data_size` ("Most/Least tokens" in the client's sort dropdown) is a real, stored
     // column (see buildRow()/SCHEMA_SQL - `calculateDataSize()`'s byte count of the card's own `data` object,
@@ -3433,7 +3537,12 @@ export async function queryEntities(directories, params = {}) {
             // creation, migrateGroupsColumns() below) - projected as create_date on the group side of this UNION
             // so it interleaves correctly with characters instead of parking every group at one end of the sort
             // permanently (NULL would be silently wrong here, not a neutral default: a group's creation time is
-            // a genuine fact this table already stores, just under a differently-named column).
+            // a genuine fact this table already stores, just under a differently-named column). Both sides are
+            // now plain INTEGER epoch ms (characters.create_date was TEXT-collated ISO-ish strings before the
+            // 2026-08 migrateCreateDateColumn() fix, which needed an explicit strftime() conversion here to
+            // interleave correctly with groups.date_added's INTEGER type - see that function's own doc comment;
+            // now that both sides genuinely share a type, a plain projection of date_added sorts correctly with
+            // no conversion needed).
             //
             // data_size: characters-only, no equivalent for real. This table has no stored byte-size concept for
             // groups at all - the closest thing (a group's own JSON file's on-disk size) isn't a column anywhere
@@ -3445,14 +3554,7 @@ export async function queryEntities(directories, params = {}) {
                 SELECT id, 'character' as type, name_fold, fav, date_added, date_last_chat, chat_size, create_date, data_size, shallow_json
                 FROM characters ${charWhere.where}
                 UNION ALL
-                -- date_added is epoch milliseconds (INTEGER); characters.create_date is an ISO-ish TEXT string.
-                -- Projecting date_added as-is here would NOT interleave correctly despite both being real,
-                -- non-NULL values - SQLite's default type-based ordering sorts every TEXT value ahead of every
-                -- INTEGER value regardless of actual chronological order (confirmed by direct testing: the top
-                -- 30 rows of a DESC create_date sort were all characters before this fix), so every group would
-                -- still cluster at one end, just via a type mismatch instead of a NULL one. strftime() converts
-                -- it to the same ISO 8601 shape create_date's own TEXT collation already sorts correctly by.
-                SELECT id, 'group' as type, name_fold, fav, date_added, date_last_chat, chat_size, strftime('%Y-%m-%dT%H:%M:%fZ', date_added / 1000.0, 'unixepoch') as create_date, NULL as data_size, NULL as shallow_json
+                SELECT id, 'group' as type, name_fold, fav, date_added, date_last_chat, chat_size, date_added as create_date, NULL as data_size, NULL as shallow_json
                 FROM groups ${groupWhere.where}
             )
             ${orderBy}
