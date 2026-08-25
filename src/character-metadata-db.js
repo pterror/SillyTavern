@@ -291,7 +291,8 @@ const SCHEMA_SQL = `
     CREATE TABLE IF NOT EXISTS changes (
         rev INTEGER PRIMARY KEY AUTOINCREMENT,
         id  TEXT NOT NULL,
-        op  TEXT NOT NULL
+        op  TEXT NOT NULL,
+        fields TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_changes_id ON changes(id);
 
@@ -786,6 +787,20 @@ function migrateGroupsColumns(db, directories) {
 }
 
 /**
+ * Adds `fields` to an existing `changes` table that predates it - same ALTER-if-missing shape as
+ * migrateContentHashColumn() above. Nullable TEXT column storing a JSON array of field names (e.g.
+ * '["fav"]', '["tag_ids"]') when only specific fields changed, or NULL when the whole record changed
+ * (full card edit, delete, import, rename). Existing rows (which predate field-level tracking) stay
+ * NULL, correctly meaning "whole record changed" - no backfill needed.
+ */
+function migrateChangesFieldsColumn(db) {
+    const columns = db.all('PRAGMA table_info(changes)');
+    if (!columns.some(c => c.name === 'fields')) {
+        db.exec('ALTER TABLE changes ADD COLUMN fields TEXT');
+    }
+}
+
+/**
  * Resolves (creating on first use) the metadata DB entry for a user, including opening the SQLite file and
  * applying SCHEMA_SQL (idempotent - every statement is CREATE ... IF NOT EXISTS). Returns `null` if no SQLite
  * engine is usable on this install at all (see sqlite-engine.js) - callers must treat that as "the metadata
@@ -821,6 +836,7 @@ async function getEntry(directories) {
     migrateActiveChatColumn(db);
     migrateCreateDateColumn(db);
     migrateLocalImportMtimesDuplicateOfColumn(db);
+    migrateChangesFieldsColumn(db);
     migrateGroupsColumns(db, directories);
     // Design doc §5.3, decisions 8/13: random-sort order is a per-query `ORDER BY <hash>(id, seed)`, never a
     // materialized column (a materialized seeded column is O(users × rerolls) to maintain - see the decision's
@@ -986,7 +1002,7 @@ function writeRowSync(db, row, tagIds) {
         }
     }
 
-    const { lastInsertRowid } = db.run('INSERT INTO changes (id, op) VALUES (@id, @op)', { id: row.id, op: 'upsert' });
+    const { lastInsertRowid } = db.run('INSERT INTO changes (id, op, fields) VALUES (@id, @op, @fields)', { id: row.id, op: 'upsert', fields: null });
     db.run(UPSERT_SQL, { ...row, rev: Number(lastInsertRowid) });
 
     if (!existed) {
@@ -1009,7 +1025,7 @@ function deleteRowSync(db, id) {
     // consequence of a character disappearing is already handled, is what keeps that skip from silently
     // outliving the row it was conditioned on.
     db.run('DELETE FROM local_import_mtimes WHERE duplicate_of = @id', { id });
-    db.run('INSERT INTO changes (id, op) VALUES (@id, @op)', { id, op: 'delete' });
+    db.run('INSERT INTO changes (id, op, fields) VALUES (@id, @op, @fields)', { id, op: 'delete', fields: null });
 }
 
 /**
@@ -1099,7 +1115,7 @@ export async function setCharacterFav(directories, avatar, fav) {
     const shallow = JSON.parse(existing.shallow_json);
     shallow.fav = !!fav;
 
-    const { lastInsertRowid } = entry.db.run('INSERT INTO changes (id, op) VALUES (@id, @op)', { id: avatar, op: 'upsert' });
+    const { lastInsertRowid } = entry.db.run('INSERT INTO changes (id, op, fields) VALUES (@id, @op, @fields)', { id: avatar, op: 'upsert', fields: JSON.stringify(['fav']) });
     entry.db.run(
         'UPDATE characters SET fav = @fav, shallow_json = @shallow_json, rev = @rev WHERE id = @id',
         { id: avatar, fav: fav ? 1 : 0, shallow_json: JSON.stringify(shallow), rev: Number(lastInsertRowid) },
@@ -1138,7 +1154,7 @@ export async function setCharacterActiveChat(directories, avatar, chat) {
     const shallow = JSON.parse(existing.shallow_json);
     shallow.chat = chat;
 
-    const { lastInsertRowid } = entry.db.run('INSERT INTO changes (id, op) VALUES (@id, @op)', { id: avatar, op: 'upsert' });
+    const { lastInsertRowid } = entry.db.run('INSERT INTO changes (id, op, fields) VALUES (@id, @op, @fields)', { id: avatar, op: 'upsert', fields: JSON.stringify(['active_chat']) });
     entry.db.run(
         // active_chat_checked = 1 here too, not just active_chat itself - a row can reach this write before
         // backfillActiveChatFromCards() ever gets to it (e.g. inserted between an upgrade landing and the next
@@ -3906,7 +3922,7 @@ export async function getCurrentRev(directories) {
  * one) - this only adds the server-side capability.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {number} sinceRev
- * @returns {Promise<{ rev: number, changes: { id: string, op: 'upsert'|'delete' }[], truncated: boolean } | null>}
+ * @returns {Promise<{ rev: number, changes: { id: string, op: 'upsert'|'delete', fields?: string[]|null }[], truncated: boolean } | null>}
  * `truncated: true` means `sinceRev` predates the oldest change-log row this table still has (nothing prunes the
  * log yet - see this module's header on phase 1's freshness mechanisms - so today this can only trigger for a
  * `sinceRev` that was never valid for this table to begin with, e.g. a cache built against a different user's
@@ -3927,16 +3943,44 @@ export async function getChangesSince(directories, sinceRev) {
         return { rev: maxRev, changes: [], truncated: true };
     }
 
-    const rawChanges = entry.db.all('SELECT rev, id, op FROM changes WHERE rev > ? ORDER BY rev ASC', [numericSince]);
-    // Collapse to one entry per id (keeping the latest op for that id in this window) - a client only cares
-    // "what do I need to refetch/drop", not how many times it changed in between, and this keeps a busy id from
-    // inflating the response with redundant entries. Safe because rawChanges is already rev-ascending, so a
-    // later Map.set() for the same id always overwrites with the more recent op.
-    const latestOpById = new Map();
+    const rawChanges = entry.db.all('SELECT rev, id, op, fields FROM changes WHERE rev > ? ORDER BY rev ASC', [numericSince]);
+    // Collapse to one entry per id. For the op: latest wins (rev-ascending, so later set() overwrites).
+    // For fields: any delete in the window forces a full refetch if the id is later re-created (the
+    // client's cached copy predates the delete, so every field is potentially stale); any null-fields
+    // entry means the whole record changed; otherwise union all field sets across upsert entries.
+    /** @type {Map<string, { op: string, hasDelete: boolean, hasNullFields: boolean, fieldSet: Set<string> }>} */
+    const collapsedById = new Map();
     for (const row of rawChanges) {
-        latestOpById.set(row.id, row.op);
+        let agg = collapsedById.get(row.id);
+        if (!agg) {
+            agg = { op: row.op, hasDelete: false, hasNullFields: false, fieldSet: new Set() };
+            collapsedById.set(row.id, agg);
+        }
+        agg.op = row.op; // latest wins
+        if (row.op === 'delete') {
+            agg.hasDelete = true;
+        } else {
+            if (row.fields === null) {
+                agg.hasNullFields = true;
+            } else {
+                try {
+                    const parsed = JSON.parse(row.fields);
+                    if (Array.isArray(parsed)) {
+                        for (const f of parsed) agg.fieldSet.add(f);
+                    }
+                } catch {
+                    agg.hasNullFields = true; // unparseable fields treated as whole-record
+                }
+            }
+        }
     }
-    const changes = [...latestOpById.entries()].map(([id, op]) => ({ id, op }));
+    const changes = [...collapsedById.entries()].map(([id, { op, hasDelete, hasNullFields, fieldSet }]) => {
+        if (op === 'delete') return { id, op };
+        // A delete anywhere in this window means the client's cached copy predates a delete+recreate,
+        // so every field is potentially stale - treat as whole-record.
+        const fields = (hasDelete || hasNullFields) ? null : [...fieldSet];
+        return { id, op, fields };
+    });
 
     return { rev: maxRev, changes, truncated: false };
 }
