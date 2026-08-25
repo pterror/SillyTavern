@@ -2592,33 +2592,36 @@ export async function getTagUsageCount(directories, tagId) {
 }
 
 /**
- * Bumps the single `tags_rev` meta counter to `Date.now()` - the freshness signature for anything derived from
- * tag *content* (definitions or assignments), replacing tags.json's own mtime now that tags.json is gone (see
- * this module's header on its removal). Called by every write below that changes what a `#tags` search field or
- * a cached tag definition would resolve to: saveTagDefinitions(), assignEntityTag(), unassignEntityTag(), and
- * migrateTagsJsonIfNeeded()'s one-time seed. Readers: getTagsRevision() below (consumed by
- * characters-search-index.js/groups-search-index.js in place of the old tags.json-mtime half of their freshness
- * signature, and by tags-cache.js's client-side freshness check in place of `/api/tags/manifest`'s old
- * whole-file mtime).
+ * Computes a content hash (SHA-256) of all tag definitions and stores it as the `tags_rev` meta value - the
+ * freshness signature for anything derived from tag *content* (definitions or assignments), replacing tags.json's
+ * own mtime now that tags.json is gone (see this module's header on its removal). Called by every write below
+ * that changes what a `#tags` search field or a cached tag definition would resolve to: saveTagDefinitions(),
+ * assignEntityTag(), unassignEntityTag(), and migrateTagsJsonIfNeeded()'s one-time seed. Readers:
+ * getTagsRevision() below (consumed by characters-search-index.js/groups-search-index.js in place of the old
+ * tags.json-mtime half of their freshness signature, and by tags-cache.js's client-side freshness check in place
+ * of `/api/tags/manifest`'s old whole-file mtime).
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  */
 function bumpTagsRevisionSync(db) {
+    const rows = db.all('SELECT id, data FROM tags ORDER BY id');
+    const content = rows.map(r => r.id + '\0' + r.data).join('\0');
+    const hash = crypto.createHash('sha256').update(content).digest('hex');
     db.run(
         "INSERT INTO meta (key, value) VALUES ('tags_rev', @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        { value: String(Date.now()) },
+        { value: hash },
     );
 }
 
 /**
  * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<number | null>} The current `tags_rev` (0 if nothing has ever bumped it yet), or `null` if
- * the metadata store is unavailable.
+ * @returns {Promise<string | null>} The current `tags_rev` content hash, or `null` if nothing has ever been
+ * stored or the metadata store is unavailable.
  */
 export async function getTagsRevision(directories) {
     const entry = await getEntry(directories);
     if (!entry) return null;
     const row = entry.db.get("SELECT value FROM meta WHERE key = 'tags_rev'");
-    return row ? Number(row.value) : 0;
+    return row ? row.value : null;
 }
 
 /**
