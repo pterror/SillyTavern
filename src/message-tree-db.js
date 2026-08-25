@@ -483,7 +483,6 @@ export async function loadBranch(directories, ownerId, branchName) {
  *   into the chat array so subsequent saves can identify them as existing (prevents duplicate inserts).
  */
 export async function saveChatToTree(directories, ownerId, chatName, chatData, isGroup = false) {
-    const t0 = performance.now();
     const entry = await getEntry(directories);
     if (!entry) return null;
 
@@ -553,8 +552,6 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
             }
         });
 
-        const tDone = performance.now();
-        console.debug(`[save-perf] saveChatToTree (new branch): messages=${messages.length} inserted=${assignedNodeIds.length} total=${(tDone - t0).toFixed(1)}ms`);
         return { integrity: nextIntegrity, assignedNodeIds };
     }
 
@@ -562,8 +559,6 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
     // When every existing message is an unchanged stub and only new messages (no node_id) appear
     // at the tail, we can skip the O(N) recursive CTE entirely: just INSERT the new rows chained
     // off branch.leaf_id and UPDATE the branch pointer.
-    const tPreDiff = performance.now();
-
     // Find the index where new (non-stub, no node_id) messages begin at the tail
     let appendStart = messages.length;
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -598,9 +593,6 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
             updateBranchMetadataSync(entry.db, branch.id, metadataJson);
         });
 
-        const tDone = performance.now();
-        const newCount = messages.length - appendStart;
-        console.debug(`[save-perf] saveChatToTree (append fast path): messages=${messages.length} appended=${newCount} total=${(tDone - t0).toFixed(1)}ms`);
         return { integrity: nextIntegrity, assignedNodeIds };
     }
 
@@ -673,11 +665,6 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
         updateBranchMetadataSync(entry.db, branch.id, metadataJson);
     });
 
-    const tDone = performance.now();
-    const stubCount = messages.filter(m => m._unchanged).length;
-    const insertCount = assignedNodeIds.length;
-    const updateCount = messages.length - stubCount - insertCount;
-    console.debug(`[save-perf] saveChatToTree (full diff): messages=${messages.length} stubs=${stubCount} inserts=${insertCount} updates=${updateCount} diffSetup=${(tPreDiff - t0).toFixed(1)}ms transaction=${(tDone - tPreDiff).toFixed(1)}ms total=${(tDone - t0).toFixed(1)}ms`);
     return { integrity: nextIntegrity, assignedNodeIds };
 }
 

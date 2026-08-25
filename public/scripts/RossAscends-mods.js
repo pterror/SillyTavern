@@ -33,7 +33,7 @@ import {
     sortEntitiesList,
 } from './power-user.js';
 
-import { characterRepository, buildCharacterQuery, isServerQueryableSort, isInvalidSortFieldError } from './character-repository.js';
+import { characterRepository, buildCharacterQuery, isServerQueryableSort, isInvalidSortFieldError, normalizeQueryRow } from './character-repository.js';
 import { getRandomSortSeed } from './random-sort.js';
 import { selected_group, is_group_generating, openGroupById, groups } from './group-chats.js';
 import { applyTagsOnCharacterSelect } from './tags.js';
@@ -397,30 +397,19 @@ export async function favsToHotswap() {
     let usedServerQuery = false;
     if (isServerQueryableSort(sortField)) {
         try {
-            const { sort } = buildCharacterQuery({
+            const { filter, sort } = buildCharacterQuery({
                 fav: true,
+                includeGroups: true,
+                searchTerm,
                 sortField,
                 sortOrder: power_user.sort_order === 'desc' ? 'desc' : 'asc',
                 randomSeed: isRandom ? getRandomSortSeed(accountStorage) : undefined,
             });
-            const filter = searchTerm ? { fav: true, search: searchTerm } : { fav: true };
-            const { rows: favCharacterRows = [] } = await characterRepository.query(filter, sort, 1, FAVS_LIMIT, ['rows']);
-            const favCharacterEntities = favCharacterRows.map(item => characterToEntity(item));
-            let favGroupEntities = groups.filter(x => x.fav || x.fav == 'true').map(item => groupToEntity(item));
-            if (searchTerm) {
-                // The character half above already asked the server to narrow by `filter.search` directly - running
-                // a second, client-side fuzzy pass over rows the server already resolved would risk exactly the
-                // stale two-search-engines divergence this function's own doc comment (and the main list's own
-                // `canUseServerQueryForEntitiesList()`, script.js) both call out. Groups still only ever come from
-                // the local resident array here (unchanged from before this search-mirroring addition), so
-                // narrowing them by search has to happen client-side - `entitiesFilter.searchFilter()` is the same
-                // score-cache/fuzzy mechanism the main list's own local fallback path already relies on for this.
-                favGroupEntities = entitiesFilter.searchFilter(favGroupEntities);
-            }
-
-            favs = [...favCharacterEntities, ...favGroupEntities];
-            sortEntitiesList(favs, false);
-            favs = favs.slice(0, FAVS_LIMIT);
+            const { rows = [] } = await characterRepository.query(filter, sort, 1, FAVS_LIMIT, ['rows']);
+            favs = rows.map(row => {
+                const { type, item } = normalizeQueryRow(row);
+                return type === 'group' ? groupToEntity(item) : characterToEntity(item);
+            });
             usedServerQuery = true;
         } catch (error) {
             if (!isInvalidSortFieldError(error)) throw error;
@@ -428,11 +417,13 @@ export async function favsToHotswap() {
         }
     }
     if (!usedServerQuery) {
-        let entities = await getEntitiesList({ doFilter: false });
+        let entities = await getEntitiesList({ doFilter: false, doSort: false });
         if (searchTerm) {
             entities = entitiesFilter.searchFilter(entities);
         }
-        favs = entities.filter(x => x.item.fav || x.item.fav == 'true').slice(0, FAVS_LIMIT);
+        favs = entities.filter(x => x.item.fav);
+        sortEntitiesList(favs, false);
+        favs = favs.slice(0, FAVS_LIMIT);
     }
 
     //helpful instruction message if no characters are favorited

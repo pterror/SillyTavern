@@ -7206,17 +7206,15 @@ export async function sendMessageAsUser(messageText, messageBias, insertAt = nul
         chat.push(message);
         const chat_id = (chat.length - 1);
 
-        // Render the message immediately — don't wait for the save round-trip.
+        // Render the message immediately so the user sees it before the save round-trip.
         addOneMessage(message);
         await eventSource.emit(event_types.MESSAGE_SENT, chat_id);
         await eventSource.emit(event_types.USER_MESSAGE_RENDERED, chat_id);
 
-        // Fire save in the background. The isChatSaving lock serializes this with
-        // any subsequent save (e.g. save #2 after the AI response), so save #2's
-        // waitUntilCondition() will wait for this to finish before proceeding.
-        // If this save fails, the message stays in chat[] without a node_id, and
-        // the next save will send it as full content — self-healing, no data loss.
-        saveChatConditional();
+        // Save is awaited (not fire-and-forget) to guarantee persistence before generation
+        // starts and to avoid a timeout race where save #2 (after AI response) could miss
+        // the isChatSaving window and silently drop the AI message.
+        await saveChatConditional();
     }
 
     return message;
@@ -8885,14 +8883,15 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
 
             // Write assigned node_ids back into the chat array so subsequent saves
             // can identify these messages as existing (prevents duplicate inserts).
-            // Must go through updateMessage since the message may be frozen.
+            // Uses updateMessage() since messages may be frozen (immutable). The index
+            // from assigned_node_ids maps directly to the chat array position (both are
+            // derived from the same 0-based message array). Using the index directly
+            // instead of chat.indexOf() avoids stale-reference mismatches when
+            // updateMessage() replaced the object between chat.slice() and now.
             if (Array.isArray(data?.assigned_node_ids)) {
                 for (const { index, node_id } of data.assigned_node_ids) {
-                    if (trimmedChat[index]) {
-                        const mesId = chat.indexOf(trimmedChat[index]);
-                        if (mesId >= 0) {
-                            updateMessage(mesId, { node_id });
-                        }
+                    if (index < chat.length) {
+                        updateMessage(index, { node_id });
                     }
                 }
             }
@@ -11697,6 +11696,8 @@ export async function createOrEditCharacter(e) {
                 }
             }
 
+            const previousFav = getCurrentCharacter()?.fav;
+
             const fetchResult = await fetch(url, {
                 method: 'POST',
                 headers: headers,
@@ -11709,7 +11710,10 @@ export async function createOrEditCharacter(e) {
             }
 
             await getOneCharacter(formData.get('avatar_url'));
-            favsToHotswap(); // Update fav state
+
+            if (Boolean(previousFav) !== Boolean(fav_ch_checked)) {
+                favsToHotswap();
+            }
 
             $('#add_avatar_button').replaceWith(
                 $('#add_avatar_button').val('').clone(true),

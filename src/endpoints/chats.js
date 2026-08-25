@@ -668,15 +668,12 @@ class IntegrityMismatchError extends Error {
  * tracking is disabled (`backups.chat.checkIntegrity` config) or the chat has no header to carry a slug.
  */
 export async function trySaveChat(chatData, filePath, skipIntegrityCheck = false, handle, cardName, backupDirectory, directories) {
-    const t0 = performance.now();
     const doIntegrityCheck = (checkIntegrity && !skipIntegrityCheck);
     const chatIntegritySlug = doIntegrityCheck ? chatData?.[0]?.chat_metadata?.integrity : undefined;
 
     if (chatIntegritySlug && !await checkChatIntegrity(filePath, chatIntegritySlug)) {
         throw new IntegrityMismatchError(`Chat integrity check failed for "${filePath}". The expected integrity slug was "${chatIntegritySlug}".`);
     }
-    const tIntegrity = performance.now();
-
     /** @type {string|undefined} */
     let nextIntegritySlug;
     if (checkIntegrity && chatData?.[0]?.chat_metadata && typeof chatData[0].chat_metadata === 'object') {
@@ -685,11 +682,8 @@ export async function trySaveChat(chatData, filePath, skipIntegrityCheck = false
     }
 
     const jsonlData = chatData?.map(m => JSON.stringify(m)).join('\n');
-    const tSerialize = performance.now();
     tryWriteFileSync(filePath, jsonlData);
-    const tWrite = performance.now();
     getBackupFunction(handle, cardName)(backupDirectory, cardName, jsonlData);
-    const tBackup = performance.now();
 
     if (directories) {
         try {
@@ -700,12 +694,6 @@ export async function trySaveChat(chatData, filePath, skipIntegrityCheck = false
             console.error('[chat-metadata] Failed to update chat metadata store after save:', err);
         }
     }
-    const tMeta = performance.now();
-
-    const messageCount = Array.isArray(chatData) ? chatData.length : 0;
-    const dataBytes = Buffer.byteLength(jsonlData ?? '', 'utf8');
-    console.debug(`[save-perf] trySaveChat: messages=${messageCount} bytes=${dataBytes} integrity=${(tIntegrity - t0).toFixed(1)}ms serialize=${(tSerialize - tIntegrity).toFixed(1)}ms write=${(tWrite - tSerialize).toFixed(1)}ms backup=${(tBackup - tWrite).toFixed(1)}ms metadata=${(tMeta - tBackup).toFixed(1)}ms total=${(tMeta - t0).toFixed(1)}ms`);
-
     return nextIntegritySlug;
 }
 
@@ -721,14 +709,10 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
         }
 
         // Tree DB path: if the character is migrated (or can be migrated now), save to tree
-        const tTreeStart = performance.now();
         const useTree = await ensureTreeMigrated(request.user.directories, cardName);
-        const tMigrationCheck = performance.now();
         if (useTree) {
             const result = await saveChatToTree(request.user.directories, cardName, chatName, chatData, false);
-            const tTreeSave = performance.now();
             if (result) {
-                console.debug(`[save-perf] /save tree path: migrationCheck=${(tMigrationCheck - tTreeStart).toFixed(1)}ms treeSave=${(tTreeSave - tMigrationCheck).toFixed(1)}ms total=${(tTreeSave - tTreeStart).toFixed(1)}ms`);
                 return response.send({
                     ok: true,
                     integrity: result.integrity,
