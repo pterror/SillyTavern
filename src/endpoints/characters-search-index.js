@@ -609,7 +609,7 @@ function createEmptyTantivyIndexAt(tantivy, dir) {
  * doc comment for why.
  * @param {import('../users.js').UserDirectoryList} directories User directories
  * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy The resolved tantivy module (tantivy-engine.js)
- * @returns {Promise<{ index: import('@oxdev03/node-tantivy-binding').Index, schema: import('@oxdev03/node-tantivy-binding').Schema, close: () => void, lastRev: number | null, lastTagsRev: number | null }>}
+ * @returns {Promise<{ index: import('@oxdev03/node-tantivy-binding').Index, schema: import('@oxdev03/node-tantivy-binding').Schema, close: () => void, lastRev: number | null, lastTagsRev: string | null }>}
  * The freshly built, open index handle, plus the rev/tagsRev watermark it was built against (`null` if the
  * metadata store was unavailable at the time - matches getFreshnessSignature()'s own fallback).
  */
@@ -633,7 +633,7 @@ async function rebuildTantivyIndexFromScratch(directories, tantivy) {
     // went away in between the getCurrentRev() check above and this call (a narrow race, not the common case) -
     // in that event there's nothing indexed yet in `tempDir`, so falling back to the filesystem-scan path (which
     // starts its own fresh build from scratch) is correct rather than swapping in an empty index.
-    const updated = await applyIncrementalTantivyChanges(directories, tantivy, index, schema, 0, 0);
+    const updated = await applyIncrementalTantivyChanges(directories, tantivy, index, schema, 0, null);
     if (!updated) {
         return buildTantivyIndexFromFilesystemScan(directories, tantivy);
     }
@@ -745,8 +745,8 @@ async function buildTantivyIndexFromFilesystemScan(directories, tantivy) {
  * @param {number | null} sinceRev The rev this index was last caught up to, or `null`/non-finite to mean "assume
  * nothing" (the first incremental pass after a fresh full build already covers everything up to its own
  * `lastRev`, so this is normally a real number, not `null`, in practice).
- * @param {number} sinceTagsRev The tags_rev this index was last caught up to.
- * @returns {Promise<{ lastRev: number, lastTagsRev: number } | null>} The new watermark, or `null` if incremental
+ * @param {string | null} sinceTagsRev The tags_rev this index was last caught up to.
+ * @returns {Promise<{ lastRev: number, lastTagsRev: string | null } | null>} The new watermark, or `null` if incremental
  * maintenance isn't possible right now (metadata store unavailable, or the change log was pruned past `sinceRev`
  * - `truncated: true`, not implemented as of phase 1, but this function is already correct against it) - the
  * caller (loadOrUpdateTantivyIndex()) must fall back to a full rebuild in that case.
@@ -810,7 +810,7 @@ async function applyIncrementalTantivyChanges(directories, tantivy, index, schem
         writer.waitMergingThreads();
     }
 
-    return { lastRev: currentRev, lastTagsRev: currentTagsRev ?? 0 };
+    return { lastRev: currentRev, lastTagsRev: currentTagsRev ?? null };
 }
 
 /**
@@ -861,7 +861,7 @@ async function openPersistedTantivyIndexStale(directories, tantivy) {
             return null;
         }
 
-        const persistedTagsRev = Number((await getMetaValue(directories, TANTIVY_INDEX_TAGS_REV_META_KEY)) ?? 0);
+        const persistedTagsRev = (await getMetaValue(directories, TANTIVY_INDEX_TAGS_REV_META_KEY)) ?? null;
         return { index, schema, close: NOOP_CLOSE, lastRev: Number(persistedRev), lastTagsRev: persistedTagsRev };
     } catch (err) {
         console.error(color.red('[search] failed to reopen the persisted character tantivy index, falling back to a full rebuild:'));
@@ -899,7 +899,7 @@ async function loadOrUpdateTantivyIndex(directories, tantivy, previous) {
     }
 
     if (previous?.index) {
-        const updated = await applyIncrementalTantivyChanges(directories, tantivy, previous.index, previous.schema, previous.lastRev, previous.lastTagsRev ?? 0);
+        const updated = await applyIncrementalTantivyChanges(directories, tantivy, previous.index, previous.schema, previous.lastRev, previous.lastTagsRev ?? null);
         if (updated) {
             if (updated.lastRev !== null) {
                 await setMetaValue(directories, TANTIVY_INDEX_REV_META_KEY, String(updated.lastRev));
