@@ -267,7 +267,7 @@ import { appendFileContent, hasPendingFileAttachment, populateFileAttachment, de
 import { getPresetManager, initPresetManager } from './scripts/preset-manager.js';
 import { evaluateMacros, getLastMessageId, initMacros } from './scripts/macros.js';
 import { currentUser, setUserControls } from './scripts/user.js';
-import { getCachedRev, setCachedRev, getAllCachedCharacters, saveCachedCharacters, removeCachedCharacters, clearCharacterCache, getLastVerifiedDigest, setLastVerifiedDigest } from './scripts/character-cache.js';
+import { getCachedRev, setCachedRev, getAllCachedCharacters, getAllCachedHashes, saveCachedCharacters, removeCachedCharacters, clearCharacterCache, getLastVerifiedDigest, setLastVerifiedDigest } from './scripts/character-cache.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup, callGenericPopup, fixToastrForDialogs } from './scripts/popup.js';
 import { renderTemplate, renderTemplateAsync } from './scripts/templates.js';
 import { initScrapers } from './scripts/scrapers.js';
@@ -2361,16 +2361,16 @@ const DIGEST_WORKER_SEND_CHUNK_SIZE = 2000;
 
 /**
  * Starts a persistent character-digest-worker.js worker (see that module's own header for the full protocol/
- * rationale), sends it `localCharacters` in chunks off this (the browser's main) thread, and resolves once the
+ * rationale), sends it `localHashes` in chunks off this (the browser's main) thread, and resolves once the
  * worker's initial level-0 tree is ready - WITHOUT terminating the worker, unlike the fixed-depth-2 approach this
  * replaces. The worker stays alive so the recursive descent in verifyCharacterCacheDigest() can keep asking it
  * (via workerComputeDigests() below) for children digests at whatever deeper tree nodes the server's own descent
  * turns up as mismatched - the caller owns terminating it once the descent is done.
- * @param {Map<string, object>} localCharacters
+ * @param {Map<string, {fav: number, tagIds: number, content: number}>} localHashes Pre-computed per-field hashes from getAllCachedHashes()
  * @param {number} branching
  * @returns {Promise<{ children: {digest: {a:number,b:number,c:number,d:number}}[], localHashes: Map<string, {fav:number,tagIds:number,content:number}>, worker: Worker }>}
  */
-function computeLocalCharacterDigest(localCharacters, branching) {
+function computeLocalCharacterDigest(localHashes, branching) {
     return new Promise((resolve, reject) => {
         const worker = new Worker(new URL('./scripts/character-digest-worker.js', import.meta.url), { type: 'module' });
         worker.onerror = (event) => {
@@ -2382,11 +2382,11 @@ function computeLocalCharacterDigest(localCharacters, branching) {
                 // Don't terminate - the worker stays alive for follow-up 'compute-digests' requests as the
                 // descent goes deeper. The caller is responsible for terminate()'ing it when done.
                 const t_mapBuild = performance.now();
-                const localHashes = new Map(event.data.localHashes);
-                console.log(`[digest-timing] new Map(localHashes): ${(performance.now() - t_mapBuild).toFixed(1)}ms (${localHashes.size} entries, localHashes array length: ${event.data.localHashes?.length})`);
+                const computedHashes = new Map(event.data.localHashes);
+                console.log(`[digest-timing] new Map(localHashes): ${(performance.now() - t_mapBuild).toFixed(1)}ms (${computedHashes.size} entries, localHashes array length: ${event.data.localHashes?.length})`);
                 resolve({
                     children: event.data.children,
-                    localHashes,
+                    localHashes: computedHashes,
                     worker,
                 });
             }
@@ -2395,7 +2395,7 @@ function computeLocalCharacterDigest(localCharacters, branching) {
         (async () => {
             worker.postMessage({ type: 'init', branching });
             const t_arrayFrom = performance.now();
-            const entries = Array.from(localCharacters.entries());
+            const entries = Array.from(localHashes.entries());
             console.log(`[digest-timing] Array.from(entries): ${(performance.now() - t_arrayFrom).toFixed(1)}ms (${entries.length} entries)`);
             const t_chunksStart = performance.now();
             let chunkCount = 0;
@@ -2522,12 +2522,12 @@ async function verifyCharacterCacheDigest() {
     // Step 3: Full verification - expensive client-side computation only runs when the server's
     // root actually differs from what was last verified.
     const t_cache = performance.now();
-    const localCharacters = await getAllCachedCharacters();
-    console.log(`[digest-timing] getAllCachedCharacters: ${(performance.now() - t_cache).toFixed(1)}ms (${localCharacters.size} entries)`);
+    const localHashes = await getAllCachedHashes();
+    console.log(`[digest-timing] getAllCachedHashes: ${(performance.now() - t_cache).toFixed(1)}ms (${localHashes.size} entries)`);
 
     const t_compute = performance.now();
-    const { children: localChildren, localHashes, worker } =
-        await computeLocalCharacterDigest(localCharacters, branching);
+    const { children: localChildren, localHashes: localPerRecordHashes, worker } =
+        await computeLocalCharacterDigest(localHashes, branching);
     console.log(`[digest-timing] computeLocalCharacterDigest total: ${(performance.now() - t_compute).toFixed(1)}ms`);
 
     try {
@@ -2629,7 +2629,7 @@ async function verifyCharacterCacheDigest() {
 
             for (const member of leaf.members) {
                 serverIdsInLeaf.add(member.id);
-                if (!localCharacters.has(member.id)) {
+                if (!localHashes.has(member.id)) {
                     // Record exists on server but not locally - genuine set-difference drift
                     // (a new import the change feed will sync), NOT a per-field collision.
                     // Must set leafHasFieldDrift so the collision fallback doesn't fire for
@@ -2638,7 +2638,7 @@ async function verifyCharacterCacheDigest() {
                     continue;
                 }
 
-                const local = localHashes.get(member.id);
+                const local = localPerRecordHashes.get(member.id);
                 if (!local) {
                     leafHasFieldDrift = true;
                     continue;
@@ -2663,14 +2663,14 @@ async function verifyCharacterCacheDigest() {
             // is hiding a real difference. Fall back to value comparison for all members.
             if (!leafHasFieldDrift) {
                 for (const member of leaf.members) {
-                    if (localCharacters.has(member.id)) {
+                    if (localHashes.has(member.id)) {
                         collisionIds.push(member.id);
                     }
                 }
             }
 
             // Detect locally-cached records that the server doesn't have in this leaf group
-            for (const [id] of localCharacters) {
+            for (const [id] of localHashes) {
                 let inSubtree = true;
                 for (let l = 0; l < leaf.path.length; l++) {
                     if (treeNodeAt(id, l, branching) !== leaf.path[l]) {
@@ -2693,7 +2693,7 @@ async function verifyCharacterCacheDigest() {
 
         // Direct fav repair (no fetch needed - value carried in leaf response)
         for (const [id, fav] of serverFavValues) {
-            const character = localCharacters.get(id);
+            const character = charactersStore.get(id);
             if (!character) continue;
             character.fav = fav;
             if (character.data?.extensions) {
@@ -2715,7 +2715,7 @@ async function verifyCharacterCacheDigest() {
             if (batchResponse.ok) {
                 const batchData = await batchResponse.json();
                 for (const partial of batchData) {
-                    const character = patched.get(partial.avatar) || localCharacters.get(partial.avatar);
+                    const character = patched.get(partial.avatar) || charactersStore.get(partial.avatar);
                     if (character && 'tag_ids' in partial) {
                         character.tag_ids = partial.tag_ids;
                         patched.set(partial.avatar, character);
@@ -2737,7 +2737,7 @@ async function verifyCharacterCacheDigest() {
             if (batchResponse.ok) {
                 const batchData = await batchResponse.json();
                 for (const partial of batchData) {
-                    const character = patched.get(partial.avatar) || localCharacters.get(partial.avatar);
+                    const character = patched.get(partial.avatar) || charactersStore.get(partial.avatar);
                     if (!character) continue;
                     if ('name' in partial) character.name = partial.name;
                     if ('tags' in partial) character.tags = partial.tags;
@@ -2759,7 +2759,7 @@ async function verifyCharacterCacheDigest() {
             if (fpResponse.ok) {
                 const { records: fpRecords } = await fpResponse.json();
                 for (const record of fpRecords) {
-                    const character = patched.get(record.id) || localCharacters.get(record.id);
+                    const character = patched.get(record.id) || charactersStore.get(record.id);
                     if (!character) continue;
                     const fp = record.fingerprint;
                     character.name = fp.name;
