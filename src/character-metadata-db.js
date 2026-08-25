@@ -1827,38 +1827,66 @@ export async function backfillTagIdsInShallowJson(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
 
-    const { count } = entry.db.get("SELECT COUNT(*) as count FROM characters WHERE shallow_json NOT LIKE '%\"tag_ids\":%'") ?? { count: 0 };
-    if (count === 0) return;
+    // One scan to find all rows needing backfill (avoids repeated NOT LIKE full-table scans per batch).
+    const idsToBackfill = entry.db.all(
+        "SELECT id FROM characters WHERE shallow_json NOT LIKE '%\"tag_ids\":%'",
+    ).map(r => r.id);
 
-    console.log(color.cyan(`[character-metadata] Backfilling tag_ids into shallow_json for ${count} character(s)...`));
+    if (idsToBackfill.length === 0) return;
+
+    console.log(color.cyan(`[character-metadata] Backfilling tag_ids into shallow_json for ${idsToBackfill.length} character(s)...`));
     let processed = 0;
+    const BACKFILL_BATCH = 100;
+    const progressStart = Date.now();
+    let lastProgressLog = progressStart;
 
-    while (true) {
-        const batch = entry.db.all(
-            "SELECT id, shallow_json FROM characters WHERE shallow_json NOT LIKE '%\"tag_ids\":%' LIMIT @limit",
-            { limit: BATCH_FLUSH_SIZE },
-        );
-        if (batch.length === 0) break;
+    for (let i = 0; i < idsToBackfill.length; i += BACKFILL_BATCH) {
+        const batchIds = idsToBackfill.slice(i, i + BACKFILL_BATCH);
 
-        entry.db.transaction(() => {
-            for (const row of batch) {
-                try {
-                    const tagIds = entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id: row.id }).map(r => r.tag_id);
-                    const shallow = JSON.parse(row.shallow_json);
-                    shallow.tag_ids = tagIds;
-                    const { lastInsertRowid } = entry.db.run('INSERT INTO changes (id, op, fields) VALUES (@id, @op, @fields)', { id: row.id, op: 'upsert', fields: JSON.stringify(['tag_ids']) });
-                    entry.db.run('UPDATE characters SET shallow_json = @shallowJson, rev = @rev WHERE id = @id', { id: row.id, shallowJson: JSON.stringify(shallow), rev: Number(lastInsertRowid) });
-                } catch (err) {
-                    console.error(`[character-metadata] Failed to backfill tag_ids for ${row.id}:`, err.message);
-                }
+        // Prepare phase (outside transaction): read shallow_json + tag_ids for each row.
+        // Keeping reads outside the transaction means the write lock is held only for the
+        // actual writes, not the per-row tag_id lookups.
+        const prepared = [];
+        for (const id of batchIds) {
+            try {
+                const row = entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id });
+                if (!row) continue;
+                // Re-check: another writer (reconcile, a live import) may have already patched
+                // this row since the initial scan.
+                if (row.shallow_json.includes('"tag_ids":')) continue;
+                const tagIds = entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id }).map(r => r.tag_id);
+                const shallow = JSON.parse(row.shallow_json);
+                shallow.tag_ids = tagIds;
+                prepared.push({ id, shallowJson: JSON.stringify(shallow) });
+            } catch (err) {
+                console.error(`[character-metadata] Failed to prepare tag_ids backfill for ${id}:`, err.message);
             }
-        });
+        }
 
-        processed += batch.length;
+        // Write phase (in transaction): only writes, short lock duration (~100 writes * 2 ops).
+        if (prepared.length > 0) {
+            entry.db.transaction(() => {
+                for (const { id, shallowJson } of prepared) {
+                    const { lastInsertRowid } = entry.db.run('INSERT INTO changes (id, op, fields) VALUES (@id, @op, @fields)', { id, op: 'upsert', fields: JSON.stringify(['tag_ids']) });
+                    entry.db.run('UPDATE characters SET shallow_json = @shallowJson, rev = @rev WHERE id = @id', { id, shallowJson, rev: Number(lastInsertRowid) });
+                }
+            });
+        }
+
+        processed += prepared.length;
+
+        // Throttled progress logging (same BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS shape other backfills use)
+        const now = Date.now();
+        if (now - lastProgressLog >= BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS) {
+            console.log(color.cyan(`[character-metadata] tag_ids backfill progress: ${i + batchIds.length}/${idsToBackfill.length} scanned, ${processed} patched`));
+            lastProgressLog = now;
+        }
+
+        // Yield between batches so the event loop stays responsive
         await new Promise(resolve => setImmediate(resolve));
     }
 
-    console.log(color.cyan(`[character-metadata] tag_ids shallow_json backfill complete (${processed} character(s)).`));
+    console.log(color.cyan(`[character-metadata] tag_ids shallow_json backfill complete (${processed} character(s) in ${((Date.now() - progressStart) / 1000).toFixed(1)}s).`));
 }
 
 /**
