@@ -267,7 +267,7 @@ import { appendFileContent, hasPendingFileAttachment, populateFileAttachment, de
 import { getPresetManager, initPresetManager } from './scripts/preset-manager.js';
 import { evaluateMacros, getLastMessageId, initMacros } from './scripts/macros.js';
 import { currentUser, setUserControls } from './scripts/user.js';
-import { getCachedRev, setCachedRev, getAllCachedCharacters, saveCachedCharacters, removeCachedCharacters, clearCharacterCache } from './scripts/character-cache.js';
+import { getCachedRev, setCachedRev, getAllCachedCharacters, saveCachedCharacters, removeCachedCharacters, clearCharacterCache, getLastVerifiedRev, setLastVerifiedRev } from './scripts/character-cache.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup, callGenericPopup, fixToastrForDialogs } from './scripts/popup.js';
 import { renderTemplate, renderTemplateAsync } from './scripts/templates.js';
 import { initScrapers } from './scripts/scrapers.js';
@@ -2331,7 +2331,16 @@ async function fetchCharactersDelta() {
     // cheap way to catch drift the `/changes` cursor itself can't see (a swallowed local write failure, a
     // partially-evicted browser storage quota, or the server's metadata store having been restored from an
     // earlier backup) without paying for it on every single getCharacters() call.
-    verifyCharacterCacheDigest().catch(error => console.error('Character cache digest verification failed:', error));
+    // Deferred to idle time: the full verification is O(library) even when nothing changed (reads
+    // and hashes every cached record), so it must not compete with boot or user interaction. The
+    // change feed (fetchCharactersDelta) is the primary sync path; this is the backup, and can wait.
+    const deferMs = typeof requestIdleCallback === 'function' ? 0 : 30000;
+    const runVerify = () => verifyCharacterCacheDigest().catch(error => console.error('Character cache digest verification failed:', error));
+    if (typeof requestIdleCallback === 'function') {
+        requestIdleCallback(() => runVerify(), { timeout: 60000 });
+    } else {
+        setTimeout(runVerify, deferMs);
+    }
 
     return Array.from(allCached.values());
 }
@@ -2474,6 +2483,21 @@ async function verifyCharacterCacheDigest() {
     console.log('[digest-timing] verifyCharacterCacheDigest starting');
     const t_start = performance.now();
 
+    // Fast-path: if the server's current rev matches what it was when the last full verification
+    // completed successfully, nothing has changed on the server since then. Combined with the
+    // change-feed sync having already applied all changes up to this rev, the cache is known-good
+    // without recomputing any hashes. This turns the common case from O(library) to O(1).
+    try {
+        const [currentRev, lastVerifiedRev] = await Promise.all([getCachedRev(), getLastVerifiedRev()]);
+        if (lastVerifiedRev > 0 && currentRev === lastVerifiedRev) {
+            console.log(`[digest-timing] fast-path skip: server rev ${currentRev} matches last verified rev, skipping full verification`);
+            return;
+        }
+        console.log(`[digest-timing] full verification needed: cached rev ${currentRev}, last verified ${lastVerifiedRev}`);
+    } catch (error) {
+        console.warn('[digest-timing] fast-path check failed, proceeding with full verification:', error);
+    }
+
     const branching = DEFAULT_TREE_BRANCHING;
     /** Crossover point where returning per-record hashes (~40 bytes/record in JSON) becomes cheaper than
      * returning `branching` children hashes (~60 bytes/child in JSON) - see DEFAULT_TREE_BRANCHING's own doc
@@ -2578,10 +2602,20 @@ async function verifyCharacterCacheDigest() {
 
             for (const member of leaf.members) {
                 serverIdsInLeaf.add(member.id);
-                if (!localCharacters.has(member.id)) continue;
+                if (!localCharacters.has(member.id)) {
+                    // Record exists on server but not locally - genuine set-difference drift
+                    // (a new import the change feed will sync), NOT a per-field collision.
+                    // Must set leafHasFieldDrift so the collision fallback doesn't fire for
+                    // the entire leaf's other members.
+                    leafHasFieldDrift = true;
+                    continue;
+                }
 
                 const local = localHashes.get(member.id);
-                if (!local) continue;
+                if (!local) {
+                    leafHasFieldDrift = true;
+                    continue;
+                }
 
                 const fields = [];
                 if (local.fav !== member.favHash) fields.push('fav');
@@ -2738,6 +2772,18 @@ async function verifyCharacterCacheDigest() {
         }
         console.log(`[digest-timing] repair total: ${(performance.now() - t_repair).toFixed(1)}ms, patched: ${patched.size}, removed: ${toRemove.length}, collisions: ${collisionIds.length}`);
         console.log(`[digest-timing] verifyCharacterCacheDigest total: ${(performance.now() - t_start).toFixed(1)}ms`);
+
+        // Persist the current rev as the last-verified-at rev, so the next session can fast-path
+        // skip if nothing changed since. Uses getCachedRev() (the rev fetchCharactersDelta synced
+        // up to) as the anchor - if the server's rev still matches this on the next boot, the cache
+        // is known-good without recomputation.
+        try {
+            const currentRev = await getCachedRev();
+            await setLastVerifiedRev(currentRev);
+            console.log(`[digest-timing] stored last verified rev: ${currentRev}`);
+        } catch (error) {
+            console.warn('[digest-timing] failed to persist last verified rev:', error);
+        }
     } finally {
         worker.terminate();
     }
