@@ -982,11 +982,52 @@ async function firstLoadInit() {
 
     const splashMessage = document.createElement('h2');
     splashMessage.className = 'splash-message';
-    splashMessage.textContent = t`Initializing…`;
-    splashMessage.dataset.i18n = 'Initializing…';
+
+    const splashLabel = document.createElement('span');
+    splashLabel.className = 'splash-label';
+    splashLabel.textContent = t`Initializing…`;
+
+    const splashElapsed = document.createElement('span');
+    splashElapsed.className = 'splash-elapsed';
+
+    splashMessage.appendChild(splashLabel);
+    splashMessage.appendChild(splashElapsed);
+
+    const splashStagesLog = document.createElement('div');
+    splashStagesLog.className = 'splash-stages-log';
 
     initLoaderOverlay.prepend(splashLogo);
     initLoaderOverlay.appendChild(splashMessage);
+    initLoaderOverlay.appendChild(splashStagesLog);
+
+    // Boot stage timing
+    const bootStart = performance.now();
+    /** @type {{stage: string, ms: number}[]} */
+    const stageTimings = [];
+    let stageStart = bootStart;
+    let currentStageLabel = 'Init';
+
+    function setStage(label) {
+        const now = performance.now();
+        const elapsed = now - stageStart;
+        stageTimings.push({ stage: currentStageLabel, ms: elapsed });
+
+        // Add completed stage to the on-screen log
+        const entry = document.createElement('div');
+        entry.className = 'splash-stage-entry';
+        entry.textContent = `${currentStageLabel} — ${(elapsed / 1000).toFixed(1)}s`;
+        splashStagesLog.appendChild(entry);
+
+        currentStageLabel = label;
+        stageStart = now;
+        splashLabel.textContent = `${label}…`;
+        splashElapsed.textContent = '';
+    }
+
+    const elapsedInterval = setInterval(() => {
+        const secs = (performance.now() - stageStart) / 1000;
+        splashElapsed.textContent = secs >= 0.5 ? ` ${secs.toFixed(1)}s` : '';
+    }, 100);
 
     const initLoaderHandle = loader.show({
         slug: 'app-init',
@@ -1002,9 +1043,15 @@ async function firstLoadInit() {
     addDOMPurifyHooks();
     reloadMarkdownProcessor();
     applyBrowserFixes();
+
+    setStage('Loading client info');
     await getClientVersion();
+
+    setStage('Loading secrets');
     await initSecrets();
     await readSecretState();
+
+    setStage('Loading locales');
     await initLocales();
     initChatUtilities();
     initDefaultSlashCommands();
@@ -1014,18 +1061,27 @@ async function firstLoadInit() {
     initKoboldSettings();
     initNovelAISettings();
     initSystemPrompts();
+
+    setStage('Loading extensions');
     await initExtensions();
     initExtensionSlashCommands();
     ToolManager.initToolSlashCommands();
+
+    setStage('Loading presets');
     await initPresetManager();
     await initSystemMessages();
+
+    setStage('Loading settings');
     await getSettings(initLoaderHandle);
+
+    setStage('Loading user data');
     await checkOpenRouterAuth();
     initKeyboard();
     initDynamicStyles();
     initTags();
     initBookmarks();
     await getUserAvatars(true, user_avatar);
+
     // Boot-residency decoupling (docs/design/boot-residency-decoupling.md): the full character/group fetch and
     // the tag-map seed that depends on it no longer gate first paint. `printCharacters(true)` right below this
     // renders via the server-query path (`canUseServerQueryForEntitiesList()`) whenever eligible - the common
@@ -1038,6 +1094,7 @@ async function firstLoadInit() {
     // + tag-filter reprints) already redraw themselves once real data lands, so the ineligible-boot-state case
     // (an active search restored from session, or a non-server-queryable sort field - design doc §3) still
     // converges to a correct render, just not the very first one.
+    let residencyResolved = false;
     const characterResidencyPromise = (async () => {
         await getCharacters();
         // Must run after getCharacters() (which also awaits getGroups() internally), since it needs both
@@ -1046,7 +1103,12 @@ async function firstLoadInit() {
         // loadTagsSettings() itself (that runs earlier, via getSettings(), before either array exists).
         await seedTagMapForResidentEntities();
     })();
+    characterResidencyPromise.then(() => { residencyResolved = true; });
+
+    setStage('Rendering characters');
     await printCharacters(true);
+
+    setStage('Loading assets');
     await getBackgrounds();
     await initTokenizers();
     initBackgrounds();
@@ -1066,6 +1128,8 @@ async function firstLoadInit() {
     initBulkEdit();
     initReasoning();
     initWelcomeScreen();
+
+    setStage('Starting up');
     await initScrapers();
     initCustomSelectedSamplers();
     initDataMaid();
@@ -1075,13 +1139,30 @@ async function firstLoadInit() {
     addDebugFunctions();
     doDailyExtensionUpdatesCheck();
     await eventSource.emit(event_types.APP_INITIALIZED);
+
+    // Record final stage timing and stop the live elapsed display
+    stageTimings.push({ stage: currentStageLabel, ms: performance.now() - stageStart });
+    clearInterval(elapsedInterval);
+
+    // Log boot timing summary to console
+    const totalMs = performance.now() - bootStart;
+    console.groupCollapsed(`[Boot] Completed in ${(totalMs / 1000).toFixed(2)}s`);
+    console.table(stageTimings.map(s => ({ Stage: s.stage, Duration: `${(s.ms / 1000).toFixed(2)}s` })));
+    console.groupEnd();
+
     await initLoaderHandle.hide();
     await fixViewport();
     // Full character/group residency (and the tag-map seed that depends on it) is awaited here rather than
     // earlier - see this function's own comment above `characterResidencyPromise` - so APP_READY keeps its
     // pre-existing guarantee (full residency by the time it fires) even though the splash screen itself no
     // longer waits on it.
-    await characterResidencyPromise;
+    if (!residencyResolved) {
+        const residencyWaitStart = performance.now();
+        await characterResidencyPromise;
+        console.log(`[Boot] Character residency resolved ${((performance.now() - residencyWaitStart) / 1000).toFixed(2)}s after splash`);
+    } else {
+        await characterResidencyPromise;
+    }
     await eventSource.emit(event_types.APP_READY);
 }
 
