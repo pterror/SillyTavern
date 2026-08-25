@@ -41,8 +41,53 @@ export class QuickReplySet {
     /**@type {HTMLElement}*/ dom;
     /**@type {HTMLElement}*/ settingsDom;
 
+    /** @type {Object|null} */ _pendingSetProps = null;
+    /** @type {Map|null} */ _pendingQrUpdates = null;
+    /** @type {Array|null} */ _pendingQrAdds = null;
+    /** @type {Set|null} */ _pendingQrDeletes = null;
+    /** @type {Array|null} */ _pendingQrOrder = null;
+
     constructor() {
         this.save = debounceAsync(() => this.performSave(), 200);
+    }
+
+    /** Save a changed set-level property (color, disableSend, etc.) */
+    saveSetProp(prop, value) {
+        if (!this._pendingSetProps) this._pendingSetProps = {};
+        this._pendingSetProps[prop] = value;
+        this.save();
+    }
+
+    /** Save a changed QR entry (full entry, merged by stable id) */
+    saveQrUpdate(qr) {
+        if (!this._pendingQrUpdates) this._pendingQrUpdates = new Map();
+        this._pendingQrUpdates.set(qr.id, qr);
+        this.save();
+    }
+
+    /** Save a new QR entry addition */
+    saveQrAdd(qr) {
+        if (!this._pendingQrAdds) this._pendingQrAdds = [];
+        this._pendingQrAdds.push(qr);
+        // idIndex changes when QRs are added
+        this.saveSetProp('idIndex', this.idIndex);
+        // Track order since the new entry needs positioning
+        this._pendingQrOrder = this.qrList.map(q => q.id);
+        // save() already called by saveSetProp above
+    }
+
+    /** Save a QR entry deletion by stable id */
+    saveQrDelete(id) {
+        if (!this._pendingQrDeletes) this._pendingQrDeletes = new Set();
+        this._pendingQrDeletes.add(id);
+        this._pendingQrUpdates?.delete(id);
+        this.save();
+    }
+
+    /** Save a reorder of QR entries */
+    saveOrder() {
+        this._pendingQrOrder = this.qrList.map(qr => qr.id);
+        this.save();
     }
 
     init() {
@@ -219,7 +264,7 @@ export class QuickReplySet {
         if (this.dom) {
             this.dom.append(qr.render());
         }
-        this.save();
+        this.saveQrAdd(qr);
         return qr;
     }
 
@@ -259,7 +304,7 @@ export class QuickReplySet {
         qr.onDebug = () => this.debug(qr);
         qr.onExecute = (_, options) => this.executeWithOptions(qr, options);
         qr.onDelete = () => this.removeQuickReply(qr);
-        qr.onUpdate = () => this.save();
+        qr.onUpdate = (qr) => this.saveQrUpdate(qr);
         qr.onInsertBefore = (qrJson) => {
             this.addQuickReplyFromText(qrJson);
             const newQr = this.qrList.pop();
@@ -267,7 +312,7 @@ export class QuickReplySet {
             if (qr.settingsDom) {
                 qr.settingsDom.insertAdjacentElement('beforebegin', newQr.settingsDom);
             }
-            this.save();
+            this.saveOrder();
         };
         qr.onTransfer = async () => {
             /**@type {HTMLSelectElement} */
@@ -356,7 +401,7 @@ export class QuickReplySet {
 
     removeQuickReply(qr) {
         this.qrList.splice(this.qrList.indexOf(qr), 1);
-        this.save();
+        this.saveQrDelete(qr.id);
     }
 
     toJSON() {
@@ -374,6 +419,66 @@ export class QuickReplySet {
     }
 
     async performSave() {
+        const setProps = this._pendingSetProps;
+        const qrUpdates = this._pendingQrUpdates;
+        const qrAdds = this._pendingQrAdds;
+        const qrDeletes = this._pendingQrDeletes;
+        const qrOrder = this._pendingQrOrder;
+
+        this._pendingSetProps = null;
+        this._pendingQrUpdates = null;
+        this._pendingQrAdds = null;
+        this._pendingQrDeletes = null;
+        this._pendingQrOrder = null;
+
+        const body = { name: this.name };
+        let hasChanges = false;
+
+        if (setProps && Object.keys(setProps).length > 0) {
+            body.setProps = setProps;
+            hasChanges = true;
+        }
+        if (qrUpdates && qrUpdates.size > 0) {
+            body.qrUpdates = [...qrUpdates.values()];
+            hasChanges = true;
+        }
+        if (qrAdds && qrAdds.length > 0) {
+            body.qrAdds = qrAdds;
+            hasChanges = true;
+        }
+        if (qrDeletes && qrDeletes.size > 0) {
+            body.qrDeletes = [...qrDeletes];
+            hasChanges = true;
+        }
+        if (qrOrder) {
+            body.qrOrder = qrOrder;
+            hasChanges = true;
+        }
+
+        if (!hasChanges) return;
+
+        const response = await fetch('/api/quick-replies/save-partial', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify(body),
+        });
+
+        if (response.ok) {
+            this.rerender();
+        } else {
+            warn(`Failed to save Quick Reply Set: ${this.name}`);
+            console.error('QR could not be saved', response);
+        }
+    }
+
+    async performFullSave() {
+        // Clear any pending partial state - this full save supersedes it
+        this._pendingSetProps = null;
+        this._pendingQrUpdates = null;
+        this._pendingQrAdds = null;
+        this._pendingQrDeletes = null;
+        this._pendingQrOrder = null;
+
         const response = await fetch('/api/quick-replies/save', {
             method: 'POST',
             headers: getRequestHeaders(),

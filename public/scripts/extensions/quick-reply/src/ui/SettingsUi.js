@@ -172,19 +172,19 @@ export class SettingsUi {
         this.disableSend.addEventListener('click', () => {
             const qrs = this.currentQrSet;
             qrs.disableSend = this.disableSend.checked;
-            qrs.save();
+            qrs.saveSetProp('disableSend', qrs.disableSend);
         });
         this.placeBeforeInput = this.dom.querySelector('#qr--placeBeforeInput');
         this.placeBeforeInput.addEventListener('click', () => {
             const qrs = this.currentQrSet;
             qrs.placeBeforeInput = this.placeBeforeInput.checked;
-            qrs.save();
+            qrs.saveSetProp('placeBeforeInput', qrs.placeBeforeInput);
         });
         this.injectInput = this.dom.querySelector('#qr--injectInput');
         this.injectInput.addEventListener('click', () => {
             const qrs = this.currentQrSet;
             qrs.injectInput = this.injectInput.checked;
-            qrs.save();
+            qrs.saveSetProp('injectInput', qrs.injectInput);
         });
         this.color = this.dom.querySelector('#qr--color');
         // @ts-ignore
@@ -195,22 +195,25 @@ export class SettingsUi {
             const qrs = this.currentQrSet;
             // @ts-ignore
             qrs.color = evt.detail.rgb;
-            qrs.save();
+            qrs.saveSetProp('color', qrs.color);
             this.currentQrSet.updateColor();
         });
         // @ts-ignore
-        this.dom.querySelector('#qr--colorClear').addEventListener('click', (evt) => {
+        this.dom.querySelector('#qr--colorClear').addEventListener('click', () => {
             const qrs = this.currentQrSet;
+            qrs.color = 'transparent';
+            this._populating = true;
             // @ts-ignore
             this.color.color = 'transparent';
-            qrs.save();
+            this._populating = false;
+            qrs.saveSetProp('color', 'transparent');
             this.currentQrSet.updateColor();
         });
         this.onlyBorderColor = this.dom.querySelector('#qr--onlyBorderColor');
         this.onlyBorderColor.addEventListener('click', () => {
             const qrs = this.currentQrSet;
             qrs.onlyBorderColor = this.onlyBorderColor.checked;
-            qrs.save();
+            qrs.saveSetProp('onlyBorderColor', qrs.onlyBorderColor);
             this.currentQrSet.updateColor();
         });
         this.onQrSetChange();
@@ -291,7 +294,7 @@ export class SettingsUi {
             it.setAttribute('data-order', String(idx));
             return qr;
         });
-        this.currentQrSet.save();
+        this.currentQrSet.saveOrder();
     }
 
     async deleteQrSet() {
@@ -336,7 +339,7 @@ export class SettingsUi {
             }
             const oldName = this.currentQrSet.name;
             this.currentQrSet.name = newName;
-            await this.currentQrSet.save();
+            await this.currentQrSet.performFullSave();
 
             // Update it in both set lists
             this.settings.config.setList.forEach(set => {
@@ -384,6 +387,7 @@ export class SettingsUi {
                     const qrs = new QuickReplySet();
                     qrs.name = name;
                     qrs.addQuickReply();
+                    await qrs.performFullSave();
                     QuickReplySet.list.splice(idx, 0, qrs);
                     this.rerender();
                     this.currentSet.value = name;
@@ -396,6 +400,7 @@ export class SettingsUi {
                 const qrs = new QuickReplySet();
                 qrs.name = name;
                 qrs.addQuickReply();
+                await qrs.performFullSave();
                 const idx = QuickReplySet.list.findIndex(it => it.name.toLowerCase().localeCompare(name.toLowerCase()) == 1);
                 if (idx > -1) {
                     QuickReplySet.list.splice(idx, 0, qrs);
@@ -445,7 +450,7 @@ export class SettingsUi {
                         const idx = QuickReplySet.list.indexOf(oldQrs);
                         await this.doDeleteQrSet(oldQrs);
                         QuickReplySet.list.splice(idx, 0, qrs);
-                        await qrs.save();
+                        await qrs.performFullSave();
                         this.rerender();
                         this.currentSet.value = qrs.name;
                         this.onQrSetChange();
@@ -460,7 +465,7 @@ export class SettingsUi {
                     } else {
                         QuickReplySet.list.push(qrs);
                     }
-                    await qrs.save();
+                    await qrs.performFullSave();
                     const opt = document.createElement('option'); {
                         opt.value = qrs.name;
                         opt.textContent = qrs.name;
