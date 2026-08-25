@@ -7,6 +7,7 @@ import { getConfigValue, color, mapWithConcurrency } from './util.js';
 import { DEFAULT_USER, UPLOADS_DIRECTORY } from './constants.js';
 import { getUserDirectories } from './users.js';
 import { copyCharacterFile } from './local-import-copy.js';
+import { reclaimReflinkPrefix } from './character-card-parser.js';
 import { importCharacterFileHeadless, buildPngImportData, buildJsonImportData, mintCharacterId, fireMetadataUpsertHook } from './endpoints/characters.js';
 import { beginBatchImport, endBatchImport, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, getLocalImportSkip, setLocalImportSkip, clearLocalImportSkip, getAllLocalImportMtimes, setLocalImportMtime, clearLocalImportMtime, seedCardTagsForSingleCharacter } from './character-metadata-db.js';
 import { attachOverflowWatch, isWindowsOverflowSignal } from './watch-overflow.js';
@@ -179,6 +180,44 @@ async function stageFile(sourcePath) {
     const stagedPath = path.join(uploadsDir, stagedName);
     await copyCharacterFile(sourcePath, stagedPath);
     return stagedPath;
+}
+
+/**
+ * When a duplicate is detected (source file matches an already-imported character by content or identity
+ * hash), reclaims disk space by making the canonical character file share its image-data extents with the
+ * source via reflink - the source archive file is only ever reflinked FROM (never opened for writing), so
+ * the archive stays genuinely untouched. A no-op on filesystems without COW/reflink support, or when the
+ * canonical file's image-data prefix doesn't byte-match the source's (see reclaimReflinkPrefix()'s own
+ * doc comment for the full verification it applies before touching anything).
+ *
+ * Unlike the removed maybeHardlinkDuplicateSource (which replaced SOURCE files with hardlinks to the
+ * canonical copy, destroying the archive's independence), this only ever modifies the app-managed
+ * canonical copy inside this install's own data directory, so it needs no config opt-in.
+ * @param {string} sourcePath Absolute path to the duplicate source file in the scanned directory.
+ * @param {string} characterId The already-imported character's avatar filename (e.g. '01a0....png').
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<void>} Never throws.
+ */
+async function maybeReflinkDuplicateTarget(sourcePath, characterId, directories) {
+    const targetPath = path.join(directories.characters, characterId);
+
+    let targetStat;
+    try {
+        targetStat = await fsPromises.stat(targetPath);
+    } catch {
+        // Canonical file doesn't exist (stale DB record?) - nothing to reclaim against.
+        return;
+    }
+    if (!targetStat.isFile()) return;
+
+    try {
+        const result = await reclaimReflinkPrefix(targetPath, sourcePath);
+        if (result.reflinked) {
+            console.log(color.cyan(`[local-import] Deduplicated on disk: ${targetPath} reflinked to share extents with source ${sourcePath} (source left untouched).`));
+        }
+    } catch (err) {
+        console.debug(`[local-import] Reflink dedup failed for ${targetPath} <- ${sourcePath}:`, /** @type {any} */ (err)?.message ?? err);
+    }
 }
 
 /**
@@ -439,6 +478,7 @@ async function processFile(state, filename, directories, tagImportSetting = 3) {
             const alreadyImported = await findCharacterIdByContentHash(directories, contentHash);
             if (alreadyImported) {
                 if (pipelineResult.needsWrite) await pipelineResult.finish({ type: 'no-write' });
+                await maybeReflinkDuplicateTarget(sourcePath, alreadyImported, directories);
                 // In-memory only, not persisted - see markProcessedInMemoryOnly()'s own doc comment on why a
                 // duplicate match must never be treated as a durable, restart-surviving skip.
                 markProcessedInMemoryOnly(state, filename, stat.mtimeMs);
@@ -453,6 +493,7 @@ async function processFile(state, filename, directories, tagImportSetting = 3) {
                     const identityMatch = await findCharacterIdByContentIdentityHash(directories, pipelineResult.identityHash);
                     if (identityMatch) {
                         if (pipelineResult.needsWrite) await pipelineResult.finish({ type: 'no-write' });
+                        await maybeReflinkDuplicateTarget(sourcePath, identityMatch, directories);
                         // In-memory only - same reasoning as the exact content_hash match above.
                         markProcessedInMemoryOnly(state, filename, stat.mtimeMs);
                         return;
