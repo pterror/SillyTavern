@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { promises as fsPromises } from 'node:fs';
 import path from 'node:path';
@@ -2049,6 +2050,7 @@ export async function initializeMetadataStores(directoriesList) {
         entry.bootstrapPromise = bootstrapIfNeeded(directories)
             .then(() => bootstrapGroupsIfNeeded(directories))
             .then(() => migrateTagsJsonIfNeeded(directories))
+            .then(() => backfillCardTagsIfNeeded(directories))
             .then(() => reconcile(directories))
             // Runs LAST in the chain, after reconcile() - so this pass sees the maximal set of poisoned rows a
             // single boot can discover (reconcile() may itself have just poisoned-inserted rows for files
@@ -3139,6 +3141,199 @@ function importTagMapSync(entry, tagMap) {
     });
 
     return droppedKeys;
+}
+
+// A card's own `data.tags` array is user-authored free text, not a curated tag set - ROOT/TAVERN are structural
+// markers some card sources embed that were never meant to become a visible tag, and 50 is a sanity cap against
+// a malformed or abusive card claiming hundreds of "tags" and bloating the tags table on backfill.
+const CARD_TAGS_EXCLUDED = new Set(['ROOT', 'TAVERN']);
+const CARD_TAGS_MAX_PER_CARD = 50;
+
+/**
+ * Shared classify-and-insert core for seeding `character_tags` from one character's card-embedded `data.tags`
+ * array - used by both backfillCardTagsIfNeeded() (the one-time backfill below) and
+ * seedCardTagsForSingleCharacter() (the forward-looking per-import path), so a card's embedded tags are always
+ * turned into real tag definitions + assignments the same way regardless of when that card is seen.
+ *
+ * `tagNameToId` is a case-insensitive `name.toLowerCase() -> id` map the caller owns across an entire pass (or a
+ * single call) - this function looks up AND populates it, so a tag name introduced by one card in a batch is
+ * immediately reused (not re-created) by the next card in the same batch that carries the same name.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} avatar Character id (the `characters.id` / `character_tags.character_id` value).
+ * @param {string[]} cardTags Raw `data.tags` array as embedded in the card.
+ * @param {Map<string, string>} tagNameToId Case-insensitive name -> tag id map, looked up and mutated in place.
+ * @param {(params: { id: string, data: string }) => void} insertTag `INSERT OR IGNORE INTO tags` runner.
+ * @param {(params: { characterId: string, tagId: string }) => void} insertAssignment `INSERT OR IGNORE INTO character_tags` runner.
+ */
+function seedCardTagsForCharacter(db, avatar, cardTags, tagNameToId, insertTag, insertAssignment) {
+    const filtered = cardTags
+        .filter(t => typeof t === 'string')
+        .map(t => t.trim())
+        .filter(t => t.length > 0 && !CARD_TAGS_EXCLUDED.has(t))
+        .slice(0, CARD_TAGS_MAX_PER_CARD);
+
+    for (const tagName of filtered) {
+        const key = tagName.toLowerCase();
+        let tagId = tagNameToId.get(key);
+        if (!tagId) {
+            tagId = crypto.randomUUID();
+            insertTag({ id: tagId, data: JSON.stringify({ id: tagId, name: tagName, create_date: Date.now() }) });
+            tagNameToId.set(key, tagId);
+        }
+        insertAssignment({ characterId: avatar, tagId });
+    }
+}
+
+/**
+ * Extracts a card's embedded tags array from one `characters.shallow_json` row, accepting either shape a card
+ * may carry it in: the normal `{ data: { tags: [...] } }` (a parsed character card) or a bare top-level
+ * `{ tags: [...] }`. Returns `[]` (never null/undefined) so callers can iterate unconditionally.
+ * @param {string} shallowJson
+ * @returns {string[]}
+ */
+function extractCardTags(shallowJson) {
+    let parsed;
+    try {
+        parsed = JSON.parse(shallowJson);
+    } catch {
+        return [];
+    }
+    if (!parsed || typeof parsed !== 'object') return [];
+    if (parsed.data && typeof parsed.data === 'object' && Array.isArray(parsed.data.tags)) {
+        return parsed.data.tags;
+    }
+    if (Array.isArray(parsed.tags)) {
+        return parsed.tags;
+    }
+    return [];
+}
+
+/**
+ * One-time backfill for characters imported before the local-import path extracted a card's embedded `data.tags`
+ * into `character_tags` (that extraction gap is why, on the owner's real library, 96% of characters carry
+ * embedded tags but only 5% have any `character_tags` row). Walks every row in `characters`, pulls each card's
+ * embedded tags out of its already-parsed `shallow_json` (no PNG re-read needed - unlike bootstrapIfNeeded(),
+ * this never touches disk), and seeds tag definitions + assignments via seedCardTagsForCharacter() - the same
+ * core forward-imports now use via seedCardTagsForSingleCharacter(), so a backfilled row and a freshly-imported
+ * row end up with identical tag rows.
+ *
+ * Gated by its own `card_tags_backfill_completed` meta flag (same one-time-ever shape as
+ * migrateTagsJsonIfNeeded()'s `tags_json_migrated` flag) so it only ever runs once per user. INSERT OR IGNORE on
+ * both `tags` and `character_tags` makes every write idempotent, so an interrupted-and-retried pass (this flag
+ * not being set yet) can never double-insert.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<void>}
+ */
+export async function backfillCardTagsIfNeeded(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+
+    const already = entry.db.get("SELECT value FROM meta WHERE key = 'card_tags_backfill_completed'");
+    if (already) return;
+
+    console.log(color.cyan('[character-metadata] Backfilling tag assignments from card-embedded tags...'));
+
+    /** @type {Map<string, string>} */
+    const tagNameToId = new Map();
+    for (const row of entry.db.all('SELECT id, data FROM tags')) {
+        try {
+            const tag = JSON.parse(row.data);
+            if (tag && typeof tag.name === 'string' && tag.name) {
+                tagNameToId.set(tag.name.toLowerCase(), row.id);
+            }
+        } catch {
+            // Malformed tag definition row - skip it, it can't be matched against by name anyway.
+        }
+    }
+
+    const rows = entry.db.all('SELECT id, shallow_json FROM characters');
+
+    const insertTag = (params) => entry.db.run('INSERT OR IGNORE INTO tags (id, data) VALUES (@id, @data)', params);
+    const insertAssignment = (params) => entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@characterId, @tagId)', params);
+
+    // Both counts logged at the end are computed as before/after deltas over the whole pass (tag definitions via
+    // tagNameToId.size, assignments via a COUNT(*) over character_tags) rather than accumulated per-row, since
+    // INSERT OR IGNORE gives no cheap per-call signal of whether a given insert actually added a row.
+    const tagDefinitionsBefore = tagNameToId.size;
+    const assignmentsBefore = entry.db.get('SELECT COUNT(*) AS n FROM character_tags')?.n ?? 0;
+
+    const backfillStart = Date.now();
+    let lastProgressLog = backfillStart;
+    let processedRows = 0;
+
+    for (let i = 0; i < rows.length; i += BATCH_FLUSH_SIZE) {
+        const chunk = rows.slice(i, i + BATCH_FLUSH_SIZE);
+
+        entry.db.transaction(() => {
+            for (const row of chunk) {
+                const cardTags = extractCardTags(row.shallow_json);
+                if (cardTags.length === 0) continue;
+                seedCardTagsForCharacter(entry.db, row.id, cardTags, tagNameToId, insertTag, insertAssignment);
+            }
+        });
+
+        processedRows += chunk.length;
+
+        const now = Date.now();
+        if (now - lastProgressLog >= BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS) {
+            console.log(color.cyan(`[character-metadata] Card-tags backfill progress: ${processedRows}/${rows.length}`));
+            lastProgressLog = now;
+        }
+
+        await new Promise(resolve => setImmediate(resolve));
+    }
+
+    bumpTagsRevisionSync(entry.db);
+    entry.db.run("INSERT INTO meta (key, value) VALUES ('card_tags_backfill_completed', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value");
+
+    const newTagDefinitions = tagNameToId.size - tagDefinitionsBefore;
+    const assignmentsAfter = entry.db.get('SELECT COUNT(*) AS n FROM character_tags')?.n ?? 0;
+    const newAssignments = assignmentsAfter - assignmentsBefore;
+
+    console.log(color.cyan(`[character-metadata] Card-tags backfill complete: ${newTagDefinitions} new tag definitions, ${newAssignments} new assignments.`));
+}
+
+/**
+ * Forward-looking counterpart to backfillCardTagsIfNeeded() - called from the local-import path for a single
+ * newly-imported character so a card's embedded `data.tags` get turned into real `character_tags` rows at
+ * import time, the same way the backfill retroactively does for the existing library. Reads the character's own
+ * `shallow_json` back out of the `characters` table (rather than requiring the caller to pass the parsed card),
+ * so it composes with import call sites that only have the avatar id in hand by this point.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} avatar
+ * @returns {Promise<void>}
+ */
+export async function seedCardTagsForSingleCharacter(directories, avatar) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+
+    const row = entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: avatar });
+    if (!row) return;
+
+    const cardTags = extractCardTags(row.shallow_json);
+    if (cardTags.length === 0) return;
+
+    /** @type {Map<string, string>} */
+    const tagNameToId = new Map();
+    for (const tagRow of entry.db.all('SELECT id, data FROM tags')) {
+        try {
+            const tag = JSON.parse(tagRow.data);
+            if (tag && typeof tag.name === 'string' && tag.name) {
+                tagNameToId.set(tag.name.toLowerCase(), tagRow.id);
+            }
+        } catch {
+            // Malformed tag definition row - skip it.
+        }
+    }
+
+    const insertTag = (params) => entry.db.run('INSERT OR IGNORE INTO tags (id, data) VALUES (@id, @data)', params);
+    const insertAssignment = (params) => entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@characterId, @tagId)', params);
+
+    entry.db.transaction(() => {
+        seedCardTagsForCharacter(entry.db, avatar, cardTags, tagNameToId, insertTag, insertAssignment);
+    });
+
+    bumpTagsRevisionSync(entry.db);
 }
 
 /**
