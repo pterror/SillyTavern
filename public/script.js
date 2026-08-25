@@ -194,7 +194,7 @@ import {
 // Imported directly from hash-utils.js (not re-exported via utils.js like getStringHash) so this doesn't widen
 // utils.js's re-export surface - a mocked utils.js in tests/utils-findchar.test.js stubs hash-utils.js with only
 // getStringHash, and this stays independent of that.
-import { hashSettingsKeys, treeNodeAt, digestsEqual128, DEFAULT_DIGEST_BUCKET_COUNT, DEFAULT_TREE_BRANCHING, characterDigestFieldsHash, characterDigestCardBodyHash } from './scripts/hash-utils.js';
+import { hashSettingsKeys, treeNodeAt, digestsEqual128, foldDigests128, emptyDigest128, DEFAULT_DIGEST_BUCKET_COUNT, DEFAULT_TREE_BRANCHING, characterDigestFieldsHash, characterDigestCardBodyHash } from './scripts/hash-utils.js';
 import { debounce_timeout, GENERATION_TYPE_TRIGGERS, IGNORE_SYMBOL, inject_ids, MEDIA_DISPLAY, MEDIA_SOURCE, MEDIA_TYPE, OVERSWIPE_BEHAVIOR, SCROLL_BEHAVIOR, SWIPE_DIRECTION, SWIPE_SOURCE, SWIPE_STATE } from './scripts/constants.js';
 
 import { cancelDebouncedMetadataSave, doDailyExtensionUpdatesCheck, extension_settings, initExtensions, loadExtensionSettings, runGenerationInterceptors } from './scripts/extensions.js';
@@ -267,7 +267,7 @@ import { appendFileContent, hasPendingFileAttachment, populateFileAttachment, de
 import { getPresetManager, initPresetManager } from './scripts/preset-manager.js';
 import { evaluateMacros, getLastMessageId, initMacros } from './scripts/macros.js';
 import { currentUser, setUserControls } from './scripts/user.js';
-import { getCachedRev, setCachedRev, getAllCachedCharacters, saveCachedCharacters, removeCachedCharacters, clearCharacterCache, getLastVerifiedRev, setLastVerifiedRev } from './scripts/character-cache.js';
+import { getCachedRev, setCachedRev, getAllCachedCharacters, saveCachedCharacters, removeCachedCharacters, clearCharacterCache, getLastVerifiedDigest, setLastVerifiedDigest } from './scripts/character-cache.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup, callGenericPopup, fixToastrForDialogs } from './scripts/popup.js';
 import { renderTemplate, renderTemplateAsync } from './scripts/templates.js';
 import { initScrapers } from './scripts/scrapers.js';
@@ -2480,51 +2480,78 @@ function workerComputeDigests(worker, nodes) {
 async function verifyCharacterCacheDigest() {
     if (hasVerifiedCharacterCacheDigestThisSession) return;
     hasVerifiedCharacterCacheDigestThisSession = true;
+
+    const branching = DEFAULT_TREE_BRANCHING;
+    const leafThreshold = Math.ceil(branching * 1.5);
+
     console.log('[digest-timing] verifyCharacterCacheDigest starting');
     const t_start = performance.now();
 
-    // Fast-path: if the server's current rev matches what it was when the last full verification
-    // completed successfully, nothing has changed on the server since then. Combined with the
-    // change-feed sync having already applied all changes up to this rev, the cache is known-good
-    // without recomputing any hashes. This turns the common case from O(library) to O(1).
-    try {
-        const [currentRev, lastVerifiedRev] = await Promise.all([getCachedRev(), getLastVerifiedRev()]);
-        if (lastVerifiedRev > 0 && currentRev === lastVerifiedRev) {
-            console.log(`[digest-timing] fast-path skip: server rev ${currentRev} matches last verified rev, skipping full verification`);
+    // Step 1: Fetch server's root-level children (one HTTP call, triggers a server-side table scan
+    // on the digest worker thread - not on the Node event loop). This is the cheapest possible way
+    // to learn the server's current state without any client-side computation.
+    const rootResponse = await fetch('/api/characters/tree-descend', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ branching, leafThreshold, nodes: [{ path: [] }] }),
+    });
+    if (!rootResponse.ok) {
+        throw new Error(`Tree-descend root fetch failed: ${rootResponse.statusText}`);
+    }
+    const { results: rootResults } = await rootResponse.json();
+    const rootResult = rootResults?.[0];
+
+    // Step 2: Fast-path - compare server's root aggregate against stored digest from the last
+    // successful verification. Both are 128-bit content-derived hashes (XOR-fold of per-record
+    // per-field hashes), not counters. If they match, the server hasn't changed since the last
+    // full verification, so the expensive O(library) client-side computation can be skipped.
+    if (rootResult?.type === 'children') {
+        let serverRoot = emptyDigest128();
+        for (const child of rootResult.children) {
+            serverRoot = foldDigests128(serverRoot, child.digest ?? emptyDigest128());
+        }
+
+        const storedDigest = await getLastVerifiedDigest();
+        if (storedDigest && digestsEqual128(serverRoot, storedDigest)) {
+            console.log(`[digest-timing] fast-path skip: server root digest unchanged (${(performance.now() - t_start).toFixed(1)}ms)`);
             return;
         }
-        console.log(`[digest-timing] full verification needed: cached rev ${currentRev}, last verified ${lastVerifiedRev}`);
-    } catch (error) {
-        console.warn('[digest-timing] fast-path check failed, proceeding with full verification:', error);
+        console.log(`[digest-timing] server root changed or no stored digest, proceeding with full verification`);
     }
 
-    const branching = DEFAULT_TREE_BRANCHING;
-    /** Crossover point where returning per-record hashes (~40 bytes/record in JSON) becomes cheaper than
-     * returning `branching` children hashes (~60 bytes/child in JSON) - see DEFAULT_TREE_BRANCHING's own doc
-     * comment in hash-utils.js. Derived from branching, not a separate constant, so the two stay in lockstep. */
-    const leafThreshold = Math.ceil(branching * 1.5);
-
-    // Compute local tree (persistent worker) - fingerprint extraction + canonicalization + hashing for the WHOLE
-    // cache runs on character-digest-worker.js (see that module's own header and computeLocalCharacterDigest()'s),
-    // not inline here - a real 326k-character cache measured multiple seconds of this on the main thread (2026-08
-    // state-digest perf investigation), which on a browser main thread means a frozen UI for that whole span, not
-    // just a delay.
+    // Step 3: Full verification - expensive client-side computation only runs when the server's
+    // root actually differs from what was last verified.
+    const t_cache = performance.now();
     const localCharacters = await getAllCachedCharacters();
-    console.log(`[digest-timing] getAllCachedCharacters: ${(performance.now() - t_start).toFixed(1)}ms (${localCharacters.size} entries)`);
+    console.log(`[digest-timing] getAllCachedCharacters: ${(performance.now() - t_cache).toFixed(1)}ms (${localCharacters.size} entries)`);
+
     const t_compute = performance.now();
     const { children: localChildren, localHashes, worker } =
         await computeLocalCharacterDigest(localCharacters, branching);
     console.log(`[digest-timing] computeLocalCharacterDigest total: ${(performance.now() - t_compute).toFixed(1)}ms`);
-    const t_descent = performance.now();
 
     try {
-        // RT 1: request root expansion from server, then keep descending into whatever mismatches until nothing's
-        // left to expand.
-        let currentNodes = [{ path: [] }];
-
-        // Collect all leaf results across descent levels
+        // Reuse the root response from step 1 (don't re-fetch). Process it the same way the
+        // descent loop would, but inline since we already have the data.
+        let currentNodes = [];
         const allLeaves = [];
 
+        if (rootResult?.type === 'children') {
+            for (let i = 0; i < branching; i++) {
+                const sd = rootResult.children[i]?.digest ?? emptyDigest128();
+                const ld = localChildren[i]?.digest ?? emptyDigest128();
+                if (!digestsEqual128(sd, ld)) {
+                    currentNodes.push({ path: [i] });
+                }
+            }
+        } else if (rootResult?.type === 'leaves') {
+            allLeaves.push(rootResult);
+        }
+
+        const t_descent = performance.now();
+
+        // Continue descent for any mismatched children (same loop as before, just starting
+        // from level 1 since level 0 was already processed above from the reused root response).
         while (currentNodes.length > 0) {
             const response = await fetch('/api/characters/tree-descend', {
                 method: 'POST',
@@ -2566,8 +2593,8 @@ async function verifyCharacterCacheDigest() {
                     if (!localDigests) continue;
 
                     for (let i = 0; i < branching; i++) {
-                        const sd = result.children[i]?.digest ?? { a: 0, b: 0, c: 0, d: 0 };
-                        const ld = localDigests[i]?.digest ?? { a: 0, b: 0, c: 0, d: 0 };
+                        const sd = result.children[i]?.digest ?? emptyDigest128();
+                        const ld = localDigests[i]?.digest ?? emptyDigest128();
                         if (!digestsEqual128(sd, ld)) {
                             nextNodes.push({ path: [...result.path, i] });
                         }
@@ -2771,19 +2798,19 @@ async function verifyCharacterCacheDigest() {
             await printCharacters(true);
         }
         console.log(`[digest-timing] repair total: ${(performance.now() - t_repair).toFixed(1)}ms, patched: ${patched.size}, removed: ${toRemove.length}, collisions: ${collisionIds.length}`);
-        console.log(`[digest-timing] verifyCharacterCacheDigest total: ${(performance.now() - t_start).toFixed(1)}ms`);
 
-        // Persist the current rev as the last-verified-at rev, so the next session can fast-path
-        // skip if nothing changed since. Uses getCachedRev() (the rev fetchCharactersDelta synced
-        // up to) as the anchor - if the server's rev still matches this on the next boot, the cache
-        // is known-good without recomputation.
-        try {
-            const currentRev = await getCachedRev();
-            await setLastVerifiedRev(currentRev);
-            console.log(`[digest-timing] stored last verified rev: ${currentRev}`);
-        } catch (error) {
-            console.warn('[digest-timing] failed to persist last verified rev:', error);
+        // Store the server's root digest for next session's fast-path. Content-derived (XOR-fold
+        // of all per-record per-field hashes), not a counter.
+        if (rootResult?.type === 'children') {
+            let serverRoot = emptyDigest128();
+            for (const child of rootResult.children) {
+                serverRoot = foldDigests128(serverRoot, child.digest ?? emptyDigest128());
+            }
+            await setLastVerifiedDigest(serverRoot);
+            console.log(`[digest-timing] stored server root digest for fast-path`);
         }
+
+        console.log(`[digest-timing] verifyCharacterCacheDigest total: ${(performance.now() - t_start).toFixed(1)}ms`);
     } finally {
         worker.terminate();
     }

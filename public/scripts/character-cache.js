@@ -68,36 +68,42 @@ export async function setCachedRev(rev) {
     }
 }
 
-// Reserved key for the last-verified-at rev (see verifyCharacterCacheDigest's fast-path skip).
-const LAST_VERIFIED_REV_KEY = '__last_verified_rev__';
+// Reserved key for the last-verified root digest (see verifyCharacterCacheDigest's fast-path skip).
+const LAST_VERIFIED_DIGEST_KEY = '__last_verified_digest__';
 
 /**
- * The server rev that was current when the last successful digest verification completed.
- * If the server's current rev still matches this, nothing has changed on either side since
- * the last full verification, so the expensive O(library) recomputation can be skipped entirely.
- * @returns {Promise<number>}
+ * The 128-bit root digest that was current when the last successful digest verification completed.
+ * Content-derived (XOR-fold of all per-record per-field hashes), not a counter - so it can't
+ * silently be wrong the way a rev counter can. If the server's current root matches this, nothing
+ * has changed since the last full verification, and the expensive O(library) client-side
+ * recomputation can be skipped entirely.
+ * @returns {Promise<{a: number, b: number, c: number, d: number} | null>}
  */
-export async function getLastVerifiedRev() {
+export async function getLastVerifiedDigest() {
     const store = getCharacterCacheStore();
     try {
-        const rev = await store.getItem(LAST_VERIFIED_REV_KEY);
-        return typeof rev === 'number' && Number.isFinite(rev) ? rev : 0;
+        const digest = await store.getItem(LAST_VERIFIED_DIGEST_KEY);
+        if (digest && typeof digest.a === 'number' && typeof digest.b === 'number' &&
+            typeof digest.c === 'number' && typeof digest.d === 'number') {
+            return digest;
+        }
+        return null;
     } catch (error) {
-        console.error('Failed to read last verified rev:', error);
-        return 0;
+        console.error('Failed to read last verified digest:', error);
+        return null;
     }
 }
 
 /**
- * @param {number} rev
+ * @param {{a: number, b: number, c: number, d: number}} digest
  * @returns {Promise<void>}
  */
-export async function setLastVerifiedRev(rev) {
+export async function setLastVerifiedDigest(digest) {
     const store = getCharacterCacheStore();
     try {
-        await store.setItem(LAST_VERIFIED_REV_KEY, rev);
+        await store.setItem(LAST_VERIFIED_DIGEST_KEY, digest);
     } catch (error) {
-        console.error('Failed to persist last verified rev:', error);
+        console.error('Failed to persist last verified digest:', error);
     }
 }
 
