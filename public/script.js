@@ -208,7 +208,7 @@ import {
     chooseBogusFolder,
     getTagBlock,
     loadTagsSettings,
-    seedTagMapCompact,
+    seedTagMapFromRecords,
     printTagFilters,
     getTagKeyForEntity,
     printTagList,
@@ -1092,15 +1092,16 @@ async function firstLoadInit() {
     // first paint moves earlier. `getCharacters()` (via its own trailing `printCharacters(true)`) already redraws
     // itself once real data lands, so the ineligible-boot-state case (an active search restored from session, or
     // a non-server-queryable sort field - design doc §3) still converges to a correct render, just not the very
-    // first one. Tag assignments are seeded in bulk via `seedTagMapCompact()` (tags.js), called right after
-    // `getCharacters()` inside this promise — a single compact fetch covering the whole library (~559 KB
-    // gzipped), not blocking first paint since this promise runs concurrently with the initial render.
+    // first one. Tag assignments are seeded via `seedTagMapFromRecords()` (tags.js), called right after
+    // `getCharacters()` inside this promise — character tags are derived from each character's `tag_ids`
+    // field (already part of the shallow record), and group tags are fetched separately in one small
+    // `/api/tags/for` call, not blocking first paint since this promise runs concurrently with the initial render.
     let residencyResolved = false;
     const characterResidencyPromise = (async () => {
         await getCharacters();
-        // Must run after getCharacters() (which also awaits getGroups() internally), since the compact
-        // response includes character avatars and group ids that the client needs to decode.
-        await seedTagMapCompact();
+        // Must run after getCharacters() (which also awaits getGroups() internally), since building the
+        // tag_map needs both the populated `characters` array and the group ids to fetch group tags for.
+        await seedTagMapFromRecords();
     })();
     characterResidencyPromise.then(() => { residencyResolved = true; });
 
