@@ -11905,54 +11905,12 @@ export async function createOrEditCharacter(e) {
 
             const previousFav = getCurrentCharacter()?.fav;
 
-            // Optimistic concurrency: send the rev we loaded so the server can detect if another
-            // session edited this character since we loaded it (same shape as settings' hash check).
-            const editCharacter = getCurrentCharacter();
-            if (editCharacter?.rev !== undefined) {
-                headers['X-Character-Rev'] = String(editCharacter.rev);
-            }
-
             const fetchResult = await fetch(url, {
                 method: 'POST',
                 headers: headers,
                 body: formData,
                 cache: 'no-cache',
             });
-
-            if (fetchResult.status === 409) {
-                let errorData;
-                try { errorData = await fetchResult.json(); } catch { /* ignore parse errors */ }
-                if (errorData?.error === 'conflict') {
-                    const confirmOverwrite = await callGenericPopup(
-                        t`<h3>Character edited in another session</h3>
-                          <p>This character was changed by another session since you loaded it. Your changes have not been saved yet.</p>
-                          <p>You can overwrite with your version (the other session's changes will be lost), or discard your changes and load the latest version from the server.</p>`,
-                        POPUP_TYPE.CONFIRM,
-                        '',
-                        { okButton: t`Overwrite with mine`, cancelButton: t`Discard my changes` },
-                    );
-                    if (confirmOverwrite === POPUP_RESULT.AFFIRMATIVE) {
-                        // Retry without the rev header to force the save through
-                        delete headers['X-Character-Rev'];
-                        const retryResult = await fetch(url, {
-                            method: 'POST',
-                            headers: headers,
-                            body: formData,
-                            cache: 'no-cache',
-                        });
-                        if (!retryResult.ok) {
-                            throw new Error('Force save after conflict failed');
-                        }
-                        await getOneCharacter(formData.get('avatar_url'));
-                        await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character: getCurrentCharacter() } });
-                    } else {
-                        // User chose to discard - reload to reset all form state to the server version
-                        window.location.reload();
-                        return;
-                    }
-                    return;
-                }
-            }
 
             if (!fetchResult.ok) {
                 throw new Error('Fetch result is not ok');
