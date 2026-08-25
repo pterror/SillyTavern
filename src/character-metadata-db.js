@@ -2609,6 +2609,12 @@ export async function getEntityTagIdsForMany(directories, ids) {
         for (const row of [...characterRows, ...groupRows]) {
             result[row.entity_id]?.push(row.tag_id);
         }
+
+        // Yield to the event loop between batches (not after the last one) so a large `ids` list can't starve
+        // other requests behind this function's otherwise fully-synchronous sqlite work.
+        if (i + BATCH_FLUSH_SIZE < ids.length) {
+            await new Promise(resolve => setImmediate(resolve));
+        }
     }
 
     return result;
@@ -2937,6 +2943,20 @@ export async function getTagDefinitions(directories) {
     const entry = await getEntry(directories);
     if (!entry) return null;
     return entry.db.all('SELECT data FROM tags').map(r => JSON.parse(r.data));
+}
+
+/**
+ * Every tag id currently assigned to at least one entity - read straight off the trigger-maintained `tag_usage`
+ * table (see its schema comment) rather than scanning `character_tags`/`group_tags`, since `tag_usage` already
+ * tracks a live count per tag id as assignments come and go.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<string[] | null>} `null` if the metadata store is unavailable.
+ */
+export async function getAssignedTagIds(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    const rows = entry.db.all('SELECT tag_id FROM tag_usage WHERE count > 0');
+    return rows.map(row => row.tag_id);
 }
 
 /**

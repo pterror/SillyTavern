@@ -208,7 +208,7 @@ import {
     chooseBogusFolder,
     getTagBlock,
     loadTagsSettings,
-    seedTagMapForResidentEntities,
+    ensureTagsForKeys,
     printTagFilters,
     getTagKeyForEntity,
     printTagList,
@@ -1082,26 +1082,21 @@ async function firstLoadInit() {
     initBookmarks();
     await getUserAvatars(true, user_avatar);
 
-    // Boot-residency decoupling (docs/design/boot-residency-decoupling.md): the full character/group fetch and
-    // the tag-map seed that depends on it no longer gate first paint. `printCharacters(true)` right below this
-    // renders via the server-query path (`canUseServerQueryForEntitiesList()`) whenever eligible - the common
-    // boot case (no restored search, a queryable sort field) - which needs no local `characters`/`groups`
-    // residency at all, so it's safe to call before either array is populated. This promise is awaited later,
-    // right before APP_READY, so nothing that genuinely assumes full residency by the time APP_READY fires
-    // (extensions included - see the design doc's §5 "what this doc does not know" on extension compatibility)
-    // observes any behavior change; only the visual first paint moves earlier. Both `getCharacters()` (via its
-    // own trailing `printCharacters(true)`) and `seedTagMapForResidentEntities()` (via `printCharactersDebounced()`
-    // + tag-filter reprints) already redraw themselves once real data lands, so the ineligible-boot-state case
-    // (an active search restored from session, or a non-server-queryable sort field - design doc §3) still
-    // converges to a correct render, just not the very first one.
+    // Boot-residency decoupling (docs/design/boot-residency-decoupling.md): the full character/group fetch no
+    // longer gates first paint. `printCharacters(true)` right below this renders via the server-query path
+    // (`canUseServerQueryForEntitiesList()`) whenever eligible - the common boot case (no restored search, a
+    // queryable sort field) - which needs no local `characters`/`groups` residency at all, so it's safe to call
+    // before either array is populated. This promise is awaited later, right before APP_READY, so nothing that
+    // genuinely assumes full residency by the time APP_READY fires (extensions included - see the design doc's
+    // §5 "what this doc does not know" on extension compatibility) observes any behavior change; only the visual
+    // first paint moves earlier. `getCharacters()` (via its own trailing `printCharacters(true)`) already redraws
+    // itself once real data lands, so the ineligible-boot-state case (an active search restored from session, or
+    // a non-server-queryable sort field - design doc §3) still converges to a correct render, just not the very
+    // first one. Tag assignments are no longer seeded wholesale here at all - `ensureTagsForKeys()`
+    // (tags.js) fetches them per-page instead, called from makePageCallback() once the page's entities are known.
     let residencyResolved = false;
     const characterResidencyPromise = (async () => {
         await getCharacters();
-        // Must run after getCharacters() (which also awaits getGroups() internally), since it needs both
-        // `characters` and `groups` populated to know which ids to ask /api/tags/for. See
-        // seedTagMapForResidentEntities()'s own doc comment (tags.js) for why this can't happen inside
-        // loadTagsSettings() itself (that runs earlier, via getSettings(), before either array exists).
-        await seedTagMapForResidentEntities();
     })();
     characterResidencyPromise.then(() => { residencyResolved = true; });
 
@@ -1545,6 +1540,17 @@ export async function printCharacters(fullRefresh = false) {
             localizePagination($('#rm_print_characters_pagination'));
 
             eventSource.emit(event_types.CHARACTER_PAGE_LOADED);
+
+            // Lazy per-page tag fetch: ask the server for tag assignments of just the entities on this
+            // page, then patch their inline tag pills once the response lands. Fire-and-forget (not awaited)
+            // so the page render itself isn't delayed.
+            const entityKeys = data
+                .filter(i => i.type === 'character' || i.type === 'group')
+                .map(i => i.type === 'character' ? i.item?.avatar : String(i.id))
+                .filter(Boolean);
+            if (entityKeys.length > 0) {
+                ensureTagsForKeys(entityKeys);
+            }
         };
     }
 
