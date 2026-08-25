@@ -76,7 +76,7 @@ export class QuickReplySet {
     }
     updateColor() {
         if (!this.dom) return;
-        if (this.color && this.color != 'transparent') {
+        if (this.color && this.color != 'transparent' && this.color != 'rgba(0, 0, 0, 0)') {
             this.dom.style.setProperty('--qr--color', this.color);
             this.dom.classList.add('qr--color');
             if (this.onlyBorderColor) {
