@@ -4034,6 +4034,21 @@ export async function getCurrentRev(directories) {
 }
 
 /**
+ * Returns the current `rev` for a specific character, or `null` if the character has no metadata row.
+ * Used by the character edit endpoint's conflict detection (optimistic concurrency via rev comparison,
+ * same pattern as the settings endpoint's hash-based check).
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} avatar Avatar filename (e.g. `Alice.png`)
+ * @returns {Promise<number|null>}
+ */
+export async function getCharacterRev(directories, avatar) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    const row = entry.db.get('SELECT rev FROM characters WHERE id = @id', { id: avatar });
+    return row ? Number(row.rev) : null;
+}
+
+/**
  * `POST /api/characters/changes` (design doc §5.2): the change-feed replacement for a whole-library manifest scan.
  * Not yet wired to replace `/api/characters/manifest` in characters.js - the doc scopes that client-side switch to
  * a later phase (§5.2's own framing: "once browse is server-paginated" client-side, which is phase 5, not this

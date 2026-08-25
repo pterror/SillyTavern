@@ -31,7 +31,7 @@ import cacheBuster from '../middleware/cacheBuster.js';
 import { searchCharacters, searchCharacterIds, rebuildCharacterSearchIndex, SEARCH_ID_CAP } from './characters-search-index.js';
 import { searchGroups, searchGroupIds } from './groups-search-index.js';
 import { getGroupsData, getGroupsByIds } from './groups.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, resolveFingerprints, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getShallowByIds } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, resolveFingerprints, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getShallowByIds, getCharacterRev } from '../character-metadata-db.js';
 import { DEFAULT_DIGEST_BUCKET_COUNT } from '../../public/scripts/hash-utils.js';
 
 // With 100 MB limit it would take roughly 3000 characters to reach this limit
@@ -998,6 +998,17 @@ router.post('/edit', validateAvatarUrlMiddleware, async function (request, respo
         console.warn('Error: invalid name.');
         response.status(400).send('Error: invalid name.');
         return;
+    }
+
+    // Optimistic concurrency: if the client sent a rev (the metadata-db row version it loaded), check
+    // that the character hasn't been edited by another session since then. Same shape as the settings
+    // endpoint's X-Settings-Hash check (409 on mismatch, client re-fetches on conflict).
+    const clientRev = request.headers['x-character-rev'];
+    if (clientRev !== undefined) {
+        const currentRev = await getCharacterRev(request.user.directories, request.body.avatar_url);
+        if (currentRev !== null && Number(clientRev) !== currentRev) {
+            return response.status(409).json({ error: 'conflict', currentRev });
+        }
     }
 
     let char = charaFormatData(request.body, request.user.directories);
@@ -2475,6 +2486,11 @@ router.post('/get', validateAvatarUrlMiddleware, async function (request, respon
         const data = await processCharacter(item, request.user.directories, { shallow: false });
         await stampDbFav(request.user.directories, [data]);
         await stampDbActiveChat(request.user.directories, [data]);
+
+        // Include the character's metadata-db rev so the client can send it back on the next edit
+        // for conflict detection (optimistic concurrency, same shape as settings' hash check).
+        const characterRev = await getCharacterRev(request.user.directories, item);
+        if (characterRev !== null) data.rev = characterRev;
 
         return response.send(data);
     } catch (err) {
