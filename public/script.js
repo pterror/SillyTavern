@@ -2372,9 +2372,12 @@ function computeLocalCharacterDigest(localCharacters, branching) {
             if (event.data.type === 'ready') {
                 // Don't terminate - the worker stays alive for follow-up 'compute-digests' requests as the
                 // descent goes deeper. The caller is responsible for terminate()'ing it when done.
+                const t_mapBuild = performance.now();
+                const localHashes = new Map(event.data.localHashes);
+                console.log(`[digest-timing] new Map(localHashes): ${(performance.now() - t_mapBuild).toFixed(1)}ms (${localHashes.size} entries, localHashes array length: ${event.data.localHashes?.length})`);
                 resolve({
                     children: event.data.children,
-                    localHashes: new Map(event.data.localHashes),
+                    localHashes,
                     worker,
                 });
             }
@@ -2382,12 +2385,18 @@ function computeLocalCharacterDigest(localCharacters, branching) {
 
         (async () => {
             worker.postMessage({ type: 'init', branching });
+            const t_arrayFrom = performance.now();
             const entries = Array.from(localCharacters.entries());
+            console.log(`[digest-timing] Array.from(entries): ${(performance.now() - t_arrayFrom).toFixed(1)}ms (${entries.length} entries)`);
+            const t_chunksStart = performance.now();
+            let chunkCount = 0;
             for (let i = 0; i < entries.length; i += DIGEST_WORKER_SEND_CHUNK_SIZE) {
                 worker.postMessage({ type: 'chunk', entries: entries.slice(i, i + DIGEST_WORKER_SEND_CHUNK_SIZE) });
+                chunkCount++;
                 // eslint-disable-next-line no-undef
                 await new Promise((r) => setTimeout(r, 0));
             }
+            console.log(`[digest-timing] postMessage chunks: ${(performance.now() - t_chunksStart).toFixed(1)}ms (${chunkCount} chunks of ${DIGEST_WORKER_SEND_CHUNK_SIZE})`);
             worker.postMessage({ type: 'end' });
         })();
     });
@@ -2462,6 +2471,8 @@ function workerComputeDigests(worker, nodes) {
 async function verifyCharacterCacheDigest() {
     if (hasVerifiedCharacterCacheDigestThisSession) return;
     hasVerifiedCharacterCacheDigestThisSession = true;
+    console.log('[digest-timing] verifyCharacterCacheDigest starting');
+    const t_start = performance.now();
 
     const branching = DEFAULT_TREE_BRANCHING;
     /** Crossover point where returning per-record hashes (~40 bytes/record in JSON) becomes cheaper than
@@ -2475,8 +2486,12 @@ async function verifyCharacterCacheDigest() {
     // state-digest perf investigation), which on a browser main thread means a frozen UI for that whole span, not
     // just a delay.
     const localCharacters = await getAllCachedCharacters();
+    console.log(`[digest-timing] getAllCachedCharacters: ${(performance.now() - t_start).toFixed(1)}ms (${localCharacters.size} entries)`);
+    const t_compute = performance.now();
     const { children: localChildren, localHashes, worker } =
         await computeLocalCharacterDigest(localCharacters, branching);
+    console.log(`[digest-timing] computeLocalCharacterDigest total: ${(performance.now() - t_compute).toFixed(1)}ms`);
+    const t_descent = performance.now();
 
     try {
         // RT 1: request root expansion from server, then keep descending into whatever mismatches until nothing's
@@ -2542,6 +2557,8 @@ async function verifyCharacterCacheDigest() {
 
             currentNodes = nextNodes;
         }
+        console.log(`[digest-timing] tree descent total: ${(performance.now() - t_descent).toFixed(1)}ms, leaves: ${allLeaves.length}`);
+        const t_repair = performance.now();
 
         // Process all collected leaf results: compare per-record hashes, identify drift by id. Leaf members are
         // hash-only ({id, favHash, fieldsHash}) - no fingerprint values are carried here (see this function's own
@@ -2719,6 +2736,8 @@ async function verifyCharacterCacheDigest() {
             charactersStore.reindex();
             await printCharacters(true);
         }
+        console.log(`[digest-timing] repair total: ${(performance.now() - t_repair).toFixed(1)}ms, patched: ${patched.size}, removed: ${toRemove.length}, collisions: ${collisionIds.length}`);
+        console.log(`[digest-timing] verifyCharacterCacheDigest total: ${(performance.now() - t_start).toFixed(1)}ms`);
     } finally {
         worker.terminate();
     }
