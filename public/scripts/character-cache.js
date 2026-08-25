@@ -143,19 +143,64 @@ export async function getAllCachedCharacters() {
  * is simply omitted from the result, and the caller recomputes those records' hashes on demand.
  * @returns {Promise<Map<string, {fav: number, tagIds: number, content: number}>>} avatar -> hashes
  */
+/**
+ * Reads per-field hashes for every cached character, keyed by avatar. These were computed and stored
+ * atomically with the character data in saveCachedCharacters(), so they're guaranteed to match the
+ * record they describe. Verification reads these instead of the full character data (~24 bytes per
+ * record instead of ~1KB), avoiding the expensive IDB deserialize + structured-clone + rehash that
+ * previously dominated the digest check.
+ *
+ * Migration: records cached before hash storage was added lack a `hashes` field. These are computed
+ * from the character data on first encounter and persisted back to IDB (batched with yields), so
+ * subsequent calls read stored hashes for all records. This is a one-time cost proportional to the
+ * number of unhashed records, not the library size on every call.
+ * @returns {Promise<Map<string, {fav: number, tagIds: number, content: number}>>} avatar -> hashes
+ */
 export async function getAllCachedHashes() {
     const store = getCharacterCacheStore();
     const result = new Map();
+    /** @type {[string, object][]} [key, record] pairs needing hash computation */
+    const unhashed = [];
     try {
         await store.iterate((record, key) => {
             if (key === REV_KEY || key === LAST_VERIFIED_DIGEST_KEY) return;
             if (record?.hashes) {
                 result.set(key, record.hashes);
+            } else if (record?.character) {
+                // Collect for migration - hash computation + persist happens in batches below.
+                unhashed.push([key, record]);
             }
         });
     } catch (error) {
         console.error('Failed to read cached character hashes:', error);
     }
+
+    // Migration: compute and persist hashes for records that predate hash storage.
+    // Batched with yields so the main thread stays responsive during the one-time migration.
+    if (unhashed.length > 0) {
+        console.log(`[character-cache] Computing hashes for ${unhashed.length} cached record(s) that predate hash storage...`);
+        const MIGRATE_BATCH = 500;
+        for (let i = 0; i < unhashed.length; i += MIGRATE_BATCH) {
+            const batch = unhashed.slice(i, i + MIGRATE_BATCH);
+            const toStore = [];
+            for (const [key, record] of batch) {
+                const character = record.character;
+                const hashes = {
+                    fav: characterDigestFavHash(character) % 4294967296,
+                    tagIds: characterDigestTagIdsHash(character),
+                    content: characterDigestFieldsHash(character) % 4294967296,
+                };
+                result.set(key, hashes);
+                toStore.push({ key, value: { ...record, hashes } });
+            }
+            // Persist the batch back to IDB so next call reads stored hashes directly.
+            await Promise.all(toStore.map(({ key, value }) =>
+                store.setItem(key, value).catch(error =>
+                    console.error(`Failed to persist migrated hashes for ${key}:`, error))));
+        }
+        console.log(`[character-cache] Hash migration complete (${unhashed.length} record(s)).`);
+    }
+
     return result;
 }
 
