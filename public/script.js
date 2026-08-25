@@ -194,7 +194,7 @@ import {
 // Imported directly from hash-utils.js (not re-exported via utils.js like getStringHash) so this doesn't widen
 // utils.js's re-export surface - a mocked utils.js in tests/utils-findchar.test.js stubs hash-utils.js with only
 // getStringHash, and this stays independent of that.
-import { hashSettingsKeys, treeNodeAt, digestsEqual, DEFAULT_DIGEST_BUCKET_COUNT, DEFAULT_TREE_BRANCHING } from './scripts/hash-utils.js';
+import { hashSettingsKeys, treeNodeAt, digestsEqual128, DEFAULT_DIGEST_BUCKET_COUNT, DEFAULT_TREE_BRANCHING } from './scripts/hash-utils.js';
 import { debounce_timeout, GENERATION_TYPE_TRIGGERS, IGNORE_SYMBOL, inject_ids, MEDIA_DISPLAY, MEDIA_SOURCE, MEDIA_TYPE, OVERSWIPE_BEHAVIOR, SCROLL_BEHAVIOR, SWIPE_DIRECTION, SWIPE_SOURCE, SWIPE_STATE } from './scripts/constants.js';
 
 import { cancelDebouncedMetadataSave, doDailyExtensionUpdatesCheck, extension_settings, initExtensions, loadExtensionSettings, runGenerationInterceptors } from './scripts/extensions.js';
@@ -2352,7 +2352,7 @@ const DIGEST_WORKER_SEND_CHUNK_SIZE = 2000;
  * turns up as mismatched - the caller owns terminating it once the descent is done.
  * @param {Map<string, object>} localCharacters
  * @param {number} branching
- * @returns {Promise<{ children: {fav: {hi:number,lo:number}, fields: {hi:number,lo:number}}[], localFavHashes: Map<string, number>, localFieldsHashes: Map<string, number>, worker: Worker }>}
+ * @returns {Promise<{ children: {digest: {a:number,b:number,c:number,d:number}}[], localHashes: Map<string, {fav:number,tagIds:number,content:number}>, worker: Worker }>}
  */
 function computeLocalCharacterDigest(localCharacters, branching) {
     return new Promise((resolve, reject) => {
@@ -2367,8 +2367,7 @@ function computeLocalCharacterDigest(localCharacters, branching) {
                 // descent goes deeper. The caller is responsible for terminate()'ing it when done.
                 resolve({
                     children: event.data.children,
-                    localFavHashes: new Map(event.data.localFavHashes),
-                    localFieldsHashes: new Map(event.data.localFieldsHashes),
+                    localHashes: new Map(event.data.localHashes),
                     worker,
                 });
             }
@@ -2469,7 +2468,7 @@ async function verifyCharacterCacheDigest() {
     // state-digest perf investigation), which on a browser main thread means a frozen UI for that whole span, not
     // just a delay.
     const localCharacters = await getAllCachedCharacters();
-    const { children: localChildren, localFavHashes, localFieldsHashes, worker } =
+    const { children: localChildren, localHashes, worker } =
         await computeLocalCharacterDigest(localCharacters, branching);
 
     try {
@@ -2521,11 +2520,9 @@ async function verifyCharacterCacheDigest() {
                     if (!localDigests) continue;
 
                     for (let i = 0; i < branching; i++) {
-                        const sf = result.children[i]?.fav ?? { hi: 0, lo: 0 };
-                        const lf = localDigests[i]?.fav ?? { hi: 0, lo: 0 };
-                        const ss = result.children[i]?.fields ?? { hi: 0, lo: 0 };
-                        const ls = localDigests[i]?.fields ?? { hi: 0, lo: 0 };
-                        if (!digestsEqual(sf, lf) || !digestsEqual(ss, ls)) {
+                        const sd = result.children[i]?.digest ?? { a: 0, b: 0, c: 0, d: 0 };
+                        const ld = localDigests[i]?.digest ?? { a: 0, b: 0, c: 0, d: 0 };
+                        if (!digestsEqual128(sd, ld)) {
                             nextNodes.push({ path: [...result.path, i] });
                         }
                     }
@@ -2544,21 +2541,47 @@ async function verifyCharacterCacheDigest() {
         // doc comment) - so this pass only decides WHICH ids drifted; their actual field values are fetched in a
         // single targeted follow-up call below, not per-leaf.
         const toRemove = [];
-        const driftedIds = [];
+        /** @type {Map<string, string[]>} id -> drifted field groups */
+        const driftedById = new Map();
+        /** @type {Map<string, boolean>} id -> server fav value (for direct fav repair) */
+        const serverFavValues = new Map();
+        /** @type {string[]} ids in collision leaves (32-bit per-field all agree, 128-bit aggregate disagrees) */
+        const collisionIds = [];
 
         for (const leaf of allLeaves) {
             const serverIdsInLeaf = new Set();
+            let leafHasFieldDrift = false;
 
             for (const member of leaf.members) {
                 serverIdsInLeaf.add(member.id);
-                const localFav = localFavHashes.get(member.id);
-                const localFields = localFieldsHashes.get(member.id);
+                if (!localCharacters.has(member.id)) continue;
 
-                if (localFav === member.favHash && localFields === member.fieldsHash) continue; // this record is fine
+                const local = localHashes.get(member.id);
+                if (!local) continue;
 
-                if (!localCharacters.has(member.id)) continue; // record exists on server but not locally - will be caught by change-feed
+                const fields = [];
+                if (local.fav !== member.favHash) fields.push('fav');
+                if (local.tagIds !== member.tagIdsHash) fields.push('tag_ids');
+                if (local.content !== member.contentHash) fields.push('content');
 
-                driftedIds.push(member.id);
+                if (fields.length > 0) {
+                    driftedById.set(member.id, fields);
+                    leafHasFieldDrift = true;
+                    if (fields.includes('fav')) {
+                        serverFavValues.set(member.id, member.fav);
+                    }
+                }
+            }
+
+            // Collision handling: this leaf was reached because a parent's 128-bit aggregate
+            // disagreed, but no per-field 32-bit hash mismatches were found. A 32-bit collision
+            // is hiding a real difference. Fall back to value comparison for all members.
+            if (!leafHasFieldDrift) {
+                for (const member of leaf.members) {
+                    if (localCharacters.has(member.id)) {
+                        collisionIds.push(member.id);
+                    }
+                }
             }
 
             // Detect locally-cached records that the server doesn't have in this leaf group
@@ -2576,51 +2599,99 @@ async function verifyCharacterCacheDigest() {
             }
         }
 
-        // Apply removals before the targeted fingerprint fetch, so a repair that lands after this function's
-        // fire-and-forget caller has already moved on can't race a removal for the same id either way.
         if (toRemove.length > 0) {
             await removeCachedCharacters(toRemove);
         }
 
-        /** @type {Map<string, object>} avatar -> patched character - repair here PATCHES the existing cached copy
-         * rather than re-fetching it whole: finalizeFetchedCharacter() is deliberately NOT called during this
-         * repair - the cached name was already DOMPurify-sanitized when first cached, and its chat field is a
-         * client-side synthesis with no server equivalent (see characterDigestFingerprint()'s own doc comment on
-         * why `chat` isn't part of this digest at all), so there is nothing for it to redo here. */
+        /** @type {Map<string, object>} avatar -> patched character */
         const patched = new Map();
 
-        if (driftedIds.length > 0) {
-            // Targeted fetch of fingerprint field values for just the drifted records - identified above via
-            // per-record hash comparison, never carried inline with the (hash-only) leaf response itself.
+        // Direct fav repair (no fetch needed - value carried in leaf response)
+        for (const [id, fav] of serverFavValues) {
+            const character = localCharacters.get(id);
+            if (!character) continue;
+            character.fav = fav;
+            if (character.data?.extensions) {
+                character.data.extensions.fav = fav;
+            }
+            patched.set(id, character);
+        }
+
+        // tag_ids repair via fields-filtered batch
+        const tagIdsDrifted = [...driftedById.entries()]
+            .filter(([, fields]) => fields.includes('tag_ids'))
+            .map(([id]) => id);
+        if (tagIdsDrifted.length > 0) {
+            const batchResponse = await fetch('/api/characters/batch', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ avatars: tagIdsDrifted, fields: ['tag_ids'] }),
+            });
+            if (batchResponse.ok) {
+                const batchData = await batchResponse.json();
+                for (const partial of batchData) {
+                    const character = patched.get(partial.avatar) || localCharacters.get(partial.avatar);
+                    if (character && 'tag_ids' in partial) {
+                        character.tag_ids = partial.tag_ids;
+                        patched.set(partial.avatar, character);
+                    }
+                }
+            }
+        }
+
+        // Content repair via fields-filtered batch
+        const contentDrifted = [...driftedById.entries()]
+            .filter(([, fields]) => fields.includes('content'))
+            .map(([id]) => id);
+        if (contentDrifted.length > 0) {
+            const batchResponse = await fetch('/api/characters/batch', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ avatars: contentDrifted, fields: ['name', 'tags', 'data'] }),
+            });
+            if (batchResponse.ok) {
+                const batchData = await batchResponse.json();
+                for (const partial of batchData) {
+                    const character = patched.get(partial.avatar) || localCharacters.get(partial.avatar);
+                    if (!character) continue;
+                    if ('name' in partial) character.name = partial.name;
+                    if ('tags' in partial) character.tags = partial.tags;
+                    if ('data' in partial) character.data = partial.data;
+                    patched.set(partial.avatar, character);
+                }
+            }
+        }
+
+        // Collision repair: 128-bit aggregate disagreed but every 32-bit per-field hash agreed.
+        // Fall back to value comparison using the fingerprint-values endpoint.
+        if (collisionIds.length > 0) {
+            console.warn(`Tree descent: ${collisionIds.length} record(s) in collision leaf, falling back to value comparison.`);
             const fpResponse = await fetch('/api/characters/fingerprint-values', {
                 method: 'POST',
                 headers: getRequestHeaders(),
-                body: JSON.stringify({ ids: driftedIds }),
+                body: JSON.stringify({ ids: collisionIds }),
             });
-            if (!fpResponse.ok) {
-                throw new Error(`Fingerprint-values fetch failed: ${fpResponse.statusText}`);
-            }
-            const { records: fpRecords } = await fpResponse.json();
-
-            for (const record of fpRecords) {
-                const character = localCharacters.get(record.id);
-                if (!character) continue;
-
-                const fp = record.fingerprint;
-                character.name = fp.name;
-                character.fav = fp.fav;
-                character.tags = fp.tags;
-                character.data = character.data || {};
-                character.data.name = fp.data?.name;
-                character.data.character_version = fp.data?.character_version;
-                character.data.creator = fp.data?.creator;
-                character.data.tags = fp.data?.tags;
-                character.data.creator_notes = fp.data?.creator_notes;
-                character.data.extensions = character.data.extensions || {};
-                character.data.extensions.fav = fp.data?.extensions?.fav;
-                character.data.extensions.world = fp.data?.extensions?.world;
-
-                patched.set(record.id, character);
+            if (fpResponse.ok) {
+                const { records: fpRecords } = await fpResponse.json();
+                for (const record of fpRecords) {
+                    const character = patched.get(record.id) || localCharacters.get(record.id);
+                    if (!character) continue;
+                    const fp = record.fingerprint;
+                    character.name = fp.name;
+                    character.fav = fp.fav;
+                    character.tags = fp.tags;
+                    character.tag_ids = fp.tag_ids;
+                    character.data = character.data || {};
+                    character.data.name = fp.data?.name;
+                    character.data.character_version = fp.data?.character_version;
+                    character.data.creator = fp.data?.creator;
+                    character.data.tags = fp.data?.tags;
+                    character.data.creator_notes = fp.data?.creator_notes;
+                    character.data.extensions = character.data.extensions || {};
+                    character.data.extensions.fav = fp.data?.extensions?.fav;
+                    character.data.extensions.world = fp.data?.extensions?.world;
+                    patched.set(record.id, character);
+                }
             }
         }
 
@@ -2629,10 +2700,6 @@ async function verifyCharacterCacheDigest() {
         }
 
         if (patched.size > 0 || toRemove.length > 0) {
-            // Patch the live in-memory list too, not just the IndexedDB cache - otherwise a repair that happens
-            // after fetchCharactersDelta() already returned (this function is deliberately fire-and-forget, see
-            // its own doc comment) would fix the cache for NEXT boot but leave the currently-rendered
-            // `characters` array and search/sort index silently stale until something else happens to reload it.
             for (const id of toRemove) {
                 const index = characters.findIndex(c => c.avatar === id);
                 if (index !== -1) characters.splice(index, 1);
