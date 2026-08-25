@@ -1261,6 +1261,37 @@ export async function getCharacterActiveChatsByIds(directories, ids) {
 }
 
 /**
+ * Bulk `shallow_json` lookup for a known set of ids - returns parsed shallow character objects keyed by id.
+ * Used by the field-filtered `/api/characters/batch` path (which only needs specific fields from shallow_json,
+ * not a full processCharacter()/PNG read). Same batched `IN (...)` chunking as getCharacterFavsByIds() above,
+ * for the identical SQLITE_MAX_VARIABLE_NUMBER reason.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string[]} ids Avatar filenames
+ * @returns {Promise<{[id: string]: object}>} Parsed shallow_json objects keyed by id; ids with no tracked row
+ * are simply absent.
+ */
+export async function getShallowByIds(directories, ids) {
+    const entry = await getEntry(directories);
+    if (!entry || !Array.isArray(ids) || ids.length === 0) return {};
+
+    /** @type {{[id: string]: object}} */
+    const result = {};
+    for (let i = 0; i < ids.length; i += FAV_LOOKUP_BATCH_SIZE) {
+        const batch = ids.slice(i, i + FAV_LOOKUP_BATCH_SIZE);
+        const placeholders = batch.map(() => '?').join(',');
+        const rows = entry.db.all(`SELECT id, shallow_json FROM characters WHERE id IN (${placeholders})`, batch);
+        for (const row of rows) {
+            try {
+                result[row.id] = JSON.parse(row.shallow_json);
+            } catch {
+                // Skip unparseable rows - same tolerance every other shallow_json consumer has.
+            }
+        }
+    }
+    return result;
+}
+
+/**
  * Write-path hook for characters.js's /delete route.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} avatar
