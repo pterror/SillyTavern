@@ -306,7 +306,6 @@ export async function validateDisabledSamplers(redraw = false) {
         setSamplerListListeners();
     }
 
-    await saveSettingsDebounced();
 }
 
 /**
