@@ -224,6 +224,22 @@ describe('POST /api/characters/query - filter.includeGroups (extends the design 
         expect(body.rows[body.rows.length - 1].item.avatar ?? body.rows[body.rows.length - 1].item.id).toBe('New.png');
     });
 
+    test('each sort field orders characters and groups together: create_date (2026-08 regression - a group interleaves by its real date_added, not parked at one end by a TEXT/INTEGER type mismatch)', async () => {
+        await seedCharacter('Old.png', { name: 'Old', create_date: '2020-01-01T00:00:00.000Z', data: { name: 'Old', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+        await seedGroup('g-mid'); // no create_date of its own - its date_added (seeded "now") stands in for it
+        await seedCharacter('New.png', { name: 'New', create_date: '2030-01-01T00:00:00.000Z', data: { name: 'New', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+
+        const response = await postJson('/api/characters/query', { filter: { includeGroups: true }, sort: { field: 'create_date', order: 'asc' }, page: 1, pageSize: 10 });
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.rows.length).toBe(3);
+        // Old (2020) first, New (2030) last - the group's own date_added (seeded at test run time, i.e. 2026)
+        // genuinely falls in between the two, so it must land in the middle, not clustered at either end.
+        expect(body.rows.map(r => r.type)).toEqual(['character', 'group', 'character']);
+        expect(body.rows[0].item.avatar).toBe('Old.png');
+        expect(body.rows[2].item.avatar).toBe('New.png');
+    });
+
     test('each sort field orders characters and groups together: date_last_chat', async () => {
         await seedCharacter('NoChat.png');
         await seedGroup('g1', { chats: ['c1'] });

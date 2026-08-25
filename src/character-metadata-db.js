@@ -657,7 +657,6 @@ function migrateCreateDateColumn(db) {
     db.exec('DROP INDEX IF EXISTS idx_characters_create_date');
     db.exec('ALTER TABLE characters ADD COLUMN create_date_ms INTEGER');
 
-    const update = db.prepare('UPDATE characters SET create_date_ms = @createDateMs WHERE id = @id');
     const unparseable = [];
     db.transaction(() => {
         for (const row of rows) {
@@ -666,9 +665,9 @@ function migrateCreateDateColumn(db) {
                 unparseable.push({ id: row.id, value: row.create_date });
                 continue; // create_date_ms stays NULL for this row, same as a genuinely-missing create_date.
             }
-            update.run({ id: row.id, createDateMs: ms });
+            db.run('UPDATE characters SET create_date_ms = @createDateMs WHERE id = @id', { id: row.id, createDateMs: ms });
         }
-    })();
+    });
 
     if (unparseable.length > 0) {
         console.error(color.yellow(
