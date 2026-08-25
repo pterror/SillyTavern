@@ -4,6 +4,7 @@ import {
     assignEntityTag,
     unassignEntityTag,
     getEntityTagIdsForMany,
+    getAssignedTagIds,
     getAllTagUsage,
     getTagDefinitions,
     saveTagDefinitions,
@@ -102,7 +103,8 @@ router.post('/get', async (request, response) => {
             return response.send({ tags: null });
         }
 
-        response.send({ tags });
+        const assignedTagIds = await getAssignedTagIds(request.user.directories);
+        response.send({ tags, assignedTagIds: assignedTagIds ?? [] });
     } catch (err) {
         console.error('Could not read tag definitions', err);
         response.sendStatus(500);

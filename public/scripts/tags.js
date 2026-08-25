@@ -49,7 +49,7 @@ export {
     chooseBogusFolder,
     getTagBlock,
     loadTagsSettings,
-    seedTagMapForResidentEntities,
+    ensureTagsForKeys,
     printTagFilters,
     getTagsList,
     printTagList,
@@ -377,6 +377,11 @@ let tags = [];
  */
 let tag_map = {};
 
+/** Keys whose tag assignments have been fetched from the server and are in tag_map. */
+let fetchedTagKeys = new Set();
+/** Server-loaded set of tag IDs assigned to at least one entity (from tag_usage table, fetched with tag definitions). */
+let serverAssignedTagIds = new Set();
+
 /**
  * A cache of all cut-off tag lists that got expanded until the last reload. They will be printed expanded again.
  * It contains the key of the entity.
@@ -438,6 +443,17 @@ function rebuildTagStores() {
     // tagMapStore op reports exactly what changed (RelationChange), so persistTagMapChange() below translates
     // that directly into the matching network call(s) instead of re-uploading the whole tag_map on every change.
     tagMapStore.onChange(persistTagMapChange);
+
+    // Keep serverAssignedTagIds in sync with in-session tag mutations so the filter sidebar
+    // stays correct without a full re-fetch.
+    tagMapStore.onChange((change) => {
+        if (change.op === 'unassigned' && change.wasLastUse) {
+            serverAssignedTagIds.delete(change.relatedId);
+        }
+        if (change.op === 'assigned' && change.wasFirstUse) {
+            serverAssignedTagIds.add(change.relatedId);
+        }
+    });
 }
 
 /**
@@ -471,7 +487,7 @@ async function saveTagsNow() {
         if (manifestResponse.ok) {
             const { mtime } = await manifestResponse.json();
             if (mtime !== null && mtime !== undefined) {
-                await setCachedTags(mtime, tags);
+                await setCachedTags(mtime, tags, [...serverAssignedTagIds]);
             }
         } else {
             console.error(`Failed to refresh tags manifest after save: ${manifestResponse.statusText}`);
@@ -642,7 +658,14 @@ function invalidateAssignedTagIdsCache() {
  * @returns {{ has(id: string): boolean }}
  */
 function getAssignedTagIds() {
-    return tagMapStore.usageCounts;
+    if (serverAssignedTagIds.size === 0) {
+        return tagMapStore.usageCounts;
+    }
+    return {
+        has(id) {
+            return serverAssignedTagIds.has(id) || tagMapStore.usageCounts.has(id);
+        },
+    };
 }
 
 /**
@@ -923,7 +946,7 @@ function filterByFolder(filterHelper) {
  * assignments off any single fetchable blob entirely, onto per-user sqlite rows keyed by character avatar/group
  * id. There is nothing to seed it *from* until `characters`/`groups` are actually populated (this runs during
  * settings load, before either of those exist yet) - `tag_map` is left empty here and gets its real content from
- * a batched `POST /api/tags/for` once both are resident, see seedTagMapForResidentEntities() below (called from
+ * a per-page batched `POST /api/tags/for` as pages render, see ensureTagsForKeys() below (called from
  * script.js's boot sequence right after `getCharacters()`).
  *
  * After loading, unconditionally seeds/refreshes the server's tag definitions with whatever ended up in `tags` -
@@ -952,6 +975,8 @@ async function loadTagsSettings(settings) {
                 if (cached && cached.mtime === mtime) {
                     tags = cached.tags;
                     tag_map = Object.create(null);
+                    fetchedTagKeys = new Set();
+                    serverAssignedTagIds = new Set(cached.assignedTagIds ?? []);
                     rebuildTagStores();
                     invalidateCharactersFuseIndex();
                     invalidateGroupsFuseIndex();
@@ -990,8 +1015,12 @@ async function loadTagsSettings(settings) {
         tags = settings.tags !== undefined ? settings.tags : DEFAULT_TAGS;
     }
     tag_map = Object.create(null);
+    fetchedTagKeys = new Set();
 
     rebuildTagStores();
+    if (tagsFile && Array.isArray(tagsFile.assignedTagIds)) {
+        serverAssignedTagIds = new Set(tagsFile.assignedTagIds);
+    }
     invalidateCharactersFuseIndex();
     invalidateGroupsFuseIndex();
 
@@ -1001,52 +1030,44 @@ async function loadTagsSettings(settings) {
 }
 
 /**
- * One-time boot seed of the local `tag_map` cache from the server, for every character and group currently
- * resident client-side. Assignments are per-row server state now (see loadTagsSettings()'s doc comment on why
- * `tag_map` starts empty there) - this is the client-side replacement for the old wholesale tags.json
- * `tag_map` load: a single batched `POST /api/tags/for` covering every character avatar and group id known at
- * boot, whose `{[id]: tagId[]}` response shape is exactly `tag_map`'s own shape, used directly as the seed.
- *
- * Must run after both `characters` and `groups` are populated - called from script.js's boot sequence right
- * after `await getCharacters()` (which itself awaits `getGroups()` internally, so both arrays are guaranteed
- * populated by the time this runs). Until phase 5 (bounded residency) lands, "resident at boot" is effectively
- * the whole library - the same cost the old wholesale tags.json load already paid.
- *
- * Rebuilding tagMapStore here (via rebuildTagStores()) does NOT itself fire any network calls: constructing a
- * fresh `RelationStore` from the fetched object doesn't go through assign()/unassign()/etc, so
- * persistTagMapChange() never sees an event for this boot-time seed.
+ * Lazy per-page fetch of tag assignments: given a set of entity keys (character avatars / group ids),
+ * fetches any that aren't already in tag_map from POST /api/tags/for and patches their visible tag pills.
+ * Replaces the old seedTagMapForResidentEntities() boot-time whole-library fetch (phase 5 of the
+ * character-data-residency redesign - see that function's former doc comment on why it was a stopgap).
+ * @param {string[]} keys Entity keys to ensure tags for
  */
-async function seedTagMapForResidentEntities() {
-    const ids = [...characters.map(c => c.avatar), ...groups.map(g => g.id)];
-    if (ids.length === 0) {
-        return;
-    }
+async function ensureTagsForKeys(keys) {
+    const needed = keys.filter(k => typeof k === 'string' && k.length > 0 && !fetchedTagKeys.has(k));
+    if (needed.length === 0) return;
 
     try {
         const response = await fetch('/api/tags/for', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ ids }),
+            body: JSON.stringify({ ids: needed }),
             cache: 'no-cache',
         });
         if (!response.ok) {
             throw new Error(`Failed to load tag assignments: ${response.statusText}`);
         }
 
-        tag_map = await response.json();
-        rebuildTagStores();
-        invalidateCharactersFuseIndex();
-        invalidateGroupsFuseIndex();
+        const fetched = await response.json();
+        for (const key of needed) {
+            fetchedTagKeys.add(key);
+        }
+        for (const [key, tagIds] of Object.entries(fetched)) {
+            tag_map[key] = tagIds;
+            if (Array.isArray(tagIds)) {
+                for (const tagId of tagIds) {
+                    tagMapStore.usageCounts.set(tagId, (tagMapStore.usageCounts.get(tagId) ?? 0) + 1);
+                }
+            }
+        }
 
-        // The initial printCharacters(true) from getCharacters() already ran with an empty tag_map (this seed
-        // runs after it, by construction) - redraw now that real assignments are known, so tag pills/filters
-        // aren't stuck empty until some unrelated re-render happens to fire.
-        printCharactersDebounced();
-        printTagFilters(tag_filter_type.character);
-        printTagFilters(tag_filter_type.group_members_list);
-        printTagFilters(tag_filter_type.group_candidates_list);
+        updateEntityRowTags(needed);
     } catch (error) {
-        console.error('Error loading tag assignments for resident entities:', error);
+        console.error('Error loading tag assignments for entities:', error);
+        toastr.warning('Could not load tag data for some characters. Tags may be missing.', 'Tag Loading Error', { timeOut: 10000 });
     }
 }
 
