@@ -2164,7 +2164,7 @@ function finalizeFetchedCharacter(character) {
 
 /**
  * Fetches the current character list via the change-feed/delta-cache path: `POST /api/characters/changes` for
- * a cheap `{ rev, changes: [{id, op}], truncated }` since this cache's last-synced revision (character-cache.js's
+ * a cheap `{ rev, changes: [{id, op, fields}], truncated }` since this cache's last-synced revision (character-cache.js's
  * `getCachedRev()`), applied on top of whatever's already cached so only characters that are genuinely new or
  * changed (`op: 'upsert'`) get fetched (via `/api/characters/batch`) and re-processed (DOMPurify/chat-default) -
  * deleted characters (`op: 'delete'`) are dropped from the cache directly, by id, rather than inferred from
@@ -2200,7 +2200,7 @@ async function fetchCharactersDelta() {
         throw new Error(`Failed to fetch character changes: ${changesResponse.statusText}`);
     }
 
-    /** @type {{rev: number, changes: {id: string, op: 'upsert'|'delete'}[], truncated: boolean}} */
+    /** @type {{rev: number, changes: {id: string, op: 'upsert'|'delete', fields?: string[]|null}[], truncated: boolean}} */
     const { rev, changes, truncated } = await changesResponse.json();
 
     if (truncated) {
@@ -2211,13 +2211,26 @@ async function fetchCharactersDelta() {
         return fetchCharactersDelta();
     }
 
-    const toFetch = [];
     const deleteIds = [];
-    for (const { id, op } of changes) {
+    const wholeRecordIds = [];
+    // Group field-level changes by their field set so each distinct set becomes one batched /batch
+    // call with that `fields` filter, rather than one call per changed character.
+    /** @type {Map<string, { fields: string[], ids: string[] }>} */
+    const fieldGroupMap = new Map();
+
+    for (const { id, op, fields } of changes) {
         if (op === 'delete') {
             deleteIds.push(id);
+        } else if (!fields) {
+            // null/undefined fields = whole record changed (full card edit, import, rename, etc.)
+            wholeRecordIds.push(id);
         } else {
-            toFetch.push(id);
+            // Field-level change - group by the same field set to batch efficiently.
+            const key = JSON.stringify([...fields].sort());
+            if (!fieldGroupMap.has(key)) {
+                fieldGroupMap.set(key, { fields, ids: [] });
+            }
+            fieldGroupMap.get(key).ids.push(id);
         }
     }
 
@@ -2225,11 +2238,12 @@ async function fetchCharactersDelta() {
         await removeCachedCharacters(deleteIds);
     }
 
-    /** @type {Map<string, object>} */
+    /** @type {Map<string, object>} fresh/updated records to save back to the cache */
     const fresh = new Map();
 
-    for (let i = 0; i < toFetch.length; i += CHARACTER_BATCH_CHUNK_SIZE) {
-        const chunk = toFetch.slice(i, i + CHARACTER_BATCH_CHUNK_SIZE);
+    // Whole-record fetches: same as before - full processCharacter() on the server, full record back.
+    for (let i = 0; i < wholeRecordIds.length; i += CHARACTER_BATCH_CHUNK_SIZE) {
+        const chunk = wholeRecordIds.slice(i, i + CHARACTER_BATCH_CHUNK_SIZE);
         const batchResponse = await fetch('/api/characters/batch', {
             method: 'POST',
             headers: getRequestHeaders(),
@@ -2244,6 +2258,51 @@ async function fetchCharactersDelta() {
         for (const character of batchData) {
             finalizeFetchedCharacter(character);
             fresh.set(character.avatar, character);
+        }
+    }
+
+    // Field-level fetches: request only the changed fields from the metadata store's shallow_json
+    // (no PNG read server-side), then merge into the existing cached record. This is the key
+    // optimization: a tag_ids change on 314k records transfers ~11.5MB instead of ~314MB.
+    if (fieldGroupMap.size > 0) {
+        // Read the full cache once up front - cheaper than N individual IndexedDB reads for large
+        // field-level fills (e.g. the one-time tag_ids backfill across 314k records).
+        const allCachedBefore = await getAllCachedCharacters();
+
+        for (const { fields, ids } of fieldGroupMap.values()) {
+            for (let i = 0; i < ids.length; i += CHARACTER_BATCH_CHUNK_SIZE) {
+                const chunk = ids.slice(i, i + CHARACTER_BATCH_CHUNK_SIZE);
+                const batchResponse = await fetch('/api/characters/batch', {
+                    method: 'POST',
+                    headers: getRequestHeaders(),
+                    body: JSON.stringify({ avatars: chunk, fields }),
+                });
+
+                if (!batchResponse.ok) {
+                    throw new Error(`Failed to fetch character batch (fields): ${batchResponse.statusText}`);
+                }
+
+                const batchData = await batchResponse.json();
+                for (const partial of batchData) {
+                    const avatar = partial.avatar;
+                    // Merge: overlay fetched fields onto the existing cached record, keyed by
+                    // avatar - never positionally. Check `fresh` first (a whole-record fetch in
+                    // this same sync supersedes any prior cached version), then fall back to the
+                    // pre-sync cache.
+                    const existing = fresh.get(avatar) || allCachedBefore.get(avatar);
+                    if (existing) {
+                        for (const field of fields) {
+                            if (field in partial) {
+                                existing[field] = partial[field];
+                            }
+                        }
+                        fresh.set(avatar, existing);
+                    }
+                    // If no existing record to merge into (field-level change for a record not in
+                    // cache - shouldn't happen normally), skip - the anti-entropy check or next
+                    // full sync will catch it.
+                }
+            }
         }
     }
 
