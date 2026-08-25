@@ -5695,8 +5695,14 @@ body:not(.movingUI) .drawer-content.maximized {
 #WorldInfo,
 #floatingPrompt {
     min-width: 100px !important;
-    min-height: 100px !important;
     position: fixed;
+}
+
+.fillRight.openDrawer,
+.fillLeft.openDrawer,
+#WorldInfo,
+#floatingPrompt {
+    min-height: 100px !important;
 }
 
 .fillLeft,
