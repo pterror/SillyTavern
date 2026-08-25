@@ -1,4 +1,4 @@
-import { getStringHash, treeNodeAt, characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash, emptyDigest128, combineDigest128, DEFAULT_DIGEST_BUCKET_COUNT, DEFAULT_TREE_BRANCHING } from './hash-utils.js';
+import { getStringHash, treeNodeAt, emptyDigest128, combineDigest128, DEFAULT_DIGEST_BUCKET_COUNT, DEFAULT_TREE_BRANCHING } from './hash-utils.js';
 
 /**
  * Module Web Worker (see kokoro.js's `new Worker(new URL(...), { type: 'module' })` for this codebase's existing
@@ -19,7 +19,8 @@ import { getStringHash, treeNodeAt, characterDigestFavHash, characterDigestField
  *
  * PROTOCOL: the main thread owns reading `getAllCachedCharacters()` (IndexedDB access stays main-thread - see
  * this file's own header note below on why) and sends it here in three phases: exactly one `{type: 'init',
- * branching}` first, then any number of `{type: 'chunk', entries: [[id, character], ...]}`, then exactly one
+ * branching}` first, then any number of `{type: 'chunk', entries: [[id, {fav, tagIds, content}], ...]}`
+ * (pre-computed per-field hashes), then exactly one
  * `{type: 'end'}`. This worker replies once to that sequence, with `{type: 'ready', children, localFavHashes:
  * [[id, hash], ...], localFieldsHashes: [[id, hash], ...]}` - `children` is the branching-length array of
  * level-0 digests, and the per-id hash lists are plain arrays (not Maps - Maps aren't structured-cloneable in
@@ -51,15 +52,16 @@ let branching = DEFAULT_DIGEST_BUCKET_COUNT;
 const records = new Map();
 
 /**
- * @param {[string, object][]} entries
+ * @param {[string, {fav: number, tagIds: number, content: number}][]} entries Pre-computed per-field
+ * hashes from character-cache.js's saveCachedCharacters(), stored atomically with the character data.
  */
 function processChunk(entries) {
-    for (const [id, character] of entries) {
+    for (const [id, hashes] of entries) {
         records.set(id, {
             hash: getStringHash(String(id)),
-            favHash: characterDigestFavHash(character) % 4294967296,
-            tagIdsHash: characterDigestTagIdsHash(character),
-            contentHash: characterDigestFieldsHash(character) % 4294967296,
+            favHash: hashes.fav,
+            tagIdsHash: hashes.tagIds,
+            contentHash: hashes.content,
         });
     }
 }

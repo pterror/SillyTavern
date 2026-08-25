@@ -1,5 +1,6 @@
 import { localforage } from '../lib.js';
 import { getCurrentUserHandle } from './user.js';
+import { characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash } from './hash-utils.js';
 
 /**
  * Client-side residency cache for character data (see getCharacters()/fetchCharactersDelta() in script.js).
@@ -132,17 +133,42 @@ export async function getAllCachedCharacters() {
 }
 
 /**
+ * Reads per-field hashes for every cached character, keyed by avatar. These were computed and stored
+ * atomically with the character data in saveCachedCharacters(), so they're guaranteed to match the
+ * record they describe. Verification reads these instead of the full character data (~24 bytes per
+ * record instead of ~1KB), avoiding the expensive IDB deserialize + structured-clone + rehash that
+ * previously dominated the digest check.
+ *
+ * Falls back gracefully for records cached before hashes were stored: a missing `hashes` field
+ * is simply omitted from the result, and the caller recomputes those records' hashes on demand.
+ * @returns {Promise<Map<string, {fav: number, tagIds: number, content: number}>>} avatar -> hashes
+ */
+export async function getAllCachedHashes() {
+    const store = getCharacterCacheStore();
+    const result = new Map();
+    try {
+        await store.iterate((record, key) => {
+            if (key === REV_KEY || key === LAST_VERIFIED_DIGEST_KEY) return;
+            if (record?.hashes) {
+                result.set(key, record.hashes);
+            }
+        });
+    } catch (error) {
+        console.error('Failed to read cached character hashes:', error);
+    }
+    return result;
+}
+
+/**
  * Persists freshly-fetched characters into the cache, keyed by avatar. Callers should pass already fully
  * processed character objects (DOMPurify-sanitized name, defaulted chat, etc. - i.e. exactly what would've been
  * assigned into the `characters` array before this cache existed), since getAllCachedCharacters() returns cache
  * hits as-is with no further processing applied on the next read.
  *
- * Deliberately does NOT also store a per-record revision/hash alongside the character data. The state-digest
- * drift check (script.js's verifyCharacterCacheDigest()) needs to prove this cache's content still matches the
- * server's - and a value stored here at write time would just be one more thing that could silently go stale or
- * wrong, exactly like the data it's meant to verify. Instead that check hashes whatever's actually sitting in
- * `character` at verification time, fresh, every time - see public/scripts/hash-utils.js's header for the full
- * reasoning on why content-derived hashing is the fix, not a second stored value to trust.
+ * Also stores per-field hashes (fav, tagIds, content) alongside the character data in the same IDB write, so
+ * they can never drift from the record they describe. The state-digest drift check (script.js's
+ * verifyCharacterCacheDigest()) reads these instead of recomputing from the full character data - see
+ * getAllCachedHashes() and public/scripts/hash-utils.js's header for the full reasoning on the hashing scheme.
  * @param {{avatar: string, character: object}[]} entries
  */
 export async function saveCachedCharacters(entries) {
@@ -153,9 +179,18 @@ export async function saveCachedCharacters(entries) {
     const SAVE_BATCH = 500;
     for (let i = 0; i < entries.length; i += SAVE_BATCH) {
         const batch = entries.slice(i, i + SAVE_BATCH);
-        await Promise.all(batch.map(({ avatar, character }) =>
-            store.setItem(avatar, { character }).catch(error =>
-                console.error(`Failed to cache character data for ${avatar}:`, error))));
+        await Promise.all(batch.map(({ avatar, character }) => {
+            // Per-field hashes stored atomically with the character data in the same IDB write,
+            // so they can never drift from the record they describe. Verification reads these
+            // instead of recomputing from scratch (O(1) per record instead of O(fields)).
+            const hashes = {
+                fav: characterDigestFavHash(character) % 4294967296,
+                tagIds: characterDigestTagIdsHash(character),
+                content: characterDigestFieldsHash(character) % 4294967296,
+            };
+            return store.setItem(avatar, { character, hashes }).catch(error =>
+                console.error(`Failed to cache character data for ${avatar}:`, error));
+        }));
     }
 }
 
