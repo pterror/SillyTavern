@@ -68,6 +68,39 @@ export async function setCachedRev(rev) {
     }
 }
 
+// Reserved key for the last-verified-at rev (see verifyCharacterCacheDigest's fast-path skip).
+const LAST_VERIFIED_REV_KEY = '__last_verified_rev__';
+
+/**
+ * The server rev that was current when the last successful digest verification completed.
+ * If the server's current rev still matches this, nothing has changed on either side since
+ * the last full verification, so the expensive O(library) recomputation can be skipped entirely.
+ * @returns {Promise<number>}
+ */
+export async function getLastVerifiedRev() {
+    const store = getCharacterCacheStore();
+    try {
+        const rev = await store.getItem(LAST_VERIFIED_REV_KEY);
+        return typeof rev === 'number' && Number.isFinite(rev) ? rev : 0;
+    } catch (error) {
+        console.error('Failed to read last verified rev:', error);
+        return 0;
+    }
+}
+
+/**
+ * @param {number} rev
+ * @returns {Promise<void>}
+ */
+export async function setLastVerifiedRev(rev) {
+    const store = getCharacterCacheStore();
+    try {
+        await store.setItem(LAST_VERIFIED_REV_KEY, rev);
+    } catch (error) {
+        console.error('Failed to persist last verified rev:', error);
+    }
+}
+
 /**
  * Reads every cached character, keyed by avatar. This IS the client's current view of the whole library once
  * it's caught up with the change feed - unlike the old manifest-diff scheme, nothing here needs a fresh
