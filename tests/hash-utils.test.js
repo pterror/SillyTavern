@@ -1,5 +1,5 @@
 import { describe, test, expect } from '@jest/globals';
-import { getStringHash, bucketOf, treeNodeAt, emptyDigest, combineDigest, foldDigests, digestsEqual, contentHashOf, characterDigestFingerprint, characterDigestContentHash, characterDigestFavHash, characterDigestFieldsHash, characterFavFingerprint, characterContentFieldsFingerprint, canonicalStringify, DEFAULT_DIGEST_BUCKET_COUNT } from '../public/scripts/hash-utils.js';
+import { getStringHash, bucketOf, treeNodeAt, emptyDigest, combineDigest, foldDigests, digestsEqual, contentHashOf, characterDigestFingerprint, characterDigestContentHash, characterDigestFavHash, characterDigestFieldsHash, characterFavFingerprint, characterContentFieldsFingerprint, canonicalStringify, DEFAULT_DIGEST_BUCKET_COUNT, characterDigestTagIdsHash, characterTagIdsFingerprint } from '../public/scripts/hash-utils.js';
 
 describe('getStringHash', () => {
     test('is deterministic for the same string and seed', () => {
@@ -273,6 +273,59 @@ describe('characterDigestFavHash / characterDigestFieldsHash - per-field-group s
         const renamed = { ...base, name: 'Alicia', data: { ...base.data, name: 'Alicia' } };
         expect(characterDigestFieldsHash(base)).not.toBe(characterDigestFieldsHash(renamed));
         expect(characterDigestFavHash(base)).toBe(characterDigestFavHash(renamed));
+    });
+});
+
+describe('characterDigestTagIdsHash - per-field hash for tag_ids, must match ' +
+    'contentHashOf(characterTagIdsFingerprint(x)) % 4294967296 (32-bit truncation)', () => {
+    const fixtures = [
+        // No tag_ids at all
+        {},
+        // Empty tag_ids
+        { tag_ids: [] },
+        // Single tag
+        { tag_ids: ['abc-123'] },
+        // Multiple tags (should be sorted before hashing for determinism)
+        { tag_ids: ['z-tag', 'a-tag', 'm-tag'] },
+        // Same tags in different order (must produce same hash due to sorting)
+        { tag_ids: ['a-tag', 'm-tag', 'z-tag'] },
+        // With other character fields present (must be ignored)
+        { name: 'Alice', fav: true, tag_ids: ['tag1', 'tag2'], tags: ['card-tag'], data: { name: 'Alice' } },
+        // null/undefined tag_ids
+        { tag_ids: null },
+        { tag_ids: undefined },
+        // Large tag set
+        { tag_ids: Array.from({ length: 50 }, (_, i) => `tag-${String(i).padStart(3, '0')}`) },
+    ];
+
+    test('fast path matches generic pipeline (truncated to 32 bits) for every fixture', () => {
+        for (const fixture of fixtures) {
+            const generic = contentHashOf(characterTagIdsFingerprint(fixture)) % 4294967296;
+            const fast = characterDigestTagIdsHash(fixture);
+            expect(fast).toBe(generic);
+        }
+    });
+
+    test('null/undefined character tolerance', () => {
+        for (const val of [null, undefined]) {
+            expect(characterDigestTagIdsHash(val)).toBe(
+                contentHashOf(characterTagIdsFingerprint(val)) % 4294967296,
+            );
+        }
+    });
+
+    test('different order of same tag_ids produces the same hash (sorting invariant)', () => {
+        const a = { tag_ids: ['z', 'a', 'm'] };
+        const b = { tag_ids: ['a', 'm', 'z'] };
+        expect(characterDigestTagIdsHash(a)).toBe(characterDigestTagIdsHash(b));
+    });
+
+    test('tag_ids change only affects tagIdsHash, not favHash or fieldsHash', () => {
+        const base = { name: 'Alice', fav: false, tag_ids: ['tag1'], tags: ['a'], data: { name: 'Alice', extensions: { fav: false, world: '' } } };
+        const changed = { ...base, tag_ids: ['tag1', 'tag2'] };
+        expect(characterDigestTagIdsHash(base)).not.toBe(characterDigestTagIdsHash(changed));
+        expect(characterDigestFavHash(base)).toBe(characterDigestFavHash(changed));
+        expect(characterDigestFieldsHash(base)).toBe(characterDigestFieldsHash(changed));
     });
 });
 
