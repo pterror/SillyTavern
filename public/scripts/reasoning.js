@@ -431,10 +431,15 @@ export class ReasoningHandler {
         this.type = (this.#isParsingReasoning || this.#parsingReasoningMesStartIndex) ? ReasoningType.Parsed : ReasoningType.Model;
 
         if (persist) {
-            // Build and save the reasoning data to message extras
-            extra.reasoning = this.reasoning;
-            extra.reasoning_duration = this.getDuration();
-            extra.reasoning_type = (this.#isParsingReasoning || this.#parsingReasoningMesStartIndex) ? ReasoningType.Parsed : ReasoningType.Model;
+            // Build and save the reasoning data to message extras via updateMessage (frozen-safe)
+            updateMessage(messageId, {
+                extra: {
+                    ...chat[messageId].extra,
+                    reasoning: this.reasoning,
+                    reasoning_duration: this.getDuration(),
+                    reasoning_type: (this.#isParsingReasoning || this.#parsingReasoningMesStartIndex) ? ReasoningType.Parsed : ReasoningType.Model,
+                },
+            });
         }
 
         return reasoningChanged;
@@ -1214,13 +1219,19 @@ function registerReasoningMacros() {
 function setReasoningEventHandlers() {
     /**
      * Updates the reasoning block of a message from a value.
+     * @param {number} messageId Message index in chat array
      * @param {object} message Message object
      * @param {string} value Reasoning value
      */
-    function updateReasoningFromValue(message, value) {
+    function updateReasoningFromValue(messageId, message, value) {
         const reasoning = getRegexedString(value, regex_placement.REASONING, { isEdit: true });
-        message.extra.reasoning = reasoning;
-        message.extra.reasoning_type = message.extra.reasoning_type ? ReasoningType.Edited : ReasoningType.Manual;
+        updateMessage(messageId, {
+            extra: {
+                ...message.extra,
+                reasoning: reasoning,
+                reasoning_type: message.extra.reasoning_type ? ReasoningType.Edited : ReasoningType.Manual,
+            },
+        });
     }
 
     $(document).on('click', '.mes_reasoning_details', function (e) {
@@ -1322,9 +1333,9 @@ function setReasoningEventHandlers() {
             closeReasoningDetailsWithoutContent(messageBlock);
             return;
         }
-        updateReasoningFromValue(message, newReasoning);
+        updateReasoningFromValue(messageId, message, newReasoning);
         await saveChatConditional();
-        updateMessageBlock(messageId, message);
+        updateMessageBlock(messageId, chat[messageId]);
         closeReasoningDetailsWithoutContent(messageBlock);
 
         messageBlock.find('.mes_edit_done:visible').trigger('click');
@@ -1389,11 +1400,12 @@ function setReasoningEventHandlers() {
         if (!message?.extra) {
             return;
         }
-        message.extra.reasoning = '';
-        delete message.extra.reasoning_type;
-        delete message.extra.reasoning_duration;
+        const cleanExtra = { ...message.extra, reasoning: '' };
+        delete cleanExtra.reasoning_type;
+        delete cleanExtra.reasoning_duration;
+        updateMessage(messageId, { extra: cleanExtra });
         await saveChatConditional();
-        updateMessageBlock(messageId, message);
+        updateMessageBlock(messageId, chat[messageId]);
         const textarea = messageBlock.find('.reasoning_edit_textarea');
         textarea.remove();
         await eventSource.emit(event_types.MESSAGE_REASONING_DELETED, messageId);
@@ -1416,12 +1428,12 @@ function setReasoningEventHandlers() {
             return;
         }
 
-        const { message, messageBlock } = getMessageFromJquery(this);
+        const { message, messageId, messageBlock } = getMessageFromJquery(this);
         if (!message?.extra) {
             return;
         }
 
-        updateReasoningFromValue(message, String($(this).val()));
+        updateReasoningFromValue(messageId, message, String($(this).val()));
         updateReasoningUI(messageBlock);
         saveChatDebounced();
     });
