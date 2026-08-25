@@ -650,34 +650,58 @@ function migrateActiveChatColumn(db) {
 function migrateCreateDateColumn(db) {
     const columns = db.all('PRAGMA table_info(characters)');
     const createDateColumn = columns.find(c => c.name === 'create_date');
+    const createDateMsColumn = columns.find(c => c.name === 'create_date_ms');
+
+    // Recovery for a half-migrated state: if a previous run was interrupted between any of the
+    // multi-step column swap (ADD create_date_ms / backfill / DROP create_date / RENAME), the
+    // table might be in one of these states:
+    //   (a) create_date_ms exists, create_date doesn't → interrupted after DROP, before RENAME
+    //   (b) both exist → interrupted after ADD/backfill, before DROP
+    // In either case, whatever backfill data exists in create_date_ms is kept as-is (NULL for
+    // rows that didn't get backfilled is acceptable - same as a genuinely-missing create_date).
+    if (!createDateColumn && createDateMsColumn) {
+        // State (a): just RENAME the surviving column and recreate the index.
+        db.exec('ALTER TABLE characters RENAME COLUMN create_date_ms TO create_date');
+        db.exec('CREATE INDEX IF NOT EXISTS idx_characters_create_date ON characters(create_date)');
+        return;
+    }
+
     if (!createDateColumn || createDateColumn.type === 'INTEGER') return;
 
-    const rows = db.all('SELECT id, create_date FROM characters WHERE create_date IS NOT NULL');
+    // State (b) recovery: if create_date_ms already exists from a previous interrupted run,
+    // skip ADD + backfill (data may be partial but NULL is acceptable) and go straight to
+    // DROP + RENAME. Otherwise, do the full migration.
+    if (!createDateMsColumn) {
+        const rows = db.all('SELECT id, create_date FROM characters WHERE create_date IS NOT NULL');
 
-    // Dropped and recreated after the column swap below (SQLite refuses to DROP COLUMN while an index still
-    // references it - confirmed by direct testing).
-    db.exec('DROP INDEX IF EXISTS idx_characters_create_date');
-    db.exec('ALTER TABLE characters ADD COLUMN create_date_ms INTEGER');
+        // Dropped and recreated after the column swap below (SQLite refuses to DROP COLUMN while an index still
+        // references it - confirmed by direct testing).
+        db.exec('DROP INDEX IF EXISTS idx_characters_create_date');
+        db.exec('ALTER TABLE characters ADD COLUMN create_date_ms INTEGER');
 
-    const unparseable = [];
-    db.transaction(() => {
-        for (const row of rows) {
-            const ms = parseCreateDateToEpochMs(row.create_date);
-            if (ms === null) {
-                unparseable.push({ id: row.id, value: row.create_date });
-                continue; // create_date_ms stays NULL for this row, same as a genuinely-missing create_date.
+        const unparseable = [];
+        db.transaction(() => {
+            for (const row of rows) {
+                const ms = parseCreateDateToEpochMs(row.create_date);
+                if (ms === null) {
+                    unparseable.push({ id: row.id, value: row.create_date });
+                    continue; // create_date_ms stays NULL for this row, same as a genuinely-missing create_date.
+                }
+                db.run('UPDATE characters SET create_date_ms = @createDateMs WHERE id = @id', { id: row.id, createDateMs: ms });
             }
-            db.run('UPDATE characters SET create_date_ms = @createDateMs WHERE id = @id', { id: row.id, createDateMs: ms });
-        }
-    });
+        });
 
-    if (unparseable.length > 0) {
-        console.error(color.yellow(
-            `[character-metadata] create_date migration: ${unparseable.length} of ${rows.length} row(s) had a ` +
-            'create_date value that could not be parsed as a date (neither ISO 8601 nor the ST "humanized" ' +
-            'format) and were set to NULL instead. Affected rows: ' +
-            JSON.stringify(unparseable),
-        ));
+        if (unparseable.length > 0) {
+            console.error(color.yellow(
+                `[character-metadata] create_date migration: ${unparseable.length} of ${rows.length} row(s) had a ` +
+                'create_date value that could not be parsed as a date (neither ISO 8601 nor the ST "humanized" ' +
+                'format) and were set to NULL instead. Affected rows: ' +
+                JSON.stringify(unparseable),
+            ));
+        }
+    } else {
+        // create_date_ms already exists from a previous interrupted run - skip ADD + backfill.
+        db.exec('DROP INDEX IF EXISTS idx_characters_create_date');
     }
 
     db.exec('ALTER TABLE characters DROP COLUMN create_date');
