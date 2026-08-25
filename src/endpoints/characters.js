@@ -32,7 +32,7 @@ import { searchCharacters, searchCharacterIds, rebuildCharacterSearchIndex, SEAR
 import { searchGroups, searchGroupIds } from './groups-search-index.js';
 import { getGroupsData, getGroupsByIds } from './groups.js';
 import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, resolveFingerprints, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getShallowByIds } from '../character-metadata-db.js';
-import { DEFAULT_DIGEST_BUCKET_COUNT } from '../../public/scripts/hash-utils.js';
+import { DEFAULT_DIGEST_BUCKET_COUNT, characterDigestFieldsHash, characterDigestCardBodyHash } from '../../public/scripts/hash-utils.js';
 
 // With 100 MB limit it would take roughly 3000 characters to reach this limit
 const memoryCacheCapacity = getConfigValue('performance.memoryCacheCapacity', '100mb');
@@ -998,6 +998,37 @@ router.post('/edit', validateAvatarUrlMiddleware, async function (request, respo
         console.warn('Error: invalid name.');
         response.status(400).send('Error: invalid name.');
         return;
+    }
+
+    // Per-field content-hash conflict detection: the client sends the hashes it computed at load time;
+    // the server reads the current card, computes fresh hashes, and rejects with 409 if any field group
+    // the client loaded has since changed. Unlike a rev counter, these are derived from the content itself
+    // and cannot drift - any write path that changes the card automatically changes its hashes, by
+    // construction, with no separate bookkeeping any endpoint could forget to maintain.
+    const contentHashesHeader = request.headers['x-content-hashes'];
+    if (contentHashesHeader) {
+        try {
+            const clientHashes = JSON.parse(contentHashesHeader);
+            const avatarPath = path.join(request.user.directories.characters, request.body.avatar_url);
+            const currentCardJson = await readCharacterData(avatarPath);
+            if (currentCardJson) {
+                const currentCard = getCharaCardV2(JSON.parse(currentCardJson), request.user.directories, false);
+                const conflicts = [];
+                if (clientHashes.fields !== undefined &&
+                    clientHashes.fields !== characterDigestFieldsHash(currentCard)) {
+                    conflicts.push('fields');
+                }
+                if (clientHashes.body !== undefined &&
+                    clientHashes.body !== characterDigestCardBodyHash(currentCard)) {
+                    conflicts.push('body');
+                }
+                if (conflicts.length > 0) {
+                    return response.status(409).json({ error: 'conflict', conflicts });
+                }
+            }
+        } catch (err) {
+            console.warn('[characters/edit] Failed to parse content hashes header, skipping conflict check:', err);
+        }
     }
 
     let char = charaFormatData(request.body, request.user.directories);
@@ -2475,6 +2506,15 @@ router.post('/get', validateAvatarUrlMiddleware, async function (request, respon
         const data = await processCharacter(item, request.user.directories, { shallow: false });
         await stampDbFav(request.user.directories, [data]);
         await stampDbActiveChat(request.user.directories, [data]);
+
+        // Per-field content hashes for edit conflict detection: the client stores these at load time
+        // and sends them back on save so the server can detect if another session changed the card
+        // in between (same pattern as the settings endpoint's hash check, but per-field instead of
+        // whole-file). characterDigestFieldsHash covers card metadata (name/creator/version/tags/
+        // world); characterDigestCardBodyHash covers the editable body (description/personality/
+        // scenario/first_mes/etc.). Together they cover everything the edit endpoint writes.
+        data._fieldsHash = characterDigestFieldsHash(data);
+        data._bodyHash = characterDigestCardBodyHash(data);
 
         return response.send(data);
     } catch (err) {

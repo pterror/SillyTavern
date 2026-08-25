@@ -194,7 +194,7 @@ import {
 // Imported directly from hash-utils.js (not re-exported via utils.js like getStringHash) so this doesn't widen
 // utils.js's re-export surface - a mocked utils.js in tests/utils-findchar.test.js stubs hash-utils.js with only
 // getStringHash, and this stays independent of that.
-import { hashSettingsKeys, treeNodeAt, digestsEqual128, DEFAULT_DIGEST_BUCKET_COUNT, DEFAULT_TREE_BRANCHING } from './scripts/hash-utils.js';
+import { hashSettingsKeys, treeNodeAt, digestsEqual128, DEFAULT_DIGEST_BUCKET_COUNT, DEFAULT_TREE_BRANCHING, characterDigestFieldsHash, characterDigestCardBodyHash } from './scripts/hash-utils.js';
 import { debounce_timeout, GENERATION_TYPE_TRIGGERS, IGNORE_SYMBOL, inject_ids, MEDIA_DISPLAY, MEDIA_SOURCE, MEDIA_TYPE, OVERSWIPE_BEHAVIOR, SCROLL_BEHAVIOR, SWIPE_DIRECTION, SWIPE_SOURCE, SWIPE_STATE } from './scripts/constants.js';
 
 import { cancelDebouncedMetadataSave, doDailyExtensionUpdatesCheck, extension_settings, initExtensions, loadExtensionSettings, runGenerationInterceptors } from './scripts/extensions.js';
@@ -11905,12 +11905,59 @@ export async function createOrEditCharacter(e) {
 
             const previousFav = getCurrentCharacter()?.fav;
 
+            // Per-field content hashes for conflict detection: compute from the character data we loaded
+            // (before the user's form edits, which go into formData, not the character object). If another
+            // session changed the card since we loaded it, the server's fresh hashes will differ from these.
+            const editCharacter = getCurrentCharacter();
+            if (editCharacter) {
+                const contentHashes = {
+                    fields: characterDigestFieldsHash(editCharacter),
+                    body: characterDigestCardBodyHash(editCharacter),
+                };
+                headers['X-Content-Hashes'] = JSON.stringify(contentHashes);
+            }
+
             const fetchResult = await fetch(url, {
                 method: 'POST',
                 headers: headers,
                 body: formData,
                 cache: 'no-cache',
             });
+
+            if (fetchResult.status === 409) {
+                let errorData;
+                try { errorData = await fetchResult.json(); } catch { /* ignore parse errors */ }
+                if (errorData?.error === 'conflict') {
+                    const confirmOverwrite = await callGenericPopup(
+                        t`<h3>Character edited in another session</h3>
+                          <p>This character was changed by another session since you loaded it. Your changes have not been saved yet.</p>
+                          <p>You can overwrite with your version (the other session's changes will be lost), or discard your changes and load the latest version from the server.</p>`,
+                        POPUP_TYPE.CONFIRM,
+                        '',
+                        { okButton: t`Overwrite with mine`, cancelButton: t`Discard my changes` },
+                    );
+                    if (confirmOverwrite === POPUP_RESULT.AFFIRMATIVE) {
+                        // Retry without the content hashes header to force the save through
+                        delete headers['X-Content-Hashes'];
+                        const retryResult = await fetch(url, {
+                            method: 'POST',
+                            headers: headers,
+                            body: formData,
+                            cache: 'no-cache',
+                        });
+                        if (!retryResult.ok) {
+                            throw new Error('Force save after conflict failed');
+                        }
+                        await getOneCharacter(formData.get('avatar_url'));
+                        await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character: getCurrentCharacter() } });
+                    } else {
+                        // User chose to discard - reload to reset all form state to the server version
+                        window.location.reload();
+                        return;
+                    }
+                    return;
+                }
+            }
 
             if (!fetchResult.ok) {
                 throw new Error('Fetch result is not ok');

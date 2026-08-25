@@ -462,6 +462,104 @@ export function characterDigestTagIdsHash(character) {
 }
 
 /**
+ * Picks the card-body subset of a character's data: the content fields that change when a user
+ * edits the character through the form (description, personality, scenario, first_mes, mes_example,
+ * system_prompt, post_history_instructions, alternate_greetings, talkativeness, depth_prompt).
+ * Paired with `characterContentFieldsFingerprint()` (metadata fields) to give full coverage of
+ * everything the character edit endpoint writes.
+ * @param {object} character
+ * @returns {object}
+ */
+export function characterCardBodyFingerprint(character) {
+    const dp = character?.data?.extensions?.depth_prompt;
+    return {
+        data: {
+            alternate_greetings: character?.data?.alternate_greetings,
+            description: character?.data?.description,
+            extensions: {
+                depth_prompt: dp !== undefined && dp !== null && typeof dp === 'object'
+                    ? { depth: dp.depth, prompt: dp.prompt, role: dp.role }
+                    : dp,
+                talkativeness: character?.data?.extensions?.talkativeness,
+            },
+            first_mes: character?.data?.first_mes,
+            mes_example: character?.data?.mes_example,
+            personality: character?.data?.personality,
+            post_history_instructions: character?.data?.post_history_instructions,
+            scenario: character?.data?.scenario,
+            system_prompt: character?.data?.system_prompt,
+        },
+    };
+}
+
+/**
+ * Fixed-shape fast path for `contentHashOf(characterCardBodyFingerprint(character))` - the editable
+ * card body fields, same hand-unrolled approach as `characterDigestFieldsHash()` and the other
+ * digest hash functions. Must stay byte-identical to the generic path.
+ *
+ * Canonical key order: top-level only `data`; inside `data`:
+ * `alternate_greetings` < `description` < `extensions` < `first_mes` < `mes_example` <
+ * `personality` < `post_history_instructions` < `scenario` < `system_prompt`;
+ * inside `extensions`: `depth_prompt` < `talkativeness`;
+ * inside `depth_prompt`: `depth` < `prompt` < `role`.
+ * @param {object} character
+ * @returns {number}
+ */
+export function characterDigestCardBodyHash(character) {
+    const data = character?.data;
+    const alternateGreetings = data?.alternate_greetings;
+    const description = data?.description;
+    const firstMes = data?.first_mes;
+    const mesExample = data?.mes_example;
+    const personality = data?.personality;
+    const postHistoryInstructions = data?.post_history_instructions;
+    const scenario = data?.scenario;
+    const systemPrompt = data?.system_prompt;
+    const ext = data?.extensions;
+    const depthPrompt = ext?.depth_prompt;
+    const talkativeness = ext?.talkativeness;
+
+    // depth_prompt is an object with known keys - canonical key ordering (alphabetical: depth, prompt, role)
+    let depthPromptStr;
+    if (depthPrompt !== undefined) {
+        if (depthPrompt !== null && typeof depthPrompt === 'object') {
+            let dpParts = '';
+            const appendDp = (key, value) => {
+                if (value === undefined) return;
+                dpParts += (dpParts ? ',' : '') + `${JSON.stringify(key)}:${JSON.stringify(value)}`;
+            };
+            appendDp('depth', depthPrompt.depth);
+            appendDp('prompt', depthPrompt.prompt);
+            appendDp('role', depthPrompt.role);
+            depthPromptStr = `{${dpParts}}`;
+        } else {
+            depthPromptStr = JSON.stringify(depthPrompt);
+        }
+    }
+
+    let extParts = '';
+    if (depthPrompt !== undefined) extParts += `"depth_prompt":${depthPromptStr}`;
+    if (talkativeness !== undefined) extParts += (extParts ? ',' : '') + `"talkativeness":${JSON.stringify(talkativeness)}`;
+
+    let dataParts = '';
+    const appendData = (key, value) => {
+        if (value === undefined) return;
+        dataParts += (dataParts ? ',' : '') + `${JSON.stringify(key)}:${value}`;
+    };
+    if (alternateGreetings !== undefined) appendData('alternate_greetings', JSON.stringify(alternateGreetings));
+    if (description !== undefined) appendData('description', JSON.stringify(description));
+    appendData('extensions', `{${extParts}}`);
+    if (firstMes !== undefined) appendData('first_mes', JSON.stringify(firstMes));
+    if (mesExample !== undefined) appendData('mes_example', JSON.stringify(mesExample));
+    if (personality !== undefined) appendData('personality', JSON.stringify(personality));
+    if (postHistoryInstructions !== undefined) appendData('post_history_instructions', JSON.stringify(postHistoryInstructions));
+    if (scenario !== undefined) appendData('scenario', JSON.stringify(scenario));
+    if (systemPrompt !== undefined) appendData('system_prompt', JSON.stringify(systemPrompt));
+
+    return getStringHash(`{"data":{${dataParts}}}`);
+}
+
+/**
  * The starting value for a bucket digest accumulator - see `combineDigest()`.
  * @returns {{ hi: number, lo: number }}
  */
