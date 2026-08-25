@@ -3429,11 +3429,30 @@ export async function queryEntities(directories, params = {}) {
 
         const unionArgs = [...charWhere.args, ...groupWhere.args, ...orderArgs, numericLimit, numericOffset];
         const rawRows = entry.db.all(
+            // create_date: a group DOES have a real creation timestamp - its own date_added column (populated at
+            // creation, migrateGroupsColumns() below) - projected as create_date on the group side of this UNION
+            // so it interleaves correctly with characters instead of parking every group at one end of the sort
+            // permanently (NULL would be silently wrong here, not a neutral default: a group's creation time is
+            // a genuine fact this table already stores, just under a differently-named column).
+            //
+            // data_size: characters-only, no equivalent for real. This table has no stored byte-size concept for
+            // groups at all - the closest thing (a group's own JSON file's on-disk size) isn't a column anywhere
+            // here, it would need an fs.statSync() per group row at query time, which is exactly the per-request
+            // filesystem cost this whole metadata store exists to avoid (same reason chat_size/date_last_chat are
+            // precomputed and cached rather than read live off disk on every query). So this one genuinely stays
+            // NULL on the group side - not a shortcut, there is no stored value to project instead.
             `SELECT * FROM (
-                SELECT id, 'character' as type, name_fold, fav, date_added, date_last_chat, chat_size, shallow_json
+                SELECT id, 'character' as type, name_fold, fav, date_added, date_last_chat, chat_size, create_date, data_size, shallow_json
                 FROM characters ${charWhere.where}
                 UNION ALL
-                SELECT id, 'group' as type, name_fold, fav, date_added, date_last_chat, chat_size, NULL as shallow_json
+                -- date_added is epoch milliseconds (INTEGER); characters.create_date is an ISO-ish TEXT string.
+                -- Projecting date_added as-is here would NOT interleave correctly despite both being real,
+                -- non-NULL values - SQLite's default type-based ordering sorts every TEXT value ahead of every
+                -- INTEGER value regardless of actual chronological order (confirmed by direct testing: the top
+                -- 30 rows of a DESC create_date sort were all characters before this fix), so every group would
+                -- still cluster at one end, just via a type mismatch instead of a NULL one. strftime() converts
+                -- it to the same ISO 8601 shape create_date's own TEXT collation already sorts correctly by.
+                SELECT id, 'group' as type, name_fold, fav, date_added, date_last_chat, chat_size, strftime('%Y-%m-%dT%H:%M:%fZ', date_added / 1000.0, 'unixepoch') as create_date, NULL as data_size, NULL as shallow_json
                 FROM groups ${groupWhere.where}
             )
             ${orderBy}
