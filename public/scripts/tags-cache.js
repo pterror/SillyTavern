@@ -13,12 +13,12 @@ import { getCurrentUserHandle } from './user.js';
  *
  * Definitions are still a single small array with no per-item manifest the way characters have, so the same
  * whole-array "invalidate everything on any change" freshness signature is kept - just backed by `tags_rev`
- * (character-metadata-db.js's monotonic revision counter) instead of tags.json's own mtime, since tags.json is
- * gone. `tags_rev` also bumps on every assign/unassign (not just definition saves), so this cache can go stale
- * more often than it strictly needs to - that's a deliberate, correctness-safe tradeoff (one extra `/api/tags/get`
- * fetch next boot, never wrong data), not a bug: there is no cheaper signal to tell "a definition changed" apart
- * from "only an assignment changed" without giving `tags_rev` two counters, which isn't worth it for a payload
- * this small.
+ * (character-metadata-db.js's sha256 content hash of the definitions table) instead of tags.json's own mtime,
+ * since tags.json is gone. Because `tags_rev` is derived from definition content, it only changes when a
+ * definition is actually created, edited, or deleted - assignment-only operations (tag/untag) are transparent to
+ * it, so the cache never invalidates spuriously. No two-counter split is needed to tell "a definition changed"
+ * from "only an assignment changed" - the content hash inherently ignores assignment-only writes, which isn't
+ * worth optimizing further for a payload this small.
  */
 
 /** @type {Map<string, LocalForage>} */
