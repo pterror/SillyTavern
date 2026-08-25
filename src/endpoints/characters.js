@@ -31,7 +31,7 @@ import cacheBuster from '../middleware/cacheBuster.js';
 import { searchCharacters, searchCharacterIds, rebuildCharacterSearchIndex, SEARCH_ID_CAP } from './characters-search-index.js';
 import { searchGroups, searchGroupIds } from './groups-search-index.js';
 import { getGroupsData, getGroupsByIds } from './groups.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, resolveFingerprints, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, resolveFingerprints, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getShallowByIds } from '../character-metadata-db.js';
 import { DEFAULT_DIGEST_BUCKET_COUNT } from '../../public/scripts/hash-utils.js';
 
 // With 100 MB limit it would take roughly 3000 characters to reach this limit
@@ -529,9 +529,10 @@ export const processCharacter = async (item, directories, { shallow }) => {
         character.json_data = imgData;
         character.date_added = charStat.ctimeMs;
         character.create_date = jsonObject.create_date || new Date(Math.round(charStat.ctimeMs)).toISOString();
-        const chatsDirectory = path.join(directories.chats, item.replace('.png', ''));
+        const charDirName = item.replace('.png', '');
+        const chatsDirectory = charDirName ? path.join(directories.chats, charDirName) : null;
 
-        const { chatSize, dateLastChat } = calculateChatSize(chatsDirectory);
+        const { chatSize, dateLastChat } = chatsDirectory ? calculateChatSize(chatsDirectory) : { chatSize: 0, dateLastChat: 0 };
         character.chat_size = chatSize;
         character.date_last_chat = dateLastChat;
         character.data_size = calculateDataSize(jsonObject?.data);
@@ -1423,18 +1424,14 @@ router.post('/delete', validateAvatarUrlMiddleware, async function (request, res
         return response.sendStatus(400);
     }
 
+    const dir_name = request.body.avatar_url.replace('.png', '');
+
     fs.unlinkSync(avatarPath);
     invalidateThumbnail(request.user.directories, 'avatar', request.body.avatar_url);
     await deleteCharacterRow(request.user.directories, request.body.avatar_url).catch(err =>
         console.error('[character-metadata] Failed to update metadata store after a character delete (the reconciler will catch it):', err));
-    let dir_name = (request.body.avatar_url.replace('.png', ''));
 
-    if (!dir_name.length) {
-        console.error('Malicious dirname prevented');
-        return response.sendStatus(403);
-    }
-
-    if (request.body.delete_chats == true) {
+    if (request.body.delete_chats == true && dir_name) {
         try {
             await fs.promises.rm(path.join(request.user.directories.chats, sanitize(dir_name)), { recursive: true, force: true });
         } catch (err) {
@@ -2399,6 +2396,10 @@ router.post('/manifest', function (request, response) {
  * applies to a single `avatar_url` field - done manually here rather than via that middleware since this
  * endpoint takes an array, not a single field.
  *
+ * Optionally accepts a `fields` array in the request body; when present, the response is switched to a
+ * field-filtered mode that returns only those specific fields (plus `avatar`) read from each character's
+ * db-tracked `shallow_json`, instead of the full processCharacter() record.
+ *
  * @param  {import("express").Request} request The HTTP request object.
  * @param  {import("express").Response} response The HTTP response object.
  * @return {void}
@@ -2406,6 +2407,7 @@ router.post('/manifest', function (request, response) {
 router.post('/batch', async function (request, response) {
     try {
         const avatars = Array.isArray(request.body?.avatars) ? request.body.avatars : [];
+        const fields = Array.isArray(request.body?.fields) ? request.body.fields : null;
 
         for (const avatar of avatars) {
             if (typeof avatar !== 'string' || forbiddenRegExp.test(avatar)) {
@@ -2413,6 +2415,31 @@ router.post('/batch', async function (request, response) {
             }
         }
 
+        // Field-filtered mode: read only requested fields from the metadata store's shallow_json,
+        // no processCharacter()/PNG read needed. shallow_json already carries the db-authoritative
+        // fav, active_chat, and tag_ids values (see writeRowSync()/setCharacterFav()/
+        // setCharacterActiveChat()/assignEntityTag()'s own doc comments), so no extra stamping step
+        // is needed here - unlike the full-record path below, which reads from the PNG first and
+        // stamps afterward.
+        if (fields) {
+            const shallowById = await getShallowByIds(request.user.directories, avatars);
+            const data = avatars
+                .filter(avatar => shallowById[avatar])
+                .map(avatar => {
+                    const shallow = shallowById[avatar];
+                    /** @type {Record<string, any>} */
+                    const filtered = { avatar };
+                    for (const field of fields) {
+                        if (field in shallow) {
+                            filtered[field] = shallow[field];
+                        }
+                    }
+                    return filtered;
+                });
+            return response.send(data);
+        }
+
+        // Full mode (no fields filter): existing behavior unchanged.
         const processingPromises = avatars.map(avatar => processCharacter(avatar, request.user.directories, { shallow: useShallowCharacters }));
         const data = (await Promise.all(processingPromises)).filter(c => c.name);
         // Same db-authoritative stamp every OTHER character-listing route already applies (/all, /get, the
@@ -2461,6 +2488,9 @@ router.post('/chats', validateAvatarUrlMiddleware, async function (request, resp
         if (!request.body) return response.sendStatus(400);
 
         const characterDirectory = (request.body.avatar_url).replace('.png', '');
+        if (!characterDirectory) {
+            return response.send([]);
+        }
 
         // Tree DB path: if the character is migrated, list branches from the tree DB
         if (await isTreeMigrated(request.user.directories, characterDirectory)) {
