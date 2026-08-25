@@ -8,7 +8,7 @@ import { DEFAULT_USER, UPLOADS_DIRECTORY } from './constants.js';
 import { getUserDirectories } from './users.js';
 import { copyCharacterFile, hardlinkOntoCanonical } from './local-import-copy.js';
 import { importCharacterFileHeadless, buildPngImportData, buildJsonImportData, mintCharacterId, fireMetadataUpsertHook } from './endpoints/characters.js';
-import { beginBatchImport, endBatchImport, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, getLocalImportSkip, setLocalImportSkip, clearLocalImportSkip, getAllLocalImportMtimes, setLocalImportMtime, clearLocalImportMtime } from './character-metadata-db.js';
+import { beginBatchImport, endBatchImport, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, getLocalImportSkip, setLocalImportSkip, clearLocalImportSkip, getAllLocalImportMtimes, setLocalImportMtime, clearLocalImportMtime, seedCardTagsForSingleCharacter } from './character-metadata-db.js';
 import { attachOverflowWatch, isWindowsOverflowSignal } from './watch-overflow.js';
 import { detectFormat } from './local-import-classify.js';
 import { LocalImportWorkerPool, resolveWorkerPoolSize } from './local-import-worker-pool.js';
@@ -368,7 +368,20 @@ function withPerHashLock(state, hash, fn) {
     return run;
 }
 
-async function processFile(state, filename, directories) {
+function readTagImportSetting(directories) {
+    try {
+        const settingsPath = path.join(directories.root, 'settings.json');
+        if (fs.existsSync(settingsPath)) {
+            const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+            const val = settings.power_user?.tag_import_setting;
+            if (val === 2) return 2;
+            if (val === 4) return 4;
+        }
+    } catch { /* use default */ }
+    return 3;
+}
+
+async function processFile(state, filename, directories, tagImportSetting = 3) {
     const format = detectFormat(filename);
     if (!format) return;
 
@@ -547,6 +560,13 @@ async function processFile(state, filename, directories) {
                     await pipelineResult.finish({ type: 'write', destPath, data });
                     await fireMetadataUpsertHook(directories, `${pngName}.png`, data, contentHash);
                     console.log(color.cyan(`[local-import] Imported ${sourcePath} as ${pngName}.png`));
+                    if (tagImportSetting !== 2) {
+                        try {
+                            await seedCardTagsForSingleCharacter(directories, `${pngName}.png`);
+                        } catch (err) {
+                            console.warn(`[local-import] Failed to seed tags for ${pngName}.png:`, err.message);
+                        }
+                    }
                 }
             } else {
                 // charx/byaf/yaml - unchanged stage+import path (see local-import-worker.js's own header on why
@@ -565,6 +585,13 @@ async function processFile(state, filename, directories) {
                     console.debug(`[local-import] Skipped ${sourcePath} - duplicate of already-imported character ${result.duplicateOf}.`);
                 } else {
                     console.log(color.cyan(`[local-import] Imported ${sourcePath} as ${result.fileName}.png`));
+                    if (tagImportSetting !== 2) {
+                        try {
+                            await seedCardTagsForSingleCharacter(directories, `${result.fileName}.png`);
+                        } catch (err) {
+                            console.warn(`[local-import] Failed to seed tags for ${result.fileName}.png:`, err.message);
+                        }
+                    }
                 }
             }
 
@@ -635,7 +662,8 @@ export async function scanDirectory(state, directories) {
         // characters-search-index.js's own I/O-bound file-read pass already uses - reused here rather than a
         // second implementation of "N in flight at once, preserve nothing about ordering that matters" (file
         // processing order was never significant - each file's outcome is independent of every other's).
-        await mapWithConcurrency(entries, resolveWorkerPoolSize(), filename => processFile(state, filename, directories));
+        const tagImportSetting = readTagImportSetting(directories);
+        await mapWithConcurrency(entries, resolveWorkerPoolSize(), filename => processFile(state, filename, directories, tagImportSetting));
     } finally {
         await endBatchImport(directories);
         // withPerHashLock()'s coordination is only ever needed to arbitrate races WITHIN one pass's concurrent
@@ -669,7 +697,7 @@ function startWatcherFor(state, directories) {
             if (existingTimer) clearTimeout(existingTimer);
             state.watchTimers.set(filename, setTimeout(() => {
                 state.watchTimers.delete(filename);
-                processFile(state, filename, directories).catch(err => {
+                processFile(state, filename, directories, readTagImportSetting(directories)).catch(err => {
                     console.error(`[local-import] Watcher-triggered import failed for ${filename} (the periodic scan will retry it):`, err.message);
                 });
             }, WATCH_DEBOUNCE_MS));
