@@ -1,7 +1,7 @@
 import { parentPort } from 'node:worker_threads';
 
 import { getSqliteEngine } from './endpoints/sqlite-engine.js';
-import { getStringHash, emptyDigest, combineDigest, foldDigests, characterDigestFavHash, characterDigestFieldsHash, characterDigestFingerprint, DEFAULT_DIGEST_BUCKET_COUNT } from '../public/scripts/hash-utils.js';
+import { getStringHash, emptyDigest128, combineDigest128, characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash, characterDigestFingerprint, DEFAULT_DIGEST_BUCKET_COUNT } from '../public/scripts/hash-utils.js';
 
 /**
  * worker_threads entry point for the recursive hash-tree anti-entropy check (POST /api/characters/tree-descend).
@@ -105,8 +105,7 @@ async function treeDescend(dbPath, nodes, branching, leafThreshold) {
                 path: n.path,
                 depth,
                 count: 0,
-                childFav: Array.from({ length: branching }, () => emptyDigest()),
-                childFields: Array.from({ length: branching }, () => emptyDigest()),
+                childDigest: Array.from({ length: branching }, () => emptyDigest128()),
             };
         });
 
@@ -118,7 +117,7 @@ async function treeDescend(dbPath, nodes, branching, leafThreshold) {
                 const hash = getStringHash(String(row.id));
 
                 // Compute path levels incrementally and check node membership at each depth
-                let parsed = null, favHash, fieldsHash;
+                let parsed = null, favHash, tagIdsHash, fieldsHash;
                 const pathParts = [];
                 for (let d = 0; d <= maxDepth; d++) {
                     if (d > 0) pathParts.push(levelOf(hash, d - 1, branching));
@@ -131,15 +130,15 @@ async function treeDescend(dbPath, nodes, branching, leafThreshold) {
                     // Record matches one or more nodes at this depth
                     if (!parsed) {
                         parsed = JSON.parse(row.shallow_json);
-                        favHash = characterDigestFavHash(parsed);
-                        fieldsHash = characterDigestFieldsHash(parsed);
+                        favHash = characterDigestFavHash(parsed) % 4294967296;
+                        tagIdsHash = characterDigestTagIdsHash(parsed);
+                        fieldsHash = characterDigestFieldsHash(parsed) % 4294967296;
                     }
                     for (const idx of nodeIndices) {
                         const nd = nodeData[idx];
                         nd.count++;
                         const childIdx = levelOf(hash, nd.depth, branching);
-                        nd.childFav[childIdx] = combineDigest(nd.childFav[childIdx], row.id, favHash);
-                        nd.childFields[childIdx] = combineDigest(nd.childFields[childIdx], row.id, fieldsHash);
+                        nd.childDigest[childIdx] = combineDigest128(nd.childDigest[childIdx], row.id, favHash, tagIdsHash, fieldsHash);
                     }
                 }
             }
@@ -195,8 +194,10 @@ async function treeDescend(dbPath, nodes, branching, leafThreshold) {
                         for (const n of nodeIndices) {
                             leafMembers.get(n).push({
                                 id: row.id,
-                                favHash: characterDigestFavHash(parsed),
-                                fieldsHash: characterDigestFieldsHash(parsed),
+                                favHash: characterDigestFavHash(parsed) % 4294967296,
+                                tagIdsHash: characterDigestTagIdsHash(parsed),
+                                contentHash: characterDigestFieldsHash(parsed) % 4294967296,
+                                fav: !!parsed?.fav,
                             });
                         }
                     }
@@ -212,7 +213,7 @@ async function treeDescend(dbPath, nodes, branching, leafThreshold) {
             }
             const children = [];
             for (let c = 0; c < branching; c++) {
-                children.push({ fav: nd.childFav[c], fields: nd.childFields[c] });
+                children.push({ digest: nd.childDigest[c] });
             }
             return { path: nd.path, type: 'children', children };
         });

@@ -227,6 +227,7 @@ export function characterDigestFingerprint(character) {
         name: character?.name,
         fav: character?.fav,
         tags: character?.tags,
+        tag_ids: Array.isArray(character?.tag_ids) && character.tag_ids.length > 0 ? [...character.tag_ids].sort() : null,
         data: {
             name: character?.data?.name,
             character_version: character?.data?.character_version,
@@ -363,6 +364,19 @@ export function characterContentFieldsFingerprint(character) {
 }
 
 /**
+ * Picks the tag_ids subset of a character's fingerprint: the system tag assignments that change
+ * independently via assignEntityTag/unassignEntityTag. Paired with characterFavFingerprint() and
+ * characterContentFieldsFingerprint() to give three independently-hashable field groups.
+ * tag_ids are sorted to ensure deterministic hashing regardless of SQL row order.
+ * @param {object} character
+ * @returns {object}
+ */
+export function characterTagIdsFingerprint(character) {
+    const tagIds = character?.tag_ids;
+    return { tag_ids: Array.isArray(tagIds) && tagIds.length > 0 ? [...tagIds].sort() : null };
+}
+
+/**
  * Fixed-shape fast path for `contentHashOf(characterFavFingerprint(character))` - same rationale as
  * `characterDigestContentHash()` above: the generic `canonicalStringify()` pipeline is redundant overhead for a
  * shape that's known statically. Must stay byte-identical to the generic path (verified in tests).
@@ -431,6 +445,23 @@ export function characterDigestFieldsHash(character) {
 }
 
 /**
+ * Fixed-shape fast path for `contentHashOf(characterTagIdsFingerprint(character))`, truncated to
+ * 32 bits for the per-field digest mechanism (4 bytes per field, per the field-granular sync design).
+ * Must produce the same output as `contentHashOf(characterTagIdsFingerprint(character)) % 4294967296`
+ * (verified in tests). tag_ids are sorted for deterministic hashing regardless of storage order.
+ * @param {object} character
+ * @returns {number} 32-bit unsigned integer
+ */
+export function characterDigestTagIdsHash(character) {
+    const tagIds = character?.tag_ids;
+    if (!Array.isArray(tagIds) || tagIds.length === 0) {
+        return getStringHash('{"tag_ids":null}') % 4294967296;
+    }
+    const sorted = [...tagIds].sort();
+    return getStringHash(`{"tag_ids":${JSON.stringify(sorted)}}`) % 4294967296;
+}
+
+/**
  * The starting value for a bucket digest accumulator - see `combineDigest()`.
  * @returns {{ hi: number, lo: number }}
  */
@@ -482,4 +513,65 @@ export function foldDigests(a, b) {
  */
 export function digestsEqual(a, b) {
     return a.hi === b.hi && a.lo === b.lo;
+}
+
+// --- 128-bit wide digest functions for field-granular sync ---
+// Aggregate hashes use 128 bits (16 bytes) at the bucket and whole-collection level so a 32-bit
+// per-field collision can never survive undetected. Per-field hashes stay narrow (32 bits / 4 bytes)
+// for locating which field drifted; the wide aggregate catches any collision the narrow hashes miss.
+
+/**
+ * Starting value for a 128-bit bucket digest accumulator.
+ * @returns {{ a: number, b: number, c: number, d: number }}
+ */
+export function emptyDigest128() {
+    return { a: 0, b: 0, c: 0, d: 0 };
+}
+
+/**
+ * Order-independent fold of one record's per-field hashes into a running 128-bit bucket digest.
+ * Four independent cyrb53 hashes with different seeds, each truncated to 32 bits, XOR'd into the
+ * accumulator. The input string encodes the record's identity (id) and all three per-field hashes,
+ * so any single-field change on any record produces a completely different contribution across all
+ * four 32-bit lanes - a per-field 32-bit collision that hides a real difference from the leaf-level
+ * comparison is still caught at the aggregate level.
+ * @param {{ a: number, b: number, c: number, d: number }} digest
+ * @param {string} id
+ * @param {number} favHash 32-bit per-field hash
+ * @param {number} tagIdsHash 32-bit per-field hash
+ * @param {number} contentHash 32-bit per-field hash
+ * @returns {{ a: number, b: number, c: number, d: number }}
+ */
+export function combineDigest128(digest, id, favHash, tagIdsHash, contentHash) {
+    const key = `${id}:${favHash}:${tagIdsHash}:${contentHash}`;
+    return {
+        a: (digest.a ^ (getStringHash(key, 0) % 4294967296)) >>> 0,
+        b: (digest.b ^ (getStringHash(key, 17) % 4294967296)) >>> 0,
+        c: (digest.c ^ (getStringHash(key, 42) % 4294967296)) >>> 0,
+        d: (digest.d ^ (getStringHash(key, 99) % 4294967296)) >>> 0,
+    };
+}
+
+/**
+ * Folds one 128-bit bucket digest into another - 128-bit counterpart of foldDigests().
+ * @param {{ a: number, b: number, c: number, d: number }} x
+ * @param {{ a: number, b: number, c: number, d: number }} y
+ * @returns {{ a: number, b: number, c: number, d: number }}
+ */
+export function foldDigests128(x, y) {
+    return {
+        a: (x.a ^ y.a) >>> 0,
+        b: (x.b ^ y.b) >>> 0,
+        c: (x.c ^ y.c) >>> 0,
+        d: (x.d ^ y.d) >>> 0,
+    };
+}
+
+/**
+ * @param {{ a: number, b: number, c: number, d: number }} x
+ * @param {{ a: number, b: number, c: number, d: number }} y
+ * @returns {boolean}
+ */
+export function digestsEqual128(x, y) {
+    return x.a === y.a && x.b === y.b && x.c === y.c && x.d === y.d;
 }

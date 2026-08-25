@@ -1,4 +1,4 @@
-import { getStringHash, treeNodeAt, characterDigestFavHash, characterDigestFieldsHash, emptyDigest, combineDigest, foldDigests, DEFAULT_DIGEST_BUCKET_COUNT, DEFAULT_TREE_BRANCHING } from './hash-utils.js';
+import { getStringHash, treeNodeAt, characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash, emptyDigest128, combineDigest128, DEFAULT_DIGEST_BUCKET_COUNT, DEFAULT_TREE_BRANCHING } from './hash-utils.js';
 
 /**
  * Module Web Worker (see kokoro.js's `new Worker(new URL(...), { type: 'module' })` for this codebase's existing
@@ -47,7 +47,7 @@ import { getStringHash, treeNodeAt, characterDigestFavHash, characterDigestField
  */
 
 let branching = DEFAULT_DIGEST_BUCKET_COUNT;
-/** @type {Map<string, { hash: number, favHash: number, fieldsHash: number }>} id -> precomputed data */
+/** @type {Map<string, { hash: number, favHash: number, tagIdsHash: number, contentHash: number }>} id -> precomputed data */
 const records = new Map();
 
 /**
@@ -57,8 +57,9 @@ function processChunk(entries) {
     for (const [id, character] of entries) {
         records.set(id, {
             hash: getStringHash(String(id)),
-            favHash: characterDigestFavHash(character),
-            fieldsHash: characterDigestFieldsHash(character),
+            favHash: characterDigestFavHash(character) % 4294967296,
+            tagIdsHash: characterDigestTagIdsHash(character),
+            contentHash: characterDigestFieldsHash(character) % 4294967296,
         });
     }
 }
@@ -96,18 +97,16 @@ async function handleComputeDigests(nodes) {
     const results = nodes.map(n => ({
         path: n.path,
         depth: n.path.length,
-        childFav: Array.from({ length: branching }, () => emptyDigest()),
-        childFields: Array.from({ length: branching }, () => emptyDigest()),
+        childDigest: Array.from({ length: branching }, () => emptyDigest128()),
     }));
 
     let processed = 0;
-    for (const [id, { hash, favHash, fieldsHash }] of records) {
+    for (const [id, { hash, favHash, tagIdsHash, contentHash }] of records) {
         for (let n = 0; n < results.length; n++) {
             const r = results[n];
             if (!isInSubtree(hash, r.path)) continue;
             const childIdx = levelOf(hash, r.depth);
-            r.childFav[childIdx] = combineDigest(r.childFav[childIdx], id, favHash);
-            r.childFields[childIdx] = combineDigest(r.childFields[childIdx], id, fieldsHash);
+            r.childDigest[childIdx] = combineDigest128(r.childDigest[childIdx], id, favHash, tagIdsHash, contentHash);
         }
         if (++processed % 5000 === 0) {
             // eslint-disable-next-line no-undef
@@ -119,7 +118,7 @@ async function handleComputeDigests(nodes) {
         type: 'digests',
         results: results.map(r => ({
             path: r.path,
-            children: r.childFav.map((fav, i) => ({ fav, fields: r.childFields[i] })),
+            children: r.childDigest.map(digest => ({ digest })),
         })),
     });
 }
@@ -136,27 +135,23 @@ self.addEventListener('message', async (event) => {
         return;
     }
     if (msg.type === 'end') {
-        // Compute level-0 children from records
-        const childFav = Array.from({ length: branching }, () => emptyDigest());
-        const childFields = Array.from({ length: branching }, () => emptyDigest());
+        // Compute level-0 children from records (single 128-bit digest stream)
+        const childDigest = Array.from({ length: branching }, () => emptyDigest128());
 
-        for (const [id, { hash, favHash, fieldsHash }] of records) {
+        for (const [id, { hash, favHash, tagIdsHash, contentHash }] of records) {
             const l0 = hash % branching;
-            childFav[l0] = combineDigest(childFav[l0], id, favHash);
-            childFields[l0] = combineDigest(childFields[l0], id, fieldsHash);
+            childDigest[l0] = combineDigest128(childDigest[l0], id, favHash, tagIdsHash, contentHash);
         }
 
-        const children = childFav.map((fav, i) => ({ fav, fields: childFields[i] }));
+        const children = childDigest.map(digest => ({ digest }));
 
         // Build per-record hash arrays for the main thread's Maps
-        const localFavHashes = [];
-        const localFieldsHashes = [];
-        for (const [id, { favHash, fieldsHash }] of records) {
-            localFavHashes.push([id, favHash]);
-            localFieldsHashes.push([id, fieldsHash]);
+        const localHashes = [];
+        for (const [id, { favHash, tagIdsHash, contentHash }] of records) {
+            localHashes.push([id, { fav: favHash, tagIds: tagIdsHash, content: contentHash }]);
         }
 
-        self.postMessage({ type: 'ready', children, localFavHashes, localFieldsHashes });
+        self.postMessage({ type: 'ready', children, localHashes });
         // Worker stays alive - the main thread will send further 'compute-digests' requests as the descent goes
         // deeper, and is responsible for terminate()'ing this worker once it's done with it.
         return;
