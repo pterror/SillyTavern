@@ -107,6 +107,7 @@ export function toShallow(character) {
         chat_size: character.chat_size,
         data_size: character.data_size,
         tags: character.tags,
+        tag_ids: character.tag_ids,
         data: {
             name: _.get(character, 'data.name', ''),
             character_version: _.get(character, 'data.character_version', ''),
