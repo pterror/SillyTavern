@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import { promises as fsPromises } from 'node:fs';
 import path from 'node:path';
@@ -20,6 +21,23 @@ import { TAGS_FILE } from './constants.js';
 // for whatever page hasn't round-tripped to the server yet.
 import { getStringHash, DEFAULT_DIGEST_BUCKET_COUNT, characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash } from '../public/scripts/hash-utils.js';
 import { runDigestWorkerTask } from './character-metadata-digest-dispatch.js';
+
+/** Fires a 'change' event whenever a row is written to the `changes` table, so callers (e.g. the SSE route in
+ * endpoints/characters.js) can push near-real-time notifications without polling. */
+export const characterChangeEmitter = new EventEmitter();
+
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} id
+ * @param {string} op
+ * @param {string?} fields
+ * @returns {number}
+ */
+function insertChange(db, id, op, fields) {
+    const { lastInsertRowid } = db.run('INSERT INTO changes (id, op, fields) VALUES (@id, @op, @fields)', { id, op, fields });
+    characterChangeEmitter.emit('change');
+    return Number(lastInsertRowid);
+}
 
 /**
  * Phase 1 of the character-data-residency redesign (see docs/design/character-data-residency-redesign.md, §3):
@@ -1086,7 +1104,7 @@ function writeRowSync(db, row, tagIds) {
         };
     }
 
-    const { lastInsertRowid } = db.run('INSERT INTO changes (id, op, fields) VALUES (@id, @op, @fields)', { id: row.id, op: 'upsert', fields: null });
+    const lastInsertRowid = insertChange(db, row.id, 'upsert', null);
     db.run(UPSERT_SQL, { ...row, changeSeq: Number(lastInsertRowid) });
 
     if (!existed) {
@@ -1109,7 +1127,7 @@ function deleteRowSync(db, id) {
     // consequence of a character disappearing is already handled, is what keeps that skip from silently
     // outliving the row it was conditioned on.
     db.run('DELETE FROM local_import_mtimes WHERE duplicate_of = @id', { id });
-    db.run('INSERT INTO changes (id, op, fields) VALUES (@id, @op, @fields)', { id, op: 'delete', fields: null });
+    insertChange(db, id, 'delete', null);
 }
 
 /**
@@ -1199,7 +1217,7 @@ export async function setCharacterFav(directories, avatar, fav) {
     const shallow = JSON.parse(existing.shallow_json);
     shallow.fav = !!fav;
 
-    const { lastInsertRowid } = entry.db.run('INSERT INTO changes (id, op, fields) VALUES (@id, @op, @fields)', { id: avatar, op: 'upsert', fields: JSON.stringify(['fav']) });
+    const lastInsertRowid = insertChange(entry.db, avatar, 'upsert', JSON.stringify(['fav']));
     entry.db.run(
         'UPDATE characters SET fav = @fav, shallow_json = @shallow_json, change_seq = @changeSeq, digest_fav = @digestFav WHERE id = @id',
         { id: avatar, fav: fav ? 1 : 0, shallow_json: JSON.stringify(shallow), changeSeq: Number(lastInsertRowid), digestFav: characterDigestFavHash(shallow) % 4294967296 },
@@ -1238,7 +1256,7 @@ export async function setCharacterActiveChat(directories, avatar, chat) {
     const shallow = JSON.parse(existing.shallow_json);
     shallow.chat = chat;
 
-    const { lastInsertRowid } = entry.db.run('INSERT INTO changes (id, op, fields) VALUES (@id, @op, @fields)', { id: avatar, op: 'upsert', fields: JSON.stringify(['active_chat']) });
+    const lastInsertRowid = insertChange(entry.db, avatar, 'upsert', JSON.stringify(['active_chat']));
     entry.db.run(
         // active_chat_checked = 1 here too, not just active_chat itself - a row can reach this write before
         // backfillActiveChatFromCards() ever gets to it (e.g. inserted between an upgrade landing and the next
@@ -1946,7 +1964,7 @@ export async function backfillTagIdsInShallowJson(directories) {
         if (prepared.length > 0) {
             entry.db.transaction(() => {
                 for (const { id, shallowJson } of prepared) {
-                    const { lastInsertRowid } = entry.db.run('INSERT INTO changes (id, op, fields) VALUES (@id, @op, @fields)', { id, op: 'upsert', fields: JSON.stringify(['tag_ids']) });
+                    const lastInsertRowid = insertChange(entry.db, id, 'upsert', JSON.stringify(['tag_ids']));
                     entry.db.run('UPDATE characters SET shallow_json = @shallowJson, change_seq = @changeSeq WHERE id = @id', { id, shallowJson, changeSeq: Number(lastInsertRowid) });
                 }
             });
@@ -2872,7 +2890,7 @@ export async function assignEntityTag(directories, id, tagId) {
             const currentTagIds = entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id }).map(r => r.tag_id);
             const shallow = JSON.parse(charRow.shallow_json);
             shallow.tag_ids = currentTagIds;
-            const { lastInsertRowid } = entry.db.run('INSERT INTO changes (id, op, fields) VALUES (@id, @op, @fields)', { id, op: 'upsert', fields: JSON.stringify(['tag_ids']) });
+            const lastInsertRowid = insertChange(entry.db, id, 'upsert', JSON.stringify(['tag_ids']));
             entry.db.run('UPDATE characters SET shallow_json = @shallowJson, change_seq = @changeSeq, digest_tag_ids = @digestTagIds WHERE id = @id', { id, shallowJson: JSON.stringify(shallow), changeSeq: Number(lastInsertRowid), digestTagIds: characterDigestTagIdsHash(shallow) % 4294967296 });
         }
         updateTagsHashSync(entry.db);
@@ -2910,7 +2928,7 @@ export async function unassignEntityTag(directories, id, tagId) {
         const currentTagIds = entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id }).map(r => r.tag_id);
         const shallow = JSON.parse(charRow.shallow_json);
         shallow.tag_ids = currentTagIds;
-        const { lastInsertRowid } = entry.db.run('INSERT INTO changes (id, op, fields) VALUES (@id, @op, @fields)', { id, op: 'upsert', fields: JSON.stringify(['tag_ids']) });
+        const lastInsertRowid = insertChange(entry.db, id, 'upsert', JSON.stringify(['tag_ids']));
         entry.db.run('UPDATE characters SET shallow_json = @shallowJson, change_seq = @changeSeq, digest_tag_ids = @digestTagIds WHERE id = @id', { id, shallowJson: JSON.stringify(shallow), changeSeq: Number(lastInsertRowid), digestTagIds: characterDigestTagIdsHash(shallow) % 4294967296 });
     }
     updateTagsHashSync(entry.db);

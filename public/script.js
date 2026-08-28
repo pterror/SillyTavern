@@ -723,6 +723,23 @@ export const saveCharacterDebounced = debounce(() => $('#create_button').trigger
  */
 export const printCharactersDebounced = debounce(() => { printCharacters(false); }, DEFAULT_PRINT_TIMEOUT);
 
+const getCharactersDebounced = debounce(() => getCharacters(), 2000);
+
+function setupCharacterChangeStream() {
+    if (typeof EventSource === 'undefined') return;
+    const source = new EventSource('/api/characters/changes/stream');
+    source.onmessage = () => {
+        if (menu_type === 'characters') {
+            getCharactersDebounced();
+        } else {
+            _charactersDirty = true;
+        }
+    };
+    source.onerror = () => {
+        // EventSource auto-reconnects on error; nothing to do
+    };
+}
+
 /**
  * @enum {number} Extension prompt types
  */
@@ -847,6 +864,8 @@ var is_advanced_char_open = false;
  * @type {MenuType}
  */
 export let menu_type = '';
+
+let _charactersDirty = false;
 
 export let selected_button = ''; //which button pressed
 
@@ -1155,6 +1174,7 @@ async function firstLoadInit() {
 
     setStage('Rendering characters');
     await printCharacters(true);
+    setupCharacterChangeStream();
 
     setStage('Loading assets');
     await getBackgrounds();
@@ -11084,7 +11104,12 @@ function select_rm_characters() {
     const doFullRefresh = menu_type === 'characters';
     setMenuType('characters');
     selectRightMenuWithAnimation('rm_characters_block');
-    printCharacters(doFullRefresh);
+    if (_charactersDirty) {
+        _charactersDirty = false;
+        getCharacters();
+    } else {
+        printCharacters(doFullRefresh);
+    }
 }
 
 /**
