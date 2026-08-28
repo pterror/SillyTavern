@@ -3691,12 +3691,12 @@ function buildWhereClause({ tags, fav, world, excludeIds, ids } = {}) {
     const args = [];
 
     if (Array.isArray(ids) && ids.length > 0) {
-        clauses.push(`id IN (${ids.map(() => '?').join(', ')})`);
-        args.push(...ids);
+        clauses.push('id IN (SELECT value FROM json_each(?))');
+        args.push(JSON.stringify(ids));
     }
     if (Array.isArray(excludeIds) && excludeIds.length > 0) {
-        clauses.push(`id NOT IN (${excludeIds.map(() => '?').join(', ')})`);
-        args.push(...excludeIds);
+        clauses.push('id NOT IN (SELECT value FROM json_each(?))');
+        args.push(JSON.stringify(excludeIds));
     }
     if (typeof fav === 'boolean') {
         clauses.push('fav = ?');
@@ -3905,12 +3905,12 @@ function buildGroupWhereClause({ tags, fav, excludeIds, ids } = {}) {
     const args = [];
 
     if (Array.isArray(ids) && ids.length > 0) {
-        clauses.push(`id IN (${ids.map(() => '?').join(', ')})`);
-        args.push(...ids);
+        clauses.push('id IN (SELECT value FROM json_each(?))');
+        args.push(JSON.stringify(ids));
     }
     if (Array.isArray(excludeIds) && excludeIds.length > 0) {
-        clauses.push(`id NOT IN (${excludeIds.map(() => '?').join(', ')})`);
-        args.push(...excludeIds);
+        clauses.push('id NOT IN (SELECT value FROM json_each(?))');
+        args.push(JSON.stringify(excludeIds));
     }
     if (typeof fav === 'boolean') {
         clauses.push('fav = ?');

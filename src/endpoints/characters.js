@@ -28,7 +28,7 @@ import { isMigrated as isTreeMigrated, listBranches as listTreeBranches } from '
 import { ByafParser } from '../byaf.js';
 import { CharXParser, persistCharXAssets } from '../charx.js';
 import cacheBuster from '../middleware/cacheBuster.js';
-import { searchCharacters, searchCharacterIds, rebuildCharacterSearchIndex, SEARCH_ID_CAP } from './characters-search-index.js';
+import { searchCharacters, searchCharacterIds, rebuildCharacterSearchIndex } from './characters-search-index.js';
 import { searchGroups, searchGroupIds } from './groups-search-index.js';
 import { getGroupsData, getGroupsByIds } from './groups.js';
 import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, resolveFingerprints, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getShallowByIds, characterChangeEmitter } from '../character-metadata-db.js';
@@ -2080,14 +2080,11 @@ router.post('/query', async function (request, response) {
 
         if (hasSearch) {
             const handle = request.user.profile.handle;
-            // 'search' sort only needs a relevance-ordered page-sized window (runIdSearch()'s own doc comment on
-            // why tantivy's payload shrink makes this cheap either way); any other sort needs the *whole*
-            // matched candidate set (bounded by SEARCH_ID_CAP) since ordering doesn't come from relevance rank -
-            // see SEARCH_ID_CAP's doc comment (characters-search-index.js) for why sort:'random' + search is
-            // exactly the case this matters for (decision 23). Applied per-source (characters and, when
-            // includeGroups, groups) rather than as a shared budget - same as the pre-existing `/all` route's
-            // `searchFetchLimit`, reused unmodified for both searchCharacters()/searchGroups() calls there.
-            const idFetchCap = sort.field === 'search' ? offset + pageSize : SEARCH_ID_CAP;
+            // 'search' sort only needs a relevance-ordered page-sized window; any other sort needs
+            // the full matched set since ordering comes from SQL, not relevance rank. Passing
+            // undefined tells the search engine to return all matches (capped internally at
+            // searcher.numDocs to avoid over-allocation - see runSearch(), tantivy-search.js).
+            const idFetchCap = sort.field === 'search' ? offset + pageSize : undefined;
             const favOnly = filter.fav === true;
             const searchResult = await searchCharacterIds(handle, request.user.directories, searchTerm, idFetchCap, favOnly);
 
@@ -2115,7 +2112,7 @@ router.post('/query', async function (request, response) {
                 ? groupSearchResult.backend
                 : searchResult.backend;
 
-            approxTotal = searchResult.total > idFetchCap || (includeGroups && groupSearchResult.total > idFetchCap);
+            approxTotal = Number.isFinite(idFetchCap) && (searchResult.total > idFetchCap || (includeGroups && groupSearchResult.total > idFetchCap));
 
             if (effectiveIds.length === 0 && effectiveGroupIds.length === 0) {
                 const seq = (await queryCharacters(request.user.directories, { ids: [], wantRows: false, wantTotal: false }))?.rev ?? 0;

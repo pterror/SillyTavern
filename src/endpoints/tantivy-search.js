@@ -269,7 +269,9 @@ export function buildSearchQuery(tantivy, schema, searchTerm, fieldWeights, fiel
  */
 export function runSearch(index, query, maxRows) {
     const searcher = index.searcher();
-    const limit = Math.max(0, Math.trunc(maxRows));
+    // When maxRows is undefined or non-finite, fetch all matching documents - capped at
+    // the index's own document count to avoid over-allocating tantivy's internal result heap.
+    const limit = Number.isFinite(maxRows) && maxRows >= 0 ? Math.min(Math.trunc(maxRows), searcher.numDocs) : searcher.numDocs;
     const result = searcher.search(query, limit, true, undefined, 0);
     const results = result.hits.map(hit => {
         const doc = searcher.doc(hit.docAddress);
