@@ -899,39 +899,34 @@ function expandMessageMedia(messageId, mediaIndex) {
         return;
     }
 
-    /**
-     * Gets the media element based on its type.
-     * @returns {HTMLElement} Media element
-     */
-    function getMediaElement() {
-        function getImageElement() {
-            const img = document.createElement('img');
-            img.src = mediaAttachment.url;
-            img.classList.add('img_enlarged');
-            return img;
-        }
+    const isVideo = mediaAttachment.type === MEDIA_TYPE.VIDEO;
+    return showMediaLightbox(mediaAttachment.url, title, isVideo);
+}
 
-        function getVideoElement() {
-            const video = document.createElement('video');
-            video.src = mediaAttachment.url;
-            video.classList.add('img_enlarged');
-            video.controls = true;
-            video.autoplay = true;
-            return video;
-        }
+/**
+ * Shows a media lightbox popup for the given URL.
+ * @param {string} url Media URL
+ * @param {string} title Optional title to display
+ * @param {boolean} isVideo Whether the media is a video
+ * @returns {HTMLElement} The created media element
+ */
+export function showMediaLightbox(url, title = '', isVideo = false) {
+    let mediaElement;
 
-        switch (mediaAttachment.type) {
-            case MEDIA_TYPE.IMAGE:
-                return getImageElement();
-            case MEDIA_TYPE.VIDEO:
-                return getVideoElement();
-        }
-
-        console.warn('Unsupported media type for enlargement:', mediaAttachment.type);
-        return getImageElement();
+    if (isVideo) {
+        const video = document.createElement('video');
+        video.src = url;
+        video.classList.add('img_enlarged');
+        video.controls = true;
+        video.autoplay = true;
+        mediaElement = video;
+    } else {
+        const img = document.createElement('img');
+        img.src = url;
+        img.classList.add('img_enlarged');
+        mediaElement = img;
     }
 
-    const mediaElement = getMediaElement();
     const mediaHolder = document.createElement('div');
     mediaHolder.classList.add('img_enlarged_holder');
     mediaHolder.append(mediaElement);
@@ -2348,6 +2343,10 @@ export function initChatUtilities() {
     chatElement.on('click', '.mes_img', async function () {
         const { messageId, mediaIndex } = getMediaContainerInfo.call(this);
         expandMessageMedia(messageId, mediaIndex);
+    });
+    chatElement.on('click', '.mes_text img', function (event) {
+        event.stopPropagation();
+        showMediaLightbox(this.src, this.alt || '');
     });
     chatElement.on('click', '.mes_media_enlarge', async function () {
         const { messageId, mediaIndex } = getMediaContainerInfo.call(this);

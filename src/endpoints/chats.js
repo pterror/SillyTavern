@@ -30,7 +30,7 @@ import { searchChatMessages } from './chat-content-search-index.js';
 import {
     isAvailable as isTreeAvailable, isMigrated as isTreeMigrated,
     saveChatToTree, loadBranch, forkBranch, labelNode,
-    deleteBranch, renameBranch as renameBranchInTree, listBranches,
+    deleteBranch, renameBranch as renameBranchInTree, listBranches, searchBranchesByContent,
     renameCharacterInMessages,
 } from '../message-tree-db.js';
 import { migrateCharacterChats } from '../message-tree-migration.js';
@@ -1338,6 +1338,8 @@ router.post('/group/save', async function (request, response) {
 router.post('/search', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const { query, avatar_url, group_id } = request.body;
+        const page = Math.max(0, Math.floor(Number(request.body.page) || 0));
+        const pageSize = Math.max(0, Math.floor(Number(request.body.page_size) || 0));
 
         /** @type {string[]} */
         let chatFiles = [];
@@ -1393,7 +1395,7 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
          * @property {number|string} [last_mes] - The timestamp of the last message
          * @property {string} [preview_message] - A preview of the last message
          */
-        const results = [];
+        let results = [];
 
         /** @type {string[]} */
         const fragments = query ? query.trim().toLowerCase().split(/\s+/).filter(x => x) : [];
@@ -1405,6 +1407,55 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
             }
             return fragments.every(fragment => textArray.some(text => String(text ?? '').toLowerCase().includes(fragment)));
         };
+
+        // Tree-migrated character path: branches replace JSONL files entirely
+        if (!group_id && avatar_url) {
+            const ownerId = String(avatar_url).replace('.png', '');
+            const treeMigrated = await ensureTreeMigrated(request.user.directories, ownerId);
+
+            if (treeMigrated) {
+                // Content search (or list-all when no query) via tree DB
+                const branches = await searchBranchesByContent(request.user.directories, ownerId, fragments);
+
+                if (branches !== null) {
+                    let results = branches.map(b => ({
+                        file_name: b.name,
+                        file_size: null,
+                        message_count: b.message_count,
+                        last_mes: b.leaf_send_date || '',
+                        preview_message: getPreviewMessage(b.last_mes),
+                    }));
+
+                    // Also match branch names against the query (content search only covers message text)
+                    if (query) {
+                        const matchedNames = new Set(results.map(r => r.file_name));
+                        const allBranches = fragments.length === 0 ? branches
+                            : await searchBranchesByContent(request.user.directories, ownerId, []);
+
+                        if (allBranches) {
+                            for (const b of allBranches) {
+                                if (!matchedNames.has(b.name) && hasTextMatch([b.name])) {
+                                    results.push({
+                                        file_name: b.name,
+                                        file_size: null,
+                                        message_count: b.message_count,
+                                        last_mes: b.leaf_send_date || '',
+                                        preview_message: getPreviewMessage(b.last_mes),
+                                    });
+                                }
+                            }
+                        }
+                    }
+
+                    const total = results.length;
+                    if (pageSize > 0) {
+                        results = results.slice(page * pageSize, (page + 1) * pageSize);
+                    }
+                    return response.send(results);
+                }
+                // If searchBranchesByContent returned null (DB unavailable), fall through to JSONL logic
+            }
+        }
 
         if (query) {
             // Real content search: try the tantivy message index first (chat-content-search-index.js) - see
@@ -1458,6 +1509,9 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
                     });
                 }
 
+                if (pageSize > 0) {
+                    results = results.slice(page * pageSize, (page + 1) * pageSize);
+                }
                 return response.send(results);
             }
         }
@@ -1500,6 +1554,9 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
             }
         }
 
+        if (pageSize > 0) {
+            results = results.slice(page * pageSize, (page + 1) * pageSize);
+        }
         return response.send(results);
     } catch (error) {
         console.error('Chat search error:', error);
