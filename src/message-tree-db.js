@@ -730,6 +730,51 @@ export async function listBranches(directories, ownerId) {
 }
 
 /**
+ * Searches branches whose message history contains all given fragments, or lists all branches when fragments is empty.
+ * Fragments come from the caller's `query.trim().toLowerCase().split(/\s+/).filter(x => x)`.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} ownerId
+ * @param {string[]} fragments - Lowercase search terms; empty array means list all.
+ * @returns {Promise<object[]|null>} Matching branches with leaf_send_date, or null if DB unavailable.
+ */
+export async function searchBranchesByContent(directories, ownerId, fragments) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    if (fragments.length === 0) {
+        return entry.db.all(`
+            SELECT b.*, json_extract(m.content, '$.send_date') as leaf_send_date
+            FROM branches b
+            LEFT JOIN messages m ON b.leaf_id = m.id
+            WHERE b.owner_id = @ownerId
+            ORDER BY m.created_at DESC
+        `, { ownerId });
+    }
+
+    const fragConditions = fragments.map((_, i) => `AND lower(json_extract(content, '$.mes')) LIKE @frag${i}`).join('\n            ');
+    const fragParams = Object.fromEntries(fragments.map((f, i) => [`frag${i}`, `%${f}%`]));
+
+    return entry.db.all(`
+        WITH matching AS (
+            SELECT id FROM messages
+            WHERE owner_id = @ownerId
+            ${fragConditions}
+        ),
+        subtree(id) AS (
+            SELECT id FROM matching
+            UNION ALL
+            SELECT m.id FROM messages m JOIN subtree s ON m.parent_id = s.id
+        )
+        SELECT b.*, json_extract(leaf_m.content, '$.send_date') as leaf_send_date
+        FROM branches b
+        LEFT JOIN messages leaf_m ON b.leaf_id = leaf_m.id
+        WHERE b.owner_id = @ownerId
+        AND b.leaf_id IN (SELECT id FROM subtree)
+        ORDER BY leaf_m.created_at DESC
+    `, { ownerId, ...fragParams });
+}
+
+/**
  * Deletes a branch record. Does NOT delete shared messages (they might be used by other branches).
  * Orphaned messages (not reachable from any branch) can be cleaned up separately.
  * @param {import('./users.js').UserDirectoryList} directories
