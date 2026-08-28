@@ -12,7 +12,6 @@ import {
 } from './lib.js';
 
 import { humanizedDateTime, favsToHotswap, getMessageTimeStamp, dragElement, isMobile, initRossMods } from './scripts/RossAscends-mods.js';
-import { GreetingEditor } from './scripts/greeting-editor.js';
 import { EntityStore } from './scripts/entity-store.js';
 import { userStatsHandler, statMesProcess, initStats } from './scripts/stats.js';
 import {
@@ -683,8 +682,6 @@ const FORM_TO_CARD = {
 
 let is_delete_mode = false;
 let fav_ch_checked = false;
-/** @type {GreetingEditor} */
-let greetingEditor;
 let scrollLock = false;
 export let abortStatusCheck = new AbortController();
 export let charDragDropHandler = null;
@@ -11078,8 +11075,7 @@ export function select_selected_character(avatar, { switchMenu = true } = {}) {
     $('#creator_textarea').val(character.data?.creator);
     $('#character_version_textarea').val(character.data?.character_version || '');
     $('#personality_textarea').val(character.personality);
-    greetingEditor.setGreetings(character.first_mes, character.data?.alternate_greetings || []);
-    $('#firstmessage_textarea').val(greetingEditor.getFirstMes());
+    $('#firstmessage_textarea').val(character.first_mes);
     $('#scenario_pole').val(character.scenario);
     $('#depth_prompt_prompt').val(character.data?.extensions?.depth_prompt?.prompt ?? '');
     $('#depth_prompt_depth').val(character.data?.extensions?.depth_prompt?.depth ?? depth_prompt_depth_default);
@@ -11097,7 +11093,7 @@ export function select_selected_character(avatar, { switchMenu = true } = {}) {
 
     const avatarUrl = character.avatar != 'none' ? getThumbnailUrl('avatar', character.avatar) : default_avatar;
     $('#avatar_load_preview').attr('src', avatarUrl);
-    // (greeting editor is populated via greetingEditor.setGreetings above)
+    $('.open_alternate_greetings').data('avatar', character?.avatar ?? null);
     $('#set_character_world').data('avatar', character?.avatar ?? null);
     setWorldInfoButtonClass(avatar);
     checkEmbeddedWorld(avatar);
@@ -11180,8 +11176,7 @@ function select_rm_create({ switchMenu = true } = {}) {
     $('#creator_textarea').val(create_save.creator);
     $('#character_version_textarea').val(create_save.character_version);
     $('#personality_textarea').val(create_save.personality);
-    greetingEditor.setGreetings(create_save.first_message, create_save.alternate_greetings || []);
-    $('#firstmessage_textarea').val(greetingEditor.getFirstMes());
+    $('#firstmessage_textarea').val(create_save.first_message);
     $('#talkativeness_slider').val(create_save.talkativeness);
     $('#scenario_pole').val(create_save.scenario);
     $('#depth_prompt_prompt').val(create_save.depth_prompt_prompt);
@@ -11194,6 +11189,7 @@ function select_rm_create({ switchMenu = true } = {}) {
     $('#renameCharButton').css('display', 'none');
     $('#name_div').removeClass('displayNone');
     $('#name_div').addClass('displayBlock');
+    $('.open_alternate_greetings').data('avatar', null);
     $('#set_character_world').data('avatar', null);
     setWorldInfoButtonClass(undefined, !!create_save.world);
     updateFavButtonState(false);
@@ -11852,6 +11848,11 @@ export function cancelTtsPlay() {
     }
 }
 
+function updateAlternateGreetingsHintVisibility(root) {
+    const numberOfGreetings = root.find('.alternate_greetings_list .alternate_greeting').length;
+    $(root).find('.alternate_grettings_hint').toggle(numberOfGreetings == 0);
+}
+
 async function openCharacterWorldPopup() {
     const avatar = $('#set_character_world').data('avatar');
     if (menu_type != 'create' && avatar === undefined) {
@@ -11927,6 +11928,152 @@ async function openCharacterWorldPopup() {
     await popup.show();
 }
 
+function openAlternateGreetings() {
+    const avatar = $('.open_alternate_greetings').data('avatar');
+    // Every use below is a read/mutation of this same character's own fields, never a positional array
+    // operation, so the resolved entity itself is all that's needed - no index required.
+    const greetingsCharacter = charactersStore.get(avatar);
+
+    if (menu_type != 'create' && avatar === undefined) {
+        toastr.error('Does not have an Id for this character in editor menu.');
+        return;
+    } else {
+        // If the character does not have alternate greetings, create an empty array
+        if (greetingsCharacter && !Array.isArray(greetingsCharacter.data.alternate_greetings)) {
+            greetingsCharacter.data.alternate_greetings = [];
+        }
+    }
+
+    const template = $('#alternate_greetings_template .alternate_grettings').clone();
+    const getArray = () => menu_type == 'create' ? create_save.alternate_greetings : greetingsCharacter.data.alternate_greetings;
+    // Snapshot to detect whether any greeting was actually changed - the onClose below
+    // should only save when something was modified, not unconditionally.
+    const originalGreetings = JSON.stringify(getArray());
+    const popup = new Popup(template, POPUP_TYPE.TEXT, '', {
+        wide: true,
+        large: true,
+        allowVerticalScrolling: true,
+        onClose: async () => {
+            if (menu_type !== 'create' && JSON.stringify(getArray()) !== originalGreetings) {
+                // Send only the changed field via merge-attributes instead of a full-card edit
+                const avatar = greetingsCharacter?.avatar;
+                if (avatar) {
+                    const response = await fetch('/api/characters/merge-attributes', {
+                        method: 'POST',
+                        headers: getRequestHeaders(),
+                        body: JSON.stringify({
+                            avatar: avatar,
+                            data: { alternate_greetings: getArray() },
+                        }),
+                    });
+                    if (response.ok) {
+                        // Update local hashes to match the new card state (avoids stale-hash
+                        // false positives on the next save without needing a full refetch)
+                        greetingsCharacter._fieldsHash = characterDigestFieldsHash(greetingsCharacter);
+                        greetingsCharacter._bodyHash = characterDigestCardBodyHash(greetingsCharacter);
+                        await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character: greetingsCharacter } });
+                    }
+                }
+            }
+        },
+    });
+
+    for (let index = 0; index < getArray().length; index++) {
+        addAlternateGreeting(template, getArray()[index], index, getArray, popup);
+    }
+
+    template.find('.add_alternate_greeting').on('click', function () {
+        const array = getArray();
+        const index = array.length;
+        array.push('');
+        addAlternateGreeting(template, '', index, getArray, popup);
+        updateAlternateGreetingsHintVisibility(template);
+        const list = template.find('.alternate_greetings_list');
+        list.scrollTop(list.prop('scrollHeight'));
+    });
+
+    popup.show();
+    updateAlternateGreetingsHintVisibility(template);
+}
+
+/**
+ * Adds an alternate greeting to the template.
+ * @param {JQuery<HTMLElement>} template
+ * @param {string} greeting
+ * @param {number} index
+ * @param {() => any[]} getArray
+ * @param {Popup} popup
+ */
+function addAlternateGreeting(template, greeting, index, getArray, popup) {
+    const greetingBlock = $('#alternate_greeting_form_template .alternate_greeting').clone();
+    greetingBlock.attr('data-index', index);
+    greetingBlock.find('.alternate_greeting_text')
+        .attr('id', `alternate_greeting_${index}`)
+        .on('input', async function () {
+            const value = $(this).val();
+            const array = getArray();
+            array[index] = value;
+        }).val(greeting);
+    greetingBlock.find('.editor_maximize').attr('data-for', `alternate_greeting_${index}`);
+    greetingBlock.find('.greeting_index').text(index + 1);
+    greetingBlock.find('.delete_alternate_greeting').on('click', async function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+
+        const confirm = await callGenericPopup(t`Are you sure you want to delete this alternate greeting?`, POPUP_TYPE.CONFIRM);
+        if (!confirm) {
+            return;
+        }
+
+        const array = getArray();
+        array.splice(index, 1);
+
+        // We need to reopen the popup to update the index numbers
+        await popup.complete(POPUP_RESULT.AFFIRMATIVE);
+        openAlternateGreetings();
+    });
+    greetingBlock.find('.move_up_alternate_greeting').on('click', function (event) {
+        handleMoveAlternateGreeting(event, -1);
+    });
+    greetingBlock.find('.move_down_alternate_greeting').on('click', function (event) {
+        handleMoveAlternateGreeting(event, 1);
+    });
+
+    /**
+     * Handles moving an alternate greeting up or down in the list.
+     * @param {JQuery.ClickEvent} event - The click event
+     * @param {number} direction - Direction to move: -1 for up, 1 for down
+     */
+    function handleMoveAlternateGreeting(event, direction) {
+        event.preventDefault();
+        event.stopPropagation();
+
+        const array = getArray();
+        const index = Number(greetingBlock.attr('data-index'));
+        const newIndex = index + direction;
+
+        // Check bounds
+        if (direction === -1 && index <= 0) {
+            return;
+        }
+        if (direction === 1 && index >= array.length - 1) {
+            return;
+        }
+
+        // Swap the greetings
+        [array[index], array[newIndex]] = [array[newIndex], array[index]];
+
+        // Update current greeting
+        greetingBlock.find('.alternate_greeting_text').val(array[index]);
+
+        // Update adjacent greeting
+        const adjacentGreetingBlock = template.find(`.alternate_greeting[data-index="${newIndex}"]`);
+        adjacentGreetingBlock.find('.alternate_greeting_text').val(array[newIndex]);
+    }
+
+    template.find('.alternate_greetings_list').append(greetingBlock);
+}
+
 /**
  * Creates or edits a character based on the form data.
  * @param {Event} [e] Event that triggered the function call.
@@ -11971,8 +12118,7 @@ export async function createOrEditCharacter(e) {
             }
 
             formData.delete('alternate_greetings');
-            formData.set('first_mes', greetingEditor.getFirstMes());
-            for (const value of greetingEditor.getAlternateGreetings()) {
+            for (const value of create_save.alternate_greetings) {
                 formData.append('alternate_greetings', value);
             }
 
@@ -12002,7 +12148,8 @@ export async function createOrEditCharacter(e) {
                 { id: '#tags_textarea', callback: value => create_save.tags = value },
                 { id: '#creator_textarea', callback: value => create_save.creator = value },
                 { id: '#personality_textarea', callback: value => create_save.personality = value },
-                { id: '#firstmessage_textarea', callback: () => { create_save.first_message = ''; create_save.alternate_greetings = []; greetingEditor.clear(); $('#firstmessage_textarea').val(''); } },
+                { id: '#firstmessage_textarea', callback: value => create_save.first_message = value },
+                { id: '#alternate_greetings_template', callback: value => create_save.alternate_greetings = value, defaultValue: [] },
                 { id: '#talkativeness_slider', callback: value => create_save.talkativeness = value, defaultValue: talkativeness_default },
                 { id: '#scenario_pole', callback: value => create_save.scenario = value },
                 { id: '#depth_prompt_prompt', callback: value => create_save.depth_prompt_prompt = value },
@@ -12070,14 +12217,6 @@ export async function createOrEditCharacter(e) {
                     }
                 }
                 if (!hasDirtyFields) {
-                    // Also check if alternate_greetings changed via the greeting editor
-                    const currentAlt = greetingEditor.getAlternateGreetings();
-                    const loadedAlt = getCurrentCharacter()?.data?.alternate_greetings || [];
-                    if (JSON.stringify(currentAlt) !== JSON.stringify(loadedAlt)) {
-                        hasDirtyFields = true;
-                    }
-                }
-                if (!hasDirtyFields) {
                     return;
                 }
             }
@@ -12118,14 +12257,6 @@ export async function createOrEditCharacter(e) {
                     // Hash the loaded value for per-field conflict detection
                     const loadedValue = lodash.get(editCharacter, mapping.v2);
                     loadedFieldHashes[mapping.v2] = getStringHash(JSON.stringify(loadedValue !== undefined ? loadedValue : null));
-                }
-
-                // Include alternate_greetings from the greeting editor if changed
-                const currentAltGreetings = greetingEditor.getAlternateGreetings();
-                const loadedAltGreetings = editCharacter?.data?.alternate_greetings || [];
-                if (JSON.stringify(currentAltGreetings) !== JSON.stringify(loadedAltGreetings)) {
-                    lodash.set(mergeData, 'data.alternate_greetings', currentAltGreetings);
-                    loadedFieldHashes['data.alternate_greetings'] = getStringHash(JSON.stringify(loadedAltGreetings));
                 }
 
                 mergeData._loadedFieldHashes = loadedFieldHashes;
@@ -12186,9 +12317,12 @@ export async function createOrEditCharacter(e) {
                 }
 
                 formData.delete('alternate_greetings');
-                formData.set('first_mes', greetingEditor.getFirstMes());
-                for (const value of greetingEditor.getAlternateGreetings()) {
-                    formData.append('alternate_greetings', value);
+                const avatar = $('.open_alternate_greetings').data('avatar');
+                const editedGreetingsCharacter = charactersStore.get(avatar);
+                if (editedGreetingsCharacter && Array.isArray(editedGreetingsCharacter?.data?.alternate_greetings)) {
+                    for (const value of editedGreetingsCharacter.data.alternate_greetings) {
+                        formData.append('alternate_greetings', value);
+                    }
                 }
 
                 const editHeaders = getRequestHeaders({ omitContentType: true });
@@ -14264,23 +14398,11 @@ jQuery(async function () {
         '#personality_textarea': function () { create_save.personality = String($('#personality_textarea').val()); },
         '#scenario_pole': function () { create_save.scenario = String($('#scenario_pole').val()); },
         '#mes_example_textarea': function () { create_save.mes_example = String($('#mes_example_textarea').val()); },
+        '#firstmessage_textarea': function () { create_save.first_message = String($('#firstmessage_textarea').val()); },
         '#talkativeness_slider': function () { create_save.talkativeness = Number($('#talkativeness_slider').val()); },
         '#depth_prompt_prompt': function () { create_save.depth_prompt_prompt = String($('#depth_prompt_prompt').val()); },
         '#depth_prompt_depth': function () { create_save.depth_prompt_depth = Number($('#depth_prompt_depth').val()); },
         '#depth_prompt_role': function () { create_save.depth_prompt_role = String($('#depth_prompt_role').val()); },
-    };
-
-    // ─── Greeting editor ──────────────────────────────────────────────
-    greetingEditor = new GreetingEditor(document.getElementById('greeting_editor_container'));
-    greetingEditor.onChange = () => {
-        // Sync the hidden input so FORM_TO_CARD / FormData / snapshot still work
-        $('#firstmessage_textarea').val(greetingEditor.getFirstMes());
-        if (menu_type === 'create') {
-            create_save.first_message = greetingEditor.getFirstMes();
-            create_save.alternate_greetings = greetingEditor.getAlternateGreetings();
-        } else {
-            saveCharacterDebounced();
-        }
     };
 
     Object.keys(elementsToUpdate).forEach(function (id) {
@@ -15176,6 +15298,7 @@ jQuery(async function () {
         }
     });
 
+    $(document).on('click', '.open_alternate_greetings', openAlternateGreetings);
     /* $('#set_character_world').on('click', openCharacterWorldPopup); */
 
     $(document).on('focus', 'input.auto-select, textarea.auto-select', function () {
