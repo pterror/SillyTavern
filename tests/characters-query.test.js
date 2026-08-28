@@ -382,7 +382,7 @@ describe('POST /api/characters/query', () => {
         const body = await response.json();
         expect(body.rows).toEqual([]);
         expect(body.total).toBe(0);
-        expect(typeof body.rev).toBe('number');
+        expect(typeof body.seq).toBe('number');
     });
 
     test('never reads the filesystem - characters not yet reconciled/indexed are simply absent, not read live', async () => {
@@ -566,7 +566,7 @@ describe('POST /api/characters/query', () => {
         expect(response.status).toBe(400);
     });
 
-    test('a rename does not change the row\'s date_added, and rev advances', async () => {
+    test('a rename does not change the row\'s date_added, and seq advances', async () => {
         await seedCharacter('Old.png', {}, 1000);
         const before = await (await postJson('/api/characters/query', { filter: { ids: ['Old.png'] } })).json();
 
@@ -575,7 +575,7 @@ describe('POST /api/characters/query', () => {
 
         const after = await (await postJson('/api/characters/query', { filter: { ids: ['New.png'] } })).json();
         expect(after.rows[0].date_added).toBe(before.rows[0].date_added);
-        expect(after.rev).toBeGreaterThan(before.rev);
+        expect(after.seq).toBeGreaterThan(before.seq);
     });
 });
 
@@ -758,47 +758,47 @@ describe('POST /api/characters/exists', () => {
 });
 
 describe('POST /api/characters/changes', () => {
-    test('sinceRev 0 on an empty store returns no changes and truncated: false', async () => {
-        const response = await postJson('/api/characters/changes', { sinceRev: 0 });
+    test('sinceSeq 0 on an empty store returns no changes and truncated: false', async () => {
+        const response = await postJson('/api/characters/changes', { sinceSeq: 0 });
         expect(response.status).toBe(200);
         const body = await response.json();
         expect(body.changes).toEqual([]);
         expect(body.truncated).toBe(false);
-        expect(body.rev).toBe(0);
+        expect(body.seq).toBe(0);
     });
 
-    test('reports an upsert then a delete as two ops for the same id, since sinceRev 0', async () => {
+    test('reports an upsert then a delete as two ops for the same id, since sinceSeq 0', async () => {
         await seedCharacter('A.png');
         await metadataDb.deleteCharacterRow(directories, 'A.png');
 
-        const response = await postJson('/api/characters/changes', { sinceRev: 0 });
+        const response = await postJson('/api/characters/changes', { sinceSeq: 0 });
         const body = await response.json();
         // Collapsed to the latest op for that id within the window (see getChangesSince()'s doc comment).
         expect(body.changes).toEqual([{ id: 'A.png', op: 'delete' }]);
     });
 
-    test('sinceRev = current rev returns no changes (already caught up)', async () => {
+    test('sinceSeq = current seq returns no changes (already caught up)', async () => {
         await seedCharacter('A.png');
-        const first = await (await postJson('/api/characters/changes', { sinceRev: 0 })).json();
+        const first = await (await postJson('/api/characters/changes', { sinceSeq: 0 })).json();
 
-        const response = await postJson('/api/characters/changes', { sinceRev: first.rev });
+        const response = await postJson('/api/characters/changes', { sinceSeq: first.seq });
         const body = await response.json();
         expect(body.changes).toEqual([]);
     });
 
-    test('only returns changes strictly after sinceRev', async () => {
+    test('only returns changes strictly after sinceSeq', async () => {
         await seedCharacter('A.png');
-        const afterA = await (await postJson('/api/characters/changes', { sinceRev: 0 })).json();
+        const afterA = await (await postJson('/api/characters/changes', { sinceSeq: 0 })).json();
         await seedCharacter('B.png', { name: 'B', data: { name: 'B', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
 
-        const response = await postJson('/api/characters/changes', { sinceRev: afterA.rev });
+        const response = await postJson('/api/characters/changes', { sinceSeq: afterA.seq });
         const body = await response.json();
         expect(body.changes).toEqual([{ id: 'B.png', op: 'upsert' }]);
     });
 
-    test('rejects a missing/invalid sinceRev with 400', async () => {
+    test('rejects a missing/invalid sinceSeq with 400', async () => {
         expect((await postJson('/api/characters/changes', {})).status).toBe(400);
-        expect((await postJson('/api/characters/changes', { sinceRev: -1 })).status).toBe(400);
-        expect((await postJson('/api/characters/changes', { sinceRev: 'nope' })).status).toBe(400);
+        expect((await postJson('/api/characters/changes', { sinceSeq: -1 })).status).toBe(400);
+        expect((await postJson('/api/characters/changes', { sinceSeq: 'nope' })).status).toBe(400);
     });
 });

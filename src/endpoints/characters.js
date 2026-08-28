@@ -1801,7 +1801,7 @@ router.post('/all', async function (request, response) {
             // group search resolve the engine independently but always agree in practice (both go through the
             // same process-wide resolveSearchEngine() cache) - this just reports whichever is worse, in case they
             // ever don't.
-            const BACKEND_SEVERITY = { tantivy: 0, native: 1, wasm: 2, unavailable: 3 };
+            const BACKEND_SEVERITY = { tantivy: 0, unavailable: 1 };
             const searchBackend = BACKEND_SEVERITY[groupSearch.backend] > BACKEND_SEVERITY[characterSearch.backend]
                 ? groupSearch.backend
                 : characterSearch.backend;
@@ -2086,7 +2086,7 @@ router.post('/query', async function (request, response) {
             // Character and group search resolve their engine tier independently but always agree in practice
             // (both go through the same process-wide resolveSearchEngine() cache) - report whichever is worse,
             // matching the `/all` route's identical BACKEND_SEVERITY comparison, in case they ever don't.
-            const BACKEND_SEVERITY = { tantivy: 0, native: 1, wasm: 2, unavailable: 3 };
+            const BACKEND_SEVERITY = { tantivy: 0, unavailable: 1 };
             searchBackend = includeGroups && BACKEND_SEVERITY[groupSearchResult.backend] > BACKEND_SEVERITY[searchResult.backend]
                 ? groupSearchResult.backend
                 : searchResult.backend;
@@ -2094,8 +2094,8 @@ router.post('/query', async function (request, response) {
             approxTotal = searchResult.total > idFetchCap || (includeGroups && groupSearchResult.total > idFetchCap);
 
             if (effectiveIds.length === 0 && effectiveGroupIds.length === 0) {
-                const rev = (await queryCharacters(request.user.directories, { ids: [], wantRows: false, wantTotal: false }))?.rev ?? 0;
-                const payload = { rev, searchBackend };
+                const seq = (await queryCharacters(request.user.directories, { ids: [], wantRows: false, wantTotal: false }))?.rev ?? 0;
+                const payload = { seq, searchBackend };
                 if (wantRows) payload.rows = [];
                 if (wantTotal) payload.total = 0;
                 return response.send(payload);
@@ -2141,7 +2141,7 @@ router.post('/query', async function (request, response) {
                     rows = rows.slice().sort((a, b) => combinedScoresById.get(a.id) - combinedScoresById.get(b.id)).slice(offset, offset + pageSize);
                 }
 
-                const payload = { rev: result.rev };
+                const payload = { seq: result.rev };
                 if (wantTotal) payload.total = approxTotal ? `~${result.total}` : result.total;
                 if (wantRows) payload.rows = hydrateEntityRows(request.user.directories, rows);
                 if (searchBackend !== undefined) payload.searchBackend = searchBackend;
@@ -2159,7 +2159,7 @@ router.post('/query', async function (request, response) {
                 return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
             }
 
-            const payload = { rev: result.rev };
+            const payload = { seq: result.rev };
             if (wantTotal) payload.total = result.total;
             if (wantRows) payload.rows = hydrateEntityRows(request.user.directories, result.rows);
             return response.send(payload);
@@ -2175,7 +2175,7 @@ router.post('/query', async function (request, response) {
         // branch (queryEntities()'s UNION ALL, above) and the !hasSearch+includeGroups branch each already
         // returned their own response before this point, so this is unconditionally the characters-only,
         // bare-Character[] shape (search or not).
-        const payload = { rev: result.rev };
+        const payload = { seq: result.rev };
         if (wantRows) payload.rows = result.rows;
         if (wantTotal) payload.total = approxTotal ? `~${result.total}` : result.total;
         if (searchBackend !== undefined) payload.searchBackend = searchBackend;
@@ -2251,12 +2251,12 @@ router.post('/exists', async function (request, response) {
  */
 router.post('/changes', async function (request, response) {
     try {
-        const sinceRev = Number(request.body?.sinceRev);
-        if (!Number.isFinite(sinceRev) || sinceRev < 0) {
+        const sinceSeq = Number(request.body?.sinceSeq);
+        if (!Number.isFinite(sinceSeq) || sinceSeq < 0) {
             return response.sendStatus(400);
         }
 
-        const result = await getChangesSince(request.user.directories, sinceRev);
+        const result = await getChangesSince(request.user.directories, sinceSeq);
         if (result === null) {
             return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
         }

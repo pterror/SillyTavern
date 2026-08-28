@@ -130,7 +130,7 @@ const WATCH_DEBOUNCE_MS = 300;
 
 /**
  * @typedef {object} PendingRow
- * @property {object} row The fully-computed row (see buildRow()), minus rev (assigned at flush time)
+ * @property {object} row The fully-computed row (see buildRow()), minus changeSeq (assigned at flush time)
  * @property {boolean} forceDateAdded True if `row.date_added` must be used verbatim even on conflict (rename)
  * @property {string[]} tagIds
  */
@@ -432,12 +432,12 @@ const UPSERT_SQL = `
     INSERT INTO characters (
         id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size,
         file_mtime, world, creator, version, creator_notes, shallow_json, content_hash,
-        content_identity_hash, avatar_identity_hash, import_poisoned, active_chat, active_chat_checked, rev,
+        content_identity_hash, avatar_identity_hash, import_poisoned, active_chat, active_chat_checked, change_seq,
         digest_fav, digest_tag_ids, digest_content
     ) VALUES (
         @id, @name, @name_fold, @fav, @date_added, @create_date, @date_last_chat, @chat_size, @data_size,
         @file_mtime, @world, @creator, @version, @creator_notes, @shallow_json, @content_hash,
-        @content_identity_hash, @avatar_identity_hash, @import_poisoned, @active_chat, @active_chat_checked, @rev,
+        @content_identity_hash, @avatar_identity_hash, @import_poisoned, @active_chat, @active_chat_checked, @changeSeq,
         @digest_fav, @digest_tag_ids, @digest_content
     )
     ON CONFLICT(id) DO UPDATE SET
@@ -491,7 +491,7 @@ const UPSERT_SQL = `
         digest_fav = excluded.digest_fav,
         digest_tag_ids = excluded.digest_tag_ids,
         digest_content = excluded.digest_content,
-        rev = excluded.rev
+        change_seq = excluded.change_seq
     -- date_added is deliberately absent from this SET list - see this module's header ("date_added IS RECORDED
     -- ONCE"). On a genuine insert the VALUES clause's candidate is used; on conflict SQLite leaves the existing
     -- column untouched.
@@ -836,6 +836,20 @@ function migrateChangesFieldsColumn(db) {
     }
 }
 
+function migrateRevToSeqColumns(db) {
+    const charCols = db.all("PRAGMA table_info('characters')").map(c => c.name);
+    if (charCols.includes('rev') && !charCols.includes('change_seq')) {
+        db.exec("ALTER TABLE characters RENAME COLUMN rev TO change_seq");
+    }
+    const changeCols = db.all("PRAGMA table_info('changes')").map(c => c.name);
+    if (changeCols.includes('rev') && !changeCols.includes('seq')) {
+        db.exec("ALTER TABLE changes RENAME COLUMN rev TO seq");
+    }
+    db.run("UPDATE meta SET key = 'tags_hash' WHERE key = 'tags_rev'");
+    db.run("UPDATE meta SET key = 'tantivy_char_index_seq' WHERE key = 'tantivy_char_index_rev'");
+    db.run("UPDATE meta SET key = 'tantivy_char_index_tags_hash' WHERE key = 'tantivy_char_index_tags_rev'");
+}
+
 /**
  * Adds `digest_fav`/`digest_tag_ids`/`digest_content` to an existing `characters` table that
  * predates them. Same ALTER-if-missing shape as migrateContentHashColumn(). No backfill needed:
@@ -888,6 +902,7 @@ async function getEntry(directories) {
     migrateCreateDateColumn(db);
     migrateLocalImportMtimesDuplicateOfColumn(db);
     migrateChangesFieldsColumn(db);
+    migrateRevToSeqColumns(db);
     migrateDigestColumns(db);
     migrateGroupsColumns(db, directories);
     // Design doc §5.3, decisions 8/13: random-sort order is a per-query `ORDER BY <hash>(id, seed)`, never a
@@ -903,7 +918,7 @@ async function getEntry(directories) {
 }
 
 /**
- * Builds the full row (everything UPSERT_SQL needs except `rev`, which is only known once the change-log entry
+ * Builds the full row (everything UPSERT_SQL needs except `changeSeq`, which is only known once the change-log entry
  * is inserted - see writeRowSync()) from an already Spec-V2-normalized character object.
  * @param {string} id Avatar filename (today's primary key - see the design doc §2.2 on why this is pre-Option-A)
  * @param {object} character Spec V2 character object
@@ -920,7 +935,7 @@ async function getEntry(directories) {
  * comment.
  * @param {string[]} [extra.tagIds] Tag ids for the shallow projection - passed by the caller to avoid
  * an extra per-row query during the 326k-row bootstrap pass.
- * @returns {object} Row fields (minus `rev`)
+ * @returns {object} Row fields (minus `changeSeq`)
  */
 function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, dateLastChat, contentHash, contentIdentityHash, avatarIdentityHash, tagIds = [] }) {
     const includeCreatorNotes = !!getConfigValue('performance.shallowCharactersIncludeCreatorNotes', false, 'boolean');
@@ -1072,7 +1087,7 @@ function writeRowSync(db, row, tagIds) {
     }
 
     const { lastInsertRowid } = db.run('INSERT INTO changes (id, op, fields) VALUES (@id, @op, @fields)', { id: row.id, op: 'upsert', fields: null });
-    db.run(UPSERT_SQL, { ...row, rev: Number(lastInsertRowid) });
+    db.run(UPSERT_SQL, { ...row, changeSeq: Number(lastInsertRowid) });
 
     if (!existed) {
         for (const tagId of tagIds) {
@@ -1186,8 +1201,8 @@ export async function setCharacterFav(directories, avatar, fav) {
 
     const { lastInsertRowid } = entry.db.run('INSERT INTO changes (id, op, fields) VALUES (@id, @op, @fields)', { id: avatar, op: 'upsert', fields: JSON.stringify(['fav']) });
     entry.db.run(
-        'UPDATE characters SET fav = @fav, shallow_json = @shallow_json, rev = @rev, digest_fav = @digestFav WHERE id = @id',
-        { id: avatar, fav: fav ? 1 : 0, shallow_json: JSON.stringify(shallow), rev: Number(lastInsertRowid), digestFav: characterDigestFavHash(shallow) % 4294967296 },
+        'UPDATE characters SET fav = @fav, shallow_json = @shallow_json, change_seq = @changeSeq, digest_fav = @digestFav WHERE id = @id',
+        { id: avatar, fav: fav ? 1 : 0, shallow_json: JSON.stringify(shallow), changeSeq: Number(lastInsertRowid), digestFav: characterDigestFavHash(shallow) % 4294967296 },
     );
     return true;
 }
@@ -1229,8 +1244,8 @@ export async function setCharacterActiveChat(directories, avatar, chat) {
         // backfillActiveChatFromCards() ever gets to it (e.g. inserted between an upgrade landing and the next
         // boot's backfill pass), and this write is just as authoritative a resolution of the column as that
         // backfill or a fresh buildRow() INSERT would be.
-        'UPDATE characters SET active_chat = @activeChat, active_chat_checked = 1, shallow_json = @shallowJson, rev = @rev WHERE id = @id',
-        { id: avatar, activeChat: chat, shallowJson: JSON.stringify(shallow), rev: Number(lastInsertRowid) },
+        'UPDATE characters SET active_chat = @activeChat, active_chat_checked = 1, shallow_json = @shallowJson, change_seq = @changeSeq WHERE id = @id',
+        { id: avatar, activeChat: chat, shallowJson: JSON.stringify(shallow), changeSeq: Number(lastInsertRowid) },
     );
     return true;
 }
@@ -1932,7 +1947,7 @@ export async function backfillTagIdsInShallowJson(directories) {
             entry.db.transaction(() => {
                 for (const { id, shallowJson } of prepared) {
                     const { lastInsertRowid } = entry.db.run('INSERT INTO changes (id, op, fields) VALUES (@id, @op, @fields)', { id, op: 'upsert', fields: JSON.stringify(['tag_ids']) });
-                    entry.db.run('UPDATE characters SET shallow_json = @shallowJson, rev = @rev WHERE id = @id', { id, shallowJson, rev: Number(lastInsertRowid) });
+                    entry.db.run('UPDATE characters SET shallow_json = @shallowJson, change_seq = @changeSeq WHERE id = @id', { id, shallowJson, changeSeq: Number(lastInsertRowid) });
                 }
             });
         }
@@ -2624,35 +2639,35 @@ export async function getTagUsageCount(directories, tagId) {
 }
 
 /**
- * Computes a content hash (SHA-256) of all tag definitions and stores it as the `tags_rev` meta value - the
+ * Computes a content hash (SHA-256) of all tag definitions and stores it as the `tags_hash` meta value - the
  * freshness signature for anything derived from tag *content* (definitions or assignments), replacing tags.json's
  * own mtime now that tags.json is gone (see this module's header on its removal). Called by every write below
  * that changes what a `#tags` search field or a cached tag definition would resolve to: saveTagDefinitions(),
  * assignEntityTag(), unassignEntityTag(), and migrateTagsJsonIfNeeded()'s one-time seed. Readers:
- * getTagsRevision() below (consumed by characters-search-index.js/groups-search-index.js in place of the old
+ * getTagsHash() below (consumed by characters-search-index.js/groups-search-index.js in place of the old
  * tags.json-mtime half of their freshness signature, and by tags-cache.js's client-side freshness check in place
  * of `/api/tags/manifest`'s old whole-file mtime).
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  */
-function bumpTagsRevisionSync(db) {
+function updateTagsHashSync(db) {
     const rows = db.all('SELECT id, data FROM tags ORDER BY id');
     const content = rows.map(r => r.id + '\0' + r.data).join('\0');
     const hash = crypto.createHash('sha256').update(content).digest('hex');
     db.run(
-        "INSERT INTO meta (key, value) VALUES ('tags_rev', @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        "INSERT INTO meta (key, value) VALUES ('tags_hash', @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         { value: hash },
     );
 }
 
 /**
  * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<string | null>} The current `tags_rev` content hash, or `null` if nothing has ever been
+ * @returns {Promise<string | null>} The current `tags_hash` content hash, or `null` if nothing has ever been
  * stored or the metadata store is unavailable.
  */
-export async function getTagsRevision(directories) {
+export async function getTagsHash(directories) {
     const entry = await getEntry(directories);
     if (!entry) return null;
-    const row = entry.db.get("SELECT value FROM meta WHERE key = 'tags_rev'");
+    const row = entry.db.get("SELECT value FROM meta WHERE key = 'tags_hash'");
     return row ? row.value : null;
 }
 
@@ -2661,7 +2676,7 @@ export async function getTagsRevision(directories) {
  * under-used ("only ever holds bootstrap_completed... worth fixing before the table has data worth migrating"),
  * so this is the one general-purpose accessor pair (this + setMetaValue() below) rather than a bespoke
  * get/set function per new key. characters-search-index.js's incremental tantivy maintenance uses this to persist
- * "which change-log rev / tags_rev this user's on-disk tantivy index was last caught up to" - state that belongs
+ * "which change-log seq / tags_hash this user's on-disk tantivy index was last caught up to" - state that belongs
  * to the search-index subsystem, not this module's own freshness bookkeeping, but is stored here rather than in
  * a second small file/lock because this table (and this module's write path) already is the single point every
  * character/tag mutation funnels through, so there is no second source of truth to keep in sync.
@@ -2696,7 +2711,7 @@ export async function setMetaValue(directories, key, value) {
 /**
  * Every character id that currently carries at least one tag - `character_tags`' own id set, not a
  * `SELECT * FROM characters` scan. Used by characters-search-index.js's incremental tantivy maintenance: a tag
- * *rename* (a definition edit, not an assignment change) bumps `tags_rev` without producing any `changes` log
+ * *rename* (a definition edit, not an assignment change) bumps `tags_hash` without producing any `changes` log
  * row for the characters that display that tag's name in their indexed `resolved_tags` field, so those
  * characters need re-indexing even though nothing in the `changes` table names them. This is a cheap
  * index-only query against `character_tags` regardless of library size - it never touches `characters` or the
@@ -2858,14 +2873,14 @@ export async function assignEntityTag(directories, id, tagId) {
             const shallow = JSON.parse(charRow.shallow_json);
             shallow.tag_ids = currentTagIds;
             const { lastInsertRowid } = entry.db.run('INSERT INTO changes (id, op, fields) VALUES (@id, @op, @fields)', { id, op: 'upsert', fields: JSON.stringify(['tag_ids']) });
-            entry.db.run('UPDATE characters SET shallow_json = @shallowJson, rev = @rev, digest_tag_ids = @digestTagIds WHERE id = @id', { id, shallowJson: JSON.stringify(shallow), rev: Number(lastInsertRowid), digestTagIds: characterDigestTagIdsHash(shallow) % 4294967296 });
+            entry.db.run('UPDATE characters SET shallow_json = @shallowJson, change_seq = @changeSeq, digest_tag_ids = @digestTagIds WHERE id = @id', { id, shallowJson: JSON.stringify(shallow), changeSeq: Number(lastInsertRowid), digestTagIds: characterDigestTagIdsHash(shallow) % 4294967296 });
         }
-        bumpTagsRevisionSync(entry.db);
+        updateTagsHashSync(entry.db);
         return 'ok';
     }
     if (entry.db.get('SELECT 1 FROM groups WHERE id = @id', { id })) {
         entry.db.run('INSERT OR IGNORE INTO group_tags (group_id, tag_id) VALUES (@id, @tagId)', { id, tagId });
-        bumpTagsRevisionSync(entry.db);
+        updateTagsHashSync(entry.db);
         return 'ok';
     }
     return 'not_found';
@@ -2896,9 +2911,9 @@ export async function unassignEntityTag(directories, id, tagId) {
         const shallow = JSON.parse(charRow.shallow_json);
         shallow.tag_ids = currentTagIds;
         const { lastInsertRowid } = entry.db.run('INSERT INTO changes (id, op, fields) VALUES (@id, @op, @fields)', { id, op: 'upsert', fields: JSON.stringify(['tag_ids']) });
-        entry.db.run('UPDATE characters SET shallow_json = @shallowJson, rev = @rev, digest_tag_ids = @digestTagIds WHERE id = @id', { id, shallowJson: JSON.stringify(shallow), rev: Number(lastInsertRowid), digestTagIds: characterDigestTagIdsHash(shallow) % 4294967296 });
+        entry.db.run('UPDATE characters SET shallow_json = @shallowJson, change_seq = @changeSeq, digest_tag_ids = @digestTagIds WHERE id = @id', { id, shallowJson: JSON.stringify(shallow), changeSeq: Number(lastInsertRowid), digestTagIds: characterDigestTagIdsHash(shallow) % 4294967296 });
     }
-    bumpTagsRevisionSync(entry.db);
+    updateTagsHashSync(entry.db);
     return 'ok';
 }
 
@@ -2981,8 +2996,8 @@ function upsertGroupRowSync(db, { id, name, fav, dateAdded, dateLastChat, chatSi
 /**
  * Write-path hook for groups.js's /create and /edit routes - upserts a group's id/name/fav into the `groups`
  * table (see this module's header on why this table exists and what it now carries). Unlike
- * upsertCharacterFromWrite(), there's still no rev/change-log bookkeeping here - nothing reads change history for
- * groups (queryEntities() below reads `changes.MAX(rev)` for its own `rev` field, but that's the shared
+ * upsertCharacterFromWrite(), there's still no seq/change-log bookkeeping here - nothing reads change history for
+ * groups (queryEntities() below reads `changes.MAX(seq)` for its own `seq` field, but that's the shared
  * high-water mark already advanced by character writes; a groups-only change produces no new `changes` row and
  * so does not advance it - acceptable since nothing depends on group mutations being visible through that
  * specific signal today).
@@ -3251,8 +3266,8 @@ export async function getAllEntityTagAssignments(directories) {
 /**
  * Replaces the entire `tags` table's contents with `tagsArray` - a full replace, not a diff, mirroring exactly
  * what the old `POST /api/tags/save` did to tags.json's `tags` array (a whole-array rewrite), just against a
- * table that costs nothing to rewrite wholesale instead of a multi-megabyte file. Bumps `tags_rev` (see
- * bumpTagsRevisionSync()) so search-index freshness and the client's tags-cache.js both see the change.
+ * table that costs nothing to rewrite wholesale instead of a multi-megabyte file. Bumps `tags_hash` (see
+ * updateTagsHashSync()) so search-index freshness and the client's tags-cache.js both see the change.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {object[]} tagsArray
  * @returns {Promise<'ok' | null>} `null` if the metadata store is unavailable.
@@ -3267,7 +3282,7 @@ export async function saveTagDefinitions(directories, tagsArray) {
             if (!tag || typeof tag.id !== 'string' || !tag.id) continue;
             entry.db.run('INSERT INTO tags (id, data) VALUES (@id, @data)', { id: tag.id, data: JSON.stringify(tag) });
         }
-        bumpTagsRevisionSync(entry.db);
+        updateTagsHashSync(entry.db);
     });
     return 'ok';
 }
@@ -3338,7 +3353,7 @@ export async function migrateTagsJsonIfNeeded(directories) {
 /**
  * Shared classify-and-insert core for importing a `{[id]: tagId[]}` map into `character_tags`/`group_tags` -
  * used by both migrateTagsJsonIfNeeded() (the one-time tags.json migration) and restoreTagMap() (a settings
- * snapshot restore, see this module's header). Runs inside its own transaction; bumps tags_rev once at the end
+ * snapshot restore, see this module's header). Runs inside its own transaction; bumps tags_hash once at the end
  * rather than per-key. Each key is classified against the CURRENT contents of `characters`/`groups` - a key
  * matching neither is dropped (reported via the returned list) rather than guessed at, the same "no dangling
  * rows" stance resyncTags() already took for characters.
@@ -3366,7 +3381,7 @@ function importTagMapSync(entry, tagMap) {
                 droppedKeys.push(key);
             }
         }
-        bumpTagsRevisionSync(entry.db);
+        updateTagsHashSync(entry.db);
     });
 
     return droppedKeys;
@@ -3512,7 +3527,7 @@ export async function backfillCardTagsIfNeeded(directories) {
         await new Promise(resolve => setImmediate(resolve));
     }
 
-    bumpTagsRevisionSync(entry.db);
+    updateTagsHashSync(entry.db);
     entry.db.run("INSERT INTO meta (key, value) VALUES ('card_tags_backfill_completed', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value");
 
     const newTagDefinitions = tagNameToId.size - tagDefinitionsBefore;
@@ -3562,7 +3577,7 @@ export async function seedCardTagsForSingleCharacter(directories, avatar) {
         seedCardTagsForCharacter(entry.db, avatar, cardTags, tagNameToId, insertTag, insertAssignment);
     });
 
-    bumpTagsRevisionSync(entry.db);
+    updateTagsHashSync(entry.db);
 }
 
 /**
@@ -3760,9 +3775,9 @@ function buildWhereClause({ tags, fav, world, excludeIds, ids } = {}) {
  * @param {number} [params.limit]
  * @param {boolean} [params.wantRows] Default true.
  * @param {boolean} [params.wantTotal] Default true.
- * @returns {Promise<{ rows: object[] | undefined, total: number | undefined, rev: number } | null>} `rows` are
- * already-parsed `toShallow()` projections, ready to ship as-is. `rev` is the change log's current high-water
- * mark (doc §5's "`rev` lets the client detect that its cache is stale relative to what it just rendered"), always
+ * @returns {Promise<{ rows: object[] | undefined, total: number | undefined, seq: number } | null>} `rows` are
+ * already-parsed `toShallow()` projections, ready to ship as-is. `seq` is the change log's current high-water
+ * mark (doc §5's "`seq` lets the client detect that its cache is stale relative to what it just rendered"), always
  * present regardless of `want`. `null` means the metadata store itself is unavailable on this install (no usable
  * SQLite backend) - callers must treat that as a hard "can't serve this endpoint right now", not silently fall
  * back to a live filesystem scan (see this module's `getEntry()` for the one place that's already logged).
@@ -3778,13 +3793,13 @@ export async function queryCharacters(directories, params = {}) {
         wantRows = true, wantTotal = true,
     } = params;
 
-    const revRow = entry.db.get('SELECT COALESCE(MAX(rev), 0) as rev FROM changes');
-    const rev = Number(revRow?.rev ?? 0);
+    const seqRow = entry.db.get('SELECT COALESCE(MAX(seq), 0) as seq FROM changes');
+    const seq = Number(seqRow?.seq ?? 0);
 
     if (Array.isArray(ids) && ids.length === 0) {
         // "Resolve exactly these ids" over zero ids - trivially empty, and worth short-circuiting rather than
         // building `id IN ()` (invalid SQL) or `id IN (NULL)` (a footgun that means something else entirely).
-        return { rows: wantRows ? [] : undefined, total: wantTotal ? 0 : undefined, rev };
+        return { rows: wantRows ? [] : undefined, total: wantTotal ? 0 : undefined, seq };
     }
 
     const { where, args } = buildWhereClause({ tags, fav, world, excludeIds, ids });
@@ -3850,7 +3865,7 @@ export async function queryCharacters(directories, params = {}) {
         rows = rawRows.map(r => JSON.parse(r.shallow_json));
     }
 
-    return { rows, total, rev };
+    return { rows, total, seq };
 }
 
 // Mirrors characters.js's own DEFAULT_PAGE_LIMIT - a caller genuinely omitting `limit` (rather than the /query
@@ -3968,7 +3983,7 @@ function buildGroupWhereClause({ tags, fav, excludeIds, ids } = {}) {
  * @param {number} [params.limit]
  * @param {boolean} [params.wantRows] Default true.
  * @param {boolean} [params.wantTotal] Default true.
- * @returns {Promise<{ rows: {type: 'character'|'group', id: string, fav: boolean, date_added: number, date_last_chat: number, chat_size: number, item: object}[] | undefined, total: number | undefined, rev: number } | null>}
+ * @returns {Promise<{ rows: {type: 'character'|'group', id: string, fav: boolean, date_added: number, date_last_chat: number, chat_size: number, item: object}[] | undefined, total: number | undefined, seq: number } | null>}
  * `null` if the metadata store is unavailable, matching queryCharacters(). A group row's `item` is `null` here -
  * see this function's own header on why hydration is the caller's job; a character row's `item` is already the
  * full `toShallow()` projection.
@@ -3984,11 +3999,11 @@ export async function queryEntities(directories, params = {}) {
         wantRows = true, wantTotal = true,
     } = params;
 
-    const revRow = entry.db.get('SELECT COALESCE(MAX(rev), 0) as rev FROM changes');
-    const rev = Number(revRow?.rev ?? 0);
+    const seqRow = entry.db.get('SELECT COALESCE(MAX(seq), 0) as seq FROM changes');
+    const seq = Number(seqRow?.seq ?? 0);
 
     if (Array.isArray(ids) && ids.length === 0) {
-        return { rows: wantRows ? [] : undefined, total: wantTotal ? 0 : undefined, rev };
+        return { rows: wantRows ? [] : undefined, total: wantTotal ? 0 : undefined, seq };
     }
 
     const charWhere = buildWhereClause({ tags, fav, world, excludeIds, ids });
@@ -4074,7 +4089,7 @@ export async function queryEntities(directories, params = {}) {
         }));
     }
 
-    return { rows, total, rev };
+    return { rows, total, seq };
 }
 
 /**
@@ -4121,11 +4136,11 @@ export async function checkCharactersExist(directories, ids) {
  * @param {import('./users.js').UserDirectoryList} directories
  * @returns {Promise<number | null>} `null` if the metadata store is unavailable.
  */
-export async function getCurrentRev(directories) {
+export async function getCurrentSeq(directories) {
     const entry = await getEntry(directories);
     if (!entry) return null;
-    const row = entry.db.get('SELECT COALESCE(MAX(rev), 0) as rev FROM changes');
-    return Number(row?.rev ?? 0);
+    const row = entry.db.get('SELECT COALESCE(MAX(seq), 0) as seq FROM changes');
+    return Number(row?.seq ?? 0);
 }
 
 /**
@@ -4134,30 +4149,30 @@ export async function getCurrentRev(directories) {
  * a later phase (§5.2's own framing: "once browse is server-paginated" client-side, which is phase 5, not this
  * one) - this only adds the server-side capability.
  * @param {import('./users.js').UserDirectoryList} directories
- * @param {number} sinceRev
- * @returns {Promise<{ rev: number, changes: { id: string, op: 'upsert'|'delete', fields?: string[]|null }[], truncated: boolean } | null>}
- * `truncated: true` means `sinceRev` predates the oldest change-log row this table still has (nothing prunes the
+ * @param {number} sinceSeq
+ * @returns {Promise<{ seq: number, changes: { id: string, op: 'upsert'|'delete', fields?: string[]|null }[], truncated: boolean } | null>}
+ * `truncated: true` means `sinceSeq` predates the oldest change-log row this table still has (nothing prunes the
  * log yet - see this module's header on phase 1's freshness mechanisms - so today this can only trigger for a
- * `sinceRev` that was never valid for this table to begin with, e.g. a cache built against a different user's
+ * `sinceSeq` that was never valid for this table to begin with, e.g. a cache built against a different user's
  * store; it's still computed for real rather than hardcoded `false`, since a pruning job is explicitly a future
  * addition this response shape already has to be correct against). `null` if the metadata store is unavailable.
  */
-export async function getChangesSince(directories, sinceRev) {
+export async function getChangesSince(directories, sinceSeq) {
     const entry = await getEntry(directories);
     if (!entry) return null;
 
-    const numericSince = Number.isFinite(sinceRev) && sinceRev >= 0 ? Math.trunc(sinceRev) : 0;
-    const bounds = entry.db.get('SELECT MIN(rev) as minRev, MAX(rev) as maxRev FROM changes');
-    const minRev = bounds?.minRev != null ? Number(bounds.minRev) : undefined;
-    const maxRev = bounds?.maxRev != null ? Number(bounds.maxRev) : 0;
+    const numericSince = Number.isFinite(sinceSeq) && sinceSeq >= 0 ? Math.trunc(sinceSeq) : 0;
+    const bounds = entry.db.get('SELECT MIN(seq) as minSeq, MAX(seq) as maxSeq FROM changes');
+    const minSeq = bounds?.minSeq != null ? Number(bounds.minSeq) : undefined;
+    const maxSeq = bounds?.maxSeq != null ? Number(bounds.maxSeq) : 0;
 
-    const truncated = minRev !== undefined && numericSince < minRev - 1;
+    const truncated = minSeq !== undefined && numericSince < minSeq - 1;
     if (truncated) {
-        return { rev: maxRev, changes: [], truncated: true };
+        return { seq: maxSeq, changes: [], truncated: true };
     }
 
-    const rawChanges = entry.db.all('SELECT rev, id, op, fields FROM changes WHERE rev > ? ORDER BY rev ASC', [numericSince]);
-    // Collapse to one entry per id. For the op: latest wins (rev-ascending, so later set() overwrites).
+    const rawChanges = entry.db.all('SELECT seq, id, op, fields FROM changes WHERE seq > ? ORDER BY seq ASC', [numericSince]);
+    // Collapse to one entry per id. For the op: latest wins (seq-ascending, so later set() overwrites).
     // For fields: any delete in the window forces a full refetch if the id is later re-created (the
     // client's cached copy predates the delete, so every field is potentially stale); any null-fields
     // entry means the whole record changed; otherwise union all field sets across upsert entries.
@@ -4195,7 +4210,7 @@ export async function getChangesSince(directories, sinceRev) {
         return { id, op, fields };
     });
 
-    return { rev: maxRev, changes, truncated: false };
+    return { seq: maxSeq, changes, truncated: false };
 }
 
 /**
@@ -4205,10 +4220,10 @@ export async function getChangesSince(directories, sinceRev) {
  *
  * `POST /api/characters/state-digest`: the anti-entropy check on the character cache itself (see
  * public/scripts/hash-utils.js's own header on the bucketed-digest approach this follows, and on WHY it's built
- * from content hashes rather than the change-log `rev` counter - a client cache that's silently gone wrong is
+ * from content hashes rather than the change-log `seq` counter - a client cache that's silently gone wrong is
  * exactly the failure a stored-and-trusted-per-record counter can't be relied on to catch, since the counter
  * can be just as wrong as the data it's supposed to describe). `/changes` only ever tells a client what
- * mutated SINCE its last-known rev; it has no way to notice a client whose cursor looks valid (not `truncated`)
+ * mutated SINCE its last-known seq; it has no way to notice a client whose cursor looks valid (not `truncated`)
  * but whose actual cached content has quietly drifted - a dropped IndexedDB write, partial browser storage
  * eviction, or (rarer) this database having been replaced/restored from an earlier backup. This endpoint is
  * what lets a client CHEAPLY prove (or disprove) "my cache still matches the server", independent of trusting

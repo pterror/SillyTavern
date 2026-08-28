@@ -47,7 +47,7 @@ import { getConfigValue, mapWithConcurrency, color } from '../util.js';
  * native better-sqlite3 engine, or a WebAssembly one on platforms without a native binding available) has been
  * removed now that tantivy covers every platform this fallback used to exist for.
  *
- * Freshness is checked cheaply (a characters-directory stat() plus getTagsRevision(),
+ * Freshness is checked cheaply (a characters-directory stat() plus getTagsHash(),
  * character-metadata-db.js's monotonic tag-revision counter - see getFreshnessSignature() below) on every
  * search rather than via push-based invalidation hooks on every character-mutating route: characters.js has ~9
  * routes that touch character files (create/rename/edit/edit-avatar/edit-attribute/merge-attributes/delete/
@@ -114,8 +114,8 @@ import { getConfigValue, mapWithConcurrency, color } from '../util.js';
  *   character data. This can't be expressed as "incremental from rev 0" because it doesn't go through
  *   applyIncrementalTantivyChanges() at all: that function (and therefore rebuildTantivyIndexFromScratch()) reads
  *   getChangesSince(), which depends on the phase-1 metadata store - so when that store itself is unavailable
- *   (getCurrentRev() returns `null`), there is no change log to be incremental against, full stop, regardless of
- *   starting rev. This is loadOrUpdateTantivyIndex()'s narrow top-of-function fallback, not something any of the
+ *   (getCurrentSeq() returns `null`), there is no change log to be incremental against, full stop, regardless of
+ *   starting seq. This is loadOrUpdateTantivyIndex()'s narrow top-of-function fallback, not something any of the
  *   three cases above ever need.
  * - REPAIR, NOT DEFAULT: rebuildCharacterSearchIndex() (exported below) is the only remaining caller of a genuine
  *   full rebuild for characters, wired to an explicit `POST /api/characters/search-index/rebuild` endpoint
@@ -172,11 +172,11 @@ const indexCoordinator = createIndexCoordinator();
  * @param {import('../users.js').UserDirectoryList} directories User directories
  * @returns {Promise<string>} A cheap fingerprint that changes whenever a character is added/removed/edited or a
  * tag definition/assignment changes. Prefers the phase-1 metadata store's own change-log high-water mark
- * (getCurrentRev()) over a directory `statSync`, now that the store exists and tracks exactly this - a `rev`
+ * (getCurrentSeq()) over a directory `statSync`, now that the store exists and tracks exactly this - a `seq`
  * change is a strictly more precise signal (it can't miss a same-mtime-different-content edit, and the
  * reconciler's drift-catching also bumps it, so a mutation that bypassed the write-path hooks still shows up
  * here once the reconciler catches it). Falls back to the old directory-mtime signature only if the metadata
- * store itself is unavailable (`getCurrentRev()` returns `null` - a broken-SQLite-install edge case distinct
+ * store itself is unavailable (`getCurrentSeq()` returns `null` - a broken-SQLite-install edge case distinct
  * from "tantivy works but SQLite doesn't", since tantivy and the metadata store resolve their engines
  * independently) - loadOrUpdateTantivyIndex() below has the matching fallback: without a change log there is
  * nothing to incrementally catch up from, so that state always full-rebuilds.
@@ -494,8 +494,8 @@ function createEmptyTantivyIndexAt(tantivy, dir) {
  * thing - "throw away whatever's on disk and build a correct index" - so both call this instead of each keeping
  * their own full-rebuild implementation.
  *
- * If the metadata store turns out to be unavailable right now (getCurrentRev() returns `null`), there is no
- * change log to be incremental against at all, regardless of starting rev - this redirects to
+ * If the metadata store turns out to be unavailable right now (getCurrentSeq() returns `null`), there is no
+ * change log to be incremental against at all, regardless of starting seq - this redirects to
  * buildTantivyIndexFromFilesystemScan() for that case rather than silently building an empty index, so this
  * function stays correct even when called from a context (rebuildCharacterSearchIndex()'s repair endpoint) that
  * doesn't already know whether the store is up.
@@ -524,9 +524,9 @@ async function rebuildTantivyIndexFromScratch(directories, tantivy) {
     const tempDir = tantivyIndexTempDir(directories);
     const { index, schema } = createEmptyTantivyIndexAt(tantivy, tempDir);
 
-    // sinceRev/sinceTagsRev of 0 against a brand-new empty index - see this function's own doc comment for why
+    // sinceSeq/prevTagsHash of 0 against a brand-new empty index - see this function's own doc comment for why
     // that's a full build, not a special case. `updated` can still come back `null` here if the metadata store
-    // went away in between the getCurrentRev() check above and this call (a narrow race, not the common case) -
+    // went away in between the getCurrentSeq() check above and this call (a narrow race, not the common case) -
     // in that event there's nothing indexed yet in `tempDir`, so falling back to the filesystem-scan path (which
     // starts its own fresh build from scratch) is correct rather than swapping in an empty index.
     const updated = await applyIncrementalTantivyChanges(directories, tantivy, index, schema, 0, null);
@@ -551,7 +551,7 @@ async function rebuildTantivyIndexFromScratch(directories, tantivy) {
  * (readCharacterBatches()) rather than through the phase-1 metadata store's change log - the one case that
  * structurally cannot go through rebuildTantivyIndexFromScratch()/applyIncrementalTantivyChanges() above, because
  * that path depends on getChangesSince(), which depends on the metadata store itself. When the store is
- * unavailable (getCurrentRev() returns `null`) there is no change log to be incremental against at all, so a raw
+ * unavailable (getCurrentSeq() returns `null`) there is no change log to be incremental against at all, so a raw
  * filesystem scan is the only way to index anything in that state - this is loadOrUpdateTantivyIndex()'s narrow
  * top-of-function fallback, and rebuildTantivyIndexFromScratch()'s own redirect target when it discovers the
  * store went unavailable out from under it.

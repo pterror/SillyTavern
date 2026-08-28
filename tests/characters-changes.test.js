@@ -93,19 +93,19 @@ async function seedCharacter(avatar, overrides = {}, fileMtime = 1000) {
 }
 
 describe('POST /api/characters/changes', () => {
-    test('rejects a missing/invalid sinceRev with 400', async () => {
+    test('rejects a missing/invalid sinceSeq with 400', async () => {
         expect((await postJson('/api/characters/changes', {})).status).toBe(400);
-        expect((await postJson('/api/characters/changes', { sinceRev: -1 })).status).toBe(400);
-        expect((await postJson('/api/characters/changes', { sinceRev: 'nope' })).status).toBe(400);
+        expect((await postJson('/api/characters/changes', { sinceSeq: -1 })).status).toBe(400);
+        expect((await postJson('/api/characters/changes', { sinceSeq: 'nope' })).status).toBe(400);
     });
 
-    test('sinceRev: 0 on an empty library returns an empty change list at rev 0', async () => {
-        const response = await postJson('/api/characters/changes', { sinceRev: 0 });
+    test('sinceSeq: 0 on an empty library returns an empty change list at seq 0', async () => {
+        const response = await postJson('/api/characters/changes', { sinceSeq: 0 });
         expect(response.status).toBe(200);
-        expect(await response.json()).toEqual({ rev: 0, changes: [], truncated: false });
+        expect(await response.json()).toEqual({ seq: 0, changes: [], truncated: false });
     });
 
-    test('sinceRev: 0 on a genuinely cold sync returns the whole library as upsert entries - the correctness ' +
+    test('sinceSeq: 0 on a genuinely cold sync returns the whole library as upsert entries - the correctness ' +
         'property fetchCharactersDelta() (script.js) relies on to replace /manifest entirely: every real write ' +
         'path logs a changes row, so there is no separate ground-truth listing needed to know the full current ' +
         'id set', async () => {
@@ -113,57 +113,57 @@ describe('POST /api/characters/changes', () => {
         await seedCharacter('Bob.png');
         await seedCharacter('Carol.png');
 
-        const response = await postJson('/api/characters/changes', { sinceRev: 0 });
+        const response = await postJson('/api/characters/changes', { sinceSeq: 0 });
         expect(response.status).toBe(200);
-        /** @type {{rev: number, changes: {id: string, op: string}[], truncated: boolean}} */
+        /** @type {{seq: number, changes: {id: string, op: string}[], truncated: boolean}} */
         const body = await response.json();
         expect(body.truncated).toBe(false);
-        expect(body.rev).toBe(3);
+        expect(body.seq).toBe(3);
         expect(body.changes.map(c => c.id).sort()).toEqual(['Alice.png', 'Bob.png', 'Carol.png']);
         expect(body.changes.every(c => c.op === 'upsert')).toBe(true);
     });
 
-    test('a client caught up to the current rev gets an empty change list back - the cheap steady-state case ' +
+    test('a client caught up to the current seq gets an empty change list back - the cheap steady-state case ' +
         '/manifest could never offer (its response is always O(library size), even when nothing changed)', async () => {
         await seedCharacter('Alice.png');
-        const first = await (await postJson('/api/characters/changes', { sinceRev: 0 })).json();
+        const first = await (await postJson('/api/characters/changes', { sinceSeq: 0 })).json();
 
-        const second = await postJson('/api/characters/changes', { sinceRev: first.rev });
+        const second = await postJson('/api/characters/changes', { sinceSeq: first.seq });
         expect(second.status).toBe(200);
-        expect(await second.json()).toEqual({ rev: first.rev, changes: [], truncated: false });
+        expect(await second.json()).toEqual({ seq: first.seq, changes: [], truncated: false });
     });
 
-    test('only the ids that actually changed since sinceRev come back, not the whole library', async () => {
+    test('only the ids that actually changed since sinceSeq come back, not the whole library', async () => {
         await seedCharacter('Alice.png');
         await seedCharacter('Bob.png');
-        const afterFirstTwo = await (await postJson('/api/characters/changes', { sinceRev: 0 })).json();
+        const afterFirstTwo = await (await postJson('/api/characters/changes', { sinceSeq: 0 })).json();
 
         await seedCharacter('Carol.png');
 
-        const response = await postJson('/api/characters/changes', { sinceRev: afterFirstTwo.rev });
+        const response = await postJson('/api/characters/changes', { sinceSeq: afterFirstTwo.seq });
         const body = await response.json();
         expect(body.changes).toEqual([{ id: 'Carol.png', op: 'upsert' }]);
     });
 
     test('a deleted character comes back as an explicit op: \'delete\' entry, not merely absent from a listing', async () => {
         await seedCharacter('Alice.png');
-        const afterCreate = await (await postJson('/api/characters/changes', { sinceRev: 0 })).json();
+        const afterCreate = await (await postJson('/api/characters/changes', { sinceSeq: 0 })).json();
 
         await metadataDb.deleteCharacterRow(directories, 'Alice.png');
 
-        const response = await postJson('/api/characters/changes', { sinceRev: afterCreate.rev });
+        const response = await postJson('/api/characters/changes', { sinceSeq: afterCreate.seq });
         const body = await response.json();
         expect(body.changes).toEqual([{ id: 'Alice.png', op: 'delete' }]);
     });
 
     test('an edit followed by a delete in the same window collapses to a single delete entry, not two rows', async () => {
         await seedCharacter('Alice.png');
-        const afterCreate = await (await postJson('/api/characters/changes', { sinceRev: 0 })).json();
+        const afterCreate = await (await postJson('/api/characters/changes', { sinceSeq: 0 })).json();
 
         await seedCharacter('Alice.png', { data: { name: 'Alice', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } }, 2000);
         await metadataDb.deleteCharacterRow(directories, 'Alice.png');
 
-        const response = await postJson('/api/characters/changes', { sinceRev: afterCreate.rev });
+        const response = await postJson('/api/characters/changes', { sinceSeq: afterCreate.seq });
         const body = await response.json();
         expect(body.changes).toEqual([{ id: 'Alice.png', op: 'delete' }]);
     });
@@ -188,7 +188,7 @@ describe('POST /api/characters/changes', () => {
 
         await metadataDb.bootstrapIfNeeded(directories);
 
-        const response = await postJson('/api/characters/changes', { sinceRev: 0 });
+        const response = await postJson('/api/characters/changes', { sinceSeq: 0 });
         const body = await response.json();
         expect(body.changes).toEqual([{ id: 'Legacy.png', op: 'upsert' }]);
     });

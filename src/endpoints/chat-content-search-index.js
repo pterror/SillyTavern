@@ -4,7 +4,7 @@ import readline from 'node:readline';
 
 import {
     getIndexedMessageCount, setIndexedMessageCount, getMetaValue, setMetaValue,
-    getLatestRev, getChangesSince, getChatRow,
+    getLatestSeq, getChangesSince, getChatRow,
 } from '../chat-metadata-db.js';
 import { buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch } from './tantivy-search.js';
 import { getTantivyModule } from './tantivy-engine.js';
@@ -54,8 +54,8 @@ import { tryParse, color, formatBytes } from '../util.js';
  * without one - see that module's own header) to eventually self-correct it. Accepted for this build given the
  * task's own framing (message-level granularity was chosen specifically to optimize the append-heavy common
  * case), but a real correctness gap for the swipe/regenerate case specifically, not a hypothetical one - a
- * future pass could close it by also comparing each chat's own `rev` (chat-metadata-db.js already has one) against
- * a per-chat "reindexed as of this rev" watermark and forcing a full reindex whenever rev moved but count didn't,
+ * future pass could close it by also comparing each chat's own `change_seq` (chat-metadata-db.js already has one) against
+ * a per-chat "reindexed as of this change_seq" watermark and forcing a full reindex whenever change_seq moved but count didn't,
  * trading the append-only fast path's win back on exactly the chats where a same-count edit actually happened.
  *
  * NO SQLITE FTS5 FALLBACK TIER (unlike the character/group search chain's tantivy-then-native-then-wasm chain) -
@@ -85,7 +85,7 @@ const CHECKPOINT_EVERY_N_CHATS = 100;
  * collapses them), so the resolved chat count after collapsing is usually far smaller than this. */
 const DEFAULT_MESSAGE_MAX_ROWS = 2000;
 
-const TANTIVY_REV_META_KEY = 'chat_content_index_rev';
+const TANTIVY_SEQ_META_KEY = 'chat_content_index_seq';
 
 const NOOP_CLOSE = () => { /* no explicit close API on this binding's Index */ };
 
@@ -305,10 +305,10 @@ async function reindexChatAppendOnly(tantivy, schema, writer, directories, fileP
  * every chat file (character + group + root) instead of every character card.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy
- * @returns {Promise<{ index: import('@oxdev03/node-tantivy-binding').Index, schema: import('@oxdev03/node-tantivy-binding').Schema, close: () => void, lastRev: number }>}
+ * @returns {Promise<{ index: import('@oxdev03/node-tantivy-binding').Index, schema: import('@oxdev03/node-tantivy-binding').Schema, close: () => void, lastSeq: number }>}
  */
 async function buildFullIndex(directories, tantivy) {
-    const lastRev = await getLatestRev(directories);
+    const lastSeq = await getLatestSeq(directories);
 
     const dbDir = path.join(directories.root, 'search-index');
     if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
@@ -360,12 +360,12 @@ async function buildFullIndex(directories, tantivy) {
     // mode this call avoids.
     writer.waitMergingThreads();
 
-    await setMetaValue(directories, TANTIVY_REV_META_KEY, String(lastRev));
-    return { index, schema, close: NOOP_CLOSE, lastRev };
+    await setMetaValue(directories, TANTIVY_SEQ_META_KEY, String(lastSeq));
+    return { index, schema, close: NOOP_CLOSE, lastSeq };
 }
 
 /**
- * Applies every chat change since `sinceRev` to an already-open index/writer, in place - the incremental
+ * Applies every chat change since `sinceSeq` to an already-open index/writer, in place - the incremental
  * counterpart to buildFullIndex() above, mirroring applyIncrementalTantivyChanges() (characters-search-index.js)
  * in structure but branching per-chat between the append-only fast path and a full per-chat reindex (see this
  * module's header for exactly when each applies).
@@ -373,16 +373,16 @@ async function buildFullIndex(directories, tantivy) {
  * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy
  * @param {import('@oxdev03/node-tantivy-binding').Index} index
  * @param {import('@oxdev03/node-tantivy-binding').Schema} schema
- * @param {number | null} sinceRev
- * @returns {Promise<{ lastRev: number } | null>} `null` if incremental maintenance isn't possible (metadata store
+ * @param {number | null} sinceSeq
+ * @returns {Promise<{ lastSeq: number } | null>} `null` if incremental maintenance isn't possible (metadata store
  * unavailable) - the caller must fall back to buildFullIndex() in that case.
  */
-async function applyIncrementalChanges(directories, tantivy, index, schema, sinceRev) {
-    const currentRev = await getLatestRev(directories);
-    const changes = await getChangesSince(directories, Number.isFinite(sinceRev) ? sinceRev : 0);
+async function applyIncrementalChanges(directories, tantivy, index, schema, sinceSeq) {
+    const currentSeq = await getLatestSeq(directories);
+    const changes = await getChangesSince(directories, Number.isFinite(sinceSeq) ? sinceSeq : 0);
 
     if (changes.length === 0) {
-        return { lastRev: currentRev };
+        return { lastSeq: currentSeq };
     }
 
     /** @type {Map<string, 'upsert'|'delete'>} */
@@ -423,7 +423,7 @@ async function applyIncrementalChanges(directories, tantivy, index, schema, sinc
     index.reload();
     writer.waitMergingThreads();
 
-    return { lastRev: currentRev };
+    return { lastSeq: currentSeq };
 }
 
 /**
@@ -433,16 +433,16 @@ async function applyIncrementalChanges(directories, tantivy, index, schema, sinc
  * whatever was last persisted immediately while the real catch-up runs in the background, instead of blocking.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy
- * @returns {Promise<{ index: import('@oxdev03/node-tantivy-binding').Index, schema: import('@oxdev03/node-tantivy-binding').Schema, close: () => void, lastRev: number } | null>}
+ * @returns {Promise<{ index: import('@oxdev03/node-tantivy-binding').Index, schema: import('@oxdev03/node-tantivy-binding').Schema, close: () => void, lastSeq: number } | null>}
  */
 async function openPersistedIndexStale(directories, tantivy) {
     const indexDir = tantivyIndexDir(directories);
-    const persistedRev = await getMetaValue(directories, TANTIVY_REV_META_KEY);
-    if (persistedRev === null) return null;
+    const persistedSeq = await getMetaValue(directories, TANTIVY_SEQ_META_KEY);
+    if (persistedSeq === null) return null;
     try {
         if (!tantivy.Index.exists(indexDir)) return null;
         const index = tantivy.Index.open(indexDir);
-        return { index, schema: index.schema, close: NOOP_CLOSE, lastRev: Number(persistedRev) };
+        return { index, schema: index.schema, close: NOOP_CLOSE, lastSeq: Number(persistedSeq) };
     } catch (err) {
         console.error(color.red('[search] failed to reopen the persisted chat content tantivy index, falling back to a full rebuild:'));
         console.error(color.red(`[search]   ${err.message}`));
@@ -461,9 +461,9 @@ async function openPersistedIndexStale(directories, tantivy) {
  */
 async function loadOrUpdateIndex(directories, tantivy, previous) {
     if (previous?.index) {
-        const updated = await applyIncrementalChanges(directories, tantivy, previous.index, previous.schema, previous.lastRev);
+        const updated = await applyIncrementalChanges(directories, tantivy, previous.index, previous.schema, previous.lastSeq);
         if (updated) {
-            await setMetaValue(directories, TANTIVY_REV_META_KEY, String(updated.lastRev));
+            await setMetaValue(directories, TANTIVY_SEQ_META_KEY, String(updated.lastSeq));
             return { ...previous, ...updated };
         }
     }
@@ -539,7 +539,7 @@ export async function searchChatMessages(handle, directories, searchTerm, maxRow
         return { results: [], backend: 'unavailable' };
     }
 
-    const signature = String(await getLatestRev(directories));
+    const signature = String(await getLatestSeq(directories));
     const index = await indexCoordinator.getIndex(
         handle, signature,
         (previous) => loadOrUpdateIndex(directories, tantivy, previous),
@@ -568,7 +568,7 @@ export async function rebuildChatContentIndex(handle, directories) {
     if (!tantivy) {
         return { ok: false, backend: 'unavailable' };
     }
-    const signature = String(await getLatestRev(directories));
+    const signature = String(await getLatestSeq(directories));
     await indexCoordinator.forceRebuild(handle, signature, () => buildFullIndex(directories, tantivy));
     return { ok: true, backend: 'tantivy' };
 }
