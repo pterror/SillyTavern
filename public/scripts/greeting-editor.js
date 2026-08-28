@@ -1,5 +1,3 @@
-import { callGenericPopup, POPUP_TYPE } from './popup.js';
-
 export class GreetingEditor {
     /**
      * @param {HTMLElement} containerElement
@@ -10,6 +8,8 @@ export class GreetingEditor {
         this.pickedIndex = null;
         this.filterText = '';
         this.expandedIndices = new Set();
+        /** @type {(() => void)|null} */
+        this.onChange = null;
 
         this._buildShell();
     }
@@ -269,6 +269,7 @@ export class GreetingEditor {
             textarea.rows = 6;
             textarea.addEventListener('input', () => {
                 this.greetings[idx] = textarea.value;
+                this._fireChange();
             });
 
             expandedArea.appendChild(textarea);
@@ -329,6 +330,7 @@ export class GreetingEditor {
 
         this.pickedIndex = null;
         this.render();
+        this._fireChange();
     }
 
     async _deleteGreeting(idx) {
@@ -336,6 +338,7 @@ export class GreetingEditor {
             ? this.greetings[idx].slice(0, 60) + '...'
             : (this.greetings[idx] || '(empty)');
 
+        const { callGenericPopup, POPUP_TYPE } = await import('./popup.js');
         const result = await callGenericPopup(
             `Delete greeting #${idx + 1}?\n\n"${preview}"`,
             POPUP_TYPE.CONFIRM,
@@ -365,6 +368,7 @@ export class GreetingEditor {
             }
 
             this.render();
+            this._fireChange();
         }
     }
 
@@ -376,10 +380,15 @@ export class GreetingEditor {
 
         // scroll to bottom
         this.rowsList.scrollTop = this.rowsList.scrollHeight;
+        this._fireChange();
+    }
+
+    _fireChange() {
+        this.onChange?.();
     }
 
     _initSortable() {
-        if (this.pickedIndex !== null) return;
+        if (this.pickedIndex !== null || this.filterText) return;
 
         try {
             $(this.rowsList).sortable({
@@ -410,6 +419,7 @@ export class GreetingEditor {
 
                     // re-render to sync indices
                     this.render();
+                    this._fireChange();
                 },
             });
         } catch {
