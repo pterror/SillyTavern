@@ -1110,7 +1110,7 @@ function registerWorldInfoSlashCommands() {
             const newName = await createWorldWithName(name, `Persona Book ${name1}`.replace(/[^a-z0-9 -]/gi, '_').replace(/_{2,}/g, '_').substring(0, 64));
             power_user.persona_description_lorebook = newName;
             setPersonaDescription();
-            saveSettingsDebounced('power_user');
+            saveSettingsDebounced('power_user.persona_description_lorebook');
             return newName;
         }
 
@@ -3622,7 +3622,7 @@ export async function getWorldEntry(name, data, entry) {
         // Key input switch
         editTemplate.find('.switch_input_type_icon').on('click', function () {
             power_user.wi_key_input_plaintext = !power_user.wi_key_input_plaintext;
-            saveSettingsDebounced('power_user');
+            saveSettingsDebounced('power_user.wi_key_input_plaintext');
             const uid = ($(this).parents('.world_entry')).data('uid');
             updateEditor(uid, false);
             $(`.world_entry[uid="${uid}"] .inline-drawer-icon`).trigger('click');
@@ -4308,7 +4308,7 @@ async function updateWorldInfoLinks(oldName, newName, { retargetPersonaLore } = 
         getOrCreatePersonaDescriptor();
         personaStore.update(user_avatar, { lorebook: newName });
         setPersonaDescription();
-        saveSettingsDebounced('power_user');
+        saveSettingsDebounced('power_user.persona_description_lorebook', 'power_user.persona_data');
     }
 
     // Update links for other personas
@@ -4319,7 +4319,7 @@ async function updateWorldInfoLinks(oldName, newName, { retargetPersonaLore } = 
         const record = personaStore.get(persona);
         if (record.lorebook === oldName) {
             personaStore.update(persona, { lorebook: newName });
-            saveSettingsDebounced('power_user');
+            saveSettingsDebounced('power_user.persona_data');
         }
     });
 
@@ -4443,7 +4443,7 @@ export async function deleteWorldInfo(worldInfoName) {
             personaStore.update(user_avatar, { lorebook: '' });
         }
         $('#persona_lore_button').toggleClass('world_set', false);
-        saveSettingsDebounced('power_user');
+        saveSettingsDebounced('power_user.persona_description_lorebook', 'power_user.persona_data');
     }
 
     return true;
@@ -6268,12 +6268,12 @@ export function initWorldInfo() {
 
         if (selectedIndex === '') {
             power_user.wi_last_editor_book = '';
-            saveSettingsDebounced('power_user');
+            saveSettingsDebounced('power_user.wi_last_editor_book');
             await hideWorldEditor();
         } else {
             const worldName = world_names[selectedIndex];
             power_user.wi_last_editor_book = worldName;
-            saveSettingsDebounced('power_user');
+            saveSettingsDebounced('power_user.wi_last_editor_book');
             showWorldEditor(worldName);
         }
     });
