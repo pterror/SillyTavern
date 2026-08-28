@@ -303,7 +303,11 @@ async function preSetupTasks() {
     const directories = await getUserDirectoriesList();
     await migrateGroupChatsMetadataFormat(directories);
     await checkForNewContent(directories);
-    await diskCache.verify(directories);
+    // Cache verification is a maintenance operation (pruning entries for deleted files), not a correctness
+    // prerequisite - stale entries just waste disk space until cleaned up. Fire-and-forget so it doesn't
+    // block the server from starting to listen (verify()'s own readdir + stat walk over the entire
+    // characters directory is the same shape of IO that was just eliminated from reconcile()).
+    diskCache.verify(directories).catch(err => console.error('Background cache verification failed:', err));
     migrateFlatSecrets(directories);
     cleanUploads();
     migrateAccessLog();
