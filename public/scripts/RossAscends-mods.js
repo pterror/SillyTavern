@@ -25,6 +25,7 @@ import {
     characterToEntity,
     groupToEntity,
     entitiesFilter,
+    chat,
 } from '../script.js';
 
 import {
@@ -1249,6 +1250,10 @@ export function initRossMods() {
             return document.body.classList.contains('nGY2_body_scrollbar');
         }
 
+        // Shift+Arrow switches between sibling branches when the last message is a fork point;
+        // plain arrows fall through to the regular text swipe below.
+        const isOnlyShiftModified = event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey;
+
         if (event.key == 'ArrowLeft') {        //swipes left
             if (
                 isSwipingAllowed() &&
@@ -1257,11 +1262,17 @@ export function initRossMods() {
                 $('#character_popup').css('display') === 'none' &&
                 $('#shadow_select_chat_popup').css('display') === 'none' &&
                 !isInputElementInFocus() &&
-                !isModifiedKeyboardEvent(event) &&
                 !(document.activeElement instanceof HTMLVideoElement)
             ) {
-                $('.swipe_left:last').trigger('click', { source: SWIPE_SOURCE.KEYBOARD, repeated: event.repeat });
-                return;
+                if (isOnlyShiftModified && chat[chat.length - 1]?.extra?.branches) {
+                    const { branchSwipe } = await import('./bookmarks.js');
+                    await branchSwipe(chat.length - 1, -1);
+                    return;
+                }
+                if (!isModifiedKeyboardEvent(event)) {
+                    $('.swipe_left:last').trigger('click', { source: SWIPE_SOURCE.KEYBOARD, repeated: event.repeat });
+                    return;
+                }
             }
         }
         if (event.key == 'ArrowRight') { //swipes right
@@ -1272,11 +1283,17 @@ export function initRossMods() {
                 $('#character_popup').css('display') === 'none' &&
                 $('#shadow_select_chat_popup').css('display') === 'none' &&
                 !isInputElementInFocus() &&
-                !isModifiedKeyboardEvent(event) &&
                 !(document.activeElement instanceof HTMLVideoElement)
             ) {
-                $('.swipe_right:last').trigger('click', { source: SWIPE_SOURCE.KEYBOARD, repeated: event.repeat });
-                return;
+                if (isOnlyShiftModified && chat[chat.length - 1]?.extra?.branches) {
+                    const { branchSwipe } = await import('./bookmarks.js');
+                    await branchSwipe(chat.length - 1, 1);
+                    return;
+                }
+                if (!isModifiedKeyboardEvent(event)) {
+                    $('.swipe_right:last').trigger('click', { source: SWIPE_SOURCE.KEYBOARD, repeated: event.repeat });
+                    return;
+                }
             }
         }
 

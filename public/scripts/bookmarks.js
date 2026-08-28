@@ -442,50 +442,6 @@ export async function branchSwipe(mesId, direction) {
     document.querySelector(`.mes[mesid="${mesId}"]`)?.scrollIntoView({ block: 'center' });
 }
 
-/**
- * Updates the branch-navigation controls on a message: shown only when this exact (mesId, swipeId)
- * is a recognized fork point with more than one sibling.
- * @param {JQuery<HTMLElement>} mes
- * @param {number} mesId
- */
-export async function updateBranchNavDisplay(mes, mesId) {
-    const message = chat[mesId];
-    const prevButton = mes.find('.mes_branch_prev');
-    const nextButton = mes.find('.mes_branch_next');
-    const counter = mes.find('.mes_branch_counter');
-
-    function hide() {
-        prevButton.hide();
-        nextButton.hide();
-        counter.hide();
-    }
-
-    if (!message) {
-        hide();
-        return;
-    }
-
-    const swipeId = Number(message.swipe_id ?? 0);
-
-    // Fast local-only check first, so ordinary messages (not fork points) never pay for a network
-    // round trip just to find out they have no siblings.
-    const hasLocalSiblings = getLocalForkSiblings(message, swipeId).length > 0;
-    const isOwnForkPoint = chat_metadata?.fork_point?.mesId === mesId && chat_metadata?.fork_point?.swipeId === swipeId;
-    if (!hasLocalSiblings && !isOwnForkPoint) {
-        hide();
-        return;
-    }
-
-    const resolved = await resolveForkRing(mesId, swipeId);
-    if (!resolved || resolved.ring.length < 2) {
-        hide();
-        return;
-    }
-
-    prevButton.show();
-    nextButton.show();
-    counter.show().text(`${resolved.selfIndex + 1}/${resolved.ring.length}`);
-}
 
 /**
  * Creates a new bookmark for a message.
@@ -1063,20 +1019,6 @@ export function initBookmarks() {
         const mesId = $(this).closest('.mes').attr('mesid');
         if (mesId !== undefined) {
             await forkChat(Number(mesId));
-        }
-    });
-
-    $(document).on('click', '.mes_branch_prev', async function () {
-        const mesId = $(this).closest('.mes').attr('mesid');
-        if (mesId !== undefined) {
-            await branchSwipe(Number(mesId), -1);
-        }
-    });
-
-    $(document).on('click', '.mes_branch_next', async function () {
-        const mesId = $(this).closest('.mes').attr('mesid');
-        if (mesId !== undefined) {
-            await branchSwipe(Number(mesId), 1);
         }
     });
 

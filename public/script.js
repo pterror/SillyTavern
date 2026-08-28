@@ -134,7 +134,6 @@ import {
     initBookmarks,
     showBookmarksButtons,
     updateBookmarkDisplay,
-    updateBranchNavDisplay,
 } from './scripts/bookmarks.js';
 
 import {
@@ -267,7 +266,7 @@ import { appendFileContent, hasPendingFileAttachment, populateFileAttachment, de
 import { getPresetManager, initPresetManager } from './scripts/preset-manager.js';
 import { evaluateMacros, getLastMessageId, initMacros } from './scripts/macros.js';
 import { currentUser, setUserControls } from './scripts/user.js';
-import { getCachedRev, setCachedRev, getAllCachedCharacters, getAllCachedHashes, saveCachedCharacters, removeCachedCharacters, clearCharacterCache, getLastVerifiedDigest, setLastVerifiedDigest } from './scripts/character-cache.js';
+import { getCachedCursor, setCachedCursor, getAllCachedCharacters, getAllCachedHashes, saveCachedCharacters, removeCachedCharacters, clearCharacterCache, getLastVerifiedDigest, setLastVerifiedDigest } from './scripts/character-cache.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup, callGenericPopup, fixToastrForDialogs } from './scripts/popup.js';
 import { renderTemplate, renderTemplateAsync } from './scripts/templates.js';
 import { initScrapers } from './scripts/scrapers.js';
@@ -2165,14 +2164,14 @@ function finalizeFetchedCharacter(character) {
 
 /**
  * Fetches the current character list via the change-feed/delta-cache path: `POST /api/characters/changes` for
- * a cheap `{ rev, changes: [{id, op, fields}], truncated }` since this cache's last-synced revision (character-cache.js's
- * `getCachedRev()`), applied on top of whatever's already cached so only characters that are genuinely new or
+ * a cheap `{ seq, changes: [{id, op, fields}], truncated }` since this cache's last-synced revision (character-cache.js's
+ * `getCachedCursor()`), applied on top of whatever's already cached so only characters that are genuinely new or
  * changed (`op: 'upsert'`) get fetched (via `/api/characters/batch`) and re-processed (DOMPurify/chat-default) -
  * deleted characters (`op: 'delete'`) are dropped from the cache directly, by id, rather than inferred from
  * absence in a full snapshot. Replaces the old `/api/characters/manifest` full-library scan entirely: every
  * real mutation (create/rename/delete/edit) already writes a `changes` row server-side (character-metadata-db.js
  * `writeRowSync()`, called unconditionally by every write path including the one-time bootstrap backfill - see
- * that function's own doc comment), so a `sinceRev: 0` cold sync's change list already IS the full current
+ * that function's own doc comment), so a `sinceSeq: 0` cold sync's change list already IS the full current
  * library, with no separate ground-truth listing needed to know what's been deleted since.
  *
  * Throws on any failure (network, non-OK response, etc.) - callers should fall back to the unconditional
@@ -2190,23 +2189,23 @@ function finalizeFetchedCharacter(character) {
  * @returns {Promise<object[]>} The full character list, cache order (see note above).
  */
 async function fetchCharactersDelta() {
-    const sinceRev = await getCachedRev();
+    const sinceSeq = await getCachedCursor();
     const changesResponse = await fetch('/api/characters/changes', {
         method: 'POST',
         headers: getRequestHeaders(),
-        body: JSON.stringify({ sinceRev }),
+        body: JSON.stringify({ sinceSeq }),
     });
 
     if (!changesResponse.ok) {
         throw new Error(`Failed to fetch character changes: ${changesResponse.statusText}`);
     }
 
-    /** @type {{rev: number, changes: {id: string, op: 'upsert'|'delete', fields?: string[]|null}[], truncated: boolean}} */
-    const { rev, changes, truncated } = await changesResponse.json();
+    /** @type {{seq: number, changes: {id: string, op: 'upsert'|'delete', fields?: string[]|null}[], truncated: boolean}} */
+    const { seq, changes, truncated } = await changesResponse.json();
 
     if (truncated) {
-        // sinceRev predates anything the server's change log still has - this cache can no longer be trusted
-        // to catch up incrementally. Wipe it and retry as a fresh sinceRev: 0 sync, whose change list is the
+        // sinceSeq predates anything the server's change log still has - this cache can no longer be trusted
+        // to catch up incrementally. Wipe it and retry as a fresh sinceSeq: 0 sync, whose change list is the
         // full current library (see this function's own doc comment).
         await clearCharacterCache();
         return fetchCharactersDelta();
@@ -2317,7 +2316,7 @@ async function fetchCharactersDelta() {
     if (fresh.size > 0) {
         await saveCachedCharacters(Array.from(fresh, ([avatar, character]) => ({ avatar, character })));
     }
-    await setCachedRev(rev);
+    await setCachedCursor(seq);
 
     // The cache is now caught up: everything still in it, plus whatever this pass upserted, minus whatever it
     // deleted, IS the current library (see this function's own doc comment on why no separate ground-truth
@@ -2440,7 +2439,7 @@ function workerComputeDigests(worker, nodes) {
 /**
  * Anti-entropy check for the character cache (see character-metadata-digest-worker.js's own header for the
  * server-side recursive hash-tree shape, and character-metadata-db.js's treeDescend() for the server half).
- * `/api/characters/changes`'s rev cursor tells a client what's mutated SINCE it last synced, but has no way to
+ * `/api/characters/changes`'s seq cursor tells a client what's mutated SINCE it last synced, but has no way to
  * notice a cursor that LOOKS caught-up while the actual cached content has quietly diverged - e.g. a
  * character-cache.js write that silently failed (saveCachedCharacters() logs and swallows per-entry errors
  * rather than aborting the sync), or a browser evicting part of this origin's IndexedDB under storage pressure.
@@ -4240,7 +4239,6 @@ export function updateMessageElement(mes, { messageId = chat.length - 1, message
     mes.title && messageElement.attr('title', mes.title);
     timerValue && messageElement.find('.mes_timer').attr('title', timerTitle).text(timerValue);
     bookmarkLink && updateBookmarkDisplay(messageElement);
-    updateBranchNavDisplay(messageElement, messageId);
 
     if (mes.extra?.bias !== '') {
         const bias = messageFormatting(mes.extra?.bias, '', false, false, -1, {}, false);
