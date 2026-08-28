@@ -38,7 +38,7 @@ import {
     textgenerationwebui_preset_names,
     textgenerationwebui_presets,
 } from './textgen-settings.js';
-import { download, ensurePlainObject, equalsIgnoreCaseAndAccents, getSanitizedFilename, parseJsonFile, waitUntilCondition } from './utils.js';
+import { debounce, download, ensurePlainObject, equalsIgnoreCaseAndAccents, getSanitizedFilename, parseJsonFile, waitUntilCondition } from './utils.js';
 
 const presetManagers = {};
 
@@ -111,6 +111,21 @@ class PresetManager {
     constructor(select, apiId) {
         this.select = select;
         this.apiId = apiId;
+        this._observeSelectChanges();
+    }
+
+    /**
+     * Watches for childList changes on the select element and reapplies saved order.
+     */
+    _observeSelectChanges() {
+        this._applyingOrder = false;
+        const applyDebounced = debounce(() => {
+            if (!this._applyingOrder) {
+                this.applyOrder();
+            }
+        }, 100);
+        const observer = new MutationObserver(() => applyDebounced());
+        observer.observe($(this.select).get(0), { childList: true });
     }
 
     static masterSections = {
@@ -872,6 +887,112 @@ class PresetManager {
     }
 
     /**
+     * Applies the saved preset order to the select element's options.
+     */
+    applyOrder() {
+        const order = power_user.preset_order?.[this.apiId];
+        if (!Array.isArray(order) || order.length === 0) {
+            return;
+        }
+
+        const selectEl = $(this.select).get(0);
+        const options = Array.from(selectEl.options);
+        if (options.length === 0) {
+            return;
+        }
+
+        const selectedValue = selectEl.value;
+
+        // Build a map from option text to the option element(s)
+        /** @type {Map<string, HTMLOptionElement[]>} */
+        const byName = new Map();
+        for (const opt of options) {
+            const list = byName.get(opt.text) ?? [];
+            list.push(opt);
+            byName.set(opt.text, list);
+        }
+
+        const sorted = [];
+        for (const name of order) {
+            const list = byName.get(name);
+            if (list) {
+                sorted.push(...list);
+                byName.delete(name);
+            }
+        }
+        // Append any options not in the saved order at the end
+        for (const list of byName.values()) {
+            sorted.push(...list);
+        }
+
+        // Detach and re-append in order (guarded to prevent MutationObserver re-entry)
+        this._applyingOrder = true;
+        try {
+            for (const opt of sorted) {
+                selectEl.appendChild(opt);
+            }
+            // Restore selection
+            selectEl.value = selectedValue;
+        } finally {
+            this._applyingOrder = false;
+        }
+    }
+
+    /**
+     * Opens a popup to drag-and-drop reorder the preset options.
+     */
+    async reorderPresets() {
+        const options = $(this.select).find('option');
+        if (options.length === 0) {
+            toastr.info(t`No presets to reorder`);
+            return;
+        }
+
+        const items = options.map((_, el) => el.text).toArray();
+        const listItems = items.map(name => {
+            const li = $('<li class="preset-reorder-item"><i class="fa-solid fa-grip-vertical preset-reorder-grip"></i><span></span></li>');
+            li.attr('data-preset-name', name);
+            li.find('span').text(name);
+            return li;
+        });
+
+        const html = $('<div class="preset-reorder-container"><ul class="preset-reorder-list"></ul></div>');
+        const list = html.find('.preset-reorder-list');
+        for (const li of listItems) {
+            list.append(li);
+        }
+
+        html.find('.preset-reorder-list').sortable({
+            delay: 30,
+            animation: 150,
+            handle: '.preset-reorder-item',
+        });
+
+        const popup = new Popup(html, POPUP_TYPE.CONFIRM, '', {
+            okButton: t`Apply`,
+            cancelButton: t`Cancel`,
+            wide: false,
+            large: false,
+        });
+
+        const result = await popup.show();
+
+        if (result !== POPUP_RESULT.AFFIRMATIVE) {
+            return;
+        }
+
+        // Read new order from the sorted list
+        const newOrder = html.find('.preset-reorder-item').map((_, el) => $(el).data('preset-name')).toArray();
+        if (!power_user.preset_order) {
+            power_user.preset_order = {};
+        }
+        power_user.preset_order[this.apiId] = newOrder;
+        this.applyOrder();
+        saveSettingsDebounced();
+        toastr.success(t`Preset order saved`);
+    }
+
+    /**
      * Writes a value to a preset extension field.
      * @param {object} options
      * @param {string} [options.name] Name of the preset. If not provided, uses the currently selected preset name.
@@ -1019,6 +1140,33 @@ export async function initPresetManager() {
         `,
     }));
 
+
+    // Inject reorder buttons next to each preset select's button group
+    $('select[data-preset-manager-for]').each((_, e) => {
+        const apiIds = $(e).data('preset-manager-for').split(',');
+        const apiId = apiIds[0];
+        // Find an anchor button to insert after: restore, or rename as fallback
+        const anchorBtn = $(`[data-preset-manager-restore="${apiId}"]`).add(`[data-preset-manager-rename="${apiId}"]`).last();
+        if (anchorBtn.length) {
+            const isIconStyle = anchorBtn.is('i');
+            const reorderBtn = isIconStyle
+                ? $(`<i data-preset-manager-reorder="${apiId}" class="menu_button fa-solid fa-arrow-down-1-9" title="Reorder presets" data-i18n="[title]Reorder presets"></i>`)
+                : $(`<div data-preset-manager-reorder="${apiId}" class="menu_button menu_button_icon" title="Reorder presets" data-i18n="[title]Reorder presets"><i class="fa-fw fa-solid fa-arrow-down-1-9"></i></div>`);
+            anchorBtn.after(reorderBtn);
+        }
+    });
+
+    $(document).on('click', '[data-preset-manager-reorder]', async function () {
+        const apiId = $(this).data('preset-manager-reorder');
+        const presetManager = getPresetManager(apiId);
+
+        if (!presetManager) {
+            console.warn(`Preset Manager not found for API: ${apiId}`);
+            return;
+        }
+
+        await presetManager.reorderPresets();
+    });
 
     $(document).on('click', '[data-preset-manager-update]', async function () {
         const apiId = $(this).data('preset-manager-update');

@@ -306,6 +306,7 @@ export const power_user = {
     default_persona: null,
     persona_descriptions: {},
     persona_data: {},
+    preset_order: {},
 
     persona_description: '',
     persona_description_position: persona_description_positions.IN_PROMPT,
