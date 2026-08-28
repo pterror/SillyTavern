@@ -19,16 +19,11 @@ import { tokenizeSearchQuery, parseLabeledToken, unquoteSearchTerm } from './sea
  * the term is regex-escaped before `.*` gets appended so a search term containing regex metacharacters is treated
  * as a literal prefix, not interpreted as a pattern.
  *
- * QUOTED MULTI-WORD PHRASES ARE NOT TRUE ADJACENCY-PHRASE-PREFIX MATCHES HERE, UNLIKE THE OLD FTS5 BEHAVIOR: FTS5's
- * `"vampire lord"*` is a genuine phrase-prefix match (the words must be adjacent, in order, with the last one
- * prefix-matched). tantivy's confirmed prefix mechanism (regexQuery, above) matches individual *indexed tokens*
- * against a regex - it has no adjacency concept, and this binding exposes phraseQuery() (exact adjacency, no
- * prefix) but nothing that combines phrase adjacency with a trailing prefix match. A quoted phrase here is instead
- * split into words and AND-ed together (each word independently prefix-matched via regexQuery, across the same
- * field/label scope) - so `tag:"cute girl"` becomes "this field contains a token starting with 'cute' AND a token
- * starting with 'girl'", not "contains the adjacent phrase 'cute girl...'". This is a real, deliberate behavioral
- * difference from the FTS5 version, not something confirmed equivalent - flagging it here rather than silently
- * changing what quoting means.
+ * QUOTED MULTI-WORD PHRASES USE REAL ADJACENCY+PREFIX MATCHING via phrasePrefixQuery (available since
+ * @oxdev03/node-tantivy-binding 0.3.x): `tag:"cute girl"` is a genuine phrase-prefix match where the words must
+ * appear adjacent, in order, with the last word prefix-matched - the same semantics FTS5's `"cute girl"*` had.
+ * Single words still go through the regexQuery prefix path (fieldPrefixQuery below) since phrasePrefixQuery
+ * requires at least two terms.
  *
  * COMPOSITION: each (sub)word becomes a Should-group boolean query over its candidate field(s) (each field's
  * regexQuery wrapped in a per-field boostQuery so relevance ranking honors the same weights the FTS5 bm25() calls
@@ -141,8 +136,8 @@ function fieldGroupQuery(tantivy, schema, word, fieldNames, fieldWeights) {
 
 /**
  * One search token's query - either a bare word/phrase (searched across every weighted field) or a recognized
- * `label:value` filter (searched only across the label's target field(s)). A quoted multi-word value is split
- * into words and AND-ed together - see this module's header for why that's not a true adjacency-phrase match.
+ * `label:value` filter (searched only across the label's target field(s)). A quoted multi-word value uses
+ * phrasePrefixQuery for real adjacency+prefix semantics (see this module's header).
  * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy
  * @param {import('@oxdev03/node-tantivy-binding').Schema} schema
  * @param {string} token One token from tokenizeSearchQuery()
@@ -164,6 +159,25 @@ function tokenQuery(tantivy, schema, token, fieldWeights, fieldLabels) {
         : Object.keys(fieldWeights);
 
     const words = term.split(/\s+/).filter(Boolean);
+
+    // Multi-word phrases (from quoted input like `"vampire lord"` or `tag:"cute girl"`) use
+    // phrasePrefixQuery for real adjacency+prefix semantics - the words must appear adjacent, in
+    // order, with the last one prefix-matched - restoring the behavior FTS5's `"vampire lord"*`
+    // provided. Single words still go through the regexQuery prefix path (fieldGroupQuery below)
+    // since phrasePrefixQuery requires at least 2 terms.
+    if (words.length >= 2) {
+        const lowered = words.map(w => w.toLowerCase());
+        const fieldQueries = targetFieldNames
+            .filter(name => Object.prototype.hasOwnProperty.call(fieldWeights, name))
+            .map(name => {
+                const q = tantivy.Query.phrasePrefixQuery(schema, name, lowered);
+                return tantivy.Query.boostQuery(q, fieldWeights[name]);
+            });
+        if (fieldQueries.length === 0) return null;
+        if (fieldQueries.length === 1) return fieldQueries[0];
+        return tantivy.Query.booleanQuery(fieldQueries.map(query => ({ occur: tantivy.Occur.Should, query })));
+    }
+
     const wordQueries = words
         .map(word => fieldGroupQuery(tantivy, schema, word, targetFieldNames, fieldWeights))
         .filter(Boolean);
