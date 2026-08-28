@@ -634,6 +634,26 @@ export let chat_metadata = {};
 /** @type {StreamingProcessor} */
 export let streamingProcessor = null;
 let crop_data = undefined;
+
+/**
+ * Snapshot of form field values captured when the character editor is populated.
+ * Used by createOrEditCharacter() to detect whether any field actually changed,
+ * preventing spurious saves that trigger shouldRegenerateMessage and corrupt chat state.
+ * @type {Object<string, string>|null}
+ */
+let _characterFormSnapshot = null;
+
+/** The form field IDs that make up the character card content (excludes db-authoritative
+ *  fields like the chat pointer, which are handled through dedicated APIs). */
+const CHARACTER_FORM_FIELDS = [
+    '#character_name_pole', '#description_textarea', '#personality_textarea',
+    '#firstmessage_textarea', '#scenario_pole', '#mes_example_textarea',
+    '#creator_notes_textarea', '#system_prompt_textarea', '#post_history_instructions_textarea',
+    '#tags_textarea', '#creator_textarea', '#character_version_textarea',
+    '#talkativeness_slider', '#depth_prompt_prompt', '#depth_prompt_depth',
+    '#depth_prompt_role', '#character_world',
+];
+
 let is_delete_mode = false;
 let fav_ch_checked = false;
 let scrollLock = false;
@@ -2048,7 +2068,6 @@ export async function getOneCharacter(avatarUrl) {
 
     if (response.ok) {
         const getData = await response.json();
-        getData.name = DOMPurify.sanitize(getData.name);
         getData.chat = String(getData.chat);
         // /api/characters/get always processes with `shallow: false` server-side (see characters.js), so this
         // response is unconditionally full data - but processCharacter() only ever sets a `shallow: true` key
@@ -2152,8 +2171,6 @@ const CHARACTER_BATCH_CHUNK_SIZE = 500;
  * @param {object} character
  */
 function finalizeFetchedCharacter(character) {
-    character.name = DOMPurify.sanitize(character.name);
-
     // For dropped-in cards
     if (!character.chat) {
         character.chat = `${character.name} - ${humanizedDateTime()}`;
@@ -10626,7 +10643,7 @@ async function displayChats(searchQuery, currentChat, displayName, avatarImg, se
             template.find('.select_chat_block').attr('file_name', chat.file_name);
             template.find('.avatar img').attr('src', avatarImg);
             template.find('.select_chat_block_filename').text(chat.file_name);
-            template.find('.chat_file_size').text(`(${chat.file_size},`);
+            template.find('.chat_file_size').text(chat.file_size ? `(${chat.file_size},` : '(');
             template.find('.chat_messages_num').text(`${chat.message_count} 💬)`);
             template.find('.select_chat_block_mes').text(chat.preview_message);
             template.find('.PastChat_cross').attr('file_name', chat.file_name);
@@ -10921,6 +10938,13 @@ export function select_selected_character(avatar, { switchMenu = true } = {}) {
     $('#renameCharButton').css('display', '');
 
     $('#form_create').attr('actiontype', 'editcharacter');
+
+    // Capture form snapshot for no-op detection in createOrEditCharacter() - must be
+    // after all .val() population above so it reflects the actual loaded state.
+    _characterFormSnapshot = {};
+    for (const id of CHARACTER_FORM_FIELDS) {
+        _characterFormSnapshot[id] = String($(id).val() ?? '');
+    }
     $('.form_create_bottom_buttons_block .chat_lorebook_button').show();
 
     const externalMediaState = isExternalMediaAllowed();
@@ -11007,6 +11031,7 @@ function select_rm_create({ switchMenu = true } = {}) {
     checkEmbeddedWorld();
 
     $('#form_create').attr('actiontype', 'createcharacter');
+    _characterFormSnapshot = null; // No snapshot in create mode
     $('.form_create_bottom_buttons_block .chat_lorebook_button').hide();
     $('#character_open_media_overrides').hide();
 }
@@ -12025,6 +12050,25 @@ export async function createOrEditCharacter(e) {
 
             const previousFav = getCurrentCharacter()?.fav;
 
+            // No-op guard: skip the save entirely if nothing in the form actually changed.
+            // Prevents spurious saves from triggering shouldRegenerateMessage (which replaces
+            // the chat with the first message, corrupting chat state) and from wasting a full
+            // card round-trip when the content is identical.
+            const avatarInput = formData.get('avatar');
+            const hasNewAvatar = avatarInput instanceof File && avatarInput.size > 0;
+            if (!hasNewAvatar && _characterFormSnapshot) {
+                let hasDirtyFields = false;
+                for (const [id, originalValue] of Object.entries(_characterFormSnapshot)) {
+                    if (String($(id).val() ?? '') !== originalValue) {
+                        hasDirtyFields = true;
+                        break;
+                    }
+                }
+                if (!hasDirtyFields) {
+                    return;
+                }
+            }
+
             // Per-field content hashes for conflict detection: compute from the character data we loaded
             // (before the user's form edits, which go into formData, not the character object). If another
             // session changed the card since we loaded it, the server's fresh hashes will differ from these.
@@ -12084,6 +12128,13 @@ export async function createOrEditCharacter(e) {
             }
 
             await getOneCharacter(formData.get('avatar_url'));
+
+            // Re-capture the form snapshot so the next save correctly detects no-op
+            if (_characterFormSnapshot) {
+                for (const id of CHARACTER_FORM_FIELDS) {
+                    _characterFormSnapshot[id] = String($(id).val() ?? '');
+                }
+            }
 
             if (Boolean(previousFav) !== Boolean(fav_ch_checked)) {
                 favsToHotswap();
@@ -13041,7 +13092,14 @@ export async function renameGroupOrCharacterChat({ characterAvatar, groupId, old
         } else if (characterAvatar !== undefined && characterAvatar === this_avatar && charactersStore.get(characterAvatar)?.chat === oldFileName) {
             charactersStore.update(characterAvatar, { chat: newFileName });
             $('#selected_chat_pole').val(charactersStore.get(characterAvatar).chat);
-            await createOrEditCharacter();
+            // Update the chat pointer through merge-attributes (which routes it to
+            // setCharacterActiveChat) instead of createOrEditCharacter(), which would
+            // do a full-card save and potentially trigger shouldRegenerateMessage.
+            await fetch('/api/characters/merge-attributes', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ avatar: characterAvatar, chat: newFileName }),
+            });
         }
 
         if (currentChatId) {

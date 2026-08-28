@@ -18,12 +18,20 @@ import { characterDigestFavHash, characterDigestFieldsHash, characterDigestTagId
  * character library on disk, so caches must not bleed between accounts sharing a browser).
  */
 
+/** Bumped when the hash function's output changes (e.g. removing DOMPurify from character.name).
+ * Records with a different or missing version get their hashes recomputed on first read. */
+const HASH_VERSION = 2;
+
 /** @type {Map<string, LocalForage>} */
 const storesByHandle = new Map();
 
-// Reserved key for the change-feed revision cursor (see getCachedRev()/setCachedRev()) - never collides with a
-// real avatar filename, which always ends in `.png`.
-const REV_KEY = '__rev__';
+// Reserved key for the change-feed revision cursor (see getCachedCursor()/setCachedCursor()) - never collides
+// with a real avatar filename, which always ends in `.png`.
+const CURSOR_KEY = '__cursor__';
+
+// Pre-rename name of CURSOR_KEY, still present in caches written before the rename. Read once and migrated
+// forward by getCachedCursor(); nothing ever writes it again.
+const LEGACY_REV_KEY = '__rev__';
 
 /**
  * @returns {LocalForage} The character cache store for the currently logged-in user.
@@ -45,11 +53,20 @@ function getCharacterCacheStore() {
  * is exactly what a cold cache needs.
  * @returns {Promise<number>}
  */
-export async function getCachedRev() {
+export async function getCachedCursor() {
     const store = getCharacterCacheStore();
     try {
-        const rev = await store.getItem(REV_KEY);
-        return typeof rev === 'number' && Number.isFinite(rev) ? rev : 0;
+        let cursor = await store.getItem(CURSOR_KEY);
+        if (cursor === null || cursor === undefined) {
+            // One-time migration from the pre-rename key.
+            const legacy = await store.getItem(LEGACY_REV_KEY);
+            if (legacy !== null && legacy !== undefined) {
+                await store.setItem(CURSOR_KEY, legacy);
+                await store.removeItem(LEGACY_REV_KEY);
+                cursor = legacy;
+            }
+        }
+        return typeof cursor === 'number' && Number.isFinite(cursor) ? cursor : 0;
     } catch (error) {
         console.error('Failed to read cached character revision:', error);
         return 0;
@@ -57,13 +74,13 @@ export async function getCachedRev() {
 }
 
 /**
- * @param {number} rev
+ * @param {number} seq
  * @returns {Promise<void>}
  */
-export async function setCachedRev(rev) {
+export async function setCachedCursor(seq) {
     const store = getCharacterCacheStore();
     try {
-        await store.setItem(REV_KEY, rev);
+        await store.setItem(CURSOR_KEY, seq);
     } catch (error) {
         console.error('Failed to persist cached character revision:', error);
     }
@@ -121,7 +138,7 @@ export async function getAllCachedCharacters() {
     const result = new Map();
     try {
         await store.iterate((record, key) => {
-            if (key === REV_KEY) return;
+            if (key === CURSOR_KEY || key === LEGACY_REV_KEY) return;
             if (record && record.character) {
                 result.set(key, record.character);
             }
@@ -163,8 +180,8 @@ export async function getAllCachedHashes() {
     const unhashed = [];
     try {
         await store.iterate((record, key) => {
-            if (key === REV_KEY || key === LAST_VERIFIED_DIGEST_KEY) return;
-            if (record?.hashes) {
+            if (key === CURSOR_KEY || key === LEGACY_REV_KEY || key === LAST_VERIFIED_DIGEST_KEY) return;
+            if (record?.hashes?.v === HASH_VERSION) {
                 result.set(key, record.hashes);
             } else if (record?.character) {
                 // Collect for migration - hash computation + persist happens in batches below.
@@ -185,13 +202,19 @@ export async function getAllCachedHashes() {
             const toStore = [];
             for (const [key, record] of batch) {
                 const character = record.character;
+                // Restore raw name from data.name if it was mangled by the now-removed
+                // DOMPurify sanitization (data.name was never sanitized).
+                if (character?.data?.name !== undefined) {
+                    character.name = character.data.name;
+                }
                 const hashes = {
                     fav: characterDigestFavHash(character) % 4294967296,
                     tagIds: characterDigestTagIdsHash(character),
                     content: characterDigestFieldsHash(character) % 4294967296,
+                    v: HASH_VERSION,
                 };
                 result.set(key, hashes);
-                toStore.push({ key, value: { ...record, hashes } });
+                toStore.push({ key, value: { character, hashes } });
             }
             // Persist the batch back to IDB so next call reads stored hashes directly.
             await Promise.all(toStore.map(({ key, value }) =>
@@ -232,6 +255,7 @@ export async function saveCachedCharacters(entries) {
                 fav: characterDigestFavHash(character) % 4294967296,
                 tagIds: characterDigestTagIdsHash(character),
                 content: characterDigestFieldsHash(character) % 4294967296,
+                v: HASH_VERSION,
             };
             return store.setItem(avatar, { character, hashes }).catch(error =>
                 console.error(`Failed to cache character data for ${avatar}:`, error));
