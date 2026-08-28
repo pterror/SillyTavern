@@ -519,10 +519,8 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
                 // Stubs in a new branch shouldn't happen, but handle gracefully: skip
                 if (msg._unchanged) continue;
 
-                const id = msg.node_id || newId();
-                if (!msg.node_id) {
-                    assignedNodeIds.push({ index: i, node_id: id });
-                }
+                const id = newId();
+                assignedNodeIds.push({ index: i, node_id: id });
                 const content = sanitizeForStorage(msg);
                 insertMessageSync(entry.db, {
                     id,
