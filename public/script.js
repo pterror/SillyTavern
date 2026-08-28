@@ -193,7 +193,7 @@ import {
 // Imported directly from hash-utils.js (not re-exported via utils.js like getStringHash) so this doesn't widen
 // utils.js's re-export surface - a mocked utils.js in tests/utils-findchar.test.js stubs hash-utils.js with only
 // getStringHash, and this stays independent of that.
-import { hashSettingsKeys, treeNodeAt, digestsEqual128, foldDigests128, emptyDigest128, DEFAULT_DIGEST_BUCKET_COUNT, DEFAULT_TREE_BRANCHING, characterDigestFieldsHash, characterDigestCardBodyHash, combineDigest128, characterDigestFavHash, characterDigestTagIdsHash } from './scripts/hash-utils.js';
+import { hashSettingsKeys, getAtPath, setAtPath, treeNodeAt, digestsEqual128, foldDigests128, emptyDigest128, DEFAULT_DIGEST_BUCKET_COUNT, DEFAULT_TREE_BRANCHING, characterDigestFieldsHash, characterDigestCardBodyHash, combineDigest128, characterDigestFavHash, characterDigestTagIdsHash } from './scripts/hash-utils.js';
 import { debounce_timeout, GENERATION_TYPE_TRIGGERS, IGNORE_SYMBOL, inject_ids, MEDIA_DISPLAY, MEDIA_SOURCE, MEDIA_TYPE, OVERSWIPE_BEHAVIOR, SCROLL_BEHAVIOR, SWIPE_DIRECTION, SWIPE_SOURCE, SWIPE_STATE } from './scripts/constants.js';
 
 import { cancelDebouncedMetadataSave, doDailyExtensionUpdatesCheck, extension_settings, initExtensions, loadExtensionSettings, runGenerationInterceptors } from './scripts/extensions.js';
@@ -10183,7 +10183,37 @@ export async function saveSettings(...keys) {
         // Partial save path: send only the keys that were explicitly marked dirty.
         const partialPayload = {};
         for (const key of dirtyKeys) {
-            if (key in payload) partialPayload[key] = payload[key];
+            // Explicit dotted path from a call site (e.g. saveSettingsDebounced('power_user.servers'))
+            if (key.includes('.')) {
+                const topLevel = key.split('.')[0];
+                if (topLevel in payload) {
+                    partialPayload[key] = getAtPath(payload, key);
+                }
+                continue;
+            }
+            if (!(key in payload)) continue;
+
+            const newValue = payload[key];
+            const oldValue = settings?.[key];
+
+            // For plain-object settings keys with a known previous snapshot, auto-decompose into
+            // per-field dotted paths so only the sub-fields that actually changed get sent and
+            // conflict-checked individually. This means saveSettingsDebounced('power_user') no
+            // longer sends the entire ~3KB power_user blob when only one field changed; two tabs
+            // changing different power_user fields no longer conflict with each other.
+            if (oldValue != null && typeof oldValue === 'object' && !Array.isArray(oldValue)
+                && newValue != null && typeof newValue === 'object' && !Array.isArray(newValue)) {
+                let hasChanges = false;
+                for (const subKey of Object.keys(newValue)) {
+                    if (JSON.stringify(newValue[subKey]) !== JSON.stringify(oldValue[subKey])) {
+                        partialPayload[`${key}.${subKey}`] = newValue[subKey];
+                        hasChanges = true;
+                    }
+                }
+                if (!hasChanges) continue;
+            } else {
+                partialPayload[key] = newValue;
+            }
         }
 
         if (Object.keys(partialPayload).length === 0) {
@@ -10213,7 +10243,19 @@ export async function saveSettings(...keys) {
             }
 
             // Adopt the saved keys into the local settings mirror so subsequent per-key hashes stay current.
-            Object.assign(settings, partialPayload);
+            // Deep-clone to break live references: partialPayload contains values like power_user
+            // that are the same object as the module-scope export. Without cloning, settings.power_user
+            // stays aliased to the live power_user, so any in-place mutation (e.g. a UI handler setting
+            // power_user.font_scale) silently updates settings.power_user too - the next save's
+            // expectedHash then reflects the current value instead of what the server actually has,
+            // causing spurious 409s.
+            for (const key of Object.keys(partialPayload)) {
+                if (key.includes('.')) {
+                    setAtPath(settings, key, structuredClone(partialPayload[key]));
+                } else {
+                    settings[key] = structuredClone(partialPayload[key]);
+                }
+            }
             lastSavedSettingsHash = payloadHash;
             // Keep the whole-file hash in sync for any remaining full-save callers during the migration.
             knownServerSettingsHash = getStringHash(JSON.stringify(settings, null, 4));
@@ -10250,7 +10292,11 @@ export async function saveSettings(...keys) {
                 throw new Error(`Failed to save settings: ${result.statusText}`);
             }
 
-            settings = payload;
+            // Re-parse from the compact string already computed above: payload contains live references
+            // (power_user, oai_settings, etc.) that get mutated in-place by UI handlers, so storing
+            // them directly would let future mutations corrupt the "what the server has" snapshot. JSON
+            // round-tripping is the cheapest deep clone here since payloadString already exists.
+            settings = JSON.parse(payloadString);
             lastSavedSettingsHash = payloadHash;
             knownServerSettingsHash = getStringHash(canonicalSettingsString);
             await eventSource.emit(event_types.SETTINGS_UPDATED);
@@ -10308,7 +10354,14 @@ export async function savePartialSettings(partialSettings) {
 
     // The server merged these keys into the on-disk state as sent (no server-side transformation of the
     // values), so this client's own view can adopt them directly without refetching.
-    Object.assign(settings, partialSettings);
+    // Same deep-clone reasoning as the partialPayload path in saveSettings() above.
+    for (const key of Object.keys(partialSettings)) {
+        if (key.includes('.')) {
+            setAtPath(settings, key, structuredClone(partialSettings[key]));
+        } else {
+            settings[key] = structuredClone(partialSettings[key]);
+        }
+    }
     return true;
 }
 

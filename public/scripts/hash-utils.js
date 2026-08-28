@@ -34,6 +34,41 @@ export function getStringHash(str, seed = 0) {
 }
 
 /**
+ * Resolves a dot-separated path to a value within a nested object.
+ * e.g. getAtPath({ a: { b: 3 } }, 'a.b') => 3
+ * @param {object|null|undefined} obj
+ * @param {string} dottedPath Dot-separated path (e.g. 'power_user.font_scale')
+ * @returns {*} The value at the path, or undefined if any segment is missing
+ */
+export function getAtPath(obj, dottedPath) {
+    let current = obj;
+    for (const part of dottedPath.split('.')) {
+        if (current == null || typeof current !== 'object') return undefined;
+        current = current[part];
+    }
+    return current;
+}
+
+/**
+ * Sets a value at a dot-separated path within a nested object, creating intermediate objects as needed.
+ * e.g. setAtPath({}, 'a.b', 3) => { a: { b: 3 } }
+ * @param {object} obj
+ * @param {string} dottedPath Dot-separated path (e.g. 'power_user.font_scale')
+ * @param {*} value Value to set
+ */
+export function setAtPath(obj, dottedPath, value) {
+    const parts = dottedPath.split('.');
+    let current = obj;
+    for (let i = 0; i < parts.length - 1; i++) {
+        if (!(parts[i] in current) || current[parts[i]] == null || typeof current[parts[i]] !== 'object') {
+            current[parts[i]] = {};
+        }
+        current = current[parts[i]];
+    }
+    current[parts[parts.length - 1]] = value;
+}
+
+/**
  * Hashes each of the given top-level keys of a settings-shaped object independently (JSON.stringify(value, null,
  * 4) per key, then getStringHash), rather than hashing the whole object as one string. This is the shallow,
  * one-level "merkle" shape optimistic-concurrency checks need for partial/delta updates: comparing a *map* of
@@ -46,14 +81,15 @@ export function getStringHash(str, seed = 0) {
  * getStringHash's own non-string fallback returns 0) - so two sides that both lack some key agree on its hash
  * without either needing to special-case "key doesn't exist yet".
  * @param {Record<string, unknown>|null|undefined} obj Parsed settings-shaped object (or null/undefined, treated as empty)
- * @param {string[]} keys Top-level keys to hash
+ * @param {string[]} keys Top-level keys or dotted paths to hash
  * @returns {Record<string, number>} Map of key -> hash of that key's current value
  */
 export function hashSettingsKeys(obj, keys) {
     /** @type {Record<string, number>} */
     const result = {};
     for (const key of keys) {
-        result[key] = getStringHash(JSON.stringify(obj?.[key], null, 4));
+        const value = key.includes('.') ? getAtPath(obj, key) : obj?.[key];
+        result[key] = getStringHash(JSON.stringify(value, null, 4));
     }
     return result;
 }

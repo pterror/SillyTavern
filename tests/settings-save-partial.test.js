@@ -204,3 +204,85 @@ describe('POST /api/settings/save-partial concurrent updates', () => {
         expect(finalState.power_user.theme).toBe(winner);
     });
 });
+
+describe('POST /api/settings/save-partial dotted-path keys', () => {
+    test('dotted key sets a nested value without replacing the parent object', async () => {
+        writeSettingsFile({ power_user: { theme: 'dark', font_scale: 1 } });
+
+        const response = await postPartialSave({ 'power_user.font_scale': 1.5 });
+
+        expect(response.status).toBe(200);
+        expect(readSettingsFile()).toEqual({
+            power_user: { theme: 'dark', font_scale: 1.5 },
+        });
+    });
+
+    test('dotted key creates intermediate objects when they do not exist', async () => {
+        writeSettingsFile({ unrelated: 'kept' });
+
+        const response = await postPartialSave({ 'power_user.font_scale': 1.5 });
+
+        expect(response.status).toBe(200);
+        expect(readSettingsFile()).toEqual({
+            unrelated: 'kept',
+            power_user: { font_scale: 1.5 },
+        });
+    });
+
+    test('dotted key conflict detection rejects when the nested value changed', async () => {
+        writeSettingsFile({ power_user: { theme: 'dark', font_scale: 1 } });
+        const staleHashes = hashSettingsKeys({ power_user: { theme: 'dark', font_scale: 0.8 } }, ['power_user.font_scale']);
+
+        const response = await postPartialSave({ 'power_user.font_scale': 1.5 }, staleHashes);
+
+        expect(response.status).toBe(409);
+        const body = await response.json();
+        expect(body.conflictingKeys).toEqual(['power_user.font_scale']);
+    });
+
+    test('dotted key succeeds when only a sibling nested field changed', async () => {
+        const original = writeSettingsFile({ power_user: { theme: 'dark', font_scale: 1 } });
+        const expectedHashes = hashSettingsKeys(JSON.parse(original), ['power_user.font_scale']);
+        writeSettingsFile({ power_user: { theme: 'light', font_scale: 1 } });
+
+        const response = await postPartialSave({ 'power_user.font_scale': 1.5 }, expectedHashes);
+
+        expect(response.status).toBe(200);
+        expect(readSettingsFile()).toEqual({
+            power_user: { theme: 'light', font_scale: 1.5 },
+        });
+    });
+
+    test('mixed dotted and top-level keys in a single request both apply correctly', async () => {
+        writeSettingsFile({ power_user: { theme: 'dark', font_scale: 1 }, main_api: 'kobold' });
+
+        const response = await postPartialSave({
+            'power_user.font_scale': 1.5,
+            main_api: 'openai',
+        });
+
+        expect(response.status).toBe(200);
+        expect(readSettingsFile()).toEqual({
+            power_user: { theme: 'dark', font_scale: 1.5 },
+            main_api: 'openai',
+        });
+    });
+
+    test('two concurrent dotted-key updates to different sub-fields both succeed', async () => {
+        const baseline = writeSettingsFile({ power_user: { theme: 'dark', font_scale: 1, blur_strength: 10 } });
+        const baselineObj = JSON.parse(baseline);
+        const hashesA = hashSettingsKeys(baselineObj, ['power_user.font_scale']);
+        const hashesB = hashSettingsKeys(baselineObj, ['power_user.blur_strength']);
+
+        const [responseA, responseB] = await Promise.all([
+            postPartialSave({ 'power_user.font_scale': 2 }, hashesA),
+            postPartialSave({ 'power_user.blur_strength': 20 }, hashesB),
+        ]);
+
+        expect(responseA.status).toBe(200);
+        expect(responseB.status).toBe(200);
+        expect(readSettingsFile()).toEqual({
+            power_user: { theme: 'dark', font_scale: 2, blur_strength: 20 },
+        });
+    });
+});

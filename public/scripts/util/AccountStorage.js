@@ -1,80 +1,41 @@
-import { saveSettingsDebounced } from '../../script.js';
-
-const MIGRATED_MARKER = '__migrated';
-const MIGRATABLE_KEYS = [
-    /^AlertRegex_/,
-    /^AlertWI_/,
-    /^Assets_SkipConfirm_/,
-    /^Characters_PerPage$/,
-    /^DataBank_sortField$/,
-    /^DataBank_sortOrder$/,
-    /^extension_update_nag$/,
-    /^extensions_sortByName$/,
-    /^FeatherlessModels_PerPage$/,
-    /^GroupMembers_PerPage$/,
-    /^GroupCandidates_PerPage$/,
-    /^LNavLockOn$/,
-    /^LNavOpened$/,
-    /^mediaWarningShown:/,
-    /^NavLockOn$/,
-    /^NavOpened$/,
-    /^Personas_PerPage$/,
-    /^Personas_GridView$/,
-    /^Proxy_SkipConfirm_/,
-    /^qr--executeShortcut$/,
-    /^qr--syntax$/,
-    /^qr--tabSize$/,
-    /^qr--wrap$/,
-    /^RegenerateWithCtrlEnter$/,
-    /^SelectedNavTab$/,
-    /^sendAsNamelessWarningShown$/,
-    /^StoryStringValidationCache$/,
-    /^WINavOpened$/,
-    /^WI_PerPage$/,
-    /^world_info_sort_order$/,
-];
+const REVERSE_MIGRATED_MARKER = '__reverseMigrated';
 
 /**
- * Provides access to account storage of arbitrary key-value pairs.
+ * Provides access to browser-local storage of arbitrary key-value pairs.
+ *
+ * Previously this class persisted its state to the server via saveSettingsDebounced('accountStorage'),
+ * but all of its contents are purely local UI state (nav panel positions, "don't show again" warning
+ * dismissals, pagination preferences, sort orders, etc.) that don't need server persistence or multi-
+ * device sync. Writes now go directly to localStorage, avoiding a server round-trip and a settings
+ * write on every UI toggle.
+ *
+ * On first init after the refactor, any values that were previously stored server-side are copied to
+ * localStorage (reverse migration) so nothing is lost.
  */
 class AccountStorage {
-    /**
-     * @type {Record<string, string>} Storage state
-     */
-    #state = {};
-
     /**
      * @type {boolean} If the storage was initialized
      */
     #ready = false;
 
-    #migrateLocalStorage() {
-        const localStorageKeys = [];
-        for (let i = 0; i < globalThis.localStorage.length; i++) {
-            localStorageKeys.push(globalThis.localStorage.key(i));
-        }
-        for (const key of localStorageKeys) {
-            if (MIGRATABLE_KEYS.some(k => k.test(key))) {
-                const value = globalThis.localStorage.getItem(key);
-                this.#state[key] = value;
-                globalThis.localStorage.removeItem(key);
-            }
-        }
-    }
-
     /**
      * Initialize the account storage.
-     * @param {Object} state Initial state
+     * Reverse-migrates any values previously stored server-side into localStorage.
+     * @param {Object} serverState State from the server's settings.json accountStorage key (may be undefined)
      */
-    init(state) {
-        if (state && typeof state === 'object') {
-            this.#state = Object.assign(this.#state, state);
-        }
-
-        if (!Object.hasOwn(this.#state, MIGRATED_MARKER)) {
-            this.#migrateLocalStorage();
-            this.#state[MIGRATED_MARKER] = '1';
-            saveSettingsDebounced('accountStorage');
+    init(serverState) {
+        // Reverse migration: copy any server-stored values to localStorage so they aren't lost.
+        // Only runs once per browser (guarded by the localStorage marker).
+        if (serverState && typeof serverState === 'object'
+            && globalThis.localStorage.getItem(REVERSE_MIGRATED_MARKER) !== '1') {
+            for (const [key, value] of Object.entries(serverState)) {
+                if (key.startsWith('__')) continue; // skip internal markers
+                // Don't overwrite values that are already in localStorage (they're more recent)
+                if (globalThis.localStorage.getItem(key) === null) {
+                    globalThis.localStorage.setItem(key, String(value));
+                }
+            }
+            globalThis.localStorage.setItem(REVERSE_MIGRATED_MARKER, '1');
         }
 
         this.#ready = true;
@@ -90,7 +51,7 @@ class AccountStorage {
             console.warn(`AccountStorage not ready (trying to read from ${key})`);
         }
 
-        return Object.hasOwn(this.#state, key) ? String(this.#state[key]) : null;
+        return globalThis.localStorage.getItem(key);
     }
 
     /**
@@ -103,14 +64,12 @@ class AccountStorage {
             console.warn(`AccountStorage not ready (trying to write to ${key})`);
         }
 
-        const hasPropertySet = Object.hasOwn(this.#state, key) && this.#state[key] === String(value);
-
-        if (hasPropertySet) {
+        const current = globalThis.localStorage.getItem(key);
+        if (current === String(value)) {
             return;
         }
 
-        this.#state[key] = String(value);
-        saveSettingsDebounced('accountStorage');
+        globalThis.localStorage.setItem(key, String(value));
     }
 
     /**
@@ -122,20 +81,16 @@ class AccountStorage {
             console.warn(`AccountStorage not ready (trying to remove ${key})`);
         }
 
-        if (!Object.hasOwn(this.#state, key)) {
-            return;
-        }
-
-        delete this.#state[key];
-        saveSettingsDebounced('accountStorage');
+        globalThis.localStorage.removeItem(key);
     }
 
     /**
      * Gets a snapshot of the storage state.
-     * @returns {Record<string, string>} A deep clone of the storage state
+     * Returns an empty object since values are now stored in localStorage, not server-side.
+     * @returns {Record<string, string>} Empty object (server-side state is no longer maintained)
      */
     getState() {
-        return structuredClone(this.#state);
+        return {};
     }
 }
 
