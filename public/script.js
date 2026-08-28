@@ -194,7 +194,7 @@ import {
 // Imported directly from hash-utils.js (not re-exported via utils.js like getStringHash) so this doesn't widen
 // utils.js's re-export surface - a mocked utils.js in tests/utils-findchar.test.js stubs hash-utils.js with only
 // getStringHash, and this stays independent of that.
-import { hashSettingsKeys, treeNodeAt, digestsEqual128, foldDigests128, emptyDigest128, DEFAULT_DIGEST_BUCKET_COUNT, DEFAULT_TREE_BRANCHING, characterDigestFieldsHash, characterDigestCardBodyHash } from './scripts/hash-utils.js';
+import { hashSettingsKeys, treeNodeAt, digestsEqual128, foldDigests128, emptyDigest128, DEFAULT_DIGEST_BUCKET_COUNT, DEFAULT_TREE_BRANCHING, characterDigestFieldsHash, characterDigestCardBodyHash, combineDigest128, characterDigestFavHash, characterDigestTagIdsHash } from './scripts/hash-utils.js';
 import { debounce_timeout, GENERATION_TYPE_TRIGGERS, IGNORE_SYMBOL, inject_ids, MEDIA_DISPLAY, MEDIA_SOURCE, MEDIA_TYPE, OVERSWIPE_BEHAVIOR, SCROLL_BEHAVIOR, SWIPE_DIRECTION, SWIPE_SOURCE, SWIPE_STATE } from './scripts/constants.js';
 
 import { cancelDebouncedMetadataSave, doDailyExtensionUpdatesCheck, extension_settings, initExtensions, loadExtensionSettings, runGenerationInterceptors } from './scripts/extensions.js';
@@ -267,7 +267,7 @@ import { appendFileContent, hasPendingFileAttachment, populateFileAttachment, de
 import { getPresetManager, initPresetManager } from './scripts/preset-manager.js';
 import { evaluateMacros, getLastMessageId, initMacros } from './scripts/macros.js';
 import { currentUser, setUserControls } from './scripts/user.js';
-import { getCachedCursor, setCachedCursor, getAllCachedCharacters, getAllCachedHashes, saveCachedCharacters, removeCachedCharacters, clearCharacterCache, getLastVerifiedDigest, setLastVerifiedDigest } from './scripts/character-cache.js';
+import { getCachedCursor, setCachedCursor, getAllCachedCharacters, getAllCachedHashes, saveCachedCharacters, removeCachedCharacters, clearCharacterCache, getLastVerifiedDigest, setLastVerifiedDigest, getCachedHashesByIds } from './scripts/character-cache.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup, callGenericPopup, fixToastrForDialogs } from './scripts/popup.js';
 import { renderTemplate, renderTemplateAsync } from './scripts/templates.js';
 import { initScrapers } from './scripts/scrapers.js';
@@ -2267,7 +2267,7 @@ async function fetchCharactersDelta() {
     }
 
     /** @type {{seq: number, changes: {id: string, op: 'upsert'|'delete', fields?: string[]|null}[], truncated: boolean}} */
-    const { seq, changes, truncated } = await changesResponse.json();
+    const { seq, changes, truncated, rootDigest } = await changesResponse.json();
 
     if (truncated) {
         // sinceSeq predates anything the server's change log still has - this cache can no longer be trusted
@@ -2299,6 +2299,20 @@ async function fetchCharactersDelta() {
             fieldGroupMap.get(key).ids.push(id);
         }
     }
+
+    // --- Incremental digest maintenance (catch-up path) ---
+    // If we have a stored digest and the server sent its current root digest, try to verify
+    // by incrementally updating the stored digest with XOR-out/XOR-in for each changed record.
+    // This avoids the expensive O(library) tree-descent verification when the delta covers
+    // all changes (the common case). Read old hashes BEFORE any IDB mutations.
+    const storedDigest = (rootDigest) ? await getLastVerifiedDigest() : null;
+    const allAffectedIds = [...deleteIds, ...wholeRecordIds];
+    for (const { ids } of fieldGroupMap.values()) {
+        allAffectedIds.push(...ids);
+    }
+    const oldHashesMap = (storedDigest && allAffectedIds.length > 0)
+        ? await getCachedHashesByIds(allAffectedIds)
+        : new Map();
 
     if (deleteIds.length > 0) {
         await removeCachedCharacters(deleteIds);
@@ -2383,6 +2397,42 @@ async function fetchCharactersDelta() {
         await saveCachedCharacters(Array.from(fresh, ([avatar, character]) => ({ avatar, character })));
     }
     await setCachedCursor(seq);
+
+    // Incremental digest: XOR-out old contributions, XOR-in new, compare to server's root.
+    // Only runs when we have a stored digest to start from AND the server provided its root.
+    if (storedDigest && rootDigest) {
+        let runningDigest = { ...storedDigest };
+
+        // XOR-out deleted records' old contributions (XOR is self-inverse)
+        for (const id of deleteIds) {
+            const old = oldHashesMap.get(id);
+            if (old) {
+                runningDigest = combineDigest128(runningDigest, id, old.fav, old.tagIds, old.content);
+            }
+        }
+
+        // XOR-out old + XOR-in new for upserted records
+        for (const [avatar, character] of fresh) {
+            const old = oldHashesMap.get(avatar);
+            if (old) {
+                // XOR-out old contribution
+                runningDigest = combineDigest128(runningDigest, avatar, old.fav, old.tagIds, old.content);
+            }
+            // XOR-in new contribution (same hash computation as saveCachedCharacters)
+            const newFav = characterDigestFavHash(character) % 4294967296;
+            const newTagIds = characterDigestTagIdsHash(character);
+            const newContent = characterDigestFieldsHash(character) % 4294967296;
+            runningDigest = combineDigest128(runningDigest, avatar, newFav, newTagIds, newContent);
+        }
+
+        if (digestsEqual128(runningDigest, rootDigest)) {
+            await setLastVerifiedDigest(runningDigest);
+            hasVerifiedCharacterCacheDigestThisSession = true;
+            console.log('[sync] Incremental digest matches server root - skipping tree-descent verification');
+        } else {
+            console.log('[sync] Incremental digest mismatch - tree-descent will run as fallback');
+        }
+    }
 
     // The cache is now caught up: everything still in it, plus whatever this pass upserted, minus whatever it
     // deleted, IS the current library (see this function's own doc comment on why no separate ground-truth
