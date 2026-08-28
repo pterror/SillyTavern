@@ -85,6 +85,7 @@ export let world_info_max_recursion_steps = 0;
 const saveWorldDebounced = debounce(async (name, data) => await _save(name, data), debounce_timeout.relaxed);
 const sortFn = (a, b) => b.order - a.order;
 let updateEditor = (navigation, flashOnNav = true) => { console.debug('Triggered WI navigation', navigation, flashOnNav); };
+let worldInfoOneTimeInitDone = false;
 
 // Do not optimize. updateEditor is a function that is updated by the displayWorldEntries with new data.
 export const worldInfoFilter = new FilterHelper(() => updateEditor());
@@ -1016,26 +1017,30 @@ export function setWorldInfoSettings(settings, data) {
     }
     $('#world_editor_select').trigger('change');
 
-    eventSource.on(event_types.CHAT_CHANGED, async () => {
-        const hasWorldInfo = !!chat_metadata[METADATA_KEY] && world_names.includes(chat_metadata[METADATA_KEY]);
-        $('.chat_lorebook_button').toggleClass('world_set', hasWorldInfo);
-        // Pre-cache the world info data for the chat for quicker first prompt generation
-        await getSortedEntries();
-    });
+    if (!worldInfoOneTimeInitDone) {
+        worldInfoOneTimeInitDone = true;
 
-    eventSource.on(event_types.WORLDINFO_FORCE_ACTIVATE, (entries) => {
-        for (const entry of entries) {
-            if (!Object.hasOwn(entry, 'world') || !Object.hasOwn(entry, 'uid')) {
-                console.error('[WI] WORLDINFO_FORCE_ACTIVATE requires all entries to have both world and uid fields, entry IGNORED', entry);
-            } else {
-                WorldInfoBuffer.externalActivations.set(`${entry.world}.${entry.uid}`, entry);
-                console.log('[WI] WORLDINFO_FORCE_ACTIVATE added entry', entry);
+        eventSource.on(event_types.CHAT_CHANGED, async () => {
+            const hasWorldInfo = !!chat_metadata[METADATA_KEY] && world_names.includes(chat_metadata[METADATA_KEY]);
+            $('.chat_lorebook_button').toggleClass('world_set', hasWorldInfo);
+            // Pre-cache the world info data for the chat for quicker first prompt generation
+            await getSortedEntries();
+        });
+
+        eventSource.on(event_types.WORLDINFO_FORCE_ACTIVATE, (entries) => {
+            for (const entry of entries) {
+                if (!Object.hasOwn(entry, 'world') || !Object.hasOwn(entry, 'uid')) {
+                    console.error('[WI] WORLDINFO_FORCE_ACTIVATE requires all entries to have both world and uid fields, entry IGNORED', entry);
+                } else {
+                    WorldInfoBuffer.externalActivations.set(`${entry.world}.${entry.uid}`, entry);
+                    console.log('[WI] WORLDINFO_FORCE_ACTIVATE added entry', entry);
+                }
             }
-        }
-    });
+        });
 
-    // Add slash commands
-    registerWorldInfoSlashCommands();
+        // Add slash commands
+        registerWorldInfoSlashCommands();
+    }
 }
 
 /**
