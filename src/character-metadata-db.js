@@ -4320,6 +4320,20 @@ export async function treeDescend(directories, nodes, branching = DEFAULT_DIGEST
 }
 
 /**
+ * Computes the global 128-bit root digest of the characters table - the XOR-fold of every record's
+ * per-field hash contribution. Same value as XOR-folding all level-0 children from a root tree-descend
+ * call, but computed in a single pass without bucketing.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<{a: number, b: number, c: number, d: number} | null>} `null` if the metadata store is unavailable.
+ */
+export async function computeRootDigest(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    const result = await runDigestWorkerTask({ type: 'root-digest', dbPath: getDbPath(directories) });
+    return result?.digest ?? null;
+}
+
+/**
  * POST /api/characters/fingerprint-values: targeted fetch of fingerprint field values for specific record ids -
  * the repair half of tree-descend() above, now that its leaf responses carry only per-record hashes (see that
  * worker's own header). Called after the client has used tree-descend to narrow drift down to an exact set of
