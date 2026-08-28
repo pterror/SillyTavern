@@ -18,7 +18,7 @@ import { TAGS_FILE } from './constants.js';
 // duplicated so the server's seeded random-sort ordering (design doc §5.3, decision 8/13) can never drift from
 // the client comparator (public/scripts/random-sort.js's compareByRandomSeed()) that decides the *same* ordering
 // for whatever page hasn't round-tripped to the server yet.
-import { getStringHash, DEFAULT_DIGEST_BUCKET_COUNT } from '../public/scripts/hash-utils.js';
+import { getStringHash, DEFAULT_DIGEST_BUCKET_COUNT, characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash } from '../public/scripts/hash-utils.js';
 import { runDigestWorkerTask } from './character-metadata-digest-dispatch.js';
 
 /**
@@ -171,7 +171,7 @@ const SCHEMA_SQL = `
         version        TEXT,
         creator_notes  TEXT,
         shallow_json   TEXT NOT NULL,
-        rev            INTEGER NOT NULL,
+        change_seq     INTEGER NOT NULL,
         -- active_chat (2026-08, chat-pointer db migration - docs/design/character-chat-pointer-db-migration.md):
         -- which chat file is "currently open" for this character, mirroring \`fav\`'s own db-authoritative shape
         -- exactly (see writeRowSync()'s doc comment on both). NULL is a genuinely ambiguous value for this
@@ -192,7 +192,14 @@ const SCHEMA_SQL = `
         -- resumability query should still match. Never regresses 1 -> 0 once set. See
         -- migrateActiveChatColumn() below for how a preexisting install's already-resolved rows get this
         -- retroactively set to 1 without a fresh corpus-wide sweep.
-        active_chat_checked INTEGER NOT NULL DEFAULT 0
+        active_chat_checked INTEGER NOT NULL DEFAULT 0,
+        -- Pre-computed per-field digest hashes for the tree-descend anti-entropy worker, stored
+        -- at every write so the worker can read just these integers (no shallow_json parse, no
+        -- hash computation) when building aggregate digests. See hash-utils.js's
+        -- characterDigestFavHash/characterDigestTagIdsHash/characterDigestFieldsHash.
+        digest_fav     INTEGER,
+        digest_tag_ids INTEGER,
+        digest_content INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_characters_name_fold ON characters(name_fold);
     CREATE INDEX IF NOT EXISTS idx_characters_date_added ON characters(date_added);
@@ -289,7 +296,7 @@ const SCHEMA_SQL = `
     END;
 
     CREATE TABLE IF NOT EXISTS changes (
-        rev INTEGER PRIMARY KEY AUTOINCREMENT,
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
         id  TEXT NOT NULL,
         op  TEXT NOT NULL,
         fields TEXT
@@ -425,11 +432,13 @@ const UPSERT_SQL = `
     INSERT INTO characters (
         id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size,
         file_mtime, world, creator, version, creator_notes, shallow_json, content_hash,
-        content_identity_hash, avatar_identity_hash, import_poisoned, active_chat, active_chat_checked, rev
+        content_identity_hash, avatar_identity_hash, import_poisoned, active_chat, active_chat_checked, rev,
+        digest_fav, digest_tag_ids, digest_content
     ) VALUES (
         @id, @name, @name_fold, @fav, @date_added, @create_date, @date_last_chat, @chat_size, @data_size,
         @file_mtime, @world, @creator, @version, @creator_notes, @shallow_json, @content_hash,
-        @content_identity_hash, @avatar_identity_hash, @import_poisoned, @active_chat, @active_chat_checked, @rev
+        @content_identity_hash, @avatar_identity_hash, @import_poisoned, @active_chat, @active_chat_checked, @rev,
+        @digest_fav, @digest_tag_ids, @digest_content
     )
     ON CONFLICT(id) DO UPDATE SET
         name = excluded.name,
@@ -479,6 +488,9 @@ const UPSERT_SQL = `
         -- resolves active_chat one way or the other), so in practice this is always a no-op overwrite of 1 with
         -- 1; the CASE is defensive against any future caller of writeRowSync()/flushBatch() that might not.
         active_chat_checked = CASE WHEN excluded.active_chat_checked = 1 THEN 1 ELSE characters.active_chat_checked END,
+        digest_fav = excluded.digest_fav,
+        digest_tag_ids = excluded.digest_tag_ids,
+        digest_content = excluded.digest_content,
         rev = excluded.rev
     -- date_added is deliberately absent from this SET list - see this module's header ("date_added IS RECORDED
     -- ONCE"). On a genuine insert the VALUES clause's candidate is used; on conflict SQLite leaves the existing
@@ -825,6 +837,21 @@ function migrateChangesFieldsColumn(db) {
 }
 
 /**
+ * Adds `digest_fav`/`digest_tag_ids`/`digest_content` to an existing `characters` table that
+ * predates them. Same ALTER-if-missing shape as migrateContentHashColumn(). No backfill needed:
+ * NULL columns are populated lazily by the next write (reconcile/bootstrap/upsert) for each row,
+ * and the tree-descend worker treats NULL as "compute from shallow_json on demand" rather than
+ * skipping the row.
+ */
+function migrateDigestColumns(db) {
+    const columns = db.all('PRAGMA table_info(characters)');
+    const columnNames = new Set(columns.map(c => c.name));
+    if (!columnNames.has('digest_fav')) db.exec('ALTER TABLE characters ADD COLUMN digest_fav INTEGER');
+    if (!columnNames.has('digest_tag_ids')) db.exec('ALTER TABLE characters ADD COLUMN digest_tag_ids INTEGER');
+    if (!columnNames.has('digest_content')) db.exec('ALTER TABLE characters ADD COLUMN digest_content INTEGER');
+}
+
+/**
  * Resolves (creating on first use) the metadata DB entry for a user, including opening the SQLite file and
  * applying SCHEMA_SQL (idempotent - every statement is CREATE ... IF NOT EXISTS). Returns `null` if no SQLite
  * engine is usable on this install at all (see sqlite-engine.js) - callers must treat that as "the metadata
@@ -861,6 +888,7 @@ async function getEntry(directories) {
     migrateCreateDateColumn(db);
     migrateLocalImportMtimesDuplicateOfColumn(db);
     migrateChangesFieldsColumn(db);
+    migrateDigestColumns(db);
     migrateGroupsColumns(db, directories);
     // Design doc §5.3, decisions 8/13: random-sort order is a per-query `ORDER BY <hash>(id, seed)`, never a
     // materialized column (a materialized seeded column is O(users × rerolls) to maintain - see the decision's
@@ -906,6 +934,7 @@ function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, date
         data_size: dataSize,
         tag_ids: tagIds,
     };
+    const shallow = toShallow(shallowSource);
     return {
         id,
         name: character.name ?? '',
@@ -928,7 +957,7 @@ function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, date
         creator: _.get(character, 'data.creator', '') || null,
         version: _.get(character, 'data.character_version', '') || null,
         creator_notes: includeCreatorNotes ? (_.get(character, 'data.creator_notes', '') || null) : null,
-        shallow_json: JSON.stringify(toShallow(shallowSource)),
+        shallow_json: JSON.stringify(shallow),
         // Undefined/omitted from every call site except the import write path (see upsertCharacterFromWrite()'s
         // own contentHash param) - normalized to `null` here so UPSERT_SQL's bound parameter is always a real
         // SQL value, never `undefined` (which better-sqlite3 rejects as a bind parameter). See UPSERT_SQL's
@@ -957,6 +986,9 @@ function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, date
         // chat name or a confirmed-none `null` - never "haven't looked yet". See active_chat_checked's own
         // SCHEMA_SQL comment for the state it distinguishes active_chat's NULL from.
         active_chat_checked: 1,
+        digest_fav: characterDigestFavHash(shallow) % 4294967296,
+        digest_tag_ids: characterDigestTagIdsHash(shallow) % 4294967296,
+        digest_content: characterDigestFieldsHash(shallow) % 4294967296,
     };
 }
 
@@ -1154,8 +1186,8 @@ export async function setCharacterFav(directories, avatar, fav) {
 
     const { lastInsertRowid } = entry.db.run('INSERT INTO changes (id, op, fields) VALUES (@id, @op, @fields)', { id: avatar, op: 'upsert', fields: JSON.stringify(['fav']) });
     entry.db.run(
-        'UPDATE characters SET fav = @fav, shallow_json = @shallow_json, rev = @rev WHERE id = @id',
-        { id: avatar, fav: fav ? 1 : 0, shallow_json: JSON.stringify(shallow), rev: Number(lastInsertRowid) },
+        'UPDATE characters SET fav = @fav, shallow_json = @shallow_json, rev = @rev, digest_fav = @digestFav WHERE id = @id',
+        { id: avatar, fav: fav ? 1 : 0, shallow_json: JSON.stringify(shallow), rev: Number(lastInsertRowid), digestFav: characterDigestFavHash(shallow) % 4294967296 },
     );
     return true;
 }
@@ -2826,7 +2858,7 @@ export async function assignEntityTag(directories, id, tagId) {
             const shallow = JSON.parse(charRow.shallow_json);
             shallow.tag_ids = currentTagIds;
             const { lastInsertRowid } = entry.db.run('INSERT INTO changes (id, op, fields) VALUES (@id, @op, @fields)', { id, op: 'upsert', fields: JSON.stringify(['tag_ids']) });
-            entry.db.run('UPDATE characters SET shallow_json = @shallowJson, rev = @rev WHERE id = @id', { id, shallowJson: JSON.stringify(shallow), rev: Number(lastInsertRowid) });
+            entry.db.run('UPDATE characters SET shallow_json = @shallowJson, rev = @rev, digest_tag_ids = @digestTagIds WHERE id = @id', { id, shallowJson: JSON.stringify(shallow), rev: Number(lastInsertRowid), digestTagIds: characterDigestTagIdsHash(shallow) % 4294967296 });
         }
         bumpTagsRevisionSync(entry.db);
         return 'ok';
@@ -2864,7 +2896,7 @@ export async function unassignEntityTag(directories, id, tagId) {
         const shallow = JSON.parse(charRow.shallow_json);
         shallow.tag_ids = currentTagIds;
         const { lastInsertRowid } = entry.db.run('INSERT INTO changes (id, op, fields) VALUES (@id, @op, @fields)', { id, op: 'upsert', fields: JSON.stringify(['tag_ids']) });
-        entry.db.run('UPDATE characters SET shallow_json = @shallowJson, rev = @rev WHERE id = @id', { id, shallowJson: JSON.stringify(shallow), rev: Number(lastInsertRowid) });
+        entry.db.run('UPDATE characters SET shallow_json = @shallowJson, rev = @rev, digest_tag_ids = @digestTagIds WHERE id = @id', { id, shallowJson: JSON.stringify(shallow), rev: Number(lastInsertRowid), digestTagIds: characterDigestTagIdsHash(shallow) % 4294967296 });
     }
     bumpTagsRevisionSync(entry.db);
     return 'ok';
