@@ -1072,7 +1072,7 @@ async function firstLoadInit() {
     await initSystemMessages();
 
     setStage('Loading settings');
-    await getSettings(initLoaderHandle);
+    await getSettings(initLoaderHandle, setStage);
 
     setStage('Loading user data');
     await checkOpenRouterAuth();
@@ -9767,7 +9767,7 @@ function reloadLoop() {
 
 //MARK: getSettings()
 ///////////////////////////////////////////
-export async function getSettings(initLoaderHandle = null) {
+export async function getSettings(initLoaderHandle = null, onStageChange = null) {
     const response = await fetch('/api/settings/get', {
         method: 'POST',
         headers: getRequestHeaders(),
@@ -9877,6 +9877,8 @@ export async function getSettings(initLoaderHandle = null) {
         // TODO: Move me into firstLoadInit when experimental toggle is removed
         // power_user.experimental_macro_engine
         initMacros();
+
+        onStageChange?.('Activating extensions');
 
         if (data.enable_extensions) {
             const enableAutoUpdate = Boolean(data.enable_extensions_auto_update);
