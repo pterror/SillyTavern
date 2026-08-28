@@ -2553,6 +2553,62 @@ function workerComputeDigests(worker, nodes) {
 }
 
 /**
+ * Decodes a binary tree-descend response into the same JS structure as the JSON path.
+ * See serializeTreeDescendBinary() server-side for the matching encoder and format spec.
+ * @param {ArrayBuffer} buffer
+ * @returns {{ results: { path: number[], type: string, children?: {digest:{a:number,b:number,c:number,d:number}}[], members?: {id:string,favHash:number,tagIdsHash:number,contentHash:number,fav:boolean}[] }[] }}
+ */
+function deserializeTreeDescendBinary(buffer) {
+    const view = new DataView(buffer);
+    let offset = 0;
+
+    const resultCount = view.getUint16(offset, true); offset += 2;
+    const results = [];
+
+    for (let r = 0; r < resultCount; r++) {
+        const pathLength = view.getUint8(offset); offset += 1;
+        const path = [];
+        for (let p = 0; p < pathLength; p++) {
+            path.push(view.getUint8(offset)); offset += 1;
+        }
+        const typeFlag = view.getUint8(offset); offset += 1;
+
+        if (typeFlag === 0) {
+            // children
+            const childCount = view.getUint16(offset, true); offset += 2;
+            const children = [];
+            for (let ci = 0; ci < childCount; ci++) {
+                const a = view.getUint32(offset, true); offset += 4;
+                const b = view.getUint32(offset, true); offset += 4;
+                const c = view.getUint32(offset, true); offset += 4;
+                const d = view.getUint32(offset, true); offset += 4;
+                children.push({ digest: { a, b, c, d } });
+            }
+            results.push({ path, type: 'children', children });
+        } else {
+            // leaves
+            const memberCount = view.getUint16(offset, true); offset += 2;
+            const members = [];
+            const decoder = new TextDecoder();
+            for (let mi = 0; mi < memberCount; mi++) {
+                const idLen = view.getUint16(offset, true); offset += 2;
+                const idBytes = new Uint8Array(buffer, offset, idLen);
+                const id = decoder.decode(idBytes);
+                offset += idLen;
+                const favHash = view.getUint32(offset, true); offset += 4;
+                const tagIdsHash = view.getUint32(offset, true); offset += 4;
+                const contentHash = view.getUint32(offset, true); offset += 4;
+                const fav = view.getUint8(offset) !== 0; offset += 1;
+                members.push({ id, favHash, tagIdsHash, contentHash, fav });
+            }
+            results.push({ path, type: 'leaves', members });
+        }
+    }
+
+    return { results };
+}
+
+/**
  * Anti-entropy check for the character cache (see character-metadata-digest-worker.js's own header for the
  * server-side recursive hash-tree shape, and character-metadata-db.js's treeDescend() for the server half).
  * `/api/characters/changes`'s seq cursor tells a client what's mutated SINCE it last synced, but has no way to
@@ -2608,12 +2664,12 @@ async function verifyCharacterCacheDigest() {
     const rootResponse = await fetch('/api/characters/tree-descend', {
         method: 'POST',
         headers: getRequestHeaders(),
-        body: JSON.stringify({ branching, leafThreshold, nodes: [{ path: [] }] }),
+        body: JSON.stringify({ branching, leafThreshold, nodes: [{ path: [] }], binary: true }),
     });
     if (!rootResponse.ok) {
         throw new Error(`Tree-descend root fetch failed: ${rootResponse.statusText}`);
     }
-    const { results: rootResults } = await rootResponse.json();
+    const { results: rootResults } = deserializeTreeDescendBinary(await rootResponse.arrayBuffer());
     const rootResult = rootResults?.[0];
 
     // Step 2: Fast-path - compare server's root aggregate against stored digest from the last
@@ -2671,12 +2727,12 @@ async function verifyCharacterCacheDigest() {
             const response = await fetch('/api/characters/tree-descend', {
                 method: 'POST',
                 headers: getRequestHeaders(),
-                body: JSON.stringify({ branching, leafThreshold, nodes: currentNodes }),
+                body: JSON.stringify({ branching, leafThreshold, nodes: currentNodes, binary: true }),
             });
             if (!response.ok) {
                 throw new Error(`Tree-descend failed: ${response.statusText}`);
             }
-            const { results: allResults } = await response.json();
+            const { results: allResults } = deserializeTreeDescendBinary(await response.arrayBuffer());
 
             const nextNodes = [];
 
