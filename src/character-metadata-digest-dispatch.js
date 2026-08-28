@@ -14,7 +14,7 @@ const WORKER_MODULE_PATH = fileURLToPath(new URL('./character-metadata-digest-wo
  * The `await` here is real async - Node's event loop keeps servicing every other request while this worker
  * computes its result off-thread; nothing about this call ties up the main thread's event loop the way the
  * inline synchronous loop this replaces did.
- * @param {{ type: 'state-digest', dbPath: string, bucketCount: number } | { type: 'bucket-members', dbPath: string, bucket: number, bucketCount: number } | { type: 'tree-descend', dbPath: string, nodes: { path: number[] }[], branching: number, leafThreshold: number } | { type: 'resolve-fingerprints', dbPath: string, ids: string[] }} task
+ * @param {{ type: 'state-digest', dbPath: string, bucketCount: number } | { type: 'bucket-members', dbPath: string, bucket: number, bucketCount: number } | { type: 'tree-descend', dbPath: string, nodes: { path: number[] }[], branching: number, leafThreshold: number } | { type: 'resolve-fingerprints', dbPath: string, ids: string[] } | { type: 'root-digest', dbPath: string }} task
  * @returns {Promise<any>} Whatever the worker's `result` field was for this task (`null` if the metadata store
  * turned out to be unavailable inside the worker - same contract getStateDigest()/getBucketMembers() already
  * have for their callers). For a `'state-digest'` task, `result` is

@@ -280,6 +280,44 @@ async function resolveFingerprints(dbPath, ids) {
     }
 }
 
+/**
+ * Computes the global root digest by scanning every row in the characters table and folding all records into a
+ * single 128-bit digest. This is the same value you'd get from XOR-folding all 64 level-0 children from a
+ * tree-descend root call, but without the bucketing overhead since XOR is associative+commutative.
+ * @param {string} dbPath
+ */
+async function computeRootDigest(dbPath) {
+    const db = await openReadOnly(dbPath);
+    if (!db) return null;
+    try {
+        const rows = db.all('SELECT id, digest_fav, digest_tag_ids, digest_content, shallow_json FROM characters');
+        let digest = emptyDigest128();
+
+        for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
+            for (let j = i; j < Math.min(i + CHUNK_SIZE, rows.length); j++) {
+                const row = rows[j];
+                let favHash, tagIdsHash, fieldsHash;
+                if (row.digest_fav != null && row.digest_tag_ids != null && row.digest_content != null) {
+                    favHash = row.digest_fav;
+                    tagIdsHash = row.digest_tag_ids;
+                    fieldsHash = row.digest_content;
+                } else {
+                    const parsed = JSON.parse(row.shallow_json);
+                    favHash = characterDigestFavHash(parsed) % 4294967296;
+                    tagIdsHash = characterDigestTagIdsHash(parsed);
+                    fieldsHash = characterDigestFieldsHash(parsed) % 4294967296;
+                }
+                digest = combineDigest128(digest, row.id, favHash, tagIdsHash, fieldsHash);
+            }
+            await new Promise((resolve) => setImmediate(resolve));
+        }
+
+        return { digest };
+    } finally {
+        db.close();
+    }
+}
+
 parentPort.on('message', async (msg) => {
     try {
         if (msg.type === 'tree-descend') {
@@ -289,6 +327,11 @@ parentPort.on('message', async (msg) => {
                 msg.branching ?? DEFAULT_DIGEST_BUCKET_COUNT,
                 msg.leafThreshold ?? DEFAULT_LEAF_THRESHOLD,
             );
+            parentPort.postMessage({ id: msg.id, ok: true, result });
+            return;
+        }
+        if (msg.type === 'root-digest') {
+            const result = await computeRootDigest(msg.dbPath);
             parentPort.postMessage({ id: msg.id, ok: true, result });
             return;
         }
