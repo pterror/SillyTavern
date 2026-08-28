@@ -59,11 +59,16 @@ export const macros = {
     registerAlias: MacroRegistry.registerMacroAlias.bind(MacroRegistry),
 };
 
+let macrosRegistered = false;
+
 /**
  * Registers all built-in macros in a well-defined order.
  * Intended to be called once during app initialization.
  */
 export function initRegisterMacros() {
+    if (macrosRegistered) return;
+    macrosRegistered = true;
+
     // Core utilities and generic helpers
     registerCoreMacros();
 
