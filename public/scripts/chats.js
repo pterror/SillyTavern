@@ -29,6 +29,7 @@ import {
     getMediaIndex,
     getMediaDisplay,
     chatElement,
+    charactersStore,
 } from '../script.js';
 import { selected_group } from './group-chats.js';
 import { power_user } from './power-user.js';
@@ -639,20 +640,13 @@ class StylesPreference {
     }
 
     /**
-     * Gets the account storage key for the style preference.
-     */
-    get key() {
-        return `AllowGlobalStyles-${this.avatarId}`;
-    }
-
-    /**
      * Checks if a preference exists for this character.
      * @returns {boolean} True if preference exists, false otherwise
      */
     exists() {
-        return this.avatarId
-            ? accountStorage.getItem(this.key) !== null
-            : true; // No character == assume preference is set
+        if (!this.avatarId) return true; // No character == assume preference is set
+        const character = charactersStore.get(this.avatarId);
+        return character?.allow_global_styles != null;
     }
 
     /**
@@ -660,20 +654,62 @@ class StylesPreference {
      * @returns {boolean} True if global styles are allowed, false otherwise
      */
     get() {
-        return this.avatarId
-            ? accountStorage.getItem(this.key) === 'true'
-            : false; // Always disabled when creating a new character
+        if (!this.avatarId) return false; // Always disabled when creating a new character
+        const character = charactersStore.get(this.avatarId);
+        return !!character?.allow_global_styles;
     }
 
     /**
-     * Sets the global styles preference.
+     * Sets the global styles preference via the character DB.
      * @param {boolean} allowed - Whether global styles are allowed
      */
     set(allowed) {
-        if (this.avatarId) {
-            accountStorage.setItem(this.key, String(allowed));
+        if (!this.avatarId) return;
+        // Update the in-memory character store immediately for responsive UI
+        const character = charactersStore.get(this.avatarId);
+        if (character) {
+            character.allow_global_styles = allowed;
+        }
+        // Persist to the character metadata DB
+        fetch('/api/characters/allow-global-styles', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ avatar: this.avatarId, allowed }),
+        }).catch(err => console.error('Failed to save global styles preference:', err));
+    }
+}
+
+/**
+ * One-time migration of AllowGlobalStyles preferences from localStorage/accountStorage to the
+ * character metadata DB. Reads existing keys, bulk-POSTs them, then marks migration complete.
+ */
+async function migrateAllowGlobalStylesToDb() {
+    if (localStorage.getItem('AllowGlobalStyles_migrated_to_db') === '1') return;
+
+    const bulk = [];
+    for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key?.startsWith('AllowGlobalStyles-')) {
+            const avatar = key.substring('AllowGlobalStyles-'.length);
+            const allowed = localStorage.getItem(key) === 'true';
+            if (avatar) bulk.push({ avatar, allowed });
         }
     }
+
+    if (bulk.length > 0) {
+        try {
+            await fetch('/api/characters/allow-global-styles', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ bulk }),
+            });
+        } catch (err) {
+            console.error('AllowGlobalStyles migration failed:', err);
+            return; // Don't mark as migrated if it failed
+        }
+    }
+
+    localStorage.setItem('AllowGlobalStyles_migrated_to_db', '1');
 }
 
 /**
@@ -2102,6 +2138,8 @@ async function onImageSwiped(messageId, element, direction) {
 }
 
 export function initChatUtilities() {
+    migrateAllowGlobalStylesToDb();
+
     $(document).on('click', '.mes_hide', async function () {
         const messageBlock = $(this).closest('.mes');
         const messageId = Number(messageBlock.attr('mesid'));

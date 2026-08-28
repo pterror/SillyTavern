@@ -879,6 +879,19 @@ function migrateDigestColumns(db) {
 }
 
 /**
+ * Adds `allow_global_styles` to an existing `characters` table. Same ALTER-if-missing shape as
+ * migrateContentHashColumn() above. No backfill needed: NULL means "no preference recorded yet",
+ * and existing values are migrated from the client's accountStorage on first load.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ */
+function migrateAllowGlobalStylesColumn(db) {
+    const columns = db.all('PRAGMA table_info(characters)');
+    if (!columns.some(c => c.name === 'allow_global_styles')) {
+        db.exec('ALTER TABLE characters ADD COLUMN allow_global_styles INTEGER');
+    }
+}
+
+/**
  * Resolves (creating on first use) the metadata DB entry for a user, including opening the SQLite file and
  * applying SCHEMA_SQL (idempotent - every statement is CREATE ... IF NOT EXISTS). Returns `null` if no SQLite
  * engine is usable on this install at all (see sqlite-engine.js) - callers must treat that as "the metadata
@@ -917,6 +930,7 @@ async function getEntry(directories) {
     migrateChangesFieldsColumn(db);
     migrateRevToSeqColumns(db);
     migrateDigestColumns(db);
+    migrateAllowGlobalStylesColumn(db);
     migrateGroupsColumns(db, directories);
     // Design doc §5.3, decisions 8/13: random-sort order is a per-query `ORDER BY <hash>(id, seed)`, never a
     // materialized column (a materialized seeded column is O(users × rerolls) to maintain - see the decision's
@@ -1221,6 +1235,31 @@ export async function setCharacterFav(directories, avatar, fav) {
 }
 
 /**
+ * Sets the `allow_global_styles` preference for a character, mirroring setCharacterFav() exactly:
+ * updates the DB column + shallow_json mirror, no card file write.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} avatar Avatar filename (e.g. `Alice.png`)
+ * @param {boolean} allowed
+ * @returns {Promise<boolean>} True if a row existed and was updated.
+ */
+export async function setCharacterAllowGlobalStyles(directories, avatar, allowed) {
+    const entry = await getEntry(directories);
+    if (!entry) return false;
+
+    const existing = entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: avatar });
+    if (!existing) return false;
+
+    const shallow = JSON.parse(existing.shallow_json);
+    shallow.allow_global_styles = !!allowed;
+
+    entry.db.run(
+        'UPDATE characters SET allow_global_styles = @val, shallow_json = @shallowJson WHERE id = @id',
+        { id: avatar, val: allowed ? 1 : 0, shallowJson: JSON.stringify(shallow) },
+    );
+    return true;
+}
+
+/**
  * Write-path hook for the chat-switch UI action (2026-08 chat-pointer db migration, owner decision - see this
  * module's header on `active_chat` being db-authoritative once a row exists) - the ONE writer, other than a
  * row's first INSERT, ever allowed to change the `active_chat` column. Mirrors setCharacterFav() exactly:
@@ -1304,6 +1343,32 @@ export async function getCharacterFavsByIds(directories, ids) {
         const rows = entry.db.all(`SELECT id, fav FROM characters WHERE id IN (${placeholders})`, batch);
         for (const row of rows) {
             result[row.id] = !!row.fav;
+        }
+    }
+    return result;
+}
+
+/**
+ * Bulk `allow_global_styles` lookup - same batched shape as getCharacterFavsByIds().
+ * Ids with no tracked row are absent from the result.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string[]} ids Avatar filenames
+ * @returns {Promise<{[id: string]: boolean}>}
+ */
+export async function getCharacterAllowGlobalStylesByIds(directories, ids) {
+    const entry = await getEntry(directories);
+    if (!entry || !Array.isArray(ids) || ids.length === 0) return {};
+
+    /** @type {{[id: string]: boolean}} */
+    const result = {};
+    for (let i = 0; i < ids.length; i += FAV_LOOKUP_BATCH_SIZE) {
+        const batch = ids.slice(i, i + FAV_LOOKUP_BATCH_SIZE);
+        const placeholders = batch.map(() => '?').join(',');
+        const rows = entry.db.all(`SELECT id, allow_global_styles FROM characters WHERE id IN (${placeholders})`, batch);
+        for (const row of rows) {
+            if (row.allow_global_styles != null) {
+                result[row.id] = !!row.allow_global_styles;
+            }
         }
     }
     return result;

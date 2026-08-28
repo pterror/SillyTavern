@@ -13749,7 +13749,6 @@ export async function deleteCharacter(characterKey, { deleteChats = true } = {})
             continue;
         }
 
-        accountStorage.removeItem(`AlertWI_${character.avatar}`);
         accountStorage.removeItem(`AlertRegex_${character.avatar}`);
         accountStorage.removeItem(`mediaWarningShown:${character.avatar}`);
         removeEntityTags(character.avatar);
