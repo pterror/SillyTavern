@@ -14119,6 +14119,8 @@ jQuery(async function () {
             // (slash-commands.js's /char-attribute, createOrEditCharacter() above) - keeps charactersStore's
             // copy (and anything derived from it, e.g. the character list) in sync with what the db now has.
             await getOneCharacter(character.avatar);
+            printCharactersDebounced();
+            favsToHotswap();
         } catch (error) {
             console.error('Failed to update favorite status', error);
             toastr.error(t`Failed to update favorite status.`);
