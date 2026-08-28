@@ -988,7 +988,7 @@ class PresetManager {
         }
         power_user.preset_order[this.apiId] = newOrder;
         this.applyOrder();
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
         toastr.success(t`Preset order saved`);
     }
 
@@ -1303,7 +1303,7 @@ export async function initPresetManager() {
             toastr.warning(warningToast);
         }
 
-        saveSettingsDebounced();
+        saveSettingsDebounced('power_user');
     });
 
     $(document).on('click', '[data-preset-manager-restore]', async function () {

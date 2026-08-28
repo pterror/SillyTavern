@@ -9985,9 +9985,19 @@ export async function getSettings(initLoaderHandle = null, onStageChange = null)
 }
 
 //MARK: saveSettings()
-export async function saveSettings() {
+export async function saveSettings(...keys) {
+    // Callers that need an immediate (non-debounced) scoped save can pass keys directly:
+    // `await saveSettings('extension_settings')` adds the key, cancels any pending debounce
+    // (so it won't re-fire with an empty set afterward), and saves immediately.
+    if (keys.length > 0) {
+        for (const key of keys) {
+            if (typeof key === 'string') pendingSettingsKeys.add(key);
+        }
+        _debouncedSaveImpl.cancel();
+    }
     if (!settingsReady) {
         console.warn('Settings not ready, scheduling another save');
+        // eslint-disable-next-line no-restricted-syntax
         saveSettingsDebounced();
         return;
     }
@@ -9997,6 +10007,7 @@ export async function saveSettings() {
         if (_saveRetryCounter < MAX_RETRIES) {
             console.warn('Response length is currently being overridden, scheduling another save');
             _saveRetryCounter++;
+            // eslint-disable-next-line no-restricted-syntax
             saveSettingsDebounced();
             return;
         }
@@ -13413,7 +13424,7 @@ async function removeCharacterFromUI(removedCharacters = []) {
         charactersStore.reportRemoved(avatar, entity);
     }
     await printMessages();
-    saveSettingsDebounced();
+    saveSettingsDebounced('active_character', 'active_group');
     await eventSource.emit(event_types.CHAT_CHANGED, getCurrentChatId());
 }
 
