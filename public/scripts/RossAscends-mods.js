@@ -615,7 +615,7 @@ export function dragElement($elmnt) {
             power_user.movingUIState[elmntName].height = height;
             eventSource.emit('resizeUI', elmntName);
         }
-        saveSettingsDebounced('power_user');
+        saveSettingsDebounced('power_user.movingUIState');
     }
 
     // Helper: Clamp element within viewport

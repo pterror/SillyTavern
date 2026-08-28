@@ -13672,7 +13672,7 @@ export async function updateRemoteChatName(avatar, newName) {
 function doCharListDisplaySwitch() {
     power_user.charListGrid = !power_user.charListGrid;
     document.body.classList.toggle('charListGrid', power_user.charListGrid);
-    saveSettingsDebounced('power_user');
+    saveSettingsDebounced('power_user.charListGrid');
 }
 
 /**
@@ -15832,7 +15832,7 @@ jQuery(async function () {
         } else {
             doCharListDisplaySwitch();
         }
-        saveSettingsDebounced('power_user');
+        saveSettingsDebounced('power_user.charGalleryGrid');
     });
 
     $('#galleryFullscreenToggle').on('click', () => {
@@ -15845,7 +15845,7 @@ jQuery(async function () {
                 btn.classList.toggle('fa-expand', !power_user.charGalleryFullscreen);
                 btn.classList.toggle('fa-compress', power_user.charGalleryFullscreen);
             }
-            saveSettingsDebounced('power_user');
+            saveSettingsDebounced('power_user.charGalleryFullscreen');
         }
     });
 
