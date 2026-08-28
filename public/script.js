@@ -12063,7 +12063,7 @@ function refreshInsertionPoints(template, getArray) {
         const firstVisibleIndex = Number(visibleGreetings.first().attr('data-index'));
         if (firstVisibleIndex !== pickedIndex && (firstVisibleIndex !== pickedIndex + 1 || pickedIndex !== 0)) {
             // Position 0 means "insert before whatever is at index firstVisibleIndex"
-            const insertPoint = $('<div class="greeting-insert-point" title="Insert here"></div>');
+            const insertPoint = $('<div class="greeting-insert-point"></div>');
             insertPoint.attr('data-insert-position', firstVisibleIndex);
             visibleGreetings.first().before(insertPoint);
         }
@@ -12084,7 +12084,7 @@ function refreshInsertionPoints(template, getArray) {
 
         if (!directlyAdjacent) {
             const insertPosition = isLast ? array.length : nextIndex;
-            const insertPoint = $('<div class="greeting-insert-point" title="Insert here"></div>');
+            const insertPoint = $('<div class="greeting-insert-point"></div>');
             insertPoint.attr('data-insert-position', insertPosition);
             $(this).after(insertPoint);
         }
