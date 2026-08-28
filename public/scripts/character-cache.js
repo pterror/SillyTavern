@@ -228,6 +228,28 @@ export async function getAllCachedHashes() {
 }
 
 /**
+ * Reads per-field hashes for a specific set of cached characters, keyed by avatar. Used by the
+ * incremental digest path in fetchCharactersDelta() to read old hashes before mutations.
+ * @param {string[]} ids Avatar filenames to look up.
+ * @returns {Promise<Map<string, {fav: number, tagIds: number, content: number}>>} avatar -> hashes (only for ids that exist and have valid hashes)
+ */
+export async function getCachedHashesByIds(ids) {
+    const store = getCharacterCacheStore();
+    const result = new Map();
+    await Promise.all(ids.map(async (id) => {
+        try {
+            const record = await store.getItem(id);
+            if (record?.hashes?.v === HASH_VERSION) {
+                result.set(id, record.hashes);
+            }
+        } catch (error) {
+            console.error(`Failed to read cached hash for ${id}:`, error);
+        }
+    }));
+    return result;
+}
+
+/**
  * Persists freshly-fetched characters into the cache, keyed by avatar. Callers should pass already fully
  * processed character objects (DOMPurify-sanitized name, defaulted chat, etc. - i.e. exactly what would've been
  * assigned into the `characters` array before this cache existed), since getAllCachedCharacters() returns cache
