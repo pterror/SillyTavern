@@ -2762,7 +2762,6 @@ function onTagCreateClick() {
     flashHighlight(tagElement);
 
     printCharactersDebounced();
-    saveSettingsDebounced('power_user');
 
     toastr.success('Tag created', 'Create Tag');
 }
@@ -2865,7 +2864,6 @@ function onTagAsFolderClick() {
 
     // If folder display has changed, we have to redraw the character list, otherwise this folders state would not change
     printCharactersDebounced();
-    saveSettingsDebounced('power_user');
 }
 
 function updateDrawTagFolder(element, tag) {
@@ -2936,7 +2934,6 @@ function onTagRenameInput() {
     tagsStore.update(id, { name: newName });
     $(this).attr('dirty', '');
     $(`.tag[id="${id}"] .tag_name`).text(newName);
-    saveSettingsDebounced('power_user');
 
     applyCharacterTagsToMessageDivs();
 }
@@ -2966,7 +2963,6 @@ function onTagColorize(evt, colorField, cssProperty) {
 
     $(evt.target).closest('.tag_view_item').find('.tag_view_name').css(cssProperty, newColor);
     tagsStore.update(id, { [colorField]: newColor });
-    saveSettingsDebounced('power_user');
 
     // Debounce redrawing color of the tag in other elements
     debouncedTagColoring(id, cssProperty, newColor);
