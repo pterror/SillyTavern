@@ -3095,11 +3095,41 @@ function updatePosOrdDisplayHelper({ template, data, uid }) {
  */
 function initCharacterFilterSelect2Helper(characterFilter) {
     if (!isMobile()) {
+        const MAX_RESULTS = 100;
         $(characterFilter).select2({
             width: '100%',
             placeholder: t`Tie this entry to specific characters or characters with specific tags`,
             allowClear: true,
             closeOnSelect: false,
+            minimumInputLength: 1,
+            ajax: {
+                transport: function (params, success) {
+                    const query = params.data?.q?.toLowerCase() ?? '';
+                    const results = [];
+
+                    // Tags first (few, always relevant)
+                    const ctxTags = getContext().tags;
+                    for (const tag of ctxTags) {
+                        if (results.length >= MAX_RESULTS) break;
+                        const text = `[Tag] ${tag.name}`;
+                        if (text.toLowerCase().includes(query)) {
+                            results.push({ id: tag.id, text });
+                        }
+                    }
+
+                    // Characters (large set, capped)
+                    const characters = getContext().characters;
+                    for (const character of characters) {
+                        if (results.length >= MAX_RESULTS) break;
+                        const name = character.avatar.replace(/\.[^/.]+$/, '') ?? character.name;
+                        if (name.toLowerCase().includes(query)) {
+                            results.push({ id: name, text: name });
+                        }
+                    }
+
+                    Promise.resolve({ results }).then(success);
+                },
+            },
         });
     }
 }
@@ -3111,24 +3141,30 @@ function initCharacterFilterSelect2Helper(characterFilter) {
  * @param {object} params.entry - The entry object containing character filter data.
  */
 function fillCharacterAndTagOptionsHelper({ characterFilter, entry }) {
-    const characters = getContext().characters;
-    characters.forEach((character) => {
+    // Pre-populate only already-selected values as <option> elements. The full character+tag
+    // list is provided via select2's ajax transport (initCharacterFilterSelect2Helper) so the
+    // browser never has to create 300K DOM nodes for the unselected entries.
+    const selectedNames = entry.characterFilter?.names ?? [];
+    for (const name of selectedNames) {
         const option = document.createElement('option');
-        const name = character.avatar.replace(/\.[^/.]+$/, '') ?? character.name;
         option.innerText = name;
-        option.selected = entry.characterFilter?.names?.includes(name);
-        option.setAttribute('data-type', 'character');
+        option.selected = true;
         characterFilter.append(option);
-    });
-    const tags = getContext().tags;
-    tags.forEach((tag) => {
-        const option = document.createElement('option');
-        option.innerText = `[Tag] ${tag.name}`;
-        option.selected = entry.characterFilter?.tags?.includes(tag.id);
-        option.value = tag.id;
-        option.setAttribute('data-type', 'tag');
-        characterFilter.append(option);
-    });
+    }
+
+    const selectedTagIds = entry.characterFilter?.tags ?? [];
+    if (selectedTagIds.length > 0) {
+        const ctxTags = getContext().tags;
+        for (const tag of ctxTags) {
+            if (selectedTagIds.includes(tag.id)) {
+                const option = document.createElement('option');
+                option.innerText = `[Tag] ${tag.name}`;
+                option.selected = true;
+                option.value = tag.id;
+                characterFilter.append(option);
+            }
+        }
+    }
 }
 
 /**
@@ -3150,15 +3186,23 @@ function handleCharacterFilterChangeHelper({ characterFilter, data, entry, name 
         if ((!selected || selected?.length === 0) && !data.entries[uid].characterFilter?.isExclude) {
             delete data.entries[uid].characterFilter;
         } else {
-            const names = selected.filter('[data-type="character"]').map((_, e) => e instanceof HTMLOptionElement && e.innerText).toArray();
-            const tags = selected.filter('[data-type="tag"]').map((_, e) => e instanceof HTMLOptionElement && e.value).toArray();
+            const names = [];
+            const tagIds = [];
+            selected.each((_, e) => {
+                if (!(e instanceof HTMLOptionElement)) return;
+                if (e.textContent.startsWith('[Tag] ')) {
+                    tagIds.push(e.value);
+                } else {
+                    names.push(e.textContent);
+                }
+            });
             Object.assign(
                 data.entries[uid],
                 {
                     characterFilter: {
                         isExclude: data.entries[uid].characterFilter?.isExclude ?? false,
                         names: names,
-                        tags: tags,
+                        tags: tagIds,
                     },
                 },
             );
