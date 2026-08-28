@@ -766,10 +766,8 @@ async function openPersistedTantivyIndexStale(directories, tantivy) {
         const schema = index.schema;
 
         const persistedSchemaVersion = await getMetaValue(directories, TANTIVY_INDEX_SCHEMA_VERSION_META_KEY);
-        // Reject future schemas (not backward compatible) but accept older ones: a version-1 index
-        // (no fast fields) is still correct for text search, it just can't use orderByField sorting
-        // and falls back to the SQL sort path until the background rebuild catches up to version 2.
-        if (Number(persistedSchemaVersion) > TANTIVY_SCHEMA_VERSION) {
+        // A persisted index built under a different schema version can't be trusted.
+        if (Number(persistedSchemaVersion) !== TANTIVY_SCHEMA_VERSION) {
             return null;
         }
 
@@ -975,9 +973,6 @@ export async function searchCharacterIdsSorted(handle, directories, searchTerm, 
         (previous) => loadOrUpdateTantivyIndex(directories, engine.tantivy, previous),
         () => openPersistedTantivyIndexStale(directories, engine.tantivy),
     );
-
-    // Check if this index actually has the fast field (old-schema indexes won't)
-    if (!tantivyIndex.schema.hasField(sortField)) return null;
 
     const query = buildTantivyQuery(engine.tantivy, tantivyIndex.schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS, { favOnly });
     if (!query) return { ids: [], total: 0, backend: 'tantivy' };
