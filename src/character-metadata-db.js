@@ -108,10 +108,6 @@ const BOOTSTRAP_READ_CONCURRENCY = getConfigValue('performance.characterIndexBui
 // for too long on a slow one, so this ties log frequency to actual elapsed time instead.
 const BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS = 5000;
 
-// How often the background reconciler re-walks a user's characters directory (see this module's header, freshness
-// mechanism 3). This is a backstop, not the primary freshness path (that's the write-path hooks), so it doesn't
-// need to be aggressive - it exists to catch what the other two mechanisms missed.
-const RECONCILE_INTERVAL_MS = getConfigValue('performance.characterMetadataReconcileIntervalMs', 5 * 60 * 1000, 'number');
 
 // Gates two consumers, both added alongside backfillContentIdentityHashes()/findCharacterIdByContentIdentityHash()
 // below: this module's own one-time backfill pass (which pays the cost described below ONCE per poisoned row,
@@ -141,7 +137,6 @@ const WATCH_DEBOUNCE_MS = 300;
  * @property {import('./users.js').UserDirectoryList} directories
  * @property {import('node:fs').FSWatcher | null} watcher
  * @property {Map<string, NodeJS.Timeout>} watchTimers Per-filename debounce timers for the watcher
- * @property {NodeJS.Timeout | null} reconcileInterval
  * @property {{ pending: Map<string, PendingRow> } | null} batch Non-null while batch-import mode is active
  * @property {Promise<void> | null} bootstrapPromise
  */
@@ -930,7 +925,7 @@ async function getEntry(directories) {
     // every candidate row first.
     db.defineFunction('RANDHASH', (id, seed) => getStringHash(String(id ?? ''), Number(seed ?? 0)));
     /** @type {MetadataDbEntry} */
-    const entry = { db, directories, watcher: null, watchTimers: new Map(), reconcileInterval: null, batch: null, bootstrapPromise: null };
+    const entry = { db, directories, watcher: null, watchTimers: new Map(), batch: null, bootstrapPromise: null };
     entries.set(key, entry);
     return entry;
 }
@@ -1553,8 +1548,8 @@ export async function beginBatchImport(directories) {
 /**
  * Ends batch-import mode: flushes whatever's still buffered and resumes the file watcher. Does NOT force an
  * immediate reconcile - every file that went through write-path hooks during the batch already has its metadata
- * row, and the periodic reconcile interval (RECONCILE_INTERVAL_MS) serves as the safety net for anything that
- * appeared/changed outside the write-path hooks while the watcher was suspended.
+ * row, and the fs.watch watcher (resumed here) serves as the safety net for anything that appeared/changed
+ * outside the write-path hooks while the watcher was suspended.
  * @param {import('./users.js').UserDirectoryList} directories
  * @returns {Promise<void>}
  */
@@ -1566,12 +1561,9 @@ export async function endBatchImport(directories) {
     entry.batch = null;
     // Watcher resumes immediately so new events going forward are caught. No immediate reconcile -
     // every file that went through the write-path hooks during batch mode already has its metadata
-    // row. The reconcile's role (catching files that appeared/changed/disappeared WITHOUT going
-    // through write-path hooks - e.g. hand-dropped during the batch window) is handled by the
-    // periodic interval (RECONCILE_INTERVAL_MS). A full-library sweep here was proportional to
-    // library size (~326k files, 0.9s) rather than to what changed, and stacked when the import
-    // scanner ran back-to-back passes from continuous mirroring - causing multi-minute event-loop
-    // stalls at this library scale.
+    // row. Files that appeared/changed/disappeared WITHOUT going through write-path hooks (e.g.
+    // hand-dropped during the batch window) will be caught by the watcher going forward, or by the
+    // next boot's reconcile pass.
     startWatcher(entry);
 }
 
@@ -2029,28 +2021,20 @@ export async function resyncTags(directories) {
 }
 
 /**
- * The mandatory reconciler backstop (doc §3.2 item 3 / §3.3 item 3's "the reconciler is what makes it safe").
- * Walks the characters directory with async opendir (never blocks the event loop for long - see the
- * yield-every-batch loop below) and diffs it against the metadata table:
- *   - a file on disk with no row -> inserted, with date_added = now (this is the "reconciler first saw it"
- *     case from the design doc's §3.1, distinct from bootstrapIfNeeded()'s one-time ctimeMs seeding - by the
- *     time any reconcile() call happens, bootstrap has necessarily already run for this user, or is running
+ * Boot-time reconciler: detects files added to or removed from the characters directory since the last
+ * successful reconcile (persisted via the `last_reconcile_dir_mtime_ms` meta key). NOT periodic - this runs
+ * exactly once per boot (from the bootstrap chain in initializeMetadataStores()), and only does real work
+ * when the directory's own mtime has changed since the last run (i.e. files were actually added/removed
+ * while the server was down). Content-only changes to existing files are handled by the fs.watch watcher
+ * (freshness mechanism 2) during runtime, not by this function.
+ *
+ * When the directory mtime HAS changed:
+ *   - a file on disk with no row -> inserted, with date_added = now (same "reconciler first saw it" rule
+ *     as before - by the time this runs, bootstrapIfNeeded() has necessarily already completed or is running
  *     concurrently and will win the same idempotent upsert either way)
  *   - a row with no file on disk -> deleted
- *   - a file whose stat().mtimeMs disagrees with the stored file_mtime -> re-upserted (refreshes every derived
- *     column; date_added is untouched, per the UPSERT's own ON CONFLICT clause; tag assignments are untouched
- *     too, per writeRowSync()'s header - phase 3 made character_tags the source of truth, so a reconcile pass
- *     over ordinary character metadata must not touch it)
- *
- * PHASE 3: this function used to call resyncTags() at the end of every pass, on the grounds that "nothing
- * watches tags.json for changes yet". That stopped being true (and stopped being safe) once character_tags
- * became a real, directly-mutated table rather than a read-only mirror: resyncTags() diffs FROM tags.json's
- * tag_map, which is no longer kept current for characters (assignments happen via `POST /api/tags/assign`/
- * `/unassign` now, not through tags.json) - so calling it here on every 5-minute interval would periodically
- * revert every direct assignment back to whatever tags.json's now-stale tag_map says, silently. resyncTags()
- * itself is untouched and still exported/tested directly; it's just no longer wired into this automatic pass.
- * The one legitimate ongoing caller of a tags.json-derived seed is bootstrapIfNeeded()'s one-time backfill (see
- * its own doc comment) for a library that predates the new endpoints.
+ *   - a file already in the DB -> left untouched (no re-stat, no mtime comparison - the watcher handles
+ *     content changes during runtime, and bootstrapIfNeeded() already processed the initial population)
  * @param {import('./users.js').UserDirectoryList} directories
  * @returns {Promise<void>}
  */
@@ -2058,118 +2042,104 @@ export async function reconcile(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
 
-    if (!fs.existsSync(directories.characters)) {
-        return;
+    // Stat the directory itself. On Linux (and most POSIX filesystems), a directory's mtime only changes
+    // when entries are added, removed, or renamed within it. Comparing this against the persisted value
+    // from the last successful reconcile detects whether any files appeared or disappeared while the server
+    // was down - without stat'ing every individual file in the directory.
+    let currentDirMtimeMs;
+    try {
+        currentDirMtimeMs = (await fsPromises.stat(directories.characters)).mtimeMs;
+    } catch {
+        return; // Directory doesn't exist or is inaccessible.
+    }
+    const storedRow = entry.db.get("SELECT value FROM meta WHERE key = 'last_reconcile_dir_mtime_ms'");
+    if (storedRow !== undefined && Number(storedRow.value) === currentDirMtimeMs) {
+        return; // Nothing added/removed/renamed since last reconcile.
     }
 
     const files = (await fsPromises.readdir(directories.characters)).filter(f => f.endsWith('.png'));
     const onDisk = new Set(files);
-    const existingRows = entry.db.all('SELECT id, file_mtime FROM characters');
-    const existingMtimeById = new Map(existingRows.map(r => [r.id, Number(r.file_mtime)]));
+    const existingIds = new Set(entry.db.all('SELECT id FROM characters').map(r => r.id));
 
     // Rows whose file no longer exists on disk.
-    for (const row of existingRows) {
-        if (!onDisk.has(row.id)) {
-            entry.db.transaction(() => deleteRowSync(entry.db, row.id));
+    for (const id of existingIds) {
+        if (!onDisk.has(id)) {
+            entry.db.transaction(() => deleteRowSync(entry.db, id));
         }
     }
 
-    // Chunked + BOOTSTRAP_READ_CONCURRENCY-bounded, same shape as bootstrapIfNeeded()'s own mapWithConcurrency
-    // loop just above in this file - NOT the same as it used to be here. The previous shape was a plain
-    // sequential `for (const file of files) { await fsPromises.stat(...) }`, one stat in flight at a time, and
-    // this function runs unconditionally on EVERY boot (unlike bootstrapIfNeeded()/the two backfills below,
-    // which all shrink toward near-zero work once caught up, via a completion flag or a narrowing WHERE clause -
-    // reconcile() has neither by design, see this function's own header). At the owner's real ~286,715-card
-    // library, that one-in-flight-at-a-time stat loop measured out to a ~10-minute, completely silent boot
-    // stall (2026-08-24 investigation, reproduced from the observed gap between local-import's own log lines
-    // and backfillContentIdentityHashes()'s first progress line - reconcile() sits in the bootstrap chain
-    // between them and had zero logging of its own). Batching the stats behind mapWithConcurrency doesn't change
-    // what gets skipped - the per-file mtime-unchanged fast path below is untouched - only how many stat() calls
-    // are in flight at once on the way there.
-    //
-    // Progress logging matches the throttled BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS shape bootstrapIfNeeded() and
-    // both backfills already use below - this pass previously had none at all, indistinguishable from a hang at
-    // this library size. Unlike those three (each a one-time-per-boot or one-time-ever pass), this one also
-    // runs on every periodic reconcile interval forever, so the completion summary only logs when there's
-    // something worth reporting: the pass actually crossed the progress-log threshold (worth confirming it
-    // finished), or it found real changes to apply. A quiet periodic pass over an already-settled library stays
-    // exactly as silent as it always was.
-    const reconcileStart = Date.now();
-    let lastProgressLog = reconcileStart;
-    let processedFiles = 0;
-    let changedFiles = 0;
-    let loggedProgress = false;
+    // Only process files NOT already in the DB - genuinely new files that appeared while the server was
+    // down (or during a concurrent bootstrap that hasn't reached them yet). Files already in the DB are
+    // left untouched: their content was already processed by bootstrapIfNeeded() or a previous reconcile,
+    // and any runtime content changes are caught by the fs.watch watcher, not by this function.
+    const newFiles = files.filter(f => !existingIds.has(f));
 
-    for (let i = 0; i < files.length; i += BATCH_FLUSH_SIZE) {
-        const chunkFiles = files.slice(i, i + BATCH_FLUSH_SIZE);
-        const chunkResults = await mapWithConcurrency(chunkFiles, BOOTSTRAP_READ_CONCURRENCY, async (file) => {
-            try {
-                const filePath = path.join(directories.characters, file);
-                const stat = await fsPromises.stat(filePath);
-                const storedMtime = existingMtimeById.get(file);
-                if (storedMtime !== undefined && storedMtime === stat.mtimeMs) {
-                    return null; // unchanged since last reconcile - nothing to do
+    if (newFiles.length > 0) {
+        const reconcileStart = Date.now();
+        let lastProgressLog = reconcileStart;
+        let processedFiles = 0;
+        let loggedProgress = false;
+
+        for (let i = 0; i < newFiles.length; i += BATCH_FLUSH_SIZE) {
+            const chunkFiles = newFiles.slice(i, i + BATCH_FLUSH_SIZE);
+            const chunkResults = await mapWithConcurrency(chunkFiles, BOOTSTRAP_READ_CONCURRENCY, async (file) => {
+                try {
+                    const filePath = path.join(directories.characters, file);
+                    const stat = await fsPromises.stat(filePath);
+                    const imgData = await parseCharacterCard(filePath, 'png');
+                    if (imgData === undefined) return null;
+                    const character = getCharaCardV2(JSON.parse(imgData), directories, false);
+                    const { chatSize, dateLastChat } = calculateChatSize(path.join(directories.chats, file.replace(/\.png$/, '')));
+                    const tagIds = getTagIdsFor(directories, file);
+                    const row = buildRow(file, character, { dateAddedCandidate: Date.now(), fileMtime: stat.mtimeMs, chatSize, dateLastChat, tagIds });
+                    return { row, tagIds };
+                } catch (err) {
+                    console.error(`[character-metadata] Reconcile failed to process ${file}, will retry next boot:`, err.message);
+                    return null;
                 }
+            });
 
-                const imgData = await parseCharacterCard(filePath, 'png');
-                if (imgData === undefined) return null;
-                const character = getCharaCardV2(JSON.parse(imgData), directories, false);
-                const { chatSize, dateLastChat } = calculateChatSize(path.join(directories.chats, file.replace(/\.png$/, '')));
-                const tagIds = getTagIdsFor(directories, file);
-                const row = buildRow(file, character, { dateAddedCandidate: Date.now(), fileMtime: stat.mtimeMs, chatSize, dateLastChat, tagIds });
-                return { row, tagIds };
-            } catch (err) {
-                console.error(`[character-metadata] Reconcile failed to process ${file}, will retry next pass:`, err.message);
-                return null;
+            for (const result of chunkResults) {
+                if (result) {
+                    applyOrBuffer(entry, result.row, result.tagIds);
+                }
             }
-        });
 
-        for (const result of chunkResults) {
-            if (result) {
-                applyOrBuffer(entry, result.row, result.tagIds);
-                changedFiles++;
+            processedFiles += chunkFiles.length;
+
+            const now = Date.now();
+            if (now - lastProgressLog >= BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS) {
+                const elapsedSec = (now - reconcileStart) / 1000;
+                const rate = processedFiles / elapsedSec;
+                const remaining = newFiles.length - processedFiles;
+                const etaSec = rate > 0 ? Math.round(remaining / rate) : null;
+                console.log(color.cyan(`[character-metadata] Reconcile progress: ${processedFiles}/${newFiles.length} new files (${rate.toFixed(1)} files/sec, ETA ${etaSec === null ? 'unknown' : `${etaSec}s`})`));
+                lastProgressLog = now;
+                loggedProgress = true;
+            }
+
+            if (i + BATCH_FLUSH_SIZE < newFiles.length) {
+                await new Promise(resolve => setImmediate(resolve));
             }
         }
 
-        processedFiles += chunkFiles.length;
-
-        const now = Date.now();
-        if (now - lastProgressLog >= BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS) {
-            const elapsedSec = (now - reconcileStart) / 1000;
-            const rate = processedFiles / elapsedSec;
-            const remaining = files.length - processedFiles;
-            const etaSec = rate > 0 ? Math.round(remaining / rate) : null;
-            console.log(color.cyan(`[character-metadata] Reconcile progress: ${processedFiles}/${files.length} (${rate.toFixed(1)} files/sec, ETA ${etaSec === null ? 'unknown' : `${etaSec}s`})`));
-            lastProgressLog = now;
-            loggedProgress = true;
+        if (loggedProgress || newFiles.length > 0) {
+            const totalSec = (Date.now() - reconcileStart) / 1000;
+            console.log(color.cyan(`[character-metadata] Reconcile complete: ${newFiles.length} new file(s) processed in ${totalSec.toFixed(1)}s.`));
         }
 
-        // Yield the event loop between chunks - same rate-bounding intent the previous per-file yield had, just
-        // now once per BATCH_FLUSH_SIZE-sized chunk instead of once per file, since a chunk's stats now resolve
-        // concurrently rather than one at a time. Only when there's a next chunk to get to, though - unlike the
-        // old per-file counter (which, for any library under BATCH_FLUSH_SIZE files, never actually reached the
-        // threshold and so never yielded at all), a per-chunk yield fires on every chunk including the very
-        // last/only one unless guarded here. A trailing yield with no more work queued behind it doesn't rate-
-        // bound anything - it's just a real setImmediate wait that hangs indefinitely under `jest.useFakeTimers()`
-        // (several local-import-scan.js callers of this function's transitive write path run under exactly that -
-        // confirmed via reproduction: this exact unguarded yield is what turned three of those into 5-second
-        // timeouts before this guard was added).
-        if (i + BATCH_FLUSH_SIZE < files.length) {
-            await new Promise(resolve => setImmediate(resolve));
+        // If batch mode is active, applyOrBuffer() above buffered rather than wrote - flush now so this
+        // reconcile pass's own changes are actually durable before returning.
+        if (entry.batch) {
+            flushBatch(entry);
         }
     }
 
-    if (loggedProgress || changedFiles > 0) {
-        const totalSec = (Date.now() - reconcileStart) / 1000;
-        console.log(color.cyan(`[character-metadata] Reconcile complete: scanned ${files.length} file(s), updated ${changedFiles}, in ${totalSec.toFixed(1)}s.`));
-    }
-
-    // If batch mode is active, applyOrBuffer() above buffered rather than wrote - flush now so this reconcile
-    // pass's own changes are actually durable before returning (relevant when reconcile() is called from
-    // endBatchImport() itself).
-    if (entry.batch) {
-        flushBatch(entry);
-    }
+    // Persist the directory mtime so the next boot can skip the walk if nothing changed.
+    entry.db.run(
+        "INSERT INTO meta (key, value) VALUES ('last_reconcile_dir_mtime_ms', @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        { value: String(currentDirMtimeMs) },
+    );
 }
 
 /**
@@ -2248,11 +2218,10 @@ async function handleWatchEvent(entry, filename) {
 }
 
 /**
- * Server-boot entry point: for every user directory, opens/creates its metadata DB, starts the watcher and the
- * reconcile interval, and kicks off the one-time bootstrap backfill in the background (deliberately NOT
- * awaited beyond schema creation - a 300k-card bootstrap must not delay the server actually starting to listen,
- * per the design doc's "Runs at boot (non-blocking)"). Safe to call multiple times; already-initialized users
- * are skipped.
+ * Server-boot entry point: for every user directory, opens/creates its metadata DB, starts the watcher,
+ * and kicks off the one-time bootstrap backfill in the background (deliberately NOT awaited beyond schema
+ * creation - a 300k-card bootstrap must not delay the server actually starting to listen, per the design
+ * doc's "Runs at boot (non-blocking)"). Safe to call multiple times; already-initialized users are skipped.
  * @param {import('./users.js').UserDirectoryList[]} directoriesList
  * @returns {Promise<void>}
  */
@@ -2260,27 +2229,9 @@ export async function initializeMetadataStores(directoriesList) {
     for (const directories of directoriesList) {
         const entry = await getEntry(directories);
         if (!entry) continue; // No usable SQLite engine - already warned once in getEntry().
-        if (entry.reconcileInterval) continue; // Already initialized this process.
+        if (entry.bootstrapPromise) continue; // Already initialized this process.
 
         startWatcher(entry);
-        entry.reconcileInterval = setInterval(() => {
-            // Wait for any bootstrap backfill still in flight before starting a periodic reconcile pass. Without
-            // this, a library big enough that bootstrapIfNeeded() takes longer than RECONCILE_INTERVAL_MS (very
-            // real at tens of thousands of characters - the whole reason this file is being sped up) got a
-            // reconcile() pass launched concurrently with the still-running bootstrap: both walk the same
-            // characters directory and write to the same db at the same time, so every character bootstrap
-            // hasn't reached yet looks "new" to reconcile() too, and it re-parses + re-upserts it right alongside
-            // bootstrap doing the same thing - real duplicate work, not just lock contention, that was
-            // multiplying total bootstrap wall-clock time. entry.bootstrapPromise is read here (not captured
-            // earlier) so this always sees whatever's current by the time the interval actually fires.
-            const waitForBootstrap = entry.bootstrapPromise ?? Promise.resolve();
-            waitForBootstrap
-                .then(() => reconcile(directories))
-                .catch(err => console.error(`[character-metadata] Periodic reconcile failed for ${directories.root}:`, err));
-        }, RECONCILE_INTERVAL_MS);
-        // setInterval alone would keep the process alive even if everything else has shut down - unref() so
-        // this timer never becomes the reason the server can't exit.
-        entry.reconcileInterval.unref?.();
 
         // Ordering matters: migrateTagsJsonIfNeeded() classifies tag_map's keys against the characters/groups
         // tables, so both bootstraps have to have already populated them (bootstrapIfNeeded() for characters,
@@ -2293,10 +2244,8 @@ export async function initializeMetadataStores(directoriesList) {
             .then(() => backfillTagIdsInShallowJson(directories))
             .then(() => reconcile(directories))
             // Runs LAST in the chain, after reconcile() - so this pass sees the maximal set of poisoned rows a
-            // single boot can discover (reconcile() may itself have just poisoned-inserted rows for files
-            // dropped in while the server was down). Non-blocking in the same sense as the rest of this chain:
-            // entry.bootstrapPromise is awaited by the periodic reconcile interval (see below) so THAT stays
-            // sequenced correctly, but server startup itself (server-main.js) never awaits this promise at all.
+            // single boot can discover (reconcile() may itself have just inserted rows for files dropped in
+            // while the server was down).
             .then(() => backfillContentIdentityHashes(directories))
             .then(() => backfillActiveChatFromCards(directories))
             .catch(err => console.error(`[character-metadata] Bootstrap failed for ${directories.root}:`, err));
@@ -2304,16 +2253,12 @@ export async function initializeMetadataStores(directoriesList) {
 }
 
 /**
- * Graceful-shutdown counterpart to initializeMetadataStores() - closes every watcher, clears every interval, and
- * closes every open database handle. Mirrors diskCache.dispose()'s role in server-main.js's exitProcess().
+ * Graceful-shutdown counterpart to initializeMetadataStores() - closes every watcher and closes every open
+ * database handle. Mirrors diskCache.dispose()'s role in server-main.js's exitProcess().
  */
 export function disposeMetadataStores() {
     for (const entry of entries.values()) {
         stopWatcher(entry);
-        if (entry.reconcileInterval) {
-            clearInterval(entry.reconcileInterval);
-            entry.reconcileInterval = null;
-        }
         try {
             entry.db.close();
         } catch {

@@ -303,37 +303,36 @@ describe('reconcile', () => {
     // bootstrapIfNeeded()/the backfills do, and measured out to a ~10-minute silent stall at the owner's real
     // ~286,715-card library). Concurrency only changes how many stat()/parse() calls are in flight at once; it
     // must not change which rows end up changed vs. left alone.
-    test('under concurrent stat/parse, only the actually-touched files among many get re-upserted - untouched ones keep their original date_added', async () => {
-        const names = Array.from({ length: 20 }, (_, i) => `Card${i}.png`);
-        for (const name of names) {
+    test('under concurrent processing, new files are discovered while existing ones keep their original date_added', async () => {
+        const existingNames = Array.from({ length: 10 }, (_, i) => `Existing${i}.png`);
+        for (const name of existingNames) {
             await writeCardFile(name, { name });
         }
         await metadataDb.bootstrapIfNeeded(directories);
 
-        const before = await Promise.all(names.map(name => metadataDb.getCharacterMetadataRow(directories, name)));
+        const before = await Promise.all(existingNames.map(name => metadataDb.getCharacterMetadataRow(directories, name)));
 
-        // Touch only the even-indexed files' mtimes (and content, via a fresh write) - the odd ones must survive
-        // the concurrent reconcile pass completely untouched.
-        const touched = names.filter((_, i) => i % 2 === 0);
-        for (const name of touched) {
-            await new Promise(resolve => setTimeout(resolve, 5)); // ensure a distinct mtime tick
-            await writeCardFile(name, { name, data: { name, description: 'updated', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+        // Add genuinely new files (not yet in the DB) - these should be discovered by reconcile.
+        const newNames = Array.from({ length: 10 }, (_, i) => `New${i}.png`);
+        for (const name of newNames) {
+            await writeCardFile(name, { name });
         }
 
         await metadataDb.reconcile(directories);
 
-        for (let i = 0; i < names.length; i++) {
-            const row = await metadataDb.getCharacterMetadataRow(directories, names[i]);
-            if (i % 2 === 0) {
-                expect(row.file_mtime).not.toBe(before[i].file_mtime);
-            } else {
-                expect(row.date_added).toBe(before[i].date_added);
-                expect(row.file_mtime).toBe(before[i].file_mtime);
-            }
+        // Existing files: untouched (no re-stat, no re-parse).
+        for (let i = 0; i < existingNames.length; i++) {
+            const row = await metadataDb.getCharacterMetadataRow(directories, existingNames[i]);
+            expect(row.date_added).toBe(before[i].date_added);
+            expect(row.file_mtime).toBe(before[i].file_mtime);
+        }
+        // New files: discovered and inserted.
+        for (const name of newNames) {
+            expect(await metadataDb.getCharacterMetadataRow(directories, name)).toBeDefined();
         }
     });
 
-    test('a quiet pass over an already-settled library logs nothing; a pass that finds real changes logs a completion summary', async () => {
+    test('a quiet pass over an already-settled library logs nothing; a pass that discovers a new file logs a completion summary', async () => {
         await writeCardFile('Alice.png');
         await metadataDb.bootstrapIfNeeded(directories);
 
@@ -345,11 +344,11 @@ describe('reconcile', () => {
 
             logSpy.mockClear();
             await new Promise(resolve => setTimeout(resolve, 5));
-            await writeCardFile('Alice.png', { data: { name: 'Alice', description: 'changed', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+            await writeCardFile('NewCard.png', { name: 'NewCard', data: { name: 'NewCard', description: 'brand new', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
             await metadataDb.reconcile(directories);
             const summaryCalls = logSpy.mock.calls.filter(args => String(args[0]).includes('[character-metadata] Reconcile complete'));
             expect(summaryCalls).toHaveLength(1);
-            expect(String(summaryCalls[0][0])).toMatch(/updated 1/);
+            expect(String(summaryCalls[0][0])).toMatch(/1 new file/);
         } finally {
             logSpy.mockRestore();
         }
