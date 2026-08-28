@@ -267,7 +267,7 @@ import { appendFileContent, hasPendingFileAttachment, populateFileAttachment, de
 import { getPresetManager, initPresetManager } from './scripts/preset-manager.js';
 import { evaluateMacros, getLastMessageId, initMacros } from './scripts/macros.js';
 import { currentUser, setUserControls } from './scripts/user.js';
-import { getCachedCursor, setCachedCursor, getAllCachedCharacters, getAllCachedHashes, saveCachedCharacters, removeCachedCharacters, clearCharacterCache, getLastVerifiedDigest, setLastVerifiedDigest, getCachedHashesByIds } from './scripts/character-cache.js';
+import { getCachedCursor, setCachedCursor, getAllCachedCharacters, getAllCachedHashes, saveCachedCharacters, removeCachedCharacters, clearCharacterCache, getLastVerifiedDigest, setLastVerifiedDigest, getCachedHashesByIds, getWriteFailures, setWriteFailures } from './scripts/character-cache.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup, callGenericPopup, fixToastrForDialogs } from './scripts/popup.js';
 import { renderTemplate, renderTemplateAsync } from './scripts/templates.js';
 import { initScrapers } from './scripts/scrapers.js';
@@ -2300,6 +2300,19 @@ async function fetchCharactersDelta() {
         }
     }
 
+    // Re-fetch records that failed to write on a previous sync (event-driven retry: the write
+    // failure itself is the trigger, not a periodic verification sweep).
+    const previousFailures = await getWriteFailures();
+    if (previousFailures.length > 0) {
+        const deleteSet = new Set(deleteIds);
+        for (const id of previousFailures) {
+            if (!deleteSet.has(id) && !wholeRecordIds.includes(id)) {
+                wholeRecordIds.push(id);
+            }
+        }
+        console.log(`[sync] Re-fetching ${previousFailures.length} record(s) from previous write failure(s)`);
+    }
+
     // --- Incremental digest maintenance (catch-up path) ---
     // Read old hashes BEFORE any IDB mutations so the incremental update can XOR-out old
     // contributions and XOR-in new ones. The stored digest gets updated at the end so that
@@ -2393,10 +2406,14 @@ async function fetchCharactersDelta() {
         }
     }
 
+    let writeFailures = [];
     if (fresh.size > 0) {
-        await saveCachedCharacters(Array.from(fresh, ([avatar, character]) => ({ avatar, character })));
+        writeFailures = await saveCachedCharacters(Array.from(fresh, ([avatar, character]) => ({ avatar, character })));
     }
     await setCachedCursor(seq);
+    // Persist any write failures for retry on next boot; clear if all succeeded.
+    // This replaces the per-boot verify with event-driven failure tracking.
+    await setWriteFailures(writeFailures);
 
     // Incremental digest maintenance: update the stored digest to reflect applied changes,
     // so the deferred verify's fast-path (which compares server root to stored digest) succeeds
@@ -2438,22 +2455,6 @@ async function fetchCharactersDelta() {
     // processCharacter() server-side (corrupt file etc., filtered out of the batch response, matching /all's
     // own `.filter(c => c.name)` behavior) correctly stays absent instead of resurfacing from a stale local var.
     const allCached = await getAllCachedCharacters();
-
-    // Fire-and-forget anti-entropy check (see verifyCharacterCacheDigest()'s own doc comment) - never blocks
-    // this function's return, and never turns into a rejected promise this caller would have to handle: a
-    // cheap way to catch drift the `/changes` cursor itself can't see (a swallowed local write failure, a
-    // partially-evicted browser storage quota, or the server's metadata store having been restored from an
-    // earlier backup) without paying for it on every single getCharacters() call.
-    // Deferred to idle time: the full verification is O(library) even when nothing changed (reads
-    // and hashes every cached record), so it must not compete with boot or user interaction. The
-    // change feed (fetchCharactersDelta) is the primary sync path; this is the backup, and can wait.
-    const deferMs = typeof requestIdleCallback === 'function' ? 0 : 30000;
-    const runVerify = () => verifyCharacterCacheDigest().catch(error => console.error('Character cache digest verification failed:', error));
-    if (typeof requestIdleCallback === 'function') {
-        requestIdleCallback(() => runVerify(), { timeout: 60000 });
-    } else {
-        setTimeout(runVerify, deferMs);
-    }
 
     return Array.from(allCached.values());
 }
