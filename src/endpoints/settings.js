@@ -11,7 +11,7 @@ import { getConfigValue, generateTimestamp, removeOldBackups } from '../util.js'
 import { getAllUserHandles, getUserDirectories } from '../users.js';
 import { getFileNameValidationFunction } from '../middleware/validateFileName.js';
 import { mergeTagsIntoSnapshot, splitTagsFromSnapshot } from './tags.js';
-import { getStringHash, hashSettingsKeys } from '../../public/scripts/hash-utils.js';
+import { getStringHash, hashSettingsKeys, setAtPath } from '../../public/scripts/hash-utils.js';
 
 const ENABLE_EXTENSIONS = !!getConfigValue('extensions.enabled', true, 'boolean');
 const ENABLE_EXTENSIONS_AUTO_UPDATE = !!getConfigValue('extensions.autoUpdate', true, 'boolean');
@@ -322,7 +322,16 @@ router.post('/save-partial', function (request, response) {
             }
         }
 
-        const mergedSettings = { ...currentSettings, ...keys };
+        // Merge: top-level keys replace directly; dotted keys (e.g. 'power_user.font_scale')
+        // set only the addressed sub-field via deep path, leaving sibling fields untouched.
+        const mergedSettings = { ...currentSettings };
+        for (const [key, value] of Object.entries(keys)) {
+            if (key.includes('.')) {
+                setAtPath(mergedSettings, key, value);
+            } else {
+                mergedSettings[key] = value;
+            }
+        }
         writeFileAtomicSync(pathToSettings, JSON.stringify(mergedSettings, null, 4), 'utf8');
         triggerAutoSave(request.user.profile.handle);
         response.send({ result: 'ok' });
