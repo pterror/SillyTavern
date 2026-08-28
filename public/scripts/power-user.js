@@ -3979,7 +3979,7 @@ jQuery(() => {
         }
         updateRandomSortRerollVisibility();
         printCharactersDebounced();
-        saveSettingsDebounced('power_user');
+        saveSettingsDebounced('power_user.sort_field', 'power_user.sort_order', 'power_user.sort_rule');
     });
 
     // Random sort persists its order (seeded hash, not a fresh shuffle - see random-sort.js), so it needs an
@@ -3995,7 +3995,7 @@ jQuery(() => {
 
     $('#gestures-checkbox').on('change', function () {
         power_user.gestures = !!$('#gestures-checkbox').prop('checked');
-        saveSettingsDebounced('power_user');
+        saveSettingsDebounced('power_user.gestures');
     });
 
     $('#auto_swipe').on('input', function () {
@@ -4297,7 +4297,7 @@ jQuery(() => {
 
     $('#experimental_macro_engine').on('input', function () {
         power_user.experimental_macro_engine = !!$(this).prop('checked');
-        saveSettingsDebounced('power_user');
+        saveSettingsDebounced('power_user.experimental_macro_engine');
 
         // Check if the app is ready before showing the toast
         if (!settingsReady) {
