@@ -31,7 +31,7 @@ import cacheBuster from '../middleware/cacheBuster.js';
 import { searchCharacters, searchCharacterIds, searchCharacterIdsSorted, rebuildCharacterSearchIndex, TANTIVY_SORT_FIELDS } from './characters-search-index.js';
 import { searchGroups, searchGroupIds } from './groups-search-index.js';
 import { getGroupsData, getGroupsByIds } from './groups.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, resolveFingerprints, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getShallowByIds, characterChangeEmitter } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, resolveFingerprints, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter } from '../character-metadata-db.js';
 import { DEFAULT_DIGEST_BUCKET_COUNT, characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash } from '../../public/scripts/hash-utils.js';
 
 // With 100 MB limit it would take roughly 3000 characters to reach this limit
@@ -1464,6 +1464,38 @@ router.post('/chat', getFileNameValidationFunction('avatar'), async function (re
     }
 });
 
+/**
+ * Sets the `allow_global_styles` preference for one or more characters. Same shape as `/fav`.
+ * Accepts `{ avatar, allowed }` for a single character, or `{ bulk: [{ avatar, allowed }, ...] }`
+ * for a batch (used by the one-time migration from accountStorage).
+ */
+router.post('/allow-global-styles', async function (request, response) {
+    try {
+        const { avatar, allowed, bulk } = request.body ?? {};
+
+        if (Array.isArray(bulk)) {
+            for (const entry of bulk) {
+                if (typeof entry.avatar === 'string' && entry.avatar) {
+                    await setCharacterAllowGlobalStyles(request.user.directories, entry.avatar, entry.allowed === true || entry.allowed === 'true');
+                }
+            }
+            return response.sendStatus(204);
+        }
+
+        if (typeof avatar !== 'string' || !avatar) {
+            return response.status(400).send({ error: true, reason: 'avatar-required' });
+        }
+        const updated = await setCharacterAllowGlobalStyles(request.user.directories, avatar, allowed === true || allowed === 'true');
+        if (!updated) {
+            return response.status(404).send({ error: true, reason: 'not-tracked' });
+        }
+        return response.sendStatus(204);
+    } catch (err) {
+        console.error('[characters/allow-global-styles] Failed to update:', err);
+        return response.status(500).send({ error: true });
+    }
+});
+
 router.post('/delete', validateAvatarUrlMiddleware, async function (request, response) {
     if (!request.body || !request.body.avatar_url) {
         return response.sendStatus(400);
@@ -1756,6 +1788,23 @@ async function stampDbTagIds(directories, characters) {
     }
 }
 
+/**
+ * Stamps each character's `allow_global_styles` from the DB, same pattern as stampDbFav().
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {object[]} characters Already-processed character objects - mutated in place.
+ * @returns {Promise<void>}
+ */
+async function stampDbAllowGlobalStyles(directories, characters) {
+    const ids = characters.map(c => c.avatar).filter(Boolean);
+    if (ids.length === 0) return;
+    const allowedById = await getCharacterAllowGlobalStylesByIds(directories, ids);
+    for (const character of characters) {
+        if (Object.prototype.hasOwnProperty.call(allowedById, character.avatar)) {
+            character.allow_global_styles = allowedById[character.avatar];
+        }
+    }
+}
+
 router.post('/all', async function (request, response) {
     try {
         const { sortField, sortOrder, offset, limit, search, includeGroups, fav } = request.body ?? {};
@@ -1769,6 +1818,7 @@ router.post('/all', async function (request, response) {
             await stampDbFav(request.user.directories, data);
             await stampDbActiveChat(request.user.directories, data);
             await stampDbTagIds(request.user.directories, data);
+            await stampDbAllowGlobalStyles(request.user.directories, data);
             // No pagination params at all: preserve the exact pre-existing response shape (a bare array).
             return response.send(data);
         }
@@ -1813,6 +1863,7 @@ router.post('/all', async function (request, response) {
             await stampDbFav(request.user.directories, finalCharacterResults.map(r => r.item));
             await stampDbActiveChat(request.user.directories, finalCharacterResults.map(r => r.item));
             await stampDbTagIds(request.user.directories, finalCharacterResults.map(r => r.item));
+            await stampDbAllowGlobalStyles(request.user.directories, finalCharacterResults.map(r => r.item));
 
             const { items, total } = paginateSearchResults(finalCharacterResults, groupSearch.results, {
                 offset: numericOffset, limit: numericLimit,
@@ -1840,6 +1891,7 @@ router.post('/all', async function (request, response) {
         await stampDbFav(request.user.directories, data);
         await stampDbActiveChat(request.user.directories, data);
         await stampDbTagIds(request.user.directories, data);
+        await stampDbAllowGlobalStyles(request.user.directories, data);
 
         if (includeGroups) {
             const groupsData = getGroupsData(request.user.directories);
@@ -2668,6 +2720,7 @@ router.post('/batch', async function (request, response) {
         await stampDbFav(request.user.directories, data);
         await stampDbActiveChat(request.user.directories, data);
         await stampDbTagIds(request.user.directories, data);
+        await stampDbAllowGlobalStyles(request.user.directories, data);
         return response.send(data);
     } catch (err) {
         console.error(err);
@@ -2689,6 +2742,7 @@ router.post('/get', validateAvatarUrlMiddleware, async function (request, respon
         await stampDbFav(request.user.directories, [data]);
         await stampDbActiveChat(request.user.directories, [data]);
         await stampDbTagIds(request.user.directories, [data]);
+        await stampDbAllowGlobalStyles(request.user.directories, [data]);
 
         // Per-field content hashes for edit conflict detection: the client stores these at load time
         // and sends them back on save so the server can detect if another session changed the card
