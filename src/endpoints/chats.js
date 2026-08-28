@@ -786,8 +786,8 @@ router.post('/get', validateAvatarUrlMiddleware, async function (request, respon
                 };
                 return response.send([header, ...result.messages]);
             }
-            // Branch not found in tree — return 404 (same as missing JSONL file)
-            return response.status(404).send({ error: 'not_found' });
+            // Branch not found in tree — new chat, return empty (same as JSONL path for missing files)
+            return response.send({});
         }
 
         // JSONL fallback path

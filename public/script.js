@@ -8483,7 +8483,7 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
  * @param {ChatMessage} message
  * @returns {boolean} true if the message was updated.
  */
-export function ensureSwipes(message) {
+export function ensureSwipes(message, mesId = undefined) {
     let updated = false;
 
     if (!message || typeof message !== 'object') {
@@ -8546,11 +8546,11 @@ export function ensureSwipes(message) {
     if (swipeInfoDirty) updates.swipe_info = swipeInfo;
 
     if (updated) {
-        const mesId = chat.indexOf(message);
+        mesId ??= chat.indexOf(message);
         if (mesId >= 0) {
             updateMessage(mesId, updates);
-        } else {
-            // Not in the chat array (e.g., newly created message) — mutate directly
+        } else if (!Object.isFrozen(message)) {
+            // Not in the chat array and not frozen (e.g., newly created message) — mutate directly
             Object.assign(message, updates);
         }
     }
@@ -10195,7 +10195,7 @@ function applyMessageEdit(div) {
 
     const editUpdates = { mes: text };
     if (mes.swipe_id !== undefined) {
-        ensureSwipes(mes);
+        ensureSwipes(mes, mesId);
         const newSwipes = [...mes.swipes];
         newSwipes[mes.swipe_id] = text;
         editUpdates.swipes = newSwipes;
@@ -11237,7 +11237,7 @@ export async function updateSwipeCounter(mesId, { message = undefined, messageEl
     messageElement ??= chatElement.children('.mes').filter(`[mesid="${mesId}"]`);
 
     //If the message does not have swipes, create them.
-    if (ensureSwipes(message)) {
+    if (ensureSwipes(message, mesId)) {
         syncMesToSwipe(mesId);
     }
 
@@ -11290,7 +11290,7 @@ export function isMessageSwipeable(messageId, message = undefined) {
     message ??= chat[messageId];
 
     //If the message does not have swipes, create them.
-    if (ensureSwipes(message)) {
+    if (ensureSwipes(message, messageId)) {
         syncMesToSwipe(messageId);
     }
 
@@ -11751,13 +11751,34 @@ function openAlternateGreetings() {
 
     const template = $('#alternate_greetings_template .alternate_grettings').clone();
     const getArray = () => menu_type == 'create' ? create_save.alternate_greetings : greetingsCharacter.data.alternate_greetings;
+    // Snapshot to detect whether any greeting was actually changed - the onClose below
+    // should only save when something was modified, not unconditionally.
+    const originalGreetings = JSON.stringify(getArray());
     const popup = new Popup(template, POPUP_TYPE.TEXT, '', {
         wide: true,
         large: true,
         allowVerticalScrolling: true,
         onClose: async () => {
-            if (menu_type !== 'create') {
-                await createOrEditCharacter();
+            if (menu_type !== 'create' && JSON.stringify(getArray()) !== originalGreetings) {
+                // Send only the changed field via merge-attributes instead of a full-card edit
+                const avatar = greetingsCharacter?.avatar;
+                if (avatar) {
+                    const response = await fetch('/api/characters/merge-attributes', {
+                        method: 'POST',
+                        headers: getRequestHeaders(),
+                        body: JSON.stringify({
+                            avatar: avatar,
+                            data: { alternate_greetings: getArray() },
+                        }),
+                    });
+                    if (response.ok) {
+                        // Update local hashes to match the new card state (avoids stale-hash
+                        // false positives on the next save without needing a full refetch)
+                        greetingsCharacter._fieldsHash = characterDigestFieldsHash(greetingsCharacter);
+                        greetingsCharacter._bodyHash = characterDigestCardBodyHash(greetingsCharacter);
+                        await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character: greetingsCharacter } });
+                    }
+                }
             }
         },
     });
