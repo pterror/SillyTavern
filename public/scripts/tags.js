@@ -251,7 +251,7 @@ function setTagFilterVisibility(type, visible) {
     const settingKey = getTagFilterVisibilitySetting(type);
     if (power_user[settingKey] === visible) return;
     power_user[settingKey] = visible;
-    saveSettingsDebounced('power_user');
+    saveSettingsDebounced(`power_user.${settingKey}`);
 }
 
 /** @enum {number} */
@@ -1094,14 +1094,14 @@ async function seedTagMapFromRecords() {
 function renameTagKey(oldKey, newKey) {
     // Fuse-index invalidation is handled by the tagMapStore.onChange subscriber (rebuildTagStores()).
     tagMapStore.renameKey(oldKey, newKey);
-    saveSettingsDebounced('power_user');
+    saveSettingsDebounced('power_user.tag_map');
 }
 
 function createTagMapFromList(listElement, key) {
     const tagIds = [...($(listElement).find('.tag').map((_, el) => $(el).attr('id')))];
     // Fuse-index invalidation is handled by the tagMapStore.onChange subscriber (rebuildTagStores()).
     tagMapStore.setKey(key, tagIds);
-    saveSettingsDebounced('power_user');
+    saveSettingsDebounced('power_user.tag_map');
 }
 
 /**
@@ -1287,7 +1287,7 @@ export function addTagsToEntity(tag, entityId, { tagListSelector = null, tagList
     // hundreds of rows) if the current view could actually change as a result - otherwise just patch the
     // affected row(s) and the tag filter buttons in place.
     redrawAfterTagChange(tags.map(t => t.id), affectedKeys, usageFlips);
-    saveSettingsDebounced('power_user');
+    saveSettingsDebounced('power_user.tag_map');
 
     // We should manually add the selected tag to the print tag function, so we cover places where the tag list did not automatically include it
     tagListOptions.addTag = tags;
@@ -1421,7 +1421,7 @@ export function removeTagFromEntity(tag, entityId, { tagListSelector = null, tag
 
     // Save and redraw
     redrawAfterTagChange([tag.id], affectedKeys, new Map([[tag.id, wasLastUse]]));
-    saveSettingsDebounced('power_user');
+    saveSettingsDebounced('power_user.tag_map');
 
     // We don't reprint the lists, we can just remove the html elements from them.
     if (tagListSelector) {
@@ -1646,7 +1646,7 @@ async function showTagImportPopup(character, existingTags, newTags, folderTags) 
             if (!setting) return;
             power_user.tag_import_setting = setting;
             $('#tag_import_setting').val(power_user.tag_import_setting);
-            saveSettingsDebounced('power_user');
+            saveSettingsDebounced('power_user.tag_import_setting');
             console.log('Remembered tag import setting:', Object.entries(tag_import_setting).find(x => x[1] === setting)[0], setting);
         }
     }
@@ -2445,7 +2445,7 @@ async function onViewTagsListClick() {
     $sortModeSelect.on('change', function () {
         const newMode = $(this).val().toString();
         power_user.tag_sort_mode = newMode;
-        saveSettingsDebounced('power_user');
+        saveSettingsDebounced('power_user.tag_sort_mode');
         printViewTagList(tagContainer);
     });
 
@@ -2482,7 +2482,7 @@ function makeTagListDraggable(tagContainer) {
 
         // If the order of tags in display has changed, we need to redraw some UI elements. Do it debounced so it doesn't block and you can drag multiple tags.
         printCharactersDebounced();
-        saveSettingsDebounced('power_user');
+        saveSettingsDebounced('power_user.tag_sort_mode');
     };
 
     // @ts-ignore
@@ -2674,7 +2674,7 @@ async function onTagRestoreFileSelect(e) {
 
     $('#tag_view_restore_input').val('');
     printCharactersDebounced();
-    saveSettingsDebounced('power_user');
+    saveSettingsDebounced('power_user.tag_map');
 
     // Reprint the tag management popup, without having it to be opened again
     const tagContainer = $('#tag_view_list .tag_view_list_tags');
@@ -2743,7 +2743,7 @@ async function onTagsPruneClick() {
     }
 
     printCharactersDebounced();
-    saveSettingsDebounced('power_user');
+    saveSettingsDebounced('power_user.tag_map');
 
     // Reprint the tag management popup, without having it to be opened again
     const tagContainer = $('#tag_view_list .tag_view_list_tags');
@@ -2924,7 +2924,7 @@ async function onTagDeleteClick() {
     toastr.success(`'${tag.name}' deleted${mergeTagId ? ` and merged into '${tagsStore.get(mergeTagId).name}'` : ''}`, 'Delete Tag');
 
     printCharactersDebounced();
-    saveSettingsDebounced('power_user');
+    saveSettingsDebounced('power_user.tag_map');
 
     applyCharacterTagsToMessageDivs();
 }
