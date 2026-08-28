@@ -1791,18 +1791,19 @@ export async function printCharacters(fullRefresh = false) {
 
 /**
  * Shows/hides the "Search" sort option depending on whether a search term is active - it's meaningless
- * without one, since it sorts by search relevance score. Does *not* select it: relevance is an ordinary sort
- * choice the user can pick, not a mode the search box imposes (a search term no longer force-switches the
- * sort, so e.g. Random stays selected, and stays applied to the narrowed result set, while typing).
+ * without one, since it sorts by search relevance score. Auto-selects it when the search term first becomes
+ * active (the option going from hidden to visible), but does not re-force it on every render afterward - so a
+ * user who manually switches away from it while still searching keeps their choice.
  */
 function verifyCharactersSearchSortRule() {
     const searchTerm = entitiesFilter.getFilterData(FILTER_TYPES.SEARCH);
     const searchOption = $('#character_sort_order option[data-field="search"]');
     const isHidden = searchOption.attr('hidden') !== undefined;
 
-    // If we have a search term, we are displaying the sorting option for it
+    // If we have a search term, we are displaying the sorting option for it, and selecting it since it just became active
     if (searchTerm && isHidden) {
         searchOption.removeAttr('hidden');
+        searchOption.prop('selected', true);
     }
     // If search got cleared, hide the option, and fall back to the last real sort if it was the selected one
     // (it's no longer a valid choice with nothing to rank by).
@@ -1927,13 +1928,14 @@ function buildCharacterQueryFromCurrentFilterState({ includeGroups = false } = {
     if (isFilterState(favState, FILTER_STATES.SELECTED)) fav = true;
     else if (isFilterState(favState, FILTER_STATES.EXCLUDED)) fav = false;
 
-    const isRandom = power_user.sort_order === 'random';
+    const isSearchSort = isSearchSortSelected();
+    const isRandom = !isSearchSort && power_user.sort_order === 'random';
     return buildCharacterQuery({
         searchTerm: entitiesFilter.getFilterData(FILTER_TYPES.SEARCH) ?? '',
         tagsInclude: tagFilterData.selected ?? [],
         tagsExclude: tagFilterData.excluded ?? [],
         fav,
-        sortField: isRandom ? 'random' : power_user.sort_field,
+        sortField: isSearchSort ? 'search' : (isRandom ? 'random' : power_user.sort_field),
         sortOrder: power_user.sort_order === 'desc' ? 'desc' : 'asc',
         randomSeed: isRandom ? getRandomSortSeed(accountStorage) : undefined,
         includeGroups,
@@ -14177,6 +14179,15 @@ function initCharacterSearch() {
                 .append($('<span>').addClass('search_pill_label').text(`${pill.label}:`))
                 .append($('<span>').addClass('search_pill_value').text(pill.value))
                 .append(removeIcon);
+            pillEl.on('click', function () {
+                searchPills.splice(index, 1);
+                const editText = `${pill.label}:${pill.value}`;
+                const currentVal = String(searchInput.val());
+                searchInput.val(currentVal ? editText + ' ' + currentVal : editText);
+                renderPills();
+                searchInput.trigger('focus');
+                debouncedCharacterSearch(currentSearchQuery());
+            });
             pillsContainer.append(pillEl);
         });
     }
@@ -14187,13 +14198,15 @@ function initCharacterSearch() {
         // promote it to a pill and strip it out of the input, same as Discord's filter-chip typing UX.
         if (raw.endsWith(' ')) {
             const trimmed = raw.slice(0, -1);
-            const lastSpaceIndex = trimmed.lastIndexOf(' ');
-            const lastToken = lastSpaceIndex === -1 ? trimmed : trimmed.slice(lastSpaceIndex + 1);
-            const match = lastToken.match(/^([A-Za-z][A-Za-z0-9_]*):(.+)$/);
-            if (match && SEARCH_PILL_LABELS.has(match[1].toLowerCase())) {
-                searchPills.push({ label: match[1].toLowerCase(), value: match[2] });
+            // Match a complete label:value or label:"quoted value" at the end of the string,
+            // respecting quotes so a space inside "quoted value" doesn't split the token.
+            const pillMatch = trimmed.match(/(?:^|\s)([A-Za-z][A-Za-z0-9_]*):("[^"]*"|\S+)$/);
+            if (pillMatch && SEARCH_PILL_LABELS.has(pillMatch[1].toLowerCase())) {
+                searchPills.push({ label: pillMatch[1].toLowerCase(), value: pillMatch[2] });
                 renderPills();
-                searchInput.val(lastSpaceIndex === -1 ? '' : trimmed.slice(0, lastSpaceIndex + 1));
+                // Keep everything before the matched token (pillMatch.index is the start
+                // of the full match including the leading space/start-of-string anchor).
+                searchInput.val(trimmed.slice(0, pillMatch.index));
             }
         }
         debouncedCharacterSearch(currentSearchQuery());
