@@ -211,9 +211,9 @@ describe('reconcile racing bootstrap (regression: initializeMetadataStores() mus
     // call - see initializeMetadataStores()) addresses: reconcile() concurrent with a still-running
     // bootstrapIfNeeded() over the same directory produces duplicate upserts (one from each pass reaching the
     // same not-yet-bootstrapped file), inflating the change log without a matching row-count increase - this is
-    // exactly the rev-vs-character-count mismatch observed on a real, large, in-progress bootstrap. Sequencing
+    // exactly the seq-vs-character-count mismatch observed on a real, large, in-progress bootstrap. Sequencing
     // them (what the fix makes the periodic interval actually do) does not.
-    test('running reconcile() concurrently with an in-flight bootstrapIfNeeded() duplicates upserts (rev advances more than once per character)', async () => {
+    test('running reconcile() concurrently with an in-flight bootstrapIfNeeded() duplicates upserts (seq advances more than once per character)', async () => {
         // A large-enough file count that the two passes' real async fs I/O actually interleaves (this is what
         // made the bug reliably reproduce on the owner's real ~24k-card library, not a hypothetical) - too few
         // files risks one pass finishing before the other's had a chance to observe any overlap.
@@ -229,10 +229,10 @@ describe('reconcile racing bootstrap (regression: initializeMetadataStores() mus
 
         const changes = await metadataDb.getChangesSince(directories, 0);
         const result = await metadataDb.queryCharacters(directories, { wantRows: false, wantTotal: true });
-        // A rev count higher than the final character count means at least one file got processed (parsed +
+        // A seq count higher than the final character count means at least one file got processed (parsed +
         // written) by both passes instead of exactly one - the real duplicate-work symptom this test guards
         // against, not just lock contention.
-        expect(changes.rev).toBeGreaterThan(result.total);
+        expect(changes.seq).toBeGreaterThan(result.total);
     });
 
     test('sequencing reconcile() after bootstrapIfNeeded() resolves (what the fixed periodic interval does) does not duplicate upserts', async () => {
@@ -245,7 +245,7 @@ describe('reconcile racing bootstrap (regression: initializeMetadataStores() mus
 
         const changes = await metadataDb.getChangesSince(directories, 0);
         const result = await metadataDb.queryCharacters(directories, { wantRows: false, wantTotal: true });
-        expect(changes.rev).toBe(result.total);
+        expect(changes.seq).toBe(result.total);
     });
 });
 
@@ -463,11 +463,11 @@ describe('content_hash / findCharacterIdByContentHash (bulk-import exact-duplica
                 version        TEXT,
                 creator_notes  TEXT,
                 shallow_json   TEXT NOT NULL,
-                rev            INTEGER NOT NULL
+                change_seq            INTEGER NOT NULL
             );
         `);
         rawDb.prepare(`
-            INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, rev)
+            INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, change_seq)
             VALUES ('Preexisting.png', 'Preexisting', 'preexisting', 0, 500, NULL, 0, 0, 0, 500, NULL, NULL, NULL, NULL, '{}', 1)
         `).run();
         rawDb.close();
@@ -512,12 +512,12 @@ describe('migrateCreateDateColumn (2026-08: create_date TEXT -> INTEGER epoch ms
                 version        TEXT,
                 creator_notes  TEXT,
                 shallow_json   TEXT NOT NULL,
-                rev            INTEGER NOT NULL
+                change_seq            INTEGER NOT NULL
             );
             CREATE INDEX idx_characters_create_date ON characters(create_date);
         `);
         const insert = rawDb.prepare(`
-            INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, rev)
+            INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, change_seq)
             VALUES (@id, @name, @nameFold, 0, 500, @createDate, 0, 0, 0, 500, NULL, NULL, NULL, NULL, '{}', 1)
         `);
         insert.run({ id: 'Iso.png', name: 'Iso', nameFold: 'iso', createDate: '2024-07-12T01:31:37.123Z' });
@@ -674,11 +674,11 @@ describe('avatar_identity_hash / findCharacterIdByIdentityHashes (avatar-aware i
                 content_hash           TEXT,
                 content_identity_hash  TEXT,
                 import_poisoned        INTEGER NOT NULL DEFAULT 1,
-                rev                    INTEGER NOT NULL
+                change_seq                    INTEGER NOT NULL
             );
         `);
         rawDb.prepare(`
-            INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, rev)
+            INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, change_seq)
             VALUES ('Preexisting.png', 'Preexisting', 'preexisting', 0, 500, NULL, 0, 0, 0, 500, NULL, NULL, NULL, NULL, '{}', 1)
         `).run();
         rawDb.close();
@@ -775,11 +775,11 @@ describe('content_identity_hash / import_poisoned (unfuck-the-import: cheap dedu
                 creator_notes  TEXT,
                 shallow_json   TEXT NOT NULL,
                 content_hash   TEXT,
-                rev            INTEGER NOT NULL
+                change_seq            INTEGER NOT NULL
             );
         `);
         rawDb.prepare(`
-            INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, content_hash, rev)
+            INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, content_hash, change_seq)
             VALUES ('Preexisting.png', 'Preexisting', 'preexisting', 0, 500, NULL, 0, 0, 0, 500, NULL, NULL, NULL, NULL, '{}', NULL, 1)
         `).run();
         rawDb.close();
@@ -1143,18 +1143,18 @@ describe('phase 3 extension: tag definitions (owner decision - tags.json removal
         expect(await metadataDb.getTagDefinitions(directories)).toEqual([{ id: 'tag2', name: 'Serious' }]);
     });
 
-    test('getTagsRevision advances on a definitions save and on assign/unassign', async () => {
-        const before = await metadataDb.getTagsRevision(directories);
+    test('getTagsHash advances on a definitions save and on assign/unassign', async () => {
+        const before = await metadataDb.getTagsHash(directories);
         expect(before).toBe(0);
 
         await metadataDb.saveTagDefinitions(directories, [{ id: 'tag1', name: 'Funny' }]);
-        const afterSave = await metadataDb.getTagsRevision(directories);
+        const afterSave = await metadataDb.getTagsHash(directories);
         expect(afterSave).toBeGreaterThanOrEqual(before);
 
         await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
         await new Promise(resolve => setTimeout(resolve, 2));
         await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag1');
-        const afterAssign = await metadataDb.getTagsRevision(directories);
+        const afterAssign = await metadataDb.getTagsHash(directories);
         expect(afterAssign).toBeGreaterThanOrEqual(afterSave);
     });
 });
@@ -1480,7 +1480,7 @@ describe('active_chat is db-authoritative once a character row exists (2026-08 c
         expect(row).toBeUndefined();
     });
 
-    test('setCharacterActiveChat() updates active_chat, patches shallow_json.chat, and bumps rev for a tracked row', async () => {
+    test('setCharacterActiveChat() updates active_chat, patches shallow_json.chat, and bumps change_seq for a tracked row', async () => {
         await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
         const before = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
 
@@ -1489,7 +1489,7 @@ describe('active_chat is db-authoritative once a character row exists (2026-08 c
 
         const after = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
         expect(after.active_chat).toBe('Bob - New Chat');
-        expect(after.rev).toBeGreaterThan(before.rev);
+        expect(after.change_seq).toBeGreaterThan(before.change_seq);
 
         const shallow = JSON.parse(after.shallow_json);
         expect(shallow.chat).toBe('Bob - New Chat');
@@ -1572,11 +1572,11 @@ describe('active_chat is db-authoritative once a character row exists (2026-08 c
                 version        TEXT,
                 creator_notes  TEXT,
                 shallow_json   TEXT NOT NULL,
-                rev            INTEGER NOT NULL
+                change_seq            INTEGER NOT NULL
             );
         `);
         const insert = rawDb.prepare(`
-            INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, rev)
+            INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, change_seq)
             VALUES (@id, @name, @nameFold, 0, 1000, NULL, 0, 0, 0, 1000, NULL, NULL, NULL, NULL, '{}', 1)
         `);
         insert.run({ id: 'Alice.png', name: 'Alice', nameFold: 'alice' });
@@ -1647,11 +1647,11 @@ describe('active_chat_checked (regression: a genuinely chatless card must conver
                 version        TEXT,
                 creator_notes  TEXT,
                 shallow_json   TEXT NOT NULL,
-                rev            INTEGER NOT NULL
+                change_seq            INTEGER NOT NULL
             );
         `);
         rawDb.prepare(`
-            INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, rev)
+            INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, change_seq)
             VALUES ('Carol.png', 'Carol', 'carol', 0, 1000, NULL, 0, 0, 0, 1000, NULL, NULL, NULL, NULL, '{}', 1)
         `).run();
         rawDb.close();
@@ -1703,11 +1703,11 @@ describe('active_chat_checked (regression: a genuinely chatless card must conver
                 version        TEXT,
                 creator_notes  TEXT,
                 shallow_json   TEXT NOT NULL,
-                rev            INTEGER NOT NULL
+                change_seq            INTEGER NOT NULL
             );
         `);
         const insert = rawDb.prepare(`
-            INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, rev)
+            INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, change_seq)
             VALUES (@id, @name, @nameFold, 0, 1000, NULL, 0, 0, 0, 1000, NULL, NULL, NULL, NULL, '{}', 1)
         `);
         insert.run({ id: 'Alice.png', name: 'Alice', nameFold: 'alice' });
@@ -1759,12 +1759,12 @@ describe('active_chat_checked (regression: a genuinely chatless card must conver
                 version        TEXT,
                 creator_notes  TEXT,
                 shallow_json   TEXT NOT NULL,
-                rev            INTEGER NOT NULL,
+                change_seq            INTEGER NOT NULL,
                 active_chat    TEXT
             );
         `);
         const insert = rawDb.prepare(`
-            INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, rev, active_chat)
+            INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, change_seq, active_chat)
             VALUES (@id, @name, @nameFold, 0, 1000, NULL, 0, 0, 0, 1000, NULL, NULL, NULL, NULL, '{}', 1, @activeChat)
         `);
         insert.run({ id: 'HasChat.png', name: 'HasChat', nameFold: 'haschat', activeChat: 'Some Real Chat' });
@@ -1811,11 +1811,11 @@ describe('active_chat_checked (regression: a genuinely chatless card must conver
                 version        TEXT,
                 creator_notes  TEXT,
                 shallow_json   TEXT NOT NULL,
-                rev            INTEGER NOT NULL
+                change_seq            INTEGER NOT NULL
             );
         `);
         rawDb.prepare(`
-            INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, rev)
+            INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, change_seq)
             VALUES ('Dave.png', 'Dave', 'dave', 0, 1000, NULL, 0, 0, 0, 1000, NULL, NULL, NULL, NULL, '{}', 1)
         `).run();
         rawDb.close();
@@ -1868,11 +1868,11 @@ describe('active_chat_checked (regression: a genuinely chatless card must conver
                 version        TEXT,
                 creator_notes  TEXT,
                 shallow_json   TEXT NOT NULL,
-                rev            INTEGER NOT NULL
+                change_seq            INTEGER NOT NULL
             );
         `);
         rawDb.prepare(`
-            INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, rev)
+            INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, change_seq)
             VALUES ('Eve.png', 'Eve', 'eve', 0, 1000, NULL, 0, 0, 0, 1000, NULL, NULL, NULL, NULL, '{"chat":null}', 1)
         `).run();
         rawDb.close();

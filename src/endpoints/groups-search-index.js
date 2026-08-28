@@ -44,7 +44,7 @@ const indexCoordinator = createIndexCoordinator();
 /**
  * @param {import('../users.js').UserDirectoryList} directories User directories
  * @returns {Promise<string>} A cheap fingerprint that changes whenever a group is added/removed/edited or a tag
- * definition/assignment changes (getTagsRevision() - see character-metadata-db.js - replaces the old
+ * definition/assignment changes (getTagsHash() - see character-metadata-db.js - replaces the old
  * tags.json-mtime half of this signature now that tags.json is gone)
  */
 async function getFreshnessSignature(directories) {

@@ -9,7 +9,7 @@ import {
     getAllTagUsage,
     getTagDefinitions,
     saveTagDefinitions,
-    getTagsRevision,
+    getTagsHash,
     getFullTagMapExport,
     restoreTagMap,
 } from '../character-metadata-db.js';
@@ -88,7 +88,7 @@ router.post('/save', async function (request, response) {
 
         // A tag rename/delete/reassignment can change what the `#tags` field of any character or group search
         // index entry resolves to. No explicit invalidation call needed here - the character/group search
-        // indexes (characters-search-index.js/groups-search-index.js) check getTagsRevision() as part of their
+        // indexes (characters-search-index.js/groups-search-index.js) check getTagsHash() as part of their
         // freshness signature on every search, so this write is picked up automatically.
         response.send({ result: 'ok' });
     } catch (err) {
@@ -116,7 +116,7 @@ router.post('/get', async (request, response) => {
  * Lightweight freshness check for the client's tags cache (see loadTagsSettings() in tags.js) - `tags_rev`
  * (character-metadata-db.js) replaces tags.json's own mtime as the "has anything changed" signal now that
  * there's no file to stat. It's a sha256 content hash of the definitions table, recomputed on any tag
- * definition save or assign/unassign path (see getTagsRevision()'s doc comment for the full list of callers),
+ * definition save or assign/unassign path (see getTagsHash()'s doc comment for the full list of callers),
  * but only actually changes when definitions change - assignment-only operations leave the hash unchanged, so
  * the client cache stays valid through tag/untag activity that doesn't touch definitions.
  *
@@ -124,8 +124,8 @@ router.post('/get', async (request, response) => {
  */
 router.post('/manifest', async (request, response) => {
     try {
-        const rev = await getTagsRevision(request.user.directories);
-        response.send({ mtime: rev });
+        const hash = await getTagsHash(request.user.directories);
+        response.send({ hash });
     } catch (err) {
         console.error('Could not get tags revision', err);
         response.sendStatus(500);

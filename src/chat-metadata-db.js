@@ -26,10 +26,10 @@ import { getSqliteEngine } from './endpoints/sqlite-engine.js';
  * once bitten by. So this module knows nothing about how to parse a `.jsonl` chat file; it only stores/retrieves
  * already-computed rows. The fallback-parse-on-miss orchestration lives in chats.js itself.
  *
- * CHANGE LOG (`changes` table, monotonic `rev`): written by every upsert/delete alongside the row, mirroring
- * character-metadata-db.js's own `changes` table shape exactly (rev INTEGER PRIMARY KEY AUTOINCREMENT). This
- * table has no reader in this phase of the build - it exists as the durable, ordered "what changed since rev N"
- * feed the planned per-message tantivy content index needs for incremental catch-up (same shape
+ * CHANGE LOG (`changes` table, monotonic `seq`): written by every upsert/delete alongside the row, mirroring
+ * character-metadata-db.js's own `changes` table shape (seq INTEGER PRIMARY KEY AUTOINCREMENT). This
+ * table has no reader in this phase of the build - it exists as the durable, ordered "what changed since seq N"
+ * feed the per-message tantivy content index needs for incremental catch-up (same shape
  * characters-search-index.js already consumes from character-metadata-db.js's own `changes` table), landing in
  * this store now so the write-path hook only has to be wired up once.
  *
@@ -54,12 +54,12 @@ const SCHEMA_SQL = `
         last_mes           TEXT,
         preview            TEXT,
         chat_metadata_json TEXT,
-        rev                INTEGER NOT NULL,
+        change_seq         INTEGER NOT NULL,
         -- How many of this chat's messages the planned tantivy content index (chat-content-search-index.js) has
         -- already indexed, as of its own last catch-up pass - -1 means "never indexed" (distinct from a real
         -- 0-message chat). NOT touched by upsertRow()/deleteChatRow()/renameChatRow() above and NOT logged as a
         -- change (see setIndexedMessageCount() below) - this is index bookkeeping, not a "this chat changed"
-        -- event, so writing it must never itself bump 'rev' (that would make the content index perpetually see
+        -- event, so writing it must never itself bump 'change_seq' (that would make the content index perpetually see
         -- its own catch-up as new work to catch up on again). This is what lets that index's incremental catch-up
         -- add tantivy documents only for messages at index >= this watermark on an ordinary append (the common
         -- case: sending a message), instead of re-indexing a chat's entire text on every save - see that
@@ -69,15 +69,15 @@ const SCHEMA_SQL = `
     CREATE INDEX IF NOT EXISTS idx_chats_mtime ON chats(mtime);
 
     CREATE TABLE IF NOT EXISTS changes (
-        rev       INTEGER PRIMARY KEY AUTOINCREMENT,
+        seq       INTEGER PRIMARY KEY AUTOINCREMENT,
         file_path TEXT NOT NULL,
         op        TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_changes_file_path ON changes(file_path);
 
     -- Generic key/value store, mirroring character-metadata-db.js's own 'meta' table - the planned per-message
-    -- tantivy content index (chat-content-search-index.js) uses this to persist its own "caught up to rev N"
-    -- watermark (same TANTIVY_INDEX_REV_META_KEY pattern that module's character equivalent already uses), so a
+    -- tantivy content index (chat-content-search-index.js) uses this to persist its own "caught up to seq N"
+    -- watermark (same TANTIVY_SEQ_META_KEY pattern that module's character equivalent already uses), so a
     -- persisted index can be reopened and incrementally caught up instead of rebuilt from scratch on every
     -- process restart.
     CREATE TABLE IF NOT EXISTS meta (
@@ -88,9 +88,9 @@ const SCHEMA_SQL = `
 
 const UPSERT_SQL = `
     INSERT INTO chats (
-        file_path, file_name, mtime, file_size, message_count, last_mes, preview, chat_metadata_json, rev
+        file_path, file_name, mtime, file_size, message_count, last_mes, preview, chat_metadata_json, change_seq
     ) VALUES (
-        @filePath, @fileName, @mtime, @fileSize, @messageCount, @lastMes, @preview, @chatMetadataJson, @rev
+        @filePath, @fileName, @mtime, @fileSize, @messageCount, @lastMes, @preview, @chatMetadataJson, @changeSeq
     )
     ON CONFLICT(file_path) DO UPDATE SET
         file_name = excluded.file_name,
@@ -100,7 +100,7 @@ const UPSERT_SQL = `
         last_mes = excluded.last_mes,
         preview = excluded.preview,
         chat_metadata_json = excluded.chat_metadata_json,
-        rev = excluded.rev
+        change_seq = excluded.change_seq
 `;
 
 /** @type {Map<string, { db: import('./endpoints/sqlite-engine.js').SqliteEngineHandle }>} Keyed by directories.root */
@@ -145,6 +145,15 @@ async function getEntry(directories) {
     }
     const db = engine.openDatabase(getDbPath(directories));
     db.exec(SCHEMA_SQL);
+    const chatCols = db.all("PRAGMA table_info('chats')").map(c => c.name);
+    if (chatCols.includes('rev') && !chatCols.includes('change_seq')) {
+        db.exec("ALTER TABLE chats RENAME COLUMN rev TO change_seq");
+    }
+    const changeCols = db.all("PRAGMA table_info('changes')").map(c => c.name);
+    if (changeCols.includes('rev') && !changeCols.includes('seq')) {
+        db.exec("ALTER TABLE changes RENAME COLUMN rev TO seq");
+    }
+    db.run("UPDATE meta SET key = 'chat_content_index_seq' WHERE key = 'chat_content_index_rev'");
     const entry = { db };
     entries.set(key, entry);
     return entry;
@@ -160,11 +169,11 @@ async function getEntry(directories) {
  * @property {string|null} last_mes
  * @property {string|null} preview
  * @property {string|null} chat_metadata_json
- * @property {number} rev
+ * @property {number} change_seq
  */
 
 /**
- * @typedef {object} ChatRowFields Everything UPSERT_SQL needs except `filePath`/`rev` (rev is only known once the
+ * @typedef {object} ChatRowFields Everything UPSERT_SQL needs except `filePath`/`changeSeq` (rev is only known once the
  * change-log entry is inserted, filePath is always the caller's own key).
  * @property {string} fileName
  * @property {number} mtime
@@ -199,7 +208,7 @@ async function upsertRow(directories, filePath, fields) {
             lastMes: fields.lastMes ?? null,
             preview: fields.preview ?? null,
             chatMetadataJson: fields.chatMetadataJson ?? null,
-            rev: Number(lastInsertRowid),
+            changeSeq: Number(lastInsertRowid),
         });
     });
 }
@@ -339,7 +348,7 @@ export async function renameChatRow(directories, oldFilePath, newFilePath) {
                 lastMes: existingRow.last_mes,
                 preview: existingRow.preview,
                 chatMetadataJson: existingRow.chat_metadata_json,
-                rev: Number(lastInsertRowid),
+                changeSeq: Number(lastInsertRowid),
             });
         }
     });
@@ -347,26 +356,26 @@ export async function renameChatRow(directories, oldFilePath, newFilePath) {
 
 /**
  * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<number>} The highest rev currently recorded, or 0 if the store is empty/unavailable - the
- * freshness signature the planned tantivy content index will diff its own last-caught-up rev against.
+ * @returns {Promise<number>} The highest seq currently recorded, or 0 if the store is empty/unavailable - the
+ * freshness signature the planned tantivy content index will diff its own last-caught-up seq against.
  */
-export async function getLatestRev(directories) {
+export async function getLatestSeq(directories) {
     const entry = await getEntry(directories);
     if (!entry) return 0;
-    const row = entry.db.get('SELECT MAX(rev) as rev FROM changes');
-    return Number(row?.rev ?? 0);
+    const row = entry.db.get('SELECT MAX(seq) as seq FROM changes');
+    return Number(row?.seq ?? 0);
 }
 
 /**
  * @param {import('./users.js').UserDirectoryList} directories
- * @param {number} sinceRev Exclusive lower bound - only changes strictly newer than this are returned.
- * @returns {Promise<{ rev: number, file_path: string, op: string }[]>} Ordered oldest-first, so a caller
+ * @param {number} sinceSeq Exclusive lower bound - only changes strictly newer than this are returned.
+ * @returns {Promise<{ seq: number, file_path: string, op: string }[]>} Ordered oldest-first, so a caller
  * replaying them to catch an index up applies them in the order they actually happened.
  */
-export async function getChangesSince(directories, sinceRev) {
+export async function getChangesSince(directories, sinceSeq) {
     const entry = await getEntry(directories);
     if (!entry) return [];
-    return entry.db.all('SELECT rev, file_path, op FROM changes WHERE rev > @sinceRev ORDER BY rev ASC', { sinceRev });
+    return entry.db.all('SELECT seq, file_path, op FROM changes WHERE seq > @sinceSeq ORDER BY seq ASC', { sinceSeq });
 }
 
 /**

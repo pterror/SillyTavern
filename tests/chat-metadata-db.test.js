@@ -59,7 +59,7 @@ describe('upsertChatFromSave', () => {
         expect(row.mtime).toBe(1000);
         expect(row.file_size).toBe(500);
         expect(JSON.parse(row.chat_metadata_json).integrity).toBe('seed-slug');
-        expect(row.rev).toBeGreaterThan(0);
+        expect(row.seq).toBeGreaterThan(0);
     });
 
     test('handles an empty chat array without throwing', async () => {
@@ -72,7 +72,7 @@ describe('upsertChatFromSave', () => {
         expect(row.preview).toBe('[The chat is empty]');
     });
 
-    test('a later save overwrites the row in place, bumping rev', async () => {
+    test('a later save overwrites the row in place, bumping seq', async () => {
         const filePath = path.join(tempDir, 'chat1.jsonl');
         await chatMetadataDb.upsertChatFromSave(directories, filePath, makeChatData(1), 1000, 100);
         const firstRow = await chatMetadataDb.getChatRow(directories, filePath);
@@ -82,7 +82,7 @@ describe('upsertChatFromSave', () => {
 
         expect(secondRow.message_count).toBe(2);
         expect(secondRow.mtime).toBe(2000);
-        expect(secondRow.rev).toBeGreaterThan(firstRow.rev);
+        expect(secondRow.seq).toBeGreaterThan(firstRow.seq);
     });
 });
 
@@ -118,14 +118,14 @@ describe('deleteChatRow', () => {
     test('removes the row and records a change-log delete entry', async () => {
         const filePath = path.join(tempDir, 'chat1.jsonl');
         await chatMetadataDb.upsertChatFromSave(directories, filePath, makeChatData(1), 1000, 100);
-        const revBeforeDelete = await chatMetadataDb.getLatestRev(directories);
+        const seqBeforeDelete = await chatMetadataDb.getLatestSeq(directories);
 
         await chatMetadataDb.deleteChatRow(directories, filePath);
 
         const row = await chatMetadataDb.getChatRow(directories, filePath);
         expect(row).toBeUndefined();
 
-        const changes = await chatMetadataDb.getChangesSince(directories, revBeforeDelete);
+        const changes = await chatMetadataDb.getChangesSince(directories, seqBeforeDelete);
         expect(changes).toHaveLength(1);
         expect(changes[0].op).toBe('delete');
         expect(changes[0].file_path).toBe(filePath);
@@ -162,29 +162,29 @@ describe('renameChatRow', () => {
     });
 });
 
-describe('getLatestRev / getChangesSince', () => {
-    test('rev is monotonically increasing across multiple writes to different files', async () => {
-        const revStart = await chatMetadataDb.getLatestRev(directories);
-        expect(revStart).toBe(0);
+describe('getLatestSeq / getChangesSince', () => {
+    test('seq is monotonically increasing across multiple writes to different files', async () => {
+        const seqStart = await chatMetadataDb.getLatestSeq(directories);
+        expect(seqStart).toBe(0);
 
         await chatMetadataDb.upsertChatFromSave(directories, path.join(tempDir, 'a.jsonl'), makeChatData(1), 1000, 10);
         await chatMetadataDb.upsertChatFromSave(directories, path.join(tempDir, 'b.jsonl'), makeChatData(1), 1000, 10);
         await chatMetadataDb.deleteChatRow(directories, path.join(tempDir, 'a.jsonl'));
 
-        const revEnd = await chatMetadataDb.getLatestRev(directories);
-        expect(revEnd).toBe(3);
+        const seqEnd = await chatMetadataDb.getLatestSeq(directories);
+        expect(seqEnd).toBe(3);
 
         const changes = await chatMetadataDb.getChangesSince(directories, 0);
         expect(changes.map(c => c.op)).toEqual(['upsert', 'upsert', 'delete']);
-        expect(changes.every((c, i) => i === 0 || c.rev > changes[i - 1].rev)).toBe(true);
+        expect(changes.every((c, i) => i === 0 || c.seq > changes[i - 1].seq)).toBe(true);
     });
 
-    test('getChangesSince only returns changes strictly newer than the given rev', async () => {
+    test('getChangesSince only returns changes strictly newer than the given seq', async () => {
         await chatMetadataDb.upsertChatFromSave(directories, path.join(tempDir, 'a.jsonl'), makeChatData(1), 1000, 10);
-        const midRev = await chatMetadataDb.getLatestRev(directories);
+        const midSeq = await chatMetadataDb.getLatestSeq(directories);
         await chatMetadataDb.upsertChatFromSave(directories, path.join(tempDir, 'b.jsonl'), makeChatData(1), 1000, 10);
 
-        const changes = await chatMetadataDb.getChangesSince(directories, midRev);
+        const changes = await chatMetadataDb.getChangesSince(directories, midSeq);
         expect(changes).toHaveLength(1);
         expect(changes[0].file_path).toBe(path.join(tempDir, 'b.jsonl'));
     });

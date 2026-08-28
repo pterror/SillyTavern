@@ -483,9 +483,9 @@ async function saveTagsNow() {
             cache: 'no-cache',
         });
         if (manifestResponse.ok) {
-            const { mtime } = await manifestResponse.json();
-            if (mtime !== null && mtime !== undefined) {
-                await setCachedTags(mtime, tags, [...serverAssignedTagIds]);
+            const { hash } = await manifestResponse.json();
+            if (hash !== null && hash !== undefined) {
+                await setCachedTags(hash, tags, [...serverAssignedTagIds]);
             }
         } else {
             console.error(`Failed to refresh tags manifest after save: ${manifestResponse.statusText}`);
@@ -967,10 +967,10 @@ async function loadTagsSettings(settings) {
             cache: 'no-cache',
         });
         if (manifestResponse.ok) {
-            const { mtime } = await manifestResponse.json();
-            if (mtime !== null && mtime !== undefined) {
+            const { hash } = await manifestResponse.json();
+            if (hash !== null && hash !== undefined) {
                 const cached = await getCachedTags();
-                if (cached && cached.mtime === mtime) {
+                if (cached && cached.hash === hash) {
                     tags = cached.tags;
                     tag_map = Object.create(null);
                     serverAssignedTagIds = new Set(cached.assignedTagIds ?? []);
