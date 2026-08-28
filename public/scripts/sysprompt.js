@@ -38,7 +38,7 @@ async function migrateSystemPromptFromInstructMode() {
             power_user.sysprompt.name = data.name;
         }
 
-        saveSettingsDebounced('power_user');
+        saveSettingsDebounced('power_user.sysprompt.name');
         toastr.info('System prompt settings have been moved from the Instruct Mode.', 'Migration notice', { timeOut: 5000 });
     }
 }
@@ -109,7 +109,7 @@ function setSystemPromptStateCallback(state) {
     power_user.sysprompt.enabled = state;
     $enabled.prop('checked', state);
     toggleSystemPromptDisabledControls();
-    saveSettingsDebounced('power_user');
+    saveSettingsDebounced('power_user.sysprompt.enabled');
     return '';
 }
 
@@ -157,7 +157,7 @@ export function initSystemPrompts() {
     $enabled.on('input', function () {
         power_user.sysprompt.enabled = !!$(this).prop('checked');
         toggleSystemPromptDisabledControls();
-        saveSettingsDebounced('power_user');
+        saveSettingsDebounced('power_user.sysprompt.enabled');
     });
 
     $select.on('change', async function () {
@@ -180,17 +180,17 @@ export function initSystemPrompts() {
             power_user.sysprompt.content = prompt.content || '';
             power_user.sysprompt.post_history = prompt.post_history || '';
         }
-        saveSettingsDebounced('power_user');
+        saveSettingsDebounced('power_user.sysprompt.name', 'power_user.sysprompt.content', 'power_user.sysprompt.post_history');
     });
 
     $content.on('input', function () {
         power_user.sysprompt.content = String($(this).val());
-        saveSettingsDebounced('power_user');
+        saveSettingsDebounced('power_user.sysprompt.content');
     });
 
     $postHistory.on('input', function () {
         power_user.sysprompt.post_history = String($(this).val());
-        saveSettingsDebounced('power_user');
+        saveSettingsDebounced('power_user.sysprompt.post_history');
     });
 
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({

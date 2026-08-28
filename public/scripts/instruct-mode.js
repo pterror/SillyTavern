@@ -138,7 +138,7 @@ export async function loadInstructMode(data) {
             if (!CSS.supports('field-sizing', 'content') && $(this).is('textarea')) {
                 await resetScrollHeight($(this));
             }
-            saveSettingsDebounced('power_user');
+            saveSettingsDebounced('power_user.instruct');
         });
 
         if (control.trigger) {
@@ -192,7 +192,7 @@ export function selectContextPreset(preset, { quiet = false, isAuto = false } = 
 
     updateBindModelTemplatesState();
 
-    saveSettingsDebounced('power_user');
+    saveSettingsDebounced('power_user.context');
 }
 
 /**
@@ -224,7 +224,7 @@ export function selectInstructPreset(preset, { quiet = false, isAuto = false } =
 
     updateBindModelTemplatesState();
 
-    saveSettingsDebounced('power_user');
+    saveSettingsDebounced('power_user.instruct');
 }
 
 /**

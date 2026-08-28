@@ -2299,7 +2299,7 @@ export function initChatUtilities() {
         if (!entityId) return;
         power_user.external_media_allowed_overrides.push(entityId);
         power_user.external_media_forbidden_overrides = power_user.external_media_forbidden_overrides.filter((v) => v !== entityId);
-        saveSettingsDebounced('power_user');
+        saveSettingsDebounced('power_user.external_media_allowed_overrides', 'power_user.external_media_forbidden_overrides');
         reloadCurrentChat();
     });
     $(document).on('input', '#forbid_media_override_forbidden', function () {
@@ -2307,7 +2307,7 @@ export function initChatUtilities() {
         if (!entityId) return;
         power_user.external_media_forbidden_overrides.push(entityId);
         power_user.external_media_allowed_overrides = power_user.external_media_allowed_overrides.filter((v) => v !== entityId);
-        saveSettingsDebounced('power_user');
+        saveSettingsDebounced('power_user.external_media_forbidden_overrides', 'power_user.external_media_allowed_overrides');
         reloadCurrentChat();
     });
     $(document).on('input', '#forbid_media_override_global', function () {
@@ -2315,7 +2315,7 @@ export function initChatUtilities() {
         if (!entityId) return;
         power_user.external_media_allowed_overrides = power_user.external_media_allowed_overrides.filter((v) => v !== entityId);
         power_user.external_media_forbidden_overrides = power_user.external_media_forbidden_overrides.filter((v) => v !== entityId);
-        saveSettingsDebounced('power_user');
+        saveSettingsDebounced('power_user.external_media_allowed_overrides', 'power_user.external_media_forbidden_overrides');
         reloadCurrentChat();
     });
 

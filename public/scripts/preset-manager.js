@@ -214,7 +214,7 @@ class PresetManager {
                 power_user.show_user_prompt_bias = data.show ?? false;
                 $('#start_reply_with').val(power_user.user_prompt_bias);
                 $('#chat-show-reply-prefix-checkbox').prop('checked', power_user.show_user_prompt_bias);
-                return saveSettingsDebounced('power_user');
+                return saveSettingsDebounced('power_user.user_prompt_bias', 'power_user.show_user_prompt_bias');
             },
             isValid: (data) => PresetManager.isPossiblyStartReplyWithData(data),
         },
@@ -988,7 +988,7 @@ class PresetManager {
         }
         power_user.preset_order[this.apiId] = newOrder;
         this.applyOrder();
-        saveSettingsDebounced('power_user');
+        saveSettingsDebounced('power_user.preset_order');
         toastr.success(t`Preset order saved`);
     }
 
