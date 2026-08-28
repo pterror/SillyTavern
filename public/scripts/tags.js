@@ -249,6 +249,7 @@ function getTagFilterVisibility(type) {
  */
 function setTagFilterVisibility(type, visible) {
     const settingKey = getTagFilterVisibilitySetting(type);
+    if (power_user[settingKey] === visible) return;
     power_user[settingKey] = visible;
     saveSettingsDebounced('power_user');
 }
