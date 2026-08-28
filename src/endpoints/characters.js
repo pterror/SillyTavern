@@ -1720,7 +1720,7 @@ router.post('/all', async function (request, response) {
             const files = fs.readdirSync(request.user.directories.characters);
             const pngFiles = files.filter(file => file.endsWith('.png'));
             const processingPromises = pngFiles.map(file => processCharacter(file, request.user.directories, { shallow: useShallowCharacters }));
-            const data = (await Promise.all(processingPromises)).filter(c => c.name);
+            const data = (await Promise.all(processingPromises)).filter(c => 'name' in c);
             await stampDbFav(request.user.directories, data);
             await stampDbActiveChat(request.user.directories, data);
             // No pagination params at all: preserve the exact pre-existing response shape (a bare array).
@@ -2472,7 +2472,7 @@ router.post('/batch', async function (request, response) {
 
         // Full mode (no fields filter): existing behavior unchanged.
         const processingPromises = avatars.map(avatar => processCharacter(avatar, request.user.directories, { shallow: useShallowCharacters }));
-        const data = (await Promise.all(processingPromises)).filter(c => c.name);
+        const data = (await Promise.all(processingPromises)).filter(c => 'name' in c);
         // Same db-authoritative stamp every OTHER character-listing route already applies (/all, /get, the
         // query path) - fav/active_chat are db-authoritative once a row exists (setCharacterFav()/
         // setCharacterActiveChat() deliberately never touch the PNG), so without this, a character whose fav
