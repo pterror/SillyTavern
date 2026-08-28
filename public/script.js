@@ -12641,9 +12641,7 @@ export async function createOrEditCharacter(e) {
                 !isNewChat &&
                 message.mes &&
                 !selected_group &&
-                !chat_metadata.tainted &&
-                (chat.length === 0 || (chat.length === 1 && !chat[0].is_user && !chat[0].is_system)) &&
-                (chat.length === 0 || chat[0].mes !== message.mes);
+                chat.length === 0;
 
             if (shouldRegenerateMessage) {
                 if (power_user.message_token_count_enabled) {
