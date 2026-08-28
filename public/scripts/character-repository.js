@@ -74,7 +74,7 @@ import { charactersStore, getRequestHeaders, unshallowCharacter } from '../scrip
  * so would throw away the "this is approximate" signal the `~` exists to carry.
  * @property {number} rev - the metadata store's current change revision at query time (§5.2); lets a caller
  * detect that what it just rendered may already be stale relative to `/api/characters/changes`.
- * @property {string} [searchBackend] - which search engine answered `filter.search` ('tantivy'|'native'|'wasm'),
+ * @property {string} [searchBackend] - which search engine answered `filter.search` ('tantivy'),
  * present only when `filter.search` was non-empty.
  */
 

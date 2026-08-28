@@ -3,12 +3,11 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 
 import {
-    getTagDefinitions, getEntityTagIdsForMany, getTagsRevision,
-    getChangesSince, getCurrentRev, getAllTaggedCharacterIds, getMetaValue, setMetaValue,
+    getTagDefinitions, getEntityTagIdsForMany, getTagsHash,
+    getChangesSince, getCurrentSeq, getAllTaggedCharacterIds, getMetaValue, setMetaValue,
     getCharacterFavsByIds,
 } from '../character-metadata-db.js';
 import { processCharacter } from './characters.js';
-import { buildFtsQuery } from './search-query.js';
 import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD, FAV_FIELD } from './tantivy-search.js';
 import { resolveSearchEngine } from './search-engine.js';
 import { createIndexCoordinator } from './search-index-coordinator.js';
@@ -39,18 +38,16 @@ import { getConfigValue, mapWithConcurrency, color } from '../util.js';
  * in SQLite's own file and page cache, not V8's heap. That's what makes this viable at library sizes an
  * in-memory JS index can't reach at all, not just "a bit better."
  *
- * TANTIVY IS NOW THE PRIMARY ENGINE, SQLITE FTS5 A FALLBACK TIER: FTS5's MATCH cost scales with a term's
+ * TANTIVY IS NOW THE ONLY ENGINE, THERE IS NO FALLBACK TIER: FTS5's MATCH cost scales with a term's
  * posting-list size, not result-set size - measured a single common word ("the") at ~78ms against this install's
  * real library, and getting *worse*, not staying flat, as the library grows. Tantivy (see tantivy-engine.js,
  * tantivy-search.js) measured a flat 0-1ms for the same shape of query regardless of term commonality - a real
- * inverted-index search engine rather than a general relational engine with FTS bolted on. search-engine.js
- * resolves the actual tier used (tantivy first, then this module's native/wasm SQLite chain, matching this
- * header's original native-vs-wasm reasoning below) - see that module's header for the tantivy-not-usable
- * fallback story (its own platform coverage is narrower than SQLite's, so this fallback exists for real, not
- * hypothetically). Both this file's own two SQLite tiers still run the exact same SQLite/FTS5 code and produce
- * identical ranking and `label:query` behavior (search-query.js) when they're the tier in use.
+ * inverted-index search engine rather than a general relational engine with FTS bolted on. search-engine.js now
+ * resolves either the tantivy tier or 'unavailable' - the SQLite FTS5 tier this module used to fall back to (a
+ * native better-sqlite3 engine, or a WebAssembly one on platforms without a native binding available) has been
+ * removed now that tantivy covers every platform this fallback used to exist for.
  *
- * Freshness (for both backends) is checked cheaply (a characters-directory stat() plus getTagsRevision(),
+ * Freshness is checked cheaply (a characters-directory stat() plus getTagsRevision(),
  * character-metadata-db.js's monotonic tag-revision counter - see getFreshnessSignature() below) on every
  * search rather than via push-based invalidation hooks on every character-mutating route: characters.js has ~9
  * routes that touch character files (create/rename/edit/edit-avatar/edit-attribute/merge-attributes/delete/
@@ -148,31 +145,10 @@ const BM25_WEIGHTS = [20, 10, 3, 3, 2, 2, 2, 2, 1, 1, 1];
  */
 const TANTIVY_SCHEMA_VERSION = 1;
 
-// `label:value` search syntax (see search-query.js) - maps a friendly label to the real FTS5 column-filter
-// expression it becomes. `tag:`/`tags:` searches BOTH tag-ish columns via FTS5's `{col1 col2}:` group syntax,
-// since BM25_WEIGHTS above already treats resolved_tags (tags.json names) and tags (raw embedded card data) as
-// the same "does this character have this tag" concept - a label filter should honor that, not just pick one.
-const FIELD_LABELS = {
-    name: 'name',
-    tag: '{resolved_tags tags}',
-    tags: '{resolved_tags tags}',
-    desc: 'description',
-    description: 'description',
-    example: 'mes_example',
-    scenario: 'scenario',
-    personality: 'personality',
-    greeting: 'first_mes',
-    notes: 'creator_notes',
-    creator: 'creator',
-    alt: 'alternate_greetings',
-    alternate: 'alternate_greetings',
-};
-
-// tantivy-search.js's field-name-array equivalent of FIELD_LABELS above - same labels, same target fields, just
-// expressed as arrays of tantivy field names instead of FTS5 column-filter expression strings (tantivy-search.js
-// is agnostic to which shape parseLabeledToken()'s `fieldLabels` map uses, so these are just a different view of
-// the same mapping, not a second source of truth to keep in sync by hand-checking - a mismatch here would only
-// ever change which fields a `label:` filter searches, not break anything silently).
+// `label:value` search syntax (see search-query.js) - maps a friendly label to the tantivy field(s) it targets.
+// `tag:`/`tags:` searches BOTH tag-ish fields, since BM25_WEIGHTS above already treats resolved_tags (tags.json
+// names) and tags (raw embedded card data) as the same "does this character have this tag" concept - a label
+// filter should honor that, not just pick one.
 const TANTIVY_FIELD_WEIGHTS = Object.fromEntries(BM25_INDEXED_COLUMNS.map((name, i) => [name, BM25_WEIGHTS[i]]));
 const TANTIVY_FIELD_LABELS = {
     name: ['name'],
@@ -190,7 +166,6 @@ const TANTIVY_FIELD_LABELS = {
     alternate: ['alternate_greetings'],
 };
 
-/** @type {ReturnType<typeof createIndexCoordinator<import('./sqlite-engine.js').SqliteEngineHandle>>} */
 const indexCoordinator = createIndexCoordinator();
 
 /**
@@ -207,41 +182,43 @@ const indexCoordinator = createIndexCoordinator();
  * nothing to incrementally catch up from, so that state always full-rebuilds.
  */
 async function getFreshnessSignature(directories) {
-    const tagsRev = await getTagsRevision(directories);
-    const rev = await getCurrentRev(directories);
-    if (rev === null) {
+    const tagsHash = await getTagsHash(directories);
+    const seq = await getCurrentSeq(directories);
+    if (seq === null) {
         const charDirMtime = fs.statSync(directories.characters).mtimeMs;
-        return `mtime:${charDirMtime}:${tagsRev}`;
+        return `mtime:${charDirMtime}:${tagsHash}`;
     }
-    return `rev:${rev}:${tagsRev}`;
+    return `rev:${seq}:${tagsHash}`;
 }
 
-// How many characters get read, processed, and inserted into the FTS5 index per batch/transaction while
-// (re)building it. This is a pure memory/throughput knob, not a correctness one - every character still gets
+// How many characters get read, processed, and inserted into the tantivy index per batch while (re)building
+// it. This is a pure memory/throughput knob, not a correctness one - every character still gets
 // visited exactly once regardless of batch size. What it bounds is peak memory: readCharacterBatches() below
 // never holds more than one batch's worth of full (non-shallow) character objects at a time, so index-build
 // memory stays flat as a library grows from thousands of characters to (per this install's owner) a target of
 // tens of millions, instead of scaling linearly with total library size the way an eager
 // `Promise.all(everyCharacter)` does. 500 is a starting point, not a measured-optimal number - large enough
-// that per-batch/per-transaction overhead (one SQLite transaction and one directory-batch of file reads each)
-// stays small relative to the work done, small enough that a batch's worth of full character objects (each
+// that per-batch overhead (one directory-batch of file reads, plus a periodic tantivy writer.commit() - see
+// CHECKPOINT_EVERY_N_BATCHES below) stays small relative to the work done, small enough that a batch's worth
+// of full character objects (each
 // averaging tens of KB of text - see the json_data comment below) is a rounding error against any reasonable
 // heap size.
 const INDEX_BUILD_BATCH_SIZE = 500;
 
 // Fallback cap on the tantivy tier's maxRows when a caller genuinely omits it - mirrors characters.js's own
-// DEFAULT_PAGE_LIMIT. querySqliteIndex()'s doc comment explains why an unbounded fetch is a real OOM risk (a
-// short/broad query prefix-matching most of a large library, each match then JSON.parse()'d in full); that risk
-// applies identically to runTantivySearch()'s per-hit JSON.parse() of the stored `data` field, tantivy's raw
-// per-query speed doesn't change how many full character objects an unbounded result set would parse.
+// DEFAULT_PAGE_LIMIT. Even though a tantivy hit is now (design doc §5.1's payload shrink) just a bare id, not
+// full character JSON, an unbounded fetch is still worth capping: searchCharacters() resolves every hit's full
+// character data afterward (processCharacter()), so an uncapped short/broad query prefix-matching most of a
+// large library would still mean resolving most of the library's worth of character data for a page the caller
+// never asked for.
 const DEFAULT_TANTIVY_MAX_ROWS = 500;
 
 // `meta` table keys (character-metadata-db.js's getMetaValue()/setMetaValue()) this module uses to remember
 // which change-log rev / tags_rev the on-disk tantivy index was last caught up to - see this module's header on
 // why that table, not a second file, holds this. Namespaced with a `tantivy_char_` prefix since `meta` is a flat
 // key/value table shared with the metadata store's own bootstrap_completed/tags_rev keys.
-const TANTIVY_INDEX_REV_META_KEY = 'tantivy_char_index_rev';
-const TANTIVY_INDEX_TAGS_REV_META_KEY = 'tantivy_char_index_tags_rev';
+const TANTIVY_INDEX_SEQ_META_KEY = 'tantivy_char_index_seq';
+const TANTIVY_INDEX_TAGS_HASH_META_KEY = 'tantivy_char_index_tags_hash';
 // The TANTIVY_SCHEMA_VERSION a persisted index was built under - see that constant's own doc comment for why this
 // exists and how openPersistedTantivyIndexStale() uses it.
 const TANTIVY_INDEX_SCHEMA_VERSION_META_KEY = 'tantivy_char_index_schema_version';
@@ -251,19 +228,18 @@ const TANTIVY_INDEX_SCHEMA_VERSION_META_KEY = 'tantivy_char_index_schema_version
 // decision 23: "random and search compose unconditionally"), where hash order has no relationship to text
 // relevance, so bounding tightly by relevance rank would silently bias which matches are ever reachable under a
 // random ordering. This is affordable now in a way it wasn't before the payload shrink: a tantivy hit is a bare
-// id string, not a 13KB-mean JSON.parse (DEFAULT_TANTIVY_MAX_ROWS's original OOM concern - see querySqliteIndex()
-// below), so fetching orders of magnitude more ids costs orders of magnitude less than fetching that many full
-// rows used to. The /query route (characters.js) marks a total as approximate whenever a search itself matched
+// id string, not a 13KB-mean JSON.parse (DEFAULT_TANTIVY_MAX_ROWS's original OOM concern), so fetching orders
+// of magnitude more ids costs orders of magnitude less than fetching that many full rows used to. The /query
+// route (characters.js) marks a total as approximate whenever a search itself matched
 // more ids than this cap - decision 6 permits an approximate total, never a silently-truncated one.
 export const SEARCH_ID_CAP = 50000;
 
-// How many batches to insert before folding the WAL back into the main db file (native engine only - see
-// buildSqliteIndex()'s checkpoint comment for why this matters and why the wasm engine's checkpoint is a
-// no-op). Checkpointing only once at the very end - the original approach - meant the WAL grew to roughly the
-// size of the *entire* index before ever being reclaimed (confirmed: ~1.7GB WAL alongside a ~1.7GB db file for
-// this install's real 24,171-character library) - fine at that scale, not at a target of millions of
-// characters, where an unbounded WAL is a real multi-gigabyte-plus disk cost, not just an odd transient. This
-// interval is a disk-usage/checkpoint-overhead tradeoff, not a correctness knob.
+// How many batches to commit before the next one, while (re)building a tantivy index
+// (buildTantivyIndexFromFilesystemScan() and applyIncrementalTantivyChanges() below). Committing only once at
+// the very end would mean an IndexWriter accumulating an unbounded amount of unflushed state across an entire
+// library before ever flushing it - fine at a few thousand characters, not at a target of millions, where
+// that's a real multi-gigabyte-plus memory cost, not just an odd transient. This interval is a
+// memory-usage/commit-overhead tradeoff, not a correctness knob.
 const CHECKPOINT_EVERY_N_BATCHES = 20;
 
 // How many character files get read+processed concurrently *within* a batch. Separate knob from
@@ -280,7 +256,7 @@ const INDEX_BUILD_READ_CONCURRENCY = getConfigValue('performance.characterIndexB
 
 /**
  * Streams a user's characters off disk in fixed-size batches (see INDEX_BUILD_BATCH_SIZE) instead of returning
- * one array of the whole library, so buildSqliteIndex() below never has to hold more than one batch's worth of
+ * one array of the whole library, so a tantivy index build never has to hold more than one batch's worth of
  * full character objects in memory at once. The eager Promise.all-over-everything version this replaces OOM'd
  * this server on a real 24,171-character install (confirmed by reproducing the crash locally) and has no
  * ceiling that helps at real self-hosted-scale libraries far larger than that.
@@ -352,86 +328,6 @@ async function makeFavResolver(directories, avatars) {
     return (character) => Object.prototype.hasOwnProperty.call(favById, character.avatar)
         ? favById[character.avatar]
         : Boolean(character.data?.extensions?.fav);
-}
-
-/**
- * (Re)builds the persistent on-disk SQLite FTS5 index for a user's characters.
- * @param {import('../users.js').UserDirectoryList} directories User directories
- * @param {{ kind: 'native' | 'wasm', openDatabase: (path: string) => import('./sqlite-engine.js').SqliteEngineHandle }} engine
- * The resolved SQLite engine (sqlite-engine.js)
- * @returns {Promise<import('./sqlite-engine.js').SqliteEngineHandle>} The freshly built, open database handle
- */
-async function buildSqliteIndex(directories, engine) {
-    const dbDir = path.join(directories.root, 'search-index');
-    if (!fs.existsSync(dbDir)) {
-        fs.mkdirSync(dbDir, { recursive: true });
-    }
-    const dbPath = path.join(dbDir, 'characters.db');
-
-    for (const suffix of ['', '-wal', '-shm']) {
-        const filePath = dbPath + suffix;
-        if (fs.existsSync(filePath)) {
-            fs.unlinkSync(filePath);
-        }
-    }
-
-    const db = engine.openDatabase(dbPath);
-    db.exec(`
-        CREATE VIRTUAL TABLE cards USING fts5(
-            avatar UNINDEXED,
-            data UNINDEXED,
-            fav UNINDEXED,
-            ${BM25_INDEXED_COLUMNS.join(', ')}
-        );
-    `);
-
-    const avatars = fs.readdirSync(directories.characters).filter(file => file.endsWith('.png'));
-    const tagNamesFor = await makeTagNamesResolver(directories, avatars);
-    const favFor = await makeFavResolver(directories, avatars);
-    const insertSql = `INSERT INTO cards (avatar, data, fav, ${BM25_INDEXED_COLUMNS.join(', ')})
-         VALUES (@avatar, @data, @fav, @name, @resolved_tags, @description, @mes_example, @scenario, @personality, @first_mes, @creator_notes, @creator, @tags, @alternate_greetings)`;
-
-    // One insertMany() call - and, per CHECKPOINT_EVERY_N_BATCHES, one checkpoint - per batch, not one giant
-    // call/transaction over the whole library: see readCharacterBatches() and the two constants above this
-    // function for why. Each batch's rows only need to live long enough for this one insertMany() call; nothing
-    // here accumulates across batches.
-    let batchIndex = 0;
-    for await (const batch of readCharacterBatches(directories)) {
-        const rows = batch.map(character => ({
-            avatar: character.avatar,
-            data: JSON.stringify(character),
-            // db-authoritative via favFor() (falls back to the card's own embedded fav only for an untracked
-            // character - see makeFavResolver()'s doc comment). SQLite has no real boolean type, so this stores
-            // 0/1 for the plain `AND fav = 1` predicate querySqliteIndex()/countSqliteIndexMatches() add when
-            // favOnly is set.
-            fav: favFor(character) ? 1 : 0,
-            name: character.data?.name ?? '',
-            resolved_tags: tagNamesFor(character.avatar),
-            description: character.data?.description ?? '',
-            mes_example: character.data?.mes_example ?? '',
-            scenario: character.data?.scenario ?? '',
-            personality: character.data?.personality ?? '',
-            first_mes: character.data?.first_mes ?? '',
-            creator_notes: character.data?.creator_notes ?? '',
-            creator: character.data?.creator ?? '',
-            tags: Array.isArray(character.data?.tags) ? character.data.tags.join(' ') : '',
-            alternate_greetings: Array.isArray(character.data?.alternate_greetings) ? character.data.alternate_greetings.join(' ') : '',
-        }));
-        db.insertMany(insertSql, rows);
-
-        batchIndex++;
-        if (batchIndex % CHECKPOINT_EVERY_N_BATCHES === 0) {
-            db.checkpoint();
-        }
-    }
-
-    // Final checkpoint (native engine only - see sqlite-engine.js on why the wasm engine's checkpoint is a
-    // no-op) folds back whatever's accumulated in the WAL since the last periodic checkpoint above, so
-    // steady-state disk usage after a build reflects the actual index size rather than up to
-    // CHECKPOINT_EVERY_N_BATCHES batches' worth more.
-    db.checkpoint();
-
-    return db;
 }
 
 /** No-op `close()` for a tantivy index handle - this binding has no explicit index-handle-close API, so every
@@ -614,7 +510,7 @@ function createEmptyTantivyIndexAt(tantivy, dir) {
  * metadata store was unavailable at the time - matches getFreshnessSignature()'s own fallback).
  */
 async function rebuildTantivyIndexFromScratch(directories, tantivy) {
-    if (await getCurrentRev(directories) === null) {
+    if (await getCurrentSeq(directories) === null) {
         return buildTantivyIndexFromFilesystemScan(directories, tantivy);
     }
 
@@ -643,11 +539,11 @@ async function rebuildTantivyIndexFromScratch(directories, tantivy) {
     // above can't just keep being used after the rename.
     const reopened = reopenTantivyIndexAt(tantivy, indexDir);
 
-    await setMetaValue(directories, TANTIVY_INDEX_REV_META_KEY, String(updated.lastRev));
-    await setMetaValue(directories, TANTIVY_INDEX_TAGS_REV_META_KEY, String(updated.lastTagsRev));
+    await setMetaValue(directories, TANTIVY_INDEX_SEQ_META_KEY, String(updated.lastSeq));
+    await setMetaValue(directories, TANTIVY_INDEX_TAGS_HASH_META_KEY, String(updated.lastTagsHash));
     await setMetaValue(directories, TANTIVY_INDEX_SCHEMA_VERSION_META_KEY, String(TANTIVY_SCHEMA_VERSION));
 
-    return { ...reopened, close: NOOP_CLOSE, lastRev: updated.lastRev, lastTagsRev: updated.lastTagsRev };
+    return { ...reopened, close: NOOP_CLOSE, lastSeq: updated.lastSeq, lastTagsHash: updated.lastTagsHash };
 }
 
 /**
@@ -660,11 +556,10 @@ async function rebuildTantivyIndexFromScratch(directories, tantivy) {
  * top-of-function fallback, and rebuildTantivyIndexFromScratch()'s own redirect target when it discovers the
  * store went unavailable out from under it.
  *
- * Reuses the exact same batched-read discipline (readCharacterBatches(), INDEX_BUILD_BATCH_SIZE/
- * INDEX_BUILD_READ_CONCURRENCY/CHECKPOINT_EVERY_N_BATCHES) buildSqliteIndex() does, for the same OOM-avoidance
- * reasons documented on those constants - a tantivy IndexWriter can still accumulate an unbounded amount of
- * unflushed state if fed the entire library in one go, so periodic writer.commit() calls here play the same role
- * periodic db.checkpoint() calls do for the SQLite tier.
+ * Reuses the same batched-read discipline (readCharacterBatches(), INDEX_BUILD_BATCH_SIZE/
+ * INDEX_BUILD_READ_CONCURRENCY/CHECKPOINT_EVERY_N_BATCHES) for the same OOM-avoidance reasons documented on
+ * those constants - a tantivy IndexWriter can still accumulate an unbounded amount of unflushed state if fed
+ * the entire library in one go, so periodic writer.commit() calls here bound that.
  *
  * Since the metadata store is unavailable whenever this runs, there is no rev/tags_rev to record - the returned
  * watermark is always `null`/`null`, and no meta values get written (setMetaValue() would no-op against an
@@ -725,7 +620,7 @@ async function buildTantivyIndexFromFilesystemScan(directories, tantivy) {
     // above can't just keep being used after the rename.
     const reopened = reopenTantivyIndexAt(tantivy, indexDir);
 
-    return { ...reopened, close: NOOP_CLOSE, lastRev: null, lastTagsRev: null };
+    return { ...reopened, close: NOOP_CLOSE, lastSeq: null, lastTagsHash: null };
 }
 
 /**
@@ -751,14 +646,14 @@ async function buildTantivyIndexFromFilesystemScan(directories, tantivy) {
  * - `truncated: true`, not implemented as of phase 1, but this function is already correct against it) - the
  * caller (loadOrUpdateTantivyIndex()) must fall back to a full rebuild in that case.
  */
-async function applyIncrementalTantivyChanges(directories, tantivy, index, schema, sinceRev, sinceTagsRev) {
-    const currentRev = await getCurrentRev(directories);
-    const currentTagsRev = await getTagsRevision(directories);
-    if (currentRev === null) {
+async function applyIncrementalTantivyChanges(directories, tantivy, index, schema, sinceSeq, prevTagsHash) {
+    const currentSeq = await getCurrentSeq(directories);
+    const currentTagsHash = await getTagsHash(directories);
+    if (currentSeq === null) {
         return null;
     }
 
-    const changesResult = await getChangesSince(directories, Number.isFinite(sinceRev) ? sinceRev : 0);
+    const changesResult = await getChangesSince(directories, Number.isFinite(sinceSeq) ? sinceSeq : 0);
     if (!changesResult || changesResult.truncated) {
         return null;
     }
@@ -768,7 +663,7 @@ async function applyIncrementalTantivyChanges(directories, tantivy, index, schem
 
     // A tag *rename* (a tags.js definition edit, not an assignment change) bumps tags_rev without producing any
     // `changes` row naming the characters whose indexed resolved_tags text it affects - see this module's header.
-    if (currentTagsRev !== sinceTagsRev) {
+    if (currentTagsHash !== prevTagsHash) {
         const taggedIds = await getAllTaggedCharacterIds(directories);
         for (const id of taggedIds ?? []) {
             if (!idsToReindex.has(id)) {
@@ -810,7 +705,7 @@ async function applyIncrementalTantivyChanges(directories, tantivy, index, schem
         writer.waitMergingThreads();
     }
 
-    return { lastRev: currentRev, lastTagsRev: currentTagsRev ?? null };
+    return { lastSeq: currentSeq, lastTagsHash: currentTagsHash ?? null };
 }
 
 /**
@@ -845,8 +740,8 @@ async function applyIncrementalTantivyChanges(directories, tantivy, index, schem
  */
 async function openPersistedTantivyIndexStale(directories, tantivy) {
     const indexDir = tantivyIndexDir(directories);
-    const persistedRev = await getMetaValue(directories, TANTIVY_INDEX_REV_META_KEY);
-    if (persistedRev === null) {
+    const persistedSeq = await getMetaValue(directories, TANTIVY_INDEX_SEQ_META_KEY);
+    if (persistedSeq === null) {
         return null;
     }
     try {
@@ -861,8 +756,8 @@ async function openPersistedTantivyIndexStale(directories, tantivy) {
             return null;
         }
 
-        const persistedTagsRev = (await getMetaValue(directories, TANTIVY_INDEX_TAGS_REV_META_KEY)) ?? null;
-        return { index, schema, close: NOOP_CLOSE, lastRev: Number(persistedRev), lastTagsRev: persistedTagsRev };
+        const persistedTagsHash = (await getMetaValue(directories, TANTIVY_INDEX_TAGS_HASH_META_KEY)) ?? null;
+        return { index, schema, close: NOOP_CLOSE, lastSeq: Number(persistedSeq), lastTagsHash: persistedTagsHash };
     } catch (err) {
         console.error(color.red('[search] failed to reopen the persisted character tantivy index, falling back to a full rebuild:'));
         console.error(color.red(`[search]   ${err.message}`));
@@ -894,16 +789,16 @@ async function loadOrUpdateTantivyIndex(directories, tantivy, previous) {
     // matching mtime-based fallback means this gets called on *every* directory-mtime change in that state, and
     // a full filesystem scan (the one case that can't be expressed as "incremental from rev 0" - see this
     // module's header) is the only thing that can possibly be correct without a change log.
-    if (await getCurrentRev(directories) === null) {
+    if (await getCurrentSeq(directories) === null) {
         return buildTantivyIndexFromFilesystemScan(directories, tantivy);
     }
 
     if (previous?.index) {
-        const updated = await applyIncrementalTantivyChanges(directories, tantivy, previous.index, previous.schema, previous.lastRev, previous.lastTagsRev ?? null);
+        const updated = await applyIncrementalTantivyChanges(directories, tantivy, previous.index, previous.schema, previous.lastSeq, previous.lastTagsHash ?? null);
         if (updated) {
-            if (updated.lastRev !== null) {
-                await setMetaValue(directories, TANTIVY_INDEX_REV_META_KEY, String(updated.lastRev));
-                await setMetaValue(directories, TANTIVY_INDEX_TAGS_REV_META_KEY, String(updated.lastTagsRev));
+            if (updated.lastSeq !== null) {
+                await setMetaValue(directories, TANTIVY_INDEX_SEQ_META_KEY, String(updated.lastSeq));
+                await setMetaValue(directories, TANTIVY_INDEX_TAGS_HASH_META_KEY, String(updated.lastTagsHash));
                 await setMetaValue(directories, TANTIVY_INDEX_SCHEMA_VERSION_META_KEY, String(TANTIVY_SCHEMA_VERSION));
             }
             return { ...previous, ...updated };
@@ -918,88 +813,25 @@ async function loadOrUpdateTantivyIndex(directories, tantivy, previous) {
 }
 
 /**
- * The AND-by-default rationale for multi-word queries is documented in search-query.js; the specific numbers it
- * was measured against: a search for "vampire romance" OR-combined matched 11,101 of 24,171 cards (worthless as
- * a filter), AND-combined matched 315 (a result set someone could actually use). Known tradeoff: FTS5 prefix
- * matching (buildFtsQuery(), search-query.js) handles partial words (typing-in-progress) but not misspellings.
- * @param {import('./sqlite-engine.js').SqliteEngineHandle} db
- * @param {string} searchTerm
- * @param {number} [maxRows] Caps how many matching rows get fetched *and JSON.parse()'d* here. Without this, a
- * broad/short query (a single letter typed while typing, for instance) can prefix-match most of a large
- * library - every one of those rows' full character JSON then gets pulled off disk and parsed into a JS object
- * regardless of how small a page the caller actually wants, *before* pagination slicing (paginateSearchResults()
- * in characters.js) ever runs. That unbounded parse - not the final response serialization - is what actually
- * OOM'd this server on a real 24,171-character install (confirmed by reproducing it: the crash's V8 stack was
- * inside JsonParser, not JsonStringifier, i.e. this line, not response.send()). Left undefined only for a
- * caller that genuinely wants every match - none currently do.
- * @param {boolean} [favOnly] When true, adds `AND fav = 1` to the WHERE clause - see the `favOnly` doc on
- * buildSearchQuery() (tantivy-search.js) for why this has to be a query-level predicate (applied before
- * `LIMIT`), not a post-fetch filter over the already-capped page: a favorited row can rank arbitrarily far below
- * `maxRows` other, more textually-relevant rows, so filtering after the LIMIT would silently miss it.
- * @returns {{ item: object, score: number }[]} Results sorted best-first (ascending bm25 score - lower is
- * better, same convention the rest of this codebase's search results already use)
- */
-function querySqliteIndex(db, searchTerm, maxRows, favOnly) {
-    const ftsQuery = buildFtsQuery(searchTerm, FIELD_LABELS);
-    if (!ftsQuery) {
-        return [];
-    }
-    const weightsArg = BM25_WEIGHTS.join(', ');
-    // maxRows is always a value this module computed via Number.isFinite + Math.trunc (see searchCharacters()),
-    // never raw request input, so interpolating it directly is safe - it can only ever be digits/a minus sign.
-    const limitClause = Number.isFinite(maxRows) ? ` LIMIT ${Math.max(0, Math.trunc(maxRows))}` : '';
-    const favClause = favOnly ? ' AND fav = 1' : '';
-    return db.query(`SELECT avatar, data, bm25(cards, ${weightsArg}) as score FROM cards WHERE cards MATCH ?${favClause} ORDER BY score${limitClause}`, ftsQuery)
-        .map(row => ({ item: JSON.parse(row.data), score: row.score }));
-}
-
-/**
- * Counts how many rows match a query, independent of `maxRows`'s cap on `querySqliteIndex()` above - that cap
- * exists to bound how many *full character rows* get fetched and JSON.parse()'d (see that function's doc
- * comment), but a client paginating results still needs the real total match count (e.g. "showing 50 of 315")
- * even when it's well past whatever page it actually requested. FTS5's COUNT(*) is index-only - no row data is
- * read or parsed - so this stays cheap regardless of how many rows match.
- * @param {import('./sqlite-engine.js').SqliteEngineHandle} db
- * @param {string} searchTerm
- * @param {boolean} [favOnly] Same `AND fav = 1` predicate as querySqliteIndex() above, kept in sync so the
- * reported total matches what querySqliteIndex() with the same favOnly value would actually return.
- * @returns {number} Total number of matching rows
- */
-function countSqliteIndexMatches(db, searchTerm, favOnly) {
-    const ftsQuery = buildFtsQuery(searchTerm, FIELD_LABELS);
-    if (!ftsQuery) {
-        return 0;
-    }
-    const favClause = favOnly ? ' AND fav = 1' : '';
-    const [row] = db.query(`SELECT COUNT(*) as total FROM cards WHERE cards MATCH ?${favClause}`, ftsQuery);
-    return row ? Number(row.total) : 0;
-}
-
-/**
  * Fuzzy-searches a user's characters, rebuilding the persistent index first if it's missing or stale. Resolves
- * the full search engine chain via resolveSearchEngine() (search-engine.js) - tantivy first, falling back to
- * SQLite FTS5 (native better-sqlite3, then WebAssembly node-sqlite3-wasm) if tantivy's native binding isn't
- * usable on this install.
+ * the search engine via resolveSearchEngine() (search-engine.js) - tantivy is the only engine now; there is no
+ * fallback tier.
  *
  * The returned `backend` field lets callers (see the /api/characters/all handler in characters.js) tell the
- * client which engine actually served a given search - the client surfaces that as a visible indicator whenever
- * it's not the best available tier ('tantivy'), since every fallback tier below it is measurably slower (the
- * SQLite tiers are otherwise behaviorally identical to each other - same ranking, same `label:query` support -
- * see sqlite-engine.js), and 'unavailable' means search produced no results because nothing usable could be
- * loaded, not because the query didn't match anything. Nothing about a degraded-but-still-200-OK response would
- * otherwise reveal any of that to whoever's looking at an empty or slow result list.
+ * client which engine actually served a given search - 'unavailable' means search produced no results because
+ * nothing usable could be loaded, not because the query didn't match anything. Nothing about a degraded-but-
+ * still-200-OK response would otherwise reveal that to whoever's looking at an empty result list.
  * @param {string} handle User handle
  * @param {import('../users.js').UserDirectoryList} directories User directories
  * @param {string} searchTerm Search term
- * @param {number} [maxRows] Caps how many matching ids get fetched - see querySqliteIndex()'s doc comment for
- * the SQLite tier's rationale. For the tantivy tier this is now (design doc §5.1's payload shrink) a cap on bare
- * id strings, not full-JSON hits, so it's cheap to size generously - see SEARCH_ID_CAP.
+ * @param {number} [maxRows] Caps how many matching ids get fetched. This is now (design doc §5.1's payload
+ * shrink) a cap on bare id strings, not full-JSON hits, so it's cheap to size generously - see SEARCH_ID_CAP.
  * @param {boolean} [favOnly] When true, restricts matches to favorited characters only, applied inside the query
  * itself (not after `maxRows` truncates the page) - see buildSearchQuery()'s `favOnly` doc comment
  * (tantivy-search.js) for why a post-fetch filter here would be wrong: it lets the caller's own client-side
  * favorites filter (FilterHelper.favFilter(), public/scripts/filters.js) actually work when combined with a
  * search term, instead of only ever narrowing whichever relevance-ranked page happened to survive the cap.
- * @returns {Promise<{ hits: { id: string, score: number }[], total: number, backend: 'tantivy' | 'native' | 'wasm' | 'unavailable' }>}
+ * @returns {Promise<{ hits: { id: string, score: number }[], total: number, backend: 'tantivy' | 'unavailable' }>}
  * `hits` sorted best-first (ascending score - see tantivy-search.js's runSearch() for why the tantivy tier's
  * naturally-higher-is-better score gets negated to match this convention), the true total match count
  * (independent of `maxRows`), and which engine tier produced them.
@@ -1012,33 +844,23 @@ async function runIdSearch(handle, directories, searchTerm, maxRows, favOnly) {
         return { hits: [], total: 0, backend: 'unavailable' };
     }
 
-    if (engine.tier === 'tantivy') {
-        const tantivyIndex = await indexCoordinator.getIndex(
-            handle, signature,
-            (previous) => loadOrUpdateTantivyIndex(directories, engine.tantivy, previous),
-            // Cold-start fast path (search-index-coordinator.js's `openStale`) - see openPersistedTantivyIndexStale()'s
-            // doc comment for the incident this closes. Only consulted when this process has no live handle for
-            // `handle` yet at all; every other call (including the very next one right after this) goes through
-            // the `build` callback above like normal.
-            () => openPersistedTantivyIndexStale(directories, engine.tantivy),
-        );
-        const query = buildTantivyQuery(engine.tantivy, tantivyIndex.schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS, { favOnly });
-        if (!query) {
-            return { hits: [], total: 0, backend: 'tantivy' };
-        }
-        const boundedMaxRows = Number.isFinite(maxRows) ? maxRows : DEFAULT_TANTIVY_MAX_ROWS;
-        const { results, total } = runTantivySearch(tantivyIndex.index, query, boundedMaxRows);
-        // DATA_FIELD now stores just the id (design doc §5.1) - `raw` *is* the id, nothing to parse.
-        return { hits: results.map(r => ({ id: r.raw, score: r.score })), total, backend: 'tantivy' };
+    const tantivyIndex = await indexCoordinator.getIndex(
+        handle, signature,
+        (previous) => loadOrUpdateTantivyIndex(directories, engine.tantivy, previous),
+        // Cold-start fast path (search-index-coordinator.js's `openStale`) - see openPersistedTantivyIndexStale()'s
+        // doc comment for the incident this closes. Only consulted when this process has no live handle for
+        // `handle` yet at all; every other call (including the very next one right after this) goes through
+        // the `build` callback above like normal.
+        () => openPersistedTantivyIndexStale(directories, engine.tantivy),
+    );
+    const query = buildTantivyQuery(engine.tantivy, tantivyIndex.schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS, { favOnly });
+    if (!query) {
+        return { hits: [], total: 0, backend: 'tantivy' };
     }
-
-    const db = await indexCoordinator.getIndex(handle, signature, () => buildSqliteIndex(directories, engine.sqlite));
-    const results = querySqliteIndex(db, searchTerm, maxRows, favOnly);
-    return {
-        hits: results.map(r => ({ id: r.item.avatar, score: r.score })),
-        total: countSqliteIndexMatches(db, searchTerm, favOnly),
-        backend: engine.sqlite.kind,
-    };
+    const boundedMaxRows = Number.isFinite(maxRows) ? maxRows : DEFAULT_TANTIVY_MAX_ROWS;
+    const { results, total } = runTantivySearch(tantivyIndex.index, query, boundedMaxRows);
+    // DATA_FIELD now stores just the id (design doc §5.1) - `raw` *is* the id, nothing to parse.
+    return { hits: results.map(r => ({ id: r.raw, score: r.score })), total, backend: 'tantivy' };
 }
 
 /**
@@ -1057,7 +879,7 @@ async function runIdSearch(handle, directories, searchTerm, maxRows, favOnly) {
  * pass this (the /api/characters/all handler in characters.js passes offset+limit, sized to cover whatever page
  * it's about to slice out of the merged character+group results).
  * @param {boolean} [favOnly] Forwarded to runIdSearch() - see that function's doc comment.
- * @returns {Promise<{ results: { item: object, score: number }[], total: number, backend: 'tantivy' | 'native' | 'wasm' | 'unavailable' }>}
+ * @returns {Promise<{ results: { item: object, score: number }[], total: number, backend: 'tantivy' | 'unavailable' }>}
  * Results sorted best-first, the true total match count (independent of `maxRows`), and which engine tier
  * produced them. A matched id whose character data can no longer be resolved (deleted since the index was last
  * caught up, or a corrupt/unreadable card) is silently dropped, the same way readCharacterBatches() already
@@ -1095,7 +917,7 @@ export async function searchCharacters(handle, directories, searchTerm, maxRows,
  * how a caller that needs the *whole* matched set (not just a relevance-ranked page of it - e.g. sort:'random'
  * combined with filter.search, design doc §5.3 decision 23) should size this.
  * @param {boolean} [favOnly] Forwarded to runIdSearch() - see that function's doc comment.
- * @returns {Promise<{ ids: string[], scoresById: Map<string, number>, total: number, backend: 'tantivy' | 'native' | 'wasm' | 'unavailable' }>}
+ * @returns {Promise<{ ids: string[], scoresById: Map<string, number>, total: number, backend: 'tantivy' | 'unavailable' }>}
  * `ids` in relevance order (best match first), `scoresById` the same hits keyed by id (ascending-is-better, the
  * Fuse/BM25 convention this codebase already uses elsewhere) - needed by a caller that has to merge this result
  * against a *different* index's relevance order (characters+groups search, `/query`'s `filter.includeGroups`
@@ -1121,7 +943,7 @@ export async function searchCharacterIds(handle, directories, searchTerm, maxRow
  * decide one's needed.
  * @param {string} handle User handle
  * @param {import('../users.js').UserDirectoryList} directories User directories
- * @returns {Promise<{ ok: boolean, backend: 'tantivy' | 'native' | 'wasm' | 'unavailable' }>}
+ * @returns {Promise<{ ok: boolean, backend: 'tantivy' | 'unavailable' }>}
  */
 export async function rebuildCharacterSearchIndex(handle, directories) {
     const engine = await resolveSearchEngine();
@@ -1130,11 +952,6 @@ export async function rebuildCharacterSearchIndex(handle, directories) {
     }
 
     const signature = await getFreshnessSignature(directories);
-    if (engine.tier === 'tantivy') {
-        await indexCoordinator.forceRebuild(handle, signature, () => rebuildTantivyIndexFromScratch(directories, engine.tantivy));
-        return { ok: true, backend: 'tantivy' };
-    }
-
-    await indexCoordinator.forceRebuild(handle, signature, () => buildSqliteIndex(directories, engine.sqlite));
-    return { ok: true, backend: engine.sqlite.kind };
+    await indexCoordinator.forceRebuild(handle, signature, () => rebuildTantivyIndexFromScratch(directories, engine.tantivy));
+    return { ok: true, backend: 'tantivy' };
 }
