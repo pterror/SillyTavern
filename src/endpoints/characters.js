@@ -31,7 +31,7 @@ import cacheBuster from '../middleware/cacheBuster.js';
 import { searchCharacters, searchCharacterIds, rebuildCharacterSearchIndex, SEARCH_ID_CAP } from './characters-search-index.js';
 import { searchGroups, searchGroupIds } from './groups-search-index.js';
 import { getGroupsData, getGroupsByIds } from './groups.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, resolveFingerprints, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getShallowByIds } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, resolveFingerprints, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getShallowByIds, characterChangeEmitter } from '../character-metadata-db.js';
 import { DEFAULT_DIGEST_BUCKET_COUNT, characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash } from '../../public/scripts/hash-utils.js';
 
 // With 100 MB limit it would take roughly 3000 characters to reach this limit
@@ -2265,6 +2265,35 @@ router.post('/changes', async function (request, response) {
         console.error('[characters/changes] Change-feed query failed:', err);
         return response.status(500).send({ error: true });
     }
+});
+
+/**
+ * Server-Sent Events endpoint that pushes an empty notification every time the metadata store's `changes` table
+ * gets a new row (see character-metadata-db.js's characterChangeEmitter), so a connected client can call
+ * `/changes` right away instead of polling on a timer. The event payload carries no data on purpose - clients
+ * already track their own `sinceSeq` cursor via `/changes`, so this is just a "something changed, go ask" ping.
+ * @param  {import("express").Request} request The HTTP request object.
+ * @param  {import("express").Response} response The HTTP response object.
+ * @return {void}
+ */
+router.get('/changes/stream', function (request, response) {
+    response.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+    });
+    response.write(':ok\n\n');
+
+    const onChange = () => {
+        response.write('data: {}\n\n');
+    };
+
+    characterChangeEmitter.on('change', onChange);
+
+    request.on('close', () => {
+        characterChangeEmitter.off('change', onChange);
+    });
 });
 
 /**
