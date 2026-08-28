@@ -140,14 +140,25 @@ class DiskCache {
             const cache = await this.instance();
             const validKeys = new Set();
             for (const dir of directoriesList) {
-                const files = fs.readdirSync(dir.characters, { withFileTypes: true });
+                if (!fs.existsSync(dir.characters)) continue;
+                const files = await fs.promises.readdir(dir.characters, { withFileTypes: true });
                 for (const file of files.filter(f => f.isFile() && path.extname(f.name) === '.png')) {
                     const filePath = path.join(dir.characters, file.name);
-                    const cacheKey = getCacheKey(filePath);
-                    validKeys.add(path.parse(cache.getDatumPath(cacheKey)).base);
+                    // Inline async stat instead of getCacheKey()'s statSync - this function runs in the
+                    // background and must not block the event loop with 327k synchronous stat calls.
+                    try {
+                        const stat = await fs.promises.stat(filePath);
+                        const cacheKey = `${filePath}-${stat.mtimeMs}`;
+                        validKeys.add(path.parse(cache.getDatumPath(cacheKey)).base);
+                    } catch (err) {
+                        if (err.code !== 'ENOENT') throw err;
+                        // File gone between readdir and stat - its cache entry is stale by definition,
+                        // so not adding it to validKeys is correct (it'll be pruned below).
+                    }
                 }
             }
-            for (const key of this.hashedKeys) {
+            const cachedKeys = await fs.promises.readdir(this.cachePath).catch(() => []);
+            for (const key of cachedKeys) {
                 if (!validKeys.has(key)) {
                     await cache.removeItem(key);
                 }
