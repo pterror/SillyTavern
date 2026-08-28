@@ -8799,6 +8799,9 @@ export function activateSendButtons() {
     hideStopButton();
     showSwipeButtons();
     delete document.body.dataset.generating;
+    if (online_status !== 'no_connection') {
+        $('#send_but, #mes_continue, #mes_impersonate').removeClass('displayNone');
+    }
 }
 
 /**
