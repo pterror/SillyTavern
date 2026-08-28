@@ -1310,6 +1310,51 @@ export async function getCharacterFavsByIds(directories, ids) {
 }
 
 /**
+ * Bulk `tag_ids` lookup for a known set of character ids - same batched shape as getCharacterFavsByIds().
+ * Returns `{[avatar: string]: string[]}` with an entry for every tracked character; untracked ids are omitted
+ * (same contract as getCharacterFavsByIds - "not present" means the metadata store has no signal, so the caller
+ * should leave whatever's already on the character untouched).
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string[]} ids Avatar filenames
+ * @returns {Promise<{[id: string]: string[]}>}
+ */
+export async function getCharacterTagIdsByIds(directories, ids) {
+    const entry = await getEntry(directories);
+    if (!entry || !Array.isArray(ids) || ids.length === 0) return {};
+
+    // First, find which of the requested ids are actually tracked (have a row in `characters`),
+    // so we can distinguish "tracked but no tags" (-> []) from "not tracked" (-> omitted).
+    /** @type {Set<string>} */
+    const trackedIds = new Set();
+    for (let i = 0; i < ids.length; i += FAV_LOOKUP_BATCH_SIZE) {
+        const batch = ids.slice(i, i + FAV_LOOKUP_BATCH_SIZE);
+        const placeholders = batch.map(() => '?').join(',');
+        const rows = entry.db.all(`SELECT id FROM characters WHERE id IN (${placeholders})`, batch);
+        for (const row of rows) {
+            trackedIds.add(row.id);
+        }
+    }
+
+    /** @type {{[id: string]: string[]}} */
+    const result = {};
+    for (const id of trackedIds) {
+        result[id] = [];
+    }
+
+    for (let i = 0; i < ids.length; i += FAV_LOOKUP_BATCH_SIZE) {
+        const batch = ids.slice(i, i + FAV_LOOKUP_BATCH_SIZE);
+        const placeholders = batch.map(() => '?').join(',');
+        const rows = entry.db.all(`SELECT character_id, tag_id FROM character_tags WHERE character_id IN (${placeholders})`, batch);
+        for (const row of rows) {
+            if (result[row.character_id]) {
+                result[row.character_id].push(row.tag_id);
+            }
+        }
+    }
+    return result;
+}
+
+/**
  * Bulk `active_chat` lookup for a known set of ids - same batched shape as getCharacterFavsByIds() just above
  * (FAV_LOOKUP_BATCH_SIZE-sized `IN (...)` chunks, for the identical SQLITE_MAX_VARIABLE_NUMBER reason), used by
  * the live `/all`/`/query`-adjacent routes (characters.js) to stamp their already-disk-read results with the

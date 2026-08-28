@@ -31,7 +31,7 @@ import cacheBuster from '../middleware/cacheBuster.js';
 import { searchCharacters, searchCharacterIds, rebuildCharacterSearchIndex, SEARCH_ID_CAP } from './characters-search-index.js';
 import { searchGroups, searchGroupIds } from './groups-search-index.js';
 import { getGroupsData, getGroupsByIds } from './groups.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, resolveFingerprints, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getShallowByIds, characterChangeEmitter } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, resolveFingerprints, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getShallowByIds, characterChangeEmitter } from '../character-metadata-db.js';
 import { DEFAULT_DIGEST_BUCKET_COUNT, characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash } from '../../public/scripts/hash-utils.js';
 
 // With 100 MB limit it would take roughly 3000 characters to reach this limit
@@ -1735,6 +1735,27 @@ async function stampDbActiveChat(directories, characters) {
     }
 }
 
+/**
+ * Overwrites each character's `.tag_ids` with the metadata store's own value, in place - the tag-assignment
+ * counterpart to stampDbFav()/stampDbActiveChat() above. `tag_ids` is db-authoritative (character_tags table)
+ * once a row is tracked; processCharacter() reads from the PNG file which doesn't carry tag assignments, so
+ * without this stamp the client receives characters with tag_ids undefined, and seedTagMapFromRecords() can't
+ * build tag_map. Same "not present means no signal, leave untouched" contract as the other stamp functions.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {object[]} characters Already-processed character objects (each with `.avatar` set) - mutated in place.
+ * @returns {Promise<void>}
+ */
+async function stampDbTagIds(directories, characters) {
+    const ids = characters.map(c => c.avatar).filter(Boolean);
+    if (ids.length === 0) return;
+    const tagIdsById = await getCharacterTagIdsByIds(directories, ids);
+    for (const character of characters) {
+        if (Object.prototype.hasOwnProperty.call(tagIdsById, character.avatar)) {
+            character.tag_ids = tagIdsById[character.avatar];
+        }
+    }
+}
+
 router.post('/all', async function (request, response) {
     try {
         const { sortField, sortOrder, offset, limit, search, includeGroups, fav } = request.body ?? {};
@@ -1747,6 +1768,7 @@ router.post('/all', async function (request, response) {
             const data = (await Promise.all(processingPromises)).filter(c => 'name' in c);
             await stampDbFav(request.user.directories, data);
             await stampDbActiveChat(request.user.directories, data);
+            await stampDbTagIds(request.user.directories, data);
             // No pagination params at all: preserve the exact pre-existing response shape (a bare array).
             return response.send(data);
         }
@@ -1790,6 +1812,7 @@ router.post('/all', async function (request, response) {
             // decided against whatever the index had at query time - see this function's own doc comment.
             await stampDbFav(request.user.directories, finalCharacterResults.map(r => r.item));
             await stampDbActiveChat(request.user.directories, finalCharacterResults.map(r => r.item));
+            await stampDbTagIds(request.user.directories, finalCharacterResults.map(r => r.item));
 
             const { items, total } = paginateSearchResults(finalCharacterResults, groupSearch.results, {
                 offset: numericOffset, limit: numericLimit,
@@ -1816,6 +1839,7 @@ router.post('/all', async function (request, response) {
         const data = (await Promise.all(processingPromises)).filter(c => c.name);
         await stampDbFav(request.user.directories, data);
         await stampDbActiveChat(request.user.directories, data);
+        await stampDbTagIds(request.user.directories, data);
 
         if (includeGroups) {
             const groupsData = getGroupsData(request.user.directories);
@@ -2604,6 +2628,7 @@ router.post('/batch', async function (request, response) {
         // wrong, only this endpoint's un-stamped response was.
         await stampDbFav(request.user.directories, data);
         await stampDbActiveChat(request.user.directories, data);
+        await stampDbTagIds(request.user.directories, data);
         return response.send(data);
     } catch (err) {
         console.error(err);
@@ -2624,6 +2649,7 @@ router.post('/get', validateAvatarUrlMiddleware, async function (request, respon
         const data = await processCharacter(item, request.user.directories, { shallow: false });
         await stampDbFav(request.user.directories, [data]);
         await stampDbActiveChat(request.user.directories, [data]);
+        await stampDbTagIds(request.user.directories, [data]);
 
         // Per-field content hashes for edit conflict detection: the client stores these at load time
         // and sends them back on save so the server can detect if another session changed the card
