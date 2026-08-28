@@ -6548,3 +6548,53 @@ body:not(.movingUI) .drawer-content.maximized {
         border-width: 2px;
     }
 }
+
+/* Preset reorder popup */
+.preset-reorder-container {
+    min-width: 250px;
+}
+
+.preset-reorder-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.preset-reorder-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    margin: 2px 0;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 5px;
+    background: var(--SmartThemeBlurTintColor);
+    cursor: grab;
+    user-select: none;
+}
+
+.preset-reorder-item:hover {
+    background: var(--SmartThemeChatTintColor);
+}
+
+.preset-reorder-item.ui-sortable-helper {
+    cursor: grabbing;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.preset-reorder-grip {
+    opacity: 0.5;
+    font-size: 0.85em;
+}
+
+.preset-reorder-item:hover .preset-reorder-grip {
+    opacity: 0.8;
+}
+
+.preset-reorder-list .ui-sortable-placeholder {
+    visibility: visible !important;
+    border: 1px dashed var(--SmartThemeBorderColor);
+    border-radius: 5px;
+    margin: 2px 0;
+    height: 32px;
+}
