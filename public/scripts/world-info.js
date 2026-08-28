@@ -4572,6 +4572,16 @@ async function getCharacterLore() {
         }
     }
 
+    // If no primary world is linked, activate the embedded character_book directly - no import needed.
+    if (!baseWorldName && character?.data?.character_book?.entries?.length) {
+        const converted = convertCharacterBook(character.data.character_book);
+        const embeddedEntries = Object.keys(converted.entries)
+            .map(x => converted.entries[x])
+            .map(({ uid, ...rest }) => ({ uid, world: '__embedded__', ...rest }));
+        entries = entries.concat(embeddedEntries);
+        console.debug(`[WI] Character ${name}'s embedded lorebook has ${embeddedEntries.length} entries (activated directly)`);
+    }
+
     console.debug(`[WI] Character ${name}'s lore has ${entries.length} world info entries`, [...worldsToSearch]);
     return entries;
 }
