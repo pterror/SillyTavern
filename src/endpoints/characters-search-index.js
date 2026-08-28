@@ -857,7 +857,7 @@ async function runIdSearch(handle, directories, searchTerm, maxRows, favOnly) {
     if (!query) {
         return { hits: [], total: 0, backend: 'tantivy' };
     }
-    const boundedMaxRows = Number.isFinite(maxRows) ? maxRows : DEFAULT_TANTIVY_MAX_ROWS;
+    const boundedMaxRows = Number.isFinite(maxRows) && maxRows > 0 ? maxRows : undefined;
     const { results, total } = runTantivySearch(tantivyIndex.index, query, boundedMaxRows);
     // DATA_FIELD now stores just the id (design doc §5.1) - `raw` *is* the id, nothing to parse.
     return { hits: results.map(r => ({ id: r.raw, score: r.score })), total, backend: 'tantivy' };
