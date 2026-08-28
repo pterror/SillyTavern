@@ -9674,6 +9674,9 @@ async function getChatResult() {
     if (chat.length === 0) {
         const message = getFirstMessage();
         if (message.mes) {
+            if (power_user.message_token_count_enabled) {
+                message.extra.token_count = await getTokenCountAsync(message.mes, 0);
+            }
             chat.push(message);
             freshChat = true;
         }
@@ -11436,20 +11439,48 @@ export async function updateSwipeCounter(mesId, { message = undefined, messageEl
         syncMesToSwipe(mesId);
     }
 
-    const swipeCounterText = formatSwipeCounter((message?.swipe_id + 1), message?.swipes?.length);
+    const currentNum = (message?.swipe_id ?? 0) + 1;
+    const totalNum = message?.swipes?.length ?? 1;
     const swipeCounter = messageElement.find('.swipes-counter');
     const swipePickerButton = messageElement.find('.mes_swipe_picker');
     const canOpenSwipePicker = canOpenSwipePickerForMessage(mesId);
     const canJumpToSwipe = canJumpToSwipeForMessage(mesId);
 
+    // Build or update the editable swipe jump input
+    let jumpInput = swipeCounter.find('.swipe-jump-input');
+    let totalSpan = swipeCounter.find('.swipe-jump-total');
+    if (jumpInput.length === 0 && totalNum > 1) {
+        swipeCounter.empty();
+        jumpInput = $('<input>', {
+            type: 'number',
+            class: 'swipe-jump-input',
+            min: 1,
+            max: totalNum,
+            value: currentNum,
+        });
+        totalSpan = $('<span>', { class: 'swipe-jump-total' });
+        swipeCounter.append(jumpInput, totalSpan);
+    }
+
+    if (jumpInput.length > 0) {
+        jumpInput.val(currentNum).attr('max', totalNum);
+        totalSpan.text(`​/​${totalNum}`);
+    } else {
+        const swipeCounterText = formatSwipeCounter(currentNum, totalNum);
+        swipeCounter.text(swipeCounterText);
+    }
+
     swipeCounter
-        .text(swipeCounterText)
         .prop('hidden', false)
         .toggleClass('swipe-picker-enabled', canOpenSwipePicker)
         .toggleClass(INTERACTABLE_CONTROL_CLASS, canOpenSwipePicker)
         .attr('role', canOpenSwipePicker ? 'button' : null)
         .attr('title', canJumpToSwipe ? t`Click to jump to a swipe` : canOpenSwipePicker ? t`Click to view swipe history` : null);
     swipePickerButton.toggle(canOpenSwipePicker);
+
+    // Show greeting search toggle only on first message with swipes
+    const searchToggle = messageElement.find('.greeting-search-toggle');
+    searchToggle.toggle(mesId === 0 && totalNum > 1);
 
     if (!canOpenSwipePicker) {
         swipeCounter.removeAttr('tabindex');
@@ -12548,6 +12579,9 @@ export async function createOrEditCharacter(e) {
                 (chat.length === 0 || (chat.length === 1 && !chat[0].is_user && !chat[0].is_system));
 
             if (shouldRegenerateMessage) {
+                if (power_user.message_token_count_enabled) {
+                    message.extra.token_count = await getTokenCountAsync(message.mes, 0);
+                }
                 chat.splice(0, chat.length, message);
                 const messageId = (chat.length - 1);
                 await eventSource.emit(event_types.MESSAGE_RECEIVED, messageId, 'first_message');
