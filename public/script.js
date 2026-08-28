@@ -10213,36 +10213,17 @@ export async function saveSettings(...keys) {
         // Partial save path: send only the keys that were explicitly marked dirty.
         const partialPayload = {};
         for (const key of dirtyKeys) {
-            // Explicit dotted path from a call site (e.g. saveSettingsDebounced('power_user.servers'))
             if (key.includes('.')) {
+                // Dotted path: extract just the addressed sub-field from the payload.
                 const topLevel = key.split('.')[0];
                 if (topLevel in payload) {
                     partialPayload[key] = getAtPath(payload, key);
                 }
-                continue;
-            }
-            if (!(key in payload)) continue;
-
-            const newValue = payload[key];
-
-            // For plain-object settings keys, auto-decompose into per-field dotted paths by comparing
-            // content hashes against what the server has - only the sub-fields that actually changed
-            // get sent and conflict-checked individually.
-            if (newValue != null && typeof newValue === 'object' && !Array.isArray(newValue)) {
-                let hasChanges = false;
-                for (const subKey of Object.keys(newValue)) {
-                    const pathKey = `${key}.${subKey}`;
-                    const newHash = getStringHash(JSON.stringify(newValue[subKey], null, 4));
-                    if (newHash !== (serverKeyHashes[pathKey] ?? 0)) {
-                        partialPayload[pathKey] = newValue[subKey];
-                        hasChanges = true;
-                    }
-                }
-                if (!hasChanges) continue;
-            } else {
-                const newHash = getStringHash(JSON.stringify(newValue, null, 4));
-                if (newHash === (serverKeyHashes[key] ?? 0)) continue;
-                partialPayload[key] = newValue;
+            } else if (key in payload) {
+                // Top-level key: send the whole value. Call sites that want per-field granularity
+                // pass a dotted path instead (same pattern as /merge-attributes and /save-partial
+                // for quick replies).
+                partialPayload[key] = payload[key];
             }
         }
 
