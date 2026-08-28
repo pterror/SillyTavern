@@ -89,6 +89,9 @@ export async function setCachedCursor(seq) {
 // Reserved key for the last-verified root digest (see verifyCharacterCacheDigest's fast-path skip).
 const LAST_VERIFIED_DIGEST_KEY = '__last_verified_digest__';
 
+// Reserved key for tracking IDB write failures (see fetchCharactersDelta's retry-on-failure path).
+const WRITE_FAILURES_KEY = '__write_failures__';
+
 /**
  * The 128-bit root digest that was current when the last successful digest verification completed.
  * Content-derived (XOR-fold of all per-record per-field hashes), not a counter - so it can't
@@ -126,6 +129,39 @@ export async function setLastVerifiedDigest(digest) {
 }
 
 /**
+ * Avatar IDs whose IDB write failed on the last sync. fetchCharactersDelta re-fetches these on the
+ * next boot so the failure is retried exactly once, driven by the actual failure event rather than
+ * a periodic verification sweep.
+ * @returns {Promise<string[]>}
+ */
+export async function getWriteFailures() {
+    const store = getCharacterCacheStore();
+    try {
+        const failures = await store.getItem(WRITE_FAILURES_KEY);
+        return Array.isArray(failures) ? failures : [];
+    } catch {
+        return [];
+    }
+}
+
+/**
+ * @param {string[]} ids Empty array clears the failure list.
+ * @returns {Promise<void>}
+ */
+export async function setWriteFailures(ids) {
+    const store = getCharacterCacheStore();
+    try {
+        if (ids.length > 0) {
+            await store.setItem(WRITE_FAILURES_KEY, ids);
+        } else {
+            await store.removeItem(WRITE_FAILURES_KEY);
+        }
+    } catch (error) {
+        console.error('Failed to persist write failures:', error);
+    }
+}
+
+/**
  * Reads every cached character, keyed by avatar. This IS the client's current view of the whole library once
  * it's caught up with the change feed - unlike the old manifest-diff scheme, nothing here needs a fresh
  * ground-truth listing from the server to know the full current id set: every real mutation since this cache's
@@ -138,7 +174,7 @@ export async function getAllCachedCharacters() {
     const result = new Map();
     try {
         await store.iterate((record, key) => {
-            if (key === CURSOR_KEY || key === LEGACY_REV_KEY) return;
+            if (key === CURSOR_KEY || key === LEGACY_REV_KEY || key === WRITE_FAILURES_KEY) return;
             if (record && record.character) {
                 result.set(key, record.character);
             }
@@ -180,7 +216,7 @@ export async function getAllCachedHashes() {
     const unhashed = [];
     try {
         await store.iterate((record, key) => {
-            if (key === CURSOR_KEY || key === LEGACY_REV_KEY || key === LAST_VERIFIED_DIGEST_KEY) return;
+            if (key === CURSOR_KEY || key === LEGACY_REV_KEY || key === LAST_VERIFIED_DIGEST_KEY || key === WRITE_FAILURES_KEY) return;
             if (record?.hashes?.v === HASH_VERSION) {
                 result.set(key, record.hashes);
             } else if (record?.character) {
@@ -260,9 +296,11 @@ export async function getCachedHashesByIds(ids) {
  * verifyCharacterCacheDigest()) reads these instead of recomputing from the full character data - see
  * getAllCachedHashes() and public/scripts/hash-utils.js's header for the full reasoning on the hashing scheme.
  * @param {{avatar: string, character: object}[]} entries
+ * @returns {Promise<string[]>} Avatar IDs that failed to write (empty if all succeeded).
  */
 export async function saveCachedCharacters(entries) {
     const store = getCharacterCacheStore();
+    const failed = [];
     // Batched to avoid overwhelming IndexedDB with hundreds of thousands of concurrent writes
     // (a one-time tag_ids backfill across 314k records would otherwise fire 314k concurrent
     // setItem calls via Promise.all, making the browser unresponsive for seconds).
@@ -279,10 +317,13 @@ export async function saveCachedCharacters(entries) {
                 content: characterDigestFieldsHash(character) % 4294967296,
                 v: HASH_VERSION,
             };
-            return store.setItem(avatar, { character, hashes }).catch(error =>
-                console.error(`Failed to cache character data for ${avatar}:`, error));
+            return store.setItem(avatar, { character, hashes }).catch(error => {
+                console.error(`Failed to cache character data for ${avatar}:`, error);
+                failed.push(avatar);
+            });
         }));
     }
+    return failed;
 }
 
 /**
