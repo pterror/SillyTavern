@@ -1610,7 +1610,6 @@ async function loadPersonaForCurrentChat({ doRender = false } = {}) {
         if (!userAvatars.includes(chatPersona)) {
             console.warn('Chat-locked persona avatar not found, unlocking persona');
             delete chat_metadata.persona;
-            saveSettingsDebounced('power_user');
             chatPersona = '';
         }
         if (chatPersona) connectType = 'chat';
@@ -2319,7 +2318,7 @@ async function updatePersonaCallback(args) {
         return avatarId;
     }
 
-    saveSettingsDebounced('power_user');
+    saveSettingsDebounced('power_user.persona_data');
     await eventSource.emit(event_types.PERSONA_UPDATED, avatarId);
 
     // Refresh UI if the updated persona is the active one

@@ -2295,7 +2295,7 @@ async function loadContextSettings() {
             if (!CSS.supports('field-sizing', 'content') && $(this).is('textarea')) {
                 await resetScrollHeight($(this));
             }
-            saveSettingsDebounced('power_user');
+            saveSettingsDebounced(control.isGlobalSetting ? 'power_user.' + control.property : 'power_user.context');
         });
 
         if (control.trigger) {
@@ -2361,7 +2361,7 @@ async function loadContextSettings() {
 
         updateBindModelTemplatesState();
 
-        saveSettingsDebounced('power_user');
+        saveSettingsDebounced('power_user.context', 'power_user.instruct');
     });
 }
 
@@ -2865,7 +2865,6 @@ async function importTheme(file) {
     option.value = parsed.name;
     option.innerText = parsed.name;
     $('#themes').append(option);
-    saveSettingsDebounced('power_user');
     toastr.success(parsed.name, 'Theme imported');
 }
 
