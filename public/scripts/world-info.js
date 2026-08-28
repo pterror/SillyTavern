@@ -5767,31 +5767,6 @@ export function checkEmbeddedWorld(avatar) {
 
     if (character?.data?.character_book) {
         $('#import_character_info').data('avatar', character?.avatar ?? null).show();
-
-        // Only show the alert once per character
-        const checkKey = `AlertWI_${character.avatar}`;
-        const worldName = character?.data?.extensions?.world;
-        if (!accountStorage.getItem(checkKey) && (!worldName || !world_names.includes(worldName))) {
-            accountStorage.setItem(checkKey, 'true');
-
-            if (power_user.world_import_dialog) {
-                const html = `<h3>This character has an embedded World/Lorebook.</h3>
-                <h3>Would you like to import it now?</h3>
-                <div class="m-b-1">If you want to import it later, select "Import Card Lore" in the "More..." dropdown menu on the character panel.</div>`;
-                const checkResult = (result) => {
-                    if (result) {
-                        importEmbeddedWorldInfo(true);
-                    }
-                };
-                callGenericPopup(html, POPUP_TYPE.CONFIRM, '', { okButton: 'Yes' }).then(checkResult);
-            } else {
-                toastr.info(
-                    'To import and use it, select "Import Card Lore" in the "More..." dropdown menu on the character panel.',
-                    `${character.name} has an embedded World/Lorebook`,
-                    { timeOut: 5000, extendedTimeOut: 10000 },
-                );
-            }
-        }
         return true;
     }
 
