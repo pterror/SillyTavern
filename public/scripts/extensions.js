@@ -570,9 +570,15 @@ async function activateExtensions() {
     const clientVersion = CLIENT_VERSION.split(':')[1];
     const extensions = Object.entries(manifests).sort((a, b) => sortManifestsByOrder(a[1], b[1]));
     const extensionNames = extensions.map(x => x[0]);
-    const promises = [];
 
-    for (let entry of extensions) {
+    // Phase 1: Evaluate eligibility and start loading all extension resources in parallel.
+    // Scripts are <script type="module" async> tags (addExtensionScript), so the browser fetches
+    // and executes them concurrently regardless of insertion order. Styles and locales are also
+    // I/O-bound fetches. Launching all of these at once instead of one-extension-at-a-time
+    // collapses ~N sequential HTTP round-trips into one parallel batch.
+    const toActivate = [];
+
+    for (const entry of extensions) {
         const name = entry[0];
         const manifest = entry[1];
         const extrasRequirements = manifest.requires;
@@ -583,13 +589,12 @@ async function activateExtensions() {
         if (activeExtensions.has(name)) {
             continue;
         }
-        // Client version requirement: pass if 'minimum_client_version' is undefined or null.
+
         let meetsClientMinimumVersion = true;
         if (minClientVersion !== undefined) {
             meetsClientMinimumVersion = versionCompare(clientVersion, minClientVersion);
         }
 
-        // Module requirements: pass if 'requires' is undefined, null, or not an array; check subset if it's an array
         let meetsModuleRequirements = true;
         let missingModules = [];
         if (extrasRequirements !== undefined) {
@@ -601,20 +606,16 @@ async function activateExtensions() {
             }
         }
 
-        // Extension dependencies: pass if 'dependencies' is undefined or not an array; check subset and disabled status if it's an array
         let meetsExtensionDeps = true;
         let missingDependencies = [];
         let disabledDependencies = [];
         if (extensionDependencies !== undefined) {
             if (Array.isArray(extensionDependencies)) {
-                // Check if all dependencies exist
                 meetsExtensionDeps = isSubsetOf(extensionNames, extensionDependencies);
                 missingDependencies = extensionDependencies.filter(dep => !extensionNames.includes(dep));
-                // Check for disabled dependencies
                 if (meetsExtensionDeps) {
                     disabledDependencies = extensionDependencies.filter(dep => extension_settings.disabledExtensions.includes(dep));
                     if (disabledDependencies.length > 0) {
-                        // Fail if any dependencies are disabled
                         meetsExtensionDeps = false;
                     }
                 }
@@ -626,24 +627,11 @@ async function activateExtensions() {
         const isDisabled = extension_settings.disabledExtensions.includes(name);
 
         if (meetsModuleRequirements && meetsExtensionDeps && meetsClientMinimumVersion && !isDisabled) {
-            try {
-                console.debug('Activating extension', name);
-                const promise = addExtensionLocale(name, manifest).finally(() =>
-                    Promise.all([addExtensionScript(name, manifest), addExtensionStyle(name, manifest)]),
-                );
-                await promise
-                    .then(() => {
-                        activeExtensions.add(name);
-                        return callExtensionHook(name, 'activate');
-                    })
-                    .catch(err => {
-                        console.log('Could not activate extension', name, err);
-                        extensionLoadErrors.add(t`Extension "${displayName}" failed to load: ${err}`);
-                    });
-                promises.push(promise);
-            } catch (error) {
-                console.error('Could not activate extension', name, error);
-            }
+            console.debug('Loading extension resources:', name);
+            const loadPromise = addExtensionLocale(name, manifest).finally(() =>
+                Promise.all([addExtensionScript(name, manifest), addExtensionStyle(name, manifest)]),
+            );
+            toActivate.push({ name, displayName, loadPromise });
         } else if (!meetsModuleRequirements && !isDisabled) {
             console.warn(t`Extension "${name}" did not load. Missing required Extras module(s): "${missingModules.join(', ')}"`);
             extensionLoadErrors.add(t`Extension "${displayName}" did not load. Missing required Extras module(s): "${missingModules.join(', ')}"`);
@@ -661,7 +649,23 @@ async function activateExtensions() {
         }
     }
 
-    await Promise.allSettled(promises);
+    // Wait for all resource fetches to complete before activating any hooks.
+    await Promise.allSettled(toActivate.map(e => e.loadPromise));
+
+    // Phase 2: Call activate hooks in the declared loading_order. Resource loading (script
+    // fetch + parse + module-level execution) already happened above; this is just the
+    // extension's own init function, which is typically fast.
+    for (const { name, displayName, loadPromise } of toActivate) {
+        try {
+            await loadPromise; // Re-await to propagate per-extension load errors
+            activeExtensions.add(name);
+            await callExtensionHook(name, 'activate');
+        } catch (err) {
+            console.log('Could not activate extension', name, err);
+            extensionLoadErrors.add(t`Extension "${displayName}" failed to load: ${err}`);
+        }
+    }
+
     $('#extensions_details').toggleClass('warning', extensionLoadErrors.size > 0);
 }
 
