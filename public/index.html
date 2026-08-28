@@ -7651,16 +7651,17 @@
         <div id="alternate_greetings_template" class="template_element">
             <div class="alternate_grettings flexFlowColumn flex-container">
                 <div class="title_restorable">
-                    <h3><span data-i18n="Alternate Greetings" class="mdhotkey_location">Alternate Greetings</span></h3>
+                    <h3><span data-i18n="Greetings" class="mdhotkey_location">Greetings</span></h3>
                     <div class="menu_button menu_button_icon add_alternate_greeting">
                         <i class="fa-solid fa-plus"></i>
                         <span data-i18n="Add">Add</span>
                     </div>
                 </div>
-                <small class="justifyLeft" data-i18n="Alternate_Greetings_desc">
-                    These will be displayed as swipes on the first message when starting a new chat.
+                <small class="justifyLeft" data-i18n="Greetings_desc">
+                    The first greeting is the default. Others are displayed as swipes when starting a new chat.
                     Group members can select one of them to initiate the conversation.
                 </small>
+                <input type="text" class="text_pole greeting-filter-input" placeholder="Filter greetings..." />
                 <hr>
                 <div class="alternate_greetings_list flexFlowColumn flex-container wide100p">
                     <strong class="alternate_grettings_hint margin-bot-10px">
@@ -7675,15 +7676,19 @@
                     <summary>
                         <div class="title_restorable gap5px">
                             <div class="flex-container alignItemsCenter">
-                                <strong><span data-i18n="Alternate Greeting #">Alternate Greeting #</span><span class="greeting_index"></span></strong>
+                                <span class="greeting_default_badge" style="display:none;" title="Default greeting"><i class="fa-solid fa-star" style="color: var(--SmartThemeQuoteColor, #e69500);"></i></span>
+                                <strong><span data-i18n="Greeting #">Greeting #</span><span class="greeting_index"></span></strong>
                                 <i class="editor_maximize fa-solid fa-maximize right_menu_button" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
                             </div>
                             <span class="expander"></span>
-                            <div class="menu_button menu_button_icon move_up_alternate_greeting" title="Move up" data-i18n="[title]Move up">
-                                <i class="fa-solid fa-chevron-up"></i>
+                            <div class="menu_button menu_button_icon pick_up_greeting" title="Pick up to move">
+                                <i class="fa-solid fa-arrows-up-down"></i>
                             </div>
-                            <div class="menu_button menu_button_icon move_down_alternate_greeting" title="Move down" data-i18n="[title]Move down">
-                                <i class="fa-solid fa-chevron-down"></i>
+                            <div class="menu_button menu_button_icon set_default_greeting" title="Set as default greeting" style="display:none;">
+                                <i class="fa-solid fa-star"></i>
+                            </div>
+                            <div class="menu_button menu_button_icon demote_default_greeting" title="Demote from default" style="display:none;">
+                                <i class="fa-solid fa-arrow-down"></i>
                             </div>
                             <div class="menu_button menu_button_icon delete_alternate_greeting">
                                 <i class="fa-solid fa-trash-alt"></i>
