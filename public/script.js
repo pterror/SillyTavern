@@ -193,7 +193,7 @@ import {
 // Imported directly from hash-utils.js (not re-exported via utils.js like getStringHash) so this doesn't widen
 // utils.js's re-export surface - a mocked utils.js in tests/utils-findchar.test.js stubs hash-utils.js with only
 // getStringHash, and this stays independent of that.
-import { hashSettingsKeys, getAtPath, setAtPath, treeNodeAt, digestsEqual128, foldDigests128, emptyDigest128, DEFAULT_DIGEST_BUCKET_COUNT, DEFAULT_TREE_BRANCHING, characterDigestFieldsHash, characterDigestCardBodyHash, combineDigest128, characterDigestFavHash, characterDigestTagIdsHash } from './scripts/hash-utils.js';
+import { getAtPath, treeNodeAt, digestsEqual128, foldDigests128, emptyDigest128, DEFAULT_DIGEST_BUCKET_COUNT, DEFAULT_TREE_BRANCHING, characterDigestFieldsHash, characterDigestCardBodyHash, combineDigest128, characterDigestFavHash, characterDigestTagIdsHash } from './scripts/hash-utils.js';
 import { debounce_timeout, GENERATION_TYPE_TRIGGERS, IGNORE_SYMBOL, inject_ids, MEDIA_DISPLAY, MEDIA_SOURCE, MEDIA_TYPE, OVERSWIPE_BEHAVIOR, SCROLL_BEHAVIOR, SWIPE_DIRECTION, SWIPE_SOURCE, SWIPE_STATE } from './scripts/constants.js';
 
 import { cancelDebouncedMetadataSave, doDailyExtensionUpdatesCheck, extension_settings, initExtensions, loadExtensionSettings, runGenerationInterceptors } from './scripts/extensions.js';
@@ -949,6 +949,19 @@ let knownServerSettingsHash = null;
  * caller specified keys (backward compat / unmigrated call site), which falls through to the full /save path.
  */
 const pendingSettingsKeys = new Set();
+/**
+ * Per-key content hashes of what this client believes the server currently has. Keyed by top-level
+ * settings key or dotted sub-path (e.g. 'power_user.font_scale'). Used for two things in the
+ * partial save path: (1) diffing live values against the server to find which sub-fields actually
+ * changed, and (2) sending expectedHashes to the server for conflict detection. Populated from the
+ * parsed settings in getSettings(), updated with hashes (not values) after each successful save.
+ *
+ * This replaces the old approach of maintaining `settings` as a value mirror - storing just hashes
+ * means the save path never needs a second copy of the actual state, so the aliasing between
+ * `settings.power_user` and the live `power_user` export that caused spurious 409s can't happen.
+ * @type {Record<string, number>}
+ */
+const serverKeyHashes = {};
 /** Module-scope retry counter for TempResponseLength customization, replacing the old loopCounter parameter. */
 let _saveRetryCounter = 0;
 export let amount_gen = 80; //default max length of AI generated responses
@@ -9967,6 +9980,15 @@ export async function getSettings(initLoaderHandle = null, onStageChange = null)
         // this matches what the server will hash on the next save. See knownServerSettingsHash's doc comment.
         knownServerSettingsHash = getStringHash(data.settings);
         settings = JSON.parse(data.settings);
+        // Seed per-key hashes for partial-save conflict detection.
+        for (const key of Object.keys(settings)) {
+            serverKeyHashes[key] = getStringHash(JSON.stringify(settings[key], null, 4));
+            if (settings[key] != null && typeof settings[key] === 'object' && !Array.isArray(settings[key])) {
+                for (const subKey of Object.keys(settings[key])) {
+                    serverKeyHashes[`${key}.${subKey}`] = getStringHash(JSON.stringify(settings[key][subKey], null, 4));
+                }
+            }
+        }
         if (settings.username !== undefined && settings.username !== '') {
             name1 = settings.username;
             $('#your_name').text(name1);
@@ -10202,24 +10224,24 @@ export async function saveSettings(...keys) {
             if (!(key in payload)) continue;
 
             const newValue = payload[key];
-            const oldValue = settings?.[key];
 
-            // For plain-object settings keys with a known previous snapshot, auto-decompose into
-            // per-field dotted paths so only the sub-fields that actually changed get sent and
-            // conflict-checked individually. This means saveSettingsDebounced('power_user') no
-            // longer sends the entire ~3KB power_user blob when only one field changed; two tabs
-            // changing different power_user fields no longer conflict with each other.
-            if (oldValue != null && typeof oldValue === 'object' && !Array.isArray(oldValue)
-                && newValue != null && typeof newValue === 'object' && !Array.isArray(newValue)) {
+            // For plain-object settings keys, auto-decompose into per-field dotted paths by comparing
+            // content hashes against what the server has - only the sub-fields that actually changed
+            // get sent and conflict-checked individually.
+            if (newValue != null && typeof newValue === 'object' && !Array.isArray(newValue)) {
                 let hasChanges = false;
                 for (const subKey of Object.keys(newValue)) {
-                    if (JSON.stringify(newValue[subKey]) !== JSON.stringify(oldValue[subKey])) {
-                        partialPayload[`${key}.${subKey}`] = newValue[subKey];
+                    const pathKey = `${key}.${subKey}`;
+                    const newHash = getStringHash(JSON.stringify(newValue[subKey], null, 4));
+                    if (newHash !== (serverKeyHashes[pathKey] ?? 0)) {
+                        partialPayload[pathKey] = newValue[subKey];
                         hasChanges = true;
                     }
                 }
                 if (!hasChanges) continue;
             } else {
+                const newHash = getStringHash(JSON.stringify(newValue, null, 4));
+                if (newHash === (serverKeyHashes[key] ?? 0)) continue;
                 partialPayload[key] = newValue;
             }
         }
@@ -10228,7 +10250,10 @@ export async function saveSettings(...keys) {
             return;
         }
 
-        const expectedHashes = hashSettingsKeys(settings ?? {}, Object.keys(partialPayload));
+        const expectedHashes = {};
+        for (const key of Object.keys(partialPayload)) {
+            expectedHashes[key] = serverKeyHashes[key] ?? 0;
+        }
 
         try {
             const result = await fetch('/api/settings/save-partial', {
@@ -10250,23 +10275,17 @@ export async function saveSettings(...keys) {
                 throw new Error(`Failed to save partial settings: ${result.statusText}`);
             }
 
-            // Adopt the saved keys into the local settings mirror so subsequent per-key hashes stay current.
-            // Deep-clone to break live references: partialPayload contains values like power_user
-            // that are the same object as the module-scope export. Without cloning, settings.power_user
-            // stays aliased to the live power_user, so any in-place mutation (e.g. a UI handler setting
-            // power_user.font_scale) silently updates settings.power_user too - the next save's
-            // expectedHash then reflects the current value instead of what the server actually has,
-            // causing spurious 409s.
+            // Update per-key hashes for what was just written.
             for (const key of Object.keys(partialPayload)) {
-                if (key.includes('.')) {
-                    setAtPath(settings, key, structuredClone(partialPayload[key]));
-                } else {
-                    settings[key] = structuredClone(partialPayload[key]);
-                }
+                serverKeyHashes[key] = getStringHash(JSON.stringify(partialPayload[key], null, 4));
             }
             lastSavedSettingsHash = payloadHash;
-            // Keep the whole-file hash in sync for any remaining full-save callers during the migration.
-            knownServerSettingsHash = getStringHash(JSON.stringify(settings, null, 4));
+            // The server returns the whole-file hash so knownServerSettingsHash stays in sync
+            // without needing a full copy of the settings content.
+            const partialSaveResponse = await result.json().catch(() => ({}));
+            if (partialSaveResponse.settingsHash != null) {
+                knownServerSettingsHash = partialSaveResponse.settingsHash;
+            }
             await eventSource.emit(event_types.SETTINGS_UPDATED);
         } catch (error) {
             console.error('Error saving settings:', error);
@@ -10300,11 +10319,15 @@ export async function saveSettings(...keys) {
                 throw new Error(`Failed to save settings: ${result.statusText}`);
             }
 
-            // Re-parse from the compact string already computed above: payload contains live references
-            // (power_user, oai_settings, etc.) that get mutated in-place by UI handlers, so storing
-            // them directly would let future mutations corrupt the "what the server has" snapshot. JSON
-            // round-tripping is the cheapest deep clone here since payloadString already exists.
-            settings = JSON.parse(payloadString);
+            // Update per-key hashes from the full payload.
+            for (const key of Object.keys(payload)) {
+                serverKeyHashes[key] = getStringHash(JSON.stringify(payload[key], null, 4));
+                if (payload[key] != null && typeof payload[key] === 'object' && !Array.isArray(payload[key])) {
+                    for (const subKey of Object.keys(payload[key])) {
+                        serverKeyHashes[`${key}.${subKey}`] = getStringHash(JSON.stringify(payload[key][subKey], null, 4));
+                    }
+                }
+            }
             lastSavedSettingsHash = payloadHash;
             knownServerSettingsHash = getStringHash(canonicalSettingsString);
             await eventSource.emit(event_types.SETTINGS_UPDATED);
@@ -10325,10 +10348,10 @@ export async function saveSettings(...keys) {
  * touched, so wiring any of the 679 saveSettingsDebounced() call sites to use this would need each one to start
  * tracking that itself - a separate, larger piece of work than this function's existence, and not done here.
  *
- * Conflict check is per-key (see hashSettingsKeys in hash-utils.js), not saveSettings()'s whole-file
- * knownServerSettingsHash: hashes only the keys actually being sent, computed fresh from this client's current
- * in-memory `settings` object (its own last known-good server state, same invariant knownServerSettingsHash
- * relies on). This means two concurrent partial updates to genuinely disjoint keys can both succeed server-side;
+ * Conflict check is per-key (via serverKeyHashes), not saveSettings()'s whole-file
+ * knownServerSettingsHash: hashes only the keys actually being sent, looked up from serverKeyHashes
+ * (seeded at getSettings() time and updated after each successful save).
+ * This means two concurrent partial updates to genuinely disjoint keys can both succeed server-side;
  * only a real overlap on the same key(s) gets rejected - deliberately different from (and better-fitting than)
  * full saves' single whole-file hash, which would reject on any concurrent change regardless of overlap.
  * @param {Record<string, unknown>} partialSettings Top-level settings keys to merge; only these keys change.
@@ -10336,7 +10359,10 @@ export async function saveSettings(...keys) {
  */
 export async function savePartialSettings(partialSettings) {
     const keys = Object.keys(partialSettings);
-    const expectedHashes = hashSettingsKeys(settings ?? {}, keys);
+    const expectedHashes = {};
+    for (const key of keys) {
+        expectedHashes[key] = serverKeyHashes[key] ?? 0;
+    }
 
     const result = await fetch('/api/settings/save-partial', {
         method: 'POST',
@@ -10360,15 +10386,8 @@ export async function savePartialSettings(partialSettings) {
         throw new Error(`Failed to save partial settings: ${result.statusText}`);
     }
 
-    // The server merged these keys into the on-disk state as sent (no server-side transformation of the
-    // values), so this client's own view can adopt them directly without refetching.
-    // Same deep-clone reasoning as the partialPayload path in saveSettings() above.
     for (const key of Object.keys(partialSettings)) {
-        if (key.includes('.')) {
-            setAtPath(settings, key, structuredClone(partialSettings[key]));
-        } else {
-            settings[key] = structuredClone(partialSettings[key]);
-        }
+        serverKeyHashes[key] = getStringHash(JSON.stringify(partialSettings[key], null, 4));
     }
     return true;
 }

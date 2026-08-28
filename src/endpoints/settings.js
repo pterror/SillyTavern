@@ -332,9 +332,10 @@ router.post('/save-partial', function (request, response) {
                 mergedSettings[key] = value;
             }
         }
-        writeFileAtomicSync(pathToSettings, JSON.stringify(mergedSettings, null, 4), 'utf8');
+        const mergedContent = JSON.stringify(mergedSettings, null, 4);
+        writeFileAtomicSync(pathToSettings, mergedContent, 'utf8');
         triggerAutoSave(request.user.profile.handle);
-        response.send({ result: 'ok' });
+        response.send({ result: 'ok', settingsHash: getStringHash(mergedContent) });
     } catch (err) {
         console.error(err);
         response.send(err);
