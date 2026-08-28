@@ -6599,4 +6599,28 @@ body:not(.movingUI) .drawer-content.maximized {
     height: 32px;
 }
 
+/* greeting pick-and-place */
+.alternate_greeting.greeting-picked {
+    outline: 2px solid var(--SmartThemeQuoteColor, #e69500);
+    outline-offset: -2px;
+}
 
+.greeting-insert-point {
+    height: 4px;
+    margin: 2px 0;
+    background: var(--SmartThemeQuoteColor, #e69500);
+    border-radius: 2px;
+    cursor: pointer;
+    opacity: 0.5;
+    transition: opacity 0.15s, height 0.15s;
+    position: relative;
+}
+
+.greeting-insert-point:hover {
+    opacity: 1;
+    height: 8px;
+}
+
+.greeting-filter-input {
+    margin-bottom: 8px;
+}

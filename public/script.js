@@ -11944,18 +11944,40 @@ function openAlternateGreetings() {
         }
     }
 
+    // Build a unified greetings array: [first_mes, ...alternate_greetings]
+    const getFirstMes = () => menu_type == 'create' ? (create_save.first_message ?? '') : (greetingsCharacter.data.first_mes ?? '');
+    const getAltArray = () => menu_type == 'create' ? create_save.alternate_greetings : greetingsCharacter.data.alternate_greetings;
+    const unifiedGreetings = [getFirstMes(), ...getAltArray()];
+
+    const getArray = () => unifiedGreetings;
+
     const template = $('#alternate_greetings_template .alternate_grettings').clone();
-    const getArray = () => menu_type == 'create' ? create_save.alternate_greetings : greetingsCharacter.data.alternate_greetings;
-    // Snapshot to detect whether any greeting was actually changed - the onClose below
-    // should only save when something was modified, not unconditionally.
-    const originalGreetings = JSON.stringify(getArray());
+
+    // Snapshot to detect whether any greeting was actually changed
+    const originalSnapshot = JSON.stringify(unifiedGreetings);
+
+    /** Syncs the unified array back to the underlying first_mes and alternate_greetings fields. */
+    function syncFromUnified() {
+        const newFirstMes = unifiedGreetings[0] ?? '';
+        const newAltGreetings = unifiedGreetings.slice(1);
+        if (menu_type == 'create') {
+            create_save.first_message = newFirstMes;
+            create_save.alternate_greetings = newAltGreetings;
+        } else {
+            greetingsCharacter.data.first_mes = newFirstMes;
+            greetingsCharacter.data.alternate_greetings = newAltGreetings;
+        }
+        // Keep the main editor textarea in sync
+        $('#firstmessage_textarea').val(newFirstMes);
+    }
+
     const popup = new Popup(template, POPUP_TYPE.TEXT, '', {
         wide: true,
         large: true,
         allowVerticalScrolling: true,
         onClose: async () => {
-            if (menu_type !== 'create' && JSON.stringify(getArray()) !== originalGreetings) {
-                // Send only the changed field via merge-attributes instead of a full-card edit
+            syncFromUnified();
+            if (menu_type !== 'create' && JSON.stringify(unifiedGreetings) !== originalSnapshot) {
                 const avatar = greetingsCharacter?.avatar;
                 if (avatar) {
                     const response = await fetch('/api/characters/merge-attributes', {
@@ -11963,12 +11985,13 @@ function openAlternateGreetings() {
                         headers: getRequestHeaders(),
                         body: JSON.stringify({
                             avatar: avatar,
-                            data: { alternate_greetings: getArray() },
+                            data: {
+                                first_mes: unifiedGreetings[0] ?? '',
+                                alternate_greetings: unifiedGreetings.slice(1),
+                            },
                         }),
                     });
                     if (response.ok) {
-                        // Update local hashes to match the new card state (avoids stale-hash
-                        // false positives on the next save without needing a full refetch)
                         greetingsCharacter._fieldsHash = characterDigestFieldsHash(greetingsCharacter);
                         greetingsCharacter._bodyHash = characterDigestCardBodyHash(greetingsCharacter);
                         await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character: greetingsCharacter } });
@@ -11978,9 +12001,22 @@ function openAlternateGreetings() {
         },
     });
 
-    for (let index = 0; index < getArray().length; index++) {
-        addAlternateGreeting(template, getArray()[index], index, getArray, popup);
+    for (let index = 0; index < unifiedGreetings.length; index++) {
+        addAlternateGreeting(template, unifiedGreetings[index], index, getArray, popup);
     }
+
+    // Filter input handler
+    template.find('.greeting-filter-input').on('input', function () {
+        const filterText = $(this).val().toLowerCase();
+        template.find('.alternate_greetings_list .alternate_greeting').each(function () {
+            const content = $(this).find('.alternate_greeting_text').val().toLowerCase();
+            $(this).toggle(!filterText || content.includes(filterText));
+        });
+        // Refresh insertion points if something is picked up
+        if (template.hasClass('greeting-inserting')) {
+            refreshInsertionPoints(template, getArray);
+        }
+    });
 
     template.find('.add_alternate_greeting').on('click', function () {
         const array = getArray();
@@ -11994,6 +12030,65 @@ function openAlternateGreetings() {
 
     popup.show();
     updateAlternateGreetingsHintVisibility(template);
+}
+
+/**
+ * Removes all insertion points and pick state from the greeting container.
+ * @param {JQuery<HTMLElement>} template
+ */
+function clearPickState(template) {
+    template.find('.greeting-insert-point').remove();
+    template.find('.alternate_greeting.greeting-picked').removeClass('greeting-picked');
+    template.removeClass('greeting-inserting');
+    // Restore pick-up icons
+    template.find('.pick_up_greeting i').removeClass('fa-xmark').addClass('fa-arrows-up-down');
+    template.find('.pick_up_greeting').attr('title', 'Pick up to move');
+}
+
+/**
+ * Recalculates and inserts insertion-point divs between visible greetings,
+ * skipping adjacency to the currently picked greeting.
+ * @param {JQuery<HTMLElement>} template
+ * @param {() => any[]} getArray
+ */
+function refreshInsertionPoints(template, getArray) {
+    template.find('.greeting-insert-point').remove();
+    const pickedIndex = Number(template.find('.alternate_greeting.greeting-picked').attr('data-index'));
+    const list = template.find('.alternate_greetings_list');
+    const visibleGreetings = list.find('.alternate_greeting:visible');
+    const array = getArray();
+
+    // Insert point at top of list (before the first visible greeting)
+    if (visibleGreetings.length > 0) {
+        const firstVisibleIndex = Number(visibleGreetings.first().attr('data-index'));
+        if (firstVisibleIndex !== pickedIndex && (firstVisibleIndex !== pickedIndex + 1 || pickedIndex !== 0)) {
+            // Position 0 means "insert before whatever is at index firstVisibleIndex"
+            const insertPoint = $('<div class="greeting-insert-point" title="Insert here"></div>');
+            insertPoint.attr('data-insert-position', firstVisibleIndex);
+            visibleGreetings.first().before(insertPoint);
+        }
+    }
+
+    // Insert points between visible greetings and at the bottom
+    visibleGreetings.each(function (i) {
+        const currentIndex = Number($(this).attr('data-index'));
+        const nextVisible = visibleGreetings.eq(i + 1);
+        const nextIndex = nextVisible.length ? Number(nextVisible.attr('data-index')) : array.length;
+        const isLast = !nextVisible.length;
+
+        // Skip if this greeting or the next is the picked one and they're adjacent
+        const adjacentToPicked = currentIndex === pickedIndex || nextIndex === pickedIndex;
+        const directlyAdjacent = (currentIndex === pickedIndex && nextIndex === pickedIndex + 1) ||
+                                  (nextIndex === pickedIndex && currentIndex === pickedIndex - 1) ||
+                                  currentIndex === pickedIndex;
+
+        if (!directlyAdjacent) {
+            const insertPosition = isLast ? array.length : nextIndex;
+            const insertPoint = $('<div class="greeting-insert-point" title="Insert here"></div>');
+            insertPoint.attr('data-insert-position', insertPosition);
+            $(this).after(insertPoint);
+        }
+    });
 }
 
 /**
@@ -12016,60 +12111,108 @@ function addAlternateGreeting(template, greeting, index, getArray, popup) {
         }).val(greeting);
     greetingBlock.find('.editor_maximize').attr('data-for', `alternate_greeting_${index}`);
     greetingBlock.find('.greeting_index').text(index + 1);
+
+    // Show default badge on greeting #1
+    if (index === 0) {
+        greetingBlock.find('.greeting_default_badge').show();
+    }
+
+    // Show set-as-default on non-first, demote on first
+    if (index === 0) {
+        greetingBlock.find('.demote_default_greeting').show();
+    } else {
+        greetingBlock.find('.set_default_greeting').show();
+    }
+
     greetingBlock.find('.delete_alternate_greeting').on('click', async function (event) {
         event.preventDefault();
         event.stopPropagation();
 
-        const confirm = await callGenericPopup(t`Are you sure you want to delete this alternate greeting?`, POPUP_TYPE.CONFIRM);
+        const array = getArray();
+        const label = index === 0 ? 'the default greeting' : 'this greeting';
+        const confirm = await callGenericPopup(t`Are you sure you want to delete ${label}?`, POPUP_TYPE.CONFIRM);
         if (!confirm) {
             return;
         }
 
-        const array = getArray();
         array.splice(index, 1);
 
-        // We need to reopen the popup to update the index numbers
+        // Sync and reopen
         await popup.complete(POPUP_RESULT.AFFIRMATIVE);
         openAlternateGreetings();
     });
-    greetingBlock.find('.move_up_alternate_greeting').on('click', function (event) {
-        handleMoveAlternateGreeting(event, -1);
-    });
-    greetingBlock.find('.move_down_alternate_greeting').on('click', function (event) {
-        handleMoveAlternateGreeting(event, 1);
+
+    // Pick up to move (pick-and-place reordering)
+    greetingBlock.find('.pick_up_greeting').on('click', function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+
+        const isPicked = greetingBlock.hasClass('greeting-picked');
+        if (isPicked) {
+            // Cancel pick
+            clearPickState(template);
+            return;
+        }
+
+        // Clear any existing pick state first
+        clearPickState(template);
+
+        // Enter pick mode
+        greetingBlock.addClass('greeting-picked');
+        template.addClass('greeting-inserting');
+        $(this).find('i').removeClass('fa-arrows-up-down').addClass('fa-xmark');
+        $(this).attr('title', 'Cancel move');
+
+        // Create insertion points
+        refreshInsertionPoints(template, getArray);
+
+        // Bind click on insertion points
+        template.find('.greeting-insert-point').on('click', async function () {
+            let targetPosition = Number($(this).attr('data-insert-position'));
+            const array = getArray();
+            const sourceIndex = index;
+
+            // Remove from old position
+            const [moved] = array.splice(sourceIndex, 1);
+            // Adjust target if source was before target
+            if (sourceIndex < targetPosition) {
+                targetPosition--;
+            }
+            // Insert at new position
+            array.splice(targetPosition, 0, moved);
+
+            // Rebuild popup
+            await popup.complete(POPUP_RESULT.AFFIRMATIVE);
+            openAlternateGreetings();
+        });
     });
 
-    /**
-     * Handles moving an alternate greeting up or down in the list.
-     * @param {JQuery.ClickEvent} event - The click event
-     * @param {number} direction - Direction to move: -1 for up, 1 for down
-     */
-    function handleMoveAlternateGreeting(event, direction) {
+    // Set as default greeting (move to position 0)
+    greetingBlock.find('.set_default_greeting').on('click', async function (event) {
         event.preventDefault();
         event.stopPropagation();
 
         const array = getArray();
-        const index = Number(greetingBlock.attr('data-index'));
-        const newIndex = index + direction;
+        const [moved] = array.splice(index, 1);
+        array.unshift(moved);
 
-        // Check bounds
-        if (direction === -1 && index <= 0) {
-            return;
-        }
-        if (direction === 1 && index >= array.length - 1) {
-            return;
-        }
+        await popup.complete(POPUP_RESULT.AFFIRMATIVE);
+        openAlternateGreetings();
+    });
 
-        // Swap the greetings
-        [array[index], array[newIndex]] = [array[newIndex], array[index]];
+    // Demote from default (move from position 0 to position 1)
+    greetingBlock.find('.demote_default_greeting').on('click', async function (event) {
+        event.preventDefault();
+        event.stopPropagation();
 
-        // Update current greeting
-        greetingBlock.find('.alternate_greeting_text').val(array[index]);
+        const array = getArray();
+        if (array.length < 2) return;
+        const [moved] = array.splice(0, 1);
+        array.splice(1, 0, moved);
 
-        // Update adjacent greeting
-        const adjacentGreetingBlock = template.find(`.alternate_greeting[data-index="${newIndex}"]`);
-        adjacentGreetingBlock.find('.alternate_greeting_text').val(array[newIndex]);
-    }
+        await popup.complete(POPUP_RESULT.AFFIRMATIVE);
+        openAlternateGreetings();
+    });
 
     template.find('.alternate_greetings_list').append(greetingBlock);
 }
