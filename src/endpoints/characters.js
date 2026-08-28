@@ -2374,6 +2374,67 @@ router.post('/bucket-members', async function (request, response) {
 });
 
 /**
+ * Serializes tree-descend results into a compact binary format. Fixed-width integers where JSON
+ * would use key names and string representations, positional where JSON would be self-describing.
+ * See deserializeTreeDescendBinary() client-side for the matching decoder.
+ * @param {{ path: number[], type: string, children?: {digest: {a:number,b:number,c:number,d:number}}[], members?: {id:string,favHash:number,tagIdsHash:number,contentHash:number,fav:boolean}[] }[]} results
+ * @returns {Buffer}
+ */
+function serializeTreeDescendBinary(results) {
+    // Pre-compute total size
+    let totalSize = 2; // resultCount
+    for (const result of results) {
+        totalSize += 1 + result.path.length + 1; // pathLen + path + type
+        if (result.type === 'children') {
+            totalSize += 2 + result.children.length * 16;
+        } else {
+            totalSize += 2; // memberCount
+            for (const member of (result.members ?? [])) {
+                totalSize += 2 + Buffer.byteLength(member.id, 'utf8') + 13;
+            }
+        }
+    }
+
+    const buf = Buffer.allocUnsafe(totalSize);
+    let offset = 0;
+
+    buf.writeUInt16LE(results.length, offset); offset += 2;
+
+    for (const result of results) {
+        buf.writeUInt8(result.path.length, offset); offset += 1;
+        for (const p of result.path) {
+            buf.writeUInt8(p, offset); offset += 1;
+        }
+        buf.writeUInt8(result.type === 'children' ? 0 : 1, offset); offset += 1;
+
+        if (result.type === 'children') {
+            buf.writeUInt16LE(result.children.length, offset); offset += 2;
+            for (const child of result.children) {
+                const d = child.digest ?? { a: 0, b: 0, c: 0, d: 0 };
+                buf.writeUInt32LE(d.a >>> 0, offset); offset += 4;
+                buf.writeUInt32LE(d.b >>> 0, offset); offset += 4;
+                buf.writeUInt32LE(d.c >>> 0, offset); offset += 4;
+                buf.writeUInt32LE(d.d >>> 0, offset); offset += 4;
+            }
+        } else {
+            const members = result.members ?? [];
+            buf.writeUInt16LE(members.length, offset); offset += 2;
+            for (const member of members) {
+                const idBytes = Buffer.byteLength(member.id, 'utf8');
+                buf.writeUInt16LE(idBytes, offset); offset += 2;
+                buf.write(member.id, offset, idBytes, 'utf8'); offset += idBytes;
+                buf.writeUInt32LE(member.favHash >>> 0, offset); offset += 4;
+                buf.writeUInt32LE(member.tagIdsHash >>> 0, offset); offset += 4;
+                buf.writeUInt32LE(member.contentHash >>> 0, offset); offset += 4;
+                buf.writeUInt8(member.fav ? 1 : 0, offset); offset += 1;
+            }
+        }
+    }
+
+    return buf;
+}
+
+/**
  * POST /api/characters/tree-descend: recursive hash-tree anti-entropy descent. The client calls this
  * repeatedly, once per descent level, until all mismatched subtrees are resolved.
  *
@@ -2399,6 +2460,10 @@ router.post('/tree-descend', async function (request, response) {
         const result = await treeDescend(request.user.directories, nodes, branching, leafThreshold);
         if (result === null) {
             return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
+        }
+        if (request.body.binary) {
+            response.set('Content-Type', 'application/octet-stream');
+            return response.send(serializeTreeDescendBinary(result.results));
         }
         return response.send(result);
     } catch (err) {
