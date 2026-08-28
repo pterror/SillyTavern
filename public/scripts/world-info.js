@@ -791,9 +791,8 @@ class WorldInfoTimedEffects {
 }
 
 export function getWorldInfoSettings() {
-    Object.assign(world_info, { globalSelect: selected_world_info });
     return {
-        world_info,
+        world_info: { ...world_info, globalSelect: selected_world_info },
         world_info_depth,
         world_info_min_activations,
         world_info_min_activations_depth_max,

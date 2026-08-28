@@ -660,7 +660,7 @@ export function collapseNewlines(x) {
  */
 export function fixMarkdown(text, forDisplay) {
     // Find pairs of formatting characters and capture the text in between them
-    const format = /([*_]{1,2})([\s\S]*?)\1/gm;
+    const format = /([*_]{1,2})([^\n]*?)\1/gm;
     let matches = [];
     let match;
     while ((match = format.exec(text)) !== null) {
