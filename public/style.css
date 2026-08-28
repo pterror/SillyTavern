@@ -1367,6 +1367,49 @@ body.hideAllSwipeButtons :is(.swipe_left, .swipe_right),
     pointer-events: none;
 }
 
+/* Branch navigation arrows - shown on hover for messages at fork points */
+.branch_nav {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 2px 0;
+    font-size: 0.8em;
+}
+
+.mes.has_branches .branch_nav {
+    display: flex;
+    opacity: 0;
+    transition: opacity var(--animation-duration) ease;
+}
+
+.mes.has_branches:hover .branch_nav,
+.mes.has_branches .branch_nav:focus-within {
+    opacity: 1;
+}
+
+.branch_left,
+.branch_right {
+    cursor: pointer;
+    opacity: 0.5;
+    padding: 2px 6px;
+    border-radius: 3px;
+}
+
+.branch_left:hover,
+.branch_right:hover {
+    opacity: 1;
+    background: var(--SmartThemeBlurTintColor);
+}
+
+.branch_counter {
+    font-size: 0.85em;
+    opacity: 0.6;
+    user-select: none;
+    min-width: 2em;
+    text-align: center;
+}
+
 /* Swipe jump input inside the counter */
 .swipe-jump-input {
     width: 3ch;
@@ -4641,10 +4684,6 @@ input[type="range"]::-webkit-slider-thumb {
 
 .mes:not([bookmark_link='']) .mes_bookmark {
     display: inline-block;
-}
-
-.mes:not([bookmark_link='']) .mes_create_bookmark {
-    display: none;
 }
 
 .mes_edit_buttons {

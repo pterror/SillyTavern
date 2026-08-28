@@ -1,4 +1,3 @@
-import { branchChat } from './bookmarks.js';
 import { SWIPE_DIRECTION, SWIPE_SOURCE } from './constants.js';
 import { t } from './i18n.js';
 import { callGenericPopup, Popup, POPUP_RESULT, POPUP_TYPE } from './popup.js';
@@ -80,9 +79,6 @@ async function openSwipePicker(messageId) {
     let popup;
     /** @type {HTMLInputElement} */
     let swipeIdInput;
-    /** @type {number|null} */
-    let branchActionSwipeId = null;
-
     function syncSwipeIdInput() {
         if (swipeIdInput) {
             swipeIdInput.value = String(selectedSwipeId + 1);
@@ -157,21 +153,7 @@ async function openSwipePicker(messageId) {
             });
 
             template.find('.renameChatButton, .exportChatButton').remove();
-            branchButton
-                .removeAttr('data-format')
-                .attr({
-                    title: t`Create Branch`,
-                    'data-i18n': '[title]Create Branch',
-                })
-                .removeClass('exportRawChatButton fa-solid fa-file-export')
-                .addClass('swipe_picker_branch mes_button fa-fw fa-regular fa-code-branch')
-                .on('click', async (event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    setSelectedSwipe(index);
-                    branchActionSwipeId = index;
-                    await popup.completeCancelled();
-                });
+            branchButton.remove();
             deleteButton
                 .removeAttr('file_name')
                 .attr('aria-disabled', String(!canDeleteSwipe))
@@ -259,8 +241,8 @@ async function openSwipePicker(messageId) {
                 toastr.info(t`Copied!`, '', { timeOut: 2000 });
             });
 
-            // Insert new buttons before the branch button
-            branchButton.before(expandLabel, copyButton);
+            // Insert new buttons before the delete button
+            deleteButton.before(expandLabel, copyButton);
 
             template.find('.select_chat_block_filename').text(`#${index + 1}${index === Number(message.swipe_id ?? 0) ? ` ${t`[Current]`}` : ''}`);
             template.find('.chat_messages_date').text(sendDate);
@@ -383,11 +365,6 @@ async function openSwipePicker(messageId) {
     await renderSwipeList();
 
     const popupResult = await popup.show();
-
-    if (branchActionSwipeId !== null) {
-        await branchChat(messageId, { swipeId: branchActionSwipeId });
-        return;
-    }
 
     if (popupResult !== POPUP_RESULT.AFFIRMATIVE) {
         return;

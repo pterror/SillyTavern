@@ -14,6 +14,7 @@ import {
     saveItemizedPrompts,
     setActiveGroup,
     getCurrentChatDetails,
+    updateMessage,
 } from '../script.js';
 import { humanizedDateTime } from './RossAscends-mods.js';
 import {
@@ -256,15 +257,12 @@ export async function createBranch(mesId, { swipeId = null } = {}) {
         }
 
         // Update local branch tracking for the UI
-        if (typeof lastMes.extra !== 'object') lastMes.extra = {};
-        if (typeof lastMes.extra.branches !== 'object' || Array.isArray(lastMes.extra.branches)) {
-            lastMes.extra.branches = {};
-        }
+        const extra = typeof lastMes.extra === 'object' ? { ...lastMes.extra } : {};
+        const branches = (typeof extra.branches === 'object' && !Array.isArray(extra.branches)) ? { ...extra.branches } : {};
         const groupKey = String(resolvedSwipeId);
-        if (!Array.isArray(lastMes.extra.branches[groupKey])) {
-            lastMes.extra.branches[groupKey] = [];
-        }
-        lastMes.extra.branches[groupKey].push(name);
+        branches[groupKey] = [...(Array.isArray(branches[groupKey]) ? branches[groupKey] : []), name];
+        extra.branches = branches;
+        updateMessage(mesId, { extra });
         return name;
     }
 
@@ -282,17 +280,12 @@ export async function createBranch(mesId, { swipeId = null } = {}) {
     } else {
         await saveChat({ chatName: name, withMetadata: newMetadata, mesId, chatData: branchChatSnapshot });
     }
-    if (typeof lastMes.extra !== 'object') {
-        lastMes.extra = {};
-    }
-    if (typeof lastMes.extra.branches !== 'object' || Array.isArray(lastMes.extra.branches)) {
-        lastMes.extra.branches = {};
-    }
+    const extra = typeof lastMes.extra === 'object' ? { ...lastMes.extra } : {};
+    const branches = (typeof extra.branches === 'object' && !Array.isArray(extra.branches)) ? { ...extra.branches } : {};
     const groupKey = String(resolvedSwipeId);
-    if (!Array.isArray(lastMes.extra.branches[groupKey])) {
-        lastMes.extra.branches[groupKey] = [];
-    }
-    lastMes.extra.branches[groupKey].push(name);
+    branches[groupKey] = [...(Array.isArray(branches[groupKey]) ? branches[groupKey] : []), name];
+    extra.branches = branches;
+    updateMessage(mesId, { extra });
     return name;
 }
 
@@ -312,6 +305,32 @@ function getLocalForkSiblings(message, swipeId) {
     }
     const siblings = branches[String(swipeId)];
     return Array.isArray(siblings) ? [...siblings] : [];
+}
+
+/**
+ * Returns whether a message has fork branches at its current swipe, meaning branch
+ * navigation arrows should be shown. Checks both the local case (current chat is the
+ * origin, so extra.branches has entries) and the branch case (current chat was forked
+ * from this message, so chat_metadata.fork_point matches).
+ * @param {number} mesId
+ * @param {ChatMessage} [message]
+ * @returns {boolean}
+ */
+export function hasForkBranches(mesId, message) {
+    message ??= chat[mesId];
+    if (!message) return false;
+
+    const swipeId = Number(message.swipe_id ?? 0);
+
+    // Local case: this chat is the origin and has branches recorded
+    const localSiblings = getLocalForkSiblings(message, swipeId);
+    if (localSiblings.length > 0) return true;
+
+    // Branch case: we're on a branch that was forked from this message
+    const forkPoint = chat_metadata?.fork_point;
+    if (forkPoint && forkPoint.mesId === mesId && forkPoint.swipeId === swipeId) return true;
+
+    return false;
 }
 
 /**
@@ -746,10 +765,9 @@ export async function forkChat(mesId, { swipeId = null } = {}) {
             }),
         });
 
-        if (typeof lastMes.extra !== 'object') {
-            lastMes.extra = {};
-        }
-        lastMes.extra.bookmark_link = fileName;
+        const extra = typeof lastMes.extra === 'object' ? { ...lastMes.extra } : {};
+        extra.bookmark_link = fileName;
+        updateMessage(mesId, { extra });
         updateBookmarkDisplay($(`.mes[mesid="${mesId}"]`), fileName);
     }
 
@@ -1013,13 +1031,6 @@ export function initBookmarks() {
         }
 
         $('#shadow_select_chat_popup').css('display', 'none');
-    });
-
-    $(document).on('click', '.mes_create_bookmark', async function () {
-        const mesId = $(this).closest('.mes').attr('mesid');
-        if (mesId !== undefined) {
-            await forkChat(Number(mesId));
-        }
     });
 
     registerBookmarksSlashCommands();
