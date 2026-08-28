@@ -189,6 +189,7 @@ export class SettingsUi {
         this.color = this.dom.querySelector('#qr--color');
         // @ts-ignore
         this.color.color = this.currentQrSet?.color ?? 'transparent';
+        this.color.setAttribute('color', this.currentQrSet?.color ?? 'transparent');
         this.color.addEventListener('change', (evt) => {
             if (!this.dom.closest('body')) return;
             if (this._populating) return;
@@ -205,6 +206,7 @@ export class SettingsUi {
             this._populating = true;
             // @ts-ignore
             this.color.color = 'transparent';
+            this.color.setAttribute('color', 'transparent');
             this._populating = false;
             qrs.saveSetProp('color', 'transparent');
             this.currentQrSet.updateColor();
@@ -226,6 +228,7 @@ export class SettingsUi {
         this.injectInput.checked = this.currentQrSet.injectInput;
         // @ts-ignore
         this.color.color = this.currentQrSet.color ?? 'transparent';
+        this.color.setAttribute('color', this.currentQrSet.color ?? 'transparent');
         this.onlyBorderColor.checked = this.currentQrSet.onlyBorderColor;
         this.qrList.innerHTML = '';
         const qrsDom = this.currentQrSet.renderSettings();
