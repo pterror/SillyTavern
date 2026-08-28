@@ -232,7 +232,7 @@ async function maybeReflinkDuplicateTarget(sourcePath, characterId, directories)
  * @param {string} filename
  * @param {number} mtimeMs
  */
-async function markProcessed(state, directories, sourcePath, filename, mtimeMs) {
+async function markProcessed(state, directories, sourcePath, filename, mtimeMs, duplicateOf = null) {
     state.lastSeenMtimeMs.set(filename, mtimeMs);
     // Awaited, not fire-and-forget: the underlying write is a single synchronous better-sqlite3 call under an
     // async wrapper (see setLocalImportMtime()), so awaiting it costs nothing real, and NOT awaiting it left a
@@ -242,33 +242,12 @@ async function markProcessed(state, directories, sourcePath, filename, mtimeMs) 
     // try/catch (not a rejection the caller sees) keeps this a pure efficiency write: a failure here only costs
     // a wasted re-read on the next restart, never a wrong result now.
     try {
-        await setLocalImportMtime(directories, sourcePath, mtimeMs);
+        await setLocalImportMtime(directories, sourcePath, mtimeMs, duplicateOf);
     } catch (err) {
         console.debug(`[local-import] Failed to persist processed-mtime record for ${sourcePath} (will just be re-processed on the next restart, not incorrectly):`, err.message);
     }
 }
 
-/**
- * Records that `filename` has been processed as of `mtimeMs` in the in-memory skip cache ONLY - deliberately
- * NOT persisted (unlike markProcessed()) - for the two "recognized as a duplicate of some OTHER already-imported
- * character" outcomes (an exact content_hash match, or the expensive content-identity fallback match). Found via
- * a real reproduction, not theorized: a duplicate match's validity depends on that OTHER character's row still
- * existing, which can stop being true later (e.g. character-metadata-db.js's reconcile() deletes a row once its
- * own file goes missing on disk - a real, ordinary occurrence, not an edge case). Persisting THIS file's mtime
- * across a restart in that case would make a fresh, warmed DirectoryScanState (see warmMtimeCache()) skip
- * re-checking it forever via the plain mtime-unchanged fast path, even after the character it was a duplicate
- * OF no longer exists to be a duplicate of - silently losing the source file's only path back into the library.
- * The in-memory-only record still gets the SAME-run efficiency win markProcessed() does (two back-to-back passes
- * within one boot won't re-hash this file either), it just doesn't survive a restart - the exact same posture
- * every mtime skip had before local_import_mtimes existed at all, so this is a narrowing of the new feature's
- * scope to the cases it's actually safe for, not a regression relative to before that feature landed.
- * @param {DirectoryScanState} state
- * @param {string} filename
- * @param {number} mtimeMs
- */
-function markProcessedInMemoryOnly(state, filename, mtimeMs) {
-    state.lastSeenMtimeMs.set(filename, mtimeMs);
-}
 
 /**
  * Discovers-and-imports one file if it looks new/changed and isn't already in the library (by content hash).
@@ -479,9 +458,15 @@ async function processFile(state, filename, directories, tagImportSetting = 3) {
             if (alreadyImported) {
                 if (pipelineResult.needsWrite) await pipelineResult.finish({ type: 'no-write' });
                 await maybeReflinkDuplicateTarget(sourcePath, alreadyImported, directories);
-                // In-memory only, not persisted - see markProcessedInMemoryOnly()'s own doc comment on why a
-                // duplicate match must never be treated as a durable, restart-surviving skip.
-                markProcessedInMemoryOnly(state, filename, stat.mtimeMs);
+                // Persisted with duplicate_of tracking: the durable skip record's validity depends on the
+                // matched character still existing - deleteRowSync()'s cascade (DELETE FROM local_import_mtimes
+                // WHERE duplicate_of = @id) automatically clears this row if the target character is ever
+                // deleted, so the source file falls through to a fresh dedup-check on its next scan pass. This
+                // replaces the previous in-memory-only approach (which forced a full re-read + re-hash of every
+                // duplicate source file on every restart - a real, measured O(all-duplicates) IO cost on the
+                // owner's ~300k-file corpus) with the structural safety net that was already built for exactly
+                // this purpose (see migrateLocalImportMtimesDuplicateOfColumn()'s own doc comment).
+                await markProcessed(state, directories, sourcePath, filename, stat.mtimeMs, alreadyImported);
                 return;
             }
 
@@ -494,8 +479,8 @@ async function processFile(state, filename, directories, tagImportSetting = 3) {
                     if (identityMatch) {
                         if (pipelineResult.needsWrite) await pipelineResult.finish({ type: 'no-write' });
                         await maybeReflinkDuplicateTarget(sourcePath, identityMatch, directories);
-                        // In-memory only - same reasoning as the exact content_hash match above.
-                        markProcessedInMemoryOnly(state, filename, stat.mtimeMs);
+                        // Same persisted-with-duplicate_of approach as the content_hash match above.
+                        await markProcessed(state, directories, sourcePath, filename, stat.mtimeMs, identityMatch);
                         return;
                     }
                 } catch (err) {
