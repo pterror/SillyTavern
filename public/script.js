@@ -2267,7 +2267,7 @@ async function fetchCharactersDelta() {
     }
 
     /** @type {{seq: number, changes: {id: string, op: 'upsert'|'delete', fields?: string[]|null}[], truncated: boolean}} */
-    const { seq, changes, truncated, rootDigest } = await changesResponse.json();
+    const { seq, changes, truncated } = await changesResponse.json();
 
     if (truncated) {
         // sinceSeq predates anything the server's change log still has - this cache can no longer be trusted
@@ -2301,11 +2301,11 @@ async function fetchCharactersDelta() {
     }
 
     // --- Incremental digest maintenance (catch-up path) ---
-    // If we have a stored digest and the server sent its current root digest, try to verify
-    // by incrementally updating the stored digest with XOR-out/XOR-in for each changed record.
-    // This avoids the expensive O(library) tree-descent verification when the delta covers
-    // all changes (the common case). Read old hashes BEFORE any IDB mutations.
-    const storedDigest = (rootDigest) ? await getLastVerifiedDigest() : null;
+    // Read old hashes BEFORE any IDB mutations so the incremental update can XOR-out old
+    // contributions and XOR-in new ones. The stored digest gets updated at the end so that
+    // the deferred verify's fast-path comparison (server root vs stored digest) succeeds
+    // without a full O(library) client-side recomputation.
+    const storedDigest = await getLastVerifiedDigest();
     const allAffectedIds = [...deleteIds, ...wholeRecordIds];
     for (const { ids } of fieldGroupMap.values()) {
         allAffectedIds.push(...ids);
@@ -2398,9 +2398,12 @@ async function fetchCharactersDelta() {
     }
     await setCachedCursor(seq);
 
-    // Incremental digest: XOR-out old contributions, XOR-in new, compare to server's root.
-    // Only runs when we have a stored digest to start from AND the server provided its root.
-    if (storedDigest && rootDigest) {
+    // Incremental digest maintenance: update the stored digest to reflect applied changes,
+    // so the deferred verify's fast-path (which compares server root to stored digest) succeeds
+    // without needing a full O(library) client-side recomputation. The decision "am I up to date"
+    // still comes from comparing content hashes (verify's server-root vs stored-root comparison),
+    // not from trusting the seq cursor.
+    if (storedDigest && (fresh.size > 0 || deleteIds.length > 0)) {
         let runningDigest = { ...storedDigest };
 
         // XOR-out deleted records' old contributions (XOR is self-inverse)
@@ -2425,13 +2428,8 @@ async function fetchCharactersDelta() {
             runningDigest = combineDigest128(runningDigest, avatar, newFav, newTagIds, newContent);
         }
 
-        if (digestsEqual128(runningDigest, rootDigest)) {
-            await setLastVerifiedDigest(runningDigest);
-            hasVerifiedCharacterCacheDigestThisSession = true;
-            console.log('[sync] Incremental digest matches server root - skipping tree-descent verification');
-        } else {
-            console.log('[sync] Incremental digest mismatch - tree-descent will run as fallback');
-        }
+        await setLastVerifiedDigest(runningDigest);
+        console.log('[sync] Stored digest updated incrementally for', fresh.size, 'upsert(s) and', deleteIds.length, 'delete(s)');
     }
 
     // The cache is now caught up: everything still in it, plus whatever this pass upserted, minus whatever it
