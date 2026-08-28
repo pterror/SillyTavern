@@ -28,7 +28,7 @@ import { isMigrated as isTreeMigrated, listBranches as listTreeBranches } from '
 import { ByafParser } from '../byaf.js';
 import { CharXParser, persistCharXAssets } from '../charx.js';
 import cacheBuster from '../middleware/cacheBuster.js';
-import { searchCharacters, searchCharacterIds, rebuildCharacterSearchIndex } from './characters-search-index.js';
+import { searchCharacters, searchCharacterIds, searchCharacterIdsSorted, rebuildCharacterSearchIndex, TANTIVY_SORT_FIELDS } from './characters-search-index.js';
 import { searchGroups, searchGroupIds } from './groups-search-index.js';
 import { getGroupsData, getGroupsByIds } from './groups.js';
 import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, resolveFingerprints, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getShallowByIds, characterChangeEmitter } from '../character-metadata-db.js';
@@ -2080,6 +2080,48 @@ router.post('/query', async function (request, response) {
 
         if (hasSearch) {
             const handle = request.user.profile.handle;
+
+            // Fast path: when the sort field has a tantivy fast field, tantivy can sort and paginate
+            // natively, returning just the page window (~pageSize ids) + exact count - no match-set
+            // materialization, no SQL sort. Falls back to the SQL path below if the field isn't
+            // tantivy-sortable or the current index was built before fast fields were added.
+            if (sort.field && TANTIVY_SORT_FIELDS.has(sort.field) && !includeGroups) {
+                const favOnly = filter.fav === true;
+                const sortedResult = await searchCharacterIdsSorted(
+                    handle, request.user.directories, searchTerm,
+                    sort.field, sort.order === 'asc' ? 'asc' : 'desc',
+                    offset, pageSize, favOnly,
+                );
+                if (sortedResult !== null) {
+                    searchBackend = sortedResult.backend;
+                    if (sortedResult.ids.length === 0) {
+                        const seq = (await queryCharacters(request.user.directories, { ids: [], wantRows: false, wantTotal: false }))?.rev ?? 0;
+                        const payload = { seq, searchBackend };
+                        if (wantRows) payload.rows = [];
+                        if (wantTotal) payload.total = 0;
+                        return response.send(payload);
+                    }
+                    // Hydrate just the page-sized id set - no sorting, no counting in SQL.
+                    const result = await queryCharacters(request.user.directories, {
+                        ids: sortedResult.ids,
+                        wantRows, wantTotal: false,
+                    });
+                    if (result === null) {
+                        return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
+                    }
+                    const payload = { seq: result.rev };
+                    if (wantTotal) payload.total = sortedResult.total;
+                    if (wantRows) {
+                        // queryCharacters returns rows in id order; re-order to match tantivy's sort.
+                        const idToRow = new Map(result.rows.map(r => [r.id ?? r.item?.avatar, r]));
+                        payload.rows = sortedResult.ids.map(id => idToRow.get(id)).filter(Boolean);
+                    }
+                    if (searchBackend !== undefined) payload.searchBackend = searchBackend;
+                    return response.send(payload);
+                }
+                // sortedResult === null: fast field not available on this index, fall through to SQL path.
+            }
+
             // 'search' sort only needs a relevance-ordered page-sized window; any other sort needs
             // the full matched set since ordering comes from SQL, not relevance rank. Passing
             // undefined tells the search engine to return all matches (capped internally at

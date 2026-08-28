@@ -73,12 +73,18 @@ export const FAV_FIELD = 'fav';
  * the user actually typed. `raw` + `basic` keeps it stored-and-exact-fetchable without indexing it for search.
  * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy
  * @param {string[]} searchableFieldNames
+ * @param {string[]} [unsignedFastFieldNames] Names of columnar "fast" fields (unstored, unindexed for search) that
+ * exist purely so runSearch()'s `orderByField` can sort on them - a field has to be declared `fast: true` here
+ * before it can be used that way.
  * @returns {import('@oxdev03/node-tantivy-binding').Schema}
  */
-export function buildSchema(tantivy, searchableFieldNames) {
+export function buildSchema(tantivy, searchableFieldNames, unsignedFastFieldNames = []) {
     const builder = new tantivy.SchemaBuilder();
     for (const name of searchableFieldNames) {
         builder.addTextField(name, { stored: false, tokenizerName: 'default', indexOption: 'position' });
+    }
+    for (const name of unsignedFastFieldNames) {
+        builder.addUnsignedField(name, { stored: false, indexed: false, fast: true });
     }
     builder.addTextField(DATA_FIELD, { stored: true, tokenizerName: 'raw', indexOption: 'basic' });
     builder.addBooleanField(FAV_FIELD, { indexed: true });
@@ -262,21 +268,31 @@ export function buildSearchQuery(tantivy, schema, searchTerm, fieldWeights, fiel
  * what the caller stores in DATA_FIELD: a full-JSON payload (groups) still pays a per-hit JSON.parse, while an
  * id-only payload (characters, since design doc §5.1's payload shrink) makes this cap purely about avoiding a
  * pathologically large hit list, not about parse cost.
+ * @param {object} [options]
+ * @param {string} [options.orderByField] Name of a fast field (declared via buildSchema()'s `unsignedFastFieldNames`)
+ * to sort results by instead of BM25 relevance. When set, every result's `score` is a meaningless 0 placeholder -
+ * there's no relevance score once ordering comes from a fast field instead of the query match.
+ * @param {'asc'|'desc'} [options.order] Sort direction when `orderByField` is set; defaults to descending.
+ * @param {number} [options.offset] Row offset for pagination, handled natively by tantivy's own search() call
+ * rather than by fetching everything and slicing in JS.
  * @returns {{ results: { raw: string, score: number }[], total: number }} `raw` is DATA_FIELD's stored value
  * exactly as indexed, UN-parsed - the caller decides what it means (JSON.parse for a full-payload index,
  * used as-is for an id-only one). Deliberately not parsed here so this one function serves both shapes without
  * a mode flag - see DATA_FIELD's doc comment.
  */
-export function runSearch(index, query, maxRows) {
+export function runSearch(index, query, maxRows, { orderByField, order, offset: searchOffset = 0 } = {}) {
     const searcher = index.searcher();
     // When maxRows is undefined or non-finite, fetch all matching documents - capped at
     // the index's own document count to avoid over-allocating tantivy's internal result heap.
     const limit = Number.isFinite(maxRows) && maxRows >= 0 ? Math.min(Math.trunc(maxRows), searcher.numDocs) : searcher.numDocs;
-    const result = searcher.search(query, limit, true, undefined, 0);
+    // Order enum: 0 = Asc, 1 = Desc (from @oxdev03/node-tantivy-binding's Order const enum)
+    const tantivyOrder = orderByField ? (order === 'asc' ? 0 : 1) : undefined;
+    const result = searcher.search(query, limit, true, orderByField ?? undefined, searchOffset, tantivyOrder);
     const results = result.hits.map(hit => {
         const doc = searcher.doc(hit.docAddress);
         const raw = doc.getFirst(DATA_FIELD);
-        return { raw, score: -(hit.score ?? 0) };
+        // When sorting by a fast field, there's no relevance score - use 0 as a placeholder.
+        return { raw, score: orderByField ? 0 : -(hit.score ?? 0) };
     });
     return { results, total: result.count ?? results.length };
 }

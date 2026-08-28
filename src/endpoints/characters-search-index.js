@@ -132,6 +132,13 @@ import { getConfigValue, mapWithConcurrency, color } from '../util.js';
 const BM25_INDEXED_COLUMNS = ['name', 'resolved_tags', 'description', 'mes_example', 'scenario', 'personality', 'first_mes', 'creator_notes', 'creator', 'tags', 'alternate_greetings'];
 const BM25_WEIGHTS = [20, 10, 3, 3, 2, 2, 2, 2, 1, 1, 1];
 
+// Unsigned fast fields for native tantivy sorting (orderByField) - these numeric metadata columns
+// are stored as columnar data in the tantivy index so search results can be sorted by them directly,
+// without materializing the full match set and round-tripping it through SQLite for ORDER BY.
+const TANTIVY_FAST_FIELDS = ['create_date', 'date_added', 'date_last_chat', 'chat_size', 'data_size'];
+
+export const TANTIVY_SORT_FIELDS = new Set(TANTIVY_FAST_FIELDS);
+
 /**
  * Manually-bumped identifier for the shape of the tantivy schema characterToTantivyDoc() builds documents against
  * (buildTantivySchema(), tantivy-search.js - itself derived from BM25_INDEXED_COLUMNS plus DATA_FIELD/FAV_FIELD).
@@ -143,7 +150,7 @@ const BM25_WEIGHTS = [20, 10, 3, 3, 2, 2, 2, 2, 1, 1, 1];
  * a mismatch there is treated exactly like a corrupt or missing index (nothing usable persisted), which naturally
  * routes into a fresh rebuild the same way those already do, without needing a separate branch anywhere else.
  */
-const TANTIVY_SCHEMA_VERSION = 1;
+const TANTIVY_SCHEMA_VERSION = 2;
 
 // `label:value` search syntax (see search-query.js) - maps a friendly label to the tantivy field(s) it targets.
 // `tag:`/`tags:` searches BOTH tag-ish fields, since BM25_WEIGHTS above already treats resolved_tags (tags.json
@@ -362,6 +369,13 @@ function characterToTantivyDoc(tantivy, schema, character, tagNamesFor, favFor) 
         creator: character.data?.creator ?? '',
         tags: Array.isArray(character.data?.tags) ? character.data.tags.join(' ') : '',
         alternate_greetings: Array.isArray(character.data?.alternate_greetings) ? character.data.alternate_greetings.join(' ') : '',
+        // Fast fields for native tantivy sorting (see TANTIVY_FAST_FIELDS) - stored as unsigned
+        // integers so orderByField can sort on them without round-tripping through SQLite.
+        create_date: Math.max(0, Date.parse(character.create_date) || character.date_added || 0),
+        date_added: Math.max(0, Number(character.date_added) || 0),
+        date_last_chat: Math.max(0, Number(character.date_last_chat) || 0),
+        chat_size: Math.max(0, Number(character.chat_size) || 0),
+        data_size: Math.max(0, Number(character.data_size) || 0),
         // Design doc §5.1's payload shrink: just the id (== the avatar filename, under today's pre-Option-A
         // identity - design doc §2.2), not the full character JSON - see DATA_FIELD's doc comment
         // (tantivy-search.js) for why this is also exactly what qualifies as the delete-by-term key.
@@ -473,7 +487,7 @@ function reopenTantivyIndexAt(tantivy, dir) {
  */
 function createEmptyTantivyIndexAt(tantivy, dir) {
     fs.mkdirSync(dir, { recursive: true });
-    const schema = buildTantivySchema(tantivy, BM25_INDEXED_COLUMNS);
+    const schema = buildTantivySchema(tantivy, BM25_INDEXED_COLUMNS, TANTIVY_FAST_FIELDS);
     const index = new tantivy.Index(schema, dir, false);
     return { index, schema };
 }
@@ -752,7 +766,10 @@ async function openPersistedTantivyIndexStale(directories, tantivy) {
         const schema = index.schema;
 
         const persistedSchemaVersion = await getMetaValue(directories, TANTIVY_INDEX_SCHEMA_VERSION_META_KEY);
-        if (Number(persistedSchemaVersion) !== TANTIVY_SCHEMA_VERSION) {
+        // Reject future schemas (not backward compatible) but accept older ones: a version-1 index
+        // (no fast fields) is still correct for text search, it just can't use orderByField sorting
+        // and falls back to the SQL sort path until the background rebuild catches up to version 2.
+        if (Number(persistedSchemaVersion) > TANTIVY_SCHEMA_VERSION) {
             return null;
         }
 
@@ -927,6 +944,50 @@ export async function searchCharacters(handle, directories, searchTerm, maxRows,
 export async function searchCharacterIds(handle, directories, searchTerm, maxRows, favOnly) {
     const { hits, total, backend } = await runIdSearch(handle, directories, searchTerm, maxRows, favOnly);
     return { ids: hits.map(hit => hit.id), scoresById: new Map(hits.map(hit => [hit.id, hit.score])), total, backend };
+}
+
+/**
+ * Searches characters and returns a page-sized window sorted by a tantivy fast field, plus the
+ * exact match count - no full-match-set materialization, no SQL sort step. Only usable when the
+ * sort field is in TANTIVY_SORT_FIELDS AND the current index was built with those fast fields
+ * (schema version >= 2). Falls back to null if the fast field isn't available (the caller should
+ * use the SQL sort path instead).
+ * @param {string} handle User handle
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {string} searchTerm
+ * @param {string} sortField One of TANTIVY_SORT_FIELDS
+ * @param {'asc'|'desc'} sortOrder
+ * @param {number} offset Row offset (0-based)
+ * @param {number} pageSize
+ * @param {boolean} [favOnly]
+ * @returns {Promise<{ ids: string[], total: number, backend: 'tantivy' | 'unavailable' } | null>}
+ * null when the current index doesn't support fast-field sorting (schema too old or field missing).
+ */
+export async function searchCharacterIdsSorted(handle, directories, searchTerm, sortField, sortOrder, offset, pageSize, favOnly) {
+    if (!TANTIVY_SORT_FIELDS.has(sortField)) return null;
+
+    const signature = await getFreshnessSignature(directories);
+    const engine = await resolveSearchEngine();
+    if (engine.tier === 'unavailable') return { ids: [], total: 0, backend: 'unavailable' };
+
+    const tantivyIndex = await indexCoordinator.getIndex(
+        handle, signature,
+        (previous) => loadOrUpdateTantivyIndex(directories, engine.tantivy, previous),
+        () => openPersistedTantivyIndexStale(directories, engine.tantivy),
+    );
+
+    // Check if this index actually has the fast field (old-schema indexes won't)
+    if (!tantivyIndex.schema.hasField(sortField)) return null;
+
+    const query = buildTantivyQuery(engine.tantivy, tantivyIndex.schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS, { favOnly });
+    if (!query) return { ids: [], total: 0, backend: 'tantivy' };
+
+    const { results, total } = runTantivySearch(tantivyIndex.index, query, pageSize, {
+        orderByField: sortField,
+        order: sortOrder,
+        offset,
+    });
+    return { ids: results.map(r => r.raw), total, backend: 'tantivy' };
 }
 
 /**
