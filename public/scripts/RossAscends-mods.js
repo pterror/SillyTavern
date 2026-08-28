@@ -19,7 +19,7 @@ import {
     event_types,
     menu_type,
     substituteParams,
-    sendTextareaMessage,
+    userInputGenerateMutex,
     doNavbarIconClick,
     isSwipingAllowed,
     characterToEntity,
@@ -1146,7 +1146,7 @@ export function initRossMods() {
             const sendOnEnter = shouldSendOnEnter();
             if (!event.isComposing && !event.shiftKey && !event.ctrlKey && !event.altKey && event.key == 'Enter' && sendOnEnter) {
                 event.preventDefault();
-                sendTextareaMessage();
+                userInputGenerateMutex.update();
                 return;
             }
         }
@@ -1214,7 +1214,7 @@ export function initRossMods() {
                     if (shouldSendOnEnter()) {
                         console.debug('Sending with Ctrl+Enter');
                         event.preventDefault();
-                        sendTextareaMessage();
+                        userInputGenerateMutex.update();
                     } else {
                         console.debug('Text area is not empty, but send on enter is disabled');
                     }
