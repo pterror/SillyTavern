@@ -32,7 +32,7 @@ import { searchCharacters, searchCharacterIds, rebuildCharacterSearchIndex, SEAR
 import { searchGroups, searchGroupIds } from './groups-search-index.js';
 import { getGroupsData, getGroupsByIds } from './groups.js';
 import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, resolveFingerprints, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getShallowByIds } from '../character-metadata-db.js';
-import { DEFAULT_DIGEST_BUCKET_COUNT, characterDigestFieldsHash, characterDigestCardBodyHash } from '../../public/scripts/hash-utils.js';
+import { DEFAULT_DIGEST_BUCKET_COUNT, characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash } from '../../public/scripts/hash-utils.js';
 
 // With 100 MB limit it would take roughly 3000 characters to reach this limit
 const memoryCacheCapacity = getConfigValue('performance.memoryCacheCapacity', '100mb');
@@ -1227,6 +1227,28 @@ async function mergeCharacterUpdate(avatarPath, avatar, updateData, request, sho
     _.unset(update, 'json_data');
     _.unset(character, 'json_data');
 
+    // Per-field conflict detection: if the client sent _loadedFieldHashes (a map of V2 data paths
+    // to cyrb53 hashes of their loaded values), check each against the current card. A mismatch
+    // means another session changed that specific field since the client loaded it. This gives
+    // field-granular conflict reporting (not just "body" or "fields"), and only flags a conflict
+    // on fields the client is actually writing - a change to a field the client didn't touch
+    // isn't a conflict at all.
+    const loadedFieldHashes = update._loadedFieldHashes;
+    delete update._loadedFieldHashes;
+    if (loadedFieldHashes && typeof loadedFieldHashes === 'object') {
+        const conflictingFields = [];
+        for (const [v2Path, loadedHash] of Object.entries(loadedFieldHashes)) {
+            const currentValue = _.get(character, v2Path);
+            const currentHash = getStringHash(JSON.stringify(currentValue !== undefined ? currentValue : null));
+            if (currentHash !== loadedHash) {
+                conflictingFields.push(v2Path);
+            }
+        }
+        if (conflictingFields.length > 0) {
+            return { ok: false, error: 'conflict', conflictingFields };
+        }
+    }
+
     // Favorite status is db-authoritative once a row exists (character-metadata-db.js's setCharacterFav() doc
     // comment) - a merge payload's `fav`/`data.extensions.fav` (the shape slash-commands.js's /char-attribute
     // still advertises and sends) must never land in the card file, but it still has to take effect: pull the
@@ -1365,6 +1387,8 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
         const result = await mergeCharacterUpdate(avatarPath, update.avatar, update, request);
         if (result.ok) {
             response.sendStatus(200);
+        } else if (result.error === 'conflict' && result.conflictingFields) {
+            response.status(409).json({ error: 'conflict', conflictingFields: result.conflictingFields });
         } else {
             console.warn(result.error);
             response.status(400).send({ message: `Validation failed for ${update.avatar}`, error: result.error });
