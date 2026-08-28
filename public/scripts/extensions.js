@@ -474,7 +474,7 @@ export async function enableExtension(name, reload = true) {
     await callExtensionHook(name, 'enable');
     extension_settings.disabledExtensions = extension_settings.disabledExtensions.filter(x => x !== name);
     stateChanged = true;
-    await saveSettings();
+    await saveSettings('extension_settings');
     if (reload) {
         location.reload();
     } else {
@@ -491,7 +491,7 @@ export async function disableExtension(name, reload = true) {
     await callExtensionHook(name, 'disable');
     extension_settings.disabledExtensions.push(name);
     stateChanged = true;
-    await saveSettings();
+    await saveSettings('extension_settings');
     if (reload) {
         location.reload();
     } else {
@@ -1305,7 +1305,7 @@ async function showExtensionsDetails() {
                 if (stateChanged) {
                     waitingForSave = true;
                     const toast = toastr.info(t`The page will be reloaded shortly...`, t`Extensions state changed`);
-                    await saveSettings();
+                    await saveSettings('extension_settings');
                     toastr.clear(toast);
                     waitingForSave = false;
                     requiresReload = true;
@@ -1452,7 +1452,7 @@ async function cleanExtension(extensionName) {
     await callExtensionHook(fullExtensionName, 'clean');
 
     // Clean might have updated settings, which could race with the page reload, so we'll force save here
-    await saveSettings();
+    await saveSettings('extension_settings');
 
     toastr.success(t`Extension ${extensionName} data cleaned`);
     delay(1000).then(() => location.reload());
@@ -1585,7 +1585,7 @@ export async function deleteExtension(extensionName, shouldClean = false) {
     }
 
     // Delete or clean might have updated settings, which could race with the page reload, so we'll force save here
-    await saveSettings();
+    await saveSettings('extension_settings');
 
     toastr.success(t`Extension ${extensionName} deleted`);
     delay(1000).then(() => location.reload());

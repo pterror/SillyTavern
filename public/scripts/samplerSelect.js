@@ -194,7 +194,7 @@ function setSamplerListListeners() {
             }
         }
 
-        await saveSettingsDebounced();
+        await saveSettingsDebounced('power_user');
 
         const shouldDisplay = isChecked ? targetDisplayType : 'none';
         relatedDOMElement.css('display', shouldDisplay);
@@ -434,7 +434,7 @@ export function isSamplerManualPriorityEnabled(tcApiType = '') {
 }
 
 export async function initCustomSelectedSamplers() {
-    await saveSettingsDebounced();
+    await saveSettingsDebounced('power_user');
     $('#samplerSelectButton').off('click').on('click', showSamplerSelectPopup);
 }
 

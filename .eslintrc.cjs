@@ -121,6 +121,10 @@ module.exports = {
         'space-unary-ops': ['error', { words: true, nonwords: false }],
         'arrow-spacing': ['error', { before: true, after: true }],
         'template-curly-spacing': ['error', 'never'],
+        'no-restricted-syntax': ['error', {
+            selector: "CallExpression[callee.name='saveSettingsDebounced'][arguments.length=0]",
+            message: "saveSettingsDebounced() requires at least one settings key — pass the key(s) you modified, e.g. saveSettingsDebounced('power_user'). Third-party extensions are exempt from this rule.",
+        }],
         'rest-spread-spacing': ['error', 'never'],
         'generator-star-spacing': ['error', { before: false, after: true }],
         'yield-star-spacing': ['error', { before: false, after: true }],
