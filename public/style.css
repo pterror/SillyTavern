@@ -6749,31 +6749,8 @@ body:not(.movingUI) .drawer-content.maximized {
     display: block;
 }
 
-.greeting-drag-handle {
-    cursor: grab;
-    color: var(--SmartThemeEmColor);
-    opacity: 0.5;
-    padding: 0 2px;
-    flex-shrink: 0;
-}
-
-.greeting-drag-handle:hover {
-    opacity: 0.9;
-}
-
-.greeting-row:active .greeting-drag-handle {
-    cursor: grabbing;
-}
-
 .greeting-add-btn {
     margin-top: 4px;
     align-self: flex-start;
 }
 
-.greeting-sortable-placeholder {
-    visibility: visible !important;
-    border: 1px dashed var(--SmartThemeBorderColor);
-    border-radius: 5px;
-    margin: 2px 0;
-    height: 32px;
-}

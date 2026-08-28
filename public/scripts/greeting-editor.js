@@ -48,7 +48,6 @@ export class GreetingEditor {
     }
 
     destroy() {
-        this._destroySortable();
         this.container.innerHTML = '';
     }
 
@@ -66,6 +65,9 @@ export class GreetingEditor {
         this.filterInput.addEventListener('input', () => {
             this.filterText = this.filterInput.value;
             this.render();
+        });
+        this.filterInput.addEventListener('keydown', (e) => {
+            e.stopPropagation();
         });
         this.container.appendChild(this.filterInput);
 
@@ -103,6 +105,20 @@ export class GreetingEditor {
     }
 
     render() {
+        // save focus state before re-render
+        let focusInfo = null;
+        const activeEl = document.activeElement;
+        if (activeEl && activeEl.closest('.greeting-editor') && activeEl.tagName === 'TEXTAREA') {
+            const row = activeEl.closest('.greeting-row');
+            if (row) {
+                focusInfo = {
+                    greetingIndex: Number(row.dataset.greetingIndex),
+                    selectionStart: activeEl.selectionStart,
+                    selectionEnd: activeEl.selectionEnd,
+                };
+            }
+        }
+
         const visibleIndices = this._getVisibleIndices();
 
         // status bar
@@ -116,7 +132,6 @@ export class GreetingEditor {
         }
 
         // clear rows
-        this._destroySortable();
         this.rowsList.innerHTML = '';
 
         // build rows with insertion points
@@ -150,7 +165,15 @@ export class GreetingEditor {
             this.rowsList.appendChild(this._createInsertionPoint(0));
         }
 
-        this._initSortable();
+        // restore focus
+        if (focusInfo !== null) {
+            const textarea = this.container.querySelector(`#greeting_textarea_${focusInfo.greetingIndex}`);
+            if (textarea) {
+                textarea.focus();
+                textarea.selectionStart = focusInfo.selectionStart;
+                textarea.selectionEnd = focusInfo.selectionEnd;
+            }
+        }
     }
 
     /**
@@ -168,12 +191,6 @@ export class GreetingEditor {
         row.dataset.greetingIndex = String(idx);
         if (isPicked) row.classList.add('greeting-picked');
         if (isDefault) row.classList.add('greeting-default');
-
-        // drag handle
-        const handle = document.createElement('span');
-        handle.classList.add('greeting-drag-handle');
-        handle.innerHTML = '<i class="fa-solid fa-grip-vertical"></i>';
-        row.appendChild(handle);
 
         // index
         const indexSpan = document.createElement('span');
@@ -235,8 +252,19 @@ export class GreetingEditor {
         }
         actions.appendChild(pickBtn);
 
-        // set as default (only for non-first)
-        if (!isDefault) {
+        // promote / demote
+        if (isDefault) {
+            if (this.greetings.length > 1) {
+                const demoteBtn = document.createElement('button');
+                demoteBtn.classList.add('menu_button', 'greeting-row-action-btn');
+                demoteBtn.innerHTML = '<i class="fa-solid fa-arrow-down"></i>';
+                demoteBtn.title = 'Demote from default (move to #2)';
+                demoteBtn.addEventListener('click', () => {
+                    this._moveGreeting(0, 2);
+                });
+                actions.appendChild(demoteBtn);
+            }
+        } else {
             const starBtn = document.createElement('button');
             starBtn.classList.add('menu_button', 'greeting-row-action-btn');
             starBtn.innerHTML = '<i class="fa-solid fa-star"></i>';
@@ -262,7 +290,14 @@ export class GreetingEditor {
             const expandedArea = document.createElement('div');
             expandedArea.classList.add('greeting-row-expanded');
 
+            const maximizeBtn = document.createElement('i');
+            maximizeBtn.classList.add('editor_maximize', 'fa-solid', 'fa-maximize', 'right_menu_button');
+            maximizeBtn.setAttribute('data-for', `greeting_textarea_${idx}`);
+            maximizeBtn.title = 'Expand the editor';
+            expandedArea.appendChild(maximizeBtn);
+
             const textarea = document.createElement('textarea');
+            textarea.id = `greeting_textarea_${idx}`;
             textarea.classList.add('text_pole', 'mdHotkeys');
             textarea.setAttribute('data-macros', '');
             textarea.value = greeting;
@@ -270,6 +305,9 @@ export class GreetingEditor {
             textarea.addEventListener('input', () => {
                 this.greetings[idx] = textarea.value;
                 this._fireChange();
+            });
+            textarea.addEventListener('keydown', (e) => {
+                e.stopPropagation();
             });
 
             expandedArea.appendChild(textarea);
@@ -387,53 +425,4 @@ export class GreetingEditor {
         this.onChange?.();
     }
 
-    _initSortable() {
-        if (this.pickedIndex !== null || this.filterText) return;
-
-        try {
-            $(this.rowsList).sortable({
-                handle: '.greeting-drag-handle',
-                items: '.greeting-row',
-                placeholder: 'greeting-sortable-placeholder',
-                tolerance: 'pointer',
-                update: (_event, _ui) => {
-                    // read new order from DOM
-                    const newOrder = [];
-                    $(this.rowsList).find('.greeting-row').each((_i, el) => {
-                        newOrder.push(Number(el.dataset.greetingIndex));
-                    });
-
-                    // rebuild greetings array
-                    const reordered = newOrder.map(i => this.greetings[i]);
-
-                    // rebuild expanded indices
-                    const newExpanded = new Set();
-                    for (let newPos = 0; newPos < newOrder.length; newPos++) {
-                        if (this.expandedIndices.has(newOrder[newPos])) {
-                            newExpanded.add(newPos);
-                        }
-                    }
-
-                    this.greetings = reordered;
-                    this.expandedIndices = newExpanded;
-
-                    // re-render to sync indices
-                    this.render();
-                    this._fireChange();
-                },
-            });
-        } catch {
-            // jQuery UI not available
-        }
-    }
-
-    _destroySortable() {
-        try {
-            if ($(this.rowsList).sortable('instance')) {
-                $(this.rowsList).sortable('destroy');
-            }
-        } catch {
-            // not initialized
-        }
-    }
 }
