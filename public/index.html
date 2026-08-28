@@ -6257,10 +6257,23 @@
                             </div>
                             <div id="firstMessageWrapper" class="flex-container flexFlowColumn flex1">
                                 <div id="first_message_div" class="title_restorable">
-                                    <h3><span data-i18n="First Message / Greetings">First Message / Greetings</span></h3>
+                                    <div class="flex-container alignitemscenter flex1">
+                                        <span data-i18n="First message" class="mdhotkey_location">First message</span>
+                                        <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="firstmessage_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
+                                        <a href="https://docs.sillytavern.app/usage/core-concepts/characterdesign/#first-message" class="notes-link" target="_blank">
+                                            <span class="fa-solid fa-circle-question note-link-span"></span>
+                                        </a>
+                                    </div>
+                                    <div class="menu_button menu_button_icon open_alternate_greetings margin0" title="Click to set additional greeting messages" data-i18n="[title]Click to set additional greeting messages">
+                                        <span data-i18n="Alt. Greetings">
+                                            Alt. Greetings
+                                        </span>
+                                    </div>
                                 </div>
-                                <input type="hidden" id="firstmessage_textarea" name="first_mes">
-                                <div id="greeting_editor_container"></div>
+                                <textarea id="firstmessage_textarea" class="mdHotkeys" data-macros data-i18n="[placeholder]This will be the first message from the character that starts every chat." placeholder="This will be the first message from the character that starts every chat." name="first_mes" placeholder=""></textarea>
+                                <div class="extension_token_counter">
+                                    <span data-i18n="extension_token_counter">Tokens:</span> <span data-token-counter="firstmessage_textarea">counting...</span>
+                                </div>
                             </div>
                             <!-- these divs are invisible and used for server communication purposes -->
                             <div id="hidden-divs">
