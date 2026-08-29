@@ -239,6 +239,12 @@ export function loadBackgroundSettings(settings) {
     background_settings.thumbnailColumns = columns;
     background_settings.sortOrder = backgroundSettings.sortOrder;
     background_settings.animation = backgroundSettings.animation;
+    // Adopt the loaded name/url the same way as the fields above, BEFORE setBackground() runs. That
+    // function compares against background_settings to decide whether to persist, and until these are
+    // assigned it is still holding its module defaults - so without this it would see the loaded
+    // background as a change and write settings back on every boot.
+    background_settings.name = backgroundSettings.name;
+    background_settings.url = backgroundSettings.url;
     applyThumbnailColumns(background_settings.thumbnailColumns);
 
     setBackground(backgroundSettings.name, backgroundSettings.url);
@@ -1453,9 +1459,12 @@ async function setBackground(bg, url) {
     if (!isChatBackgroundLocked()) {
         $('#bg1').css('background-image', url);
     }
+    const changed = background_settings.name !== bg || background_settings.url !== url;
     background_settings.name = bg;
     background_settings.url = url;
-    saveSettingsDebounced('background');
+    if (changed) {
+        saveSettingsDebounced('background');
+    }
 }
 
 async function delBackground(bg) {

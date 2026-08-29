@@ -191,15 +191,19 @@ export function selectContextPreset(preset, { quiet = false, isAuto = false } = 
         return;
     }
 
+    const changed = preset !== power_user.context.preset;
+
     // If context template is not already selected, select it
-    if (preset !== power_user.context.preset) {
+    if (changed) {
         $('#context_presets').val(preset).trigger('change');
         !quiet && toastr.info(`Context Template: "${preset}" ${isAuto ? 'auto-' : ''}selected`);
     }
 
     updateBindModelTemplatesState();
 
-    saveSettingsDebounced('power_user.context');
+    if (changed) {
+        saveSettingsDebounced('power_user.context');
+    }
 }
 
 /**
@@ -216,14 +220,17 @@ export function selectInstructPreset(preset, { quiet = false, isAuto = false } =
         return;
     }
 
+    const presetChanged = preset !== power_user.instruct.preset;
+    const enabledChanged = !power_user.instruct.enabled;
+
     // If instruct preset is not already selected, select it
-    if (preset !== power_user.instruct.preset) {
+    if (presetChanged) {
         $('#instruct_presets').val(preset).trigger('change');
         !quiet && toastr.info(`Instruct Template: "${preset}" ${isAuto ? 'auto-' : ''}selected`);
     }
 
     // If instruct mode is disabled, enable it
-    if (!power_user.instruct.enabled) {
+    if (enabledChanged) {
         power_user.instruct.enabled = true;
         $('#instruct_enabled').prop('checked', true).trigger('change');
         !quiet && toastr.info('Instruct Mode enabled');
@@ -231,7 +238,9 @@ export function selectInstructPreset(preset, { quiet = false, isAuto = false } =
 
     updateBindModelTemplatesState();
 
-    saveSettingsDebounced('power_user.instruct');
+    if (presetChanged || enabledChanged) {
+        saveSettingsDebounced('power_user.instruct');
+    }
 }
 
 /**
