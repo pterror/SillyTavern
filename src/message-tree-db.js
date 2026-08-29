@@ -736,7 +736,16 @@ export async function loadBranch(directories, ownerId, branchName) {
 }
 
 /**
- * Saves a chat array into the tree.
+ * Saves a whole chat array into the tree.
+ *
+ * Kept for parity with upstream SillyTavern: /api/chats/save is what extensions and anything written
+ * against the stock API call, so this shape has to keep working.
+ *
+ * Our own frontend does NOT use it, and shouldn't be routed back through it. It writes via the named
+ * operations (editMessage / appendMessages / addAlternatives / selectDefaultChild / setChatMetadata),
+ * each of which states the row it acts on. An array handed over wholesale is authority over rows the
+ * caller may never have received, which is how a windowed load's unfilled slots came to overwrite
+ * stored greetings with empty strings.
  *
  * Existing rows are matched by `node_id` (which survives the client round-trip). Anything without a
  * known node_id becomes new rows chained off the last resolved node. Every message's alternatives are
