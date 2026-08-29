@@ -470,9 +470,13 @@ export function initKoboldSettings() {
             }
 
             $('#api_url_text').val(value);
+            // Autoconnect on boot re-clicks this button with the already-stored URL; don't persist a no-op.
+            const serverChanged = value !== kai_settings.api_server;
             kai_settings.api_server = value;
             startStatusLoading();
-            saveSettingsDebounced('kai_settings');
+            if (serverChanged) {
+                saveSettingsDebounced('kai_settings');
+            }
             getStatusKobold();
         }
     });
