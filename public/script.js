@@ -11823,7 +11823,6 @@ export function isMessageSwipeable(messageId, message = undefined) {
 export function getOverswipeBehavior(messageId, message = undefined) {
     message ??= chat[messageId];
 
-    const isPristine = !chat_metadata?.tainted;
     const isGreeting = messageId === 0;
 
     //Do not override explicitly set overswipe_behavior.
@@ -11832,8 +11831,13 @@ export function getOverswipeBehavior(messageId, message = undefined) {
     else if (message?.extra?.swipeable === false) return OVERSWIPE_BEHAVIOR.NONE;
     //Small System messages can't be swiped.
     else if (message?.extra?.isSmallSys) return OVERSWIPE_BEHAVIOR.NONE;
-    //The first message in a priistine chat will loop. It's chevrons will always be visible https://github.com/SillyTavern/SillyTavern/pull/4712#issuecomment-3557893373
-    else if (isGreeting && isPristine) return OVERSWIPE_BEHAVIOR.PRISTINE_GREETING;
+    //Greetings are card data the user authors, never something the LLM produces, so overswiping one must never
+    //start a generation. It appends an empty greeting slot and opens the editor instead (EDIT_GENERATE does not
+    //generate despite its name - see its branch in swipe()). This deliberately covers tainted chats too: the
+    //pristine-only check this replaces let a greeting that was the only message in a tainted chat fall through
+    //to REGENERATE below and call the LLM. Supersedes the pristine-loop behaviour from
+    //https://github.com/SillyTavern/SillyTavern/pull/4712#issuecomment-3557893373
+    else if (isGreeting) return OVERSWIPE_BEHAVIOR.EDIT_GENERATE;
     //Earlier messages loop through the alternatives they already have. Swiping past the end of one
     //must not start a generation, because the conversation continues below it.
     else if (messageId !== chat.length - 1) return OVERSWIPE_BEHAVIOR.LOOP;
@@ -11889,9 +11893,6 @@ export function refreshSwipeButtons(updateCounters = false, fade = true) {
             const swipePickerButton = $(div).find('.mes_swipe_picker');
             const canOpenSwipePicker = canOpenSwipePickerForMessage(messageId);
 
-            // Chevrons should always be shown on pristine greetings: https://github.com/SillyTavern/SillyTavern/pull/4712#issuecomment-3557893373
-            const pristineGreeting = overswipe == OVERSWIPE_BEHAVIOR.PRISTINE_GREETING;
-
             //The swipe button will be shown if an overswipe would trigger REGENERATE or EDIT_GENERATE.
             const isOverswipeable = isLastSwipe &&
                 overswipe == OVERSWIPE_BEHAVIOR.REGENERATE ||
@@ -11899,8 +11900,12 @@ export function refreshSwipeButtons(updateCounters = false, fade = true) {
 
             div.classList.toggle('last_swipe', isOverswipeable);
 
-            //If there's only one swipe, the left arrow should not be shown.
-            div.classList.toggle('swipes_visible', hasSwipes || pristineGreeting);
+            //If there's only one swipe, the left arrow should not be shown - except where an overswipe is
+            //meaningful on its own. Greetings now always resolve to EDIT_GENERATE (see getOverswipeBehavior),
+            //so a card with a single greeting still needs its chevrons to add a second one. This replaces the
+            //narrower pristine-greeting check that used to keep them visible:
+            //https://github.com/SillyTavern/SillyTavern/pull/4712#issuecomment-3557893373
+            div.classList.toggle('swipes_visible', hasSwipes || isOverswipeable);
             swipePickerButton.toggle(canOpenSwipePicker);
 
             //updateSwipeCounter does not need to be awaited, It can run a bit later.
