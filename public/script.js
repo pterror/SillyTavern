@@ -12370,6 +12370,15 @@ export function isMessageSwipeable(messageId, message = undefined) {
 export function getOverswipeBehavior(messageId, message = undefined) {
     message ??= chat[messageId];
 
+    // Every branch below is a property of the MESSAGE, not of where it sits. A position check used to
+    // sit in here forcing LOOP for anything but the last message, which overrode all of it: an earlier
+    // message could neither generate a new alternative nor, having only one, navigate to anything. So
+    // most of a conversation had arrows that did nothing.
+    //
+    // It was added out of a worry that generating mid-conversation would disturb what follows. In a
+    // tree it does not - generating makes a new sibling, and the old one keeps its continuation. That
+    // is a fork, which is the point.
+
     const isGreeting = messageId === 0;
 
     //Do not override explicitly set overswipe_behavior.
@@ -12385,9 +12394,6 @@ export function getOverswipeBehavior(messageId, message = undefined) {
     //to REGENERATE below and call the LLM. Supersedes the pristine-loop behaviour from
     //https://github.com/SillyTavern/SillyTavern/pull/4712#issuecomment-3557893373
     else if (isGreeting) return OVERSWIPE_BEHAVIOR.EDIT_GENERATE;
-    //Earlier messages loop through the alternatives they already have. Swiping past the end of one
-    //must not start a generation, because the conversation continues below it.
-    else if (messageId !== chat.length - 1) return OVERSWIPE_BEHAVIOR.LOOP;
     //Non-user and non-prompt hidden messages will regenerate.
     else if (!message?.is_user && !message?.is_system) return OVERSWIPE_BEHAVIOR.REGENERATE;
     //User messages will open the editor on a new, empty swipe.
