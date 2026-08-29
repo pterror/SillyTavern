@@ -283,7 +283,7 @@ export function buildTagFilterQuery(tantivy, schema, tags, fieldName) {
     if (include.length > 0) {
         const mode = tags.mode === 'or' ? tantivy.Occur.Should : tantivy.Occur.Must;
         const includeQuery = tantivy.Query.booleanQuery(
-            include.map(id => ({ occur: mode, query: tantivy.Query.termQuery(schema, fieldName, id) }))
+            include.map(id => ({ occur: mode, query: tantivy.Query.termQuery(schema, fieldName, id) })),
         );
         subqueries.push({ occur: tantivy.Occur.Must, query: includeQuery });
     }

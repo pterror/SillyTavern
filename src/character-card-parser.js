@@ -133,7 +133,7 @@ function spliceCardDataIntoChunks(chunks, data) {
     }
 
     return chunks;
-};
+}
 
 export const write = (image, data) => {
     const chunks = extract(new Uint8Array(image));

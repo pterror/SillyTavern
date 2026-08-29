@@ -145,15 +145,15 @@ async function getEntry(directories) {
     }
     const db = engine.openDatabase(getDbPath(directories));
     db.exec(SCHEMA_SQL);
-    const chatCols = db.all("PRAGMA table_info('chats')").map(c => c.name);
+    const chatCols = db.all('PRAGMA table_info(\'chats\')').map(c => c.name);
     if (chatCols.includes('rev') && !chatCols.includes('change_seq')) {
-        db.exec("ALTER TABLE chats RENAME COLUMN rev TO change_seq");
+        db.exec('ALTER TABLE chats RENAME COLUMN rev TO change_seq');
     }
-    const changeCols = db.all("PRAGMA table_info('changes')").map(c => c.name);
+    const changeCols = db.all('PRAGMA table_info(\'changes\')').map(c => c.name);
     if (changeCols.includes('rev') && !changeCols.includes('seq')) {
-        db.exec("ALTER TABLE changes RENAME COLUMN rev TO seq");
+        db.exec('ALTER TABLE changes RENAME COLUMN rev TO seq');
     }
-    db.run("UPDATE meta SET key = 'chat_content_index_seq' WHERE key = 'chat_content_index_rev'");
+    db.run('UPDATE meta SET key = \'chat_content_index_seq\' WHERE key = \'chat_content_index_rev\'');
     const entry = { db };
     entries.set(key, entry);
     return entry;
