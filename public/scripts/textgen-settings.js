@@ -1128,9 +1128,12 @@ export function initTextGenSettings() {
             }
         }
 
+        // No save here on purpose. This handler assigns nothing in textgenerationwebui_settings: the
+        // writeSecret() calls above persist through /api/secrets/write, and validateTextGenUrl() only
+        // reformats the DOM control. Connecting is not a settings change, and RA_autoconnect fakes a
+        // click on this button during boot, so the save this replaces fired on every page load.
         validateTextGenUrl();
         startStatusLoading();
-        saveSettingsDebounced('textgenerationwebui_settings');
         getStatusTextgen();
     });
 }

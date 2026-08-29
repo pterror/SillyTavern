@@ -6079,8 +6079,12 @@ async function onConnectButtonClick(e) {
         }
     }
 
+    // No save here on purpose. This function does not assign a single oai_settings field on any path -
+    // every reference to oai_settings above is a read. Its only real mutation is writeSecret(), which
+    // persists through /api/secrets/write and never touches oai_settings. Connecting is not a settings
+    // change, and reconnectOpenAi() reaches this from loadOpenAISettings() during boot, so the save this
+    // replaces fired on every page load for anyone on an OpenAI backend, auto-connect or not.
     startStatusLoading();
-    saveSettingsDebounced('oai_settings');
     await getStatusOpen();
 }
 
