@@ -34,7 +34,10 @@ const TANTIVY_COLLATION_FIELDS = ['name_sort_key', 'fav_name_sort_key'];
 const ALL_FAST_FIELDS = [...TANTIVY_FAST_FIELDS, ...TANTIVY_COLLATION_FIELDS];
 const TANTIVY_FILTER_TEXT_FIELDS = [{ name: 'tag_ids', tokenizerName: 'whitespace' }];
 
-function stringToSortKey(str, byteCount = 7) {
+// Byte-count capped at 6 for the same JS-double precision reason characters-search-index.js's own
+// stringToSortKey() documents in full: 7 bytes is 2^56, past Number.MAX_SAFE_INTEGER (2^53 - 1), and
+// silently rounds the low byte away so names differing only at the 7th character collide.
+function stringToSortKey(str, byteCount = 6) {
     const lower = (str || '').toLowerCase();
     let key = 0;
     for (let i = 0; i < byteCount; i++) {
