@@ -542,9 +542,11 @@ export let characters = [];
  * settings load), so this doesn't need a rebuild-on-reassignment hook the way tagsStore does.
  *
  * Unlike tags, character lifecycle mutations (create/delete/rename/duplicate) are not targeted array
- * push/splice-by-id - they're all implemented (server-side and client-side) as a full array replace via
- * getCharacters(). getCharacters() itself keeps doing that replace and calls charactersStore.reindex()/reset()
- * as appropriate; callers that know a specific create/delete/rename happened report it via
+ * push/splice-by-id - they're all implemented (server-side and client-side) as a bulk refetch-and-merge via
+ * getCharacters(). getCharacters() itself merges the refetched data field-by-field into the existing array in
+ * place (adding/removing entries as needed, but never wholesale-replacing an existing entity - see its own
+ * comment) and calls charactersStore.reindex()/reset() as appropriate; callers that know a specific
+ * create/delete/rename happened report it via
  * charactersStore.reportCreated()/.reportRemoved()/.reportRenamed() instead of the generic reset(), so
  * consumers hear the specific thing that happened rather than "something changed, go re-scan".
  * @type {EntityStore<Character>}
@@ -3048,11 +3050,54 @@ export async function getCharacters({ silent = false, silentGroups = false } = {
         return;
     }
 
-    characters.splice(0, characters.length, ...newCharacters);
+    // Merge newCharacters into the existing `characters` array in place rather than wholesale-replacing it.
+    // newCharacters can legitimately be a *shallow* projection of the library (toShallow() / useShallowCharacters)
+    // that simply omits heavy fields like data.alternate_greetings - that omission means "not included in this
+    // projection", not "this field is now gone". A full splice-replace was treating it as the latter: a
+    // character that had already been unshallowed (e.g. by the autoload path during boot, which races this
+    // still-in-flight fetch) would get its full entity swapped out for the thinner shallow one, silently losing
+    // alternate_greetings and anything else the projection doesn't carry. Merging field-by-field onto the
+    // existing object (Object.assign-style: incoming fields overwrite, fields the incoming payload doesn't
+    // carry are left alone) keeps already-resident heavy data intact while still picking up whatever did change
+    // upstream. Characters no longer present upstream are removed (this is also how deletions propagate - a
+    // merge that only ever added/updated would leave deleted characters resident forever), and characters newly
+    // present are added.
+    const newByAvatar = new Map(newCharacters.map(c => [c.avatar, c]));
+    for (const existing of characters) {
+        const incoming = newByAvatar.get(existing.avatar);
+        if (!incoming) continue;
+        // getOneCharacter() (above) explicitly resets `shallow` to false when it fetches full data, because
+        // processCharacter()'s full-data branch never sets `shallow: false` itself, and Object.assign() only
+        // overwrites keys actually present in the patch - so without that reset, an entity that was ever shallow
+        // would keep reading as shallow forever. The same asymmetry applies here in reverse: `incoming.shallow
+        // === true` is a true statement about *this* fetched payload, but not about `existing` if it was already
+        // unshallowed - it still holds the earlier full data underneath these fresher shallow fields. Letting the
+        // merge downgrade it back to `shallow: true` would make unshallowCharacter() treat an already-full
+        // character as needing a redundant re-fetch, so that one field is preserved rather than merged.
+        const wasUnshallowed = existing.shallow === false;
+        Object.assign(existing, incoming);
+        if (wasUnshallowed && incoming.shallow === true) {
+            existing.shallow = false;
+        }
+    }
+    for (let i = characters.length - 1; i >= 0; i--) {
+        if (!newByAvatar.has(characters[i].avatar)) {
+            characters.splice(i, 1);
+        }
+    }
+    const existingAvatars = new Set(characters.map(c => c.avatar));
+    for (const incoming of newCharacters) {
+        if (!existingAvatars.has(incoming.avatar)) {
+            characters.push(incoming);
+        }
+    }
 
     // Fuse-index invalidation is handled by the charactersStore.onChange subscriber (see charactersStore's
     // definition above) - reset() emits directly, and reindex()'s silent callers all follow up with a
-    // reportCreated()/reportRemoved()/reportRenamed() of their own right after this call returns.
+    // reportCreated()/reportRemoved()/reportRenamed() of their own right after this call returns. The merge
+    // above is still a bulk refetch-and-rebuild with no single more-specific create/delete/rename intent (see
+    // EntityStore's own reset() doc comment), so it still fits reset()'s "the whole collection may have
+    // changed" semantics - one summary event, not a flood of per-entity ones.
     if (silent) {
         charactersStore.reindex();
     } else {
@@ -3060,7 +3105,7 @@ export async function getCharacters({ silent = false, silentGroups = false } = {
     }
 
     if (this_avatar) {
-        // this_avatar is untouched by the splice()/reload above (it's a separate variable, not derived from
+        // this_avatar is untouched by the merge/reload above (it's a separate variable, not derived from
         // the array), so it's still exactly the avatar that was selected before this reload - selecting by
         // avatar directly needs no index lookup.
         if (charactersStore.get(this_avatar)) {
