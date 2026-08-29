@@ -333,9 +333,11 @@ export function nodeIdentityKey(parentId, contentJson) {
         // A user message's speaker is the PERSONA it was said as. Two identical texts under one
         // parent, said as different personas, are two different messages and must not merge.
         //
-        // The persona rather than the display name because the name drifts: this install has one
-        // persona written as `n_n`, `n-n` and `n＿n` across 145k messages, which name-as-speaker reads
-        // as three different people. The avatar id survives a rename.
+        // The persona rather than the display name because the two are many-to-many, measured on a
+        // real install: the name `n_n` appears under both `user-default.png` and a Millie persona,
+        // and the name `Millie` appears under both a Millie persona and an Avery one. So a name
+        // neither identifies a persona nor is identified by one, and name-as-speaker would merge
+        // genuinely different speakers while splitting a single one across spellings.
         //
         // Character messages keep the name - persona is a user-side concept and they have none.
         speaker = o?.is_user
