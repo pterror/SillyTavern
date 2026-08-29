@@ -1301,6 +1301,21 @@ async function mergeCharacterUpdate(avatarPath, avatar, updateData, request, sho
     _.unset(update, 'json_data');
     _.unset(character, 'json_data');
 
+    // Greetings no longer land through the generic field-merge path - the six named /greetings/*
+    // operations (added/migrated onto in this same change) are now the only way a client is allowed
+    // to change first_mes/alternate_greetings, since they're the only path that enforces no empty
+    // entries, stable order, a separately-tracked default, and delete-only-when-the-caller's-view-
+    // matched-disk. The field-mapping table above writes both V1 (bare `first_mes`,
+    // `alternate_greetings`) and V2 (`data.first_mes`, `data.alternate_greetings`) spellings, so all
+    // four have to be checked or one spelling would still bypass the operations' guarantees.
+    // /api/characters/edit is a deliberate exception - it takes a whole card and doesn't route through
+    // this function, so greetings stay writable wholesale there for upstream parity and extensions.
+    const forbiddenGreetingPaths = ['data.alternate_greetings', 'data.first_mes', 'alternate_greetings', 'first_mes'];
+    const touchedGreetingPaths = forbiddenGreetingPaths.filter(p => _.has(update, p));
+    if (touchedGreetingPaths.length > 0) {
+        return { ok: false, error: 'greeting-fields-forbidden', touchedGreetingPaths };
+    }
+
     // Per-field conflict detection: if the client sent _loadedFieldHashes (a map of V2 data paths
     // to cyrb53 hashes of their loaded values), check each against the current card. A mismatch
     // means another session changed that specific field since the client loaded it. This gives
@@ -1471,6 +1486,12 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
             response.sendStatus(200);
         } else if (result.error === 'conflict' && result.conflictingFields) {
             response.status(409).json({ error: 'conflict', conflictingFields: result.conflictingFields });
+        } else if (result.error === 'greeting-fields-forbidden') {
+            response.status(400).json({
+                error: 'greeting-fields-forbidden',
+                touchedGreetingPaths: result.touchedGreetingPaths,
+                message: 'first_mes and alternate_greetings can no longer be written through /merge-attributes - use the /greetings/* operations instead.',
+            });
         } else {
             console.warn(result.error);
             response.status(400).send({ message: `Validation failed for ${update.avatar}`, error: result.error });
