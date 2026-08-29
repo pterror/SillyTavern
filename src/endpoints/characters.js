@@ -325,9 +325,16 @@ async function findCrossCharacterReflinkCandidate(directories, selfAvatar, data)
  * @param {string|null} [contentHash] - sha256 hex digest of the raw uploaded source-file bytes this write came
  * from (bulk-import dedup) - only `/import`'s format importers have one of these to pass; every other caller
  * omits it and the write proceeds exactly as before (see fireMetadataUpsertHook()'s doc comment).
+ * @param {Set<string>|null} [freshFieldPaths] - V2 dot-paths (e.g. `'data.alternate_greetings'`) that the
+ * caller has already, independently confirmed match current on-disk state via the per-field/body content-hash
+ * conflict check it ran before calling this function (see `/edit`'s `x-content-hashes` check and
+ * `mergeCharacterUpdate()`'s `_loadedFieldHashes` check). Only a caller that actually ran that check and got a
+ * match for a given path may include it here - this is not a caller-asserted "trust me" flag, it's a pass-through
+ * of a verification the caller already did. Only `/edit` and `/merge-attributes` currently pass anything;
+ * every other caller omits it and the write proceeds exactly as before.
  * @returns {Promise<boolean>} - True if the operation was successful
  */
-async function writeCharacterData(inputFile, data, outputFile, request, crop = undefined, contentHash = null) {
+async function writeCharacterData(inputFile, data, outputFile, request, crop = undefined, contentHash = null, freshFieldPaths = null) {
     try {
         // Reset the cache
         for (const key of memoryCache.keys()) {
@@ -362,24 +369,41 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
 
         const outputImagePath = path.join(request.user.directories.characters, `${outputFile}.png`);
 
-        // Safety measure against a client-side read bug (2026-08) that can leave a loaded character's
-        // alternate_greetings empty in memory while the file on disk still holds the full list - every
-        // create/edit/edit-avatar/edit-attribute/merge-attributes/import route funnels through this one
-        // function (see the write-path-hook comment below), so this is the single place that can catch an
-        // incoming empty array before it clobbers a non-empty one already on disk. Deliberately narrow: only
-        // this one field, only empty-over-non-empty, no override flag - it also blocks a legitimate "delete
-        // all my alternate greetings" edit, which is accepted for now since the destructive read bug is the
-        // live risk. Any failure inside this guard (unparsable data, no existing file, read error) just skips
-        // the guard and lets the write proceed as it would have before.
+        // Safety measure against a client-side read bug (2026-08, fixed in afe557551/d8fd090b2 -
+        // getCharacters() was replacing resident characters with shallow projections that lost
+        // alternate_greetings) that could leave a loaded character's alternate_greetings empty in memory
+        // while the file on disk still held the full list. Every create/edit/edit-avatar/edit-attribute/
+        // merge-attributes/import route funnels through this one function (see the write-path-hook comment
+        // below), so this is the single place that can catch an incoming empty array before it clobbers a
+        // non-empty one already on disk.
+        //
+        // The owner has since said a card must support any number of greetings, including a deliberate
+        // delete-to-zero (or delete-to-one, under the first_mes/alternate_greetings split), so "incoming
+        // alternate_greetings is empty, stored one is not" can no longer be blocked unconditionally - that
+        // shape is now also the *legitimate* case. The two are indistinguishable from the payload alone; the
+        // only thing that tells them apart is whether the client's view was actually based on current disk
+        // state, which this function has no way to know on its own. `freshFieldPaths` is how a caller that
+        // *does* know - because it ran the codebase's existing per-field/body content-hash conflict check
+        // (`/edit`'s `x-content-hashes`, `mergeCharacterUpdate()`'s `_loadedFieldHashes`) and got a match for
+        // `data.alternate_greetings` - passes that verification through. When it's present for this path, the
+        // write is a confirmed-deliberate edit and goes through untouched. When it's absent (no caller-side
+        // check ran, or this call site never learned to pass one), this falls back to the original blocking
+        // behavior: refuse the empty-over-non-empty write, keep the existing greetings, and log it. That
+        // fallback still blocks legitimate deletion on any write path that hasn't been wired to prove
+        // freshness (currently: create/edit-avatar/edit-attribute/import) - narrow and conservative on
+        // purpose, same tradeoff the original guard made, now scoped down to just the callers that haven't
+        // caught up rather than all of them. Any failure inside this guard (unparsable data, no existing
+        // file, read error) just skips the guard and lets the write proceed as it would have before.
         try {
             const incomingCard = JSON.parse(data);
             const incomingGreetings = incomingCard?.data?.alternate_greetings;
-            if (Array.isArray(incomingGreetings) && incomingGreetings.length === 0 && fs.existsSync(outputImagePath)) {
+            const greetingsVerifiedFresh = freshFieldPaths instanceof Set && freshFieldPaths.has('data.alternate_greetings');
+            if (!greetingsVerifiedFresh && Array.isArray(incomingGreetings) && incomingGreetings.length === 0 && fs.existsSync(outputImagePath)) {
                 const existingRaw = await parse(outputImagePath, 'png');
                 const existingCard = JSON.parse(existingRaw);
                 const existingGreetings = existingCard?.data?.alternate_greetings;
                 if (Array.isArray(existingGreetings) && existingGreetings.length > 0) {
-                    console.warn(`[writeCharacterData] Refusing to overwrite non-empty alternate_greetings with an empty array for "${outputFile}.png" - kept ${existingGreetings.length} existing greeting(s) (safety guard against an in-memory-empty read bug).`);
+                    console.warn(`[writeCharacterData] Refusing to overwrite non-empty alternate_greetings with an empty array for "${outputFile}.png" - kept ${existingGreetings.length} existing greeting(s) (safety guard against an in-memory-empty read bug; no verified-fresh signal was passed for this write).`);
                     incomingCard.data.alternate_greetings = existingGreetings;
                     data = JSON.stringify(incomingCard);
                 }
@@ -1043,6 +1067,11 @@ router.post('/edit', validateAvatarUrlMiddleware, async function (request, respo
     // and cannot drift - any write path that changes the card automatically changes its hashes, by
     // construction, with no separate bookkeeping any endpoint could forget to maintain.
     const contentHashesHeader = request.headers['x-content-hashes'];
+    // Paths this request has proven (via the content-hash check just below) match current on-disk state -
+    // threaded through to writeCharacterData()'s own alternate_greetings guard so a confirmed-fresh empty
+    // array isn't mistaken for the stale/corrupted-read shape that guard exists to catch. See that function's
+    // doc comment on `freshFieldPaths` for the full reasoning.
+    let freshFieldPaths = null;
     if (contentHashesHeader) {
         try {
             const clientHashes = JSON.parse(contentHashesHeader);
@@ -1061,6 +1090,12 @@ router.post('/edit', validateAvatarUrlMiddleware, async function (request, respo
                 }
                 if (conflicts.length > 0) {
                     return response.status(409).json({ error: 'conflict', conflicts });
+                }
+                // The body hash matched current disk, and alternate_greetings is one of the fields that hash
+                // covers (characterCardBodyFingerprint() in hash-utils.js), so this request's view of it is
+                // confirmed current, not just assumed current.
+                if (clientHashes.body !== undefined) {
+                    freshFieldPaths = new Set(['data.alternate_greetings']);
                 }
             }
         } catch (err) {
@@ -1091,12 +1126,12 @@ router.post('/edit', validateAvatarUrlMiddleware, async function (request, respo
     try {
         if (!request.file) {
             const avatarPath = path.join(request.user.directories.characters, request.body.avatar_url);
-            await writeCharacterData(avatarPath, char, targetFile, request);
+            await writeCharacterData(avatarPath, char, targetFile, request, undefined, null, freshFieldPaths);
         } else {
             const crop = tryParse(request.query.crop);
             const newAvatarPath = path.join(request.file.destination, request.file.filename);
             invalidateThumbnail(request.user.directories, 'avatar', request.body.avatar_url);
-            await writeCharacterData(newAvatarPath, char, targetFile, request, crop);
+            await writeCharacterData(newAvatarPath, char, targetFile, request, crop, null, freshFieldPaths);
             fs.unlinkSync(newAvatarPath);
 
             // Bust cache to reload the new avatar
@@ -1272,6 +1307,11 @@ async function mergeCharacterUpdate(avatarPath, avatar, updateData, request, sho
     // isn't a conflict at all.
     const loadedFieldHashes = update._loadedFieldHashes;
     delete update._loadedFieldHashes;
+    // Paths this request has proven match current on-disk state, threaded through to
+    // writeCharacterData()'s own alternate_greetings guard - see that function's doc comment on
+    // `freshFieldPaths`. A path only lands here if the caller actually sent a loaded-hash for it AND that
+    // hash matched (the conflict return above already catches a mismatch on any path, this one included).
+    let freshFieldPaths = null;
     if (loadedFieldHashes && typeof loadedFieldHashes === 'object') {
         const conflictingFields = [];
         for (const [v2Path, loadedHash] of Object.entries(loadedFieldHashes)) {
@@ -1283,6 +1323,9 @@ async function mergeCharacterUpdate(avatarPath, avatar, updateData, request, sho
         }
         if (conflictingFields.length > 0) {
             return { ok: false, error: 'conflict', conflictingFields };
+        }
+        if (Object.prototype.hasOwnProperty.call(loadedFieldHashes, 'data.alternate_greetings')) {
+            freshFieldPaths = new Set(['data.alternate_greetings']);
         }
     }
 
@@ -1313,7 +1356,7 @@ async function mergeCharacterUpdate(avatarPath, avatar, updateData, request, sho
     }
 
     const targetImg = avatar.replace('.png', '');
-    await writeCharacterData(avatarPath, JSON.stringify(character), targetImg, request);
+    await writeCharacterData(avatarPath, JSON.stringify(character), targetImg, request, undefined, null, freshFieldPaths);
     if (favRequested) {
         await setCharacterFav(request.user.directories, avatar, requestedFav);
     }
