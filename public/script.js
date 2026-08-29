@@ -9681,9 +9681,12 @@ async function _mergeCardGreetingsIntoOpening() {
     const character = getCurrentCharacter();
     if (!opening?.node_id || !character?.avatar) return;
 
+    // Raw card text, deliberately unregexed. Identity is the message as stored, and stored openings
+    // hold the card's own text - regex is a display transform applied on the way to the screen. Sending
+    // the transformed version made every already-stored greeting look brand new, which on this card
+    // meant 927 phantom alternatives appearing out of nowhere.
     const { greetings } = cardToGreetingsModel(character);
     const contents = (greetings ?? [])
-        .map(greeting => getRegexedString(greeting, regex_placement.AI_OUTPUT))
         .filter(text => typeof text === 'string' && text.length > 0)
         .map(text => ({
             name: name2,
@@ -10364,7 +10367,10 @@ async function getFirstMessage() {
     // them and holding its id, not copying a greeting off the card into a brand new message - the
     // copy was a file-era necessity (a file couldn't reference a shared node) and it is why the
     // opening message had no node_id and nothing could be anchored to it.
-    const fromTree = await _openingFromTree(regexedGreetings, swipeId);
+    // Raw greetings, not the regexed ones: identity is the message as stored, and stored openings hold
+    // the card's own text. Regex is a display transform, and sending it makes every existing greeting
+    // look new.
+    const fromTree = await _openingFromTree(greetings, swipeId);
     if (fromTree) return fromTree;
 
     const message = {
