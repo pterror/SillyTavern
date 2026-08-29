@@ -362,6 +362,32 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
 
         const outputImagePath = path.join(request.user.directories.characters, `${outputFile}.png`);
 
+        // Safety measure against a client-side read bug (2026-08) that can leave a loaded character's
+        // alternate_greetings empty in memory while the file on disk still holds the full list - every
+        // create/edit/edit-avatar/edit-attribute/merge-attributes/import route funnels through this one
+        // function (see the write-path-hook comment below), so this is the single place that can catch an
+        // incoming empty array before it clobbers a non-empty one already on disk. Deliberately narrow: only
+        // this one field, only empty-over-non-empty, no override flag - it also blocks a legitimate "delete
+        // all my alternate greetings" edit, which is accepted for now since the destructive read bug is the
+        // live risk. Any failure inside this guard (unparsable data, no existing file, read error) just skips
+        // the guard and lets the write proceed as it would have before.
+        try {
+            const incomingCard = JSON.parse(data);
+            const incomingGreetings = incomingCard?.data?.alternate_greetings;
+            if (Array.isArray(incomingGreetings) && incomingGreetings.length === 0 && fs.existsSync(outputImagePath)) {
+                const existingRaw = await parse(outputImagePath, 'png');
+                const existingCard = JSON.parse(existingRaw);
+                const existingGreetings = existingCard?.data?.alternate_greetings;
+                if (Array.isArray(existingGreetings) && existingGreetings.length > 0) {
+                    console.warn(`[writeCharacterData] Refusing to overwrite non-empty alternate_greetings with an empty array for "${outputFile}.png" - kept ${existingGreetings.length} existing greeting(s) (safety guard against an in-memory-empty read bug).`);
+                    incomingCard.data.alternate_greetings = existingGreetings;
+                    data = JSON.stringify(incomingCard);
+                }
+            }
+        } catch (guardError) {
+            // Can't compare - don't block the write on the guard itself.
+        }
+
         // Fast path: when the source is already a file on disk and no crop is requested, its image data
         // is going into the output completely unchanged (crop is the only thing that would actually
         // touch pixels) - writeCardToFile() reflinks that unchanged portion straight from `inputFile`
