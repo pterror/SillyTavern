@@ -11597,29 +11597,14 @@ export async function updateSwipeCounter(mesId, { message = undefined, messageEl
     const canOpenSwipePicker = canOpenSwipePickerForMessage(mesId);
     const canJumpToSwipe = canJumpToSwipeForMessage(mesId);
 
-    // Build or update the editable swipe jump input
-    let jumpInput = swipeCounter.find('.swipe-jump-input');
-    let totalSpan = swipeCounter.find('.swipe-jump-total');
-    if (jumpInput.length === 0 && totalNum > 1) {
+    // A message's swipe counter is a counter, not a control. The typeable jump box belongs to
+    // greeting navigation in the character panel; it had leaked onto every message with more than one
+    // alternative, which is not a reasonable thing to bolt onto every message's swipe controls.
+    // Clean up any input a previous render left behind before writing the text.
+    if (swipeCounter.find('.swipe-jump-input').length > 0) {
         swipeCounter.empty();
-        jumpInput = $('<input>', {
-            type: 'number',
-            class: 'swipe-jump-input',
-            min: 1,
-            max: totalNum,
-            value: currentNum,
-        });
-        totalSpan = $('<span>', { class: 'swipe-jump-total' });
-        swipeCounter.append(jumpInput, totalSpan);
     }
-
-    if (jumpInput.length > 0) {
-        jumpInput.val(currentNum).attr('max', totalNum);
-        totalSpan.text(`​/​${totalNum}`);
-    } else {
-        const swipeCounterText = formatSwipeCounter(currentNum, totalNum);
-        swipeCounter.text(swipeCounterText);
-    }
+    swipeCounter.text(formatSwipeCounter(currentNum, totalNum));
 
     swipeCounter
         .prop('hidden', false)
@@ -11675,8 +11660,10 @@ export function isMessageSwipeable(messageId, message = undefined) {
         //Only messages below the currently edited message can be swiped, if it's not mid-swipe edit.
         ((messageId > (this_edit_mes_id ?? -1)) && (swipeState != SWIPE_STATE.EDITING)) &&
 
-        //If the message is the last message, and it exists.
-        (messageId == chat.length - 1) &&
+        //Any message can be swiped, not just the last one: every message on the loaded path carries
+        //its own sibling set now, so navigating between an earlier message's alternatives is just
+        //moving along that message's own fork. Whether an overswipe past the end GENERATES is a
+        //separate question, and that stays last-message-only - see getOverswipeBehavior().
         (message &&
             //Small system messages cannot be swiped.
             !(message?.extra?.isSmallSys) &&
@@ -11715,6 +11702,9 @@ export function getOverswipeBehavior(messageId, message = undefined) {
     else if (message?.extra?.isSmallSys) return OVERSWIPE_BEHAVIOR.NONE;
     //The first message in a priistine chat will loop. It's chevrons will always be visible https://github.com/SillyTavern/SillyTavern/pull/4712#issuecomment-3557893373
     else if (isGreeting && isPristine) return OVERSWIPE_BEHAVIOR.PRISTINE_GREETING;
+    //Earlier messages loop through the alternatives they already have. Swiping past the end of one
+    //must not start a generation, because the conversation continues below it.
+    else if (messageId !== chat.length - 1) return OVERSWIPE_BEHAVIOR.LOOP;
     //Non-user and non-prompt hidden messages will regenerate.
     else if (!message?.is_user && !message?.is_system) return OVERSWIPE_BEHAVIOR.REGENERATE;
     //User messages will open the editor on a new, empty swipe.
@@ -12795,6 +12785,13 @@ export async function swipe(event, direction, { source, repeated, message = chat
     }
 
     const mesId = Number(forceMesId ?? event?.currentTarget?.closest('.mes')?.getAttribute('mesid') ?? messageIndex ?? chat.length - 1);
+
+    //A click carries its own message id. `message` defaults to the last message, so without this an
+    //arrow on an earlier message would be checked against the wrong one.
+    if (forceMesId == null && event?.currentTarget?.closest('.mes')?.getAttribute('mesid') != null && chat[mesId]) {
+        message = chat[mesId];
+        messageIndex = mesId;
+    }
 
     if ([SWIPE_SOURCE.DELETE, SWIPE_SOURCE.BACK, SWIPE_SOURCE.AUTO_SWIPE, SWIPE_SOURCE.SLASH_COMMAND, SWIPE_SOURCE.SWIPE_PICKER].includes(source)) {
         console.info(`The ${direction} swipe source on message #${mesId} is ${source}, Most checks have been bypassed. `);
@@ -14398,8 +14395,8 @@ jQuery(async function () {
     ///// SWIPE BUTTON CLICKS ///////
 
     //limit swiping to only last message clicks
-    $(document).on('click', '.last_mes .swipe_right', async (e, data) => await swipe(e, SWIPE_DIRECTION.RIGHT, data));
-    $(document).on('click', '.last_mes .swipe_left', async (e, data) => await swipe(e, SWIPE_DIRECTION.LEFT, data));
+    $(document).on('click', '.mes .swipe_right', async (e, data) => await swipe(e, SWIPE_DIRECTION.RIGHT, data));
+    $(document).on('click', '.mes .swipe_left', async (e, data) => await swipe(e, SWIPE_DIRECTION.LEFT, data));
 
     $(document).on('click', '.branch_left', async function (e) {
         e.preventDefault();
