@@ -14091,7 +14091,8 @@ async function removeCharacterFromUI(removedCharacters = []) {
         charactersStore.reportRemoved(avatar, entity);
     }
     await printMessages();
-    saveSettingsDebounced('active_character', 'active_group');
+    // No save: nothing in this function or its call chain writes active_character/active_group - only
+    // setActiveCharacter()/setActiveGroup() do, and neither is reached from here.
     await eventSource.emit(event_types.CHAT_CHANGED, getCurrentChatId());
 }
 
