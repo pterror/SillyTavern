@@ -4202,11 +4202,10 @@ export async function queryEntities(directories, params = {}) {
         // filesystem cost this whole metadata store exists to avoid (same reason chat_size/date_last_chat are
         // precomputed and cached rather than read live off disk on every query). So this one genuinely stays
         // NULL on the group side - not a shortcut, there is no stored value to project instead - and the
-        // group-side ORDER BY substitutes a literal `0` for it so groups sort at one end when sorting by
-        // data_size, which the merge comparator's `Number(a.data_size ?? 0)` treats identically.
+        // group SELECT's `NULL as data_size` alias is what the group-side ORDER BY resolves data_size to,
+        // so every group sorts as equal on that key and falls through to the tiebreaker together.
         const groupOrderBy = orderBy
-            .replace(/\bcreate_date\b/g, 'date_added')
-            .replace(/\bdata_size\b/g, '0');
+            .replace(/\bcreate_date\b/g, 'date_added');
 
         const charArgs = [...charWhere.args, ...orderArgs, fetchLimit];
         const charRawRows = entry.db.all(
