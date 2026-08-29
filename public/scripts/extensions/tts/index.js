@@ -1383,8 +1383,13 @@ function updateVoiceMap() {
     if (!extension_settings.tts[ttsProviderName].voiceMap) {
         extension_settings.tts[ttsProviderName].voiceMap = {};
     }
+    // Loading the page / switching chats can recompute the same voice map from already-stored values; don't persist a no-op.
+    const previousVoiceMap = JSON.stringify(extension_settings.tts[ttsProviderName].voiceMap);
     Object.assign(extension_settings.tts[ttsProviderName].voiceMap, voiceMap);
-    saveSettingsDebounced('extension_settings');
+    const voiceMapChanged = JSON.stringify(extension_settings.tts[ttsProviderName].voiceMap) !== previousVoiceMap;
+    if (voiceMapChanged) {
+        saveSettingsDebounced('extension_settings');
+    }
 }
 
 class VoiceMapEntry {
