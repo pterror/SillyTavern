@@ -178,7 +178,11 @@ export { SORT_FIELD_TO_TANTIVY_FIELD };
  * a mismatch there is treated exactly like a corrupt or missing index (nothing usable persisted), which naturally
  * routes into a fresh rebuild the same way those already do, without needing a separate branch anywhere else.
  */
-const TANTIVY_SCHEMA_VERSION = 3;
+// Bumped 3 -> 4 for a VALUE change rather than a shape change: the schema's field set is identical to
+// v3, but `name_sort_key` was computed with a 7-byte encoding that overflowed JS double precision (see
+// stringToSortKey() below), so every v3 index holds subtly wrong name-sort keys. A stale-data bump is
+// exactly as load-bearing as a stale-shape one - the persisted index can't be trusted either way.
+const TANTIVY_SCHEMA_VERSION = 4;
 
 // `label:value` search syntax (see search-query.js) - maps a friendly label to the tantivy field(s) it targets.
 // `tag:`/`tags:` searches BOTH tag-ish fields, since BM25_WEIGHTS above already treats resolved_tags (tags.json
@@ -383,12 +387,24 @@ const NOOP_CLOSE = () => { /* no explicit close API on this binding's Index */ }
 /**
  * Encodes the first `byteCount` bytes of a lowercased string as an unsigned integer for use as a
  * fast-field sort key. Gives correct lexicographic ordering for names that differ within the first
- * `byteCount` characters; ties are broken by tantivy's stable internal ordering.
+ * `byteCount` characters; names sharing that prefix tie, and a tie is broken by tantivy's stable
+ * internal ordering (arbitrary but consistent between page turns, so pagination never repeats or
+ * skips a row).
+ *
+ * WHY 6 AND NOT MORE: the value has to survive as an exact JS `number` all the way into the binding's
+ * `addUnsigned()`, and a JS number is an IEEE-754 double - integers are only exact up to
+ * `Number.MAX_SAFE_INTEGER` (2^53 - 1). Each byte multiplies the key by 256, so 6 bytes is 2^48
+ * (safe) while 7 bytes is 2^56, which OVERFLOWS that range and silently rounds the low bits away.
+ * This was a real bug, not a theoretical one: at 7 bytes, `stringToSortKey('aaaaaaa')` and
+ * `stringToSortKey('aaaaaab')` returned the *identical* value, so any two names differing only at
+ * the 7th character sorted arbitrarily instead of alphabetically. Do not raise this past 6 without
+ * moving the whole encoding to BigInt, which this binding's `addUnsigned(name, value: number)`
+ * signature does not accept.
  * @param {string} str
- * @param {number} [byteCount=7]
- * @returns {number} A non-negative integer safe for tantivy's unsigned fast field.
+ * @param {number} [byteCount=6] Must not exceed 6 - see above.
+ * @returns {number} A non-negative integer <= 2^48, exactly representable as a JS number.
  */
-function stringToSortKey(str, byteCount = 7) {
+function stringToSortKey(str, byteCount = 6) {
     const lower = (str || '').toLowerCase();
     let key = 0;
     for (let i = 0; i < byteCount; i++) {
