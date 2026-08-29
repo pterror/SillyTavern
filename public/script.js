@@ -11649,7 +11649,7 @@ export async function displayPastChats(hightlightNames = []) {
         debouncedDisplay(searchQuery);
     });
 
-    // UX convenience: Focus the search field when the Manage Chat Files view opens.
+    // UX convenience: Focus the search field when the bookmark list opens.
     setTimeout(function () {
         const textSearchElement = $('#select_chat_search');
         textSearchElement.trigger('click').trigger('focus').trigger('select');
@@ -16218,7 +16218,7 @@ jQuery(async function () {
         } else if (id == 'option_start_new_chat') {
             if (getSelectionState().type !== 'none' && !is_send_press) {
                 let deleteCurrentChat = false;
-                const result = await Popup.show.confirm(t`Start new chat?`, await renderTemplateAsync('newChatConfirm'), {
+                const result = await Popup.show.confirm(t`Start from a greeting?`, await renderTemplateAsync('newChatConfirm'), {
                     onClose: () => { deleteCurrentChat = !!$('#del_chat_checkbox').prop('checked'); },
                 });
                 if (!result) {
