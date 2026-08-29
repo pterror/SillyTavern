@@ -12949,7 +12949,6 @@ function refreshInsertionPoints(template, getArray) {
         const isLast = !nextVisible.length;
 
         // Skip if this greeting or the next is the picked one and they're adjacent
-        const adjacentToPicked = currentIndex === pickedIndex || nextIndex === pickedIndex;
         const directlyAdjacent = (currentIndex === pickedIndex && nextIndex === pickedIndex + 1) ||
                                   (nextIndex === pickedIndex && currentIndex === pickedIndex - 1) ||
                                   currentIndex === pickedIndex;
