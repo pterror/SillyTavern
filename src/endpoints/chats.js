@@ -1354,62 +1354,6 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
         const pageSize = Math.max(0, Math.floor(Number(request.body.page_size) || 0));
 
         /** @type {string[]} */
-        let chatFiles = [];
-
-        if (group_id) {
-            // Find group's chat IDs first
-            const groupDir = path.join(request.user.directories.groups);
-            const groupFiles = fs.readdirSync(groupDir)
-                .filter(file => path.extname(file) === '.json');
-
-            let targetGroup;
-            for (const groupFile of groupFiles) {
-                try {
-                    const groupData = JSON.parse(fs.readFileSync(path.join(groupDir, groupFile), 'utf8'));
-                    if (groupData.id === group_id) {
-                        targetGroup = groupData;
-                        break;
-                    }
-                } catch (error) {
-                    console.warn(groupFile, 'group file is corrupted:', error);
-                }
-            }
-
-            if (!Array.isArray(targetGroup?.chats)) {
-                return response.send([]);
-            }
-
-            // Find group chat files for given group ID
-            const groupChatsDir = path.join(request.user.directories.groupChats);
-            chatFiles = targetGroup.chats
-                .map(chatId => path.join(groupChatsDir, `${chatId}.jsonl`))
-                .filter(fileName => fs.existsSync(fileName));
-        } else {
-            // Regular character chat directory
-            const character_name = avatar_url.replace('.png', '');
-            const directoryPath = path.join(request.user.directories.chats, character_name);
-
-            if (!fs.existsSync(directoryPath)) {
-                return response.send([]);
-            }
-
-            chatFiles = fs.readdirSync(directoryPath)
-                .filter(file => path.extname(file) === '.jsonl')
-                .map(fileName => path.join(directoryPath, fileName));
-        }
-
-        /**
-         * @type {SearchChatResult[]}
-         * @typedef {object} SearchChatResult
-         * @property {string} [file_name] - The name of the chat file
-         * @property {string} [file_size] - The size of the chat file in a human-readable format
-         * @property {number} [message_count] - The number of messages in the chat
-         * @property {number|string} [last_mes] - The timestamp of the last message
-         * @property {string} [preview_message] - A preview of the last message
-         */
-        let results = [];
-
-        /** @type {string[]} */
         const fragments = query ? query.trim().toLowerCase().split(/\s+/).filter(x => x) : [];
 
         /** @type {ChatMatchFunction} */
@@ -1420,7 +1364,16 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
             return fragments.every(fragment => textArray.some(text => String(text ?? '').toLowerCase().includes(fragment)));
         };
 
-        // Tree-migrated character path: branches replace JSONL files entirely
+        // Tree-migrated character path: branches replace JSONL files entirely. This has to run BEFORE the
+        // JSONL directory scan below - a character whose chats live entirely in the tree DB (created after
+        // tree storage became primary, or fully migrated with nothing left behind) never gets a
+        // `directories.chats/<owner>` folder created on disk at all, so the JSONL branch's own
+        // `fs.existsSync(directoryPath)` early-return used to fire unconditionally for every such
+        // character - for every query, not just an empty one - and short-circuit out of this route before
+        // the tree path ever got a chance to run. Confirmed live: 01a03228-a216-7454-b76f-e3e9704f28ef (a
+        // tree-native character with 4 real branches, no chats/ folder on disk) returned `[]` from this
+        // route for both an empty query and a real content query, while calling searchBranchesByContent()
+        // directly against the same owner id returned all 4 branches correctly either way.
         if (!group_id && avatar_url) {
             const ownerId = String(avatar_url).replace('.png', '');
             const treeMigrated = await ensureTreeMigrated(request.user.directories, ownerId);
@@ -1468,6 +1421,64 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
                 // If searchBranchesByContent returned null (DB unavailable), fall through to JSONL logic
             }
         }
+
+        // JSONL path: group chats (always file-based today) and any character not tree-migrated (or whose
+        // tree DB was unavailable above).
+        /** @type {string[]} */
+        let chatFiles = [];
+
+        if (group_id) {
+            // Find group's chat IDs first
+            const groupDir = path.join(request.user.directories.groups);
+            const groupFiles = fs.readdirSync(groupDir)
+                .filter(file => path.extname(file) === '.json');
+
+            let targetGroup;
+            for (const groupFile of groupFiles) {
+                try {
+                    const groupData = JSON.parse(fs.readFileSync(path.join(groupDir, groupFile), 'utf8'));
+                    if (groupData.id === group_id) {
+                        targetGroup = groupData;
+                        break;
+                    }
+                } catch (error) {
+                    console.warn(groupFile, 'group file is corrupted:', error);
+                }
+            }
+
+            if (!Array.isArray(targetGroup?.chats)) {
+                return response.send([]);
+            }
+
+            // Find group chat files for given group ID
+            const groupChatsDir = path.join(request.user.directories.groupChats);
+            chatFiles = targetGroup.chats
+                .map(chatId => path.join(groupChatsDir, `${chatId}.jsonl`))
+                .filter(fileName => fs.existsSync(fileName));
+        } else if (avatar_url) {
+            // Regular character chat directory
+            const character_name = avatar_url.replace('.png', '');
+            const directoryPath = path.join(request.user.directories.chats, character_name);
+
+            if (!fs.existsSync(directoryPath)) {
+                return response.send([]);
+            }
+
+            chatFiles = fs.readdirSync(directoryPath)
+                .filter(file => path.extname(file) === '.jsonl')
+                .map(fileName => path.join(directoryPath, fileName));
+        }
+
+        /**
+         * @type {SearchChatResult[]}
+         * @typedef {object} SearchChatResult
+         * @property {string} [file_name] - The name of the chat file
+         * @property {string} [file_size] - The size of the chat file in a human-readable format
+         * @property {number} [message_count] - The number of messages in the chat
+         * @property {number|string} [last_mes] - The timestamp of the last message
+         * @property {string} [preview_message] - A preview of the last message
+         */
+        let results = [];
 
         if (query) {
             // Real content search: try the tantivy message index first (chat-content-search-index.js) - see
