@@ -3035,6 +3035,27 @@ async function fetchAllCharacters() {
     return getData;
 }
 
+/**
+ * Customizer for lodash's mergeWith(), used to merge a shallow character payload onto a resident one (see
+ * getCharacters() below). Plain lodash merge() would be right for objects (recurse field-by-field, key absent
+ * from source leaves the destination's value untouched) but wrong for arrays (it merges them index-by-index,
+ * e.g. a shorter incoming array would only overwrite the leading elements and leave trailing ones from the old
+ * array behind) - toShallow()'s projection nests thin objects under `data`/`data.extensions`, and any of those
+ * fields (e.g. `data.tags`) can be an array that's meant to replace wholesale, including replacing with an
+ * empty one. Returning the incoming array as-is here (rather than undefined, which would fall through to
+ * mergeWith's default per-index merge) makes arrays and everything else that isn't a plain object replace
+ * wholesale, while plain objects still keep recursing via the default behavior.
+ * @param {*} _objValue
+ * @param {*} srcValue
+ * @returns {*} the replacement value, or undefined to let mergeWith apply its default behavior
+ */
+function mergeShallowCharacterCustomizer(_objValue, srcValue) {
+    if (Array.isArray(srcValue)) {
+        return srcValue;
+    }
+    return undefined;
+}
+
 export async function getCharacters({ silent = false, silentGroups = false } = {}) {
     let newCharacters;
     try {
@@ -3057,9 +3078,16 @@ export async function getCharacters({ silent = false, silentGroups = false } = {
     // character that had already been unshallowed (e.g. by the autoload path during boot, which races this
     // still-in-flight fetch) would get its full entity swapped out for the thinner shallow one, silently losing
     // alternate_greetings and anything else the projection doesn't carry. Merging field-by-field onto the
-    // existing object (Object.assign-style: incoming fields overwrite, fields the incoming payload doesn't
-    // carry are left alone) keeps already-resident heavy data intact while still picking up whatever did change
-    // upstream. Characters no longer present upstream are removed (this is also how deletions propagate - a
+    // existing object (incoming fields overwrite, fields the incoming payload doesn't carry are left alone)
+    // keeps already-resident heavy data intact while still picking up whatever did change upstream. The merge
+    // has to be deep, not a shallow Object.assign: toShallow() nests its own thin projection under a `data` key
+    // (and `data.extensions` under that), so `data` itself is a key *present* on the incoming payload - a
+    // shallow assign would replace the whole `data` object, alternate_greetings included, reproducing the same
+    // clobber one level down. lodash's mergeWith() (with a customizer that keeps arrays replacing wholesale
+    // rather than merging index-by-index - see mergeShallowCharacterCustomizer() above) recurses into plain
+    // objects instead, so a key absent from the incoming payload is left untouched at any depth, while a key
+    // that IS present - including an array or an empty value - still overwrites. Characters no longer present
+    // upstream are removed (this is also how deletions propagate - a
     // merge that only ever added/updated would leave deleted characters resident forever), and characters newly
     // present are added.
     const newByAvatar = new Map(newCharacters.map(c => [c.avatar, c]));
@@ -3067,7 +3095,7 @@ export async function getCharacters({ silent = false, silentGroups = false } = {
         const incoming = newByAvatar.get(existing.avatar);
         if (!incoming) continue;
         // getOneCharacter() (above) explicitly resets `shallow` to false when it fetches full data, because
-        // processCharacter()'s full-data branch never sets `shallow: false` itself, and Object.assign() only
+        // processCharacter()'s full-data branch never sets `shallow: false` itself, and the merge below only
         // overwrites keys actually present in the patch - so without that reset, an entity that was ever shallow
         // would keep reading as shallow forever. The same asymmetry applies here in reverse: `incoming.shallow
         // === true` is a true statement about *this* fetched payload, but not about `existing` if it was already
@@ -3075,7 +3103,7 @@ export async function getCharacters({ silent = false, silentGroups = false } = {
         // merge downgrade it back to `shallow: true` would make unshallowCharacter() treat an already-full
         // character as needing a redundant re-fetch, so that one field is preserved rather than merged.
         const wasUnshallowed = existing.shallow === false;
-        Object.assign(existing, incoming);
+        lodash.mergeWith(existing, incoming, mergeShallowCharacterCustomizer);
         if (wasUnshallowed && incoming.shallow === true) {
             existing.shallow = false;
         }
