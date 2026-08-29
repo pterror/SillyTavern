@@ -31,7 +31,7 @@ import {
     isAvailable as isTreeAvailable, isMigrated as isTreeMigrated,
     saveChatToTree, loadBranch, forkBranch, labelNode,
     deleteBranch, renameBranch as renameBranchInTree, listBranches, searchBranchesByContent,
-    renameCharacterInMessages,
+    renameCharacterInMessages, getAlternatives,
 } from '../message-tree-db.js';
 import { migrateCharacterChats } from '../message-tree-migration.js';
 
@@ -1024,6 +1024,34 @@ router.post('/tree/branches', validateAvatarUrlMiddleware, async function (reque
     } catch (error) {
         console.error('Error listing tree branches:', error);
         return response.status(500).send([]);
+    }
+});
+
+/**
+ * Fills in the alternatives a chat load left as holes.
+ *
+ * A load ships a window around the selected alternative and holes elsewhere, because a wide fork
+ * point can carry over a thousand of them and shipping their text costs hundreds of KB nobody reads.
+ * This is how the client gets the rest, at the moment it actually needs them.
+ */
+router.post('/alternatives', async function (request, response) {
+    try {
+        const nodeId = String(request.body.node_id || '');
+        if (!nodeId) {
+            return response.status(400).send({ error: 'node_id is required' });
+        }
+
+        const offset = Number.isFinite(Number(request.body.offset)) ? Number(request.body.offset) : undefined;
+        const limit = Number.isFinite(Number(request.body.limit)) ? Number(request.body.limit) : undefined;
+
+        const result = await getAlternatives(request.user.directories, nodeId, { offset, limit });
+        if (!result) {
+            return response.status(404).send({ error: 'Node not found' });
+        }
+        return response.send(result);
+    } catch (error) {
+        console.error('Error fetching alternatives:', error);
+        return response.status(500).send({ error: true });
     }
 });
 

@@ -8812,6 +8812,96 @@ export function syncMesToSwipe(messageId = null) {
 }
 
 /**
+ * How many alternatives either side of a requested one to pull in when filling holes, matching the
+ * window the server sends inline so stepping onward stays instant.
+ */
+const ALTERNATIVE_FETCH_WINDOW = 25;
+
+/**
+ * Fills in alternatives that a chat load left as holes.
+ *
+ * A tree-backed load sends a window of alternatives around the selected one and `null` everywhere
+ * else, because a wide fork point can carry well over a thousand and their text runs to hundreds of
+ * KB that nothing reads. `null` rather than an empty string on purpose: a hole has to be
+ * distinguishable from a genuinely empty message, so anything indexing into it fails visibly instead
+ * of quietly rendering blank text as though it were real.
+ *
+ * Anything that needs an alternative at an arbitrary index awaits this first. Messages are
+ * deep-frozen, so the filled arrays go back through updateMessage rather than being written in place.
+ *
+ * @param {number} mesId Index into `chat`
+ * @param {{ index?: number|null, all?: boolean }} [options] Which holes to fill: a single index (plus
+ *   a window around it), or every hole in the message.
+ * @returns {Promise<boolean>} true when the requested alternatives are present afterwards
+ */
+export async function hydrateSwipes(mesId, { index = null, all = false } = {}) {
+    const message = chat[mesId];
+    if (!message || !Array.isArray(message.swipes)) {
+        return false;
+    }
+
+    const isHole = i => typeof message.swipes[i] !== 'string';
+    const wanted = all
+        ? message.swipes.some((_, i) => isHole(i))
+        : (index !== null && index >= 0 && index < message.swipes.length && isHole(index));
+    if (!wanted) {
+        return true;
+    }
+
+    // Chats that aren't tree-backed always arrive complete, so a hole there is not something a fetch
+    // can repair.
+    if (!message.node_id) {
+        return false;
+    }
+
+    const body = { node_id: message.node_id };
+    if (!all) {
+        body.offset = Math.max(0, index - ALTERNATIVE_FETCH_WINDOW);
+        body.limit = ALTERNATIVE_FETCH_WINDOW * 2 + 1;
+    }
+
+    let payload;
+    try {
+        const response = await fetch('/api/chats/alternatives', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify(body),
+        });
+        if (!response.ok) {
+            console.warn(`[hydrateSwipes] Failed to fetch alternatives for message ${mesId}: HTTP ${response.status}`);
+            return false;
+        }
+        payload = await response.json();
+    } catch (error) {
+        console.warn(`[hydrateSwipes] Failed to fetch alternatives for message ${mesId}:`, error);
+        return false;
+    }
+
+    // Re-read: an await means the message may have been replaced while the fetch was in flight.
+    const current = chat[mesId];
+    if (!current || current.node_id !== message.node_id || !Array.isArray(current.swipes)) {
+        return false;
+    }
+
+    const swipes = [...current.swipes];
+    const swipeInfo = Array.isArray(current.swipe_info) ? [...current.swipe_info] : new Array(swipes.length).fill(null);
+    const from = body.offset ?? 0;
+
+    payload.alternatives.forEach((alt, i) => {
+        const at = from + i;
+        if (at >= swipes.length) return;
+        // Never overwrite something already in hand - a locally edited alternative that hasn't been
+        // saved yet would otherwise be clobbered by the stored copy.
+        if (typeof swipes[at] === 'string') return;
+        swipes[at] = alt.mes ?? '';
+        swipeInfo[at] = { send_date: alt.send_date, extra: alt.extra ?? {}, name: alt.name, is_user: alt.is_user };
+    });
+
+    updateMessage(mesId, { swipes, swipe_info: swipeInfo });
+    return all ? true : typeof chat[mesId].swipes[index] === 'string';
+}
+
+/**
  * Syncs swipe data back to the message data at the given message ID (or the last message if no ID is given).
  * If the swipe ID is not provided, the current swipe ID in the message object is used.
  *
@@ -12878,6 +12968,10 @@ export async function swipe(event, direction, { source, repeated, message = chat
      * @param {number} newSwipeId
      */
     async function loadFromSwipeId(mesId, newSwipeId) {
+        // A wide fork point arrives with most alternatives as holes; fetch this one before switching
+        // to it, so the swipe never lands on empty.
+        await hydrateSwipes(mesId, { index: newSwipeId });
+
         //Update the swipe_id and clear stale generation data.
         updateMessage(mesId, { swipe_id: newSwipeId, ...clearMessageData(chat[mesId]) });
 

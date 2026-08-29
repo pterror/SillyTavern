@@ -1559,6 +1559,11 @@ export function parseReasoningInSwipes(swipes, swipeInfoArray, duration) {
     }
 
     for (let index = 0; index < swipes.length; index++) {
+        // Alternatives a chat load left as holes have nothing to parse and no swipe_info object to
+        // write into. They were parsed when they were generated, so skipping them loses nothing.
+        if (typeof swipes[index] !== 'string' || !swipeInfoArray[index]) {
+            continue;
+        }
         const parsedReasoning = parseReasoningFromString(swipes[index]);
         if (parsedReasoning) {
             swipes[index] = getRegexedString(parsedReasoning.content, regex_placement.REASONING);
