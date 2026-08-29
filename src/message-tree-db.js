@@ -187,7 +187,7 @@ function sanitizeForStorage(msg) {
 function alternativesFromMessage(msg) {
     const rawSwipes = Array.isArray(msg?.swipes) ? msg.swipes : null;
     if (!rawSwipes || rawSwipes.length === 0) {
-        return { contents: [sanitizeForStorage(msg)], selected: 0, origIndices: [0] };
+        return { contents: [sanitizeForStorage(msg)], selected: 0, origIndices: [0], nodeIds: [msg?.node_id ?? null] };
     }
 
     // A hole means "this alternative exists but wasn't sent to the client", not "delete it". Nothing is
@@ -200,10 +200,24 @@ function alternativesFromMessage(msg) {
     const kept = [];
     for (let i = 0; i < rawSwipes.length; i++) {
         if (typeof rawSwipes[i] !== 'string') continue;
-        kept.push({ text: rawSwipes[i], info: rawInfo[i], wasSelected: i === rawSel, origIndex: i });
+        kept.push({
+            text: rawSwipes[i],
+            info: rawInfo[i],
+            wasSelected: i === rawSel,
+            origIndex: i,
+            // The row this alternative was loaded from. Present only for slots the client genuinely
+            // received; anything it fabricated locally has no id and cannot claim to be an existing
+            // row. This is what lets the save verify rather than trust array positions.
+            nodeId: (rawInfo[i] && typeof rawInfo[i] === 'object' && rawInfo[i].node_id)
+                ? rawInfo[i].node_id
+                // The selected slot is the message itself, so it can fall back to the message's own
+                // row id. That keeps editing the visible message an in-place update even when
+                // swipe_info predates carrying ids.
+                : (i === rawSel ? (msg?.node_id ?? null) : null),
+        });
     }
     if (kept.length === 0) {
-        return { contents: [sanitizeForStorage(msg)], selected: 0, origIndices: [0] };
+        return { contents: [sanitizeForStorage(msg)], selected: 0, origIndices: [0], nodeIds: [msg?.node_id ?? null] };
     }
     const swipes = kept.map(k => k.text);
     const info = kept.map(k => k.info);
@@ -238,7 +252,8 @@ function alternativesFromMessage(msg) {
     let selected = selIdx;
     if (selected < 0 || selected >= contents.length) selected = 0;
     const origIndices = kept.map(k => k.origIndex);
-    return { contents, selected, origIndices };
+    const nodeIds = kept.map(k => k.nodeId);
+    return { contents, selected, origIndices, nodeIds };
 }
 
 /**
@@ -767,7 +782,7 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
                 const known = entry.db.get('SELECT id, parent_id, content, label FROM messages WHERE id = @id', { id: msg.node_id });
                 if (known) {
                     if (!msg._unchanged && known.parent_id === parentId) {
-                        const { contents, selected, origIndices } = alternativesFromMessage(msg);
+                        const { contents, selected, nodeIds } = alternativesFromMessage(msg);
                         // Re-materialize the alternative set around this node, matching each incoming
                         // alternative to an existing sibling by POSITION (its original slot in the
                         // swipe array) rather than by text identity. An edit to an alternative's text
@@ -787,27 +802,34 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
                         // text used to collapse onto the same row (text identity); by position they now
                         // stay two distinct rows, one per slot.
                         const sibs = getSiblingsSync(entry.db, known.parent_id, known.id);
+                        const sibById = new Map(sibs.map(x => [x.id, x]));
                         let chosenId = known.id;
+
                         for (let k = 0; k < contents.length; k++) {
                             const c = contents[k];
-                            const pos = origIndices[k];
+                            const claimedId = nodeIds[k];
+                            const existing = claimedId ? sibById.get(claimedId) : null;
+
                             let sid;
-                            if (pos < sibs.length) {
-                                sid = sibs[pos].id;
-                                // Floor: a save never blanks a row that has text. An incoming empty
-                                // over stored text means the client sent a placeholder for a slot it
-                                // never loaded, and writing it destroys the only copy.
-                                if (sibs[pos].content !== c && !wouldBlankStoredText(sibs[pos].content, c)) {
+                            if (existing) {
+                                // The client received this exact row, so it is entitled to edit it.
+                                sid = existing.id;
+                                if (existing.content !== c && !wouldBlankStoredText(existing.content, c)) {
                                     updateMessageContentSync(entry.db, sid, c);
                                 }
                             } else {
+                                // No id, or an id that isn't a sibling of this node: the client cannot
+                                // show it received this row, so it does not get to speak for one. Write
+                                // a new row instead of overwriting something it never held. A duplicate
+                                // is recoverable; a clobbered alternative is not.
                                 sid = newId();
                                 insertMessageSync(entry.db, {
-                                    id: sid, parentId, ownerId, content: c, createdAt: now + pos,
+                                    id: sid, parentId, ownerId, content: c, createdAt: now + k,
                                 });
                             }
                             if (k === selected) chosenId = sid;
                         }
+
                         const newLabel = msg.extra?.bookmark_link || null;
                         if (known.label !== newLabel && newLabel !== null) labelMessageSync(entry.db, chosenId, newLabel);
                         setDefaultChildSync(entry.db, parentId, chosenId);
