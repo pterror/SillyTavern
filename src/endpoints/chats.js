@@ -786,8 +786,20 @@ router.post('/get', validateAvatarUrlMiddleware, async function (request, respon
                 };
                 return response.send([header, ...result.messages]);
             }
-            // Branch not found in tree — new chat, return empty (same as JSONL path for missing files)
-            return response.send({});
+            // Branch not found in tree. The JSONL fallback below only returns {} when no chatName was
+            // given at all (a brand-new character with nothing selected yet) - once a chatName IS given,
+            // a missing file 404s, full stop, whether the chat is "new" or not. The client already
+            // relies on that: doNewChat()/getChat({ isNewChat: true }) passes isNewChat precisely so a
+            // 404 for a freshly-minted, definitely-nonexistent name is treated as an empty chat with no
+            // side effects (see getChat() in script.js), while a 404 for anything else is treated as
+            // "this character's persisted chat pointer names something that's gone" and triggers
+            // replaceCurrentChat() to recover onto a real chat instead of silently rendering blank.
+            // Returning {} here for every miss (as this used to) collapses that distinction: a stale or
+            // wrong chat-name pointer for an EXISTING character looks identical to a legitimately new,
+            // unsaved chat, so the recovery path never fires and the very next autosave can create a
+            // brand-new near-empty branch under the stale name - right beside whatever branch actually
+            // holds the real history - instead of surfacing the mismatch.
+            return response.status(404).send({ error: 'not_found' });
         }
 
         // JSONL fallback path
