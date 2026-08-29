@@ -28,7 +28,7 @@ import { isMigrated as isTreeMigrated, listBranches as listTreeBranches } from '
 import { ByafParser } from '../byaf.js';
 import { CharXParser, persistCharXAssets } from '../charx.js';
 import cacheBuster from '../middleware/cacheBuster.js';
-import { searchCharacters, searchCharacterIds, searchCharacterIdsSorted, rebuildCharacterSearchIndex, TANTIVY_SORT_FIELDS } from './characters-search-index.js';
+import { searchCharacters, searchCharacterIds, searchCharacterIdsSorted, rebuildCharacterSearchIndex, TANTIVY_SORT_FIELDS, SORT_FIELD_TO_TANTIVY_FIELD } from './characters-search-index.js';
 import { searchGroups, searchGroupIds } from './groups-search-index.js';
 import { getGroupsData, getGroupsByIds } from './groups.js';
 import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, resolveFingerprints, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter } from '../character-metadata-db.js';
@@ -2154,6 +2154,7 @@ router.post('/query', async function (request, response) {
                     handle, request.user.directories, searchTerm,
                     sort.field, sort.order === 'asc' ? 'asc' : 'desc',
                     offset, pageSize, favOnly,
+                    { tags: filter.tags, excludeIds: filter.excludeIds },
                 );
                 if (sortedResult !== null) {
                     searchBackend = sortedResult.backend;
