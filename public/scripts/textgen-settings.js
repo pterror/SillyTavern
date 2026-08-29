@@ -506,8 +506,12 @@ function getCustomTokenBans(settings = null) {
 function toggleBannedStringsKillSwitch(isEnabled, title) {
     $('#send_banned_tokens_textgenerationwebui').prop('checked', isEnabled);
     $('#send_banned_tokens_label').find('.menu_button').toggleClass('toggleEnabled', isEnabled).prop('title', title);
+    // setSettingByName's boot loop triggers this change unconditionally to re-apply the stored value; don't persist a no-op.
+    const changed = isEnabled !== textgenerationwebui_settings.send_banned_tokens;
     textgenerationwebui_settings.send_banned_tokens = isEnabled;
-    saveSettingsDebounced('textgenerationwebui_settings');
+    if (changed) {
+        saveSettingsDebounced('textgenerationwebui_settings');
+    }
 }
 
 /**

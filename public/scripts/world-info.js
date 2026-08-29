@@ -5821,6 +5821,8 @@ export async function importEmbeddedWorldInfo(skipPopup = false) {
 }
 
 export function onWorldInfoChange(args, text) {
+    // Boot re-fires the #world_info change handler to re-apply the already-stored selection; don't persist a no-op.
+    const previousSelectedWorldInfo = JSON.stringify(selected_world_info);
     if (args !== '__notSlashCommand__') { // if it's a slash command
         const silent = isTrueBoolean(args.silent);
         if (text.trim() !== '') { // and args are provided
@@ -5889,7 +5891,9 @@ export function onWorldInfoChange(args, text) {
         selected_world_info = tempWorldInfo;
     }
 
-    saveSettingsDebounced('world_info_settings');
+    if (JSON.stringify(selected_world_info) !== previousSelectedWorldInfo) {
+        saveSettingsDebounced('world_info_settings');
+    }
     eventSource.emit(event_types.WORLDINFO_SETTINGS_UPDATED);
     return '';
 }
@@ -6267,13 +6271,21 @@ export function initWorldInfo() {
         const selectedIndex = String($('#world_editor_select').find(':selected').val());
 
         if (selectedIndex === '') {
+            // Boot re-fires this change handler to re-apply the already-stored selection; don't persist a no-op.
+            const changed = power_user.wi_last_editor_book !== '';
             power_user.wi_last_editor_book = '';
-            saveSettingsDebounced('power_user.wi_last_editor_book');
+            if (changed) {
+                saveSettingsDebounced('power_user.wi_last_editor_book');
+            }
             await hideWorldEditor();
         } else {
             const worldName = world_names[selectedIndex];
+            // Boot re-fires this change handler to re-apply the already-stored selection; don't persist a no-op.
+            const changed = power_user.wi_last_editor_book !== worldName;
             power_user.wi_last_editor_book = worldName;
-            saveSettingsDebounced('power_user.wi_last_editor_book');
+            if (changed) {
+                saveSettingsDebounced('power_user.wi_last_editor_book');
+            }
             showWorldEditor(worldName);
         }
     });
