@@ -285,6 +285,9 @@ export function runSearch(index, query, maxRows, { orderByField, order, offset: 
     // When maxRows is undefined or non-finite, fetch all matching documents - capped at
     // the index's own document count to avoid over-allocating tantivy's internal result heap.
     const limit = Number.isFinite(maxRows) && maxRows >= 0 ? Math.min(Math.trunc(maxRows), searcher.numDocs) : searcher.numDocs;
+    if (limit <= 0) {
+        return { results: [], total: 0 };
+    }
     // Order enum: 0 = Asc, 1 = Desc (from @oxdev03/node-tantivy-binding's Order const enum)
     const tantivyOrder = orderByField ? (order === 'asc' ? 0 : 1) : undefined;
     const result = searcher.search(query, limit, true, orderByField ?? undefined, searchOffset, tantivyOrder);
