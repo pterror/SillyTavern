@@ -11,7 +11,7 @@ import {
     lodash,
 } from './lib.js';
 
-import { humanizedDateTime, favsToHotswap, getMessageTimeStamp, dragElement, isMobile, initRossMods } from './scripts/RossAscends-mods.js';
+import { humanizedDateTime, favsToHotswap, getMessageTimeStamp, dragElement, isMobile, initRossMods, RA_CountCharTokens } from './scripts/RossAscends-mods.js';
 import { EntityStore } from './scripts/entity-store.js';
 import { userStatsHandler, statMesProcess, initStats } from './scripts/stats.js';
 import {
@@ -8902,6 +8902,63 @@ export async function hydrateSwipes(mesId, { index = null, all = false } = {}) {
 }
 
 /**
+ * Moves the client onto a different alternative's path.
+ *
+ * Switching message N to a sibling means the conversation below N is that sibling's continuation,
+ * not the old one's. So N's node_id becomes the sibling's actual row, everything after N is dropped
+ * from the in-memory chat, and the sibling's own default_child_id chain is fetched and put in its
+ * place - the same walk a fresh chat load does.
+ *
+ * Nothing is removed from the database by any of this. The old alternative keeps its children
+ * exactly as they were, and swiping back reaches them again.
+ *
+ * @param {number} mesId
+ * @param {number} swipeId Index of the alternative being switched to
+ * @returns {Promise<boolean>} true when the path was switched
+ */
+export async function switchToAlternativePath(mesId, swipeId) {
+    const message = chat[mesId];
+    const targetNodeId = message?.swipe_info?.[swipeId]?.node_id;
+
+    // No node id means this isn't tree-backed (a JSONL chat), where swipes are just an array on the
+    // message and there is no separate path to move onto.
+    if (!targetNodeId || message.node_id === targetNodeId) {
+        return false;
+    }
+
+    let payload;
+    try {
+        const response = await fetch('/api/chats/continuation', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ node_id: targetNodeId, chat_name: getCurrentChatId() }),
+        });
+        if (!response.ok) {
+            console.warn(`[switchToAlternativePath] HTTP ${response.status} fetching continuation for ${targetNodeId}`);
+            return false;
+        }
+        payload = await response.json();
+    } catch (error) {
+        console.warn('[switchToAlternativePath] Failed to fetch continuation:', error);
+        return false;
+    }
+
+    // Re-check: the await means the chat may have moved on while the fetch was in flight.
+    if (chat[mesId] !== message) {
+        return false;
+    }
+
+    updateMessage(mesId, { node_id: targetNodeId });
+    chat.splice(mesId + 1, chat.length - (mesId + 1), ...(payload.messages ?? []));
+
+    await redisplayChat({ startIndex: mesId });
+    updateViewMessageIds();
+    refreshSwipeButtons(true);
+    saveChatDebounced();
+    return true;
+}
+
+/**
  * Syncs swipe data back to the message data at the given message ID (or the last message if no ID is given).
  * If the swipe ID is not provided, the current swipe ID in the message object is used.
  *
@@ -11230,6 +11287,7 @@ export function select_selected_character(avatar, { switchMenu = true } = {}) {
     $('#character_version_textarea').val(character.data?.character_version || '');
     $('#personality_textarea').val(character.personality);
     $('#firstmessage_textarea').val(character.first_mes);
+    setGreetingPagerGreetings([character.first_mes ?? '', ...(Array.isArray(character.data?.alternate_greetings) ? character.data.alternate_greetings : [])]);
     $('#scenario_pole').val(character.scenario);
     $('#depth_prompt_prompt').val(character.data?.extensions?.depth_prompt?.prompt ?? '');
     $('#depth_prompt_depth').val(character.data?.extensions?.depth_prompt?.depth ?? depth_prompt_depth_default);
@@ -11331,6 +11389,7 @@ function select_rm_create({ switchMenu = true } = {}) {
     $('#character_version_textarea').val(create_save.character_version);
     $('#personality_textarea').val(create_save.personality);
     $('#firstmessage_textarea').val(create_save.first_message);
+    setGreetingPagerGreetings([create_save.first_message ?? '', ...(Array.isArray(create_save.alternate_greetings) ? create_save.alternate_greetings : [])]);
     $('#talkativeness_slider').val(create_save.talkativeness);
     $('#scenario_pole').val(create_save.scenario);
     $('#depth_prompt_prompt').val(create_save.depth_prompt_prompt);
@@ -12094,6 +12153,81 @@ async function openCharacterWorldPopup() {
     await popup.show();
 }
 
+/**
+ * In-memory state for the sidebar greeting pager (`< [M]/N >` next to the "First message" field).
+ * greetings[0] is always first_mes, greetings[1..] are alternate_greetings, mirroring the unified
+ * array the Alt. Greetings popup already works with.
+ */
+const greetingPagerState = {
+    greetings: [''],
+    index: 0,
+};
+
+/**
+ * Replaces the pager's greetings list (e.g. on character load, create-mode fill, or after the Alt.
+ * Greetings popup closes) and clamps the current index in case the list shrank.
+ * @param {string[]} greetings [first_mes, ...alternate_greetings]
+ */
+function setGreetingPagerGreetings(greetings) {
+    greetingPagerState.greetings = greetings.length > 0 ? greetings.slice() : [''];
+    greetingPagerState.index = Math.min(greetingPagerState.index, greetingPagerState.greetings.length - 1);
+    renderGreetingPager();
+}
+
+/** Redraws the pager controls and the visible greeting field from the current pager state. */
+function renderGreetingPager() {
+    const { greetings, index } = greetingPagerState;
+    $('#greeting_field').val(greetings[index] ?? '');
+    $('.greeting-pager-input').val(index + 1);
+    $('.greeting-pager-total').text(`/${greetings.length}`);
+    $('.greeting-pager-prev').toggleClass('disabled', index === 0);
+    $('.greeting-pager-next').toggleClass('disabled', index === greetings.length - 1);
+    // .val() above doesn't fire a native input event, so the token counter needs an explicit nudge.
+    RA_CountCharTokens();
+}
+
+/**
+ * Steps the pager to a (clamped) index, first committing whatever is currently in the visible
+ * field back into the greetings array so it isn't lost.
+ * @param {number} newIndex
+ */
+function navigateGreetingPager(newIndex) {
+    const { greetings, index } = greetingPagerState;
+    greetings[index] = String($('#greeting_field').val());
+    greetingPagerState.index = Math.max(0, Math.min(newIndex, greetings.length - 1));
+    renderGreetingPager();
+}
+
+/**
+ * Debounced save for greetings other than the first (which keeps saving through the hidden
+ * #firstmessage_textarea's existing autosave path). Reuses the exact merge-attributes write the
+ * Alt. Greetings popup does on close - see openAlternateGreetings()'s onClose.
+ */
+const saveGreetingPagerAlternatesDebounced = debounce(async () => {
+    const avatar = $('.open_alternate_greetings').data('avatar');
+    const character = avatar ? charactersStore.get(avatar) : null;
+    if (!character) return;
+    const [firstMes, ...altGreetings] = greetingPagerState.greetings;
+    character.data.first_mes = firstMes ?? '';
+    character.data.alternate_greetings = altGreetings;
+    const response = await fetch('/api/characters/merge-attributes', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({
+            avatar: avatar,
+            data: {
+                first_mes: firstMes ?? '',
+                alternate_greetings: altGreetings,
+            },
+        }),
+    });
+    if (response.ok) {
+        character._fieldsHash = characterDigestFieldsHash(character);
+        character._bodyHash = characterDigestCardBodyHash(character);
+        await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character: character } });
+    }
+}, DEFAULT_SAVE_EDIT_TIMEOUT);
+
 function openAlternateGreetings() {
     const avatar = $('.open_alternate_greetings').data('avatar');
     // Every use below is a read/mutation of this same character's own fields, never a positional array
@@ -12135,6 +12269,8 @@ function openAlternateGreetings() {
         }
         // Keep the main editor textarea in sync
         $('#firstmessage_textarea').val(newFirstMes);
+        // The popup can add, delete and reorder greetings - rebuild the pager to match.
+        setGreetingPagerGreetings(unifiedGreetings);
     }
 
     const popup = new Popup(template, POPUP_TYPE.TEXT, '', {
@@ -12475,6 +12611,7 @@ export async function createOrEditCharacter(e) {
                 $(field.id).val(fieldValue);
                 field.callback && field.callback(fieldValue);
             });
+            setGreetingPagerGreetings(['']);
 
             if (Array.isArray(create_save.extra_books) && create_save.extra_books.length > 0) {
                 const fileName = getCharaFilename(null, { manualAvatarKey: avatarId });
@@ -12960,6 +13097,10 @@ export async function swipe(event, direction, { source, repeated, message = chat
 
         //Update the swipe_id and clear stale generation data.
         updateMessage(mesId, { swipe_id: newSwipeId, ...clearMessageData(chat[mesId]) });
+
+        //Moving to a different alternative means moving onto its path: adopt its node, drop what
+        //belonged to the old one, and load what actually follows it.
+        await switchToAlternativePath(mesId, newSwipeId);
 
         //Load from swipes.
         if (syncSwipeToMes(mesId, newSwipeId) == false) {
@@ -14759,6 +14900,52 @@ jQuery(async function () {
                 saveCharacterDebounced();
             }
         });
+    });
+
+    // Greeting pager: steps through [first_mes, ...alternate_greetings] in the sidebar, editing
+    // whichever one is currently shown. See setGreetingPagerGreetings() and friends above.
+    $('#greeting_field').on('input', function () {
+        const value = String($(this).val());
+        greetingPagerState.greetings[greetingPagerState.index] = value;
+        if (greetingPagerState.index === 0) {
+            // Greeting 1 stays authoritative in #firstmessage_textarea, which drives the existing
+            // first_mes autosave/form-snapshot/FormData bindings untouched.
+            $('#firstmessage_textarea').val(value).trigger('input');
+        } else if (menu_type === 'create') {
+            create_save.alternate_greetings[greetingPagerState.index - 1] = value;
+        } else {
+            saveGreetingPagerAlternatesDebounced();
+        }
+    });
+
+    $('.greeting-pager-prev').on('click', function () {
+        if ($(this).hasClass('disabled')) return;
+        navigateGreetingPager(greetingPagerState.index - 1);
+    });
+
+    $('.greeting-pager-next').on('click', function () {
+        if ($(this).hasClass('disabled')) return;
+        navigateGreetingPager(greetingPagerState.index + 1);
+    });
+
+    function jumpGreetingPager() {
+        const requested = parseInt(String($('.greeting-pager-input').val()), 10);
+        if (Number.isNaN(requested)) {
+            renderGreetingPager(); // reset the invalid input display back to the current index
+            return;
+        }
+        navigateGreetingPager(requested - 1);
+    }
+
+    $('.greeting-pager-input').on('keydown', function (e) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            jumpGreetingPager();
+        }
+    });
+
+    $('.greeting-pager-input').on('blur', function () {
+        jumpGreetingPager();
     });
 
     $('#creator_notes_textarea').on('input', function () {

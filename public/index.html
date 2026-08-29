@@ -6259,10 +6259,20 @@
                                 <div id="first_message_div" class="title_restorable">
                                     <div class="flex-container alignitemscenter flex1">
                                         <span data-i18n="First message" class="mdhotkey_location">First message</span>
-                                        <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="firstmessage_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
+                                        <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="greeting_field" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
                                         <a href="https://docs.sillytavern.app/usage/core-concepts/characterdesign/#first-message" class="notes-link" target="_blank">
                                             <span class="fa-solid fa-circle-question note-link-span"></span>
                                         </a>
+                                        <div class="greeting-pager">
+                                            <div class="greeting-pager-btn greeting-pager-prev" title="Previous greeting" data-i18n="[title]Previous greeting">
+                                                <i class="fa-solid fa-chevron-left"></i>
+                                            </div>
+                                            <input type="number" class="greeting-pager-input" min="1" value="1" title="Jump to greeting" data-i18n="[title]Jump to greeting">
+                                            <span class="greeting-pager-total">/1</span>
+                                            <div class="greeting-pager-btn greeting-pager-next" title="Next greeting" data-i18n="[title]Next greeting">
+                                                <i class="fa-solid fa-chevron-right"></i>
+                                            </div>
+                                        </div>
                                     </div>
                                     <div class="menu_button menu_button_icon open_alternate_greetings margin0" title="Click to set additional greeting messages" data-i18n="[title]Click to set additional greeting messages">
                                         <span data-i18n="Alt. Greetings">
@@ -6270,9 +6280,10 @@
                                         </span>
                                     </div>
                                 </div>
-                                <textarea id="firstmessage_textarea" class="mdHotkeys" data-macros data-i18n="[placeholder]This will be the first message from the character that starts every chat." placeholder="This will be the first message from the character that starts every chat." name="first_mes" placeholder=""></textarea>
+                                <input id="firstmessage_textarea" type="hidden" name="first_mes">
+                                <textarea id="greeting_field" class="mdHotkeys" data-macros data-i18n="[placeholder]This will be the first message from the character that starts every chat." placeholder="This will be the first message from the character that starts every chat."></textarea>
                                 <div class="extension_token_counter">
-                                    <span data-i18n="extension_token_counter">Tokens:</span> <span data-token-counter="firstmessage_textarea">counting...</span>
+                                    <span data-i18n="extension_token_counter">Tokens:</span> <span data-token-counter="greeting_field">counting...</span>
                                 </div>
                             </div>
                             <!-- these divs are invisible and used for server communication purposes -->
