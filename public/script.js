@@ -653,7 +653,7 @@ let _characterFormSnapshot = null;
  *  fields like the chat pointer, which are handled through dedicated APIs). */
 const CHARACTER_FORM_FIELDS = [
     '#character_name_pole', '#description_textarea', '#personality_textarea',
-    '#firstmessage_textarea', '#scenario_pole', '#mes_example_textarea',
+    '#scenario_pole', '#mes_example_textarea',
     '#creator_notes_textarea', '#system_prompt_textarea', '#post_history_instructions_textarea',
     '#tags_textarea', '#creator_textarea', '#character_version_textarea',
     '#talkativeness_slider', '#depth_prompt_prompt', '#depth_prompt_depth',
@@ -670,7 +670,6 @@ const FORM_TO_CARD = {
     '#character_name_pole': { v1: 'name', v2: 'data.name' },
     '#description_textarea': { v1: 'description', v2: 'data.description' },
     '#personality_textarea': { v1: 'personality', v2: 'data.personality' },
-    '#firstmessage_textarea': { v1: 'first_mes', v2: 'data.first_mes' },
     '#scenario_pole': { v1: 'scenario', v2: 'data.scenario' },
     '#mes_example_textarea': { v1: 'mes_example', v2: 'data.mes_example' },
     '#creator_notes_textarea': { v1: 'creatorcomment', v2: 'data.creator_notes' },
@@ -11673,9 +11672,8 @@ export function select_selected_character(avatar, { switchMenu = true } = {}) {
     $('#creator_textarea').val(character.data?.creator);
     $('#character_version_textarea').val(character.data?.character_version || '');
     $('#personality_textarea').val(character.personality);
-    $('#firstmessage_textarea').val(character.first_mes);
     const greetingModel = cardToGreetingsModel(character);
-    setGreetingPagerGreetings(greetingModel.greetings, greetingModel.defaultIndex);
+    setGreetingPagerGreetings(greetingModel.greetings, greetingModel.defaultIndex, greetingModel.greetings.map(hashGreetingText));
     $('#scenario_pole').val(character.scenario);
     $('#depth_prompt_prompt').val(character.data?.extensions?.depth_prompt?.prompt ?? '');
     $('#depth_prompt_depth').val(character.data?.extensions?.depth_prompt?.depth ?? depth_prompt_depth_default);
@@ -11776,9 +11774,8 @@ function select_rm_create({ switchMenu = true } = {}) {
     $('#creator_textarea').val(create_save.creator);
     $('#character_version_textarea').val(create_save.character_version);
     $('#personality_textarea').val(create_save.personality);
-    $('#firstmessage_textarea').val(create_save.first_message);
     const greetingModel = cardToGreetingsModel({ first_mes: create_save.first_message, data: { alternate_greetings: create_save.alternate_greetings, extensions: create_save.extensions } });
-    setGreetingPagerGreetings(greetingModel.greetings, greetingModel.defaultIndex);
+    setGreetingPagerGreetings(greetingModel.greetings, greetingModel.defaultIndex, greetingModel.greetings.map(hashGreetingText));
     $('#talkativeness_slider').val(create_save.talkativeness);
     $('#scenario_pole').val(create_save.scenario);
     $('#depth_prompt_prompt').val(create_save.depth_prompt_prompt);
@@ -12641,25 +12638,118 @@ function reindexDefaultAfterMove(defaultIndex, sourceIndex, finalTargetIndex) {
 }
 
 /**
+ * Same hashing convention src/greeting-ops.js's hashGreetingText() uses server-side - `getStringHash()`
+ * of the value's JSON. Only ever used to seed the *initial* per-position hash list right after a fresh
+ * load from the server (the text just came from disk, so hashing it here is hashing the truth). Every
+ * hash after that comes verbatim from a greeting-op response's `hashes` array - never recomputed from
+ * whatever the client currently has typed, which would make every precondition trivially match itself
+ * and silently defeat the mechanism (see src/greeting-ops.js's doc comment - this trap already got hit
+ * once in this codebase).
+ * @param {string} text
+ * @returns {number}
+ */
+function hashGreetingText(text) {
+    return getStringHash(JSON.stringify(text));
+}
+
+/**
+ * Posts one named greeting-list operation - see src/greeting-ops.js and the six
+ * `/api/characters/greetings/*` routes in src/endpoints/characters.js. `opName` is the path segment
+ * after `/greetings/` (e.g. `'add'`, `'default/set'`). Resolves to a result object rather than
+ * throwing for a refused op (409) or any other non-2xx response; only a network-level failure counts
+ * as an exception, and even that is caught and folded into the same shape.
+ * @param {string} opName
+ * @param {object} body
+ * @returns {Promise<{ok: true, hashes: number[], defaultPosition: number|null}|{ok: false, status?: number, reason?: string}>}
+ */
+async function postGreetingOp(opName, body) {
+    try {
+        const response = await fetch(`/api/characters/greetings/${opName}`, {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify(body),
+        });
+        let payload = null;
+        try { payload = await response.json(); } catch { /* no body, or not JSON */ }
+        if (response.ok && payload?.ok) {
+            return { ok: true, hashes: payload.hashes, defaultPosition: payload.default_position };
+        }
+        return { ok: false, status: response.status, reason: payload?.reason };
+    } catch (error) {
+        console.error(`Greeting op "${opName}" request failed`, error);
+        return { ok: false, reason: 'network error' };
+    }
+}
+
+/**
+ * Writes a GreetingsModel onto an in-memory character object's first_mes/alternate_greetings/
+ * extensions fields (mirrors src/greeting-list.js's applyGreetingsModelToCard() server-side) after a
+ * greeting op the client already knows the resulting text for - text is always client-authored, only
+ * positions/hashes are server-derived, so this is safe to call with the client's own array. Also
+ * refreshes the digest caches other UI (list re-render diffing) reads off the character object.
+ * @param {object} character
+ * @param {import('../src/greeting-list.js').GreetingsModel} model
+ */
+function applyGreetingsModelToCharacter(character, model) {
+    const fields = greetingsModelToCardFields(model);
+    const alternateGreetings = stripEmptyAlternateGreetings(fields.alternateGreetings, 'greeting op sync');
+    character.first_mes = fields.firstMes;
+    character.data = character.data ?? {};
+    character.data.first_mes = fields.firstMes;
+    character.data.alternate_greetings = alternateGreetings;
+    character.data.extensions = character.data.extensions ?? {};
+    if (fields.greetingDefaultPosition === null) {
+        delete character.data.extensions[GREETING_DEFAULT_POSITION_KEY];
+    } else {
+        character.data.extensions[GREETING_DEFAULT_POSITION_KEY] = fields.greetingDefaultPosition;
+    }
+    character._fieldsHash = characterDigestFieldsHash(character);
+    character._bodyHash = characterDigestCardBodyHash(character);
+}
+
+/**
+ * Lands a successful greeting op's result everywhere it needs to: the in-memory character object (so
+ * other UI - chat greeting selection, digest hashes - sees the new text) and the sidebar pager, whose
+ * `hashes` is the one place per-position precondition hashes live (the Alt. Greetings popup reads
+ * them from there too on its next open). `greetings`/`defaultIndex` are the caller's own already-known
+ * post-op model; `hashes` must be the op response's `hashes`, never recomputed locally.
+ * @param {object} character
+ * @param {string[]} greetings
+ * @param {number|null} defaultIndex
+ * @param {number[]} hashes
+ */
+async function applyGreetingOpSuccess(character, greetings, defaultIndex, hashes) {
+    applyGreetingsModelToCharacter(character, { greetings, defaultIndex });
+    setGreetingPagerGreetings(greetings, defaultIndex, hashes);
+    await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character: character } });
+}
+
+/**
  * In-memory state for the sidebar greeting pager (`< [M]/N >` next to the "First message" field).
  * `greetings` is the stable-order list (see GreetingsModel above), `defaultIndex` mirrors the card's
- * current default, and `index` is which slot the pager is currently showing.
+ * current default, `hashes` is the post-op per-position precondition hash list (see
+ * hashGreetingText()'s doc comment - only ever seeded from a fresh load or a server response), and
+ * `index` is which slot the pager is currently showing.
  */
 const greetingPagerState = {
     greetings: [''],
     defaultIndex: 0,
+    hashes: [],
     index: 0,
 };
 
 /**
- * Replaces the pager's greetings list and default pointer (e.g. on character load, create-mode fill,
- * or after the Alt. Greetings popup closes) and clamps the current index in case the list shrank.
+ * Replaces the pager's greetings list, default pointer, and precondition hashes (e.g. on character
+ * load, create-mode fill, or after a greeting op succeeds) and clamps the current index in case the
+ * list shrank.
  * @param {string[]} greetings Stable-order greeting list.
  * @param {number|null} defaultIndex
+ * @param {number[]} hashes Position-aligned with `greetings`.
  */
-function setGreetingPagerGreetings(greetings, defaultIndex) {
+function setGreetingPagerGreetings(greetings, defaultIndex, hashes) {
     greetingPagerState.greetings = greetings.length > 0 ? greetings.slice() : [''];
     greetingPagerState.defaultIndex = greetings.length > 0 ? defaultIndex : 0;
+    greetingPagerState.hashes = greetings.length > 0 ? hashes.slice() : [];
     greetingPagerState.index = Math.max(0, Math.min(greetingPagerState.index, greetingPagerState.greetings.length - 1));
     renderGreetingPager();
 }
@@ -12689,59 +12779,46 @@ function navigateGreetingPager(newIndex) {
 }
 
 /**
- * Debounced save for greetings other than the default (which keeps saving through the hidden
- * #firstmessage_textarea's existing autosave path). Reuses the exact merge-attributes write the
- * Alt. Greetings popup does on close - see openAlternateGreetings()'s onClose.
+ * One debounce instance per pager slot (lazily created, kept for the page's lifetime) - a single
+ * shared debounce would let switching slots mid-type (type in slot A, page to slot B before A's timer
+ * fires, type in B) cancel slot A's still-pending call outright, silently losing that edit instead of
+ * ever sending it as its own op. Keyed by position; a position that later shifts under an add/delete/
+ * move just leaves a stale, harmless, never-refired entry - nothing keyed to it fires again.
+ * @type {Map<number, (position: number, text: string) => void>}
  */
-const saveGreetingPagerAlternatesDebounced = debounce(async () => {
-    const avatar = $('.open_alternate_greetings').data('avatar');
-    const character = avatar ? charactersStore.get(avatar) : null;
-    if (!character) return;
-    // Hash of alternate_greetings as loaded (before this save's own mutation below) - lets the server
-    // tell a deliberate delete-to-empty apart from the stale-in-memory-read bug its guard exists for,
-    // and gives this path real 409 conflict detection it never had before.
-    const loadedAltGreetingsHash = getStringHash(JSON.stringify(character.data.alternate_greetings ?? null));
-    const { firstMes, alternateGreetings, greetingDefaultPosition } = greetingsModelToCardFields({
-        greetings: greetingPagerState.greetings,
-        defaultIndex: greetingPagerState.defaultIndex,
-    });
-    const altGreetings = stripEmptyAlternateGreetings(alternateGreetings, 'greeting pager save');
-    character.data.first_mes = firstMes;
-    character.data.alternate_greetings = altGreetings;
-    if (!character.data.extensions) character.data.extensions = {};
-    character.data.extensions[GREETING_DEFAULT_POSITION_KEY] = greetingDefaultPosition;
-    try {
-        const response = await fetch('/api/characters/merge-attributes', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({
-                avatar: avatar,
-                data: {
-                    first_mes: firstMes,
-                    alternate_greetings: altGreetings,
-                    extensions: { [GREETING_DEFAULT_POSITION_KEY]: greetingDefaultPosition },
-                },
-                _loadedFieldHashes: { 'data.alternate_greetings': loadedAltGreetingsHash },
-            }),
-        });
-        if (response.ok) {
-            character._fieldsHash = characterDigestFieldsHash(character);
-            character._bodyHash = characterDigestCardBodyHash(character);
-            await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character: character } });
-            return;
-        }
-        if (response.status === 409) {
-            console.error('Greeting save conflict (409)', { avatar, status: response.status });
-            toastr.error(t`This character was changed in another session, so this greeting change was not saved. Reopen the character to see the current version.`, t`Greeting not saved`);
-            return;
-        }
-        console.error('Greeting save failed', { avatar, status: response.status });
-        toastr.error(t`Failed to save the greeting. Your edit is still shown here, but it was not saved.`, t`Greeting not saved`);
-    } catch (error) {
-        console.error('Greeting save failed', { avatar, error });
-        toastr.error(t`Failed to save the greeting. Your edit is still shown here, but it was not saved.`, t`Greeting not saved`);
+const greetingPagerEditDebouncers = new Map();
+
+/**
+ * Debounced per-position save for the sidebar pager (`< [M]/N >`). Every slot, default included,
+ * saves through the same named `edit` operation (src/greeting-ops.js's opEdit()) - there is no more
+ * first_mes-specific save path, #firstmessage_textarea is gone.
+ * @param {number} position
+ * @param {string} text
+ */
+function saveGreetingPagerEditDebounced(position, text) {
+    if (!greetingPagerEditDebouncers.has(position)) {
+        greetingPagerEditDebouncers.set(position, debounce(async (pos, txt) => {
+            const avatar = $('.open_alternate_greetings').data('avatar');
+            const character = avatar ? charactersStore.get(avatar) : null;
+            if (!character) return;
+            const expectedHash = greetingPagerState.hashes[pos];
+            if (!Number.isFinite(expectedHash)) return; // Position out of range of what the server last confirmed.
+
+            const result = await postGreetingOp('edit', { avatar_url: avatar, position: pos, expected_hash: expectedHash, text: txt });
+            if (result.ok) {
+                await applyGreetingOpSuccess(character, greetingPagerState.greetings.slice(), result.defaultPosition, result.hashes);
+                return;
+            }
+            console.error('Greeting save failed', { avatar, position: pos, status: result.status, reason: result.reason });
+            if (result.status === 409) {
+                toastr.error(t`This character was changed in another session, so this greeting change was not saved. Reopen the character to see the current version.`, t`Greeting not saved`);
+                return;
+            }
+            toastr.error(t`Failed to save the greeting. Your edit is still shown here, but it was not saved.`, t`Greeting not saved`);
+        }, DEFAULT_SAVE_EDIT_TIMEOUT));
     }
-}, DEFAULT_SAVE_EDIT_TIMEOUT);
+    greetingPagerEditDebouncers.get(position)(position, text);
+}
 
 /**
  * Final safety net for the "no empty string ever lands in alternate_greetings" invariant. The
@@ -12777,55 +12854,36 @@ function openAlternateGreetings() {
         }
     }
 
-    // Hash of alternate_greetings as loaded (before anything in this popup session changes it) -
-    // see saveGreetingPagerAlternatesDebounced()'s matching comment for why.
-    const loadedAltGreetingsHash = menu_type !== 'create' && greetingsCharacter
-        ? getStringHash(JSON.stringify(greetingsCharacter.data.alternate_greetings ?? null))
-        : null;
-
     const initialModel = menu_type == 'create'
         ? cardToGreetingsModel({ first_mes: create_save.first_message ?? '', data: { alternate_greetings: create_save.alternate_greetings, extensions: create_save.extensions } })
         : cardToGreetingsModel(greetingsCharacter);
 
-    // Live working copy for this popup instance. List operations (delete/reorder/add) mutate
-    // `model.greetings` in place via getArray(); set/demote-default reassign `model.defaultIndex`
-    // directly - both are pure pointer moves, no splicing. Neither ever gets turned back into card
-    // fields by hand, only through greetingsModelToCardFields() in syncFromUnified().
+    // Live working copy for this popup instance, read for display and for the pre-op values row
+    // handlers need (current text, current default). It's only ever mutated after a row handler's own
+    // server op is confirmed (see addAlternateGreeting()) - create mode is the one exception, where
+    // there's no server side yet to confirm against, so its handlers mutate this directly, same as
+    // before. Nothing here accumulates a diff to flush on close any more for real characters; every
+    // mutation is its own named operation (src/greeting-ops.js), fired the moment the user makes it.
     const model = { greetings: initialModel.greetings.slice(), defaultIndex: initialModel.defaultIndex };
 
     const getArray = () => model.greetings;
 
     const template = $('#alternate_greetings_template .alternate_grettings').clone();
 
-    // Snapshot to detect whether anything was actually changed (order, text, or the default itself)
-    const originalSnapshot = JSON.stringify(initialModel);
-
     /**
-     * Syncs the working model back to the underlying first_mes/alternate_greetings/extensions fields.
-     * @returns {{newFirstMes: string, newAltGreetings: string[]}} What actually got written, so
-     *   callers doing a follow-up server save use the exact same (filtered) list instead of
-     *   re-deriving and re-filtering it themselves.
+     * Create-mode-only: syncs the working model back to create_save's first_message/
+     * alternate_greetings/extensions and rebuilds the pager. Real characters never call this - every
+     * row handler below already lands its own op's result via applyGreetingOpSuccess() the moment it's
+     * confirmed, so there's nothing left to flush at close.
      */
-    function syncFromUnified() {
+    function syncCreateModeFromUnified() {
         const fields = greetingsModelToCardFields(model);
-        const newFirstMes = fields.firstMes;
-        const newAltGreetings = stripEmptyAlternateGreetings(fields.alternateGreetings, 'alt greetings popup');
-        if (menu_type == 'create') {
-            create_save.first_message = newFirstMes;
-            create_save.alternate_greetings = newAltGreetings;
-            if (!create_save.extensions) create_save.extensions = {};
-            create_save.extensions[GREETING_DEFAULT_POSITION_KEY] = fields.greetingDefaultPosition;
-        } else {
-            greetingsCharacter.data.first_mes = newFirstMes;
-            greetingsCharacter.data.alternate_greetings = newAltGreetings;
-            if (!greetingsCharacter.data.extensions) greetingsCharacter.data.extensions = {};
-            greetingsCharacter.data.extensions[GREETING_DEFAULT_POSITION_KEY] = fields.greetingDefaultPosition;
-        }
-        // Keep the main editor textarea in sync
-        $('#firstmessage_textarea').val(newFirstMes);
-        // The popup can add, delete, reorder, and change the default - rebuild the pager to match.
-        setGreetingPagerGreetings(model.greetings, model.defaultIndex);
-        return { newFirstMes, newAltGreetings };
+        const newAltGreetings = stripEmptyAlternateGreetings(fields.alternateGreetings, 'alt greetings popup (create mode)');
+        create_save.first_message = fields.firstMes;
+        create_save.alternate_greetings = newAltGreetings;
+        if (!create_save.extensions) create_save.extensions = {};
+        create_save.extensions[GREETING_DEFAULT_POSITION_KEY] = fields.greetingDefaultPosition;
+        setGreetingPagerGreetings(model.greetings, model.defaultIndex, model.greetings.map(hashGreetingText));
     }
 
     const popup = new Popup(template, POPUP_TYPE.TEXT, '', {
@@ -12833,40 +12891,8 @@ function openAlternateGreetings() {
         large: true,
         allowVerticalScrolling: true,
         onClose: async () => {
-            const { newFirstMes, newAltGreetings } = syncFromUnified();
-            if (menu_type !== 'create' && JSON.stringify(model) !== originalSnapshot) {
-                const avatar = greetingsCharacter?.avatar;
-                if (avatar) {
-                    try {
-                        const response = await fetch('/api/characters/merge-attributes', {
-                            method: 'POST',
-                            headers: getRequestHeaders(),
-                            body: JSON.stringify({
-                                avatar: avatar,
-                                data: {
-                                    first_mes: newFirstMes,
-                                    alternate_greetings: newAltGreetings,
-                                    extensions: { [GREETING_DEFAULT_POSITION_KEY]: greetingsCharacter.data.extensions[GREETING_DEFAULT_POSITION_KEY] },
-                                },
-                                _loadedFieldHashes: { 'data.alternate_greetings': loadedAltGreetingsHash },
-                            }),
-                        });
-                        if (response.ok) {
-                            greetingsCharacter._fieldsHash = characterDigestFieldsHash(greetingsCharacter);
-                            greetingsCharacter._bodyHash = characterDigestCardBodyHash(greetingsCharacter);
-                            await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character: greetingsCharacter } });
-                        } else if (response.status === 409) {
-                            console.error('Greeting save conflict (409)', { avatar, status: response.status });
-                            toastr.error(t`This character was changed in another session, so these greeting changes were not saved. Reopen the character to see the current version.`, t`Greetings not saved`);
-                        } else {
-                            console.error('Greeting save failed', { avatar, status: response.status });
-                            toastr.error(t`Failed to save the greetings. Your edits are still shown here, but they were not saved.`, t`Greetings not saved`);
-                        }
-                    } catch (error) {
-                        console.error('Greeting save failed', { avatar, error });
-                        toastr.error(t`Failed to save the greetings. Your edits are still shown here, but they were not saved.`, t`Greetings not saved`);
-                    }
-                }
+            if (menu_type === 'create') {
+                syncCreateModeFromUnified();
             }
         },
     });
@@ -12984,6 +13010,31 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
     const greetingBlock = $('#alternate_greeting_form_template .alternate_greeting').clone();
     let committed = !pending;
     greetingBlock.attr('data-index', index);
+
+    // Per-row debounced `edit` op for keystrokes after the row is committed - one row, one debounce
+    // instance, so typing in a different row doesn't reset this one's pending save (unlike a single
+    // shared debounced function would). Never fires in create mode - create_save is synced at popup
+    // close via syncCreateModeFromUnified(), same as every other create-mode field on this popup.
+    const debouncedRowEdit = debounce(async (rowIndex, text) => {
+        const avatar = $('.open_alternate_greetings').data('avatar');
+        const character = avatar ? charactersStore.get(avatar) : null;
+        if (!character) return;
+        const expectedHash = greetingPagerState.hashes[rowIndex];
+        if (!Number.isFinite(expectedHash)) return;
+
+        const result = await postGreetingOp('edit', { avatar_url: avatar, position: rowIndex, expected_hash: expectedHash, text });
+        if (result.ok) {
+            await applyGreetingOpSuccess(character, getArray().slice(), result.defaultPosition, result.hashes);
+            return;
+        }
+        console.error('Greeting edit failed', { avatar, position: rowIndex, status: result.status, reason: result.reason });
+        if (result.status === 409) {
+            toastr.error(t`This greeting was changed in another session, so this edit was not saved. Close and reopen this popup to see the current version.`, t`Greeting not saved`);
+            return;
+        }
+        toastr.error(t`Failed to save the greeting. Your edit is still shown here, but it was not saved.`, t`Greeting not saved`);
+    }, DEFAULT_SAVE_EDIT_TIMEOUT);
+
     greetingBlock.find('.alternate_greeting_text')
         .attr('id', `alternate_greeting_${index}`)
         .on('input', async function () {
@@ -13002,9 +13053,28 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
                 greetingBlock.find('.greeting_index').text(index + 1);
                 greetingBlock.find('.set_default_greeting').show();
                 greetingBlock.find('.pick_up_greeting').show();
+
+                if (menu_type === 'create') return; // synced at popup close, same as every other create-mode field
+
+                const addedIndex = index;
+                const avatar = $('.open_alternate_greetings').data('avatar');
+                const character = avatar ? charactersStore.get(avatar) : null;
+                if (!character) return;
+                const result = await postGreetingOp('add', { avatar_url: avatar, position: addedIndex, text: value });
+                if (result.ok) {
+                    await applyGreetingOpSuccess(character, array.slice(), result.defaultPosition, result.hashes);
+                    return;
+                }
+                console.error('Greeting add failed', { avatar, position: addedIndex, status: result.status, reason: result.reason });
+                toastr.error(t`Failed to save the new greeting. It's still shown here - keep typing in it to retry.`, t`Greeting not saved`);
+                // Wasn't actually saved - revert to an uncommitted draft so the next keystroke retries
+                // the add, instead of leaving this row looking saved when it isn't.
+                array.splice(addedIndex, 1);
+                committed = false;
                 return;
             }
             array[index] = value;
+            if (menu_type !== 'create') debouncedRowEdit(index, value);
         }).val(greeting);
     greetingBlock.find('.editor_maximize').attr('data-for', `alternate_greeting_${index}`);
     greetingBlock.find('.greeting_index').text(displayPosition);
@@ -13040,8 +13110,30 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
             return;
         }
 
-        array.splice(index, 1);
-        model.defaultIndex = reindexDefaultAfterRemoval(model.defaultIndex, index);
+        if (menu_type === 'create') {
+            array.splice(index, 1);
+            model.defaultIndex = reindexDefaultAfterRemoval(model.defaultIndex, index);
+            await popup.complete(POPUP_RESULT.AFFIRMATIVE);
+            openAlternateGreetings();
+            return;
+        }
+
+        const avatar = $('.open_alternate_greetings').data('avatar');
+        const character = avatar ? charactersStore.get(avatar) : null;
+        if (!character) return;
+        const expectedHash = greetingPagerState.hashes[index];
+        if (!Number.isFinite(expectedHash)) return;
+        const result = await postGreetingOp('delete', { avatar_url: avatar, position: index, expected_hash: expectedHash });
+        if (!result.ok) {
+            console.error('Greeting delete failed', { avatar, position: index, status: result.status, reason: result.reason });
+            toastr.error(result.status === 409
+                ? t`This character was changed in another session, so this greeting was not deleted. Close and reopen this popup to see the current version.`
+                : t`Failed to delete the greeting.`, t`Greeting not deleted`);
+            return;
+        }
+        const newGreetings = array.slice();
+        newGreetings.splice(index, 1);
+        await applyGreetingOpSuccess(character, newGreetings, result.defaultPosition, result.hashes);
 
         // Sync and reopen
         await popup.complete(POPUP_RESULT.AFFIRMATIVE);
@@ -13083,15 +13175,34 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
             const array = getArray();
             const sourceIndex = index;
 
-            // Remove from old position
-            const [moved] = array.splice(sourceIndex, 1);
-            // Adjust target if source was before target
-            if (sourceIndex < targetPosition) {
-                targetPosition--;
+            if (menu_type === 'create') {
+                const [moved] = array.splice(sourceIndex, 1);
+                if (sourceIndex < targetPosition) targetPosition--;
+                array.splice(targetPosition, 0, moved);
+                model.defaultIndex = reindexDefaultAfterMove(model.defaultIndex, sourceIndex, targetPosition);
+                await popup.complete(POPUP_RESULT.AFFIRMATIVE);
+                openAlternateGreetings();
+                return;
             }
-            // Insert at new position
-            array.splice(targetPosition, 0, moved);
-            model.defaultIndex = reindexDefaultAfterMove(model.defaultIndex, sourceIndex, targetPosition);
+
+            const avatar = $('.open_alternate_greetings').data('avatar');
+            const character = avatar ? charactersStore.get(avatar) : null;
+            if (!character) return;
+            const expectedHash = greetingPagerState.hashes[sourceIndex];
+            if (!Number.isFinite(expectedHash)) return;
+            const result = await postGreetingOp('move', { avatar_url: avatar, source_position: sourceIndex, expected_hash: expectedHash, target_position: targetPosition });
+            if (!result.ok) {
+                console.error('Greeting move failed', { avatar, sourceIndex, targetPosition, status: result.status, reason: result.reason });
+                toastr.error(result.status === 409
+                    ? t`This character was changed in another session, so this move was not saved. Close and reopen this popup to see the current version.`
+                    : t`Failed to move the greeting.`, t`Greeting not moved`);
+                return;
+            }
+            const newGreetings = array.slice();
+            const [moved] = newGreetings.splice(sourceIndex, 1);
+            const postRemovalTarget = targetPosition > sourceIndex ? targetPosition - 1 : targetPosition;
+            newGreetings.splice(postRemovalTarget, 0, moved);
+            await applyGreetingOpSuccess(character, newGreetings, result.defaultPosition, result.hashes);
 
             // Rebuild popup
             await popup.complete(POPUP_RESULT.AFFIRMATIVE);
@@ -13109,7 +13220,27 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
             return;
         }
 
-        model.defaultIndex = index;
+        if (menu_type === 'create') {
+            model.defaultIndex = index;
+            await popup.complete(POPUP_RESULT.AFFIRMATIVE);
+            openAlternateGreetings();
+            return;
+        }
+
+        const avatar = $('.open_alternate_greetings').data('avatar');
+        const character = avatar ? charactersStore.get(avatar) : null;
+        if (!character) return;
+        const expectedHash = greetingPagerState.hashes[index];
+        if (!Number.isFinite(expectedHash)) return;
+        const result = await postGreetingOp('default/set', { avatar_url: avatar, position: index, expected_hash: expectedHash });
+        if (!result.ok) {
+            console.error('Set default greeting failed', { avatar, position: index, status: result.status, reason: result.reason });
+            toastr.error(result.status === 409
+                ? t`This character was changed in another session, so the default was not changed. Close and reopen this popup to see the current version.`
+                : t`Failed to set the default greeting.`, t`Default not changed`);
+            return;
+        }
+        await applyGreetingOpSuccess(character, getArray().slice(), result.defaultPosition, result.hashes);
 
         await popup.complete(POPUP_RESULT.AFFIRMATIVE);
         openAlternateGreetings();
@@ -13121,7 +13252,23 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
         event.preventDefault();
         event.stopPropagation();
 
-        model.defaultIndex = null;
+        if (menu_type === 'create') {
+            model.defaultIndex = null;
+            await popup.complete(POPUP_RESULT.AFFIRMATIVE);
+            openAlternateGreetings();
+            return;
+        }
+
+        const avatar = $('.open_alternate_greetings').data('avatar');
+        const character = avatar ? charactersStore.get(avatar) : null;
+        if (!character) return;
+        const result = await postGreetingOp('default/unset', { avatar_url: avatar });
+        if (!result.ok) {
+            console.error('Unset default greeting failed', { avatar, status: result.status, reason: result.reason });
+            toastr.error(t`Failed to clear the default greeting.`, t`Default not changed`);
+            return;
+        }
+        await applyGreetingOpSuccess(character, getArray().slice(), result.defaultPosition, result.hashes);
 
         await popup.complete(POPUP_RESULT.AFFIRMATIVE);
         openAlternateGreetings();
@@ -13173,6 +13320,11 @@ export async function createOrEditCharacter(e) {
                 url += `?crop=${encodeURIComponent(JSON.stringify(crop_data))}`;
             }
 
+            // #firstmessage_textarea used to carry this via its `name="first_mes"` form field - now that
+            // it's gone, create_save.first_message (kept live by the greeting pager/popup in create
+            // mode) is the source instead.
+            formData.set('first_mes', create_save.first_message);
+
             formData.delete('alternate_greetings');
             for (const value of stripEmptyAlternateGreetings(create_save.alternate_greetings, 'create character')) {
                 formData.append('alternate_greetings', value);
@@ -13204,7 +13356,6 @@ export async function createOrEditCharacter(e) {
                 { id: '#tags_textarea', callback: value => create_save.tags = value },
                 { id: '#creator_textarea', callback: value => create_save.creator = value },
                 { id: '#personality_textarea', callback: value => create_save.personality = value },
-                { id: '#firstmessage_textarea', callback: value => create_save.first_message = value },
                 { id: '#alternate_greetings_template', callback: value => create_save.alternate_greetings = value, defaultValue: [] },
                 { id: '#talkativeness_slider', callback: value => create_save.talkativeness = value, defaultValue: talkativeness_default },
                 { id: '#scenario_pole', callback: value => create_save.scenario = value },
@@ -13222,7 +13373,8 @@ export async function createOrEditCharacter(e) {
                 $(field.id).val(fieldValue);
                 field.callback && field.callback(fieldValue);
             });
-            setGreetingPagerGreetings([''], 0);
+            create_save.first_message = ''; // was reset via the #firstmessage_textarea fields-loop entry above
+            setGreetingPagerGreetings([''], 0, []);
 
             if (Array.isArray(create_save.extra_books) && create_save.extra_books.length > 0) {
                 const fileName = getCharaFilename(null, { manualAvatarKey: avatarId });
@@ -15482,7 +15634,6 @@ jQuery(async function () {
         '#personality_textarea': function () { create_save.personality = String($('#personality_textarea').val()); },
         '#scenario_pole': function () { create_save.scenario = String($('#scenario_pole').val()); },
         '#mes_example_textarea': function () { create_save.mes_example = String($('#mes_example_textarea').val()); },
-        '#firstmessage_textarea': function () { create_save.first_message = String($('#firstmessage_textarea').val()); },
         '#talkativeness_slider': function () { create_save.talkativeness = Number($('#talkativeness_slider').val()); },
         '#depth_prompt_prompt': function () { create_save.depth_prompt_prompt = String($('#depth_prompt_prompt').val()); },
         '#depth_prompt_depth': function () { create_save.depth_prompt_depth = Number($('#depth_prompt_depth').val()); },
@@ -15505,15 +15656,12 @@ jQuery(async function () {
         const value = String($(this).val());
         const { index, defaultIndex } = greetingPagerState;
         greetingPagerState.greetings[index] = value;
-        if (index === defaultIndex) {
-            // The default greeting stays authoritative in #firstmessage_textarea, which drives the
-            // existing first_mes autosave/form-snapshot/FormData bindings untouched.
-            $('#firstmessage_textarea').val(value).trigger('input');
-        } else if (menu_type === 'create') {
+        if (menu_type === 'create') {
             const fields = greetingsModelToCardFields({ greetings: greetingPagerState.greetings, defaultIndex });
+            create_save.first_message = fields.firstMes;
             create_save.alternate_greetings = stripEmptyAlternateGreetings(fields.alternateGreetings, 'greeting pager create-mode input');
         } else {
-            saveGreetingPagerAlternatesDebounced();
+            saveGreetingPagerEditDebounced(index, value);
         }
     });
 
