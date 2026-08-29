@@ -26,6 +26,15 @@ import { runDigestWorkerTask } from './character-metadata-digest-dispatch.js';
  * endpoints/characters.js) can push near-real-time notifications without polling. */
 export const characterChangeEmitter = new EventEmitter();
 
+// In-memory cache of hash-sorted ID arrays for random ordering. Keyed by `handle:seed`, each entry
+// holds the full sorted-ID array plus the seq it was built against. Populated on first random-sort
+// request for a (handle, seed) pair (one-time ~270ms), then every subsequent page is a sub-ms array
+// slice. Invalidated when seq changes (character add/remove/edit). Bounded to
+// MAX_RANDOM_CACHE_ENTRIES to prevent unbounded memory growth from seed churn.
+const MAX_RANDOM_CACHE_ENTRIES = 10;
+/** @type {Map<string, { seq: number, sortedIds: string[] }>} */
+const randomSortCache = new Map();
+
 /**
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {string} id
@@ -4073,6 +4082,46 @@ function buildGroupWhereClause({ tags, fav, excludeIds, ids } = {}) {
  * see this function's own header on why hydration is the caller's job; a character row's `item` is already the
  * full `toShallow()` projection.
  */
+
+/**
+ * Returns a hash-sorted array of ALL entity IDs (characters + groups) for the given seed,
+ * cached per (handle, seed, seq). On a cache miss, fetches all IDs from both tables,
+ * hashes each with getStringHash(id, seed), sorts, and caches the result (~270ms for 327k IDs).
+ * On a hit, returns the cached array (sub-ms).
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} handle User handle (or '' for single-user installs)
+ * @param {number} seed Random sort seed
+ * @param {number} seq Current change-log high-water mark for cache invalidation
+ * @returns {string[]} All entity IDs sorted by hash(id, seed) ascending
+ */
+function getRandomSortedEntityIds(db, handle, seed, seq) {
+    const key = `${handle}:${seed}`;
+    const entry = randomSortCache.get(key);
+    if (entry && entry.seq === seq) {
+        // Move to end for LRU
+        randomSortCache.delete(key);
+        randomSortCache.set(key, entry);
+        return entry.sortedIds;
+    }
+
+    // Compute: read all IDs, hash, sort
+    const charIds = db.all('SELECT id FROM characters').map(r => r.id);
+    const groupIds = db.all('SELECT id FROM groups').map(r => r.id);
+    const allIds = [...charIds, ...groupIds];
+    const hashed = allIds.map(id => ({ id, h: getStringHash(String(id), Number(seed)) }));
+    hashed.sort((a, b) => a.h - b.h);
+    const sortedIds = hashed.map(r => r.id);
+
+    // Evict oldest (first in Map) if at capacity
+    if (randomSortCache.size >= MAX_RANDOM_CACHE_ENTRIES && !randomSortCache.has(key)) {
+        const oldest = randomSortCache.keys().next().value;
+        randomSortCache.delete(oldest);
+    }
+
+    randomSortCache.set(key, { seq, sortedIds });
+    return sortedIds;
+}
+
 /**
  * Comparator for merge-sorting queryEntities()'s two pre-sorted (characters, groups) row arrays into one page,
  * matching the exact ORDER BY each side's own SQL query was run with (see queryEntities()'s `if (wantRows)`
@@ -4138,7 +4187,7 @@ export async function queryEntities(directories, params = {}) {
     const {
         tags, fav, world, excludeIds, ids,
         sortField, sortOrder, seed,
-        offset, limit,
+        offset, limit, handle,
         wantRows = true, wantTotal = true,
     } = params;
 
@@ -4198,58 +4247,116 @@ export async function queryEntities(directories, params = {}) {
         // produce a correct page regardless of how the two tables' rows interleave.
         const fetchLimit = numericOffset + numericLimit;
 
-        // create_date: a group DOES have a real creation timestamp - its own date_added column (populated at
-        // creation, migrateGroupsColumns() below) - projected (and, in the ORDER BY, substituted for the
-        // characters-only `create_date` column) as create_date on the group side so it interleaves correctly
-        // with characters instead of parking every group at one end of the sort permanently (NULL would be
-        // silently wrong here, not a neutral default: a group's creation time is a genuine fact this table
-        // already stores, just under a differently-named column). Both sides are plain INTEGER epoch ms
-        // (characters.create_date was TEXT-collated ISO-ish strings before the 2026-08 migrateCreateDateColumn()
-        // fix - see that function's own doc comment; now that both sides genuinely share a type, a plain
-        // projection of date_added sorts correctly with no conversion needed).
-        //
-        // data_size: characters-only, no equivalent for real. This table has no stored byte-size concept for
-        // groups at all - the closest thing (a group's own JSON file's on-disk size) isn't a column anywhere
-        // here, it would need an fs.statSync() per group row at query time, which is exactly the per-request
-        // filesystem cost this whole metadata store exists to avoid (same reason chat_size/date_last_chat are
-        // precomputed and cached rather than read live off disk on every query). So this one genuinely stays
-        // NULL on the group side - not a shortcut, there is no stored value to project instead - and the
-        // group SELECT's `NULL as data_size` alias is what the group-side ORDER BY resolves data_size to,
-        // so every group sorts as equal on that key and falls through to the tiebreaker together.
-        const groupOrderBy = orderBy
-            .replace(/\bcreate_date\b/g, 'date_added');
+        if (sortField === 'random') {
+            // Random sort: use the in-memory cache of hash-sorted IDs rather than computing
+            // RANDHASH per row per query. The cache is populated once per (handle, seed) pair
+            // (~270ms), then every page is a sub-ms scan+slice.
+            const sortedAllIds = getRandomSortedEntityIds(entry.db, handle ?? '', Number(seed) || 0, seq);
 
-        const charArgs = [...charWhere.args, ...orderArgs, fetchLimit];
-        const charRawRows = entry.db.all(
-            `SELECT id, 'character' as type, name_fold, fav, date_added, date_last_chat, chat_size, create_date, data_size, shallow_json
-            FROM characters ${charWhere.where}
-            ${orderBy}
-            LIMIT ?`,
-            charArgs,
-        );
+            // When there are no filters, the cached sorted array already contains exactly the right
+            // IDs in the right order - skip the expensive SELECT id queries (132ms for 327k rows)
+            // and just slice directly. When filters ARE active, fetch the filtered ID set and
+            // intersect with the cached order.
+            const hasFilters = charWhere.where !== '' || groupWhere.where !== '';
+            const filterSet = hasFilters ? new Set([
+                ...entry.db.all(`SELECT id FROM characters ${charWhere.where}`, charWhere.args).map(r => r.id),
+                ...entry.db.all(`SELECT id FROM groups ${groupWhere.where}`, groupWhere.args).map(r => r.id),
+            ]) : null;
 
-        const groupArgs = [...groupWhere.args, ...orderArgs, fetchLimit];
-        const groupRawRows = entry.db.all(
-            `SELECT id, 'group' as type, name_fold, fav, date_added, date_last_chat, chat_size, date_added as create_date, NULL as data_size, NULL as shallow_json
-            FROM groups ${groupWhere.where}
-            ${groupOrderBy}
-            LIMIT ?`,
-            groupArgs,
-        );
+            // Walk the sorted array, keeping only IDs that pass filters, collect offset+limit
+            const descending = sortOrder === 'desc';
+            const len = sortedAllIds.length;
+            const pageIds = [];
+            let skipped = 0;
+            for (let i = 0; i < len; i++) {
+                const id = sortedAllIds[descending ? len - 1 - i : i];
+                if (filterSet && !filterSet.has(id)) continue;
+                if (skipped < numericOffset) { skipped++; continue; }
+                pageIds.push(id);
+                if (pageIds.length >= numericLimit) break;
+            }
 
-        const comparator = makeEntityMergeComparator(sortField, sortOrder, seed);
-        const merged = mergeSortedRows(charRawRows, groupRawRows, comparator);
-        const rawRows = merged.slice(numericOffset, numericOffset + numericLimit);
+            // Hydrate the page IDs
+            if (pageIds.length === 0) {
+                rows = [];
+            } else {
+                const pageIdsJson = JSON.stringify(pageIds);
+                const charPageRows = entry.db.all(
+                    `SELECT id, 'character' as type, name_fold, fav, date_added, date_last_chat, chat_size, create_date, data_size, shallow_json
+                    FROM characters WHERE id IN (SELECT value FROM json_each(?))`,
+                    [pageIdsJson],
+                );
+                const groupPageRows = entry.db.all(
+                    `SELECT id, 'group' as type, name_fold, fav, date_added, date_last_chat, chat_size, date_added as create_date, NULL as data_size, NULL as shallow_json
+                    FROM groups WHERE id IN (SELECT value FROM json_each(?))`,
+                    [pageIdsJson],
+                );
+                const rowById = new Map([...charPageRows, ...groupPageRows].map(r => [r.id, r]));
+                const rawRows = pageIds.map(id => rowById.get(id)).filter(Boolean);
+                rows = rawRows.map(r => ({
+                    type: r.type,
+                    id: r.id,
+                    fav: !!r.fav,
+                    date_added: Number(r.date_added),
+                    date_last_chat: Number(r.date_last_chat),
+                    chat_size: Number(r.chat_size),
+                    item: r.type === 'character' ? JSON.parse(r.shallow_json) : null,
+                }));
+            }
+        } else {
+            // create_date: a group DOES have a real creation timestamp - its own date_added column (populated at
+            // creation, migrateGroupsColumns() below) - projected (and, in the ORDER BY, substituted for the
+            // characters-only `create_date` column) as create_date on the group side so it interleaves correctly
+            // with characters instead of parking every group at one end of the sort permanently (NULL would be
+            // silently wrong here, not a neutral default: a group's creation time is a genuine fact this table
+            // already stores, just under a differently-named column). Both sides are plain INTEGER epoch ms
+            // (characters.create_date was TEXT-collated ISO-ish strings before the 2026-08 migrateCreateDateColumn()
+            // fix - see that function's own doc comment; now that both sides genuinely share a type, a plain
+            // projection of date_added sorts correctly with no conversion needed).
+            //
+            // data_size: characters-only, no equivalent for real. This table has no stored byte-size concept for
+            // groups at all - the closest thing (a group's own JSON file's on-disk size) isn't a column anywhere
+            // here, it would need an fs.statSync() per group row at query time, which is exactly the per-request
+            // filesystem cost this whole metadata store exists to avoid (same reason chat_size/date_last_chat are
+            // precomputed and cached rather than read live off disk on every query). So this one genuinely stays
+            // NULL on the group side - not a shortcut, there is no stored value to project instead - and the
+            // group SELECT's `NULL as data_size` alias is what the group-side ORDER BY resolves data_size to,
+            // so every group sorts as equal on that key and falls through to the tiebreaker together.
+            const groupOrderBy = orderBy
+                .replace(/\bcreate_date\b/g, 'date_added');
 
-        rows = rawRows.map(r => ({
-            type: r.type,
-            id: r.id,
-            fav: !!r.fav,
-            date_added: Number(r.date_added),
-            date_last_chat: Number(r.date_last_chat),
-            chat_size: Number(r.chat_size),
-            item: r.type === 'character' ? JSON.parse(r.shallow_json) : null,
-        }));
+            const charArgs = [...charWhere.args, ...orderArgs, fetchLimit];
+            const charRawRows = entry.db.all(
+                `SELECT id, 'character' as type, name_fold, fav, date_added, date_last_chat, chat_size, create_date, data_size, shallow_json
+                FROM characters ${charWhere.where}
+                ${orderBy}
+                LIMIT ?`,
+                charArgs,
+            );
+
+            const groupArgs = [...groupWhere.args, ...orderArgs, fetchLimit];
+            const groupRawRows = entry.db.all(
+                `SELECT id, 'group' as type, name_fold, fav, date_added, date_last_chat, chat_size, date_added as create_date, NULL as data_size, NULL as shallow_json
+                FROM groups ${groupWhere.where}
+                ${groupOrderBy}
+                LIMIT ?`,
+                groupArgs,
+            );
+
+            const comparator = makeEntityMergeComparator(sortField, sortOrder, seed);
+            const merged = mergeSortedRows(charRawRows, groupRawRows, comparator);
+            const rawRows = merged.slice(numericOffset, numericOffset + numericLimit);
+
+            rows = rawRows.map(r => ({
+                type: r.type,
+                id: r.id,
+                fav: !!r.fav,
+                date_added: Number(r.date_added),
+                date_last_chat: Number(r.date_last_chat),
+                chat_size: Number(r.chat_size),
+                item: r.type === 'character' ? JSON.parse(r.shallow_json) : null,
+            }));
+        }
     }
 
     return { rows, total, seq };
