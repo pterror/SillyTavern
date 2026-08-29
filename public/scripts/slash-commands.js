@@ -64,6 +64,7 @@ import {
     getCurrentCharacter,
     updateMessageElement,
     updateSwipeCounter,
+    closeCurrentChat,
 } from '../script.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 import { SlashCommandParserError } from './slash-commands/SlashCommandParserError.js';
@@ -494,8 +495,8 @@ export function initDefaultSlashCommands() {
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'closechat',
-        callback: function () {
-            $('#option_close_chat').trigger('click');
+        callback: async function () {
+            await closeCurrentChat();
             return '';
         },
         helpString: t`Closes the current chat.`,
@@ -512,7 +513,9 @@ export function initDefaultSlashCommands() {
                     return resolve('');
                 };
                 eventSource.once(event_types.CHAT_CHANGED, eventCallback);
-                $('#option_close_chat').trigger('click');
+                // Not awaited: the resolution comes from the CHAT_CHANGED listener above, and this
+                // executor is not async. Same fire-and-forget as the menu click this replaces.
+                void closeCurrentChat();
                 setTimeout(() => {
                     reject(t`Failed to open temporary chat`);
                     eventSource.removeListener(event_types.CHAT_CHANGED, eventCallback);
