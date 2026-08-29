@@ -937,9 +937,22 @@ function filterByFolder(filterHelper) {
 
 /**
  * Loads tag *definitions* (`tags` - name/color/folder_type/sort_order/...) from the server's per-user metadata
- * store (POST /api/tags/get), falling back to the `tags` field embedded in `settings` (the pre-tags.json-split
- * location) only if the server has none yet - a fresh install, or a settings.json snapshot restored from before
- * that split.
+ * store (POST /api/tags/get).
+ *
+ * Two different "no tags from the server" cases are handled differently, because they mean different things:
+ *   - The server responds but explicitly has none (`{ tags: null }` - the metadata store is unavailable, or a
+ *     genuinely fresh install with nothing seeded yet) - falls back to DEFAULT_TAGS and unconditionally seeds/
+ *     refreshes the server's definitions with it (see below), same as always.
+ *   - The request itself failed (network error, non-2xx response) - the server might still have real
+ *     definitions, we just don't know what they are right now. Falling back to DEFAULT_TAGS here and then
+ *     seed-saving it (the old unconditional save-on-any-fallback did exactly this) would silently overwrite the
+ *     user's actual tag definitions with the six built-in defaults via /api/tags/save's replace-all semantics -
+ *     a real, silent data-loss path this function used to invite on any transient network hiccup, not a
+ *     hypothetical. So a fetch failure instead reuses the last-known-good tags-cache.js entry (if any) for
+ *     display purposes only, and never calls saveTagsNow() - nothing gets pushed back to the server without
+ *     actually knowing what's there. (There used to also be a `settings.tags` fallback here, from before the
+ *     tags.json split - settings.json has never carried tag data since that split finished, so it was always
+ *     `undefined` and never actually reachable; removed rather than kept as dead scaffolding.)
  *
  * `tag_map` (assignments) is NOT loaded here anymore - phase 3 of the character-data-residency redesign moved
  * assignments off any single fetchable blob entirely, onto per-user sqlite rows keyed by character avatar/group
@@ -947,14 +960,10 @@ function filterByFolder(filterHelper) {
  * settings load, before either of those exist yet) - `tag_map` is left empty here and gets its real content from
  * a single compact whole-library fetch, see seedTagMapFromRecords() below (called from script.js's boot sequence
  * right after `getCharacters()`).
- *
- * After loading, unconditionally seeds/refreshes the server's tag definitions with whatever ended up in `tags` -
- * this closes the gap between "the server has no definitions yet" and "the next definitions save happens":
- * without this, a page load that falls back to the settings.json copy but never triggers a definition mutation
- * could otherwise end up with the definitions living only in memory.
  */
-async function loadTagsSettings(settings) {
+async function loadTagsSettings() {
     let tagsFile = null;
+    let fetchFailed = false;
 
     // Cheap freshness check before paying for the full (potentially very large) /api/tags/get response: if
     // tags_rev matches what's cached, reuse the cached `tags` and skip the fetch (and the seed/normalize save
@@ -1002,15 +1011,29 @@ async function loadTagsSettings(settings) {
             }
         } else {
             console.error(`Failed to load tags: ${response.statusText}`);
+            fetchFailed = true;
         }
     } catch (error) {
         console.error('Error loading tags:', error);
+        fetchFailed = true;
     }
 
+    let seedSave = false;
     if (tagsFile) {
-        tags = tagsFile.tags !== undefined && tagsFile.tags !== null ? tagsFile.tags : DEFAULT_TAGS;
+        tags = tagsFile.tags;
+    } else if (fetchFailed) {
+        // Don't know the server's actual state - reuse the last-known-good cache rather than guessing, and
+        // don't seed-save it back (see doc comment above).
+        const cached = await getCachedTags();
+        tags = cached ? cached.tags : DEFAULT_TAGS;
+        if (!cached) {
+            console.warn('Could not load tag definitions and no cached copy exists - showing built-in defaults locally without saving them.');
+        }
     } else {
-        tags = settings.tags !== undefined ? settings.tags : DEFAULT_TAGS;
+        // The server responded and explicitly has nothing (fresh install / metadata store unavailable) - this
+        // is the one case where seeding the built-in defaults back to the server is actually correct.
+        tags = DEFAULT_TAGS;
+        seedSave = true;
     }
     tag_map = Object.create(null);
 
@@ -1021,9 +1044,12 @@ async function loadTagsSettings(settings) {
     invalidateCharactersFuseIndex();
     invalidateGroupsFuseIndex();
 
-    // See the seeding note above - keep the server's tag definitions in sync with whatever just got loaded,
-    // regardless of source.
-    await saveTagsNow();
+    if (seedSave) {
+        // Closes the gap between "the server has no definitions yet" and "the next definitions save happens":
+        // without this, a page load that fell back to DEFAULT_TAGS but never triggers a definition mutation
+        // could otherwise end up with the definitions living only in memory.
+        await saveTagsNow();
+    }
 }
 
 /**
