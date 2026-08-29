@@ -5,7 +5,7 @@ import { power_user } from './power-user.js';
 import { isMobile } from './RossAscends-mods.js';
 import { getTokenCountAsync } from './tokenizers.js';
 import { addLongPressEvent, clamp, copyText, timestampToMoment } from './utils.js';
-import { chat, deleteSwipe, ensureSwipes, isMessageSwipeable, isSwipingAllowed, swipe, syncMesToSwipe } from '/script.js';
+import { chat, deleteSwipe, ensureSwipes, hydrateSwipes, isMessageSwipeable, isSwipingAllowed, swipe, syncMesToSwipe } from '/script.js';
 
 /**
  * Returns whether a swipe picker can be opened for the message.
@@ -55,6 +55,10 @@ async function openSwipePicker(messageId) {
         toastr.info(t`This message has no alternate swipes yet.`, t`Jump to Swipe`);
         return;
     }
+
+    // The picker lists every alternative, so it is the one place that genuinely needs all of them.
+    // Pull the holes in before rendering rather than drawing a list of blanks.
+    await hydrateSwipes(messageId, { all: true });
 
     const canJumpToSwipe = canJumpToSwipeForMessage(messageId);
     let selectedSwipeId = clamp(Number(message.swipe_id ?? 0), 0, message.swipes.length - 1);

@@ -15,6 +15,7 @@ import {
     setActiveGroup,
     getCurrentChatDetails,
     updateMessage,
+    hydrateSwipes,
 } from '../script.js';
 import { humanizedDateTime } from './RossAscends-mods.js';
 import {
@@ -167,7 +168,13 @@ async function saveBookmarkMenu() {
  * @param {{swipeId?: number|null}} [options={}]
  * @returns {ChatMessage[]|null}
  */
-function getBranchChatSnapshot(mesId, { swipeId = null } = {}) {
+async function getBranchChatSnapshot(mesId, { swipeId = null } = {}) {
+    if (swipeId !== null) {
+        // The snapshot is cloned from the live chat, so the alternative has to be in hand BEFORE the
+        // clone - a hole would make syncSwipeToMes bail and the branch silently fail to be created.
+        await hydrateSwipes(Number(mesId), { index: Number(swipeId) });
+    }
+
     const snapshot = structuredClone(chat.slice(0, Number(mesId) + 1));
 
     if (swipeId === null) {
@@ -231,7 +238,7 @@ export async function createBranch(mesId, { swipeId = null } = {}) {
         // If a specific swipe was selected, save the current chat first so the swipe state is
         // persisted to the tree, then fork at the node.
         if (selectedSwipeId !== null) {
-            const snapshot = getBranchChatSnapshot(mesId, { swipeId: selectedSwipeId });
+            const snapshot = await getBranchChatSnapshot(mesId, { swipeId: selectedSwipeId });
             if (!snapshot) {
                 toastr.warning('Could not prepare the selected swipe for branching.', 'Branch creation failed');
                 return;
@@ -270,7 +277,7 @@ export async function createBranch(mesId, { swipeId = null } = {}) {
     // Legacy JSONL path: copy the chat prefix into a new file
     const newMetadata = { main_chat: mainChatName, integrity: uuidv4(), fork_point: { mesId: Number(mesId), swipeId: resolvedSwipeId } };
 
-    const branchChatSnapshot = getBranchChatSnapshot(mesId, { swipeId: selectedSwipeId });
+    const branchChatSnapshot = await getBranchChatSnapshot(mesId, { swipeId: selectedSwipeId });
     if (!branchChatSnapshot) {
         toastr.warning('Could not prepare the selected swipe for branching.', 'Branch creation failed');
         return;
