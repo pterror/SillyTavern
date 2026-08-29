@@ -31,7 +31,7 @@ import {
     isAvailable as isTreeAvailable, isMigrated as isTreeMigrated,
     saveChatToTree, loadBranch, forkBranch, labelNode,
     deleteBranch, renameBranch as renameBranchInTree, listBranches, searchBranchesByContent,
-    renameCharacterInMessages, getAlternatives,
+    renameCharacterInMessages, getAlternatives, getContinuation,
 } from '../message-tree-db.js';
 import { migrateCharacterChats } from '../message-tree-migration.js';
 
@@ -1051,6 +1051,28 @@ router.post('/alternatives', async function (request, response) {
         return response.send(result);
     } catch (error) {
         console.error('Error fetching alternatives:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/**
+ * The conversation below a node, for when the client switches an earlier message to a different
+ * alternative and needs to move onto that alternative's path.
+ */
+router.post('/continuation', async function (request, response) {
+    try {
+        const nodeId = String(request.body.node_id || '');
+        if (!nodeId) {
+            return response.status(400).send({ error: 'node_id is required' });
+        }
+        const branchName = request.body.chat_name ? String(request.body.chat_name) : null;
+        const result = await getContinuation(request.user.directories, nodeId, branchName);
+        if (!result) {
+            return response.status(404).send({ error: 'Node not found' });
+        }
+        return response.send(result);
+    } catch (error) {
+        console.error('Error fetching continuation:', error);
         return response.status(500).send({ error: true });
     }
 });

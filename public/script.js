@@ -13098,10 +13098,6 @@ export async function swipe(event, direction, { source, repeated, message = chat
         //Update the swipe_id and clear stale generation data.
         updateMessage(mesId, { swipe_id: newSwipeId, ...clearMessageData(chat[mesId]) });
 
-        //Moving to a different alternative means moving onto its path: adopt its node, drop what
-        //belonged to the old one, and load what actually follows it.
-        await switchToAlternativePath(mesId, newSwipeId);
-
         //Load from swipes.
         if (syncSwipeToMes(mesId, newSwipeId) == false) {
             let errorMessage = t`When swiping ${direction} on message ${mesId}, syncSwipeToMes has returned false. Attempting to swipe back!`;
@@ -13109,7 +13105,13 @@ export async function swipe(event, direction, { source, repeated, message = chat
 
             updateMessage(mesId, { swipe_id: originalSwipeId });
             await endSwipe(true);
+            return true;
         }
+
+        //Moving to a different alternative means moving onto its path: adopt its node, drop what
+        //belonged to the old one, and load what actually follows it. This runs after the sync so the
+        //message already holds the new text by the time the chat is redrawn.
+        await switchToAlternativePath(mesId, newSwipeId);
         return true;
     }
 

@@ -276,7 +276,12 @@ function rowToMessage(row, siblings) {
             let o = {};
             try { o = JSON.parse(siblings[i].content); } catch { o = {}; }
             msg.swipes[i] = o?.mes ?? '';
-            msg.swipe_info[i] = { send_date: o?.send_date, extra: o?.extra ?? {}, name: o?.name, is_user: !!o?.is_user };
+            // node_id per alternative: switching to one means moving onto that row's path, and the
+            // client cannot ask for what is below it without knowing which row it is.
+            msg.swipe_info[i] = {
+                send_date: o?.send_date, extra: o?.extra ?? {},
+                name: o?.name, is_user: !!o?.is_user, node_id: siblings[i].id,
+            };
         }
     }
 
@@ -630,6 +635,44 @@ export async function isMigrated(directories, ownerId) {
 }
 
 /**
+ * Turns a contiguous run of path rows into client-shaped messages: sibling windows, node ids, and
+ * extra.branches on the fork points that actually diverge.
+ *
+ * Shared by a full chat load and by fetching the continuation below a node, so the two can never
+ * disagree about what a message looks like.
+ *
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {object[]} rows root-to-leaf order, anchor already removed
+ * @param {string|null} branchName current chat name, excluded from its own extra.branches list
+ */
+function buildPathMessages(db, rows, branchName = null) {
+    const siblingsByParent = getSiblingsBatchSync(db, rows.map(r => r.parent_id));
+    const messages = rows.map(r => rowToMessage(
+        r,
+        r.parent_id ? (siblingsByParent.get(r.parent_id) ?? [{ id: r.id, content: r.content }]) : [{ id: r.id, content: r.content }],
+    ));
+
+    const childIds = getChildIdsBatchSync(db, rows.map(r => r.id));
+    for (let i = 0; i < rows.length; i++) {
+        const kids = childIds.get(rows[i].id) ?? [];
+        const nextOnPath = rows[i + 1]?.id;
+        if (!kids.some(id => id !== nextOnPath)) continue;
+
+        const names = [];
+        for (const { branches } of getForkSiblingsSync(db, rows[i].id)) {
+            for (const b of branches) {
+                if (b.name && b.name !== branchName && !names.includes(b.name)) names.push(b.name);
+            }
+        }
+        if (names.length > 0) {
+            if (!messages[i].extra || typeof messages[i].extra !== 'object') messages[i].extra = {};
+            messages[i].extra.branches = names;
+        }
+    }
+    return messages;
+}
+
+/**
  * Loads a chat as the flat message array the client expects. Resolution is: labeled node → descend
  * `default_child_id` to the deepest row → walk parents back to the anchor → drop the anchor.
  *
@@ -645,31 +688,7 @@ export async function loadBranch(directories, ownerId, branchName) {
     const leafId = descendDefaultSync(entry.db, node.id);
     const rows = getPathSync(entry.db, leafId).filter(r => !isAnchorRow(r));
 
-    const siblingsByParent = getSiblingsBatchSync(entry.db, rows.map(r => r.parent_id));
-    const messages = rows.map(r => rowToMessage(
-        r,
-        r.parent_id ? (siblingsByParent.get(r.parent_id) ?? [{ id: r.id, content: r.content }]) : [{ id: r.id, content: r.content }],
-    ));
-
-    // Re-expose sibling chats as extra.branches on the fork points they hang off. Only nodes that
-    // actually diverge from this path pay for it (3 of 102 on the worst real chat).
-    const childIds = getChildIdsBatchSync(entry.db, rows.map(r => r.id));
-    for (let i = 0; i < rows.length; i++) {
-        const kids = childIds.get(rows[i].id) ?? [];
-        const nextOnPath = rows[i + 1]?.id;
-        if (!kids.some(id => id !== nextOnPath)) continue;
-
-        const names = [];
-        for (const { branches } of getForkSiblingsSync(entry.db, rows[i].id)) {
-            for (const b of branches) {
-                if (b.name && b.name !== branchName && !names.includes(b.name)) names.push(b.name);
-            }
-        }
-        if (names.length > 0) {
-            if (!messages[i].extra || typeof messages[i].extra !== 'object') messages[i].extra = {};
-            messages[i].extra.branches = names;
-        }
-    }
+    const messages = buildPathMessages(entry.db, rows, branchName);
 
     let metadata = {};
     if (node.metadata) {
@@ -983,6 +1002,36 @@ export async function getAlternatives(directories, nodeId, range = {}) {
     });
 
     return { selected: selected < 0 ? 0 : selected, total: siblings.length, alternatives };
+}
+
+/**
+ * The conversation below a node: follow its default_child_id chain to the deepest leaf and return
+ * everything under it, in the same shape a chat load produces.
+ *
+ * Switching an earlier message to a different alternative moves the client onto that alternative's
+ * path, and this is what it is now on. The rows below the OLD alternative are untouched and stay
+ * exactly where they are - swiping back reaches them again.
+ *
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} nodeId
+ * @param {string|null} [branchName] current chat name, excluded from its own extra.branches list
+ * @returns {Promise<{ messages: object[] } | null>} null when the node does not exist
+ */
+export async function getContinuation(directories, nodeId, branchName = null) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    const node = entry.db.get('SELECT id FROM messages WHERE id = @id', { id: nodeId });
+    if (!node) return null;
+
+    const leafId = descendDefaultSync(entry.db, nodeId);
+    if (leafId === nodeId) return { messages: [] };
+
+    const path = getPathSync(entry.db, leafId).filter(r => !isAnchorRow(r));
+    const at = path.findIndex(r => r.id === nodeId);
+    const rows = at < 0 ? [] : path.slice(at + 1);
+
+    return { messages: buildPathMessages(entry.db, rows, branchName) };
 }
 
 /** Direct handle for the migration module, which batches many writes into one transaction. */
