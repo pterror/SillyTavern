@@ -300,17 +300,34 @@ async function preSetupTasks() {
     }
     console.log();
 
+    const __t0 = process.hrtime.bigint();
+    const __mark = (label) => {
+        const now = process.hrtime.bigint();
+        console.log(`[boot-timing] ${label}: +${Number(now - __t0) / 1e6}ms total`);
+    };
+
     const directories = await getUserDirectoriesList();
+    __mark('getUserDirectoriesList');
     await migrateGroupChatsMetadataFormat(directories);
+    __mark('migrateGroupChatsMetadataFormat');
     await checkForNewContent(directories);
+    __mark('checkForNewContent');
     // Cache verification is a maintenance operation (pruning entries for deleted files), not a correctness
     // prerequisite - stale entries just waste disk space until cleaned up. Fire-and-forget so it doesn't
     // block the server from starting to listen (verify()'s own readdir + stat walk over the entire
     // characters directory is the same shape of IO that was just eliminated from reconcile()).
-    diskCache.verify(directories).catch(err => console.error('Background cache verification failed:', err));
+    {
+        const __verifyStart = process.hrtime.bigint();
+        diskCache.verify(directories)
+            .catch(err => console.error('Background cache verification failed:', err))
+            .finally(() => console.log(`[boot-timing] diskCache.verify (background) took ${Number(process.hrtime.bigint() - __verifyStart) / 1e6}ms wall, finished at +${Number(process.hrtime.bigint() - __t0) / 1e6}ms total`));
+    }
     migrateFlatSecrets(directories);
+    __mark('migrateFlatSecrets');
     cleanUploads();
+    __mark('cleanUploads');
     migrateAccessLog();
+    __mark('migrateAccessLog');
 
     // Phase 1 of the character-data-residency redesign (docs/design/character-data-residency-redesign.md):
     // opens/creates each user's character-metadata SQLite store, starts its directory watcher and reconcile
@@ -318,17 +335,32 @@ async function preSetupTasks() {
     // beyond schema creation (fast) - a large library's bootstrap backfill must never delay the server actually
     // starting to listen, per the design doc's "Runs at boot (non-blocking)".
     await initializeMetadataStores(directories);
+    __mark('initializeMetadataStores');
 
     // Config/admin-set-only "import characters from a local directory on disk" feature - inert unless
     // localImport.directories is non-empty (see that module's header). Started after initializeMetadataStores()
     // since it drives the same metadata store's batch-import/write path for whatever it discovers.
     await initializeLocalImportScan();
+    __mark('initializeLocalImportScan');
 
-    await settingsInit();
+    // settingsInit() (settings.js's init()) is a per-user settings-snapshot backup that merges in the FULL
+    // tag/tag_map export from the character-metadata store (mergeTagsIntoSnapshot() -> getFullTagMapExport()) -
+    // on a large library that's a multi-second synchronous SQLite scan (measured: ~2.7s on 327k characters /
+    // 3.77M character_tags rows even after the GROUP_CONCAT optimization below), same shape of "expensive
+    // maintenance work that must not gate the server actually starting to listen" as diskCache.verify() just
+    // above - so it gets the same fire-and-forget treatment rather than sitting in the awaited boot chain.
+    {
+        const __settingsStart = process.hrtime.bigint();
+        settingsInit()
+            .catch(err => console.error('Background settings backup failed:', err))
+            .finally(() => console.log(`[boot-timing] settingsInit (background) took ${Number(process.hrtime.bigint() - __settingsStart) / 1e6}ms wall, finished at +${Number(process.hrtime.bigint() - __t0) / 1e6}ms total`));
+    }
     await statsInit();
+    __mark('statsInit');
 
     const pluginsDirectory = path.join(serverDirectory, 'plugins');
     const cleanupPlugins = await loadPlugins(app, pluginsDirectory);
+    __mark('loadPlugins');
     const consoleTitle = process.title;
 
     let isExiting = false;
@@ -372,6 +404,7 @@ async function preSetupTasks() {
 
     // Wait for frontend libs to compile
     await webpackMiddleware.runWebpackCompiler({ pruneCache: true });
+    __mark('runWebpackCompiler');
 }
 
 /**
