@@ -262,16 +262,6 @@ const TANTIVY_INDEX_TAGS_HASH_META_KEY = 'tantivy_char_index_tags_hash';
 // exists and how openPersistedTantivyIndexStale() uses it.
 const TANTIVY_INDEX_SCHEMA_VERSION_META_KEY = 'tantivy_char_index_schema_version';
 
-// Fallback cap for callers that need the *whole* (or a generous approximation of the whole) matched-id set, not
-// just a relevance-ranked page of it - specifically sort:'random' combined with filter.search (design doc §5.3,
-// decision 23: "random and search compose unconditionally"), where hash order has no relationship to text
-// relevance, so bounding tightly by relevance rank would silently bias which matches are ever reachable under a
-// random ordering. This is affordable now in a way it wasn't before the payload shrink: a tantivy hit is a bare
-// id string, not a 13KB-mean JSON.parse (DEFAULT_TANTIVY_MAX_ROWS's original OOM concern), so fetching orders
-// of magnitude more ids costs orders of magnitude less than fetching that many full rows used to. The /query
-// route (characters.js) marks a total as approximate whenever a search itself matched
-// more ids than this cap - decision 6 permits an approximate total, never a silently-truncated one.
-export const SEARCH_ID_CAP = 50000;
 
 // How many batches to commit before the next one, while (re)building a tantivy index
 // (buildTantivyIndexFromFilesystemScan() and applyIncrementalTantivyChanges() below). Committing only once at
@@ -916,7 +906,7 @@ async function loadOrUpdateTantivyIndex(directories, tantivy, previous) {
  * @param {import('../users.js').UserDirectoryList} directories User directories
  * @param {string} searchTerm Search term
  * @param {number} [maxRows] Caps how many matching ids get fetched. This is now (design doc §5.1's payload
- * shrink) a cap on bare id strings, not full-JSON hits, so it's cheap to size generously - see SEARCH_ID_CAP.
+ * shrink) a cap on bare id strings, not full-JSON hits, so it's cheap to size generously.
  * @param {boolean} [favOnly] When true, restricts matches to favorited characters only, applied inside the query
  * itself (not after `maxRows` truncates the page) - see buildSearchQuery()'s `favOnly` doc comment
  * (tantivy-search.js) for why a post-fetch filter here would be wrong: it lets the caller's own client-side
@@ -1004,7 +994,7 @@ export async function searchCharacters(handle, directories, searchTerm, maxRows,
  * @param {string} handle User handle
  * @param {import('../users.js').UserDirectoryList} directories User directories
  * @param {string} searchTerm Search term
- * @param {number} [maxRows] Forwarded to runIdSearch() - see that function's doc comment and SEARCH_ID_CAP for
+ * @param {number} [maxRows] Forwarded to runIdSearch() - see that function's doc comment for
  * how a caller that needs the *whole* matched set (not just a relevance-ranked page of it - e.g. sort:'random'
  * combined with filter.search, design doc §5.3 decision 23) should size this.
  * @param {boolean} [favOnly] Forwarded to runIdSearch() - see that function's doc comment.
@@ -1023,9 +1013,11 @@ export async function searchCharacterIds(handle, directories, searchTerm, maxRow
 /**
  * Searches characters and returns a page-sized window sorted by a tantivy fast field, plus the
  * exact match count - no full-match-set materialization, no SQL sort step. Only usable when the
- * sort field is in TANTIVY_SORT_FIELDS AND the current index was built with those fast fields
- * (schema version >= 2). Falls back to null if the fast field isn't available (the caller should
- * use the SQL sort path instead).
+ * sort field maps to a tantivy fast field (SORT_FIELD_TO_TANTIVY_FIELD); returns null otherwise, and
+ * the caller uses the SQL sort path for those. There is no schema-version gate here: an index that
+ * doesn't match TANTIVY_SCHEMA_VERSION is rejected outright at open time
+ * (openPersistedTantivyIndexStale()) and rebuilt, so by the time this runs the live index is always
+ * current and always carries the fast fields.
  * @param {string} handle User handle
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {string} searchTerm
