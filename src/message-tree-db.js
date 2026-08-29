@@ -430,30 +430,33 @@ export async function loadBranch(directories, ownerId, branchName) {
         const children = getChildrenSync(entry.db, path[i].id);
         if (children.length > 1 || (children.length === 1 && i < path.length - 1 && children[0].id !== path[i + 1]?.id)) {
             // This message has children that aren't just the next message in this branch's path.
-            // It's a fork point. Reconstruct extra.branches for the client.
-            // In the old model, branches were keyed by swipe_id. In the tree model, we group by
-            // the child message's content (specifically, which swipe was active at fork time).
-            // For now, use a flat "0" key (default swipe) for all children.
+            // It's a fork point. Reconstruct extra.branches for the client as a flat list of
+            // sibling branch names - NOT keyed by swipe id.
+            //
+            // The old (JSONL-era) model kept swipe_id-scoped grouping because each branch
+            // independently recorded which swipe of the fork-point message was active when it was
+            // created (chat_metadata.fork_point.swipeId). The tree model has nowhere to keep that:
+            // every sibling branch off one fork point shares the exact same parent row, and that
+            // row has exactly one swipe_id field, not one per branch. /api/chats/fork doesn't take
+            // a swipe id either, so there is no per-branch fork-time swipe context to key by, for
+            // either migrated or tree-native forks. A flat list is what the tree can actually
+            // represent - every sibling shows up together, regardless of which swipe of the parent
+            // happens to be selected right now.
             if (!messages[i].extra || typeof messages[i].extra !== 'object') {
                 messages[i].extra = {};
             }
 
             // Find branches that go through each child (not through this branch's own next message)
             const forkSiblings = getForkSiblingsSync(entry.db, path[i].id);
-            const branchNames = {};
+            const branchNames = [];
             for (const { branches: sibBranches } of forkSiblings) {
                 for (const b of sibBranches) {
-                    if (b.name !== branchName) {
-                        // Key by swipe id — use "0" as default since the tree doesn't track per-swipe forks yet
-                        const key = '0';
-                        if (!branchNames[key]) branchNames[key] = [];
-                        if (!branchNames[key].includes(b.name)) {
-                            branchNames[key].push(b.name);
-                        }
+                    if (b.name !== branchName && !branchNames.includes(b.name)) {
+                        branchNames.push(b.name);
                     }
                 }
             }
-            if (Object.keys(branchNames).length > 0) {
+            if (branchNames.length > 0) {
                 messages[i].extra.branches = branchNames;
             }
         }

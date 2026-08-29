@@ -1379,7 +1379,10 @@ body.hideAllSwipeButtons :is(.swipe_left, .swipe_right),
 
 .mes.has_branches .branch_nav {
     display: flex;
-    opacity: 0;
+    /* Dimly visible always, not hidden until hover - the rest of the message button row
+     * (.mes_buttons) doesn't hide on hover either, and a fork existing at this message is
+     * exactly the kind of thing that shouldn't require already knowing to look for it. */
+    opacity: 0.5;
     transition: opacity var(--animation-duration) ease;
 }
 

@@ -256,11 +256,12 @@ export async function createBranch(mesId, { swipeId = null } = {}) {
             return;
         }
 
-        // Update local branch tracking for the UI
+        // Update local branch tracking for the UI - a flat list of sibling branch names, not
+        // grouped by swipe id (the tree has nowhere to keep per-branch fork-time swipe context;
+        // see the matching comment in loadBranch()'s server-side reconstruction).
         const extra = typeof lastMes.extra === 'object' ? { ...lastMes.extra } : {};
-        const branches = (typeof extra.branches === 'object' && !Array.isArray(extra.branches)) ? { ...extra.branches } : {};
-        const groupKey = String(resolvedSwipeId);
-        branches[groupKey] = [...(Array.isArray(branches[groupKey]) ? branches[groupKey] : []), name];
+        const branches = Array.isArray(extra.branches) ? [...extra.branches] : [];
+        if (!branches.includes(name)) branches.push(name);
         extra.branches = branches;
         updateMessage(mesId, { extra });
         return name;
@@ -294,24 +295,45 @@ export async function createBranch(mesId, { swipeId = null } = {}) {
  * Only meaningful when the current chat is the one that natively hosts the message (the fork's
  * origin) - a branch's own copy of the message never carries this (it's read from the origin on
  * demand instead, see resolveForkRing).
+ *
+ * NOT scoped by swipe id - siblings off one fork point all share the same parent row, which has
+ * exactly one swipe_id field, not one per branch, and /api/chats/fork records no per-branch
+ * fork-time swipe context either. So every sibling at a fork point is returned together,
+ * regardless of which swipe of this message happens to be selected right now.
+ *
+ * `extra.branches` is written as a flat array going forward (see createBranch() above); a plain
+ * object is still read here too and flattened, purely for chats forked before this change whose
+ * saved data still has the old swipe-id-keyed shape - no migration needed for those, this just
+ * reads them correctly either way.
  * @param {ChatMessage} message
- * @param {number} swipeId
- * @returns {string[]} Sibling branch names, in creation order. Empty if none.
+ * @returns {string[]} Sibling branch names, in creation order (deduped). Empty if none.
  */
-function getLocalForkSiblings(message, swipeId) {
+function getLocalForkSiblings(message) {
     const branches = message?.extra?.branches;
-    if (!branches || Array.isArray(branches)) {
-        return [];
+    if (Array.isArray(branches)) {
+        return [...branches];
     }
-    const siblings = branches[String(swipeId)];
-    return Array.isArray(siblings) ? [...siblings] : [];
+    if (branches && typeof branches === 'object') {
+        const seen = [];
+        for (const group of Object.values(branches)) {
+            if (Array.isArray(group)) {
+                for (const name of group) {
+                    if (!seen.includes(name)) seen.push(name);
+                }
+            }
+        }
+        return seen;
+    }
+    return [];
 }
 
 /**
- * Returns whether a message has fork branches at its current swipe, meaning branch
- * navigation arrows should be shown. Checks both the local case (current chat is the
- * origin, so extra.branches has entries) and the branch case (current chat was forked
- * from this message, so chat_metadata.fork_point matches).
+ * Returns whether a message has fork branches, meaning branch navigation arrows should be shown.
+ * Checks both the local case (current chat is the origin, so extra.branches has entries) and the
+ * branch case (current chat was forked from this message, so chat_metadata.fork_point matches -
+ * legacy JSONL branches still record their own fork-time swipe id independently, so that check
+ * stays swipe-scoped for them; it just doesn't apply to the tree, which has nothing to check it
+ * against).
  * @param {number} mesId
  * @param {ChatMessage} [message]
  * @returns {boolean}
@@ -320,13 +342,12 @@ export function hasForkBranches(mesId, message) {
     message ??= chat[mesId];
     if (!message) return false;
 
-    const swipeId = Number(message.swipe_id ?? 0);
-
     // Local case: this chat is the origin and has branches recorded
-    const localSiblings = getLocalForkSiblings(message, swipeId);
+    const localSiblings = getLocalForkSiblings(message);
     if (localSiblings.length > 0) return true;
 
     // Branch case: we're on a branch that was forked from this message
+    const swipeId = Number(message.swipe_id ?? 0);
     const forkPoint = chat_metadata?.fork_point;
     if (forkPoint && forkPoint.mesId === mesId && forkPoint.swipeId === swipeId) return true;
 
