@@ -12299,21 +12299,34 @@ const saveGreetingPagerAlternatesDebounced = debounce(async () => {
     const [firstMes, ...altGreetings] = greetingPagerState.greetings;
     character.data.first_mes = firstMes ?? '';
     character.data.alternate_greetings = altGreetings;
-    const response = await fetch('/api/characters/merge-attributes', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({
-            avatar: avatar,
-            data: {
-                first_mes: firstMes ?? '',
-                alternate_greetings: altGreetings,
-            },
-        }),
-    });
-    if (response.ok) {
-        character._fieldsHash = characterDigestFieldsHash(character);
-        character._bodyHash = characterDigestCardBodyHash(character);
-        await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character: character } });
+    try {
+        const response = await fetch('/api/characters/merge-attributes', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({
+                avatar: avatar,
+                data: {
+                    first_mes: firstMes ?? '',
+                    alternate_greetings: altGreetings,
+                },
+            }),
+        });
+        if (response.ok) {
+            character._fieldsHash = characterDigestFieldsHash(character);
+            character._bodyHash = characterDigestCardBodyHash(character);
+            await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character: character } });
+            return;
+        }
+        if (response.status === 409) {
+            console.error('Greeting save conflict (409)', { avatar, status: response.status });
+            toastr.error(t`This character was changed in another session, so this greeting change was not saved. Reopen the character to see the current version.`, t`Greeting not saved`);
+            return;
+        }
+        console.error('Greeting save failed', { avatar, status: response.status });
+        toastr.error(t`Failed to save the greeting. Your edit is still shown here, but it was not saved.`, t`Greeting not saved`);
+    } catch (error) {
+        console.error('Greeting save failed', { avatar, error });
+        toastr.error(t`Failed to save the greeting. Your edit is still shown here, but it was not saved.`, t`Greeting not saved`);
     }
 }, DEFAULT_SAVE_EDIT_TIMEOUT);
 
@@ -12371,21 +12384,32 @@ function openAlternateGreetings() {
             if (menu_type !== 'create' && JSON.stringify(unifiedGreetings) !== originalSnapshot) {
                 const avatar = greetingsCharacter?.avatar;
                 if (avatar) {
-                    const response = await fetch('/api/characters/merge-attributes', {
-                        method: 'POST',
-                        headers: getRequestHeaders(),
-                        body: JSON.stringify({
-                            avatar: avatar,
-                            data: {
-                                first_mes: unifiedGreetings[0] ?? '',
-                                alternate_greetings: unifiedGreetings.slice(1),
-                            },
-                        }),
-                    });
-                    if (response.ok) {
-                        greetingsCharacter._fieldsHash = characterDigestFieldsHash(greetingsCharacter);
-                        greetingsCharacter._bodyHash = characterDigestCardBodyHash(greetingsCharacter);
-                        await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character: greetingsCharacter } });
+                    try {
+                        const response = await fetch('/api/characters/merge-attributes', {
+                            method: 'POST',
+                            headers: getRequestHeaders(),
+                            body: JSON.stringify({
+                                avatar: avatar,
+                                data: {
+                                    first_mes: unifiedGreetings[0] ?? '',
+                                    alternate_greetings: unifiedGreetings.slice(1),
+                                },
+                            }),
+                        });
+                        if (response.ok) {
+                            greetingsCharacter._fieldsHash = characterDigestFieldsHash(greetingsCharacter);
+                            greetingsCharacter._bodyHash = characterDigestCardBodyHash(greetingsCharacter);
+                            await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character: greetingsCharacter } });
+                        } else if (response.status === 409) {
+                            console.error('Greeting save conflict (409)', { avatar, status: response.status });
+                            toastr.error(t`This character was changed in another session, so these greeting changes were not saved. Reopen the character to see the current version.`, t`Greetings not saved`);
+                        } else {
+                            console.error('Greeting save failed', { avatar, status: response.status });
+                            toastr.error(t`Failed to save the greetings. Your edits are still shown here, but they were not saved.`, t`Greetings not saved`);
+                        }
+                    } catch (error) {
+                        console.error('Greeting save failed', { avatar, error });
+                        toastr.error(t`Failed to save the greetings. Your edits are still shown here, but they were not saved.`, t`Greetings not saved`);
                     }
                 }
             }
