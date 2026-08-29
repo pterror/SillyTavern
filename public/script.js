@@ -11597,13 +11597,6 @@ export async function updateSwipeCounter(mesId, { message = undefined, messageEl
     const canOpenSwipePicker = canOpenSwipePickerForMessage(mesId);
     const canJumpToSwipe = canJumpToSwipeForMessage(mesId);
 
-    // A message's swipe counter is a counter, not a control. The typeable jump box belongs to
-    // greeting navigation in the character panel; it had leaked onto every message with more than one
-    // alternative, which is not a reasonable thing to bolt onto every message's swipe controls.
-    // Clean up any input a previous render left behind before writing the text.
-    if (swipeCounter.find('.swipe-jump-input').length > 0) {
-        swipeCounter.empty();
-    }
     swipeCounter.text(formatSwipeCounter(currentNum, totalNum));
 
     swipeCounter
@@ -11613,10 +11606,6 @@ export async function updateSwipeCounter(mesId, { message = undefined, messageEl
         .attr('role', canOpenSwipePicker ? 'button' : null)
         .attr('title', canJumpToSwipe ? t`Click to jump to a swipe` : canOpenSwipePicker ? t`Click to view swipe history` : null);
     swipePickerButton.toggle(canOpenSwipePicker);
-
-    // Show greeting search toggle only on first message with swipes
-    const searchToggle = messageElement.find('.greeting-search-toggle');
-    searchToggle.toggle(mesId === 0 && totalNum > 1);
 
     if (!canOpenSwipePicker) {
         swipeCounter.removeAttr('tabindex');
