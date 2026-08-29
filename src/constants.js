@@ -9,10 +9,17 @@ export const PUBLIC_DIRECTORIES = {
 export const SETTINGS_FILE = 'settings.json';
 
 /**
- * Holds `tags`/`tag_map` - the source of truth as of the tags.js load/save cutover (loadTagsSettings/
- * saveTagsDebounced). Written by the tagsStore/tagMapStore onChange subscriber and read on load; settings.json
- * no longer carries these fields going forward (see restoreUserTagsForSnapshot in src/endpoints/tags.js for how
- * an old settings.json snapshot that still has them embedded gets reconciled back into this file on restore).
+ * Legacy, migration-only. Pre-phase-3 (character-data-residency redesign), this file held `tags`/`tag_map` as
+ * the actual source of truth. That's no longer true: tag definitions and assignments now live in the per-user
+ * metadata sqlite store (character-metadata-db.js's `tags`/`character_tags`/`group_tags` tables), and neither
+ * this file nor settings.json is written to or read from as live state for tags/tag_map any more - see
+ * character-metadata-db.js's own header and src/endpoints/tags.js's route handlers, which all go through sqlite
+ * directly.
+ *
+ * This constant's only remaining reader is readTagsData() (endpoints/tags-data.js), used exclusively by the
+ * one-time migrateTagsJsonIfNeeded() bootstrap pass: if a user directory still has a tags.json from before the
+ * cutover, its contents get imported into sqlite once and the file is never touched again afterward. A fresh
+ * install today never creates one.
  */
 export const TAGS_FILE = 'tags.json';
 
