@@ -76,6 +76,7 @@ import { initializeMetadataStores, disposeMetadataStores } from './character-met
 import { initializeLocalImportScan, disposeLocalImportScan } from './local-import-scan.js';
 import { migrateFlatSecrets } from './endpoints/secrets.js';
 import { migrateGroupChatsMetadataFormat } from './endpoints/groups.js';
+import { wasBrowserRecentlyConnected } from './browser-presence.js';
 
 // Work around a node v20.0.0, v20.1.0, and v20.2.0 bug. The issue was fixed in v20.3.0.
 // https://github.com/nodejs/node/issues/47822#issuecomment-1564708870
@@ -418,7 +419,9 @@ async function postSetupTasks(result) {
     const browserLaunchUrl = cliArgs.getBrowserLaunchUrl(browserLaunchHostname);
     const browserLaunchApp = String(getConfigValue('browserLaunch.browser', 'default') ?? '');
 
-    if (cliArgs.browserLaunchEnabled) {
+    if (cliArgs.browserLaunchEnabled && wasBrowserRecentlyConnected()) {
+        console.log('A browser tab is already connected (or reconnecting after a restart) - not opening a new one.');
+    } else if (cliArgs.browserLaunchEnabled) {
         try {
             // TODO: This should be converted to a regular import when support for Node 18 is dropped
             const openModule = await import('open');
