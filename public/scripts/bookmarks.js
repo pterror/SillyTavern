@@ -1033,11 +1033,14 @@ export function initBookmarks() {
             return;
         }
 
-        const fileName = $(this).hasClass('mes_bookmark')
+        // Prefer the node. A name is not an identifier - `label` is not unique per owner, so opening
+        // by name picks whichever row sorts first. The name is the fallback for file-backed chats,
+        // which have no nodes at all.
+        const target = $(this).hasClass('mes_bookmark')
             ? $(this).closest('.mes').attr('bookmark_link')
-            : $(this).attr('file_name');
+            : ($(this).attr('node_id') || $(this).attr('file_name'));
 
-        if (!fileName) {
+        if (!target) {
             return;
         }
 
@@ -1050,9 +1053,9 @@ export function initBookmarks() {
 
         try {
             if (selected_group) {
-                await openGroupChat(selected_group, fileName);
+                await openGroupChat(selected_group, target);
             } else {
-                await openCharacterChat(fileName);
+                await openCharacterChat(target);
             }
         } finally {
             await loaderHandle.hide();

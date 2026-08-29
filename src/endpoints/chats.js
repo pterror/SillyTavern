@@ -1027,6 +1027,7 @@ router.post('/tree/branches', validateAvatarUrlMiddleware, async function (reque
 
         // Transform to the format the client's chat listing expects
         const result = branches.map(b => ({
+            node_id: b.id,
             file_name: b.name,
             file_size: 0, // Not meaningful for tree-stored chats
             message_count: b.message_count,
@@ -1632,6 +1633,9 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
 
                 if (branches !== null) {
                     let results = branches.map(b => ({
+                        // The node this bookmark sits on. A name is not an identifier - `label` is
+                        // not unique per owner - so the id is what opening one should use.
+                        node_id: b.id,
                         file_name: b.name,
                         file_size: null,
                         message_count: b.message_count,
@@ -1649,6 +1653,7 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
                             for (const b of allBranches) {
                                 if (!matchedNames.has(b.name) && hasTextMatch([b.name])) {
                                     results.push({
+                                        node_id: b.id,
                                         file_name: b.name,
                                         file_size: null,
                                         message_count: b.message_count,

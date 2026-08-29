@@ -11489,9 +11489,15 @@ async function displayChats(searchQuery, currentChat, displayName, avatarImg, se
         filteredData.sort((a, b) => sortMoments(timestampToMoment(a.last_mes), timestampToMoment(b.last_mes)));
 
         for (const chat of filteredData) {
-            const isSelected = currentChat === chat.file_name;
+            // Opening one uses the node it sits on. A name only ever resolved to a position by
+            // lookup, and not uniquely, so the id is the thing that actually identifies it. The name
+            // stays for display and for the file-backed path, which has no nodes.
+            const isSelected = currentChat === chat.file_name || (!!chat.node_id && currentChat === chat.node_id);
             const template = $('#past_chat_template .select_chat_block_wrapper').clone();
             template.find('.select_chat_block').attr('file_name', chat.file_name);
+            if (chat.node_id) {
+                template.find('.select_chat_block').attr('node_id', chat.node_id);
+            }
             template.find('.avatar img').attr('src', avatarImg);
             template.find('.select_chat_block_filename').text(chat.file_name);
             template.find('.chat_file_size').text(chat.file_size ? `(${chat.file_size},` : '(');
