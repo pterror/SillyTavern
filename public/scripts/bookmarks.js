@@ -525,7 +525,9 @@ export async function createNewBookmark(mesId, { forceName = null } = {}) {
         return null;
     }
 
-    // Tree DB path: checkpoint = fork + label (O(1), no data copy)
+    // Bookmarking names the node, and that is the whole of it. There is nothing to copy - the node
+    // already exists, and a label on it is what makes it findable. Forking as well used to leave a
+    // second thing pointing at the same place.
     if (isTreeStored() && !selected_group && lastMes.node_id) {
         const character = getCurrentCharacter();
 
@@ -540,29 +542,11 @@ export async function createNewBookmark(mesId, { forceName = null } = {}) {
             }),
         });
 
-        // Create a fork branch (so the checkpoint is openable as a separate chat)
-        const forkResponse = await fetch('/api/chats/fork', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({
-                avatar_url: character?.avatar,
-                node_id: lastMes.node_id,
-                branch_name: name,
-                metadata: { ...chat_metadata },
-            }),
-        });
-
-        if (forkResponse.ok) {
-            lastMes.extra.bookmark_link = name;
-            const mes = $(`.mes[mesid="${mesId}"]`);
-            updateBookmarkDisplay(mes, name);
-            await saveChatConditional();
-            toastr.success('Click the flag icon next to the message to open the checkpoint chat.', 'Create Checkpoint', { timeOut: 10000 });
-            return name;
-        }
-
-        toastr.error('Failed to create checkpoint.', 'Create Checkpoint');
-        return null;
+        lastMes.extra.bookmark_link = name;
+        updateBookmarkDisplay($(`.mes[mesid="${mesId}"]`), name);
+        await saveChatConditional();
+        toastr.success('Bookmarked. It shows up in the chat list.', 'Bookmark', { timeOut: 6000 });
+        return name;
     }
 
     // Legacy JSONL path
@@ -1023,6 +1007,17 @@ export function initBookmarks() {
     $('#option_new_bookmark').on('click', saveBookmarkMenu);
     $('#option_back_to_main').on('click', backToMainChat);
     $('#option_convert_to_group').on('click', convertSoloToGroupChat);
+
+    // Bookmark whichever message this is. Naming the node is the whole operation - nothing is copied
+    // and nothing forks, so a bookmark is just a name you can find the place by.
+    $(document).on('click', '.mes_bookmark_add', async function (e) {
+        e.stopPropagation();
+        const mesId = Number($(this).closest('.mes').attr('mesid'));
+        if (!Number.isInteger(mesId)) {
+            return;
+        }
+        await createNewBookmark(mesId);
+    });
 
     $(document).on('click', '.select_chat_block, .mes_bookmark', async function (e) {
         // If shift is held down, we are not following the bookmark, but creating a new one
