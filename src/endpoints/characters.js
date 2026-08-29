@@ -33,6 +33,8 @@ import { searchGroups, searchGroupIds } from './groups-search-index.js';
 import { getGroupsData, getGroupsByIds } from './groups.js';
 import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, resolveFingerprints, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter } from '../character-metadata-db.js';
 import { DEFAULT_DIGEST_BUCKET_COUNT, characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash } from '../../public/scripts/hash-utils.js';
+import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
+import { hashGreetingText, opAdd, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault } from '../greeting-ops.js';
 
 // With 100 MB limit it would take roughly 3000 characters to reach this limit
 const memoryCacheCapacity = getConfigValue('performance.memoryCacheCapacity', '100mb');
@@ -1475,6 +1477,206 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
         }
     } catch (exception) {
         response.status(500).send({ message: 'Unexpected error while saving character.', error: exception.toString() });
+    }
+});
+
+// ---------------------------------------------------------------------------
+//  Stage 1 (additive only) of the greeting-list migration - named, position-addressed operations on
+//  a character's greeting list, alongside the existing first_mes/alternate_greetings-as-fields write
+//  path (/merge-attributes, /edit). Nothing switches over to these yet; the client keeps saving
+//  greetings exactly as it does today. Mirrors the shape chats.js's message/* routes use for the same
+//  reason: a save that hands over a whole array can't refuse a stale write or an empty entry, a save
+//  that names one operation on one target can.
+//
+//  Every operation addresses a position in the ONE unified greeting list - see greeting-list.js for
+//  the model and the first_mes/alternate_greetings split these operations never mention in their
+//  request or response shape. Ops that target an existing greeting also carry a precondition hash
+//  (hashGreetingText() in greeting-ops.js) over the text the caller believes is there; a mismatch
+//  means the list moved under the caller since it was loaded, and the op refuses rather than
+//  guessing (409, `{ ok: false, reason }`).
+// ---------------------------------------------------------------------------
+
+/**
+ * Reads a character card fresh from disk, applies a single greeting-list operation to it, and writes
+ * the result back through writeCharacterData() - the same read-modify-write shape
+ * mergeCharacterUpdate() uses just above. `freshFieldPaths` is always passed as
+ * `['data.alternate_greetings']`: this function's own read is what the operation validated its
+ * precondition hash against (for ops that carry one), so - unlike a merge payload, which carries a
+ * client-supplied view that might be stale relative to disk - there is nothing else that could make
+ * an empty result here mistaken for the stale-read shape writeCharacterData()'s guard exists to catch.
+ * @param {import('express').Request} request
+ * @param {string} avatar avatar filename (e.g. "char.png")
+ * @param {(model: import('../greeting-list.js').GreetingsModel) => {ok: boolean, reason?: string, model?: import('../greeting-list.js').GreetingsModel}} op
+ * @returns {Promise<{ok: boolean, reason?: string, status?: number, hashes?: number[], defaultPosition?: number|null}>}
+ */
+async function applyGreetingOperation(request, avatar, op) {
+    const avatarPath = path.join(request.user.directories.characters, avatar);
+    const pngStringData = await readCharacterData(avatarPath);
+    if (!pngStringData) {
+        return { ok: false, reason: 'character not found', status: 404 };
+    }
+
+    const character = JSON.parse(pngStringData);
+    const model = cardToGreetingsModel(character);
+    const result = op(model);
+    if (!result.ok) {
+        return { ok: false, reason: result.reason, status: 409 };
+    }
+
+    applyGreetingsModelToCard(character, result.model);
+
+    const validator = new TavernCardValidator(character);
+    if (!validator.validate()) {
+        return { ok: false, reason: validator.lastValidationError ?? 'validation failed', status: 500 };
+    }
+
+    const targetImg = avatar.replace('.png', '');
+    await writeCharacterData(avatarPath, JSON.stringify(character), targetImg, request, undefined, null, new Set(['data.alternate_greetings']));
+
+    return {
+        ok: true,
+        hashes: result.model.greetings.map(hashGreetingText),
+        defaultPosition: result.model.defaultIndex,
+    };
+}
+
+/**
+ * Sends an {@link applyGreetingOperation} result. On success, echoes back the full post-op
+ * hash-per-position list and the default's position so a caller can keep issuing further operations
+ * without a round trip to re-fetch the card just to learn its own write's new positions/hashes.
+ * @param {import('express').Response} response
+ * @param {Awaited<ReturnType<typeof applyGreetingOperation>>} result
+ */
+function sendGreetingOpResult(response, result) {
+    if (!result.ok) {
+        return response.status(result.status ?? 409).send({ ok: false, reason: result.reason });
+    }
+    return response.status(200).send({ ok: true, hashes: result.hashes, default_position: result.defaultPosition });
+}
+
+/**
+ * Inserts a new greeting at `position` (0..current length, i.e. length appends at the end). Refuses
+ * empty text. Carries no precondition hash - it doesn't target existing content, only an insertion
+ * point - so a retried add is not deduped or otherwise protected beyond the ordinary position-range
+ * check; two identical greetings are legitimate on a card, so content-based dedup (as chats.js's
+ * addAlternatives does, for its own different reason - reasserting the same set is normal there)
+ * would silently drop a real one here.
+ */
+router.post('/greetings/add', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const avatar = String(request.body.avatar_url || '');
+        const position = Number(request.body.position);
+        const text = request.body.text;
+        if (!avatar) return response.status(400).send({ ok: false, reason: 'avatar_url is required' });
+        if (typeof text !== 'string') return response.status(400).send({ ok: false, reason: 'text is required' });
+        if (!Number.isInteger(position)) return response.status(400).send({ ok: false, reason: 'position must be an integer' });
+
+        const result = await applyGreetingOperation(request, avatar, model => opAdd(model, position, text));
+        return sendGreetingOpResult(response, result);
+    } catch (error) {
+        console.error('Error adding greeting:', error);
+        return response.status(500).send({ ok: false, reason: 'internal error' });
+    }
+});
+
+/** Replaces the text of the greeting at `position`. Refuses empty text and a stale `expected_hash`. */
+router.post('/greetings/edit', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const avatar = String(request.body.avatar_url || '');
+        const position = Number(request.body.position);
+        const expectedHash = Number(request.body.expected_hash);
+        const text = request.body.text;
+        if (!avatar) return response.status(400).send({ ok: false, reason: 'avatar_url is required' });
+        if (typeof text !== 'string') return response.status(400).send({ ok: false, reason: 'text is required' });
+        if (!Number.isInteger(position)) return response.status(400).send({ ok: false, reason: 'position must be an integer' });
+        if (!Number.isFinite(expectedHash)) return response.status(400).send({ ok: false, reason: 'expected_hash is required' });
+
+        const result = await applyGreetingOperation(request, avatar, model => opEdit(model, position, expectedHash, text));
+        return sendGreetingOpResult(response, result);
+    } catch (error) {
+        console.error('Error editing greeting:', error);
+        return response.status(500).send({ ok: false, reason: 'internal error' });
+    }
+});
+
+/**
+ * Removes the greeting at `position`. Removing the current default clears default-ness rather than
+ * picking a successor.
+ */
+router.post('/greetings/delete', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const avatar = String(request.body.avatar_url || '');
+        const position = Number(request.body.position);
+        const expectedHash = Number(request.body.expected_hash);
+        if (!avatar) return response.status(400).send({ ok: false, reason: 'avatar_url is required' });
+        if (!Number.isInteger(position)) return response.status(400).send({ ok: false, reason: 'position must be an integer' });
+        if (!Number.isFinite(expectedHash)) return response.status(400).send({ ok: false, reason: 'expected_hash is required' });
+
+        const result = await applyGreetingOperation(request, avatar, model => opDelete(model, position, expectedHash));
+        return sendGreetingOpResult(response, result);
+    } catch (error) {
+        console.error('Error deleting greeting:', error);
+        return response.status(500).send({ ok: false, reason: 'internal error' });
+    }
+});
+
+/**
+ * Moves the greeting at `source_position` to `target_position`, order otherwise preserved.
+ * `target_position` is pre-removal: an index into the list exactly as it currently stands (0..length,
+ * `length` meaning "move to the end"), same as `source_position` is read against - see
+ * greeting-ops.js's opMove() doc comment for why the boundary takes it this way round.
+ */
+router.post('/greetings/move', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const avatar = String(request.body.avatar_url || '');
+        const sourcePosition = Number(request.body.source_position);
+        const expectedHash = Number(request.body.expected_hash);
+        const targetPosition = Number(request.body.target_position);
+        if (!avatar) return response.status(400).send({ ok: false, reason: 'avatar_url is required' });
+        if (!Number.isInteger(sourcePosition)) return response.status(400).send({ ok: false, reason: 'source_position must be an integer' });
+        if (!Number.isInteger(targetPosition)) return response.status(400).send({ ok: false, reason: 'target_position must be an integer' });
+        if (!Number.isFinite(expectedHash)) return response.status(400).send({ ok: false, reason: 'expected_hash is required' });
+
+        const result = await applyGreetingOperation(request, avatar, model => opMove(model, sourcePosition, expectedHash, targetPosition));
+        return sendGreetingOpResult(response, result);
+    } catch (error) {
+        console.error('Error moving greeting:', error);
+        return response.status(500).send({ ok: false, reason: 'internal error' });
+    }
+});
+
+/** Makes the greeting at `position` the default. Never reorders anything. */
+router.post('/greetings/default/set', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const avatar = String(request.body.avatar_url || '');
+        const position = Number(request.body.position);
+        const expectedHash = Number(request.body.expected_hash);
+        if (!avatar) return response.status(400).send({ ok: false, reason: 'avatar_url is required' });
+        if (!Number.isInteger(position)) return response.status(400).send({ ok: false, reason: 'position must be an integer' });
+        if (!Number.isFinite(expectedHash)) return response.status(400).send({ ok: false, reason: 'expected_hash is required' });
+
+        const result = await applyGreetingOperation(request, avatar, model => opSetDefault(model, position, expectedHash));
+        return sendGreetingOpResult(response, result);
+    } catch (error) {
+        console.error('Error setting default greeting:', error);
+        return response.status(500).send({ ok: false, reason: 'internal error' });
+    }
+});
+
+/**
+ * Clears the default entirely - no default greeting at all. The list keeps its order and membership.
+ * Doesn't address a position, so it carries no precondition hash.
+ */
+router.post('/greetings/default/unset', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const avatar = String(request.body.avatar_url || '');
+        if (!avatar) return response.status(400).send({ ok: false, reason: 'avatar_url is required' });
+
+        const result = await applyGreetingOperation(request, avatar, model => opUnsetDefault(model));
+        return sendGreetingOpResult(response, result);
+    } catch (error) {
+        console.error('Error unsetting default greeting:', error);
+        return response.status(500).send({ ok: false, reason: 'internal error' });
     }
 });
 
