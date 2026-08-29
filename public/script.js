@@ -9061,10 +9061,36 @@ export async function hydrateSwipes(mesId, { index = null, all = false } = {}) {
  */
 export async function switchToAlternativePath(mesId, swipeId) {
     const message = chat[mesId];
-    const targetNodeId = message?.swipe_info?.[swipeId]?.node_id;
+    let targetNodeId = message?.swipe_info?.[swipeId]?.node_id;
 
-    // No node id means this isn't tree-backed (a JSONL chat), where swipes are just an array on the
-    // message and there is no separate path to move onto.
+    // An opening with no node_id is a greeting that lives on the card and has no row yet. Moving onto
+    // it is what gives it one - only the greeting actually used, not the whole card.
+    if (!targetNodeId && mesId === 0 && typeof message?.swipes?.[swipeId] === 'string' && message.node_id) {
+        try {
+            const response = await fetch('/api/chats/openings/ensure', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({
+                    avatar_url: getCurrentCharacter()?.avatar,
+                    contents: [{
+                        name: message.name ?? name2,
+                        is_user: false,
+                        is_system: false,
+                        send_date: getMessageTimeStamp(),
+                        mes: message.swipes[swipeId],
+                        extra: {},
+                    }],
+                }),
+            });
+            const made = response.ok ? await response.json().catch(() => null) : null;
+            targetNodeId = made?.node_ids?.[0] ?? null;
+        } catch (error) {
+            console.warn('[switchToAlternativePath] Could not create a row for the chosen greeting:', error);
+        }
+    }
+
+    // Still nothing means this isn't tree-backed (a JSONL chat), where swipes are just an array on
+    // the message and there is no separate path to move onto.
     if (!targetNodeId || message.node_id === targetNodeId) {
         return false;
     }
@@ -9620,82 +9646,6 @@ export function saveChatDebounced() {
     }, DEFAULT_SAVE_EDIT_TIMEOUT);
 }
 
-/**
- * Makes sure every greeting currently on the card is present as an opening alternative for this chat.
- *
- * A chat's opening alternatives are the union of two things: the character's current greetings, and
- * whatever that conversation has diverged into. Greetings edited inside a chat belong to that chat
- * and never go back to the card, so the tree cannot simply be read from the card - but the card's
- * greetings do have to show up everywhere, including in chats that existed before a greeting was
- * added. Asserting them on open is what keeps both true.
- *
- * Safe to repeat: adding an alternative that is already there resolves to the existing row, so the
- * fork does not grow on every open.
- */
-async function _ensureCardGreetingsPresent() {
-    if (!chat_metadata?._tree_stored) return;
-
-    const opening = chat[0];
-    const character = getCurrentCharacter();
-    if (!opening?.node_id || !character) return;
-
-    const { greetings } = cardToGreetingsModel(character);
-    if (!greetings?.length) return;
-
-    const contents = greetings
-        .map(greeting => getRegexedString(greeting, regex_placement.AI_OUTPUT))
-        .filter(text => typeof text === 'string' && text.length > 0)
-        .map(text => ({
-            name: name2,
-            is_user: false,
-            is_system: false,
-            send_date: opening.send_date,
-            mes: text,
-            extra: {},
-        }));
-
-    if (!contents.length) return;
-
-    try {
-        const response = await fetch('/api/chats/message/alternative', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({
-                avatar_url: character.avatar,
-                sibling_node_id: opening.node_id,
-                contents,
-            }),
-        });
-        if (!response.ok) {
-            console.warn(`[greetings] Could not assert card greetings: HTTP ${response.status}`);
-            return;
-        }
-
-        const result = await response.json();
-        if (!result.added) return;
-
-        // The fork just got wider. Pad this message's alternative arrays with holes so the counter
-        // reflects reality; the text arrives from hydrateSwipes() if the user actually goes there.
-        const current = chat[0];
-        if (!current?.node_id || !Array.isArray(current.swipes) || !result.total) return;
-        if (result.total <= current.swipes.length) return;
-
-        const swipes = [...current.swipes];
-        const swipeInfo = Array.isArray(current.swipe_info) ? [...current.swipe_info] : new Array(swipes.length).fill(null);
-        while (swipes.length < result.total) { swipes.push(null); swipeInfo.push(null); }
-
-        const wasClean = _messageSnapshots.get(current.node_id) === current;
-        updateMessage(0, { swipes, swipe_info: swipeInfo });
-        // Padding with holes is not an edit either - it only widens the message to the fork's real
-        // width. Left dirty it would earn an edit on the next save, on every chat open.
-        if (wasClean && chat[0]?.node_id) {
-            _messageSnapshots.set(chat[0].node_id, chat[0]);
-        }
-        refreshSwipeButtons(true);
-    } catch (error) {
-        console.warn('[greetings] Could not assert card greetings:', error);
-    }
-}
 
 /**
  * True when the message is sitting on a swipe slot that is blank and has never been written.
@@ -10245,9 +10195,6 @@ export async function getChat({ isNewChat = false } = {}) {
         }
         await getChatResult();
 
-        // The card's greetings belong in every chat, including ones created before they existed.
-        await _ensureCardGreetingsPresent();
-
         eventSource.emit(event_types.CHAT_LOADED, { detail: { character: getCurrentCharacter() } });
 
         // Focus on the textarea if not already focused on a visible text input
@@ -10355,63 +10302,73 @@ async function _openingFromTree(cardGreetings, preferredIndex) {
         return response.json().catch(() => null);
     };
 
-    let openings = await post('/api/chats/openings', {});
-    if (!openings?.migrated) return null;
+    const sendDate = getMessageTimeStamp();
+    const asMessage = text => ({
+        name: name2,
+        is_user: false,
+        is_system: false,
+        send_date: sendDate,
+        mes: text,
+        extra: {},
+    });
 
-    // Make sure the card's current greetings are among the openings before choosing one. Idempotent,
-    // so this costs nothing once they're there.
-    if (cardGreetings.length) {
-        const sendDate = getMessageTimeStamp();
-        const ensured = await post('/api/chats/openings/ensure', {
-            contents: cardGreetings.map(text => ({
-                name: name2,
-                is_user: false,
-                is_system: false,
-                send_date: sendDate,
-                mes: text,
-                extra: {},
-            })),
-        });
-        if (ensured?.added) {
-            openings = await post('/api/chats/openings', {});
-            if (!openings) return null;
-        }
-        // Prefer the card's own default, now that it definitely has a node.
-        const preferredId = ensured?.node_ids?.[preferredIndex];
-        if (preferredId) openings.default_node_id = preferredId;
-    }
+    // The card's greetings go along with the read and are merged there. Nothing is copied into the
+    // tree: an opening with no node_id is a greeting that lives on the card and has no row yet.
+    const contents = (cardGreetings ?? [])
+        .filter(text => typeof text === 'string' && text.length > 0)
+        .map(asMessage);
 
-    if (!openings.total) return null;
+    const openings = await post('/api/chats/openings', { card_greetings: contents });
+    if (!openings?.migrated || !openings.total) return null;
 
     const windowStart = openings.offset ?? 0;
-    const chosenOffset = openings.alternatives.findIndex(a => a.node_id === openings.default_node_id);
-    const chosen = chosenOffset >= 0 ? openings.alternatives[chosenOffset] : openings.alternatives[0];
+    const preferredText = contents[preferredIndex]?.mes;
+    let chosenOffset = openings.alternatives.findIndex(a => a.node_id && a.node_id === openings.default_node_id);
+    if (chosenOffset < 0 && preferredText !== undefined) {
+        chosenOffset = openings.alternatives.findIndex(a => a.mes === preferredText);
+    }
+    if (chosenOffset < 0) chosenOffset = 0;
+
+    const chosen = openings.alternatives[chosenOffset];
     if (!chosen) return null;
+
+    // Opening a conversation on a greeting is what gives it a row - only the one being used, not the
+    // whole card. Everything else stays card-only until someone starts from it.
+    let chosenNodeId = chosen.node_id;
+    if (!chosenNodeId) {
+        const made = await post('/api/chats/openings/ensure', { contents: [asMessage(chosen.mes)] });
+        chosenNodeId = made?.node_ids?.[0] ?? null;
+        if (!chosenNodeId) return null;
+    }
 
     const message = {
         name: chosen.name ?? name2,
         is_user: !!chosen.is_user,
         is_system: false,
-        send_date: chosen.send_date ?? getMessageTimeStamp(),
+        send_date: chosen.send_date ?? sendDate,
         mes: chosen.mes,
         extra: chosen.extra ?? {},
-        node_id: chosen.node_id,
+        node_id: chosenNodeId,
     };
 
     if (openings.total > 1) {
-        // Same holed shape a chat load produces: full width, only what was actually fetched filled
-        // in, the rest left for hydrateSwipes().
+        // Same holed shape a chat load produces. A slot with no node_id is a card-only greeting: its
+        // text is known, it simply has no row, and it gains one if selected.
         const swipes = new Array(openings.total).fill(null);
         const swipeInfo = new Array(openings.total).fill(null);
-        openings.alternatives.forEach((alt, i) => {
-            const at = windowStart + i;
+        openings.alternatives.forEach((alt, k) => {
+            const at = windowStart + k;
             if (at >= openings.total) return;
             swipes[at] = alt.mes;
-            swipeInfo[at] = { send_date: alt.send_date, extra: alt.extra ?? {}, name: alt.name, is_user: alt.is_user, node_id: alt.node_id };
+            swipeInfo[at] = {
+                send_date: alt.send_date, extra: alt.extra ?? {},
+                name: alt.name, is_user: alt.is_user,
+                node_id: at === windowStart + chosenOffset ? chosenNodeId : alt.node_id,
+            };
         });
         message.swipes = swipes;
         message.swipe_info = swipeInfo;
-        message.swipe_id = chosenOffset >= 0 ? windowStart + chosenOffset : windowStart;
+        message.swipe_id = windowStart + chosenOffset;
     }
 
     return message;

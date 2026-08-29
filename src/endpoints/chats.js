@@ -1136,12 +1136,20 @@ router.post('/message/append', validateAvatarUrlMiddleware, async function (requ
  * Addressed by character rather than by node, because starting a chat has no node to start from yet.
  * A new chat picks one of these and holds its id, instead of copying a greeting off the card into a
  * fresh message the way file-backed chats had to.
+ *
+ * The card's own greetings are merged in at read time. An entry with no node_id is a greeting that
+ * exists on the card and has no row yet; it gets one when someone actually opens a conversation on
+ * it. That is why nothing needs syncing: edit a greeting on the card and the next read reflects it.
  */
 router.post('/openings', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const offset = Number.isFinite(Number(request.body.offset)) ? Number(request.body.offset) : undefined;
         const limit = Number.isFinite(Number(request.body.limit)) ? Number(request.body.limit) : undefined;
-        const result = await getOpeningAlternatives(request.user.directories, ownerOf(request), { offset, limit });
+        // The card's greetings come from the caller and are merged read-only. Nothing is written, so
+        // this is not the client asserting anything about stored rows - it is supplying the card's
+        // current contents, which it legitimately holds, for a union computed here.
+        const cardGreetings = Array.isArray(request.body.card_greetings) ? request.body.card_greetings : [];
+        const result = await getOpeningAlternatives(request.user.directories, ownerOf(request), { offset, limit }, cardGreetings);
         if (!result) return response.status(404).send({ error: 'Tree storage unavailable' });
         return response.send(result);
     } catch (error) {
