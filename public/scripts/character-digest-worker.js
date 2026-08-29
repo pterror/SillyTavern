@@ -1,4 +1,4 @@
-import { getStringHash, treeNodeAt, emptyDigest128, combineDigest128, DEFAULT_DIGEST_BUCKET_COUNT, DEFAULT_TREE_BRANCHING } from './hash-utils.js';
+import { getStringHash, emptyDigest128, combineDigest128, DEFAULT_DIGEST_BUCKET_COUNT, DEFAULT_TREE_BRANCHING } from './hash-utils.js';
 
 /**
  * Module Web Worker (see kokoro.js's `new Worker(new URL(...), { type: 'module' })` for this codebase's existing
