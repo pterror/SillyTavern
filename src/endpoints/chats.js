@@ -940,9 +940,13 @@ router.post('/delete', validateAvatarUrlMiddleware, async function (request, res
 // ---------------------------------------------------------------------------
 
 /**
- * Creates a fork (new branch) at a specific message node. O(1) operation — no data is copied.
- * This is the tree DB equivalent of createBranch() in bookmarks.js, which used to copy the
- * entire chat prefix into a new JSONL file.
+ * DEPRECATED, and unused by this frontend.
+ *
+ * On the tree path a fork was only ever a label: nothing is copied, because the node already exists
+ * and is shared. So this and /api/chats/label were two routes doing one thing, and the client now uses
+ * the label one for both branching and bookmarking.
+ *
+ * Kept for extensions written against the stock API.
  */
 router.post('/fork', validateAvatarUrlMiddleware, async function (request, response) {
     try {

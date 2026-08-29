@@ -246,20 +246,23 @@ export async function createBranch(mesId, { swipeId = null } = {}) {
             await saveChat({ mesId, chatData: snapshot });
         }
 
+        // Branching and bookmarking are the same act: put a name on a node. /api/chats/fork was a
+        // second route doing exactly that, left over from when a branch had to be a separate copy of
+        // the conversation. Nothing is copied now, so there is nothing to fork - the node is already
+        // there and shared, and naming it is what makes it findable.
         const character = getCurrentCharacter();
-        const response = await fetch('/api/chats/fork', {
+        const response = await fetch('/api/chats/label', {
             method: 'POST',
             headers: getRequestHeaders(),
             body: JSON.stringify({
                 avatar_url: character?.avatar,
                 node_id: lastMes.node_id,
-                branch_name: name,
-                metadata: { ...chat_metadata },
+                label: name,
             }),
         });
 
         if (!response.ok) {
-            toastr.error('Fork failed.', 'Branch creation failed');
+            toastr.error('Could not name that point.', 'Branch creation failed');
             return;
         }
 
