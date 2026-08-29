@@ -837,7 +837,7 @@ function migrateGroupsColumns(db, directories) {
     const columnNames = new Set(columns.map(c => c.name));
     const isPreExistingTable = columnNames.size > 0 && !columnNames.has('date_added');
 
-    if (!columnNames.has('name_fold')) db.exec("ALTER TABLE groups ADD COLUMN name_fold TEXT NOT NULL DEFAULT ''");
+    if (!columnNames.has('name_fold')) db.exec('ALTER TABLE groups ADD COLUMN name_fold TEXT NOT NULL DEFAULT \'\'');
     if (!columnNames.has('fav')) db.exec('ALTER TABLE groups ADD COLUMN fav INTEGER NOT NULL DEFAULT 0');
     if (!columnNames.has('date_added')) db.exec('ALTER TABLE groups ADD COLUMN date_added INTEGER NOT NULL DEFAULT 0');
     if (!columnNames.has('date_last_chat')) db.exec('ALTER TABLE groups ADD COLUMN date_last_chat INTEGER NOT NULL DEFAULT 0');
@@ -887,17 +887,17 @@ function migrateChangesFieldsColumn(db) {
 }
 
 function migrateRevToSeqColumns(db) {
-    const charCols = db.all("PRAGMA table_info('characters')").map(c => c.name);
+    const charCols = db.all('PRAGMA table_info(\'characters\')').map(c => c.name);
     if (charCols.includes('rev') && !charCols.includes('change_seq')) {
-        db.exec("ALTER TABLE characters RENAME COLUMN rev TO change_seq");
+        db.exec('ALTER TABLE characters RENAME COLUMN rev TO change_seq');
     }
-    const changeCols = db.all("PRAGMA table_info('changes')").map(c => c.name);
+    const changeCols = db.all('PRAGMA table_info(\'changes\')').map(c => c.name);
     if (changeCols.includes('rev') && !changeCols.includes('seq')) {
-        db.exec("ALTER TABLE changes RENAME COLUMN rev TO seq");
+        db.exec('ALTER TABLE changes RENAME COLUMN rev TO seq');
     }
-    db.run("UPDATE meta SET key = 'tags_hash' WHERE key = 'tags_rev'");
-    db.run("UPDATE meta SET key = 'tantivy_char_index_seq' WHERE key = 'tantivy_char_index_rev'");
-    db.run("UPDATE meta SET key = 'tantivy_char_index_tags_hash' WHERE key = 'tantivy_char_index_tags_rev'");
+    db.run('UPDATE meta SET key = \'tags_hash\' WHERE key = \'tags_rev\'');
+    db.run('UPDATE meta SET key = \'tantivy_char_index_seq\' WHERE key = \'tantivy_char_index_rev\'');
+    db.run('UPDATE meta SET key = \'tantivy_char_index_tags_hash\' WHERE key = \'tantivy_char_index_tags_rev\'');
 }
 
 /**
@@ -2091,16 +2091,16 @@ export async function backfillTagIdsInShallowJson(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
 
-    const already = entry.db.get("SELECT value FROM meta WHERE key = 'tag_ids_shallow_json_backfill_completed'");
+    const already = entry.db.get('SELECT value FROM meta WHERE key = \'tag_ids_shallow_json_backfill_completed\'');
     if (already) return;
 
     // One scan to find all rows needing backfill (avoids repeated NOT LIKE full-table scans per batch).
     const idsToBackfill = entry.db.all(
-        "SELECT id FROM characters WHERE shallow_json NOT LIKE '%\"tag_ids\":%'",
+        'SELECT id FROM characters WHERE shallow_json NOT LIKE \'%"tag_ids":%\'',
     ).map(r => r.id);
 
     if (idsToBackfill.length === 0) {
-        entry.db.run("INSERT INTO meta (key, value) VALUES ('tag_ids_shallow_json_backfill_completed', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value");
+        entry.db.run('INSERT INTO meta (key, value) VALUES (\'tag_ids_shallow_json_backfill_completed\', \'1\') ON CONFLICT(key) DO UPDATE SET value = excluded.value');
         return;
     }
 
@@ -2164,9 +2164,9 @@ export async function backfillTagIdsInShallowJson(directories) {
     // never increments `processed`, which would otherwise make a genuinely-complete pass look incomplete
     // forever. Paying this scan once more here is fine - it's the tail of a pass that was already doing real
     // work this boot, not the repeated per-boot cost the flag exists to avoid.
-    const remaining = entry.db.get("SELECT 1 FROM characters WHERE shallow_json NOT LIKE '%\"tag_ids\":%' LIMIT 1");
+    const remaining = entry.db.get('SELECT 1 FROM characters WHERE shallow_json NOT LIKE \'%"tag_ids":%\' LIMIT 1');
     if (!remaining) {
-        entry.db.run("INSERT INTO meta (key, value) VALUES ('tag_ids_shallow_json_backfill_completed', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value");
+        entry.db.run('INSERT INTO meta (key, value) VALUES (\'tag_ids_shallow_json_backfill_completed\', \'1\') ON CONFLICT(key) DO UPDATE SET value = excluded.value');
     }
 }
 
@@ -2244,7 +2244,7 @@ export async function reconcile(directories) {
     } catch {
         return; // Directory doesn't exist or is inaccessible.
     }
-    const storedRow = entry.db.get("SELECT value FROM meta WHERE key = 'last_reconcile_dir_mtime_ms'");
+    const storedRow = entry.db.get('SELECT value FROM meta WHERE key = \'last_reconcile_dir_mtime_ms\'');
     if (storedRow !== undefined && Number(storedRow.value) === currentDirMtimeMs) {
         return; // Nothing added/removed/renamed since last reconcile.
     }
@@ -2329,7 +2329,7 @@ export async function reconcile(directories) {
 
     // Persist the directory mtime so the next boot can skip the walk if nothing changed.
     entry.db.run(
-        "INSERT INTO meta (key, value) VALUES ('last_reconcile_dir_mtime_ms', @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        'INSERT INTO meta (key, value) VALUES (\'last_reconcile_dir_mtime_ms\', @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
         { value: String(currentDirMtimeMs) },
     );
 }
@@ -2821,7 +2821,7 @@ function updateTagsHashSync(db) {
     const content = rows.map(r => r.id + '\0' + r.data).join('\0');
     const hash = crypto.createHash('sha256').update(content).digest('hex');
     db.run(
-        "INSERT INTO meta (key, value) VALUES ('tags_hash', @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        'INSERT INTO meta (key, value) VALUES (\'tags_hash\', @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
         { value: hash },
     );
 }
@@ -2834,7 +2834,7 @@ function updateTagsHashSync(db) {
 export async function getTagsHash(directories) {
     const entry = await getEntry(directories);
     if (!entry) return null;
-    const row = entry.db.get("SELECT value FROM meta WHERE key = 'tags_hash'");
+    const row = entry.db.get('SELECT value FROM meta WHERE key = \'tags_hash\'');
     return row ? row.value : null;
 }
 
@@ -3310,7 +3310,7 @@ export async function bootstrapGroupsIfNeeded(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
 
-    const already = entry.db.get("SELECT value FROM meta WHERE key = 'groups_bootstrap_completed'");
+    const already = entry.db.get('SELECT value FROM meta WHERE key = \'groups_bootstrap_completed\'');
     if (already) return;
 
     if (fs.existsSync(directories.groups)) {
@@ -3341,7 +3341,7 @@ export async function bootstrapGroupsIfNeeded(directories) {
     }
 
     entry.db.run(
-        "INSERT INTO meta (key, value) VALUES ('groups_bootstrap_completed', @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        'INSERT INTO meta (key, value) VALUES (\'groups_bootstrap_completed\', @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
         { value: String(Date.now()) },
     );
 }
@@ -3475,13 +3475,13 @@ export async function migrateTagsJsonIfNeeded(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
 
-    const already = entry.db.get("SELECT value FROM meta WHERE key = 'tags_json_migrated'");
+    const already = entry.db.get('SELECT value FROM meta WHERE key = \'tags_json_migrated\'');
     if (already) return;
 
     const tagsJsonPath = path.join(directories.root, TAGS_FILE);
     if (!fs.existsSync(tagsJsonPath)) {
         entry.db.run(
-            "INSERT INTO meta (key, value) VALUES ('tags_json_migrated', @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            'INSERT INTO meta (key, value) VALUES (\'tags_json_migrated\', @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
             { value: String(Date.now()) },
         );
         return;
@@ -3502,7 +3502,7 @@ export async function migrateTagsJsonIfNeeded(directories) {
     await saveTagDefinitions(directories, tagsArray);
     const droppedKeys = importTagMapSync(entry, tagMap);
     entry.db.run(
-        "INSERT INTO meta (key, value) VALUES ('tags_json_migrated', @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        'INSERT INTO meta (key, value) VALUES (\'tags_json_migrated\', @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
         { value: String(Date.now()) },
     );
 
@@ -3639,7 +3639,7 @@ export async function backfillCardTagsIfNeeded(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
 
-    const already = entry.db.get("SELECT value FROM meta WHERE key = 'card_tags_backfill_completed'");
+    const already = entry.db.get('SELECT value FROM meta WHERE key = \'card_tags_backfill_completed\'');
     if (already) return;
 
     console.log(color.cyan('[character-metadata] Backfilling tag assignments from card-embedded tags...'));
@@ -3695,7 +3695,7 @@ export async function backfillCardTagsIfNeeded(directories) {
     }
 
     updateTagsHashSync(entry.db);
-    entry.db.run("INSERT INTO meta (key, value) VALUES ('card_tags_backfill_completed', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value");
+    entry.db.run('INSERT INTO meta (key, value) VALUES (\'card_tags_backfill_completed\', \'1\') ON CONFLICT(key) DO UPDATE SET value = excluded.value');
 
     const newTagDefinitions = tagNameToId.size - tagDefinitionsBefore;
     const assignmentsAfter = entry.db.get('SELECT COUNT(*) AS n FROM character_tags')?.n ?? 0;

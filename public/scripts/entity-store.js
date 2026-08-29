@@ -525,8 +525,7 @@ export class RelationStore {
         const lastUseIds = [];
         for (const id of removedIds) {
             const count = (this.usageCounts.get(id) ?? 1) - 1;
-            if (count <= 0) { this.usageCounts.delete(id); lastUseIds.push(id); }
-            else this.usageCounts.set(id, count);
+            if (count <= 0) { this.usageCounts.delete(id); lastUseIds.push(id); } else this.usageCounts.set(id, count);
         }
         return this._emit({ op: 'keyRemoved', key, removedIds, lastUseIds });
     }

@@ -303,7 +303,6 @@ export async function validateDisabledSamplers(redraw = false) {
         $('#apiSamplersList').empty().append(samplersHTML.toString());
         setSamplerListListeners();
     }
-
 }
 
 /**

@@ -1119,12 +1119,14 @@ async function seedTagMapFromRecords() {
  */
 function renameTagKey(oldKey, newKey) {
     // Fuse-index invalidation is handled by the tagMapStore.onChange subscriber (rebuildTagStores()).
-    tagMapStore.renameKey(oldKey, newKey);}
+    tagMapStore.renameKey(oldKey, newKey);
+}
 
 function createTagMapFromList(listElement, key) {
     const tagIds = [...($(listElement).find('.tag').map((_, el) => $(el).attr('id')))];
     // Fuse-index invalidation is handled by the tagMapStore.onChange subscriber (rebuildTagStores()).
-    tagMapStore.setKey(key, tagIds);}
+    tagMapStore.setKey(key, tagIds);
+}
 
 /**
  * Gets a list of all tags for a given entity key.

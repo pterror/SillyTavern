@@ -2714,7 +2714,7 @@ async function verifyCharacterCacheDigest() {
             console.log(`[digest-timing] fast-path skip: server root digest unchanged (${(performance.now() - t_start).toFixed(1)}ms)`);
             return;
         }
-        console.log(`[digest-timing] server root changed or no stored digest, proceeding with full verification`);
+        console.log('[digest-timing] server root changed or no stored digest, proceeding with full verification');
     }
 
     // Step 3: Full verification - expensive client-side computation only runs when the server's
@@ -3005,7 +3005,7 @@ async function verifyCharacterCacheDigest() {
                 serverRoot = foldDigests128(serverRoot, child.digest ?? emptyDigest128());
             }
             await setLastVerifiedDigest(serverRoot);
-            console.log(`[digest-timing] stored server root digest for fast-path`);
+            console.log('[digest-timing] stored server root digest for fast-path');
         }
 
         console.log(`[digest-timing] verifyCharacterCacheDigest total: ${(performance.now() - t_start).toFixed(1)}ms`);
@@ -11504,7 +11504,7 @@ export function selectRightMenuWithAnimation(selectedMenuId) {
         const charBlock = document.getElementById('rm_characters_block');
         if (charBlock) {
             openRightMenu('rm_characters_block');
-            $(charBlock).css('display', displayModes['rm_characters_block'] ?? 'flex');
+            $(charBlock).css('display', displayModes.rm_characters_block ?? 'flex');
         }
     }
     const panelSelector = targetPanel?.id === 'char-info-panel' ? '#char-info-panel .right_menu' : null;
