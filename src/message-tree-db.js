@@ -1093,6 +1093,108 @@ export async function getContinuation(directories, nodeId, branchName = null) {
     return { messages: buildPathMessages(entry.db, rows, branchName) };
 }
 
+/**
+ * The operations a save is actually made of.
+ *
+ * The tree already holds the path, so there is nothing for the client to restate. Each of these names
+ * the row it acts on, which is what stops a client speaking for rows it never received - the shape
+ * that let a windowed load's unfilled slots overwrite stored greetings with empty strings.
+ */
+
+/**
+ * Edits one message's content in place.
+ * @returns {Promise<{ ok: boolean, reason?: string }>}
+ */
+export async function editMessage(directories, ownerId, nodeId, content) {
+    const entry = await getEntry(directories);
+    if (!entry) return { ok: false, reason: 'unavailable' };
+
+    const row = entry.db.get('SELECT id, content FROM messages WHERE id = @id AND owner_id = @ownerId',
+        { id: nodeId, ownerId });
+    if (!row) return { ok: false, reason: 'unknown node' };
+
+    const next = sanitizeForStorage(content);
+    if (row.content === next) return { ok: true };
+    // No legitimate edit empties a message that has text; an incoming blank means the client is
+    // echoing a slot it never loaded.
+    if (wouldBlankStoredText(row.content, next)) return { ok: false, reason: 'refused to blank stored text' };
+
+    updateMessageContentSync(entry.db, nodeId, next);
+    return { ok: true };
+}
+
+/**
+ * Appends messages after a node, chaining each onto the last and pointing the fork at them.
+ * @param {object[]} contents ordered
+ * @returns {Promise<{ ok: boolean, reason?: string, node_ids?: string[] }>}
+ */
+export async function appendMessages(directories, ownerId, afterNodeId, contents) {
+    const entry = await getEntry(directories);
+    if (!entry) return { ok: false, reason: 'unavailable' };
+    if (!Array.isArray(contents) || contents.length === 0) return { ok: true, node_ids: [] };
+
+    const anchor = entry.db.get('SELECT id FROM messages WHERE id = @id AND owner_id = @ownerId',
+        { id: afterNodeId, ownerId });
+    if (!anchor) return { ok: false, reason: 'unknown anchor' };
+
+    const now = Date.now();
+    const nodeIds = [];
+    entry.db.transaction(() => {
+        let cursor = afterNodeId;
+        for (const c of contents) {
+            const id = newId();
+            insertMessageSync(entry.db, {
+                id, parentId: cursor, ownerId, content: sanitizeForStorage(c), createdAt: now + nodeIds.length,
+            });
+            setDefaultChildSync(entry.db, cursor, id);
+            nodeIds.push(id);
+            cursor = id;
+        }
+    });
+    return { ok: true, node_ids: nodeIds };
+}
+
+/**
+ * Adds a new alternative alongside a node's existing children, without selecting it.
+ * @returns {Promise<{ ok: boolean, reason?: string, node_id?: string }>}
+ */
+export async function addAlternative(directories, ownerId, parentNodeId, content) {
+    const entry = await getEntry(directories);
+    if (!entry) return { ok: false, reason: 'unavailable' };
+
+    const parent = entry.db.get('SELECT id FROM messages WHERE id = @id AND owner_id = @ownerId',
+        { id: parentNodeId, ownerId });
+    if (!parent) return { ok: false, reason: 'unknown parent' };
+
+    const id = newId();
+    insertMessageSync(entry.db, {
+        id, parentId: parentNodeId, ownerId, content: sanitizeForStorage(content), createdAt: Date.now(),
+    });
+    return { ok: true, node_id: id };
+}
+
+/**
+ * Replaces a chat's metadata and rotates its integrity slug.
+ * @returns {Promise<{ ok: boolean, reason?: string, integrity?: string }>}
+ */
+export async function setChatMetadata(directories, ownerId, chatName, metadata) {
+    const entry = await getEntry(directories);
+    if (!entry) return { ok: false, reason: 'unavailable' };
+
+    const node = getLabeledNodeSync(entry.db, ownerId, chatName);
+    if (!node) return { ok: false, reason: 'unknown chat' };
+
+    const meta = { ...(metadata || {}) };
+    const integrity = crypto.randomUUID();
+    meta.integrity = integrity;
+    delete meta.main_chat;
+    delete meta.fork_point;
+    delete meta._tree_stored;
+
+    setMetadataSync(entry.db, node.id, JSON.stringify(meta));
+    return { ok: true, integrity };
+}
+
 /** Direct handle for the migration module, which batches many writes into one transaction. */
 export async function getDbHandle(directories) {
     const entry = await getEntry(directories);
