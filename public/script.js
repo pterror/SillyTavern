@@ -9783,6 +9783,49 @@ async function _mergeCardGreetingsIntoOpening() {
 }
 
 /**
+ * Puts back what follows a message, re-derived from the tree.
+ *
+ * Overswiping a message truncates the visible conversation to it, so you are sitting at that point
+ * ready to say something else. Leaving that blank slot has to restore what was there. It is fetched
+ * rather than remembered: the nodes never went anywhere, only the client's view of them.
+ *
+ * @param {number} mesId
+ */
+async function _restoreContinuation(mesId) {
+    const message = chat[mesId];
+    if (!message?.node_id || !chat_metadata?._tree_stored) return;
+
+    let payload;
+    try {
+        const response = await fetch('/api/chats/continuation', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ node_id: message.node_id, chat_name: getCurrentChatId() }),
+        });
+        if (!response.ok) return;
+        payload = await response.json();
+    } catch (error) {
+        console.warn('[restore] Could not fetch what follows:', error);
+        return;
+    }
+
+    const following = payload?.messages ?? [];
+    if (!following.length && chat.length === mesId + 1) return;
+
+    chat.splice(mesId + 1, chat.length - (mesId + 1), ...following);
+    await redisplayChat({ startIndex: mesId });
+    updateViewMessageIds();
+    refreshSwipeButtons(true);
+}
+
+/** Whether a given slot on a message is a blank nobody has typed into yet. */
+function _isBlankSlot(message, at) {
+    if (!Array.isArray(message?.swipes)) return false;
+    if (typeof message.swipes[at] !== 'string' || message.swipes[at].length > 0) return false;
+    return !message.swipe_info?.[at]?.node_id;
+}
+
+/**
  * Saves a tree-backed chat as the operations it actually is, rather than by handing the whole
  * conversation over.
  *
@@ -11336,6 +11379,8 @@ async function messageEditCancel(messageId = this_edit_mes_id) {
                 swipe_id: back,
             });
             syncSwipeToMes(messageId, back);
+            // The blank truncated the view; giving up on it puts back what followed.
+            await _restoreContinuation(messageId);
         }
     }
 
@@ -14088,6 +14133,11 @@ export async function swipe(event, direction, { source, repeated, message = chat
      * @param {number} newSwipeId
      */
     async function loadFromSwipeId(mesId, newSwipeId) {
+        // Leaving a blank slot means the truncation it caused is over, so what followed comes back.
+        // Checked before the switch, since the slot stops being current afterwards.
+        const leavingBlank = _isBlankSlot(chat[mesId], chat[mesId]?.swipe_id ?? 0)
+            && newSwipeId !== (chat[mesId]?.swipe_id ?? 0);
+
         // A wide fork point arrives with most alternatives as holes; fetch this one before switching
         // to it, so the swipe never lands on empty.
         await hydrateSwipes(mesId, { index: newSwipeId });
@@ -14108,7 +14158,13 @@ export async function swipe(event, direction, { source, repeated, message = chat
         //Moving to a different alternative means moving onto its path: adopt its node, drop what
         //belonged to the old one, and load what actually follows it. This runs after the sync so the
         //message already holds the new text by the time the chat is redrawn.
-        await switchToAlternativePath(mesId, newSwipeId);
+        const switched = await switchToAlternativePath(mesId, newSwipeId);
+
+        // Swiping back onto the slot we were already on does not change node, so the switch above is
+        // a no-op and cannot restore anything. Do it explicitly.
+        if (leavingBlank && !switched) {
+            await _restoreContinuation(mesId);
+        }
         return true;
     }
 
@@ -14379,6 +14435,17 @@ export async function swipe(event, direction, { source, repeated, message = chat
                 }];
                 updateMessage(mesId, { swipes: newSwipes, swipe_info: newSwipeInfo });
                 await standardSwipe(newSwipeId);
+
+                // Truncate the view to this message. You are now sitting at this point about to say
+                // something else, so what currently follows is not what follows any more. Nothing is
+                // deleted - there is no DELETE anywhere in the tree - and typing here appends under
+                // this node, which forks. Leaving the blank slot restores the old continuation.
+                if (chat.length > mesId + 1) {
+                    chat.splice(mesId + 1);
+                    await redisplayChat({ startIndex: mesId });
+                    updateViewMessageIds();
+                }
+
                 // Open the message editor on the new empty swipe.
                 await messageEdit(mesId);
                 return;
