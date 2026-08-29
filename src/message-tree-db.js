@@ -182,26 +182,28 @@ function sanitizeForStorage(msg) {
  * A message with no swipes array is a single alternative.
  *
  * @param {object} msg
- * @returns {{ contents: string[], selected: number }}
+ * @returns {{ contents: string[], selected: number, origIndices: number[] }}
  */
 function alternativesFromMessage(msg) {
     const rawSwipes = Array.isArray(msg?.swipes) ? msg.swipes : null;
     if (!rawSwipes || rawSwipes.length === 0) {
-        return { contents: [sanitizeForStorage(msg)], selected: 0 };
+        return { contents: [sanitizeForStorage(msg)], selected: 0, origIndices: [0] };
     }
 
     // A hole means "this alternative exists but wasn't sent to the client", not "delete it". Nothing is
-    // ever removed from the tree, and identity is (parent, speaker, text) rather than array position,
-    // so dropping unloaded entries here leaves their rows exactly where they are.
+    // ever removed from the tree, so dropping unloaded entries here leaves their rows exactly where
+    // they are. `origIndex` remembers each kept entry's position in the original (possibly sparse)
+    // `swipes` array - callers that match siblings by position (rather than by text identity) need
+    // that original slot, not the compacted index it ends up at in `kept`/`contents`.
     const rawSel = Number.isInteger(msg.swipe_id) ? msg.swipe_id : 0;
     const rawInfo = Array.isArray(msg.swipe_info) ? msg.swipe_info : [];
     const kept = [];
     for (let i = 0; i < rawSwipes.length; i++) {
         if (typeof rawSwipes[i] !== 'string') continue;
-        kept.push({ text: rawSwipes[i], info: rawInfo[i], wasSelected: i === rawSel });
+        kept.push({ text: rawSwipes[i], info: rawInfo[i], wasSelected: i === rawSel, origIndex: i });
     }
     if (kept.length === 0) {
-        return { contents: [sanitizeForStorage(msg)], selected: 0 };
+        return { contents: [sanitizeForStorage(msg)], selected: 0, origIndices: [0] };
     }
     const swipes = kept.map(k => k.text);
     const info = kept.map(k => k.info);
@@ -235,7 +237,8 @@ function alternativesFromMessage(msg) {
 
     let selected = selIdx;
     if (selected < 0 || selected >= contents.length) selected = 0;
-    return { contents, selected };
+    const origIndices = kept.map(k => k.origIndex);
+    return { contents, selected, origIndices };
 }
 
 /**
@@ -746,28 +749,39 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
                 const known = entry.db.get('SELECT id, parent_id, content, label FROM messages WHERE id = @id', { id: msg.node_id });
                 if (known) {
                     if (!msg._unchanged && known.parent_id === parentId) {
-                        const { contents, selected } = alternativesFromMessage(msg);
-                        // Re-materialize the alternative set around this node.
+                        const { contents, selected, origIndices } = alternativesFromMessage(msg);
+                        // Re-materialize the alternative set around this node, matching each incoming
+                        // alternative to an existing sibling by POSITION (its original slot in the
+                        // swipe array) rather than by text identity. An edit to an alternative's text
+                        // keeps its place in the swipe order - text identity reads that as "this
+                        // alternative vanished, a different one appeared", which for a non-selected
+                        // alternative used to fall straight to the newId() branch below and mint a
+                        // fresh row every time the text changed (autosave-while-typing would then leave
+                        // one permanent orphaned row per debounce tick, for any alternative that wasn't
+                        // the selected one - only the selected slot ever got the in-place update).
+                        // Position is what "the same alternative, edited" means to the caller, so a
+                        // slot that already has a row gets that row's content updated in place, whether
+                        // or not it is the selected one; only a slot with no existing row is new.
+                        // Nothing is ever deleted - a slot the incoming array doesn't cover (a hole, or
+                        // the array simply being shorter) just leaves whatever row already sits there
+                        // untouched, orphaned children and all, same as before.
+                        // Behaviour change worth flagging: two alternatives that happen to share exact
+                        // text used to collapse onto the same row (text identity); by position they now
+                        // stay two distinct rows, one per slot.
                         const sibs = getSiblingsSync(entry.db, known.parent_id, known.id);
-                        const byContent = new Map(sibs.map(s => [nodeIdentityKey(known.parent_id ?? '', s.content), s.id]));
                         let chosenId = known.id;
                         for (let k = 0; k < contents.length; k++) {
                             const c = contents[k];
-                            const ck = nodeIdentityKey(known.parent_id ?? '', c);
-                            let sid = byContent.get(ck);
-                            if (!sid) {
-                                if (k === selected) {
-                                    // The selected alternative's text changed in place — update the row
-                                    // we already have rather than orphaning its children.
-                                    updateMessageContentSync(entry.db, known.id, c);
-                                    sid = known.id;
-                                } else {
-                                    sid = newId();
-                                    insertMessageSync(entry.db, {
-                                        id: sid, parentId, ownerId, content: c, createdAt: now + k,
-                                    });
-                                }
-                                byContent.set(ck, sid);
+                            const pos = origIndices[k];
+                            let sid;
+                            if (pos < sibs.length) {
+                                sid = sibs[pos].id;
+                                if (sibs[pos].content !== c) updateMessageContentSync(entry.db, sid, c);
+                            } else {
+                                sid = newId();
+                                insertMessageSync(entry.db, {
+                                    id: sid, parentId, ownerId, content: c, createdAt: now + pos,
+                                });
                             }
                             if (k === selected) chosenId = sid;
                         }
