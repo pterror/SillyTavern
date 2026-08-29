@@ -14135,6 +14135,11 @@ export async function swipe(event, direction, { source, repeated, message = chat
     async function loadFromSwipeId(mesId, newSwipeId) {
         // Leaving a blank slot means the truncation it caused is over, so what followed comes back.
         // Checked before the switch, since the slot stops being current afterwards.
+        //
+        // Reachable via confirming an EMPTY edit: applyMessageEdit has no empty guard, so the slot
+        // stays blank while messageEditDone clears this_edit_mes_id and re-enables the buttons. That
+        // leaves a blank selected, a truncated view, and the message swipeable again. Cancelling
+        // takes the other exit and restores from there instead.
         const leavingBlank = _isBlankSlot(chat[mesId], chat[mesId]?.swipe_id ?? 0)
             && newSwipeId !== (chat[mesId]?.swipe_id ?? 0);
 
