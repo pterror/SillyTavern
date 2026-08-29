@@ -1415,61 +1415,6 @@ body.hideAllSwipeButtons :is(.swipe_left, .swipe_right),
     text-align: center;
 }
 
-/* Swipe jump input inside the counter */
-.swipe-jump-input {
-    width: 3ch;
-    text-align: center;
-    border: none;
-    border-bottom: 1px solid currentColor;
-    background: transparent;
-    color: inherit;
-    font-size: inherit;
-    font-family: inherit;
-    padding: 0;
-    -moz-appearance: textfield;
-    line-height: 1;
-}
-.swipe-jump-input::-webkit-inner-spin-button,
-.swipe-jump-input::-webkit-outer-spin-button {
-    -webkit-appearance: none;
-    margin: 0;
-}
-
-/* Greeting search controls */
-.greeting-search-toggle {
-    font-size: 10px;
-    opacity: 0.3;
-    pointer-events: auto;
-    align-self: center;
-    cursor: pointer;
-}
-.greeting-search-toggle:hover {
-    opacity: 0.7;
-}
-.greeting-search-panel {
-    position: absolute;
-    right: 100%;
-    bottom: 0;
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    padding: 4px;
-    background: var(--SmartThemeBlurTintColor);
-    border-radius: 5px;
-    pointer-events: auto;
-    white-space: nowrap;
-}
-.greeting-search-input {
-    width: 140px;
-    font-size: 11px;
-    padding: 2px 6px;
-}
-.greeting-search-matches {
-    font-size: 10px;
-    opacity: 0.6;
-    color: var(--SmartThemeBodyColor);
-}
-
 .ui-settings {
     display: flex;
     flex-direction: column;
