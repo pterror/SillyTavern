@@ -8548,9 +8548,22 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
     const generationFinished = new Date();
     if (type === 'swipe') {
         oldMessage = lastMessage.mes;
-        // Extend swipes array length by one (for the new swipe slot)
-        const newSwipes = [...(lastMessage.swipes || []), undefined];
-        updateMessage(lastMesId, { swipes: newSwipes });
+        // Make room for the incoming swipe. The slot is an empty string rather than `undefined`, and
+        // swipe_info gets a matching entry: leaving a genuine non-string here (and leaving the two
+        // arrays different lengths) is what made ensureSwipes warn and "repair" on every single
+        // generation. It was papering over a placeholder that gets filled moments later.
+        //
+        // Empty is also the honest value for it. Nothing has been written into this slot yet, and the
+        // save path deliberately ignores an empty slot that carries no node_id, so a save landing
+        // mid-generation writes nothing instead of trying to store a blank message.
+        const newSwipes = [...(lastMessage.swipes || []), ''];
+        const newSwipeInfo = [...(lastMessage.swipe_info || []), {
+            send_date: getMessageTimeStamp(),
+            gen_started: generation_started,
+            gen_finished: undefined,
+            extra: {},
+        }];
+        updateMessage(lastMesId, { swipes: newSwipes, swipe_info: newSwipeInfo });
         lastMessage = chat[lastMesId];
 
         if (lastMessage.swipe_id === lastMessage.swipes.length - 1) {
