@@ -744,6 +744,16 @@ function setupCharacterChangeStream() {
 }
 
 /**
+ * Keeps an SSE connection open for as long as this tab is alive, so the server can tell (at its next boot)
+ * that a browser tab is already open and skip auto-launching a new one. `EventSource` auto-reconnects on
+ * its own, which is what lets this tab "still count" through a server restart.
+ */
+function setupBrowserHeartbeat() {
+    if (typeof EventSource === 'undefined') return;
+    new EventSource('/api/browser-heartbeat');
+}
+
+/**
  * @enum {number} Extension prompt types
  */
 export const extension_prompt_types = {
@@ -1191,6 +1201,7 @@ async function firstLoadInit() {
     setStage('Rendering characters');
     await printCharacters(true);
     setupCharacterChangeStream();
+    setupBrowserHeartbeat();
 
     setStage('Loading assets');
     await getBackgrounds();
