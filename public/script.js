@@ -14735,9 +14735,17 @@ export async function doNewChat({ deleteCurrentChat = false } = {}) {
         // save, is what actually makes createOrEditCharacter() below persist the new chat name instead of
         // silently re-saving the old one - without this, "start new chat" looks like it worked (a fresh empty
         // chat renders) but no new chat file is ever created.
-        charactersStore.update(getCurrentCharacter().avatar, { chat: newChatName });
-        $('#selected_chat_pole').val(newChatName);
-        await saveActiveChat(getCurrentCharacter().avatar, newChatName);
+        // Point at the opening node itself. Nothing was created here - the greeting already exists as a
+        // node, and starting here is moving to one with nothing after it yet. The name above only
+        // exists to make the load above find nothing; keeping it as the pointer left it naming
+        // something that does not exist, so metadata saves (which resolve node-then-name) failed
+        // outright and the position could not be resolved back to anywhere.
+        const openingNodeId = chat[0]?.node_id;
+        const pointer = openingNodeId ?? newChatName;
+
+        charactersStore.update(getCurrentCharacter().avatar, { chat: pointer });
+        $('#selected_chat_pole').val(pointer);
+        await saveActiveChat(getCurrentCharacter().avatar, pointer);
         if (deleteCurrentChat) await delChat(chat_file_for_del + '.jsonl');
     }
 }
