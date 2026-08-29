@@ -2286,6 +2286,8 @@ async function loadContextSettings() {
             if (typeof control.defaultValue === 'number') {
                 value = Number(value);
             }
+            const oldValue = control.isGlobalSetting ? power_user[control.property] : power_user.context[control.property];
+            const changed = oldValue !== value;
             if (control.isGlobalSetting) {
                 power_user[control.property] = value;
             } else {
@@ -2295,7 +2297,9 @@ async function loadContextSettings() {
             if (!CSS.supports('field-sizing', 'content') && $(this).is('textarea')) {
                 await resetScrollHeight($(this));
             }
-            saveSettingsDebounced(control.isGlobalSetting ? 'power_user.' + control.property : 'power_user.context');
+            if (changed) {
+                saveSettingsDebounced(control.isGlobalSetting ? 'power_user.' + control.property : 'power_user.context');
+            }
         });
 
         if (control.trigger) {
@@ -3607,10 +3611,10 @@ jQuery(() => {
                     console.log(`error occurred while processing ${elmntName}: ${err}`);
                 }
             }
+            saveSettingsDebounced('power_user.movingUIState');
         } else {
             console.debug('aborting MUI reset', Object.keys(power_user.movingUIState).length);
         }
-        saveSettingsDebounced('power_user.movingUIState');
         coreTruthWinWidth = window.innerWidth;
         coreTruthWinHeight = window.innerHeight;
     });
@@ -4428,19 +4432,27 @@ jQuery(() => {
     });
 
     $('#stscript_autocomplete_width_left').on('input', function () {
-        const value = $(this).val();
-        power_user.stscript.autocomplete.width.left = Number(value);
+        const value = Number($(this).val());
+        // the resize dispatch must run every time (including on load), but the save should only fire on real changes.
+        const changed = power_user.stscript.autocomplete.width.left !== value;
+        power_user.stscript.autocomplete.width.left = value;
         /**@type {HTMLElement}*/(this.closest('.doubleRangeInputContainer')).style.setProperty('--value', value.toString());
         window.dispatchEvent(new Event('resize', { bubbles: true }));
-        saveSettingsDebounced('power_user.stscript.autocomplete.width.left');
+        if (changed) {
+            saveSettingsDebounced('power_user.stscript.autocomplete.width.left');
+        }
     });
 
     $('#stscript_autocomplete_width_right').on('input', function () {
-        const value = $(this).val();
-        power_user.stscript.autocomplete.width.right = Number(value);
+        const value = Number($(this).val());
+        // the resize dispatch must run every time (including on load), but the save should only fire on real changes.
+        const changed = power_user.stscript.autocomplete.width.right !== value;
+        power_user.stscript.autocomplete.width.right = value;
         /**@type {HTMLElement}*/(this.closest('.doubleRangeInputContainer')).style.setProperty('--value', value.toString());
         window.dispatchEvent(new Event('resize', { bubbles: true }));
-        saveSettingsDebounced('power_user.stscript.autocomplete.width.right');
+        if (changed) {
+            saveSettingsDebounced('power_user.stscript.autocomplete.width.right');
+        }
     });
 
     $('#stscript_parser_flag_strict_escaping').on('click', function () {
