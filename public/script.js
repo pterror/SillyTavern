@@ -9622,6 +9622,22 @@ async function _ensureCardGreetingsPresent() {
 }
 
 /**
+ * True when the message is sitting on a swipe slot that is blank and has never been written.
+ *
+ * Overswiping opens an empty slot for the user to type into. Nothing exists for it yet, so there is
+ * nothing to save - and trying anyway means asking the server to blank the row the message still
+ * names, which it refuses.
+ *
+ * @param {object} message
+ */
+function _isBlankUnwrittenSwipe(message) {
+    if (!Array.isArray(message?.swipes)) return false;
+    const at = message.swipe_id ?? 0;
+    if (typeof message.swipes[at] !== 'string' || message.swipes[at].length > 0) return false;
+    return !message.swipe_info?.[at]?.node_id;
+}
+
+/**
  * Saves a tree-backed chat as the operations it actually is, rather than by handing the whole
  * conversation over.
  *
@@ -9680,23 +9696,52 @@ async function _saveTreeChat(fileName, metadata, messages) {
         // unchanged message is literally the same object.
         if (_messageSnapshots.get(msg.node_id) === msg) continue;
 
-        // Alternatives the user authored locally have no row yet - they are the ones with no node_id
-        // in swipe_info. Holes are skipped entirely: they were never loaded, so there is nothing to
-        // say about them.
-        if (Array.isArray(msg.swipes) && Array.isArray(msg.swipe_info)) {
-            const selected = msg.swipe_id ?? 0;
+        // One rule for every slot: no node_id means no row yet, so it is new. Holes are skipped
+        // (never loaded, nothing to say about them) and so are empty slots (overswiping opens a blank
+        // one, and a blank nobody has typed into is not an alternative yet).
+        //
+        // The selected slot used to be exempt here, which was wrong and is why writing a new greeting
+        // over an overswipe edited the PREVIOUS greeting's row instead of making a sibling - the
+        // message still named the old node, so the "new" greeting inherited its children and looked
+        // like an identical tree.
+        const hasSlots = Array.isArray(msg.swipes) && Array.isArray(msg.swipe_info);
+        const selected = msg.swipe_id ?? 0;
+
+        if (hasSlots
+            && typeof msg.swipes[selected] === 'string'
+            && msg.swipes[selected].length === 0
+            && !msg.swipe_info[selected]?.node_id) {
+            // Sitting on a blank slot that has never been written. Nothing exists to save.
+            continue;
+        }
+
+        let newSelectedId = null;
+        if (hasSlots) {
             for (let k = 0; k < msg.swipes.length; k++) {
                 if (typeof msg.swipes[k] !== 'string') continue;
-                if (k === selected) continue;
+                if (msg.swipes[k].length === 0) continue;
                 if (msg.swipe_info[k]?.node_id) continue;
-                await post('/api/chats/message/alternative', {
+
+                const created = await post('/api/chats/message/alternative', {
                     sibling_node_id: msg.node_id,
                     contents: [alternativeContent(msg, msg.swipes[k])],
                 });
+                const createdId = created?.node_ids?.[0];
+                if (createdId && k === selected) newSelectedId = createdId;
             }
         }
 
-        await post('/api/chats/message/edit', { node_id: msg.node_id, content: msg });
+        if (newSelectedId) {
+            // The slot being shown is itself brand new, so it becomes this message's node rather than
+            // the old one being rewritten underneath it.
+            await post('/api/chats/message/select', { node_id: newSelectedId });
+            const swipeInfo = [...msg.swipe_info];
+            swipeInfo[selected] = { ...(swipeInfo[selected] || {}), node_id: newSelectedId };
+            if (i < chat.length) updateMessage(i, { node_id: newSelectedId, swipe_info: swipeInfo });
+            lastPersisted = newSelectedId;
+        } else {
+            await post('/api/chats/message/edit', { node_id: msg.node_id, content: msg });
+        }
     }
 
     if (!lastPersisted) return null;
@@ -13785,7 +13830,7 @@ export async function swipe(event, direction, { source, repeated, message = chat
                 await reloadCurrentChat();
             }
             //Out of bounds swipes should not be saved.
-        } else if (source != SWIPE_SOURCE.BACK) {
+        } else if (source != SWIPE_SOURCE.BACK && !_isBlankUnwrittenSwipe(chat[mesId])) {
             //Save the chat if swipe_id has changed.
             saveChatDebounced();
         }
