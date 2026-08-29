@@ -314,7 +314,7 @@ function rowToMessage(row, siblings) {
  * The identity of a node among its siblings: its parent, its speaker, and its text.
  *
  * Text alone is not enough - the same words said by the user and by the character are two different
- * messages. Beyond that, two alternatives with the same speaker and the same text under the same
+ * messages, and so are the same words said as two different personas. Beyond that, two alternatives with the same speaker and the same text under the same
  * parent are ONE node, even if their send_date or extra.token_count differ: a token count is a
  * derived measurement of the text, not part of what the message is.
  *
@@ -330,7 +330,17 @@ export function nodeIdentityKey(parentId, contentJson) {
     let mes = '';
     try {
         const o = JSON.parse(contentJson);
-        speaker = (o?.is_user ? 'u' : 'c') + '\u0001' + (o?.name ?? '');
+        // A user message's speaker is the PERSONA it was said as. Two identical texts under one
+        // parent, said as different personas, are two different messages and must not merge.
+        //
+        // The persona rather than the display name because the name drifts: this install has one
+        // persona written as `n_n`, `n-n` and `n＿n` across 145k messages, which name-as-speaker reads
+        // as three different people. The avatar id survives a rename.
+        //
+        // Character messages keep the name - persona is a user-side concept and they have none.
+        speaker = o?.is_user
+            ? 'u\u0001' + (o?.persona ?? o?.name ?? '')
+            : 'c\u0001' + (o?.name ?? '');
         mes = o?.mes ?? '';
     } catch {
         speaker = '?';

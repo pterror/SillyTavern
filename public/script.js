@@ -7748,6 +7748,10 @@ export async function sendMessageAsUser(messageText, messageBias, insertAt = nul
         is_system: false,
         send_date: getMessageTimeStamp(),
         mes: substituteParams(messageText),
+        // Who this was said as. This is the speaker for identity purposes: the same words under the
+        // same parent said as two different personas are two different messages. The avatar id rather
+        // than the display name, because the name drifts on rename and the id doesn't.
+        persona: avatar,
         extra: {
             isSmallSys: compact,
         },
