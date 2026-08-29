@@ -8800,14 +8800,24 @@ export function ensureSwipes(message, mesId = undefined) {
     let swipesDirty = !Array.isArray(message.swipes);
     let swipeInfoDirty = !Array.isArray(message.swipe_info);
 
+    // A tree-backed message arrives with a window of alternatives filled in and the rest as null
+    // HOLES, meaning "this exists, it just wasn't sent". Repairing a hole into '' (or fabricating
+    // swipe_info for it) turns "not loaded" into "empty", and a save then writes that emptiness over
+    // real stored text. Holes belong to hydrateSwipes(); leave them be. A message with no node_id
+    // isn't tree-backed and always arrives complete, so a non-string there is genuine corruption and
+    // still gets repaired exactly as before.
+    const hasHoles = !!message.node_id;
+
     for (let i = 0; i < swipes.length; i++) {
-        if (typeof swipes[i] !== 'string') {
+        const isHole = hasHoles && swipes[i] === null;
+
+        if (typeof swipes[i] !== 'string' && !isHole) {
             updated = true;
             swipesDirty = true;
             console.warn('The message had a swipe that is not a string. It has has been set to \'\'.', message);
             swipes[i] = '';
         }
-        if (!swipeInfo[i] || typeof swipeInfo[i] !== 'object') {
+        if ((!swipeInfo[i] || typeof swipeInfo[i] !== 'object') && !isHole) {
             updated = true;
             swipeInfoDirty = true;
             console.warn('The message had missing or invalid swipe_info for a swipe. It has been backfilled.', message);

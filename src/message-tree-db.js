@@ -362,6 +362,24 @@ function insertMessageSync(db, { id, parentId, ownerId, content, label, createdA
     );
 }
 
+/**
+ * True when writing `incoming` over `stored` would replace real message text with nothing.
+ *
+ * Editing a message to be empty is not something the UI does, and a save carrying an empty
+ * alternative where the database holds text means the client echoed back a slot it never actually
+ * received. Refusing costs nothing in the legitimate case, and is the difference between a display
+ * bug and permanent data loss in the other.
+ *
+ * @param {string} stored sanitized content JSON already in the row
+ * @param {string} incoming sanitized content JSON from the client
+ */
+function wouldBlankStoredText(stored, incoming) {
+    const mesOf = (json) => {
+        try { return JSON.parse(json)?.mes ?? ''; } catch { return ''; }
+    };
+    return mesOf(stored).length > 0 && mesOf(incoming).length === 0;
+}
+
 function updateMessageContentSync(db, id, content) {
     db.run('UPDATE messages SET content = @content WHERE id = @id', { id, content });
 }
@@ -776,7 +794,12 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
                             let sid;
                             if (pos < sibs.length) {
                                 sid = sibs[pos].id;
-                                if (sibs[pos].content !== c) updateMessageContentSync(entry.db, sid, c);
+                                // Floor: a save never blanks a row that has text. An incoming empty
+                                // over stored text means the client sent a placeholder for a slot it
+                                // never loaded, and writing it destroys the only copy.
+                                if (sibs[pos].content !== c && !wouldBlankStoredText(sibs[pos].content, c)) {
+                                    updateMessageContentSync(entry.db, sid, c);
+                                }
                             } else {
                                 sid = newId();
                                 insertMessageSync(entry.db, {
