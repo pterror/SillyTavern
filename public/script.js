@@ -13192,163 +13192,137 @@ export async function createOrEditCharacter(e) {
             const editCharacter = getCurrentCharacter();
             const avatarUrl = String(formData.get('avatar_url'));
 
-            if (!hasNewAvatar && _characterFormSnapshot) {
-                // ─── Field-granular save via merge-attributes ───────────────────
-                // Only sends the fields the user actually changed, with per-field
-                // conflict detection that names the exact fields another session
-                // modified. No full-card round-trip for text-only edits.
-                const mergeData = { avatar: avatarUrl };
-                const loadedFieldHashes = {};
+            if (!_characterFormSnapshot) {
+                // Shouldn't happen: the only place that sets actiontype to 'editcharacter'
+                // (selectCharacterById's form population) captures the snapshot immediately
+                // after, synchronously, with nothing awaited in between - so by the time this
+                // branch can run, a snapshot always exists. If this ever fires, something
+                // upstream changed; fail loudly instead of silently falling back to a
+                // whole-card save.
+                console.error('createOrEditCharacter: editing with no _characterFormSnapshot - refusing to save.');
+                toastr.error(t`Could not determine what changed on this character. Please reload it and try again.`, t`Save failed`);
+                return;
+            }
 
-                for (const [formId, originalValue] of Object.entries(_characterFormSnapshot)) {
-                    const currentValue = String($(formId).val() ?? '');
-                    if (currentValue === originalValue) continue;
-
-                    const mapping = FORM_TO_CARD[formId];
-                    if (!mapping) continue;
-
-                    // Transform the form value to match card format
-                    let cardValue = currentValue;
-                    if (mapping.transform === 'tags') {
-                        cardValue = currentValue.split(',').map(x => x.trim()).filter(x => x);
-                    } else if (mapping.transform === 'number') {
-                        cardValue = Number(currentValue) || 0;
-                    } else if (mapping.transform === 'int') {
-                        const n = Number(currentValue);
-                        cardValue = !isNaN(n) ? n : 4;
-                    }
-
-                    // Set both V1 and V2 paths in the merge payload
-                    if (mapping.v1) lodash.set(mergeData, mapping.v1, cardValue);
-                    if (mapping.v2) lodash.set(mergeData, mapping.v2, cardValue);
-
-                    // Hash the loaded value for per-field conflict detection
-                    const loadedValue = lodash.get(editCharacter, mapping.v2);
-                    loadedFieldHashes[mapping.v2] = getStringHash(JSON.stringify(loadedValue !== undefined ? loadedValue : null));
-                }
-
-                mergeData._loadedFieldHashes = loadedFieldHashes;
-
-                const fetchResult = await fetch('/api/characters/merge-attributes', {
-                    method: 'POST',
-                    headers: getRequestHeaders(),
-                    body: JSON.stringify(mergeData),
-                });
-
-                if (fetchResult.status === 409) {
-                    let errorData;
-                    try { errorData = await fetchResult.json(); } catch { /* ignore parse errors */ }
-                    if (errorData?.error === 'conflict' && errorData.conflictingFields) {
-                        const fieldNames = errorData.conflictingFields.map(path =>
-                            path.replace(/^data\.extensions\.depth_prompt\./, 'Depth Prompt ')
-                                .replace(/^data\.extensions\./, '')
-                                .replace(/^data\./, '')
-                                .replace(/_/g, ' '),
-                        );
-
-                        const confirmOverwrite = await callGenericPopup(
-                            t`<h3>Character edited in another session</h3>
-                              <p>The following fields were changed by another session:</p>
-                              <p><strong>${fieldNames.join(', ')}</strong></p>
-                              <p>Overwrite with your version, or discard your changes?</p>`,
-                            POPUP_TYPE.CONFIRM,
-                            '',
-                            { okButton: t`Overwrite with mine`, cancelButton: t`Discard my changes` },
-                        );
-                        if (confirmOverwrite === POPUP_RESULT.AFFIRMATIVE) {
-                            delete mergeData._loadedFieldHashes;
-                            const retryResult = await fetch('/api/characters/merge-attributes', {
-                                method: 'POST',
-                                headers: getRequestHeaders(),
-                                body: JSON.stringify(mergeData),
-                            });
-                            if (!retryResult.ok) {
-                                throw new Error('Force save after conflict failed');
-                            }
-                        } else {
-                            window.location.reload();
-                            return;
-                        }
-                    }
-                } else if (!fetchResult.ok) {
-                    throw new Error('Fetch result is not ok');
-                }
-            } else {
-                // ─── Full-card save with avatar via /edit ───────────────────────
-                // Used when a new avatar image was uploaded (needs FormData for the
-                // file), or when no snapshot is available (shouldn't happen, but
-                // safe fallback).
-                let url = '/api/characters/edit';
-
+            // ─── Avatar image upload via edit-avatar ─────────────────────────
+            // Independent of the field save below: edit-avatar re-reads the character
+            // straight off disk and only ever touches the image and crop, so it can't
+            // clobber card fields and needs no conflict detection of its own.
+            //
+            // Sent first, fields second. The field save below still negotiates the
+            // existing merge-attributes 409 conflict popup, which can end with the user
+            // discarding their edits and reloading the page. A new avatar the user
+            // explicitly picked and cropped isn't part of that conflict - it has nothing
+            // to do with "another session changed these fields" - so it shouldn't be at
+            // risk of silently not landing depending on how that unrelated conflict gets
+            // resolved. Uploading it first means it always lands regardless.
+            if (hasNewAvatar) {
+                let avatarEditUrl = '/api/characters/edit-avatar';
                 if (crop_data != undefined) {
-                    url += `?crop=${encodeURIComponent(JSON.stringify(crop_data))}`;
+                    avatarEditUrl += `?crop=${encodeURIComponent(JSON.stringify(crop_data))}`;
                 }
 
-                formData.delete('alternate_greetings');
-                const avatar = $('.open_alternate_greetings').data('avatar');
-                const editedGreetingsCharacter = charactersStore.get(avatar);
-                if (editedGreetingsCharacter && Array.isArray(editedGreetingsCharacter?.data?.alternate_greetings)) {
-                    for (const value of stripEmptyAlternateGreetings(editedGreetingsCharacter.data.alternate_greetings, 'edit character')) {
-                        formData.append('alternate_greetings', value);
-                    }
-                }
-                if (editedGreetingsCharacter) {
-                    // Same staleness problem alternate_greetings has above: data.json_data (what
-                    // charaFormatData() bases the rest of data.extensions on) was captured at load time
-                    // and can't see an in-session default-greeting change - send the live value
-                    // explicitly so it isn't lost under a new-avatar full-card save.
-                    formData.append('extensions', JSON.stringify({
-                        [GREETING_DEFAULT_POSITION_KEY]: editedGreetingsCharacter.data.extensions?.[GREETING_DEFAULT_POSITION_KEY] ?? null,
-                    }));
-                }
+                const avatarFormData = new FormData();
+                avatarFormData.append('avatar', avatarInput);
+                avatarFormData.append('avatar_url', avatarUrl);
 
-                const editHeaders = getRequestHeaders({ omitContentType: true });
-                if (editCharacter) {
-                    const contentHashes = {
-                        fields: characterDigestFieldsHash(editCharacter),
-                        body: characterDigestCardBodyHash(editCharacter),
-                    };
-                    editHeaders['X-Content-Hashes'] = JSON.stringify(contentHashes);
-                }
-
-                const fetchResult = await fetch(url, {
+                const avatarFetchResult = await fetch(avatarEditUrl, {
                     method: 'POST',
-                    headers: editHeaders,
-                    body: formData,
+                    headers: getRequestHeaders({ omitContentType: true }),
+                    body: avatarFormData,
                     cache: 'no-cache',
                 });
 
-                if (fetchResult.status === 409) {
-                    let errorData;
-                    try { errorData = await fetchResult.json(); } catch { /* ignore parse errors */ }
-                    if (errorData?.error === 'conflict') {
-                        const confirmOverwrite = await callGenericPopup(
-                            t`<h3>Character edited in another session</h3>
-                              <p>This character was changed by another session since you loaded it. Your changes have not been saved yet.</p>
-                              <p>You can overwrite with your version (the other session's changes will be lost), or discard your changes and load the latest version from the server.</p>`,
-                            POPUP_TYPE.CONFIRM,
-                            '',
-                            { okButton: t`Overwrite with mine`, cancelButton: t`Discard my changes` },
-                        );
-                        if (confirmOverwrite === POPUP_RESULT.AFFIRMATIVE) {
-                            delete editHeaders['X-Content-Hashes'];
-                            const retryResult = await fetch(url, {
-                                method: 'POST',
-                                headers: editHeaders,
-                                body: formData,
-                                cache: 'no-cache',
-                            });
-                            if (!retryResult.ok) {
-                                throw new Error('Force save after conflict failed');
-                            }
-                        } else {
-                            window.location.reload();
-                            return;
-                        }
-                    }
-                } else if (!fetchResult.ok) {
-                    throw new Error('Fetch result is not ok');
+                if (!avatarFetchResult.ok) {
+                    toastr.error(t`Failed to upload the new avatar image. Nothing was saved - your other edits are still shown here, try saving again.`, t`Avatar not saved`);
+                    return;
                 }
+            }
+
+            // ─── Field-granular save via merge-attributes ───────────────────
+            // Only sends the fields the user actually changed, with per-field
+            // conflict detection that names the exact fields another session
+            // modified. No full-card round-trip for text-only edits.
+            const mergeData = { avatar: avatarUrl };
+            const loadedFieldHashes = {};
+
+            for (const [formId, originalValue] of Object.entries(_characterFormSnapshot)) {
+                const currentValue = String($(formId).val() ?? '');
+                if (currentValue === originalValue) continue;
+
+                const mapping = FORM_TO_CARD[formId];
+                if (!mapping) continue;
+
+                // Transform the form value to match card format
+                let cardValue = currentValue;
+                if (mapping.transform === 'tags') {
+                    cardValue = currentValue.split(',').map(x => x.trim()).filter(x => x);
+                } else if (mapping.transform === 'number') {
+                    cardValue = Number(currentValue) || 0;
+                } else if (mapping.transform === 'int') {
+                    const n = Number(currentValue);
+                    cardValue = !isNaN(n) ? n : 4;
+                }
+
+                // Set both V1 and V2 paths in the merge payload
+                if (mapping.v1) lodash.set(mergeData, mapping.v1, cardValue);
+                if (mapping.v2) lodash.set(mergeData, mapping.v2, cardValue);
+
+                // Hash the loaded value for per-field conflict detection
+                const loadedValue = lodash.get(editCharacter, mapping.v2);
+                loadedFieldHashes[mapping.v2] = getStringHash(JSON.stringify(loadedValue !== undefined ? loadedValue : null));
+            }
+
+            mergeData._loadedFieldHashes = loadedFieldHashes;
+
+            const fetchResult = await fetch('/api/characters/merge-attributes', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify(mergeData),
+            });
+
+            if (fetchResult.status === 409) {
+                let errorData;
+                try { errorData = await fetchResult.json(); } catch { /* ignore parse errors */ }
+                if (errorData?.error === 'conflict' && errorData.conflictingFields) {
+                    const fieldNames = errorData.conflictingFields.map(path =>
+                        path.replace(/^data\.extensions\.depth_prompt\./, 'Depth Prompt ')
+                            .replace(/^data\.extensions\./, '')
+                            .replace(/^data\./, '')
+                            .replace(/_/g, ' '),
+                    );
+
+                    const confirmOverwrite = await callGenericPopup(
+                        t`<h3>Character edited in another session</h3>
+                          <p>The following fields were changed by another session:</p>
+                          <p><strong>${fieldNames.join(', ')}</strong></p>
+                          ${hasNewAvatar ? t`<p>The new avatar image has already been saved.</p>` : ''}
+                          <p>Overwrite with your version, or discard your changes?</p>`,
+                        POPUP_TYPE.CONFIRM,
+                        '',
+                        { okButton: t`Overwrite with mine`, cancelButton: t`Discard my changes` },
+                    );
+                    if (confirmOverwrite === POPUP_RESULT.AFFIRMATIVE) {
+                        delete mergeData._loadedFieldHashes;
+                        const retryResult = await fetch('/api/characters/merge-attributes', {
+                            method: 'POST',
+                            headers: getRequestHeaders(),
+                            body: JSON.stringify(mergeData),
+                        });
+                        if (!retryResult.ok) {
+                            throw new Error('Force save after conflict failed');
+                        }
+                    } else {
+                        window.location.reload();
+                        return;
+                    }
+                }
+            } else if (!fetchResult.ok) {
+                if (hasNewAvatar) {
+                    toastr.error(t`The new avatar image was saved, but your other changes could not be saved. Try saving again.`, t`Save incomplete`);
+                    return;
+                }
+                throw new Error('Fetch result is not ok');
             }
 
             // ─── Common post-save logic ────────────────────────────────────
