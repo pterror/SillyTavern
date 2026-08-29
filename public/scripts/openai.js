@@ -6641,8 +6641,9 @@ async function onVertexAIValidateServiceAccount() {
         // Show success status
         updateVertexAIServiceAccountStatus(true, `Project: ${serviceAccount.project_id}, Email: ${serviceAccount.client_email}`);
 
+        // No save: the JSON is persisted by writeSecret() above, through /api/secrets/write. This
+        // function assigns no oai_settings field on any path, so there was nothing for it to persist.
         toastr.success(t`Service Account JSON is valid and saved securely`);
-        saveSettingsDebounced('oai_settings');
     } catch (error) {
         console.error('JSON validation error:', error);
         toastr.error(t`Invalid JSON format`);
@@ -6659,9 +6660,10 @@ async function onVertexAIClearServiceAccount() {
     // Clear from backend secret storage
     await writeSecret(SECRET_KEYS.VERTEXAI_SERVICE_ACCOUNT, '');
 
+    // No save: the clear is persisted by writeSecret() above, through /api/secrets/write. This
+    // function assigns no oai_settings field, so there was nothing for it to persist.
     updateVertexAIServiceAccountStatus(false);
     toastr.info(t`Service Account JSON cleared`);
-    saveSettingsDebounced('oai_settings');
 }
 
 /**
