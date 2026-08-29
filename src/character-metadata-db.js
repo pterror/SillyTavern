@@ -3757,12 +3757,15 @@ export async function getFullTagMapExport(directories) {
 }
 
 /**
- * The inverse of getFullTagMapExport() - imports a `{[id]: tagId[]}` map (as embedded in a settings snapshot
- * being restored, see settings.js's /restore-snapshot) into `character_tags`/`group_tags`. Additive (uses the
- * same OR IGNORE insert importTagMapSync() always has), not a replace-everything - a snapshot restore is a
- * point-in-time merge of what that snapshot had, not a promise that nothing else has been assigned since, same
- * spirit as the old splitTagsFromSnapshot()'s straight tags.json overwrite except now merge-safe against
- * concurrent direct assignments instead of clobbering them.
+ * The inverse of getFullTagMapExport() - imports a `{[id]: tagId[]}` map into `character_tags`/`group_tags`.
+ * Additive (uses the same OR IGNORE insert importTagMapSync() always has), not a replace-everything.
+ *
+ * Not called anywhere in the live application right now - it used to be, from settings.js's /restore-snapshot
+ * (via a now-deleted splitTagsFromSnapshot() in tags.js), to import tags/tag_map back out of a restored
+ * settings snapshot. That call site is gone along with the write side that used to embed them (see
+ * getFullTagMapExport()'s own doc comment) - the settings path doesn't know about tags in either direction any
+ * more. Kept as a general import primitive (symmetric with getFullTagMapExport(), exercised by its own
+ * round-trip test) for whatever future need for a full tag-assignment export/import actually shows up.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {Record<string, string[]>} tagMap
  * @returns {Promise<string[] | null>} Dropped keys (matched neither a known character nor group), or `null` if
