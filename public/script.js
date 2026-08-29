@@ -16215,22 +16215,6 @@ jQuery(async function () {
                     });
                 }
             }
-        } else if (id == 'option_start_new_chat') {
-            if (getSelectionState().type !== 'none' && !is_send_press) {
-                let deleteCurrentChat = false;
-                const result = await Popup.show.confirm(t`Start from a greeting?`, await renderTemplateAsync('newChatConfirm'), {
-                    onClose: () => { deleteCurrentChat = !!$('#del_chat_checkbox').prop('checked'); },
-                });
-                if (!result) {
-                    return;
-                }
-
-                await doNewChat({ deleteCurrentChat: deleteCurrentChat });
-            }
-            if (getSelectionState().type === 'none' && !is_send_press) {
-                const alreadyInTempChat = name2 === neutralCharacterName;
-                await newAssistantChat({ temporary: alreadyInTempChat });
-            }
         } else if (id == 'option_regenerate') {
             //Attempting to regenerate a user message will instead generate a new message.
             if (chat.length && chat.length - 1 === this_edit_mes_id && chat[this_edit_mes_id]?.is_user == false) {
@@ -16266,8 +16250,6 @@ jQuery(async function () {
             }
         } else if (id == 'option_delete_mes') {
             setTimeout(() => openMessageDelete(fromSlashCommand, deleteToolCalls), animation_duration);
-        } else if (id == 'option_close_chat') {
-            await closeCurrentChat();
         } else if (id === 'option_settings') {
             //var checkBox = document.getElementById("waifuMode");
             var topBar = document.getElementById('top-bar');
