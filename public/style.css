@@ -2694,7 +2694,10 @@ textarea::placeholder {
         height: 29dvh;
     }
 
-    #firstmessage_textarea {
+    /* The greeting pager moved #firstmessage_textarea's id onto a hidden input that holds greeting 1 for the
+       form bindings, and gave the visible field its own id - so this rule has to follow the visible field or
+       it lands on a display:none input and the textarea stops filling the container. */
+    #greeting_field {
         resize: none;
         flex: 1;
     }
