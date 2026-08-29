@@ -32,8 +32,36 @@ export const characterChangeEmitter = new EventEmitter();
 // slice. Invalidated when seq changes (character add/remove/edit). Bounded to
 // MAX_RANDOM_CACHE_ENTRIES to prevent unbounded memory growth from seed churn.
 const MAX_RANDOM_CACHE_ENTRIES = 10;
-/** @type {Map<string, { seq: number, sortedIds: string[] }>} */
+/** @type {Map<string, { seq: number, sortedIds: string[], db: import('./endpoints/sqlite-engine.js').SqliteEngineHandle }>} */
 const randomSortCache = new Map();
+
+/** Timer for debouncing proactive random-cache warming after character changes. */
+let randomCacheWarmTimer = null;
+
+// Proactively recompute stale random-sort cache entries when characters change (e.g. hourly
+// imports), so the next random-sort request finds a warm cache instead of paying ~287ms. Debounced
+// at 500ms so a batch of rapid changes (bulk import) triggers only one recomputation.
+characterChangeEmitter.on('change', () => {
+    clearTimeout(randomCacheWarmTimer);
+    randomCacheWarmTimer = setTimeout(() => {
+        for (const [key, entry] of randomSortCache) {
+            const seqRow = entry.db.get('SELECT COALESCE(MAX(seq), 0) as seq FROM changes');
+            const currentSeq = Number(seqRow?.seq ?? 0);
+            if (entry.seq !== currentSeq) {
+                // Stale: recompute in place
+                const colonIdx = key.lastIndexOf(':');
+                const seed = Number(key.slice(colonIdx + 1));
+                const charIds = entry.db.all('SELECT id FROM characters').map(r => r.id);
+                const groupIds = entry.db.all('SELECT id FROM groups').map(r => r.id);
+                const allIds = [...charIds, ...groupIds];
+                const hashed = allIds.map(id => ({ id, h: getStringHash(String(id), seed) }));
+                hashed.sort((a, b) => a.h - b.h);
+                entry.sortedIds = hashed.map(r => r.id);
+                entry.seq = currentSeq;
+            }
+        }
+    }, 500);
+});
 
 /**
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
@@ -4118,7 +4146,7 @@ function getRandomSortedEntityIds(db, handle, seed, seq) {
         randomSortCache.delete(oldest);
     }
 
-    randomSortCache.set(key, { seq, sortedIds });
+    randomSortCache.set(key, { seq, sortedIds, db });
     return sortedIds;
 }
 
