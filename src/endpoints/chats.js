@@ -31,7 +31,7 @@ import {
     isAvailable as isTreeAvailable, isMigrated as isTreeMigrated,
     saveChatToTree, loadBranch, forkBranch, labelNode,
     deleteBranch, renameBranch as renameBranchInTree, listBranches, searchBranchesByContent,
-    renameCharacterInMessages, getAlternatives, getContinuation,
+    renameCharacterInMessages, getAlternatives, getContinuation, editMessage, appendMessages, addAlternative, setChatMetadata, selectDefaultChild,
 } from '../message-tree-db.js';
 import { migrateCharacterChats } from '../message-tree-migration.js';
 
@@ -1073,6 +1073,88 @@ router.post('/continuation', async function (request, response) {
         return response.send(result);
     } catch (error) {
         console.error('Error fetching continuation:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+// ---------------------------------------------------------------------------
+//  The operations a save is made of.
+//
+//  These replace handing the whole conversation over on every save. The tree already stores the
+//  path, so there is nothing to restate; each route names the single row it acts on, which means a
+//  row the client never received simply cannot be addressed.
+// ---------------------------------------------------------------------------
+
+const ownerOf = (request) => String(request.body.avatar_url).replace('.png', '');
+
+/** Edits one message's content. */
+router.post('/message/edit', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const nodeId = String(request.body.node_id || '');
+        if (!nodeId) return response.status(400).send({ error: 'node_id is required' });
+
+        const result = await editMessage(request.user.directories, ownerOf(request), nodeId, request.body.content);
+        return response.status(result.ok ? 200 : 409).send(result);
+    } catch (error) {
+        console.error('Error editing message:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/** Appends one or more messages after a node. */
+router.post('/message/append', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const after = String(request.body.after_node_id || '');
+        if (!after) return response.status(400).send({ error: 'after_node_id is required' });
+
+        const contents = Array.isArray(request.body.messages) ? request.body.messages : [];
+        const result = await appendMessages(request.user.directories, ownerOf(request), after, contents);
+        return response.status(result.ok ? 200 : 409).send(result);
+    } catch (error) {
+        console.error('Error appending messages:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/** Adds a new alternative alongside a node's existing children. */
+router.post('/message/alternative', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const parent = String(request.body.parent_node_id || '');
+        if (!parent) return response.status(400).send({ error: 'parent_node_id is required' });
+
+        const result = await addAlternative(request.user.directories, ownerOf(request), parent, request.body.content);
+        return response.status(result.ok ? 200 : 409).send(result);
+    } catch (error) {
+        console.error('Error adding alternative:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/** Chooses which child of a node is the shown continuation. */
+router.post('/message/select', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const parent = String(request.body.parent_node_id || '');
+        const child = String(request.body.child_node_id || '');
+        if (!parent || !child) return response.status(400).send({ error: 'parent_node_id and child_node_id are required' });
+
+        const ok = await selectDefaultChild(request.user.directories, parent, child);
+        return response.status(ok ? 200 : 409).send({ ok, reason: ok ? undefined : 'not a child of that parent' });
+    } catch (error) {
+        console.error('Error selecting alternative:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/** Replaces a chat's metadata. */
+router.post('/metadata', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const chatName = String(request.body.file_name || '');
+        if (!chatName) return response.status(400).send({ error: 'file_name is required' });
+
+        const result = await setChatMetadata(request.user.directories, ownerOf(request), chatName, request.body.metadata);
+        return response.status(result.ok ? 200 : 409).send(result);
+    } catch (error) {
+        console.error('Error saving chat metadata:', error);
         return response.status(500).send({ error: true });
     }
 });
