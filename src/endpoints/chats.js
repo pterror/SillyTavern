@@ -709,7 +709,13 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
             return response.status(400).send({ error: 'The request\'s body.chat is not an array.' });
         }
 
-        // Tree DB path: if the character is migrated (or can be migrated now), save to tree
+        // Whole-array save. Kept for parity with upstream SillyTavern: extensions and anything written
+        // against the stock API call this, and breaking it isn't on the table.
+        //
+        // Our own frontend never reaches it. It writes through the named operations
+        // (/message/edit, /message/append, /message/alternative, /message/select, /metadata), each of
+        // which names the row it acts on - so our client cannot speak for a row it never received,
+        // which is the shape that let a windowed load's unfilled slots overwrite stored greetings.
         const useTree = await ensureTreeMigrated(request.user.directories, cardName);
         if (useTree) {
             const result = await saveChatToTree(request.user.directories, cardName, chatName, chatData, false);

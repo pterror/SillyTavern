@@ -9781,8 +9781,15 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
                     chat_metadata.integrity = treeResult.integrity;
                 }
                 _snapshotMessages();
-                return;
+            } else {
+                // Nothing persisted to hang operations off. A chat whose opening message has no
+                // node_id has never touched the tree, and there is nothing to save yet - the greeting
+                // it sits on already exists under the character's anchor, so starting a chat is a
+                // selection rather than a write. It stops being a no-op the moment the opening
+                // message carries the id of the alternative it is on.
+                console.debug('[saveChat] Tree chat has no persisted opening; nothing to save yet.');
             }
+            return;
         }
 
         // Slim wire protocol: unchanged messages become lightweight stubs to minimize wire payload.
