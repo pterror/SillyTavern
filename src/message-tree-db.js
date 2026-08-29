@@ -1270,7 +1270,7 @@ export async function setChatMetadata(directories, ownerId, chatName, metadata) 
  *
  * @returns {Promise<{ migrated: boolean, total: number, default_index: number, default_node_id: string|null, offset: number, alternatives: object[] } | null>}
  */
-export async function getOpeningAlternatives(directories, ownerId, range = {}) {
+export async function getOpeningAlternatives(directories, ownerId, range = {}, cardGreetings = []) {
     const entry = await getEntry(directories);
     if (!entry) return null;
 
@@ -1285,38 +1285,55 @@ export async function getOpeningAlternatives(directories, ownerId, range = {}) {
         { p: anchor.id },
     );
 
+    // The card's current greetings, merged in at READ time rather than copied into the tree.
+    //
+    // Asserting them into the tree on load was a sync: two sources of truth kept in step by hand, so
+    // a greeting edited on the card stayed wrong until something re-ran the assertion. Merging here
+    // makes the staleness impossible instead of shorter-lived - and a greeting nobody has opened a
+    // conversation on does not need a row. It gets one when it is first used.
+    //
+    // A card greeting already present as a node is not repeated: same identity, same entry.
+    const seen = new Set(rows.map(r => nodeIdentityKey(anchor.id, r.content)));
+    const virtual = [];
+    for (const greeting of (Array.isArray(cardGreetings) ? cardGreetings : [])) {
+        const body = sanitizeForStorage(greeting);
+        const key = nodeIdentityKey(anchor.id, body);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        virtual.push(JSON.parse(body));
+    }
+
     const defaultNodeId = anchor.default_child_id ?? (rows[0]?.id ?? null);
     const defaultIndex = Math.max(0, rows.findIndex(r => r.id === defaultNodeId));
 
     // Windowed like a chat load, and for the same reason: one character here has 1,508 openings, and
     // shipping their text would be most of a megabyte nobody reads. The caller gets the total so it
     // can size its arrays, and fills the rest in on demand.
+    // Stored openings first, in their own order, then card greetings that have no row yet. An entry
+    // with no node_id is a greeting that exists on the card and nowhere else.
+    const all = [
+        ...rows.map(r => {
+            let o = {};
+            try { o = JSON.parse(r.content); } catch { /* leave empty */ }
+            return { node_id: r.id, mes: o?.mes ?? '', send_date: o?.send_date, extra: o?.extra ?? {}, name: o?.name, is_user: !!o?.is_user };
+        }),
+        ...virtual.map(o => ({ node_id: null, mes: o?.mes ?? '', send_date: o?.send_date, extra: o?.extra ?? {}, name: o?.name, is_user: !!o?.is_user })),
+    ];
+
     const width = Number.isInteger(range.limit) ? range.limit : 11;
     const from = Number.isInteger(range.offset)
         ? Math.max(0, range.offset)
         : Math.max(0, defaultIndex - Math.floor(width / 2));
-    const to = Math.min(rows.length, from + width);
-
-    const alternatives = rows.slice(from, to).map(r => {
-        let o = {};
-        try { o = JSON.parse(r.content); } catch { /* leave empty */ }
-        return {
-            node_id: r.id,
-            mes: o?.mes ?? '',
-            send_date: o?.send_date,
-            extra: o?.extra ?? {},
-            name: o?.name,
-            is_user: !!o?.is_user,
-        };
-    });
+    const to = Math.min(all.length, from + width);
 
     return {
         migrated,
-        total: rows.length,
+        total: all.length,
+        stored: rows.length,
         default_index: defaultIndex,
         default_node_id: defaultNodeId,
         offset: from,
-        alternatives,
+        alternatives: all.slice(from, to),
     };
 }
 
