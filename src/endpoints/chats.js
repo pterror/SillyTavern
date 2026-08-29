@@ -780,7 +780,15 @@ router.post('/get', validateAvatarUrlMiddleware, async function (request, respon
         // Tree DB path
         const useTree = await ensureTreeMigrated(request.user.directories, dirName);
         if (useTree && chatName) {
-            const result = await loadBranch(request.user.directories, dirName, chatName);
+            // The pointer may be a node id or a legacy chat name. A node id is what identifies a
+            // position; a name only ever resolved to one by lookup, and not uniquely - `label` is not
+            // unique per owner, so name lookup picks whichever row sorts first.
+            //
+            // Both are accepted so an existing pointer keeps working while the client moves over. A
+            // node id is tried first: it is exact, and a miss falls through to the name path rather
+            // than failing.
+            const result = await loadAtNode(request.user.directories, dirName, chatName)
+                ?? await loadBranch(request.user.directories, dirName, chatName);
             if (result) {
                 // Assemble in the same format as JSONL: [header, ...messages]
                 // _tree_stored flag lets the client use tree-specific APIs (fork, label)
