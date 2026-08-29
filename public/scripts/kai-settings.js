@@ -509,6 +509,12 @@ export function initKoboldSettings() {
     });
 
     $('#settings_preset').on('change', async function () {
+        // loadKoboldSettings() re-selects and re-triggers this control on load just to re-run the
+        // UI-applying side effects below (disabling/enabling inputs, generation params, etc.), which
+        // do need to happen on load too. Only the persistence at the end is a genuine no-op when the
+        // preset didn't actually change, so just that part is guarded, not the whole handler.
+        const previousPreset = kai_settings.preset_settings;
+
         if ($('#settings_preset').find(':selected').val() != 'gui') {
             kai_settings.preset_settings = $('#settings_preset').find(':selected').text();
             const preset = koboldai_settings[koboldai_setting_names[kai_settings.preset_settings]];
@@ -529,7 +535,15 @@ export function initKoboldSettings() {
                 .css('opacity', 0.5)
                 .sortable('disable');
         }
-        saveSettingsDebounced('kai_settings');
+
+        // Only the save is skipped when the preset didn't actually change. PRESET_CHANGED is left
+        // firing unconditionally on purpose: regex/index.js listens to it (checkPresetEmbeddedRegexScripts),
+        // and on the gui-preset load path the value genuinely is unchanged, so gating the emit here would
+        // silently stop that listener running at load. Whether the emit should also be gated is a separate
+        // question about what PRESET_CHANGED is supposed to mean, not part of this fix.
+        if (kai_settings.preset_settings !== previousPreset) {
+            saveSettingsDebounced('kai_settings');
+        }
         await eventSource.emit(event_types.PRESET_CHANGED, { apiId: 'kobold', name: kai_settings.preset_settings });
     });
 }
