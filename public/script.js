@@ -9057,13 +9057,24 @@ export async function switchToAlternativePath(mesId, swipeId) {
     updateMessage(mesId, { node_id: targetNodeId });
     chat.splice(mesId + 1, chat.length - (mesId + 1), ...(payload.messages ?? []));
 
-    // Persist the choice as the one operation it is. The node knows its own fork, so this cannot
-    // point anything at the wrong place, and it does not need a save to carry it.
+    // Persist the choice. Two parts, because they answer different questions.
+    //
+    // select() records which child this fork shows, which is what a fresh descent follows. But loading
+    // a chat walks UP from its label, so the label is what actually decides which path - and which
+    // opening alternative - the chat comes back on. Leaving it behind is why a reload returned a
+    // previous selection: the choice was stored somewhere the load never consulted.
+    const deepest = chat[chat.length - 1]?.node_id ?? targetNodeId;
     try {
+        const avatar = getCurrentCharacter()?.avatar;
         await fetch('/api/chats/message/select', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ avatar_url: getCurrentCharacter()?.avatar, node_id: targetNodeId }),
+            body: JSON.stringify({ avatar_url: avatar, node_id: targetNodeId }),
+        });
+        await fetch('/api/chats/relocate', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ avatar_url: avatar, file_name: getCurrentChatId(), node_id: deepest }),
         });
     } catch (error) {
         console.warn('[switchToAlternativePath] Failed to persist the selection:', error);
