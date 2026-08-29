@@ -1172,6 +1172,7 @@ router.post('/message/alternative', validateAvatarUrlMiddleware, async function 
         if (!contents) return response.status(400).send({ error: 'content or contents is required' });
 
         const result = await addAlternatives(request.user.directories, ownerOf(request), sibling, contents);
+
         return response.status(result.ok ? 200 : 409).send(result);
     } catch (error) {
         console.error('Error adding alternative:', error);
