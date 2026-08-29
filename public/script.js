@@ -9004,7 +9004,16 @@ export async function hydrateSwipes(mesId, { index = null, all = false } = {}) {
         // saved yet would otherwise be clobbered by the stored copy.
         if (typeof swipes[at] === 'string') return;
         swipes[at] = alt.mes ?? '';
-        swipeInfo[at] = { send_date: alt.send_date, extra: alt.extra ?? {}, name: alt.name, is_user: alt.is_user };
+        // node_id is what marks this slot as an existing row. Without it the save path reads a
+        // hydrated slot as a brand new alternative forever: it posts a create for every one on every
+        // save (harmless, since adding is idempotent, but endless) and selects the shown one on top.
+        swipeInfo[at] = {
+            send_date: alt.send_date,
+            extra: alt.extra ?? {},
+            name: alt.name,
+            is_user: alt.is_user,
+            node_id: alt.node_id,
+        };
     });
 
     updateMessage(mesId, { swipes, swipe_info: swipeInfo });
@@ -9733,6 +9742,7 @@ async function _saveTreeChat(fileName, metadata, messages) {
         }
 
         let newSelectedId = null;
+        let learnedIds = null;
         if (hasSlots) {
             for (let k = 0; k < msg.swipes.length; k++) {
                 if (typeof msg.swipes[k] !== 'string') continue;
@@ -9744,15 +9754,25 @@ async function _saveTreeChat(fileName, metadata, messages) {
                     contents: [alternativeContent(msg, msg.swipes[k])],
                 });
                 const createdId = created?.node_ids?.[0];
-                if (createdId && k === selected) newSelectedId = createdId;
+                if (!createdId) continue;
+
+                // Remember the row this slot turned out to be. Without this the slot stays id-less and
+                // gets posted again on every subsequent save - harmless, since adding is idempotent,
+                // but it never stops.
+                learnedIds = learnedIds ?? [...msg.swipe_info];
+                learnedIds[k] = { ...(learnedIds[k] || {}), node_id: createdId };
+                if (k === selected) newSelectedId = createdId;
             }
+        }
+        if (learnedIds && i < chat.length) {
+            updateMessage(i, { swipe_info: learnedIds });
         }
 
         if (newSelectedId) {
             // The slot being shown is itself brand new, so it becomes this message's node rather than
             // the old one being rewritten underneath it.
             await post('/api/chats/message/select', { node_id: newSelectedId });
-            const swipeInfo = [...msg.swipe_info];
+            const swipeInfo = [...(chat[i]?.swipe_info ?? msg.swipe_info)];
             swipeInfo[selected] = { ...(swipeInfo[selected] || {}), node_id: newSelectedId };
             if (i < chat.length) updateMessage(i, { node_id: newSelectedId, swipe_info: swipeInfo });
             lastPersisted = newSelectedId;
