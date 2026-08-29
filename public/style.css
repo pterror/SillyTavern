@@ -1347,8 +1347,10 @@ body.swipeAllMessages .mes:not(.last_mes) .swipes-counter {
     }
 }
 
-/* Hide all but the last message. */
-body:not(.swipeAllMessages) .mes:not(.last_mes) :is(.swipe_left, .swipe_right, .swipes-counter),
+/* The swipe counter on earlier messages stays behind the user's setting. The arrows themselves do
+   not: any message with more than one alternative can be navigated, so their visibility is driven by
+   .swipes_visible / .last_swipe below, same as the last message. */
+body:not(.swipeAllMessages) .mes:not(.last_mes) .swipes-counter,
 /* Hide non-visible swipe_left. */
 .mes:not(.swipes_visible) .swipe_left,
 /* Only hide swipe_right if it's not visible, and not the last swipe. */

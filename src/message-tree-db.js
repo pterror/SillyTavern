@@ -371,8 +371,14 @@ function setMetadataSync(db, id, metadata) {
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  */
 function setDefaultChildSync(db, parentId, childId) {
-    if (!parentId) return;
+    if (!parentId || !childId) return false;
+    // Only ever point at a genuine child. Switching an earlier message to a different alternative
+    // makes everything after it belong to the OLD alternative's subtree, so a save that walked on
+    // regardless would leave a parent pointing at a node that isn't below it.
+    const child = db.get('SELECT parent_id FROM messages WHERE id = @childId', { childId });
+    if (!child || child.parent_id !== parentId) return false;
     db.run('UPDATE messages SET default_child_id = @childId WHERE id = @parentId', { parentId, childId });
+    return true;
 }
 
 /** Walks from `leafId` to the root, returning rows in root-to-leaf order (anchor included). */
@@ -720,7 +726,7 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
             if (msg.node_id) {
                 const known = entry.db.get('SELECT id, parent_id, content, label FROM messages WHERE id = @id', { id: msg.node_id });
                 if (known) {
-                    if (!msg._unchanged) {
+                    if (!msg._unchanged && known.parent_id === parentId) {
                         const { contents, selected } = alternativesFromMessage(msg);
                         // Re-materialize the alternative set around this node.
                         const sibs = getSiblingsSync(entry.db, known.parent_id, known.id);
@@ -754,11 +760,17 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
                         lastId = chosenId;
                         continue;
                     }
-                    setDefaultChildSync(entry.db, parentId, known.id);
-                    if (!firstId) firstId = known.id;
-                    parentId = known.id;
-                    lastId = known.id;
-                    continue;
+                    // Still on the same path? Then reuse the row. If the chain diverged upstream
+                    // (an earlier message was switched to a different alternative), this row belongs
+                    // to the old branch and must not be dragged across - fall through and write a
+                    // fresh row under the new parent instead. Nothing is reparented, nothing is lost.
+                    if (known.parent_id === parentId) {
+                        setDefaultChildSync(entry.db, parentId, known.id);
+                        if (!firstId) firstId = known.id;
+                        parentId = known.id;
+                        lastId = known.id;
+                        continue;
+                    }
                 }
             }
 
