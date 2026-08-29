@@ -10136,7 +10136,7 @@ async function getChatResult() {
     name2 = getCurrentCharacter().name;
     let freshChat = false;
     if (chat.length === 0) {
-        const message = getFirstMessage();
+        const message = await getFirstMessage();
         if (message.mes) {
             if (power_user.message_token_count_enabled) {
                 message.extra.token_count = await getTokenCountAsync(message.mes, 0);
@@ -10161,11 +10161,18 @@ async function getChatResult() {
     }
 }
 
-function getFirstMessage() {
+async function getFirstMessage() {
     const character = getCurrentCharacter();
     const { greetings, defaultIndex } = cardToGreetingsModel(character);
     const regexedGreetings = greetings.map(greeting => getRegexedString(greeting, regex_placement.AI_OUTPUT));
     const swipeId = defaultIndex ?? 0;
+
+    // A tree-backed character's openings already exist as nodes. Starting here means SELECTING one of
+    // them and holding its id, not copying a greeting off the card into a brand new message - the
+    // copy was a file-era necessity (a file couldn't reference a shared node) and it is why the
+    // opening message had no node_id and nothing could be anchored to it.
+    const fromTree = await _openingFromTree(regexedGreetings, swipeId);
+    if (fromTree) return fromTree;
 
     const message = {
         name: name2,
@@ -10176,11 +10183,9 @@ function getFirstMessage() {
         extra: {},
     };
 
-    // Chat swipes mirror the greeting list in stable order, with swipe_id pointing at the default (or
-    // the first greeting when there's no default) - this now matches the editor's order (previously
-    // first_mes always led the chat regardless of where it sat in the editor - see
-    // cardToGreetingsModel()). Only set when there's actually more than one greeting to swipe between;
-    // a lone default with no alternates stays a plain, non-swipeable message, same as before.
+    // Swipes mirror the greeting list in stable order, with swipe_id pointing at the default (or the
+    // first greeting when there's no default). Only set when there is more than one to move between;
+    // a lone default with no alternates stays a plain, non-swipeable message.
     const hasSwipeableGreetings = regexedGreetings.length > (defaultIndex !== null ? 1 : 0);
     if (hasSwipeableGreetings) {
         message.swipe_id = swipeId;
@@ -10191,6 +10196,91 @@ function getFirstMessage() {
             gen_finished: void 0,
             extra: {},
         }));
+    }
+
+    return message;
+}
+
+/**
+ * Builds the opening message from the character's existing opening nodes, so it carries a real
+ * node_id from the first moment.
+ *
+ * Returns null when the character isn't tree-backed, leaving the file-era path to handle it.
+ *
+ * @param {string[]} cardGreetings the card's greetings, already regexed
+ * @param {number} preferredIndex which of them the card considers the default
+ */
+async function _openingFromTree(cardGreetings, preferredIndex) {
+    const character = getCurrentCharacter();
+    if (!character?.avatar) return null;
+
+    const post = async (path, body) => {
+        const response = await fetch(path, {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ avatar_url: character.avatar, ...body }),
+        });
+        if (!response.ok) return null;
+        return response.json().catch(() => null);
+    };
+
+    let openings = await post('/api/chats/openings', {});
+    if (!openings?.migrated) return null;
+
+    // Make sure the card's current greetings are among the openings before choosing one. Idempotent,
+    // so this costs nothing once they're there.
+    if (cardGreetings.length) {
+        const sendDate = getMessageTimeStamp();
+        const ensured = await post('/api/chats/openings/ensure', {
+            contents: cardGreetings.map(text => ({
+                name: name2,
+                is_user: false,
+                is_system: false,
+                send_date: sendDate,
+                mes: text,
+                extra: {},
+            })),
+        });
+        if (ensured?.added) {
+            openings = await post('/api/chats/openings', {});
+            if (!openings) return null;
+        }
+        // Prefer the card's own default, now that it definitely has a node.
+        const preferredId = ensured?.node_ids?.[preferredIndex];
+        if (preferredId) openings.default_node_id = preferredId;
+    }
+
+    if (!openings.total) return null;
+
+    const windowStart = openings.offset ?? 0;
+    const chosenOffset = openings.alternatives.findIndex(a => a.node_id === openings.default_node_id);
+    const chosen = chosenOffset >= 0 ? openings.alternatives[chosenOffset] : openings.alternatives[0];
+    if (!chosen) return null;
+
+    const message = {
+        name: chosen.name ?? name2,
+        is_user: !!chosen.is_user,
+        is_system: false,
+        send_date: chosen.send_date ?? getMessageTimeStamp(),
+        mes: chosen.mes,
+        extra: chosen.extra ?? {},
+        node_id: chosen.node_id,
+    };
+
+    if (openings.total > 1) {
+        // Same holed shape a chat load produces: full width, only what was actually fetched filled
+        // in, the rest left for hydrateSwipes().
+        const swipes = new Array(openings.total).fill(null);
+        const swipeInfo = new Array(openings.total).fill(null);
+        openings.alternatives.forEach((alt, i) => {
+            const at = windowStart + i;
+            if (at >= openings.total) return;
+            swipes[at] = alt.mes;
+            swipeInfo[at] = { send_date: alt.send_date, extra: alt.extra ?? {}, name: alt.name, is_user: alt.is_user, node_id: alt.node_id };
+        });
+        message.swipes = swipes;
+        message.swipe_info = swipeInfo;
+        message.swipe_id = chosenOffset >= 0 ? windowStart + chosenOffset : windowStart;
     }
 
     return message;
@@ -13347,7 +13437,7 @@ export async function createOrEditCharacter(e) {
             await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character: getCurrentCharacter() } });
 
             // Recreate the chat if it hasn't been used at least once (i.e. with continue).
-            const message = getFirstMessage();
+            const message = await getFirstMessage();
             const shouldRegenerateMessage =
                 !isNewChat &&
                 message.mes &&

@@ -1247,6 +1247,117 @@ export async function setChatMetadata(directories, ownerId, chatName, metadata) 
     return { ok: true, integrity };
 }
 
+/**
+ * The opening alternatives for a character: the anchor's children, which is every greeting any of its
+ * chats has ever opened on.
+ *
+ * Addressed by OWNER rather than by a node, because starting a chat has no node to start from yet.
+ * That is the whole point - a new chat picks one of these and holds its id, instead of copying a
+ * greeting off the card into a fresh message the way the JSONL era had to.
+ *
+ * Windowed around the default, with `total` so the caller can size its arrays and fill the rest in
+ * on demand.
+ *
+ * @returns {Promise<{ migrated: boolean, total: number, default_index: number, default_node_id: string|null, offset: number, alternatives: object[] } | null>}
+ */
+export async function getOpeningAlternatives(directories, ownerId, range = {}) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    // `migrated` distinguishes "lives in the tree and simply has no openings yet" from "still
+    // file-backed", which the caller cannot tell from an empty list alone.
+    const migrated = hasBranchesSync(entry.db, ownerId);
+    const anchor = getAnchorSync(entry.db, ownerId);
+    if (!anchor) return { migrated, total: 0, default_index: 0, default_node_id: null, offset: 0, alternatives: [] };
+
+    const rows = entry.db.all(
+        'SELECT id, content FROM messages WHERE parent_id = @p ORDER BY created_at ASC, id ASC',
+        { p: anchor.id },
+    );
+
+    const defaultNodeId = anchor.default_child_id ?? (rows[0]?.id ?? null);
+    const defaultIndex = Math.max(0, rows.findIndex(r => r.id === defaultNodeId));
+
+    // Windowed like a chat load, and for the same reason: one character here has 1,508 openings, and
+    // shipping their text would be most of a megabyte nobody reads. The caller gets the total so it
+    // can size its arrays, and fills the rest in on demand.
+    const width = Number.isInteger(range.limit) ? range.limit : 11;
+    const from = Number.isInteger(range.offset)
+        ? Math.max(0, range.offset)
+        : Math.max(0, defaultIndex - Math.floor(width / 2));
+    const to = Math.min(rows.length, from + width);
+
+    const alternatives = rows.slice(from, to).map(r => {
+        let o = {};
+        try { o = JSON.parse(r.content); } catch { /* leave empty */ }
+        return {
+            node_id: r.id,
+            mes: o?.mes ?? '',
+            send_date: o?.send_date,
+            extra: o?.extra ?? {},
+            name: o?.name,
+            is_user: !!o?.is_user,
+        };
+    });
+
+    return {
+        migrated,
+        total: rows.length,
+        default_index: defaultIndex,
+        default_node_id: defaultNodeId,
+        offset: from,
+        alternatives,
+    };
+}
+
+/**
+ * Makes sure these openings exist for a character, creating the anchor if this is its first.
+ *
+ * Same idempotence as addAlternatives, and addressed by owner for the same reason as above: a
+ * character with nothing in the tree yet has no sibling to name, so the card's greetings would
+ * otherwise have nowhere to attach.
+ *
+ * @returns {Promise<{ ok: boolean, node_ids: string[], added: number, total: number }>}
+ */
+export async function addOpeningAlternatives(directories, ownerId, contents) {
+    const entry = await getEntry(directories);
+    if (!entry) return { ok: false, node_ids: [], added: 0, total: 0 };
+
+    const list = Array.isArray(contents) ? contents : [contents];
+    const nodeIds = [];
+    let added = 0;
+    let total = 0;
+
+    entry.db.transaction(() => {
+        const now = Date.now();
+        const anchor = ensureAnchorSync(entry.db, ownerId, now);
+
+        const byIdentity = new Map();
+        for (const sib of getSiblingsSync(entry.db, anchor.id, '')) {
+            byIdentity.set(nodeIdentityKey(anchor.id, sib.content), sib.id);
+        }
+
+        for (const content of list) {
+            const body = sanitizeForStorage(content);
+            const key = nodeIdentityKey(anchor.id, body);
+            const existing = byIdentity.get(key);
+            if (existing) { nodeIds.push(existing); continue; }
+
+            const id = newId();
+            insertMessageSync(entry.db, {
+                id, parentId: anchor.id, ownerId, content: body, createdAt: now + added,
+            });
+            byIdentity.set(key, id);
+            nodeIds.push(id);
+            added++;
+        }
+
+        total = getSiblingsSync(entry.db, anchor.id, '').length;
+    });
+
+    return { ok: true, node_ids: nodeIds, added, total };
+}
+
 /** Direct handle for the migration module, which batches many writes into one transaction. */
 export async function getDbHandle(directories) {
     const entry = await getEntry(directories);
