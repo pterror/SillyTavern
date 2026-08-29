@@ -334,7 +334,8 @@ async function findCrossCharacterReflinkCandidate(directories, selfAvatar, data)
  * match for a given path may include it here - this is not a caller-asserted "trust me" flag, it's a pass-through
  * of a verification the caller already did. Only `/edit` and `/merge-attributes` currently pass anything;
  * every other caller omits it and the write proceeds exactly as before.
- * @returns {Promise<boolean>} - True if the operation was successful
+ * @returns {Promise<true>} Always resolves to `true` on success - a failed write rejects instead of resolving
+ * to a falsy value, so a caller can't observe failure by forgetting to check a return value.
  */
 async function writeCharacterData(inputFile, data, outputFile, request, crop = undefined, contentHash = null, freshFieldPaths = null) {
     try {
@@ -457,7 +458,7 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
         return true;
     } catch (err) {
         console.error(err);
-        return false;
+        throw err;
     }
 }
 
@@ -647,8 +648,8 @@ async function importFromYaml(uploadPath, context, preservedFileName) {
         'tags': '',
     }, context.request.user.directories);
     omitInstallLocalFields(char);
-    const result = await writeCharacterData(DEFAULT_AVATAR_PATH, JSON.stringify(char), fileName, context.request, undefined, context.contentHash);
-    return result ? fileName : '';
+    await writeCharacterData(DEFAULT_AVATAR_PATH, JSON.stringify(char), fileName, context.request, undefined, context.contentHash);
+    return fileName;
 }
 
 /**
@@ -694,8 +695,8 @@ async function importFromCharX(uploadPath, { request, contentHash }, preservedFi
         }
     }
 
-    const result = await writeCharacterData(avatar, JSON.stringify(processedCard), fileName, request, undefined, contentHash);
-    return result ? fileName : '';
+    await writeCharacterData(avatar, JSON.stringify(processedCard), fileName, request, undefined, contentHash);
+    return fileName;
 }
 
 /**
@@ -775,9 +776,9 @@ async function importFromByaf(uploadPath, { request, contentHash }, preservedFil
         }
     }
 
-    const result = await writeCharacterData(byafData.images[0].image, JSON.stringify(card), fileName, request, undefined, contentHash);
+    await writeCharacterData(byafData.images[0].image, JSON.stringify(card), fileName, request, undefined, contentHash);
 
-    return result ? fileName : '';
+    return fileName;
 }
 
 /**
@@ -795,8 +796,8 @@ async function importFromJson(uploadPath, { request, contentHash }, preservedFil
     if (data === null) return '';
 
     const pngName = preservedFileName || mintCharacterId(request.user.directories);
-    const result = await writeCharacterData(DEFAULT_AVATAR_PATH, data, pngName, request, undefined, contentHash);
-    return result ? pngName : '';
+    await writeCharacterData(DEFAULT_AVATAR_PATH, data, pngName, request, undefined, contentHash);
+    return pngName;
 }
 
 /**
@@ -897,9 +898,14 @@ async function importFromPng(uploadPath, { request, contentHash }, preservedFile
     if (data === null) return '';
 
     const pngName = preservedFileName || mintCharacterId(request.user.directories);
-    const result = await writeCharacterData(uploadPath, data, pngName, request, undefined, contentHash);
-    fs.unlinkSync(uploadPath);
-    return result ? pngName : '';
+    // The temp upload gets cleaned up whether the write below succeeds or throws - a failed write must not
+    // leave the staged upload behind just because it took the throw path out of this function.
+    try {
+        await writeCharacterData(uploadPath, data, pngName, request, undefined, contentHash);
+    } finally {
+        fs.unlinkSync(uploadPath);
+    }
+    return pngName;
 }
 
 /**
@@ -994,8 +1000,12 @@ router.post('/create', getFileNameValidationFunction('file_name'), async functio
         } else {
             const crop = tryParse(request.query.crop);
             const uploadPath = path.join(request.file.destination, request.file.filename);
-            await writeCharacterData(uploadPath, char, internalName, request, crop);
-            fs.unlinkSync(uploadPath);
+            // Temp upload gets cleaned up whether the write succeeds or throws.
+            try {
+                await writeCharacterData(uploadPath, char, internalName, request, crop);
+            } finally {
+                fs.unlinkSync(uploadPath);
+            }
         }
 
         if (initialFav) {
@@ -1133,8 +1143,12 @@ router.post('/edit', validateAvatarUrlMiddleware, async function (request, respo
             const crop = tryParse(request.query.crop);
             const newAvatarPath = path.join(request.file.destination, request.file.filename);
             invalidateThumbnail(request.user.directories, 'avatar', request.body.avatar_url);
-            await writeCharacterData(newAvatarPath, char, targetFile, request, crop, null, freshFieldPaths);
-            fs.unlinkSync(newAvatarPath);
+            // Temp upload gets cleaned up whether the write succeeds or throws.
+            try {
+                await writeCharacterData(newAvatarPath, char, targetFile, request, crop, null, freshFieldPaths);
+            } finally {
+                fs.unlinkSync(newAvatarPath);
+            }
 
             // Bust cache to reload the new avatar
             cacheBuster.bust(request, response);
@@ -1176,10 +1190,12 @@ router.post('/edit-avatar', validateAvatarUrlMiddleware, async function (request
 
         const crop = tryParse(request.query.crop);
         const fileName = request.body.avatar_url.replace('.png', '');
-        await writeCharacterData(uploadPath, data, fileName, request, crop);
-
-        // Remove uploaded temp file
-        fs.unlinkSync(uploadPath);
+        // Temp upload gets cleaned up whether the write succeeds or throws.
+        try {
+            await writeCharacterData(uploadPath, data, fileName, request, crop);
+        } finally {
+            fs.unlinkSync(uploadPath);
+        }
 
         // Reset images caches
         cacheBuster.bust(request, response);
@@ -3288,7 +3304,7 @@ router.post('/import', async function (request, response) {
         response.send({ file_name: fileName, character });
     } catch (err) {
         console.error(err);
-        response.send({ error: true });
+        response.status(500).send({ error: true });
     }
 });
 
