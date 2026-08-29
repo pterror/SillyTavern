@@ -9045,10 +9045,21 @@ export async function switchToAlternativePath(mesId, swipeId) {
     updateMessage(mesId, { node_id: targetNodeId });
     chat.splice(mesId + 1, chat.length - (mesId + 1), ...(payload.messages ?? []));
 
+    // Persist the choice as the one operation it is. The node knows its own fork, so this cannot
+    // point anything at the wrong place, and it does not need a save to carry it.
+    try {
+        await fetch('/api/chats/message/select', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ avatar_url: getCurrentCharacter()?.avatar, node_id: targetNodeId }),
+        });
+    } catch (error) {
+        console.warn('[switchToAlternativePath] Failed to persist the selection:', error);
+    }
+
     await redisplayChat({ startIndex: mesId });
     updateViewMessageIds();
     refreshSwipeButtons(true);
-    saveChatDebounced();
     return true;
 }
 
@@ -9542,6 +9553,172 @@ export function saveChatDebounced() {
 }
 
 /**
+ * Makes sure every greeting currently on the card is present as an opening alternative for this chat.
+ *
+ * A chat's opening alternatives are the union of two things: the character's current greetings, and
+ * whatever that conversation has diverged into. Greetings edited inside a chat belong to that chat
+ * and never go back to the card, so the tree cannot simply be read from the card - but the card's
+ * greetings do have to show up everywhere, including in chats that existed before a greeting was
+ * added. Asserting them on open is what keeps both true.
+ *
+ * Safe to repeat: adding an alternative that is already there resolves to the existing row, so the
+ * fork does not grow on every open.
+ */
+async function _ensureCardGreetingsPresent() {
+    if (!chat_metadata?._tree_stored) return;
+
+    const opening = chat[0];
+    const character = getCurrentCharacter();
+    if (!opening?.node_id || !character) return;
+
+    const { greetings } = cardToGreetingsModel(character);
+    if (!greetings?.length) return;
+
+    const contents = greetings
+        .map(greeting => getRegexedString(greeting, regex_placement.AI_OUTPUT))
+        .filter(text => typeof text === 'string' && text.length > 0)
+        .map(text => ({
+            name: name2,
+            is_user: false,
+            is_system: false,
+            send_date: opening.send_date,
+            mes: text,
+            extra: {},
+        }));
+
+    if (!contents.length) return;
+
+    try {
+        const response = await fetch('/api/chats/message/alternative', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({
+                avatar_url: character.avatar,
+                sibling_node_id: opening.node_id,
+                contents,
+            }),
+        });
+        if (!response.ok) {
+            console.warn(`[greetings] Could not assert card greetings: HTTP ${response.status}`);
+            return;
+        }
+
+        const result = await response.json();
+        if (!result.added) return;
+
+        // The fork just got wider. Pad this message's alternative arrays with holes so the counter
+        // reflects reality; the text arrives from hydrateSwipes() if the user actually goes there.
+        const current = chat[0];
+        if (!current?.node_id || !Array.isArray(current.swipes) || !result.total) return;
+        if (result.total <= current.swipes.length) return;
+
+        const swipes = [...current.swipes];
+        const swipeInfo = Array.isArray(current.swipe_info) ? [...current.swipe_info] : new Array(swipes.length).fill(null);
+        while (swipes.length < result.total) { swipes.push(null); swipeInfo.push(null); }
+        updateMessage(0, { swipes, swipe_info: swipeInfo });
+        refreshSwipeButtons(true);
+    } catch (error) {
+        console.warn('[greetings] Could not assert card greetings:', error);
+    }
+}
+
+/**
+ * Saves a tree-backed chat as the operations it actually is, rather than by handing the whole
+ * conversation over.
+ *
+ * The tree already stores the path, so there is nothing to restate. Everything the UI can do maps to
+ * one of: edit this node, append after this node, add an alternative alongside this node. Each names
+ * a row, so a row the client never received cannot be touched - which is the shape that let a
+ * windowed load's unfilled slots overwrite stored greetings.
+ *
+ * Returns null when the chat has nothing persisted yet (a brand new chat), because "create this
+ * conversation" genuinely is a whole-array operation and there is no node to hang anything off.
+ *
+ * @param {string} fileName
+ * @param {object} metadata
+ * @param {object[]} messages the chat slice being saved
+ * @returns {Promise<{ integrity?: string } | null>}
+ */
+async function _saveTreeChat(fileName, metadata, messages) {
+    const avatar = getCurrentCharacter()?.avatar;
+    if (!avatar) return null;
+
+    const post = async (path, body) => {
+        const response = await fetch(path, {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ avatar_url: avatar, ...body }),
+        });
+        if (!response.ok) {
+            throw new Error(`${path} responded ${response.status}`);
+        }
+        return response.json().catch(() => ({}));
+    };
+
+    /** Content for one alternative, with the swipe machinery stripped - it is a message, not a set. */
+    const alternativeContent = (msg, text) => {
+        const alt = { ...msg, mes: text };
+        delete alt.swipes;
+        delete alt.swipe_info;
+        delete alt.swipe_id;
+        delete alt.swipe_speaker_default;
+        return alt;
+    };
+
+    let lastPersisted = null;
+    let firstNewIndex = -1;
+
+    for (let i = 0; i < messages.length; i++) {
+        const msg = messages[i];
+
+        if (!msg.node_id) {
+            if (firstNewIndex < 0) firstNewIndex = i;
+            continue;
+        }
+        lastPersisted = msg.node_id;
+
+        // Reference equality against the snapshot is the change detector; messages are frozen, so an
+        // unchanged message is literally the same object.
+        if (_messageSnapshots.get(msg.node_id) === msg) continue;
+
+        // Alternatives the user authored locally have no row yet - they are the ones with no node_id
+        // in swipe_info. Holes are skipped entirely: they were never loaded, so there is nothing to
+        // say about them.
+        if (Array.isArray(msg.swipes) && Array.isArray(msg.swipe_info)) {
+            const selected = msg.swipe_id ?? 0;
+            for (let k = 0; k < msg.swipes.length; k++) {
+                if (typeof msg.swipes[k] !== 'string') continue;
+                if (k === selected) continue;
+                if (msg.swipe_info[k]?.node_id) continue;
+                await post('/api/chats/message/alternative', {
+                    sibling_node_id: msg.node_id,
+                    contents: [alternativeContent(msg, msg.swipes[k])],
+                });
+            }
+        }
+
+        await post('/api/chats/message/edit', { node_id: msg.node_id, content: msg });
+    }
+
+    if (!lastPersisted) return null;
+
+    if (firstNewIndex >= 0) {
+        const appended = messages.slice(firstNewIndex);
+        const result = await post('/api/chats/message/append', {
+            after_node_id: lastPersisted,
+            messages: appended,
+        });
+        (result.node_ids ?? []).forEach((node_id, offset) => {
+            const index = firstNewIndex + offset;
+            if (index < chat.length) updateMessage(index, { node_id });
+        });
+    }
+
+    const meta = await post('/api/chats/metadata', { file_name: fileName, metadata });
+    return { integrity: meta.integrity };
+}
+
+/**
  * Saves the chat to the server.
  * @param {object} [options] - Additional options.
  * @param {string} [options.chatName] The name of the chat file to save to
@@ -9592,9 +9769,23 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
     };
 
     try {
-        // Slim wire protocol: for tree-stored chats (not custom snapshots like branch creation),
-        // replace unchanged messages with lightweight stubs to minimize wire payload.
         const isTreeChat = !!metadata?._tree_stored && !Array.isArray(chatData);
+
+        // A tree-backed chat saves as operations against rows that already exist. The whole-array
+        // path below is only for what genuinely is a whole array: a chat with nothing persisted yet,
+        // a custom snapshot (branch creation), or a chat that isn't tree-stored at all.
+        if (isTreeChat) {
+            const treeResult = await _saveTreeChat(fileName, metadata, trimmedChat);
+            if (treeResult) {
+                if (typeof treeResult.integrity === 'string') {
+                    chat_metadata.integrity = treeResult.integrity;
+                }
+                _snapshotMessages();
+                return;
+            }
+        }
+
+        // Slim wire protocol: unchanged messages become lightweight stubs to minimize wire payload.
         const payloadMessages = isTreeChat ? _buildSlimPayload(trimmedChat) : trimmedChat;
 
         const bodyJson = JSON.stringify({
@@ -9915,6 +10106,10 @@ export async function getChat({ isNewChat = false } = {}) {
             chat_metadata.integrity = uuidv4();
         }
         await getChatResult();
+
+        // The card's greetings belong in every chat, including ones created before they existed.
+        await _ensureCardGreetingsPresent();
+
         eventSource.emit(event_types.CHAT_LOADED, { detail: { character: getCurrentCharacter() } });
 
         // Focus on the textarea if not already focused on a visible text input

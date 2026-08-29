@@ -31,7 +31,7 @@ import {
     isAvailable as isTreeAvailable, isMigrated as isTreeMigrated,
     saveChatToTree, loadBranch, forkBranch, labelNode,
     deleteBranch, renameBranch as renameBranchInTree, listBranches, searchBranchesByContent,
-    renameCharacterInMessages, getAlternatives, getContinuation, editMessage, appendMessages, addAlternative, setChatMetadata, selectDefaultChild,
+    renameCharacterInMessages, getAlternatives, getContinuation, editMessage, appendMessages, addAlternatives, setChatMetadata, selectDefaultChild,
 } from '../message-tree-db.js';
 import { migrateCharacterChats } from '../message-tree-migration.js';
 
@@ -1116,13 +1116,22 @@ router.post('/message/append', validateAvatarUrlMiddleware, async function (requ
     }
 });
 
-/** Adds a new alternative alongside a node's existing children. */
+/**
+ * Adds alternatives alongside an existing node - more options at the same fork.
+ *
+ * Idempotent, so a set can be asserted repeatedly. That is how a character's current greetings stay
+ * present in every chat, including ones that existed before the greeting was added, without the fork
+ * growing on every open.
+ */
 router.post('/message/alternative', validateAvatarUrlMiddleware, async function (request, response) {
     try {
-        const parent = String(request.body.parent_node_id || '');
-        if (!parent) return response.status(400).send({ error: 'parent_node_id is required' });
+        const sibling = String(request.body.sibling_node_id || '');
+        if (!sibling) return response.status(400).send({ error: 'sibling_node_id is required' });
 
-        const result = await addAlternative(request.user.directories, ownerOf(request), parent, request.body.content);
+        const contents = request.body.contents ?? request.body.content;
+        if (!contents) return response.status(400).send({ error: 'content or contents is required' });
+
+        const result = await addAlternatives(request.user.directories, ownerOf(request), sibling, contents);
         return response.status(result.ok ? 200 : 409).send(result);
     } catch (error) {
         console.error('Error adding alternative:', error);
@@ -1130,15 +1139,17 @@ router.post('/message/alternative', validateAvatarUrlMiddleware, async function 
     }
 });
 
-/** Chooses which child of a node is the shown continuation. */
+/**
+ * Shows this alternative. The fork it belongs to follows from the node itself, so the caller never
+ * names a parent and therefore can never name the wrong one.
+ */
 router.post('/message/select', validateAvatarUrlMiddleware, async function (request, response) {
     try {
-        const parent = String(request.body.parent_node_id || '');
-        const child = String(request.body.child_node_id || '');
-        if (!parent || !child) return response.status(400).send({ error: 'parent_node_id and child_node_id are required' });
+        const child = String(request.body.node_id || '');
+        if (!child) return response.status(400).send({ error: 'node_id is required' });
 
-        const ok = await selectDefaultChild(request.user.directories, parent, child);
-        return response.status(ok ? 200 : 409).send({ ok, reason: ok ? undefined : 'not a child of that parent' });
+        const ok = await selectDefaultChild(request.user.directories, child);
+        return response.status(ok ? 200 : 409).send({ ok, reason: ok ? undefined : 'unknown node, or it has no parent' });
     } catch (error) {
         console.error('Error selecting alternative:', error);
         return response.status(500).send({ error: true });
