@@ -1124,6 +1124,16 @@ router.post('/message/append', validateAvatarUrlMiddleware, async function (requ
 
         const contents = Array.isArray(request.body.messages) ? request.body.messages : [];
         const result = await appendMessages(request.user.directories, ownerOf(request), after, contents);
+
+        // Appending is what "you used this chat" means, so this is where the character's recency
+        // stamp belongs. It used to ride on the whole-array save, which our client no longer calls -
+        // so the list kept its order in-session (the client updates its own store) and lost it on
+        // reload, because nothing was persisting it.
+        if (result.ok && contents.length) {
+            await bumpCharacterDateLastChat(request.user.directories, String(request.body.avatar_url)).catch(err =>
+                console.error('Could not bump date_last_chat:', err));
+        }
+
         return response.status(result.ok ? 200 : 409).send(result);
     } catch (error) {
         console.error('Error appending messages:', error);
