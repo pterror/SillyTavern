@@ -9664,6 +9664,118 @@ function _isBlankUnwrittenSwipe(message) {
 }
 
 /**
+ * Brings the card's current greetings into an already-open chat's opening alternatives.
+ *
+ * A loaded chat builds its opening swipes from stored siblings, so a greeting that has never been
+ * used has no row and would not appear at all - which is why editing one showed nothing, even after a
+ * reload. The openings endpoint computes the union, and card-only entries sort after the stored ones,
+ * so exactly those can be asked for once their count is known.
+ *
+ * Nothing is written. An appended slot carries no node_id, which is what marks it as text that lives
+ * on the card and nowhere else; it gains a row if someone swipes onto it.
+ */
+async function _mergeCardGreetingsIntoOpening() {
+    if (!chat_metadata?._tree_stored) return;
+
+    const opening = chat[0];
+    const character = getCurrentCharacter();
+    if (!opening?.node_id || !character?.avatar) return;
+
+    const { greetings } = cardToGreetingsModel(character);
+    const contents = (greetings ?? [])
+        .map(greeting => getRegexedString(greeting, regex_placement.AI_OUTPUT))
+        .filter(text => typeof text === 'string' && text.length > 0)
+        .map(text => ({
+            name: name2,
+            is_user: false,
+            is_system: false,
+            send_date: opening.send_date,
+            mes: text,
+            extra: {},
+        }));
+    if (!contents.length) return;
+
+    const ask = async (body) => {
+        try {
+            const response = await fetch('/api/chats/openings', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ avatar_url: character.avatar, card_greetings: contents, ...body }),
+            });
+            return response.ok ? await response.json().catch(() => null) : null;
+        } catch (error) {
+            console.warn('[greetings] Could not read openings:', error);
+            return null;
+        }
+    };
+
+    const head = await ask({});
+    if (!head?.migrated) return;
+
+    const cardOnlyCount = (head.total ?? 0) - (head.stored ?? 0);
+    if (cardOnlyCount <= 0) return;
+
+    const tail = await ask({ offset: head.stored, limit: cardOnlyCount });
+    const extras = (tail?.alternatives ?? []).filter(a => !a.node_id);
+    if (!extras.length) return;
+
+    const current = chat[0];
+    if (!current?.node_id || current.node_id !== opening.node_id) return;
+
+    const swipes = Array.isArray(current.swipes) ? [...current.swipes] : [current.mes ?? ''];
+    const swipeInfo = Array.isArray(current.swipe_info)
+        ? [...current.swipe_info]
+        : [{ send_date: current.send_date, extra: current.extra ?? {}, node_id: current.node_id }];
+
+    // Rebuild the card-only tail rather than appending to it. A slot with a node_id is a real row and
+    // stays untouched; a slot without one is card text, and editing a greeting means the old text is
+    // no longer on the card. Appending alone would leave the old version sitting there forever.
+    const keptSwipes = [];
+    const keptInfo = [];
+    for (let k = 0; k < swipes.length; k++) {
+        const isStored = !!swipeInfo[k]?.node_id;
+        const isHole = typeof swipes[k] !== 'string';
+        if (isStored || isHole) {
+            keptSwipes.push(swipes[k]);
+            keptInfo.push(swipeInfo[k] ?? null);
+        }
+    }
+
+    const known = new Set(keptSwipes.filter(x => typeof x === 'string'));
+    for (const extra of extras) {
+        if (known.has(extra.mes)) continue;
+        known.add(extra.mes);
+        keptSwipes.push(extra.mes);
+        keptInfo.push({ send_date: extra.send_date, extra: extra.extra ?? {}, name: extra.name, is_user: extra.is_user });
+    }
+
+    const unchanged = keptSwipes.length === swipes.length
+        && keptSwipes.every((x, k) => x === swipes[k]);
+    if (unchanged) return;
+
+    swipes.length = 0;
+    swipes.push(...keptSwipes);
+    swipeInfo.length = 0;
+    swipeInfo.push(...keptInfo);
+
+    // Whatever is being shown must survive the rebuild.
+    const shownText = current.swipes?.[current.swipe_id ?? 0];
+    const shownAt = swipes.indexOf(shownText);
+
+    // Reading is not an edit, so a message that was saved stays saved.
+    const wasClean = _messageSnapshots.get(current.node_id) === current;
+    updateMessage(0, {
+        swipes,
+        swipe_info: swipeInfo,
+        ...(shownAt >= 0 ? { swipe_id: shownAt } : {}),
+    });
+    if (wasClean && chat[0]?.node_id) {
+        _messageSnapshots.set(chat[0].node_id, chat[0]);
+    }
+    refreshSwipeButtons(true);
+}
+
+/**
  * Saves a tree-backed chat as the operations it actually is, rather than by handing the whole
  * conversation over.
  *
@@ -10184,6 +10296,9 @@ export async function getChat({ isNewChat = false } = {}) {
                     chat[i] = deepFreeze(chat[i]);
                 }
                 _snapshotMessages();
+                // The card's greetings are not rows until used, so an already-open chat has to be
+                // told about them or an edited greeting would never show up.
+                await _mergeCardGreetingsIntoOpening();
             }
         } else {
             // An empty/corrupted chat file
@@ -11193,6 +11308,25 @@ export async function messageEdit(editMessageId) {
  * @param {number} [messageId=this_edit_mes_id]
  */
 async function messageEditCancel(messageId = this_edit_mes_id) {
+    // Overswiping opens a blank slot for something to be typed into. Cancelling means nothing was, so
+    // the slot goes away again rather than being left behind as an empty alternative to swipe past.
+    // Only the trailing blank is removed, and only when it has no row - anything stored stays.
+    const editing = chat[messageId];
+    if (_isBlankUnwrittenSwipe(editing) && Array.isArray(editing.swipes) && editing.swipes.length > 1) {
+        const at = editing.swipe_id ?? 0;
+        if (at === editing.swipes.length - 1) {
+            const swipes = editing.swipes.slice(0, -1);
+            const swipeInfo = Array.isArray(editing.swipe_info) ? editing.swipe_info.slice(0, -1) : undefined;
+            const back = Math.max(0, at - 1);
+            updateMessage(messageId, {
+                swipes,
+                ...(swipeInfo ? { swipe_info: swipeInfo } : {}),
+                swipe_id: back,
+            });
+            syncSwipeToMes(messageId, back);
+        }
+    }
+
     let text = chat[messageId].mes;
     let thisMesDiv;
     // If this is the button then select it's parent. Otherwise, select by messageId.
@@ -15328,6 +15462,14 @@ jQuery(async function () {
     // subsequent chat switch alike, since CHAT_CHANGED fires for both. Only restores when a draft actually
     // exists for the *exact* now-current context, so switching to a chat with no saved draft never pulls in
     // a stale one from wherever the textarea happened to be left.
+    // Editing a greeting changes the card, and an open chat's openings are the union of stored rows
+    // and the card's current greetings - so it should show up there and then, not on the next load.
+    eventSource.on(event_types.CHARACTER_EDITED, async (event) => {
+        const edited = event?.detail?.character?.avatar;
+        if (!edited || edited !== getCurrentCharacter()?.avatar) return;
+        await _mergeCardGreetingsIntoOpening();
+    });
+
     eventSource.on(event_types.CHAT_CHANGED, () => {
         const context = getCurrentDraftContext();
         if (!context) {
