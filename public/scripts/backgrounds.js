@@ -199,13 +199,20 @@ function createThumbnailElement(imageData) {
  */
 function applyThumbnailColumns(count) {
     const newCount = Math.max(THUMBNAIL_COLUMNS_MIN, Math.min(count, THUMBNAIL_COLUMNS_MAX));
+    const changed = background_settings.thumbnailColumns !== newCount;
     background_settings.thumbnailColumns = newCount;
     document.documentElement.style.setProperty('--bg-thumb-columns', newCount.toString());
 
     $('#bg_thumb_zoom_in').prop('disabled', newCount <= THUMBNAIL_COLUMNS_MIN);
     $('#bg_thumb_zoom_out').prop('disabled', newCount >= THUMBNAIL_COLUMNS_MAX);
 
-    saveSettingsDebounced('background');
+    // The CSS variable and button states above have to be applied on every call, including the one
+    // loadBackgroundSettings() makes during startup. The save does not: that load-path call passes the
+    // value it just assigned, so it never changes anything, and the zoom buttons also land here with an
+    // unchanged value once the count is clamped at either limit.
+    if (changed) {
+        saveSettingsDebounced('background');
+    }
 }
 
 export function loadBackgroundSettings(settings) {

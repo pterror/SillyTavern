@@ -47,6 +47,7 @@ import { SECRET_KEYS, secret_state, writeSecret } from './secrets.js';
 
 import { getEventSourceStream } from './sse-stream.js';
 import {
+    arraysEqual,
     clamp,
     createThumbnail,
     delay,
@@ -4612,6 +4613,7 @@ function onLogitBiasPresetChange() {
         return;
     }
 
+    const presetChanged = oai_settings.bias_preset_selected !== value;
     oai_settings.bias_preset_selected = value;
     const list = $('.openai_logit_bias_list');
     list.empty();
@@ -4644,7 +4646,10 @@ function onLogitBiasPresetChange() {
     });
 
     biasCache = undefined;
-    saveSettingsDebounced('oai_settings');
+    // Loading the page re-selects the already-active preset; don't persist a no-op.
+    if (presetChanged) {
+        saveSettingsDebounced('oai_settings');
+    }
 }
 
 function createNewLogitBiasEntry() {
@@ -6933,9 +6938,16 @@ export function initOpenAI() {
     $('#chat_completion_source').on('change', function () {
         cancelStatusCheck('Chat Completion source changed');
         model_list = [];
-        oai_settings.chat_completion_source = String($(this).find(':selected').val());
+        const newSource = String($(this).find(':selected').val());
+        // Loading the page re-fires this with the already-saved source; only persist a real change.
+        // The rest of the side effects (reconnect, event emit, etc.) still run on load - they're
+        // what actually establishes the connection to the saved source.
+        const sourceChanged = newSource !== oai_settings.chat_completion_source;
+        oai_settings.chat_completion_source = newSource;
         toggleChatCompletionForms();
-        saveSettingsDebounced('oai_settings');
+        if (sourceChanged) {
+            saveSettingsDebounced('oai_settings');
+        }
         reconnectOpenAi();
         forceCharacterEditorTokenize();
         updateFeatureSupportFlags();
@@ -7234,10 +7246,14 @@ export function initOpenAI() {
             return;
         }
 
+        // Loading the page re-applies the already-saved selection; don't persist a no-op.
+        const providersChanged = !arraysEqual(selectedProviders, oai_settings.openrouter_providers ?? []);
         oai_settings.openrouter_providers = selectedProviders;
 
         updateOpenRouterProvidersWarning('#openrouter_providers_chat');
-        saveSettingsDebounced('oai_settings');
+        if (providersChanged) {
+            saveSettingsDebounced('oai_settings');
+        }
     });
 
     $('#openrouter_quantizations_chat').on('change', function () {
@@ -7248,15 +7264,24 @@ export function initOpenAI() {
             return;
         }
 
+        // Loading the page re-applies the already-saved selection; don't persist a no-op.
+        const quantizationsChanged = !arraysEqual(selectedQuantizations, oai_settings.openrouter_quantizations ?? []);
         oai_settings.openrouter_quantizations = selectedQuantizations;
 
-        saveSettingsDebounced('oai_settings');
+        if (quantizationsChanged) {
+            saveSettingsDebounced('oai_settings');
+        }
     });
 
     $('#nanogpt_provider').on('change', function () {
-        oai_settings.nanogpt_provider = String($(this).val() || '');
+        const newProvider = String($(this).val() || '');
+        // Loading the page re-applies the already-saved provider; don't persist a no-op.
+        const providerChanged = newProvider !== oai_settings.nanogpt_provider;
+        oai_settings.nanogpt_provider = newProvider;
         updateNanoGptProvidersWarning('#nanogpt_provider');
-        saveSettingsDebounced('oai_settings');
+        if (providerChanged) {
+            saveSettingsDebounced('oai_settings');
+        }
     });
 
     $('#nanogpt_payg_override').on('input', function () {

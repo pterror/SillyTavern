@@ -134,7 +134,14 @@ export async function loadInstructMode(data) {
         }
 
         $element.on('input', async function () {
-            power_user.instruct[control.property] = control.isCheckbox ? !!$(this).prop('checked') : $(this).val();
+            const value = control.isCheckbox ? !!$(this).prop('checked') : $(this).val();
+            // Loading settings re-applies the stored value to the DOM and re-triggers this handler
+            // (see the `control.trigger` block below) purely to run other listeners; skip the save
+            // when nothing actually changed so a load doesn't itself dirty the settings.
+            if (power_user.instruct[control.property] === value) {
+                return;
+            }
+            power_user.instruct[control.property] = value;
             if (!CSS.supports('field-sizing', 'content') && $(this).is('textarea')) {
                 await resetScrollHeight($(this));
             }

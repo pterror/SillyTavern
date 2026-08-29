@@ -3780,17 +3780,27 @@ jQuery(() => {
     });
 
     $('#chat_display').on('change', function () {
-        const value = $(this).find(':selected').val();
-        power_user.chat_display = Number(value);
+        const value = Number($(this).find(':selected').val());
+        // applyChatDisplay toggles body classes and must run every time (including on load),
+        // but the save should only fire when the value is actually changing.
+        const changed = power_user.chat_display !== value;
+        power_user.chat_display = value;
         applyChatDisplay();
-        saveSettingsDebounced('power_user.chat_display');
+        if (changed) {
+            saveSettingsDebounced('power_user.chat_display');
+        }
     });
 
     $('#toastr_position').on('change', function () {
-        const value = $(this).find(':selected').val();
-        power_user.toastr_position = String(value);
+        const value = String($(this).find(':selected').val());
+        // applyToastrPosition sets a global toastr option that isn't otherwise persisted in the DOM,
+        // so it must run every time (including on load), but the save should only fire on real changes.
+        const changed = power_user.toastr_position !== value;
+        power_user.toastr_position = value;
         applyToastrPosition();
-        saveSettingsDebounced('power_user.toastr_position');
+        if (changed) {
+            saveSettingsDebounced('power_user.toastr_position');
+        }
     });
 
     $('#chat_width_slider').on('input', function (e, data) {
@@ -4143,9 +4153,14 @@ jQuery(() => {
             $(this).prop('checked', false).trigger('input');
             return;
         }
+        // switchZenSliders builds/tears down DOM state and must run every time (including on load),
+        // but the save should only fire when the value is actually changing.
+        const changed = power_user.enableZenSliders !== value;
         power_user.enableZenSliders = value;
         switchZenSliders();
-        saveSettingsDebounced('power_user.enableZenSliders');
+        if (changed) {
+            saveSettingsDebounced('power_user.enableZenSliders');
+        }
     });
 
     $('#enableLabMode').on('input', function (event, { fromInit = false } = {}) {
@@ -4157,9 +4172,14 @@ jQuery(() => {
             return;
         }
 
+        // switchLabMode applies real DOM/UI state and must run every time (including on load),
+        // but the save should only fire when the value is actually changing.
+        const changed = power_user.enableLabMode !== value;
         power_user.enableLabMode = value;
         switchLabMode({ noReset: fromInit });
-        saveSettingsDebounced('power_user.enableLabMode');
+        if (changed) {
+            saveSettingsDebounced('power_user.enableLabMode');
+        }
     });
 
     $('#mesIDDisplayEnabled').on('input', function () {
@@ -4351,17 +4371,23 @@ jQuery(() => {
     });
 
     $('#stscript_autocomplete_state').on('input', function () {
-        power_user.stscript.autocomplete.state = Number($(this).val());
+        const value = Number($(this).val());
+        if (power_user.stscript.autocomplete.state === value) return;
+        power_user.stscript.autocomplete.state = value;
         saveSettingsDebounced('power_user.stscript.autocomplete.state');
     });
 
     $('#stscript_autocomplete_autoHide').on('input', function () {
-        power_user.stscript.autocomplete.autoHide = !!$(this).prop('checked');
+        const value = !!$(this).prop('checked');
+        if (power_user.stscript.autocomplete.autoHide === value) return;
+        power_user.stscript.autocomplete.autoHide = value;
         saveSettingsDebounced('power_user.stscript.autocomplete.autoHide');
     });
 
     $('#stscript_autocomplete_showInAllMacroFields').on('input', function () {
-        power_user.stscript.autocomplete.showInAllMacroFields = !!$(this).prop('checked');
+        const value = !!$(this).prop('checked');
+        if (power_user.stscript.autocomplete.showInAllMacroFields === value) return;
+        power_user.stscript.autocomplete.showInAllMacroFields = value;
         saveSettingsDebounced('power_user.stscript.autocomplete.showInAllMacroFields');
     });
 
