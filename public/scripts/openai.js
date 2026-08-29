@@ -2356,8 +2356,12 @@ function saveModelList(data) {
 
         const selectedModel = model_list.find(model => model.id === oai_settings.cometapi_model);
         if (model_list.length > 0 && (!selectedModel || !oai_settings.cometapi_model)) {
+            const oldCometapiModel = oai_settings.cometapi_model;
             oai_settings.cometapi_model = model_list[0].id;
-            saveSettingsDebounced('oai_settings');
+            // Re-fetching the same model list resolves to the same default; don't persist a no-op.
+            if (oai_settings.cometapi_model !== oldCometapiModel) {
+                saveSettingsDebounced('oai_settings');
+            }
         }
 
         $('#model_cometapi_select').val(oai_settings.cometapi_model).trigger('change');
@@ -5449,6 +5453,11 @@ async function onModelChange() {
     biasCache = undefined;
     let value = String($(this).val() || '');
 
+    // Re-applying already-saved settings at boot re-triggers this handler; don't persist a no-op.
+    // Snapshotted at object granularity (rather than per-field) because this function fans out
+    // across dozens of oai_settings fields depending on which source branch runs.
+    const oldSettingsJson = JSON.stringify(oai_settings);
+
     // Skip setting the context size for sources that get it from external APIs
     const hasModelsLoaded = Array.isArray(model_list) && model_list.length > 0;
 
@@ -5988,7 +5997,9 @@ async function onModelChange() {
 
     $('#openai_max_context_counter').attr('max', Number($('#openai_max_context').attr('max')));
 
-    saveSettingsDebounced('oai_settings');
+    if (JSON.stringify(oai_settings) !== oldSettingsJson) {
+        saveSettingsDebounced('oai_settings');
+    }
     updateFeatureSupportFlags();
     eventSource.emit(event_types.CHATCOMPLETION_MODEL_CHANGED, value);
 }
@@ -6745,21 +6756,36 @@ export function initOpenAI() {
     $('#test_api_button').on('click', testApiConnection);
 
     $('#temp_openai').on('input', function () {
-        oai_settings.temp_openai = Number($(this).val());
-        $('#temp_counter_openai').val(Number($(this).val()).toFixed(2));
-        saveSettingsDebounced('oai_settings');
+        const newTemp = Number($(this).val());
+        // Loading the page re-applies the already-saved value; don't persist a no-op.
+        const tempChanged = newTemp !== oai_settings.temp_openai;
+        oai_settings.temp_openai = newTemp;
+        $('#temp_counter_openai').val(newTemp.toFixed(2));
+        if (tempChanged) {
+            saveSettingsDebounced('oai_settings');
+        }
     });
 
     $('#freq_pen_openai').on('input', function () {
-        oai_settings.freq_pen_openai = Number($(this).val());
-        $('#freq_pen_counter_openai').val(Number($(this).val()).toFixed(2));
-        saveSettingsDebounced('oai_settings');
+        const newFreqPen = Number($(this).val());
+        // Loading the page re-applies the already-saved value; don't persist a no-op.
+        const freqPenChanged = newFreqPen !== oai_settings.freq_pen_openai;
+        oai_settings.freq_pen_openai = newFreqPen;
+        $('#freq_pen_counter_openai').val(newFreqPen.toFixed(2));
+        if (freqPenChanged) {
+            saveSettingsDebounced('oai_settings');
+        }
     });
 
     $('#pres_pen_openai').on('input', function () {
-        oai_settings.pres_pen_openai = Number($(this).val());
-        $('#pres_pen_counter_openai').val(Number($(this).val()).toFixed(2));
-        saveSettingsDebounced('oai_settings');
+        const newPresPen = Number($(this).val());
+        // Loading the page re-applies the already-saved value; don't persist a no-op.
+        const presPenChanged = newPresPen !== oai_settings.pres_pen_openai;
+        oai_settings.pres_pen_openai = newPresPen;
+        $('#pres_pen_counter_openai').val(newPresPen.toFixed(2));
+        if (presPenChanged) {
+            saveSettingsDebounced('oai_settings');
+        }
     });
 
     $('#top_p_openai').on('input', function () {
