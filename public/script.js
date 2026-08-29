@@ -8969,6 +8969,11 @@ export async function hydrateSwipes(mesId, { index = null, all = false } = {}) {
         return true;
     }
 
+    // Whether this message had unsaved changes BEFORE hydrating. Filling in holes is not an edit -
+    // the text comes from the server - so a message that was clean should stay clean afterwards.
+    // Checked up front so a genuine pending edit is never marked saved by accident.
+    const wasClean = _messageSnapshots.get(message.node_id) === message;
+
     // Chats that aren't tree-backed always arrive complete, so a hole there is not something a fetch
     // can repair.
     if (!message.node_id) {
@@ -9028,6 +9033,14 @@ export async function hydrateSwipes(mesId, { index = null, all = false } = {}) {
     });
 
     updateMessage(mesId, { swipes, swipe_info: swipeInfo });
+
+    // Hydrating only fills in what was already stored, so it does not make the message unsaved. Left
+    // dirty, every hole filled would earn the message an edit on the next save, re-sending content the
+    // server had just sent.
+    if (wasClean && chat[mesId]?.node_id) {
+        _messageSnapshots.set(chat[mesId].node_id, chat[mesId]);
+    }
+
     return all ? true : typeof chat[mesId].swipes[index] === 'string';
 }
 
@@ -9092,6 +9105,12 @@ export async function switchToAlternativePath(mesId, swipeId) {
     } catch (error) {
         console.warn('[switchToAlternativePath] Failed to persist the selection:', error);
     }
+
+    // Everything in the chat now matches what is stored: the messages below came straight from the
+    // server, and the switch itself was persisted above. Without saying so they are fresh objects the
+    // snapshot has never seen, so the next save reads every one as changed and posts an edit for it -
+    // one per message, on every switch, re-sending content the server just handed over.
+    _snapshotMessages();
 
     await redisplayChat({ startIndex: mesId });
     updateViewMessageIds();
@@ -9651,7 +9670,14 @@ async function _ensureCardGreetingsPresent() {
         const swipes = [...current.swipes];
         const swipeInfo = Array.isArray(current.swipe_info) ? [...current.swipe_info] : new Array(swipes.length).fill(null);
         while (swipes.length < result.total) { swipes.push(null); swipeInfo.push(null); }
+
+        const wasClean = _messageSnapshots.get(current.node_id) === current;
         updateMessage(0, { swipes, swipe_info: swipeInfo });
+        // Padding with holes is not an edit either - it only widens the message to the fork's real
+        // width. Left dirty it would earn an edit on the next save, on every chat open.
+        if (wasClean && chat[0]?.node_id) {
+            _messageSnapshots.set(chat[0].node_id, chat[0]);
+        }
         refreshSwipeButtons(true);
     } catch (error) {
         console.warn('[greetings] Could not assert card greetings:', error);
