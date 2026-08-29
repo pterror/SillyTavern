@@ -3716,9 +3716,17 @@ export async function seedCardTagsForSingleCharacter(directories, avatar) {
 
 /**
  * The full `{[id]: tagId[]}` export of every character's and group's tag assignments, reconstructed from
- * `character_tags`/`group_tags` - the settings-snapshot backup path's (settings.js's backupUserSettings(), via
- * mergeTagsIntoSnapshot() in tags.js) replacement for what used to be tags.json's `tag_map` field verbatim. Same
- * "one file fully captures state" property snapshots have always had, just sourced from sqlite now.
+ * `character_tags`/`group_tags`.
+ *
+ * Not called anywhere in the live application right now - it used to be, from the settings-snapshot backup path
+ * (settings.js's backupUserSettings(), via a now-deleted mergeTagsIntoSnapshot() in tags.js), to re-embed a full
+ * tag_map into every settings backup the way tags.json-era backups used to carry it verbatim. That call site is
+ * gone: character_tags/group_tags in the metadata store already ARE the durable record of tag assignments, so
+ * re-deriving a whole JS-side copy of that projection on every boot and every autosave (a full scan of
+ * potentially millions of character_tags rows) was pure duplicated work with no reader that actually needed a
+ * second copy - see backupUserSettings()'s own doc comment. Kept as a general export primitive (symmetric with
+ * restoreTagMap() below, exercised by its own round-trip test) for whatever future need for a full tag-
+ * assignment export/import actually shows up, rather than deleted outright.
  * @param {import('./users.js').UserDirectoryList} directories
  * @returns {Promise<Record<string, string[]> | null>} `null` if the metadata store is unavailable.
  */
@@ -3728,12 +3736,14 @@ export async function getFullTagMapExport(directories) {
 
     // GROUP_CONCAT'd in SQL (one row per id) rather than one row per (id, tag_id) pair pushed onto a JS array
     // one at a time - on a 327k-character library with ~3.77M character_tags rows, the old row-per-assignment
-    // shape meant ~3.77M individual JS property-array-push operations on the synchronous, event-loop-blocking
-    // better-sqlite3 call (this function's only caller chain, settings.js's backupUserSettings(), runs on every
-    // boot AND on every settings autosave - see that module's header). Measured: ~5s the old way, ~2.7s this
-    // way. \x1f (ASCII unit separator) rather than the default comma - tag_id is normally a crypto.randomUUID()
-    // (see the id-minting site above) so a comma collision is unlikely in practice, but there's no schema
-    // constraint actually forbidding one, and \x1f costs nothing extra to use defensively.
+    // shape meant ~3.77M individual JS property-array-push operations on a synchronous, event-loop-blocking
+    // better-sqlite3 call. Measured in isolation (EXPLAIN QUERY PLAN confirms this already scans the
+    // character_tags primary-key covering index, no missing index, no extra sort): ~690ms for the SQL query +
+    // group_concat string building, ~294ms for the JS split-and-assign step - call this rarely (see doc comment
+    // above) rather than needing it to be instant. \x1f (ASCII unit separator) rather than the default comma -
+    // tag_id is normally a crypto.randomUUID() (see the id-minting site above) so a comma collision is unlikely
+    // in practice, but there's no schema constraint actually forbidding one, and \x1f costs nothing extra to use
+    // defensively.
     const SEP = '\x1f';
     /** @type {Record<string, string[]>} */
     const result = {};

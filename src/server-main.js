@@ -343,12 +343,13 @@ async function preSetupTasks() {
     await initializeLocalImportScan();
     __mark('initializeLocalImportScan');
 
-    // settingsInit() (settings.js's init()) is a per-user settings-snapshot backup that merges in the FULL
-    // tag/tag_map export from the character-metadata store (mergeTagsIntoSnapshot() -> getFullTagMapExport()) -
-    // on a large library that's a multi-second synchronous SQLite scan (measured: ~2.7s on 327k characters /
-    // 3.77M character_tags rows even after the GROUP_CONCAT optimization below), same shape of "expensive
-    // maintenance work that must not gate the server actually starting to listen" as diskCache.verify() just
-    // above - so it gets the same fire-and-forget treatment rather than sitting in the awaited boot chain.
+    // settingsInit() (settings.js's init()) is a per-user settings-snapshot backup - routine/automatic, so it no
+    // longer merges in the tag_map export at all (see backupUserSettings()'s own doc comment: that was a full
+    // SQLite scan re-derived on every boot for a value nothing here actually needed, since tag assignments
+    // already live durably in the metadata store itself). Still fire-and-forget rather than sitting in the
+    // awaited boot chain though - it's still real file IO (read settings.json, maybe write a backup file, prune
+    // old backups) across every user handle, same "maintenance work that must not gate the server actually
+    // starting to listen" shape as diskCache.verify() just above.
     {
         const __settingsStart = process.hrtime.bigint();
         settingsInit()

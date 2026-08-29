@@ -10,47 +10,20 @@ import {
     getTagDefinitions,
     saveTagDefinitions,
     getTagsHash,
-    getFullTagMapExport,
     restoreTagMap,
 } from '../character-metadata-db.js';
 
 export const router = express.Router();
 
 /**
- * Returns a copy of `settingsContent` (parsed settings.json) with its `tags`/`tag_map` fields set to the user's
- * live tag data, pulled from the per-user metadata sqlite store now that tags.json is gone entirely (owner
- * decision, phase 3 - see character-metadata-db.js's header on the `tags`/`group_tags`/`character_tags` tables
- * and migrateTagsJsonIfNeeded()). Used when writing a settings snapshot so each snapshot stays a single file
- * that fully captures state, same property tags.json-backed snapshots always had - just sourced differently.
- * @param {string} handle User handle
- * @param {import('../users.js').UserDirectoryList} directories User directories
- * @param {object} settingsContent Parsed settings.json content
- * @returns {Promise<object>} settingsContent with tags/tag_map merged in
- */
-export async function mergeTagsIntoSnapshot(handle, directories, settingsContent) {
-    try {
-        const [tags, tagMap] = await Promise.all([
-            getTagDefinitions(directories),
-            getFullTagMapExport(directories),
-        ]);
-        if (tags === null || tagMap === null) {
-            // Metadata store unavailable this run - same "leave settingsContent as-is" fallback the old
-            // fs.existsSync(tags.json)-missing branch used.
-            return settingsContent;
-        }
-        return { ...settingsContent, tags, tag_map: tagMap };
-    } catch (err) {
-        console.error('Could not merge tag data into settings snapshot', err);
-        return settingsContent;
-    }
-}
-
-/**
- * The inverse of mergeTagsIntoSnapshot(): given a parsed settings snapshot being restored, imports its
- * `tags`/`tag_map` fields into the metadata store (tag definitions replace-all via saveTagDefinitions(), tag_map
- * merged additively via restoreTagMap() - see that function's own doc comment on why additive) and returns the
- * remaining settings content with those fields stripped. Works the same whether the snapshot predates or
- * postdates the tags.json split - either way, whatever tags/tag_map ends up embedded in the snapshot is applied.
+ * Given a parsed settings snapshot being restored, imports its `tags`/`tag_map` fields (if present) into the
+ * metadata store (tag definitions replace-all via saveTagDefinitions(), tag_map merged additively via
+ * restoreTagMap() - see that function's own doc comment on why additive) and returns the remaining settings
+ * content with those fields stripped. Backward-compat only at this point: current backups (settings.js's
+ * backupUserSettings()) no longer embed tags/tag_map at all - character_tags/group_tags in the metadata store
+ * already are the durable record, so there's nothing left to merge in at backup time (see that function's own
+ * doc comment). This stays so an OLDER snapshot that still carries those fields - made before that change, or a
+ * pre-phase-3 tags.json-era one - still restores its tag data correctly.
  * @param {string} handle User handle
  * @param {import('../users.js').UserDirectoryList} directories User directories
  * @param {object} settingsContent Parsed contents of the settings snapshot being restored

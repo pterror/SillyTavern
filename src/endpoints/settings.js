@@ -10,7 +10,7 @@ import { SETTINGS_FILE } from '../constants.js';
 import { getConfigValue, generateTimestamp, removeOldBackups } from '../util.js';
 import { getAllUserHandles, getUserDirectories } from '../users.js';
 import { getFileNameValidationFunction } from '../middleware/validateFileName.js';
-import { mergeTagsIntoSnapshot, splitTagsFromSnapshot } from './tags.js';
+import { splitTagsFromSnapshot } from './tags.js';
 import { getStringHash, hashSettingsKeys, setAtPath } from '../../public/scripts/hash-utils.js';
 
 const ENABLE_EXTENSIONS = !!getConfigValue('extensions.enabled', true, 'boolean');
@@ -130,10 +130,20 @@ async function backupSettings() {
 }
 
 /**
- * Makes a backup of the user's settings file. The backup is a single file that fully captures state: tag
- * definitions and tag_map get merged in from the per-user metadata sqlite store at backup time (see
- * mergeTagsIntoSnapshot in tags.js) even though settings.json itself doesn't carry those fields - tags.json
- * itself is gone entirely (phase 3, owner decision).
+ * Makes a backup of the user's settings file - a plain copy of settings.json itself, nothing more.
+ *
+ * Used to also merge in a full tag definitions/tag_map export reconstructed from the metadata sqlite store
+ * (mergeTagsIntoSnapshot() in tags.js -> getFullTagMapExport() -> a full scan of every character_tags row) so
+ * the backup would carry tag_map the way the old tags.json-era backups did. That's gone: character_tags/
+ * group_tags in the metadata store already ARE the durable, backed-up-with-the-database record of tag
+ * assignments - there's no reader anywhere that needs a second, JS-reconstructed copy of that projection sitting
+ * inside a settings.json snapshot, on EVERY boot and EVERY autosave or otherwise. Carrying the field forward
+ * after the tags.json split was preserving old-format shape, not an actual requirement - see
+ * getFullTagMapExport()'s own doc comment on where that capability still lives if something genuinely needs a
+ * full export/import of tag assignments later.
+ *
+ * restore-snapshot (splitTagsFromSnapshot() below) still imports tags/tag_map when a restored snapshot happens
+ * to carry them, so an OLD backup made before this change still restores exactly as it always did.
  * @param {string} handle User handle
  * @param {boolean} preventDuplicates Prevent duplicate backups
  * @returns {Promise<void>}
@@ -153,8 +163,8 @@ async function backupUserSettings(handle, preventDuplicates) {
 
     let snapshotContent;
     try {
-        const settingsContent = JSON.parse(fs.readFileSync(sourceFile, 'utf8'));
-        snapshotContent = JSON.stringify(await mergeTagsIntoSnapshot(handle, userDirectories, settingsContent), null, 4);
+        snapshotContent = fs.readFileSync(sourceFile, 'utf8');
+        JSON.parse(snapshotContent); // Validate it's actually valid JSON before backing it up.
     } catch (err) {
         console.error('Could not read/parse settings file for backup', err);
         return;
@@ -172,7 +182,7 @@ async function backupUserSettings(handle, preventDuplicates) {
 /**
  * Checks if the backup would be a duplicate of the latest existing one.
  * @param {string} handle User handle
- * @param {string} content The (already tags-merged) snapshot content that would be written
+ * @param {string} content The snapshot content that would be written
  * @returns {boolean} True if the backup is a duplicate
  */
 function isDuplicateBackup(handle, content) {
