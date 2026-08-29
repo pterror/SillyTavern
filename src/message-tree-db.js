@@ -333,11 +333,13 @@ export function nodeIdentityKey(parentId, contentJson) {
         // A user message's speaker is the PERSONA it was said as. Two identical texts under one
         // parent, said as different personas, are two different messages and must not merge.
         //
-        // The persona rather than the display name because the two are many-to-many, measured on a
-        // real install: the name `n_n` appears under both `user-default.png` and a Millie persona,
-        // and the name `Millie` appears under both a Millie persona and an Avery one. So a name
-        // neither identifies a persona nor is identified by one, and name-as-speaker would merge
-        // genuinely different speakers while splitting a single one across spellings.
+        // A persona is a whole visible identity - its own avatar id, name, image and description. It
+        // is who the reader sees as having said something, so two of them are different even when
+        // every part that reaches the model happens to match. "Does it change the prompt" is the
+        // wrong test here; that question belongs to chat metadata, not to who is speaking.
+        //
+        // The avatar id is the key. Names are distinct in practice but they are a display field, and
+        // nothing stops two personas sharing one.
         //
         // Character messages keep the name - persona is a user-side concept and they have none.
         speaker = o?.is_user
