@@ -15056,14 +15056,6 @@ jQuery(async function () {
         setTimeout(function () { $('#shadow_select_chat_popup').css('display', 'none'); }, animation_duration);
     });
 
-    $(document).on('click', '.mes_create_bookmark', async function () {
-        const mesId = $(this).closest('.mes').attr('mesid');
-        if (mesId !== undefined) {
-            const { forkChat } = await import('./scripts/bookmarks.js');
-            await forkChat(Number(mesId));
-        }
-    });
-
     $(document).on('pointerup', '.mes_copy', async function () {
         if (getSelectionState().type !== 'none' || name2 === neutralCharacterName) {
             try {
