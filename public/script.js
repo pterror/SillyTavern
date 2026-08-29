@@ -14836,7 +14836,11 @@ export async function renameGroupOrCharacterChat({ characterAvatar, groupId, old
     const body = {
         is_group: !!groupId,
         avatar_url: characterAvatar,
-        original_file: `${oldFileName}.jsonl`,
+        // A node id is not a file, so it does not get a file extension glued on. It happened to
+        // survive because the route strips .jsonl again, but it was only ever describing storage that
+        // does not exist for this value. The JSONL path uses original_file as a real filename, so a
+        // name-addressed rename still sends one.
+        original_file: byNode ? oldFileName : `${oldFileName}.jsonl`,
         renamed_file: `${newFileName.trim()}.jsonl`,
     };
 
