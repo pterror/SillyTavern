@@ -12253,24 +12253,51 @@ const greetingPagerState = {
 };
 
 /**
+ * True when greetings[0] (first_mes) is empty and there's at least one alternate greeting to show
+ * instead - matching getFirstMessage()'s swipe-list behavior, an empty first_mes then doesn't occupy
+ * a displayed pager slot. If it's the only greeting there's nothing else to show, so it stays visible
+ * as the sole (blank) slot - that's also the only way to type a first_mes into an empty-slate card.
+ */
+function isPagerFirstMesSlotHidden() {
+    const { greetings } = greetingPagerState;
+    return greetings[0] === '' && greetings.length > 1;
+}
+
+/** Number of pager slots actually shown, after applying the empty-first_mes skip above. */
+function pagerSlotCount() {
+    return greetingPagerState.greetings.length - (isPagerFirstMesSlotHidden() ? 1 : 0);
+}
+
+/**
+ * Maps a displayed pager index (what the user pages through, 0-based) to the canonical index into
+ * greetingPagerState.greetings ([first_mes, ...alternate_greetings]) - kept explicit here rather than
+ * relying on the two index spaces happening to line up.
+ * @param {number} displayIndex
+ */
+function pagerDisplayToCanonicalIndex(displayIndex) {
+    return isPagerFirstMesSlotHidden() ? displayIndex + 1 : displayIndex;
+}
+
+/**
  * Replaces the pager's greetings list (e.g. on character load, create-mode fill, or after the Alt.
  * Greetings popup closes) and clamps the current index in case the list shrank.
  * @param {string[]} greetings [first_mes, ...alternate_greetings]
  */
 function setGreetingPagerGreetings(greetings) {
     greetingPagerState.greetings = greetings.length > 0 ? greetings.slice() : [''];
-    greetingPagerState.index = Math.min(greetingPagerState.index, greetingPagerState.greetings.length - 1);
+    greetingPagerState.index = Math.max(0, Math.min(greetingPagerState.index, pagerSlotCount() - 1));
     renderGreetingPager();
 }
 
 /** Redraws the pager controls and the visible greeting field from the current pager state. */
 function renderGreetingPager() {
     const { greetings, index } = greetingPagerState;
-    $('#greeting_field').val(greetings[index] ?? '');
+    const canonicalIndex = pagerDisplayToCanonicalIndex(index);
+    $('#greeting_field').val(greetings[canonicalIndex] ?? '');
     $('.greeting-pager-input').val(index + 1);
-    $('.greeting-pager-total').text(`/${greetings.length}`);
+    $('.greeting-pager-total').text(`/${pagerSlotCount()}`);
     $('.greeting-pager-prev').toggleClass('disabled', index === 0);
-    $('.greeting-pager-next').toggleClass('disabled', index === greetings.length - 1);
+    $('.greeting-pager-next').toggleClass('disabled', index === pagerSlotCount() - 1);
     // .val() above doesn't fire a native input event, so the token counter needs an explicit nudge.
     RA_CountCharTokens();
 }
@@ -12282,8 +12309,8 @@ function renderGreetingPager() {
  */
 function navigateGreetingPager(newIndex) {
     const { greetings, index } = greetingPagerState;
-    greetings[index] = String($('#greeting_field').val());
-    greetingPagerState.index = Math.max(0, Math.min(newIndex, greetings.length - 1));
+    greetings[pagerDisplayToCanonicalIndex(index)] = String($('#greeting_field').val());
+    greetingPagerState.index = Math.max(0, Math.min(newIndex, pagerSlotCount() - 1));
     renderGreetingPager();
 }
 
@@ -12329,6 +12356,26 @@ const saveGreetingPagerAlternatesDebounced = debounce(async () => {
         toastr.error(t`Failed to save the greeting. Your edit is still shown here, but it was not saved.`, t`Greeting not saved`);
     }
 }, DEFAULT_SAVE_EDIT_TIMEOUT);
+
+/**
+ * True when this unified array's slot 0 (first_mes) is empty and there's at least one alternate
+ * greeting to show instead - matching getFirstMessage()'s swipe-list behavior. If it's the only
+ * greeting there's nothing else to show, so it stays visible as the sole (blank) slot.
+ * @param {string[]} unifiedGreetings [first_mes, ...alternate_greetings]
+ */
+function isFirstMesSlotSkipped(unifiedGreetings) {
+    return unifiedGreetings[0] === '' && unifiedGreetings.length > 1;
+}
+
+/**
+ * Maps an array index in the unified [first_mes, ...alternate_greetings] array to its 1-based
+ * displayed slot number, accounting for a skipped empty first_mes slot.
+ * @param {number} index
+ * @param {string[]} unifiedGreetings [first_mes, ...alternate_greetings]
+ */
+function greetingDisplayPosition(index, unifiedGreetings) {
+    return isFirstMesSlotSkipped(unifiedGreetings) ? index : index + 1;
+}
 
 function openAlternateGreetings() {
     const avatar = $('.open_alternate_greetings').data('avatar');
@@ -12417,7 +12464,11 @@ function openAlternateGreetings() {
     });
 
     for (let index = 0; index < unifiedGreetings.length; index++) {
-        addAlternateGreeting(template, unifiedGreetings[index], index, getArray, popup);
+        if (index === 0 && isFirstMesSlotSkipped(unifiedGreetings)) {
+            // Empty first_mes doesn't occupy a slot here either - see getFirstMessage()'s equivalent skip.
+            continue;
+        }
+        addAlternateGreeting(template, unifiedGreetings[index], index, getArray, popup, greetingDisplayPosition(index, unifiedGreetings));
     }
 
     // Filter input handler
@@ -12435,9 +12486,15 @@ function openAlternateGreetings() {
 
     template.find('.add_alternate_greeting').on('click', function () {
         const array = getArray();
+        const wasFirstMesSlotSkipped = isFirstMesSlotSkipped(array);
         const index = array.length;
         array.push('');
-        addAlternateGreeting(template, '', index, getArray, popup);
+        if (!wasFirstMesSlotSkipped && isFirstMesSlotSkipped(array)) {
+            // This card had only a blank first_mes shown as its sole slot - adding the first
+            // alternate now hides that slot, so drop its row instead of leaving a stale duplicate "1".
+            template.find('.alternate_greeting[data-index="0"]').remove();
+        }
+        addAlternateGreeting(template, '', index, getArray, popup, greetingDisplayPosition(index, array));
         updateAlternateGreetingsHintVisibility(template);
         const list = template.find('.alternate_greetings_list');
         list.scrollTop(list.prop('scrollHeight'));
@@ -12510,11 +12567,14 @@ function refreshInsertionPoints(template, getArray) {
  * Adds an alternate greeting to the template.
  * @param {JQuery<HTMLElement>} template
  * @param {string} greeting
- * @param {number} index
+ * @param {number} index Position in the unified [first_mes, ...alternate_greetings] array.
  * @param {() => any[]} getArray
  * @param {Popup} popup
+ * @param {number} [displayPosition] 1-based slot number to show the user; defaults to index + 1.
+ *   Callers pass this explicitly when an empty first_mes has been skipped, so the visible numbering
+ *   still starts at 1 - see greetingDisplayPosition().
  */
-function addAlternateGreeting(template, greeting, index, getArray, popup) {
+function addAlternateGreeting(template, greeting, index, getArray, popup, displayPosition = index + 1) {
     const greetingBlock = $('#alternate_greeting_form_template .alternate_greeting').clone();
     greetingBlock.attr('data-index', index);
     greetingBlock.find('.alternate_greeting_text')
@@ -12525,7 +12585,7 @@ function addAlternateGreeting(template, greeting, index, getArray, popup) {
             array[index] = value;
         }).val(greeting);
     greetingBlock.find('.editor_maximize').attr('data-for', `alternate_greeting_${index}`);
-    greetingBlock.find('.greeting_index').text(index + 1);
+    greetingBlock.find('.greeting_index').text(displayPosition);
 
     // Show default badge on greeting #1
     if (index === 0) {
@@ -15022,13 +15082,14 @@ jQuery(async function () {
     // whichever one is currently shown. See setGreetingPagerGreetings() and friends above.
     $('#greeting_field').on('input', function () {
         const value = String($(this).val());
-        greetingPagerState.greetings[greetingPagerState.index] = value;
-        if (greetingPagerState.index === 0) {
+        const canonicalIndex = pagerDisplayToCanonicalIndex(greetingPagerState.index);
+        greetingPagerState.greetings[canonicalIndex] = value;
+        if (canonicalIndex === 0) {
             // Greeting 1 stays authoritative in #firstmessage_textarea, which drives the existing
             // first_mes autosave/form-snapshot/FormData bindings untouched.
             $('#firstmessage_textarea').val(value).trigger('input');
         } else if (menu_type === 'create') {
-            create_save.alternate_greetings[greetingPagerState.index - 1] = value;
+            create_save.alternate_greetings[canonicalIndex - 1] = value;
         } else {
             saveGreetingPagerAlternatesDebounced();
         }
