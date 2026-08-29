@@ -773,7 +773,15 @@ class PromptManager {
 
         // Re-render when the character changes.
         eventSource.on(event_types.CHAT_LOADED, (event) => {
-            this.handleCharacterSelected(event);
+            // CHAT_LOADED fires during boot (RA_autoloadchat -> selectCharacterByAvatar -> getChat),
+            // so an unconditional save here made merely opening the page write settings back. Loading
+            // is a read: only persist when handleCharacterSelected actually added a default prompt
+            // order for a character that had none, which is the one thing it can mutate.
+            const mutated = this.handleCharacterSelected(event);
+            if (!mutated) {
+                this.renderDebounced();
+                return;
+            }
             this.saveServiceSettings().then(() => this.renderDebounced());
         });
 
@@ -793,7 +801,13 @@ class PromptManager {
 
         // Re-render when the group changes.
         eventSource.on('groupSelected', (event) => {
-            this.handleGroupSelected(event);
+            // Same reasoning as CHAT_LOADED above: selecting a group is a read unless it had to seed
+            // a default prompt order.
+            const mutated = this.handleGroupSelected(event);
+            if (!mutated) {
+                this.renderDebounced();
+                return;
+            }
             this.saveServiceSettings().then(() => this.renderDebounced());
         });
 
@@ -1155,10 +1169,15 @@ class PromptManager {
 
             // ToDo: These should be passed as parameter or attached to the manager as a set of default options.
             // Set default prompts and order for character.
-            if (0 === promptOrder.length) this.addPromptOrderForCharacter(this.activeCharacter, promptManagerDefaultPromptOrder);
+            if (0 === promptOrder.length) {
+                this.addPromptOrderForCharacter(this.activeCharacter, promptManagerDefaultPromptOrder);
+                return true;
+            }
         } else {
             throw new Error('Unsupported prompt order mode.');
         }
+        // Re-pointing activeCharacter is in-memory only; nothing to persist.
+        return false;
     }
 
     /**
@@ -1189,10 +1208,15 @@ class PromptManager {
             this.activeCharacter = characterDummy;
             const promptOrder = this.getPromptOrderForCharacter(characterDummy);
 
-            if (0 === promptOrder.length) this.addPromptOrderForCharacter(characterDummy, promptManagerDefaultPromptOrder);
+            if (0 === promptOrder.length) {
+                this.addPromptOrderForCharacter(characterDummy, promptManagerDefaultPromptOrder);
+                return true;
+            }
         } else {
             throw new Error('Prompt order strategy not supported.');
         }
+        // Re-pointing activeCharacter is in-memory only; nothing to persist.
+        return false;
     }
 
     /**
