@@ -1005,12 +1005,16 @@ export async function labelNode(directories, nodeId, label) {
  * Sets which child of `parentId` is the shown continuation. This is the whole of "swiping" now.
  * Touches exactly one row.
  */
-export async function selectDefaultChild(directories, parentId, childId) {
+export async function selectDefaultChild(directories, childId) {
     const entry = await getEntry(directories);
     if (!entry) return false;
+
+    // A node has exactly one parent, so the caller never names it - which means it can never name the
+    // wrong one. Selecting is "show this alternative", and the fork it belongs to follows from it.
     const child = entry.db.get('SELECT id, parent_id FROM messages WHERE id = @id', { id: childId });
-    if (!child || child.parent_id !== parentId) return false;
-    setDefaultChildSync(entry.db, parentId, childId);
+    if (!child || !child.parent_id) return false;
+
+    setDefaultChildSync(entry.db, child.parent_id, childId);
     return true;
 }
 
@@ -1155,22 +1159,61 @@ export async function appendMessages(directories, ownerId, afterNodeId, contents
 }
 
 /**
- * Adds a new alternative alongside a node's existing children, without selecting it.
- * @returns {Promise<{ ok: boolean, reason?: string, node_id?: string }>}
+ * Adds an alternative alongside an existing node - another option at the same fork.
+ *
+ * Named by SIBLING rather than by parent: every node knows its own parent, so the caller never has
+ * to, which also means it can't name the wrong one or need to know about the synthetic anchor to add
+ * an alternative to the opening message.
+ *
+ * Idempotent: one that is already there resolves to the existing row instead of duplicating, so a
+ * whole set can be asserted on every chat open without the fork growing each time. That is what lets
+ * a character's current greetings always be present in every chat, including ones created before the
+ * greeting existed, while greetings a chat has diverged into stay put alongside them.
+ *
+ * @param {object[]|object} contents one alternative, or many
+ * @returns {Promise<{ ok: boolean, reason?: string, node_ids?: string[], added?: number }>}
  */
-export async function addAlternative(directories, ownerId, parentNodeId, content) {
+export async function addAlternatives(directories, ownerId, siblingNodeId, contents) {
     const entry = await getEntry(directories);
     if (!entry) return { ok: false, reason: 'unavailable' };
 
-    const parent = entry.db.get('SELECT id FROM messages WHERE id = @id AND owner_id = @ownerId',
-        { id: parentNodeId, ownerId });
-    if (!parent) return { ok: false, reason: 'unknown parent' };
+    const sibling = entry.db.get('SELECT id, parent_id FROM messages WHERE id = @id AND owner_id = @ownerId',
+        { id: siblingNodeId, ownerId });
+    if (!sibling) return { ok: false, reason: 'unknown node' };
+    if (!sibling.parent_id) return { ok: false, reason: 'node has no parent' };
 
-    const id = newId();
-    insertMessageSync(entry.db, {
-        id, parentId: parentNodeId, ownerId, content: sanitizeForStorage(content), createdAt: Date.now(),
+    const list = Array.isArray(contents) ? contents : [contents];
+    const parentId = sibling.parent_id;
+
+    const byIdentity = new Map();
+    for (const sib of getSiblingsSync(entry.db, parentId, '')) {
+        byIdentity.set(nodeIdentityKey(parentId, sib.content), sib.id);
+    }
+
+    const nodeIds = [];
+    let added = 0;
+    entry.db.transaction(() => {
+        const now = Date.now();
+        for (const content of list) {
+            const body = sanitizeForStorage(content);
+            const key = nodeIdentityKey(parentId, body);
+            const existing = byIdentity.get(key);
+            if (existing) { nodeIds.push(existing); continue; }
+
+            const id = newId();
+            insertMessageSync(entry.db, {
+                id, parentId, ownerId, content: body, createdAt: now + added,
+            });
+            byIdentity.set(key, id);
+            nodeIds.push(id);
+            added++;
+        }
     });
-    return { ok: true, node_id: id };
+
+    // The resulting fork width, so a caller that just widened it can keep its own view in step
+    // without pulling every alternative's text back.
+    const total = getSiblingsSync(entry.db, parentId, '').length;
+    return { ok: true, node_ids: nodeIds, added, total };
 }
 
 /**
