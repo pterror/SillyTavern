@@ -2392,21 +2392,33 @@ export async function initializeMetadataStores(directoriesList) {
 
         startWatcher(entry);
 
+        // Boot-perf instrumentation (kept permanently, same spirit as server-main.js's own `[boot-timing]` marks
+        // around preSetupTasks()'s top-level steps) - times each stage of this background bootstrap chain so a
+        // slow stage shows up by name in the log instead of someone having to re-instrument from scratch the
+        // next time boot gets slow again.
+        const __chainStart = process.hrtime.bigint();
+        const __stage = async (label, fn) => {
+            const s = process.hrtime.bigint();
+            const result = await fn();
+            console.log(`[boot-timing] [metadata-chain] ${label}: ${Number(process.hrtime.bigint() - s) / 1e6}ms (chain total so far: ${Number(process.hrtime.bigint() - __chainStart) / 1e6}ms)`);
+            return result;
+        };
+
         // Ordering matters: migrateTagsJsonIfNeeded() classifies tag_map's keys against the characters/groups
         // tables, so both bootstraps have to have already populated them (bootstrapIfNeeded() for characters,
         // bootstrapGroupsIfNeeded() for groups) before it runs, or every key would look unresolvable on a
         // brand-new install's very first boot.
-        entry.bootstrapPromise = bootstrapIfNeeded(directories)
-            .then(() => bootstrapGroupsIfNeeded(directories))
-            .then(() => migrateTagsJsonIfNeeded(directories))
-            .then(() => backfillCardTagsIfNeeded(directories))
-            .then(() => backfillTagIdsInShallowJson(directories))
-            .then(() => reconcile(directories))
+        entry.bootstrapPromise = __stage('bootstrapIfNeeded', () => bootstrapIfNeeded(directories))
+            .then(() => __stage('bootstrapGroupsIfNeeded', () => bootstrapGroupsIfNeeded(directories)))
+            .then(() => __stage('migrateTagsJsonIfNeeded', () => migrateTagsJsonIfNeeded(directories)))
+            .then(() => __stage('backfillCardTagsIfNeeded', () => backfillCardTagsIfNeeded(directories)))
+            .then(() => __stage('backfillTagIdsInShallowJson', () => backfillTagIdsInShallowJson(directories)))
+            .then(() => __stage('reconcile', () => reconcile(directories)))
             // Runs LAST in the chain, after reconcile() - so this pass sees the maximal set of poisoned rows a
             // single boot can discover (reconcile() may itself have just inserted rows for files dropped in
             // while the server was down).
-            .then(() => backfillContentIdentityHashes(directories))
-            .then(() => backfillActiveChatFromCards(directories))
+            .then(() => __stage('backfillContentIdentityHashes', () => backfillContentIdentityHashes(directories)))
+            .then(() => __stage('backfillActiveChatFromCards', () => backfillActiveChatFromCards(directories)))
             .catch(err => console.error(`[character-metadata] Bootstrap failed for ${directories.root}:`, err));
     }
 }
@@ -3714,13 +3726,22 @@ export async function getFullTagMapExport(directories) {
     const entry = await getEntry(directories);
     if (!entry) return null;
 
+    // GROUP_CONCAT'd in SQL (one row per id) rather than one row per (id, tag_id) pair pushed onto a JS array
+    // one at a time - on a 327k-character library with ~3.77M character_tags rows, the old row-per-assignment
+    // shape meant ~3.77M individual JS property-array-push operations on the synchronous, event-loop-blocking
+    // better-sqlite3 call (this function's only caller chain, settings.js's backupUserSettings(), runs on every
+    // boot AND on every settings autosave - see that module's header). Measured: ~5s the old way, ~2.7s this
+    // way. \x1f (ASCII unit separator) rather than the default comma - tag_id is normally a crypto.randomUUID()
+    // (see the id-minting site above) so a comma collision is unlikely in practice, but there's no schema
+    // constraint actually forbidding one, and \x1f costs nothing extra to use defensively.
+    const SEP = '\x1f';
     /** @type {Record<string, string[]>} */
     const result = {};
-    for (const row of entry.db.all('SELECT character_id as id, tag_id FROM character_tags')) {
-        (result[row.id] ??= []).push(row.tag_id);
+    for (const row of entry.db.all(`SELECT character_id as id, group_concat(tag_id, '${SEP}') as tags FROM character_tags GROUP BY character_id`)) {
+        result[row.id] = row.tags.split(SEP);
     }
-    for (const row of entry.db.all('SELECT group_id as id, tag_id FROM group_tags')) {
-        (result[row.id] ??= []).push(row.tag_id);
+    for (const row of entry.db.all(`SELECT group_id as id, group_concat(tag_id, '${SEP}') as tags FROM group_tags GROUP BY group_id`)) {
+        result[row.id] = row.tags.split(SEP);
     }
     return result;
 }
