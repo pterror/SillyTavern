@@ -8,7 +8,7 @@ import {
     getCharacterFavsByIds,
 } from '../character-metadata-db.js';
 import { processCharacter } from './characters.js';
-import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD, FAV_FIELD } from './tantivy-search.js';
+import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD, FAV_FIELD, buildTagFilterQuery, buildExcludeIdsQuery } from './tantivy-search.js';
 import { resolveSearchEngine } from './search-engine.js';
 import { createIndexCoordinator } from './search-index-coordinator.js';
 import { getConfigValue, mapWithConcurrency, color } from '../util.js';
@@ -137,7 +137,35 @@ const BM25_WEIGHTS = [20, 10, 3, 3, 2, 2, 2, 2, 1, 1, 1];
 // without materializing the full match set and round-tripping it through SQLite for ORDER BY.
 const TANTIVY_FAST_FIELDS = ['create_date', 'date_added', 'date_last_chat', 'chat_size', 'data_size'];
 
-export const TANTIVY_SORT_FIELDS = new Set(TANTIVY_FAST_FIELDS);
+// Additional fast fields for sorts that need a numeric collation key rather than a real column value.
+// name_sort_key: first 7 bytes of the lowercased name encoded as a u64, giving correct lexicographic
+// order for the vast majority of names (ties broken by tantivy's internal doc ordering, which is stable).
+// fav_name_sort_key: bit 63 = inverted fav (0 for favorites, 1 for non-favorites), bits 0-55 = first 7
+// bytes of lowercased name. ASC order gives the desired "favorites first, then alphabetical" behavior.
+const TANTIVY_COLLATION_FIELDS = ['name_sort_key', 'fav_name_sort_key'];
+const ALL_FAST_FIELDS = [...TANTIVY_FAST_FIELDS, ...TANTIVY_COLLATION_FIELDS];
+
+// Whitespace-tokenized text field for structured tag-ID filtering inside tantivy (term queries by
+// exact tag UUID, composed with AND/OR/MustNot via buildTagFilterQuery in tantivy-search.js).
+const TANTIVY_FILTER_TEXT_FIELDS = [{ name: 'tag_ids', tokenizerName: 'whitespace' }];
+
+const TAG_IDS_FIELD = 'tag_ids';
+
+export const TANTIVY_SORT_FIELDS = new Set([...TANTIVY_FAST_FIELDS, 'name', 'fav']);
+
+// Maps the /query route's sort.field value to the tantivy fast field name used by orderByField.
+// Fields not in this map don't have a tantivy fast field equivalent.
+const SORT_FIELD_TO_TANTIVY_FIELD = {
+    create_date: 'create_date',
+    date_added: 'date_added',
+    date_last_chat: 'date_last_chat',
+    chat_size: 'chat_size',
+    data_size: 'data_size',
+    name: 'name_sort_key',
+    fav: 'fav_name_sort_key',
+};
+
+export { SORT_FIELD_TO_TANTIVY_FIELD };
 
 /**
  * Manually-bumped identifier for the shape of the tantivy schema characterToTantivyDoc() builds documents against
@@ -150,7 +178,7 @@ export const TANTIVY_SORT_FIELDS = new Set(TANTIVY_FAST_FIELDS);
  * a mismatch there is treated exactly like a corrupt or missing index (nothing usable persisted), which naturally
  * routes into a fresh rebuild the same way those already do, without needing a separate branch anywhere else.
  */
-const TANTIVY_SCHEMA_VERSION = 2;
+const TANTIVY_SCHEMA_VERSION = 3;
 
 // `label:value` search syntax (see search-query.js) - maps a friendly label to the tantivy field(s) it targets.
 // `tag:`/`tags:` searches BOTH tag-ish fields, since BM25_WEIGHTS above already treats resolved_tags (tags.json
@@ -337,10 +365,37 @@ async function makeFavResolver(directories, avatars) {
         : Boolean(character.data?.extensions?.fav);
 }
 
+/**
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {string[]} avatars
+ * @returns {Promise<(avatar: string) => string>} A sync closure returning space-joined tag IDs for a character.
+ */
+async function makeTagIdsResolver(directories, avatars) {
+    const assignments = await getEntityTagIdsForMany(directories, avatars);
+    return (avatar) => (assignments?.[avatar] ?? []).join(' ');
+}
+
 /** No-op `close()` for a tantivy index handle - this binding has no explicit index-handle-close API, so every
  * function below that produces one of these handles uses this same no-op rather than each defining its own
  * (which previously left `close()`'s actual behavior implicit at each call site). */
 const NOOP_CLOSE = () => { /* no explicit close API on this binding's Index */ };
+
+/**
+ * Encodes the first `byteCount` bytes of a lowercased string as an unsigned integer for use as a
+ * fast-field sort key. Gives correct lexicographic ordering for names that differ within the first
+ * `byteCount` characters; ties are broken by tantivy's stable internal ordering.
+ * @param {string} str
+ * @param {number} [byteCount=7]
+ * @returns {number} A non-negative integer safe for tantivy's unsigned fast field.
+ */
+function stringToSortKey(str, byteCount = 7) {
+    const lower = (str || '').toLowerCase();
+    let key = 0;
+    for (let i = 0; i < byteCount; i++) {
+        key = key * 256 + (i < lower.length ? lower.charCodeAt(i) & 0xFF : 0);
+    }
+    return key;
+}
 
 /**
  * One character's tantivy document, factored out so buildTantivyIndexFromFilesystemScan() (the metadata-store-
@@ -356,7 +411,7 @@ const NOOP_CLOSE = () => { /* no explicit close API on this binding's Index */ }
  * makeFavResolver()'s doc comment on why this can't just read `character.data.extensions.fav` directly.
  * @returns {import('@oxdev03/node-tantivy-binding').Document}
  */
-function characterToTantivyDoc(tantivy, schema, character, tagNamesFor, favFor) {
+function characterToTantivyDoc(tantivy, schema, character, tagNamesFor, favFor, tagIdsFor) {
     return tantivy.Document.fromDict({
         name: character.data?.name ?? '',
         resolved_tags: tagNamesFor(character.avatar),
@@ -376,6 +431,9 @@ function characterToTantivyDoc(tantivy, schema, character, tagNamesFor, favFor) 
         date_last_chat: Math.max(0, Number(character.date_last_chat) || 0),
         chat_size: Math.max(0, Number(character.chat_size) || 0),
         data_size: Math.max(0, Number(character.data_size) || 0),
+        name_sort_key: stringToSortKey(character.data?.name ?? ''),
+        fav_name_sort_key: (favFor(character) ? 0 : 1) * (2 ** 48) + stringToSortKey(character.data?.name ?? '', 6),
+        tag_ids: tagIdsFor(character.avatar),
         // Design doc §5.1's payload shrink: just the id (== the avatar filename, under today's pre-Option-A
         // identity - design doc §2.2), not the full character JSON - see DATA_FIELD's doc comment
         // (tantivy-search.js) for why this is also exactly what qualifies as the delete-by-term key.
@@ -487,7 +545,7 @@ function reopenTantivyIndexAt(tantivy, dir) {
  */
 function createEmptyTantivyIndexAt(tantivy, dir) {
     fs.mkdirSync(dir, { recursive: true });
-    const schema = buildTantivySchema(tantivy, BM25_INDEXED_COLUMNS, TANTIVY_FAST_FIELDS);
+    const schema = buildTantivySchema(tantivy, BM25_INDEXED_COLUMNS, ALL_FAST_FIELDS, TANTIVY_FILTER_TEXT_FIELDS);
     const index = new tantivy.Index(schema, dir, false);
     return { index, schema };
 }
@@ -601,11 +659,12 @@ async function buildTantivyIndexFromFilesystemScan(directories, tantivy) {
     const avatars = fs.readdirSync(directories.characters).filter(file => file.endsWith('.png'));
     const tagNamesFor = await makeTagNamesResolver(directories, avatars);
     const favFor = await makeFavResolver(directories, avatars);
+    const tagIdsFor = await makeTagIdsResolver(directories, avatars);
 
     let batchIndex = 0;
     for await (const batch of readCharacterBatches(directories)) {
         for (const character of batch) {
-            writer.addDocument(characterToTantivyDoc(tantivy, schema, character, tagNamesFor, favFor));
+            writer.addDocument(characterToTantivyDoc(tantivy, schema, character, tagNamesFor, favFor, tagIdsFor));
         }
 
         batchIndex++;
@@ -691,6 +750,7 @@ async function applyIncrementalTantivyChanges(directories, tantivy, index, schem
         const idsNeedingData = [...idsToReindex.entries()].filter(([, op]) => op !== 'delete').map(([id]) => id);
         const tagNamesFor = idsNeedingData.length > 0 ? await makeTagNamesResolver(directories, idsNeedingData) : () => '';
         const favFor = idsNeedingData.length > 0 ? await makeFavResolver(directories, idsNeedingData) : () => false;
+        const tagIdsFor = idsNeedingData.length > 0 ? await makeTagIdsResolver(directories, idsNeedingData) : () => '';
 
         for (const [id, op] of idsToReindex) {
             writer.deleteDocumentsByTerm(DATA_FIELD, id);
@@ -707,7 +767,7 @@ async function applyIncrementalTantivyChanges(directories, tantivy, index, schem
             if (!character?.name) {
                 continue;
             }
-            writer.addDocument(characterToTantivyDoc(tantivy, schema, character, tagNamesFor, favFor));
+            writer.addDocument(characterToTantivyDoc(tantivy, schema, character, tagNamesFor, favFor, tagIdsFor));
         }
 
         writer.commit();
@@ -961,8 +1021,11 @@ export async function searchCharacterIds(handle, directories, searchTerm, maxRow
  * @returns {Promise<{ ids: string[], total: number, backend: 'tantivy' | 'unavailable' } | null>}
  * null when the current index doesn't support fast-field sorting (schema too old or field missing).
  */
-export async function searchCharacterIdsSorted(handle, directories, searchTerm, sortField, sortOrder, offset, pageSize, favOnly) {
+export async function searchCharacterIdsSorted(handle, directories, searchTerm, sortField, sortOrder, offset, pageSize, favOnly, { tags, excludeIds } = {}) {
     if (!TANTIVY_SORT_FIELDS.has(sortField)) return null;
+
+    const tantivySortField = SORT_FIELD_TO_TANTIVY_FIELD[sortField];
+    if (!tantivySortField) return null;
 
     const signature = await getFreshnessSignature(directories);
     const engine = await resolveSearchEngine();
@@ -977,9 +1040,36 @@ export async function searchCharacterIdsSorted(handle, directories, searchTerm, 
     const query = buildTantivyQuery(engine.tantivy, tantivyIndex.schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS, { favOnly });
     if (!query) return { ids: [], total: 0, backend: 'tantivy' };
 
-    const { results, total } = runTantivySearch(tantivyIndex.index, query, pageSize, {
-        orderByField: sortField,
-        order: sortOrder,
+    // fav_name_sort_key encodes DESC-fav + ASC-name into a single key, so always sort ASC.
+    // name_sort_key is a lexicographic key, always ASC for ascending name order (the most common).
+    // Other fields use the caller's sortOrder directly.
+    const effectiveOrder = (sortField === 'fav' || sortField === 'name') ? 'asc' : sortOrder;
+
+    let fullQuery = query;
+
+    // Compose tag filter if present
+    if (tags && (tags.include?.length > 0 || tags.exclude?.length > 0)) {
+        const tagQuery = buildTagFilterQuery(engine.tantivy, tantivyIndex.schema, tags, TAG_IDS_FIELD);
+        if (tagQuery) {
+            fullQuery = engine.tantivy.Query.booleanQuery([
+                { occur: engine.tantivy.Occur.Must, query: fullQuery },
+                { occur: engine.tantivy.Occur.Must, query: tagQuery },
+            ]);
+        }
+    }
+
+    // Compose excludeIds if present
+    if (Array.isArray(excludeIds) && excludeIds.length > 0) {
+        const excludeQuery = buildExcludeIdsQuery(engine.tantivy, tantivyIndex.schema, excludeIds);
+        fullQuery = engine.tantivy.Query.booleanQuery([
+            { occur: engine.tantivy.Occur.Must, query: fullQuery },
+            { occur: engine.tantivy.Occur.MustNot, query: excludeQuery },
+        ]);
+    }
+
+    const { results, total } = runTantivySearch(tantivyIndex.index, fullQuery, pageSize, {
+        orderByField: tantivySortField,
+        order: effectiveOrder,
         offset,
     });
     return { ids: results.map(r => r.raw), total, backend: 'tantivy' };

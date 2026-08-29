@@ -892,6 +892,17 @@ function migrateAllowGlobalStylesColumn(db) {
 }
 
 /**
+ * Adds a direction-matched index for fav sort: `ORDER BY fav DESC, name_fold ASC` needs an index
+ * with those exact directions to avoid a full-table-scan + temp-sort (measured: 63ms without this
+ * index, 1ms with it, at 327k rows). The existing `idx_characters_fav_name_fold (fav, name_fold)`
+ * has default ASC direction on both columns, which SQLite can't use for mixed-direction ORDER BY.
+ */
+function migrateFavSortIndex(db) {
+    db.exec('CREATE INDEX IF NOT EXISTS idx_characters_fav_desc_name_fold_asc ON characters(fav DESC, name_fold ASC)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_groups_fav_desc_name_fold_asc ON groups(fav DESC, name_fold ASC)');
+}
+
+/**
  * Resolves (creating on first use) the metadata DB entry for a user, including opening the SQLite file and
  * applying SCHEMA_SQL (idempotent - every statement is CREATE ... IF NOT EXISTS). Returns `null` if no SQLite
  * engine is usable on this install at all (see sqlite-engine.js) - callers must treat that as "the metadata
@@ -932,6 +943,7 @@ async function getEntry(directories) {
     migrateDigestColumns(db);
     migrateAllowGlobalStylesColumn(db);
     migrateGroupsColumns(db, directories);
+    migrateFavSortIndex(db);
     // Design doc §5.3, decisions 8/13: random-sort order is a per-query `ORDER BY <hash>(id, seed)`, never a
     // materialized column (a materialized seeded column is O(users × rerolls) to maintain - see the decision's
     // rationale). Registering the client's own cyrb53 as a real SQL function is what makes that expressible at

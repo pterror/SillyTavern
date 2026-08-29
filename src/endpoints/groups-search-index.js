@@ -26,6 +26,22 @@ const BM25_WEIGHTS = [20, 10, 15, 1];
 // characters-search-index.js's TANTIVY_FIELD_WEIGHTS/TANTIVY_FIELD_LABELS for the full rationale (identical here,
 // just the smaller groups field set).
 const TANTIVY_FIELD_WEIGHTS = Object.fromEntries(BM25_INDEXED_COLUMNS.map((name, i) => [name, BM25_WEIGHTS[i]]));
+
+// Fast fields for native tantivy sorting, mirroring characters-search-index.js's TANTIVY_FAST_FIELDS.
+// Groups use a subset: no create_date (groups use date_added for that), no data_size (not tracked for groups).
+const TANTIVY_FAST_FIELDS = ['date_added', 'date_last_chat', 'chat_size'];
+const TANTIVY_COLLATION_FIELDS = ['name_sort_key', 'fav_name_sort_key'];
+const ALL_FAST_FIELDS = [...TANTIVY_FAST_FIELDS, ...TANTIVY_COLLATION_FIELDS];
+const TANTIVY_FILTER_TEXT_FIELDS = [{ name: 'tag_ids', tokenizerName: 'whitespace' }];
+
+function stringToSortKey(str, byteCount = 7) {
+    const lower = (str || '').toLowerCase();
+    let key = 0;
+    for (let i = 0; i < byteCount; i++) {
+        key = key * 256 + (i < lower.length ? lower.charCodeAt(i) & 0xFF : 0);
+    }
+    return key;
+}
 const TANTIVY_FIELD_LABELS = {
     name: ['name'],
     tag: ['resolved_tags'],
@@ -58,8 +74,8 @@ async function getFreshnessSignature(directories) {
  * @param {string[]} groupIds Every group id about to be indexed - fetched once up front so this resolves with
  * two batched sqlite reads total (tag definitions + getEntityTagIdsForMany()) rather than one getGroupTagIds()
  * call per group - see characters-search-index.js's makeTagNamesResolver() for the full rationale.
- * @returns {Promise<(groupId: string) => string>} A sync closure over the pre-fetched data, resolving a group's
- * tag names (space-joined)
+ * @returns {Promise<{ tagNamesFor: (groupId: string) => string, tagIdsFor: (groupId: string) => string }>} Sync
+ * closures over the pre-fetched data, resolving a group's tag names (space-joined) and raw tag ids (space-joined)
  */
 async function makeTagNamesResolver(directories, groupIds) {
     const [definitions, assignments] = await Promise.all([
@@ -67,10 +83,12 @@ async function makeTagNamesResolver(directories, groupIds) {
         getEntityTagIdsForMany(directories, groupIds),
     ]);
     const tagsById = new Map((definitions ?? []).map(tag => [tag.id, tag]));
-    return (groupId) => (assignments?.[groupId] ?? [])
+    const tagNamesFor = (groupId) => (assignments?.[groupId] ?? [])
         .map(id => tagsById.get(id)?.name)
         .filter(Boolean)
         .join(' ');
+    const tagIdsFor = (groupId) => (assignments?.[groupId] ?? []).join(' ');
+    return { tagNamesFor, tagIdsFor };
 }
 
 // Groups (unlike characters) come from getGroupsData() as one already-in-memory array - a group is a curated
@@ -105,12 +123,12 @@ async function buildTantivyIndex(directories, tantivy) {
     fs.rmSync(indexDir, { recursive: true, force: true });
     fs.mkdirSync(indexDir, { recursive: true });
 
-    const schema = buildTantivySchema(tantivy, BM25_INDEXED_COLUMNS);
+    const schema = buildTantivySchema(tantivy, BM25_INDEXED_COLUMNS, ALL_FAST_FIELDS, TANTIVY_FILTER_TEXT_FIELDS);
     const index = new tantivy.Index(schema, indexDir, false);
     const writer = index.writer();
 
     const groups = getGroupsData(directories);
-    const tagNamesFor = await makeTagNamesResolver(directories, groups.map(group => group.id));
+    const { tagNamesFor, tagIdsFor } = await makeTagNamesResolver(directories, groups.map(group => group.id));
 
     let batchIndex = 0;
     for (let i = 0; i < groups.length; i += INDEX_BUILD_BATCH_SIZE) {
@@ -121,6 +139,13 @@ async function buildTantivyIndex(directories, tantivy) {
                 resolved_tags: tagNamesFor(group.id),
                 members: Array.isArray(group.members) ? group.members.join(' ') : '',
                 id: group.id ?? '',
+                // Fast fields for native sorting
+                date_added: Math.max(0, Number(group.date_added) || 0),
+                date_last_chat: Math.max(0, Number(group.date_last_chat) || 0),
+                chat_size: Math.max(0, Number(group.chat_size) || 0),
+                name_sort_key: stringToSortKey(group.name ?? ''),
+                fav_name_sort_key: (group.fav ? 0 : 1) * (2 ** 48) + stringToSortKey(group.name ?? '', 6),
+                tag_ids: tagIdsFor(group.id),
                 [DATA_FIELD]: JSON.stringify(group),
                 [FAV_FIELD]: Boolean(group.fav),
             }, schema);

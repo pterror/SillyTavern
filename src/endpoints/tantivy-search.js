@@ -76,15 +76,21 @@ export const FAV_FIELD = 'fav';
  * @param {string[]} [unsignedFastFieldNames] Names of columnar "fast" fields (unstored, unindexed for search) that
  * exist purely so runSearch()'s `orderByField` can sort on them - a field has to be declared `fast: true` here
  * before it can be used that way.
+ * @param {{name: string, tokenizerName?: string}[]} [filterTextFields] Extra whitespace/exact-tokenized, unstored
+ * text fields for structured term-query filtering (e.g. tag IDs) rather than free-text search or sorting - see
+ * buildTagFilterQuery() below for how these get queried.
  * @returns {import('@oxdev03/node-tantivy-binding').Schema}
  */
-export function buildSchema(tantivy, searchableFieldNames, unsignedFastFieldNames = []) {
+export function buildSchema(tantivy, searchableFieldNames, unsignedFastFieldNames = [], filterTextFields = []) {
     const builder = new tantivy.SchemaBuilder();
     for (const name of searchableFieldNames) {
         builder.addTextField(name, { stored: false, tokenizerName: 'default', indexOption: 'position' });
     }
     for (const name of unsignedFastFieldNames) {
         builder.addUnsignedField(name, { stored: false, indexed: false, fast: true });
+    }
+    for (const { name, tokenizerName } of filterTextFields) {
+        builder.addTextField(name, { stored: false, tokenizerName: tokenizerName ?? 'whitespace', indexOption: 'basic' });
     }
     builder.addTextField(DATA_FIELD, { stored: true, tokenizerName: 'raw', indexOption: 'basic' });
     builder.addBooleanField(FAV_FIELD, { indexed: true });
@@ -246,6 +252,48 @@ export function buildSearchQuery(tantivy, schema, searchTerm, fieldWeights, fiel
         { occur: tantivy.Occur.Must, query: textQuery },
         { occur: tantivy.Occur.Must, query: favQuery },
     ]);
+}
+
+/**
+ * Builds a MustNot boolean query that excludes documents whose DATA_FIELD matches any of the
+ * given ids. Composes with an existing query via `Query.booleanQuery([{occur: Must, query: baseQuery}, {occur: MustNot, query: excludeQuery}])`.
+ * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy
+ * @param {import('@oxdev03/node-tantivy-binding').Schema} schema
+ * @param {string[]} excludeIds
+ * @returns {import('@oxdev03/node-tantivy-binding').Query}
+ */
+export function buildExcludeIdsQuery(tantivy, schema, excludeIds) {
+    return tantivy.Query.termSetQuery(schema, DATA_FIELD, excludeIds);
+}
+
+/**
+ * Builds a tantivy query for structured tag filtering (include with AND/OR, exclude with MustNot)
+ * against a whitespace-tokenized `tag_ids` field in the schema.
+ * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy
+ * @param {import('@oxdev03/node-tantivy-binding').Schema} schema
+ * @param {{ include?: string[], exclude?: string[], mode?: 'and'|'or' }} tags
+ * @param {string} fieldName The tag_ids field name in the schema
+ * @returns {import('@oxdev03/node-tantivy-binding').Query | null} null if the tags object produces no constraints
+ */
+export function buildTagFilterQuery(tantivy, schema, tags, fieldName) {
+    const subqueries = [];
+    const include = Array.isArray(tags.include) ? tags.include.filter(Boolean) : [];
+    const exclude = Array.isArray(tags.exclude) ? tags.exclude.filter(Boolean) : [];
+
+    if (include.length > 0) {
+        const mode = tags.mode === 'or' ? tantivy.Occur.Should : tantivy.Occur.Must;
+        const includeQuery = tantivy.Query.booleanQuery(
+            include.map(id => ({ occur: mode, query: tantivy.Query.termQuery(schema, fieldName, id) }))
+        );
+        subqueries.push({ occur: tantivy.Occur.Must, query: includeQuery });
+    }
+
+    for (const id of exclude) {
+        subqueries.push({ occur: tantivy.Occur.MustNot, query: tantivy.Query.termQuery(schema, fieldName, id) });
+    }
+
+    if (subqueries.length === 0) return null;
+    return tantivy.Query.booleanQuery(subqueries);
 }
 
 /**
