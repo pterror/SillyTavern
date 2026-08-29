@@ -8841,6 +8841,17 @@ export function ensureSwipes(message, mesId = undefined) {
         }
     }
 
+    // The selected slot IS this message - same row, same text. Saying so matters: the save path reads
+    // a slot with text and no node_id as a brand new alternative, so a synthesised entry made this
+    // message look like it had one, on every message in the chat, on every save. The server deduped
+    // each back onto the row it came from and the client asked again next time.
+    const selectedSlot = updates.swipe_id ?? message.swipe_id ?? 0;
+    if (message.node_id && swipeInfo[selectedSlot] && !swipeInfo[selectedSlot].node_id) {
+        swipeInfo[selectedSlot] = { ...swipeInfo[selectedSlot], node_id: message.node_id };
+        swipeInfoDirty = true;
+        updated = true;
+    }
+
     if (swipesDirty) updates.swipes = swipes;
     if (swipeInfoDirty) updates.swipe_info = swipeInfo;
 
