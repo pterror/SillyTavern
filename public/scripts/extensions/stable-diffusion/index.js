@@ -1024,27 +1024,47 @@ function onSeedInput() {
 }
 
 function onScaleInput() {
-    extension_settings.sd.scale = Number($('#sd_scale').val());
+    const newScale = Number($('#sd_scale').val());
+    // Loading the page re-applies the already-saved value; don't persist a no-op.
+    const scaleChanged = newScale !== extension_settings.sd.scale;
+    extension_settings.sd.scale = newScale;
     $('#sd_scale_value').val(extension_settings.sd.scale.toFixed(1));
-    saveSettingsDebounced('extension_settings');
+    if (scaleChanged) {
+        saveSettingsDebounced('extension_settings');
+    }
 }
 
 function onStepsInput() {
-    extension_settings.sd.steps = Number($('#sd_steps').val());
+    const newSteps = Number($('#sd_steps').val());
+    // Loading the page re-applies the already-saved value; don't persist a no-op.
+    const stepsChanged = newSteps !== extension_settings.sd.steps;
+    extension_settings.sd.steps = newSteps;
     $('#sd_steps_value').val(extension_settings.sd.steps);
-    saveSettingsDebounced('extension_settings');
+    if (stepsChanged) {
+        saveSettingsDebounced('extension_settings');
+    }
 }
 
 async function onPromptPrefixInput() {
-    extension_settings.sd.prompt_prefix = $('#sd_prompt_prefix').val();
-    saveSettingsDebounced('extension_settings');
+    const newPromptPrefix = String($('#sd_prompt_prefix').val());
+    // Loading the page re-applies the already-saved value; don't persist a no-op.
+    const promptPrefixChanged = newPromptPrefix !== extension_settings.sd.prompt_prefix;
+    extension_settings.sd.prompt_prefix = newPromptPrefix;
+    if (promptPrefixChanged) {
+        saveSettingsDebounced('extension_settings');
+    }
     if (CSS.supports('field-sizing', 'content')) return;
     await resetScrollHeight($(this));
 }
 
 async function onNegativePromptInput() {
-    extension_settings.sd.negative_prompt = $('#sd_negative_prompt').val();
-    saveSettingsDebounced('extension_settings');
+    const newNegativePrompt = String($('#sd_negative_prompt').val());
+    // Loading the page re-applies the already-saved value; don't persist a no-op.
+    const negativePromptChanged = newNegativePrompt !== extension_settings.sd.negative_prompt;
+    extension_settings.sd.negative_prompt = newNegativePrompt;
+    if (negativePromptChanged) {
+        saveSettingsDebounced('extension_settings');
+    }
     if (CSS.supports('field-sizing', 'content')) return;
     await resetScrollHeight($(this));
 }
@@ -1111,15 +1131,25 @@ function onSchedulerChange() {
 }
 
 function onWidthInput() {
-    extension_settings.sd.width = Number($('#sd_width').val());
+    const newWidth = Number($('#sd_width').val());
+    // Loading the page re-applies the already-saved value; don't persist a no-op.
+    const widthChanged = newWidth !== extension_settings.sd.width;
+    extension_settings.sd.width = newWidth;
     $('#sd_width_value').val(extension_settings.sd.width);
-    saveSettingsDebounced('extension_settings');
+    if (widthChanged) {
+        saveSettingsDebounced('extension_settings');
+    }
 }
 
 function onHeightInput() {
-    extension_settings.sd.height = Number($('#sd_height').val());
+    const newHeight = Number($('#sd_height').val());
+    // Loading the page re-applies the already-saved value; don't persist a no-op.
+    const heightChanged = newHeight !== extension_settings.sd.height;
+    extension_settings.sd.height = newHeight;
     $('#sd_height_value').val(extension_settings.sd.height);
-    saveSettingsDebounced('extension_settings');
+    if (heightChanged) {
+        saveSettingsDebounced('extension_settings');
+    }
 }
 
 function onSwapDimensionsClick() {
@@ -1285,21 +1315,36 @@ function onHrUpscalerChange() {
 }
 
 function onHrScaleInput() {
-    extension_settings.sd.hr_scale = Number($('#sd_hr_scale').val());
+    const newHrScale = Number($('#sd_hr_scale').val());
+    // Loading the page re-applies the already-saved value; don't persist a no-op.
+    const hrScaleChanged = newHrScale !== extension_settings.sd.hr_scale;
+    extension_settings.sd.hr_scale = newHrScale;
     $('#sd_hr_scale_value').val(extension_settings.sd.hr_scale.toFixed(1));
-    saveSettingsDebounced('extension_settings');
+    if (hrScaleChanged) {
+        saveSettingsDebounced('extension_settings');
+    }
 }
 
 function onDenoisingStrengthInput() {
-    extension_settings.sd.denoising_strength = Number($('#sd_denoising_strength').val());
+    const newDenoisingStrength = Number($('#sd_denoising_strength').val());
+    // Loading the page re-applies the already-saved value; don't persist a no-op.
+    const denoisingStrengthChanged = newDenoisingStrength !== extension_settings.sd.denoising_strength;
+    extension_settings.sd.denoising_strength = newDenoisingStrength;
     $('#sd_denoising_strength_value').val(extension_settings.sd.denoising_strength.toFixed(2));
-    saveSettingsDebounced('extension_settings');
+    if (denoisingStrengthChanged) {
+        saveSettingsDebounced('extension_settings');
+    }
 }
 
 function onHrSecondPassStepsInput() {
-    extension_settings.sd.hr_second_pass_steps = Number($('#sd_hr_second_pass_steps').val());
+    const newHrSecondPassSteps = Number($('#sd_hr_second_pass_steps').val());
+    // Loading the page re-applies the already-saved value; don't persist a no-op.
+    const hrSecondPassStepsChanged = newHrSecondPassSteps !== extension_settings.sd.hr_second_pass_steps;
+    extension_settings.sd.hr_second_pass_steps = newHrSecondPassSteps;
     $('#sd_hr_second_pass_steps_value').val(extension_settings.sd.hr_second_pass_steps);
-    saveSettingsDebounced('extension_settings');
+    if (hrSecondPassStepsChanged) {
+        saveSettingsDebounced('extension_settings');
+    }
 }
 
 function onComfyUrlInput() {
@@ -2059,8 +2104,12 @@ function ensureElectronHubQualitySelect(models) {
         $select.empty();
 
         if (!qualities || qualities.length === 0) {
+            // Loading the page can re-run this for a model that already has no quality; don't persist a no-op.
+            const qualityChanged = extension_settings.sd.electronhub_quality !== undefined;
             extension_settings.sd.electronhub_quality = undefined;
-            saveSettingsDebounced('extension_settings');
+            if (qualityChanged) {
+                saveSettingsDebounced('extension_settings');
+            }
             return;
         }
 
