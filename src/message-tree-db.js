@@ -1243,7 +1243,11 @@ export async function setChatMetadata(directories, ownerId, chatName, metadata) 
     const entry = await getEntry(directories);
     if (!entry) return { ok: false, reason: 'unavailable' };
 
-    const node = getLabeledNodeSync(entry.db, ownerId, chatName);
+    // The caller may name a node or a legacy chat name. A node id is exact; a name resolves by label
+    // lookup, which is not unique per owner. Node first, name as the fallback.
+    const node = entry.db.get('SELECT id FROM messages WHERE id = @id AND owner_id = @ownerId',
+        { id: chatName, ownerId })
+        ?? getLabeledNodeSync(entry.db, ownerId, chatName);
     if (!node) return { ok: false, reason: 'unknown chat' };
 
     const meta = { ...(metadata || {}) };
