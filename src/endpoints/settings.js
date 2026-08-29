@@ -10,7 +10,6 @@ import { SETTINGS_FILE } from '../constants.js';
 import { getConfigValue, generateTimestamp, removeOldBackups } from '../util.js';
 import { getAllUserHandles, getUserDirectories } from '../users.js';
 import { getFileNameValidationFunction } from '../middleware/validateFileName.js';
-import { splitTagsFromSnapshot } from './tags.js';
 import { getStringHash, hashSettingsKeys, setAtPath } from '../../public/scripts/hash-utils.js';
 
 const ENABLE_EXTENSIONS = !!getConfigValue('extensions.enabled', true, 'boolean');
@@ -133,17 +132,15 @@ async function backupSettings() {
  * Makes a backup of the user's settings file - a plain copy of settings.json itself, nothing more.
  *
  * Used to also merge in a full tag definitions/tag_map export reconstructed from the metadata sqlite store
- * (mergeTagsIntoSnapshot() in tags.js -> getFullTagMapExport() -> a full scan of every character_tags row) so
- * the backup would carry tag_map the way the old tags.json-era backups did. That's gone: character_tags/
- * group_tags in the metadata store already ARE the durable, backed-up-with-the-database record of tag
- * assignments - there's no reader anywhere that needs a second, JS-reconstructed copy of that projection sitting
- * inside a settings.json snapshot, on EVERY boot and EVERY autosave or otherwise. Carrying the field forward
- * after the tags.json split was preserving old-format shape, not an actual requirement - see
- * getFullTagMapExport()'s own doc comment on where that capability still lives if something genuinely needs a
- * full export/import of tag assignments later.
- *
- * restore-snapshot (splitTagsFromSnapshot() below) still imports tags/tag_map when a restored snapshot happens
- * to carry them, so an OLD backup made before this change still restores exactly as it always did.
+ * (a now-deleted mergeTagsIntoSnapshot() in tags.js -> getFullTagMapExport() -> a full scan of every
+ * character_tags row) so the backup would carry tag_map the way the old tags.json-era backups did. That's gone,
+ * on both the write side here and the restore side (restore-snapshot below, which used to import tags/tag_map
+ * back out of a restored snapshot via a now-deleted splitTagsFromSnapshot()): character_tags/group_tags in the
+ * metadata store already ARE the durable, backed-up-with-the-database record of tag assignments, and settings.json
+ * was never authoritative for them even in the tags.json-era shape this was preserving - there's no reader
+ * anywhere that needs the settings path to know about tags in either direction. See getFullTagMapExport()'s own
+ * doc comment on where that capability still lives if something genuinely needs a full export/import of tag
+ * assignments later.
  * @param {string} handle User handle
  * @param {boolean} preventDuplicates Prevent duplicate backups
  * @returns {Promise<void>}
@@ -500,15 +497,18 @@ router.post('/restore-snapshot', getFileNameValidationFunction('name'), async (r
         }
 
         const pathToSettings = path.join(request.user.directories.root, SETTINGS_FILE);
-        const parsedSnapshot = JSON.parse(fs.readFileSync(snapshotPath, 'utf8'));
+        const snapshotContent = fs.readFileSync(snapshotPath, 'utf8');
+        JSON.parse(snapshotContent); // Validate it's actually valid JSON before overwriting settings.json with it.
 
-        // Import tags/tag_map out of the snapshot into the metadata store (see splitTagsFromSnapshot's own
-        // comment) before writing the remaining settings content, so the restored settings.json matches the
-        // post-cutover shape and the restored snapshot's tag data is applied either way.
-        const settingsOnly = await splitTagsFromSnapshot(request.user.profile.handle, request.user.directories, parsedSnapshot);
-
+        // The settings path doesn't know about tags in either direction (see backupUserSettings()'s own doc
+        // comment) - a restore is a plain copy of the snapshot back over settings.json, same as a backup is a
+        // plain copy the other way. An old snapshot that happens to still carry `tags`/`tag_map` (made before
+        // that change, or a pre-phase-3 tags.json-era one) restores those bytes back into settings.json
+        // unmodified rather than importing them into the metadata store - inert leftover data, not live state -
+        // since tag definitions/assignments there were never authoritative even when a backup carried them, and
+        // this route no longer special-cases that shape.
         fs.rmSync(pathToSettings, { force: true });
-        writeFileAtomicSync(pathToSettings, JSON.stringify(settingsOnly, null, 4), 'utf8');
+        writeFileAtomicSync(pathToSettings, snapshotContent, 'utf8');
 
         response.sendStatus(204);
     } catch (error) {
