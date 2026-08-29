@@ -1354,6 +1354,90 @@ export async function addOpeningAlternatives(directories, ownerId, contents) {
     return { ok: true, node_ids: nodeIds, added, total };
 }
 
+/**
+ * Reads the tree at a node: everything above it, and the continuation below it.
+ *
+ * Node-addressed, because a node is the only thing that actually identifies a position. A name does
+ * not: `label` is not unique per owner (12 duplicate pairs in a real install), so name lookup does
+ * `LIMIT 1` and silently picks one of them.
+ *
+ * There is no chat here. Walk up for what came before, follow default_child_id down for what comes
+ * after, and that is the whole of it.
+ *
+ * @returns {Promise<{ messages: object[], metadata: object, node_id: string, label: string|null } | null>}
+ */
+export async function loadAtNode(directories, ownerId, nodeId) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    const node = entry.db.get('SELECT * FROM messages WHERE id = @id AND owner_id = @ownerId',
+        { id: nodeId, ownerId });
+    if (!node) return null;
+
+    const leafId = descendDefaultSync(entry.db, node.id);
+    const rows = getPathSync(entry.db, leafId).filter(r => !isAnchorRow(r));
+
+    let metadata = {};
+    if (node.metadata) {
+        try { metadata = JSON.parse(node.metadata); } catch { metadata = {}; }
+    }
+    delete metadata.__is_group;
+
+    return {
+        messages: buildPathMessages(entry.db, rows, node.label ?? null),
+        metadata,
+        node_id: node.id,
+        label: node.label ?? null,
+    };
+}
+
+/**
+ * The bookmarks an owner has: nodes someone labelled so they could get back to them.
+ *
+ * Describes the nodes, not a set of objects - node id, the label text, when it was made, and the text
+ * of the message it sits on so it can be told apart from the others.
+ *
+ * @returns {Promise<{ node_id: string, label: string, created_at: number, mes: string }[]>}
+ */
+export async function listLabels(directories, ownerId) {
+    const entry = await getEntry(directories);
+    if (!entry) return [];
+
+    return entry.db.all(
+        `SELECT id, label, created_at, content FROM messages
+         WHERE owner_id = @ownerId AND label IS NOT NULL
+         ORDER BY created_at ASC, id ASC`,
+        { ownerId },
+    ).map(r => {
+        let mes = '';
+        try { mes = JSON.parse(r.content)?.mes ?? ''; } catch { /* leave empty */ }
+        return { node_id: r.id, label: r.label, created_at: r.created_at, mes };
+    });
+}
+
+/**
+ * Replaces the metadata stored on a node, node-addressed.
+ * @returns {Promise<{ ok: boolean, reason?: string, integrity?: string }>}
+ */
+export async function setNodeMetadata(directories, ownerId, nodeId, metadata) {
+    const entry = await getEntry(directories);
+    if (!entry) return { ok: false, reason: 'unavailable' };
+
+    const node = entry.db.get('SELECT id FROM messages WHERE id = @id AND owner_id = @ownerId',
+        { id: nodeId, ownerId });
+    if (!node) return { ok: false, reason: 'unknown node' };
+
+    const meta = { ...(metadata || {}) };
+    const integrity = crypto.randomUUID();
+    meta.integrity = integrity;
+    delete meta.main_chat;
+    delete meta.fork_point;
+    delete meta._tree_stored;
+
+    setMetadataSync(entry.db, nodeId, JSON.stringify(meta));
+    return { ok: true, integrity };
+}
+
 /** Direct handle for the migration module, which batches many writes into one transaction. */
 export async function getDbHandle(directories) {
     const entry = await getEntry(directories);

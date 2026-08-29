@@ -31,7 +31,7 @@ import {
     isAvailable as isTreeAvailable, isMigrated as isTreeMigrated,
     saveChatToTree, loadBranch, forkBranch, labelNode,
     deleteBranch, renameBranch as renameBranchInTree, listBranches, searchBranchesByContent,
-    renameCharacterInMessages, getAlternatives, getContinuation, editMessage, appendMessages, addAlternatives, setChatMetadata, getOpeningAlternatives, addOpeningAlternatives, selectDefaultChild,
+    renameCharacterInMessages, getAlternatives, getContinuation, editMessage, appendMessages, addAlternatives, setChatMetadata, getOpeningAlternatives, addOpeningAlternatives, loadAtNode, listLabels, setNodeMetadata, selectDefaultChild,
 } from '../message-tree-db.js';
 import { migrateCharacterChats } from '../message-tree-migration.js';
 
@@ -1192,6 +1192,54 @@ router.post('/message/select', validateAvatarUrlMiddleware, async function (requ
         return response.status(ok ? 200 : 409).send({ ok, reason: ok ? undefined : 'unknown node, or it has no parent' });
     } catch (error) {
         console.error('Error selecting alternative:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+// ---------------------------------------------------------------------------
+//  Node-addressed reads.
+//
+//  There is no chat. There is a tree, and a label is a bookmark someone put on a node they wanted to
+//  get back to. A node id is the only thing that identifies a position: `label` is not unique per
+//  owner (12 duplicate pairs in a real install), so looking one up by name silently picks whichever
+//  row comes first.
+// ---------------------------------------------------------------------------
+
+/** Reads the tree at a node: everything above it, and the continuation below it. */
+router.post('/at', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const nodeId = String(request.body.node_id || '');
+        if (!nodeId) return response.status(400).send({ error: 'node_id is required' });
+
+        const result = await loadAtNode(request.user.directories, ownerOf(request), nodeId);
+        if (!result) return response.status(404).send({ error: 'Node not found' });
+        return response.send(result);
+    } catch (error) {
+        console.error('Error reading at node:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/** The bookmarks an owner has: nodes someone labelled so they could get back to them. */
+router.post('/labels', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        return response.send(await listLabels(request.user.directories, ownerOf(request)));
+    } catch (error) {
+        console.error('Error listing labels:', error);
+        return response.status(500).send([]);
+    }
+});
+
+/** Replaces the metadata stored on a node. */
+router.post('/node/metadata', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const nodeId = String(request.body.node_id || '');
+        if (!nodeId) return response.status(400).send({ error: 'node_id is required' });
+
+        const result = await setNodeMetadata(request.user.directories, ownerOf(request), nodeId, request.body.metadata);
+        return response.status(result.ok ? 200 : 409).send(result);
+    } catch (error) {
+        console.error('Error saving node metadata:', error);
         return response.status(500).send({ error: true });
     }
 });
