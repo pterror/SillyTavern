@@ -780,7 +780,6 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
         const existingNode = getLabeledNodeSync(entry.db, ownerId, chatName);
 
         let parentId = anchor.id;
-        let lastId = null;
         let firstId = null;
 
         for (let i = 0; i < messages.length; i++) {
@@ -844,7 +843,6 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
                         setDefaultChildSync(entry.db, parentId, chosenId);
                         if (!firstId) firstId = chosenId;
                         parentId = chosenId;
-                        lastId = chosenId;
                         continue;
                     }
                     // Still on the same path? Then reuse the row. If the chain diverged upstream
@@ -855,7 +853,6 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
                         setDefaultChildSync(entry.db, parentId, known.id);
                         if (!firstId) firstId = known.id;
                         parentId = known.id;
-                        lastId = known.id;
                         continue;
                     }
                 }
@@ -890,7 +887,6 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
             setDefaultChildSync(entry.db, parentId, chosenId);
             if (!firstId) firstId = chosenId;
             parentId = chosenId;
-            lastId = chosenId;
         }
 
         // Park the chat name + metadata. An existing chat keeps its label where the user put it;

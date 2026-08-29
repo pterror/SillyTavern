@@ -16,7 +16,6 @@ import {
     buildAvatarList,
     selectCharacterByAvatar,
     eventSource,
-    event_types,
     menu_type,
     substituteParams,
     userInputGenerateMutex,

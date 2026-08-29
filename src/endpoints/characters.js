@@ -18,7 +18,7 @@ import { default as validateAvatarUrlMiddleware, getFileNameValidationFunction, 
 import { deepMerge, humanizedDateTime, tryParse, MemoryLimitedMap, getConfigValue, mutateJsonString, clientRelativePath, getUniqueName, sanitizeSafeCharacterReplacements, getArrayBufferSlice, uuidv7 } from '../util.js';
 import { TavernCardValidator } from '../validator/TavernCardValidator.js';
 import { parse, read, write, writeCardToFile, computeAvatarIdentityHashFromImageBuffer } from '../character-card-parser.js';
-import { getCharaCardV2, convertToV2, readFromV2, charaFormatData, convertWorldInfoToCharacterBook, unsetPrivateFields, omitInstallLocalFields, omitFavField, omitChatField, computeContentIdentityHash } from '../character-card-normalize.js';
+import { getCharaCardV2, convertToV2, readFromV2, charaFormatData, unsetPrivateFields, omitInstallLocalFields, omitFavField, omitChatField, computeContentIdentityHash } from '../character-card-normalize.js';
 import { calculateChatSize, calculateDataSize, toShallow } from '../character-shallow.js';
 import { invalidateThumbnail, getThumbnailVersion } from './thumbnails.js';
 import { importRisuSprites } from './sprites.js';
@@ -28,7 +28,7 @@ import { isMigrated as isTreeMigrated, listBranches as listTreeBranches } from '
 import { ByafParser } from '../byaf.js';
 import { CharXParser, persistCharXAssets } from '../charx.js';
 import cacheBuster from '../middleware/cacheBuster.js';
-import { searchCharacters, searchCharacterIds, searchCharacterIdsSorted, rebuildCharacterSearchIndex, TANTIVY_SORT_FIELDS, SORT_FIELD_TO_TANTIVY_FIELD } from './characters-search-index.js';
+import { searchCharacters, searchCharacterIds, searchCharacterIdsSorted, rebuildCharacterSearchIndex, TANTIVY_SORT_FIELDS } from './characters-search-index.js';
 import { searchGroups, searchGroupIds } from './groups-search-index.js';
 import { getGroupsData, getGroupsByIds } from './groups.js';
 import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, resolveFingerprints, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter } from '../character-metadata-db.js';

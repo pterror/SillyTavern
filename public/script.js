@@ -193,7 +193,7 @@ import {
 // Imported directly from hash-utils.js (not re-exported via utils.js like getStringHash) so this doesn't widen
 // utils.js's re-export surface - a mocked utils.js in tests/utils-findchar.test.js stubs hash-utils.js with only
 // getStringHash, and this stays independent of that.
-import { getAtPath, treeNodeAt, digestsEqual128, foldDigests128, emptyDigest128, DEFAULT_DIGEST_BUCKET_COUNT, DEFAULT_TREE_BRANCHING, characterDigestFieldsHash, characterDigestCardBodyHash, combineDigest128, characterDigestFavHash, characterDigestTagIdsHash } from './scripts/hash-utils.js';
+import { getAtPath, treeNodeAt, digestsEqual128, foldDigests128, emptyDigest128, DEFAULT_TREE_BRANCHING, characterDigestFieldsHash, characterDigestCardBodyHash, combineDigest128, characterDigestFavHash, characterDigestTagIdsHash } from './scripts/hash-utils.js';
 import { debounce_timeout, GENERATION_TYPE_TRIGGERS, IGNORE_SYMBOL, inject_ids, MEDIA_DISPLAY, MEDIA_SOURCE, MEDIA_TYPE, OVERSWIPE_BEHAVIOR, SCROLL_BEHAVIOR, SWIPE_DIRECTION, SWIPE_SOURCE, SWIPE_STATE } from './scripts/constants.js';
 
 import { cancelDebouncedMetadataSave, doDailyExtensionUpdatesCheck, extension_settings, initExtensions, loadExtensionSettings, runGenerationInterceptors } from './scripts/extensions.js';
