@@ -9950,29 +9950,30 @@ async function getChatResult() {
 }
 
 function getFirstMessage() {
-    const firstMes = getCurrentCharacter()?.first_mes || '';
-    const alternateGreetings = getCurrentCharacter()?.data?.alternate_greetings;
+    const character = getCurrentCharacter();
+    const { greetings, defaultIndex } = cardToGreetingsModel(character);
+    const regexedGreetings = greetings.map(greeting => getRegexedString(greeting, regex_placement.AI_OUTPUT));
+    const swipeId = defaultIndex ?? 0;
 
     const message = {
         name: name2,
         is_user: false,
         is_system: false,
         send_date: getMessageTimeStamp(),
-        mes: getRegexedString(firstMes, regex_placement.AI_OUTPUT),
+        mes: regexedGreetings[swipeId] ?? '',
         extra: {},
     };
 
-    if (Array.isArray(alternateGreetings) && alternateGreetings.length > 0) {
-        const swipes = [message.mes, ...(alternateGreetings.map(greeting => getRegexedString(greeting, regex_placement.AI_OUTPUT)))];
-
-        if (!message.mes) {
-            swipes.shift();
-            message.mes = swipes[0];
-        }
-
-        message.swipe_id = 0;
-        message.swipes = swipes;
-        message.swipe_info = swipes.map(_ => ({
+    // Chat swipes mirror the greeting list in stable order, with swipe_id pointing at the default (or
+    // the first greeting when there's no default) - this now matches the editor's order (previously
+    // first_mes always led the chat regardless of where it sat in the editor - see
+    // cardToGreetingsModel()). Only set when there's actually more than one greeting to swipe between;
+    // a lone default with no alternates stays a plain, non-swipeable message, same as before.
+    const hasSwipeableGreetings = regexedGreetings.length > (defaultIndex !== null ? 1 : 0);
+    if (hasSwipeableGreetings) {
+        message.swipe_id = swipeId;
+        message.swipes = regexedGreetings;
+        message.swipe_info = regexedGreetings.map(_ => ({
             send_date: message.send_date,
             gen_started: void 0,
             gen_finished: void 0,
@@ -11371,7 +11372,8 @@ export function select_selected_character(avatar, { switchMenu = true } = {}) {
     $('#character_version_textarea').val(character.data?.character_version || '');
     $('#personality_textarea').val(character.personality);
     $('#firstmessage_textarea').val(character.first_mes);
-    setGreetingPagerGreetings([character.first_mes ?? '', ...(Array.isArray(character.data?.alternate_greetings) ? character.data.alternate_greetings : [])]);
+    const greetingModel = cardToGreetingsModel(character);
+    setGreetingPagerGreetings(greetingModel.greetings, greetingModel.defaultIndex);
     $('#scenario_pole').val(character.scenario);
     $('#depth_prompt_prompt').val(character.data?.extensions?.depth_prompt?.prompt ?? '');
     $('#depth_prompt_depth').val(character.data?.extensions?.depth_prompt?.depth ?? depth_prompt_depth_default);
@@ -11473,7 +11475,8 @@ function select_rm_create({ switchMenu = true } = {}) {
     $('#character_version_textarea').val(create_save.character_version);
     $('#personality_textarea').val(create_save.personality);
     $('#firstmessage_textarea').val(create_save.first_message);
-    setGreetingPagerGreetings([create_save.first_message ?? '', ...(Array.isArray(create_save.alternate_greetings) ? create_save.alternate_greetings : [])]);
+    const greetingModel = cardToGreetingsModel({ first_mes: create_save.first_message, data: { alternate_greetings: create_save.alternate_greetings, extensions: create_save.extensions } });
+    setGreetingPagerGreetings(greetingModel.greetings, greetingModel.defaultIndex);
     $('#talkativeness_slider').val(create_save.talkativeness);
     $('#scenario_pole').val(create_save.scenario);
     $('#depth_prompt_prompt').val(create_save.depth_prompt_prompt);
@@ -12243,61 +12246,130 @@ async function openCharacterWorldPopup() {
 }
 
 /**
+ * Card <-> stable-order-greetings model, the single source of truth for splitting a character's
+ * greetings between `first_mes` (the current default, or '' when there is no default) and
+ * `alternate_greetings` (everything else, in stable order) and back. The card format itself can
+ * only express "which greeting is default" as leading position in the array, which conflates that
+ * with "where it sits in the list" - picking a new default would otherwise permanently reorder the
+ * list. `data.extensions.${GREETING_DEFAULT_POSITION_KEY}` records where in the stable order the
+ * default came from, so re-reading the card can restore it without ever touching the order. Every
+ * site that edits greetings (the sidebar pager, the Alt. Greetings popup, character load/create-mode
+ * fill, the full character save) goes through cardToGreetingsModel()/greetingsModelToCardFields()
+ * rather than doing its own index arithmetic.
+ */
+const GREETING_DEFAULT_POSITION_KEY = 'greeting_default_position';
+
+/**
+ * @typedef {{greetings: string[], defaultIndex: number|null}} GreetingsModel Ordered greeting list,
+ *   independent of which one (if any) is the default; `defaultIndex` is where the default sits in
+ *   that order, or null when the card has no default greeting at all.
+ */
+
+/**
+ * Reads a character (or a create-mode-shaped equivalent) into a {@link GreetingsModel}.
+ * @param {{first_mes?: string, data?: {alternate_greetings?: string[], extensions?: Record<string, any>}}} card
+ * @returns {GreetingsModel}
+ */
+function cardToGreetingsModel(card) {
+    const firstMes = card?.first_mes ?? '';
+    const altGreetings = Array.isArray(card?.data?.alternate_greetings) ? card.data.alternate_greetings : [];
+
+    if (firstMes === '') {
+        // Empty first_mes means "no default" - alternate_greetings holds the entire list, in order.
+        return { greetings: altGreetings.slice(), defaultIndex: null };
+    }
+
+    const recordedPosition = card?.data?.extensions?.[GREETING_DEFAULT_POSITION_KEY];
+    if (Number.isInteger(recordedPosition) && recordedPosition >= 0 && recordedPosition <= altGreetings.length) {
+        const greetings = altGreetings.slice();
+        greetings.splice(recordedPosition, 0, firstMes);
+        return { greetings, defaultIndex: recordedPosition };
+    }
+
+    // No usable recorded position (missing, out of range, or a card written/edited by something that
+    // doesn't know about it) - fall back to the pre-existing behavior: the default leads the list.
+    return { greetings: [firstMes, ...altGreetings], defaultIndex: 0 };
+}
+
+/**
+ * Inverse of {@link cardToGreetingsModel}. Callers still run the result's `alternateGreetings`
+ * through stripEmptyAlternateGreetings() themselves (with their own context label) before writing,
+ * same as every other write path.
+ * @param {GreetingsModel} model
+ * @returns {{firstMes: string, alternateGreetings: string[], greetingDefaultPosition: number|null}}
+ */
+function greetingsModelToCardFields({ greetings, defaultIndex }) {
+    if (defaultIndex === null || defaultIndex === undefined) {
+        return { firstMes: '', alternateGreetings: greetings.slice(), greetingDefaultPosition: null };
+    }
+    const clampedIndex = Math.max(0, Math.min(defaultIndex, greetings.length - 1));
+    const firstMes = greetings[clampedIndex] ?? '';
+    const alternateGreetings = greetings.filter((_, i) => i !== clampedIndex);
+    return { firstMes, alternateGreetings, greetingDefaultPosition: clampedIndex };
+}
+
+/**
+ * Where a tracked index (the default's position) ends up after removing one element at
+ * `removedIndex` from the same array. Removing the default itself clears it (returns null) rather
+ * than guessing which neighbor should inherit default status.
+ * @param {number|null} defaultIndex
+ * @param {number} removedIndex
+ */
+function reindexDefaultAfterRemoval(defaultIndex, removedIndex) {
+    if (defaultIndex === null) return null;
+    if (removedIndex === defaultIndex) return null;
+    return removedIndex < defaultIndex ? defaultIndex - 1 : defaultIndex;
+}
+
+/**
+ * Where a tracked index (the default's position) ends up after a pick-and-place move: one element
+ * removed from `sourceIndex`, then reinserted at `finalTargetIndex` (already adjusted for the
+ * removal, i.e. the exact position passed to the reinserting splice).
+ * @param {number|null} defaultIndex
+ * @param {number} sourceIndex
+ * @param {number} finalTargetIndex
+ */
+function reindexDefaultAfterMove(defaultIndex, sourceIndex, finalTargetIndex) {
+    if (defaultIndex === null) return null;
+    if (defaultIndex === sourceIndex) return finalTargetIndex;
+    let result = defaultIndex;
+    if (sourceIndex < result) result -= 1;
+    if (finalTargetIndex <= result) result += 1;
+    return result;
+}
+
+/**
  * In-memory state for the sidebar greeting pager (`< [M]/N >` next to the "First message" field).
- * greetings[0] is always first_mes, greetings[1..] are alternate_greetings, mirroring the unified
- * array the Alt. Greetings popup already works with.
+ * `greetings` is the stable-order list (see GreetingsModel above), `defaultIndex` mirrors the card's
+ * current default, and `index` is which slot the pager is currently showing.
  */
 const greetingPagerState = {
     greetings: [''],
+    defaultIndex: 0,
     index: 0,
 };
 
 /**
- * True when greetings[0] (first_mes) is empty and there's at least one alternate greeting to show
- * instead - matching getFirstMessage()'s swipe-list behavior, an empty first_mes then doesn't occupy
- * a displayed pager slot. If it's the only greeting there's nothing else to show, so it stays visible
- * as the sole (blank) slot - that's also the only way to type a first_mes into an empty-slate card.
+ * Replaces the pager's greetings list and default pointer (e.g. on character load, create-mode fill,
+ * or after the Alt. Greetings popup closes) and clamps the current index in case the list shrank.
+ * @param {string[]} greetings Stable-order greeting list.
+ * @param {number|null} defaultIndex
  */
-function isPagerFirstMesSlotHidden() {
-    const { greetings } = greetingPagerState;
-    return greetings[0] === '' && greetings.length > 1;
-}
-
-/** Number of pager slots actually shown, after applying the empty-first_mes skip above. */
-function pagerSlotCount() {
-    return greetingPagerState.greetings.length - (isPagerFirstMesSlotHidden() ? 1 : 0);
-}
-
-/**
- * Maps a displayed pager index (what the user pages through, 0-based) to the canonical index into
- * greetingPagerState.greetings ([first_mes, ...alternate_greetings]) - kept explicit here rather than
- * relying on the two index spaces happening to line up.
- * @param {number} displayIndex
- */
-function pagerDisplayToCanonicalIndex(displayIndex) {
-    return isPagerFirstMesSlotHidden() ? displayIndex + 1 : displayIndex;
-}
-
-/**
- * Replaces the pager's greetings list (e.g. on character load, create-mode fill, or after the Alt.
- * Greetings popup closes) and clamps the current index in case the list shrank.
- * @param {string[]} greetings [first_mes, ...alternate_greetings]
- */
-function setGreetingPagerGreetings(greetings) {
+function setGreetingPagerGreetings(greetings, defaultIndex) {
     greetingPagerState.greetings = greetings.length > 0 ? greetings.slice() : [''];
-    greetingPagerState.index = Math.max(0, Math.min(greetingPagerState.index, pagerSlotCount() - 1));
+    greetingPagerState.defaultIndex = greetings.length > 0 ? defaultIndex : 0;
+    greetingPagerState.index = Math.max(0, Math.min(greetingPagerState.index, greetingPagerState.greetings.length - 1));
     renderGreetingPager();
 }
 
 /** Redraws the pager controls and the visible greeting field from the current pager state. */
 function renderGreetingPager() {
     const { greetings, index } = greetingPagerState;
-    const canonicalIndex = pagerDisplayToCanonicalIndex(index);
-    $('#greeting_field').val(greetings[canonicalIndex] ?? '');
+    $('#greeting_field').val(greetings[index] ?? '');
     $('.greeting-pager-input').val(index + 1);
-    $('.greeting-pager-total').text(`/${pagerSlotCount()}`);
+    $('.greeting-pager-total').text(`/${greetings.length}`);
     $('.greeting-pager-prev').toggleClass('disabled', index === 0);
-    $('.greeting-pager-next').toggleClass('disabled', index === pagerSlotCount() - 1);
+    $('.greeting-pager-next').toggleClass('disabled', index === greetings.length - 1);
     // .val() above doesn't fire a native input event, so the token counter needs an explicit nudge.
     RA_CountCharTokens();
 }
@@ -12309,13 +12381,13 @@ function renderGreetingPager() {
  */
 function navigateGreetingPager(newIndex) {
     const { greetings, index } = greetingPagerState;
-    greetings[pagerDisplayToCanonicalIndex(index)] = String($('#greeting_field').val());
-    greetingPagerState.index = Math.max(0, Math.min(newIndex, pagerSlotCount() - 1));
+    greetings[index] = String($('#greeting_field').val());
+    greetingPagerState.index = Math.max(0, Math.min(newIndex, greetings.length - 1));
     renderGreetingPager();
 }
 
 /**
- * Debounced save for greetings other than the first (which keeps saving through the hidden
+ * Debounced save for greetings other than the default (which keeps saving through the hidden
  * #firstmessage_textarea's existing autosave path). Reuses the exact merge-attributes write the
  * Alt. Greetings popup does on close - see openAlternateGreetings()'s onClose.
  */
@@ -12323,10 +12395,19 @@ const saveGreetingPagerAlternatesDebounced = debounce(async () => {
     const avatar = $('.open_alternate_greetings').data('avatar');
     const character = avatar ? charactersStore.get(avatar) : null;
     if (!character) return;
-    const [firstMes, ...rawAltGreetings] = greetingPagerState.greetings;
-    const altGreetings = stripEmptyAlternateGreetings(rawAltGreetings, 'greeting pager save');
-    character.data.first_mes = firstMes ?? '';
+    // Hash of alternate_greetings as loaded (before this save's own mutation below) - lets the server
+    // tell a deliberate delete-to-empty apart from the stale-in-memory-read bug its guard exists for,
+    // and gives this path real 409 conflict detection it never had before.
+    const loadedAltGreetingsHash = getStringHash(JSON.stringify(character.data.alternate_greetings ?? null));
+    const { firstMes, alternateGreetings, greetingDefaultPosition } = greetingsModelToCardFields({
+        greetings: greetingPagerState.greetings,
+        defaultIndex: greetingPagerState.defaultIndex,
+    });
+    const altGreetings = stripEmptyAlternateGreetings(alternateGreetings, 'greeting pager save');
+    character.data.first_mes = firstMes;
     character.data.alternate_greetings = altGreetings;
+    if (!character.data.extensions) character.data.extensions = {};
+    character.data.extensions[GREETING_DEFAULT_POSITION_KEY] = greetingDefaultPosition;
     try {
         const response = await fetch('/api/characters/merge-attributes', {
             method: 'POST',
@@ -12334,9 +12415,11 @@ const saveGreetingPagerAlternatesDebounced = debounce(async () => {
             body: JSON.stringify({
                 avatar: avatar,
                 data: {
-                    first_mes: firstMes ?? '',
+                    first_mes: firstMes,
                     alternate_greetings: altGreetings,
+                    extensions: { [GREETING_DEFAULT_POSITION_KEY]: greetingDefaultPosition },
                 },
+                _loadedFieldHashes: { 'data.alternate_greetings': loadedAltGreetingsHash },
             }),
         });
         if (response.ok) {
@@ -12376,26 +12459,6 @@ function stripEmptyAlternateGreetings(alternateGreetings, context) {
     return filtered;
 }
 
-/**
- * True when this unified array's slot 0 (first_mes) is empty and there's at least one alternate
- * greeting to show instead - matching getFirstMessage()'s swipe-list behavior. If it's the only
- * greeting there's nothing else to show, so it stays visible as the sole (blank) slot.
- * @param {string[]} unifiedGreetings [first_mes, ...alternate_greetings]
- */
-function isFirstMesSlotSkipped(unifiedGreetings) {
-    return unifiedGreetings[0] === '' && unifiedGreetings.length > 1;
-}
-
-/**
- * Maps an array index in the unified [first_mes, ...alternate_greetings] array to its 1-based
- * displayed slot number, accounting for a skipped empty first_mes slot.
- * @param {number} index
- * @param {string[]} unifiedGreetings [first_mes, ...alternate_greetings]
- */
-function greetingDisplayPosition(index, unifiedGreetings) {
-    return isFirstMesSlotSkipped(unifiedGreetings) ? index : index + 1;
-}
-
 function openAlternateGreetings() {
     const avatar = $('.open_alternate_greetings').data('avatar');
     // Every use below is a read/mutation of this same character's own fields, never a positional array
@@ -12412,38 +12475,54 @@ function openAlternateGreetings() {
         }
     }
 
-    // Build a unified greetings array: [first_mes, ...alternate_greetings]
-    const getFirstMes = () => menu_type == 'create' ? (create_save.first_message ?? '') : (greetingsCharacter.data.first_mes ?? '');
-    const getAltArray = () => menu_type == 'create' ? create_save.alternate_greetings : greetingsCharacter.data.alternate_greetings;
-    const unifiedGreetings = [getFirstMes(), ...getAltArray()];
+    // Hash of alternate_greetings as loaded (before anything in this popup session changes it) -
+    // see saveGreetingPagerAlternatesDebounced()'s matching comment for why.
+    const loadedAltGreetingsHash = menu_type !== 'create' && greetingsCharacter
+        ? getStringHash(JSON.stringify(greetingsCharacter.data.alternate_greetings ?? null))
+        : null;
 
-    const getArray = () => unifiedGreetings;
+    const initialModel = menu_type == 'create'
+        ? cardToGreetingsModel({ first_mes: create_save.first_message ?? '', data: { alternate_greetings: create_save.alternate_greetings, extensions: create_save.extensions } })
+        : cardToGreetingsModel(greetingsCharacter);
+
+    // Live working copy for this popup instance. List operations (delete/reorder/add) mutate
+    // `model.greetings` in place via getArray(); set/demote-default reassign `model.defaultIndex`
+    // directly - both are pure pointer moves, no splicing. Neither ever gets turned back into card
+    // fields by hand, only through greetingsModelToCardFields() in syncFromUnified().
+    const model = { greetings: initialModel.greetings.slice(), defaultIndex: initialModel.defaultIndex };
+
+    const getArray = () => model.greetings;
 
     const template = $('#alternate_greetings_template .alternate_grettings').clone();
 
-    // Snapshot to detect whether any greeting was actually changed
-    const originalSnapshot = JSON.stringify(unifiedGreetings);
+    // Snapshot to detect whether anything was actually changed (order, text, or the default itself)
+    const originalSnapshot = JSON.stringify(initialModel);
 
     /**
-     * Syncs the unified array back to the underlying first_mes and alternate_greetings fields.
+     * Syncs the working model back to the underlying first_mes/alternate_greetings/extensions fields.
      * @returns {{newFirstMes: string, newAltGreetings: string[]}} What actually got written, so
      *   callers doing a follow-up server save use the exact same (filtered) list instead of
      *   re-deriving and re-filtering it themselves.
      */
     function syncFromUnified() {
-        const newFirstMes = unifiedGreetings[0] ?? '';
-        const newAltGreetings = stripEmptyAlternateGreetings(unifiedGreetings.slice(1), 'alt greetings popup');
+        const fields = greetingsModelToCardFields(model);
+        const newFirstMes = fields.firstMes;
+        const newAltGreetings = stripEmptyAlternateGreetings(fields.alternateGreetings, 'alt greetings popup');
         if (menu_type == 'create') {
             create_save.first_message = newFirstMes;
             create_save.alternate_greetings = newAltGreetings;
+            if (!create_save.extensions) create_save.extensions = {};
+            create_save.extensions[GREETING_DEFAULT_POSITION_KEY] = fields.greetingDefaultPosition;
         } else {
             greetingsCharacter.data.first_mes = newFirstMes;
             greetingsCharacter.data.alternate_greetings = newAltGreetings;
+            if (!greetingsCharacter.data.extensions) greetingsCharacter.data.extensions = {};
+            greetingsCharacter.data.extensions[GREETING_DEFAULT_POSITION_KEY] = fields.greetingDefaultPosition;
         }
         // Keep the main editor textarea in sync
         $('#firstmessage_textarea').val(newFirstMes);
-        // The popup can add, delete and reorder greetings - rebuild the pager to match.
-        setGreetingPagerGreetings([newFirstMes, ...newAltGreetings]);
+        // The popup can add, delete, reorder, and change the default - rebuild the pager to match.
+        setGreetingPagerGreetings(model.greetings, model.defaultIndex);
         return { newFirstMes, newAltGreetings };
     }
 
@@ -12453,7 +12532,7 @@ function openAlternateGreetings() {
         allowVerticalScrolling: true,
         onClose: async () => {
             const { newFirstMes, newAltGreetings } = syncFromUnified();
-            if (menu_type !== 'create' && JSON.stringify(unifiedGreetings) !== originalSnapshot) {
+            if (menu_type !== 'create' && JSON.stringify(model) !== originalSnapshot) {
                 const avatar = greetingsCharacter?.avatar;
                 if (avatar) {
                     try {
@@ -12465,7 +12544,9 @@ function openAlternateGreetings() {
                                 data: {
                                     first_mes: newFirstMes,
                                     alternate_greetings: newAltGreetings,
+                                    extensions: { [GREETING_DEFAULT_POSITION_KEY]: greetingsCharacter.data.extensions[GREETING_DEFAULT_POSITION_KEY] },
                                 },
+                                _loadedFieldHashes: { 'data.alternate_greetings': loadedAltGreetingsHash },
                             }),
                         });
                         if (response.ok) {
@@ -12488,12 +12569,8 @@ function openAlternateGreetings() {
         },
     });
 
-    for (let index = 0; index < unifiedGreetings.length; index++) {
-        if (index === 0 && isFirstMesSlotSkipped(unifiedGreetings)) {
-            // Empty first_mes doesn't occupy a slot here either - see getFirstMessage()'s equivalent skip.
-            continue;
-        }
-        addAlternateGreeting(template, unifiedGreetings[index], index, getArray, popup, greetingDisplayPosition(index, unifiedGreetings));
+    for (let index = 0; index < model.greetings.length; index++) {
+        addAlternateGreeting(template, model.greetings[index], index, getArray, popup, model, index + 1);
     }
 
     // Filter input handler
@@ -12515,7 +12592,7 @@ function openAlternateGreetings() {
         // addAlternateGreeting(). It doesn't get pushed into the array here, so closing the popup
         // (or any other write) without typing into it just never sees it, no filtering needed.
         const index = array.length;
-        addAlternateGreeting(template, '', index, getArray, popup, greetingDisplayPosition(index, array), true);
+        addAlternateGreeting(template, '', index, getArray, popup, model, index + 1, true);
         updateAlternateGreetingsHintVisibility(template);
         const list = template.find('.alternate_greetings_list');
         list.scrollTop(list.prop('scrollHeight'));
@@ -12585,23 +12662,24 @@ function refreshInsertionPoints(template, getArray) {
 }
 
 /**
- * Adds an alternate greeting to the template.
+ * Adds a greeting row to the template.
  * @param {JQuery<HTMLElement>} template
  * @param {string} greeting
- * @param {number} index Position in the unified [first_mes, ...alternate_greetings] array. For a
- *   `pending` row this is only a prediction of where it'll land once it has text - see below.
+ * @param {number} index Position in the stable-order greetings array. For a `pending` row this is
+ *   only a prediction of where it'll land once it has text - see below.
  * @param {() => any[]} getArray
  * @param {Popup} popup
+ * @param {GreetingsModel} model Live working model for this popup instance - `model.defaultIndex` is
+ *   read here to decide badge/set-default-vs-demote visibility, and reassigned by the set/demote
+ *   handlers below (a pure pointer move - the stable order never changes).
  * @param {number} [displayPosition] 1-based slot number to show the user; defaults to index + 1.
- *   Callers pass this explicitly when an empty first_mes has been skipped, so the visible numbering
- *   still starts at 1 - see greetingDisplayPosition().
  * @param {boolean} [pending] True for a just-added, still-blank row: it exists only in this DOM
  *   block, not yet as a real entry in the array, so closing the popup (or any other write) while
  *   it's still blank simply never sees it - no entry, nothing to filter out. The very first
  *   non-blank keystroke commits it into the array (at whatever the end is *at that moment*, since
  *   another pending row may have committed first); every keystroke after that is a normal update.
  */
-function addAlternateGreeting(template, greeting, index, getArray, popup, displayPosition = index + 1, pending = false) {
+function addAlternateGreeting(template, greeting, index, getArray, popup, model, displayPosition = index + 1, pending = false) {
     const greetingBlock = $('#alternate_greeting_form_template .alternate_greeting').clone();
     let committed = !pending;
     greetingBlock.attr('data-index', index);
@@ -12615,19 +12693,12 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, displa
                     // Still nothing authored - stays UI-only.
                     return;
                 }
-                const wasFirstMesSlotSkipped = isFirstMesSlotSkipped(array);
                 index = array.length;
                 array.push(value);
                 committed = true;
-                if (!wasFirstMesSlotSkipped && isFirstMesSlotSkipped(array)) {
-                    // This card had only a blank first_mes shown as its sole slot - committing the
-                    // first alternate now hides that slot, so drop its row instead of leaving a
-                    // stale duplicate "1".
-                    template.find('.alternate_greeting[data-index="0"]').remove();
-                }
                 greetingBlock.attr('data-index', index);
                 greetingBlock.find('.editor_maximize').attr('data-for', `alternate_greeting_${index}`);
-                greetingBlock.find('.greeting_index').text(greetingDisplayPosition(index, array));
+                greetingBlock.find('.greeting_index').text(index + 1);
                 greetingBlock.find('.set_default_greeting').show();
                 greetingBlock.find('.pick_up_greeting').show();
                 return;
@@ -12637,14 +12708,11 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, displa
     greetingBlock.find('.editor_maximize').attr('data-for', `alternate_greeting_${index}`);
     greetingBlock.find('.greeting_index').text(displayPosition);
 
-    // Show default badge on greeting #1
-    if (index === 0) {
+    // Badge and demote-vs-set-as-default are keyed on whether this row IS the current default, not
+    // its position - the default can sit anywhere in the stable order now. When model.defaultIndex is
+    // null (no default at all), every row falls into the set-as-default branch.
+    if (index === model.defaultIndex) {
         greetingBlock.find('.greeting_default_badge').show();
-    }
-
-    // Show set-as-default on non-first, demote on first - a still-pending row gets neither until
-    // it's committed (see the input handler above), since there's nothing real to promote/move yet.
-    if (index === 0) {
         greetingBlock.find('.demote_default_greeting').show();
     } else if (!pending) {
         greetingBlock.find('.set_default_greeting').show();
@@ -12665,13 +12733,14 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, displa
         }
 
         const array = getArray();
-        const label = index === 0 ? 'the default greeting' : 'this greeting';
+        const label = index === model.defaultIndex ? 'the default greeting' : 'this greeting';
         const confirm = await callGenericPopup(t`Are you sure you want to delete ${label}?`, POPUP_TYPE.CONFIRM);
         if (!confirm) {
             return;
         }
 
         array.splice(index, 1);
+        model.defaultIndex = reindexDefaultAfterRemoval(model.defaultIndex, index);
 
         // Sync and reopen
         await popup.complete(POPUP_RESULT.AFFIRMATIVE);
@@ -12721,6 +12790,7 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, displa
             }
             // Insert at new position
             array.splice(targetPosition, 0, moved);
+            model.defaultIndex = reindexDefaultAfterMove(model.defaultIndex, sourceIndex, targetPosition);
 
             // Rebuild popup
             await popup.complete(POPUP_RESULT.AFFIRMATIVE);
@@ -12728,7 +12798,7 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, displa
         });
     });
 
-    // Set as default greeting (move to position 0)
+    // Set as default greeting - pointer move only, the stable order never changes.
     greetingBlock.find('.set_default_greeting').on('click', async function (event) {
         event.preventDefault();
         event.stopPropagation();
@@ -12738,23 +12808,19 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, displa
             return;
         }
 
-        const array = getArray();
-        const [moved] = array.splice(index, 1);
-        array.unshift(moved);
+        model.defaultIndex = index;
 
         await popup.complete(POPUP_RESULT.AFFIRMATIVE);
         openAlternateGreetings();
     });
 
-    // Demote from default (move from position 0 to position 1)
+    // Demote from default - clears the default entirely (a card can have no default at all); pointer
+    // move only, the stable order never changes.
     greetingBlock.find('.demote_default_greeting').on('click', async function (event) {
         event.preventDefault();
         event.stopPropagation();
 
-        const array = getArray();
-        if (array.length < 2) return;
-        const [moved] = array.splice(0, 1);
-        array.splice(1, 0, moved);
+        model.defaultIndex = null;
 
         await popup.complete(POPUP_RESULT.AFFIRMATIVE);
         openAlternateGreetings();
@@ -12855,7 +12921,7 @@ export async function createOrEditCharacter(e) {
                 $(field.id).val(fieldValue);
                 field.callback && field.callback(fieldValue);
             });
-            setGreetingPagerGreetings(['']);
+            setGreetingPagerGreetings([''], 0);
 
             if (Array.isArray(create_save.extra_books) && create_save.extra_books.length > 0) {
                 const fileName = getCharaFilename(null, { manualAvatarKey: avatarId });
@@ -13013,6 +13079,15 @@ export async function createOrEditCharacter(e) {
                     for (const value of stripEmptyAlternateGreetings(editedGreetingsCharacter.data.alternate_greetings, 'edit character')) {
                         formData.append('alternate_greetings', value);
                     }
+                }
+                if (editedGreetingsCharacter) {
+                    // Same staleness problem alternate_greetings has above: data.json_data (what
+                    // charaFormatData() bases the rest of data.extensions on) was captured at load time
+                    // and can't see an in-session default-greeting change - send the live value
+                    // explicitly so it isn't lost under a new-avatar full-card save.
+                    formData.append('extensions', JSON.stringify({
+                        [GREETING_DEFAULT_POSITION_KEY]: editedGreetingsCharacter.data.extensions?.[GREETING_DEFAULT_POSITION_KEY] ?? null,
+                    }));
                 }
 
                 const editHeaders = getRequestHeaders({ omitContentType: true });
@@ -15149,18 +15224,19 @@ jQuery(async function () {
         });
     });
 
-    // Greeting pager: steps through [first_mes, ...alternate_greetings] in the sidebar, editing
-    // whichever one is currently shown. See setGreetingPagerGreetings() and friends above.
+    // Greeting pager: steps through the stable-order greeting list in the sidebar, editing whichever
+    // one is currently shown. See setGreetingPagerGreetings() and friends above.
     $('#greeting_field').on('input', function () {
         const value = String($(this).val());
-        const canonicalIndex = pagerDisplayToCanonicalIndex(greetingPagerState.index);
-        greetingPagerState.greetings[canonicalIndex] = value;
-        if (canonicalIndex === 0) {
-            // Greeting 1 stays authoritative in #firstmessage_textarea, which drives the existing
-            // first_mes autosave/form-snapshot/FormData bindings untouched.
+        const { index, defaultIndex } = greetingPagerState;
+        greetingPagerState.greetings[index] = value;
+        if (index === defaultIndex) {
+            // The default greeting stays authoritative in #firstmessage_textarea, which drives the
+            // existing first_mes autosave/form-snapshot/FormData bindings untouched.
             $('#firstmessage_textarea').val(value).trigger('input');
         } else if (menu_type === 'create') {
-            create_save.alternate_greetings[canonicalIndex - 1] = value;
+            const fields = greetingsModelToCardFields({ greetings: greetingPagerState.greetings, defaultIndex });
+            create_save.alternate_greetings = stripEmptyAlternateGreetings(fields.alternateGreetings, 'greeting pager create-mode input');
         } else {
             saveGreetingPagerAlternatesDebounced();
         }
