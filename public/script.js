@@ -11504,6 +11504,10 @@ async function displayChats(searchQuery, currentChat, displayName, avatarImg, se
             template.find('.chat_messages_num').text(`${chat.message_count} 💬)`);
             template.find('.select_chat_block_mes').text(chat.preview_message);
             template.find('.PastChat_cross').attr('file_name', chat.file_name);
+            if (chat.node_id) {
+                template.find('.PastChat_cross').attr('node_id', chat.node_id);
+                template.find('.renameChatButton').attr('node_id', chat.node_id);
+            }
             template.find('.chat_messages_date').text(timestampToMoment(chat.last_mes).format('lll'));
 
             if (isSelected) {
@@ -14595,7 +14599,7 @@ export async function doNewChat({ deleteCurrentChat = false } = {}) {
  * @param {string} param.newFileName New name for the chat (no JSONL extension)
  * @param {boolean} [param.loader=true] Whether to show loader during the operation
  */
-export async function renameGroupOrCharacterChat({ characterAvatar, groupId, oldFileName, newFileName, loader: showLoader }) {
+export async function renameGroupOrCharacterChat({ characterAvatar, groupId, oldFileName, newFileName, loader: showLoader, byNode = false }) {
     const currentChatId = getCurrentChatId();
     const body = {
         is_group: !!groupId,
@@ -14643,7 +14647,9 @@ export async function renameGroupOrCharacterChat({ characterAvatar, groupId, old
 
         if (groupId) {
             await renameGroupChat(groupId, oldFileName, newFileName);
-        } else if (characterAvatar !== undefined && characterAvatar === this_avatar && charactersStore.get(characterAvatar)?.chat === oldFileName) {
+        // When the target is a node, the pointer already names that node and renaming its bookmark
+        // does not move it. Only a name-addressed pointer has to follow the new name.
+        } else if (!byNode && characterAvatar !== undefined && characterAvatar === this_avatar && charactersStore.get(characterAvatar)?.chat === oldFileName) {
             charactersStore.update(characterAvatar, { chat: newFileName });
             $('#selected_chat_pole').val(charactersStore.get(characterAvatar).chat);
             // Update the chat pointer through merge-attributes (which routes it to
@@ -14675,13 +14681,14 @@ export async function renameGroupOrCharacterChat({ characterAvatar, groupId, old
  * @param {string} oldFileName Old name of the chat (no JSONL extension)
  * @param {string} newName New name for the chat (no JSONL extension)
  */
-export async function renameChat(oldFileName, newName) {
+export async function renameChat(oldFileName, newName, { byNode = false } = {}) {
     return await renameGroupOrCharacterChat({
         characterAvatar: this_avatar,
         groupId: selected_group,
         oldFileName: oldFileName,
         newFileName: newName,
         loader: true,
+        byNode,
     });
 }
 
@@ -15592,7 +15599,9 @@ jQuery(async function () {
 
     $(document).on('click', '.PastChat_cross', async function (e, { fromSlashCommand = false } = {}) {
         e.stopPropagation();
-        const deleteFileName = $(this).attr('file_name');
+        // The node it sits on, when there is one. Deleting removes the bookmark; a name would only
+        // find whichever row sorted first.
+        const deleteFileName = $(this).attr('node_id') || $(this).attr('file_name');
         const row = $(this).closest('.select_chat_block_wrapper');
         console.debug('detected cross click for' + deleteFileName);
 
@@ -15835,6 +15844,7 @@ jQuery(async function () {
     $(document).on('click', '.renameChatButton', async function (e) {
         e.stopPropagation();
         const oldFileName = $(this).closest('.select_chat_block_wrapper').find('.select_chat_block_filename').text();
+        const nodeId = $(this).attr('node_id');
 
         const popupText = await renderTemplateAsync('chatRename');
         const newName = await callGenericPopup(popupText, POPUP_TYPE.INPUT, oldFileName);
@@ -15844,7 +15854,8 @@ jQuery(async function () {
             return;
         }
 
-        await renameChat(oldFileName, newName);
+        // Rename the bookmark on its node. The displayed name is only what the box starts with.
+        await renameChat(nodeId || oldFileName, newName, { byNode: !!nodeId });
 
         await delay(250);
         $('#option_select_chat').trigger('click');

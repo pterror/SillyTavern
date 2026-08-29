@@ -723,6 +723,18 @@ function buildPathMessages(db, rows, branchName = null) {
 }
 
 /**
+ * Resolves a target that may be a node id or a legacy chat name.
+ *
+ * A node id is exact. A name resolves by label lookup, which is not unique per owner - this install
+ * has 12 duplicate (owner, label) pairs - so it picks whichever row sorts first. Node first, name as
+ * the fallback, so an old caller keeps working while the wrong-row hazard goes away for new ones.
+ */
+function resolveNodeOrName(db, ownerId, target) {
+    return db.get('SELECT * FROM messages WHERE id = @id AND owner_id = @ownerId', { id: target, ownerId })
+        ?? getLabeledNodeSync(db, ownerId, target);
+}
+
+/**
  * Loads a chat as the flat message array the client expects. Resolution is: labeled node → descend
  * `default_child_id` to the deepest row → walk parents back to the anchor → drop the anchor.
  *
@@ -995,8 +1007,9 @@ export async function searchBranchesByContent(directories, ownerId, fragments) {
 export async function deleteBranch(directories, ownerId, branchName) {
     const entry = await getEntry(directories);
     if (!entry) return false;
-    const node = getLabeledNodeSync(entry.db, ownerId, branchName);
+    const node = resolveNodeOrName(entry.db, ownerId, branchName);
     if (!node) return false;
+    // Removing a bookmark. The node and everything below it stays exactly where it is.
     labelMessageSync(entry.db, node.id, null);
     return true;
 }
@@ -1004,8 +1017,9 @@ export async function deleteBranch(directories, ownerId, branchName) {
 export async function renameBranch(directories, ownerId, oldName, newName) {
     const entry = await getEntry(directories);
     if (!entry) return false;
-    const node = getLabeledNodeSync(entry.db, ownerId, oldName);
+    const node = resolveNodeOrName(entry.db, ownerId, oldName);
     if (!node) return false;
+    // Editing a bookmark's text. It does not move, and nothing pointing at the node cares.
     labelMessageSync(entry.db, node.id, newName);
     return true;
 }
