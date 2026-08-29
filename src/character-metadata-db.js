@@ -2065,9 +2065,25 @@ export async function backfillActiveChatFromCards(directories) {
  * up as a targeted tag_ids fetch (~11.5MB for 314k records) instead of a whole-record refetch (~314MB).
  *
  * Batched and yielding, same shape as backfillContentIdentityHashes(): BATCH_FLUSH_SIZE rows per
- * transaction, setImmediate() between batches so other requests aren't starved. Runs once per boot
- * (gated by whether any rows actually need it); a row patched by this function is never patched again
- * (the NOT LIKE guard in the SELECT won't match it afterward).
+ * transaction, setImmediate() between batches so other requests aren't starved.
+ *
+ * Gated by its own `tag_ids_shallow_json_backfill_completed` meta flag (same one-time-ever shape as
+ * backfillCardTagsIfNeeded()'s `card_tags_backfill_completed`) - measured why this needed adding rather than
+ * just trusting "a row patched by this function is never patched again": that's true for any *individual* row,
+ * but with no flag the discovery step itself (the NOT LIKE full-table scan below, which SQLite can't index -
+ * a leading `%` wildcard forces a full `characters` scan every time, confirmed via EXPLAIN QUERY PLAN) still
+ * ran on every single boot forever, regardless of whether anything was actually left to do. On a 327k-row
+ * library that scan alone costs low hundreds of ms once nothing's left to backfill - cheap next to what this
+ * function looked like while genuine backfill work was still happening (one production boot logged 16.8s here,
+ * ~94% of the whole metadata bootstrap chain, while a few hundred thousand legacy rows were still being
+ * patched) but still O(rows) paid forever for a question a flag answers in O(1). The flag is only set once a
+ * fresh re-check of the same discovery query (at the end of the function) finds nothing left - not derived from
+ * how many rows this pass itself patched, since a row can legitimately need no work from this exact call (a
+ * concurrent writer patched it between the initial scan and its batch, or it was deleted in the meantime)
+ * without ever being counted as "processed", which would otherwise make a genuinely-complete pass look
+ * incomplete forever. A row that actually failed to patch (per-row try/catch, logged and skipped) still shows
+ * up in that final re-check, so the flag correctly stays unset and the next boot retries it - same "will retry
+ * next boot" semantics backfillContentIdentityHashes() already has.
  * @param {import('./users.js').UserDirectoryList} directories
  * @returns {Promise<void>}
  */
@@ -2075,12 +2091,18 @@ export async function backfillTagIdsInShallowJson(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
 
+    const already = entry.db.get("SELECT value FROM meta WHERE key = 'tag_ids_shallow_json_backfill_completed'");
+    if (already) return;
+
     // One scan to find all rows needing backfill (avoids repeated NOT LIKE full-table scans per batch).
     const idsToBackfill = entry.db.all(
         "SELECT id FROM characters WHERE shallow_json NOT LIKE '%\"tag_ids\":%'",
     ).map(r => r.id);
 
-    if (idsToBackfill.length === 0) return;
+    if (idsToBackfill.length === 0) {
+        entry.db.run("INSERT INTO meta (key, value) VALUES ('tag_ids_shallow_json_backfill_completed', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value");
+        return;
+    }
 
     console.log(color.cyan(`[character-metadata] Backfilling tag_ids into shallow_json for ${idsToBackfill.length} character(s)...`));
     let processed = 0;
@@ -2135,6 +2157,17 @@ export async function backfillTagIdsInShallowJson(directories) {
     }
 
     console.log(color.cyan(`[character-metadata] tag_ids shallow_json backfill complete (${processed} character(s) in ${((Date.now() - progressStart) / 1000).toFixed(1)}s).`));
+
+    // Re-run the same discovery query once more to decide whether the flag can be set - NOT `processed ===
+    // idsToBackfill.length`, because a row skipped during the loop (already patched by a concurrent writer
+    // between the initial scan and its batch, or deleted in the meantime) legitimately needs no work but also
+    // never increments `processed`, which would otherwise make a genuinely-complete pass look incomplete
+    // forever. Paying this scan once more here is fine - it's the tail of a pass that was already doing real
+    // work this boot, not the repeated per-boot cost the flag exists to avoid.
+    const remaining = entry.db.get("SELECT 1 FROM characters WHERE shallow_json NOT LIKE '%\"tag_ids\":%' LIMIT 1");
+    if (!remaining) {
+        entry.db.run("INSERT INTO meta (key, value) VALUES ('tag_ids_shallow_json_backfill_completed', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value");
+    }
 }
 
 /**
