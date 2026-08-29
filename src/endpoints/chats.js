@@ -31,7 +31,7 @@ import {
     isAvailable as isTreeAvailable, isMigrated as isTreeMigrated,
     saveChatToTree, loadBranch, forkBranch, labelNode,
     deleteBranch, renameBranch as renameBranchInTree, listBranches, searchBranchesByContent,
-    renameCharacterInMessages, getAlternatives, getContinuation, editMessage, appendMessages, addAlternatives, setChatMetadata, selectDefaultChild,
+    renameCharacterInMessages, getAlternatives, getContinuation, editMessage, appendMessages, addAlternatives, setChatMetadata, getOpeningAlternatives, addOpeningAlternatives, selectDefaultChild,
 } from '../message-tree-db.js';
 import { migrateCharacterChats } from '../message-tree-migration.js';
 
@@ -1118,6 +1118,40 @@ router.post('/message/append', validateAvatarUrlMiddleware, async function (requ
         return response.status(result.ok ? 200 : 409).send(result);
     } catch (error) {
         console.error('Error appending messages:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/**
+ * The openings a character can start on: every greeting any of its chats has ever opened from.
+ *
+ * Addressed by character rather than by node, because starting a chat has no node to start from yet.
+ * A new chat picks one of these and holds its id, instead of copying a greeting off the card into a
+ * fresh message the way file-backed chats had to.
+ */
+router.post('/openings', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const offset = Number.isFinite(Number(request.body.offset)) ? Number(request.body.offset) : undefined;
+        const limit = Number.isFinite(Number(request.body.limit)) ? Number(request.body.limit) : undefined;
+        const result = await getOpeningAlternatives(request.user.directories, ownerOf(request), { offset, limit });
+        if (!result) return response.status(404).send({ error: 'Tree storage unavailable' });
+        return response.send(result);
+    } catch (error) {
+        console.error('Error listing openings:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/** Makes sure these openings exist for a character, creating its anchor if this is the first. */
+router.post('/openings/ensure', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const contents = request.body.contents ?? request.body.content;
+        if (!contents) return response.status(400).send({ error: 'content or contents is required' });
+
+        const result = await addOpeningAlternatives(request.user.directories, ownerOf(request), contents);
+        return response.status(result.ok ? 200 : 409).send(result);
+    } catch (error) {
+        console.error('Error ensuring openings:', error);
         return response.status(500).send({ error: true });
     }
 });
