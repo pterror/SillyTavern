@@ -31,7 +31,7 @@ import {
     isAvailable as isTreeAvailable, isMigrated as isTreeMigrated,
     saveChatToTree, loadBranch, forkBranch, labelNode,
     deleteBranch, renameBranch as renameBranchInTree, listBranches, searchBranchesByContent,
-    renameCharacterInMessages, getAlternatives, getContinuation, editMessage, appendMessages, addAlternatives, setChatMetadata, getOpeningAlternatives, addOpeningAlternatives, relocateChat, selectDefaultChild,
+    renameCharacterInMessages, getAlternatives, getContinuation, editMessage, appendMessages, addAlternatives, setChatMetadata, getOpeningAlternatives, addOpeningAlternatives, selectDefaultChild,
 } from '../message-tree-db.js';
 import { migrateCharacterChats } from '../message-tree-migration.js';
 
@@ -1192,29 +1192,6 @@ router.post('/message/select', validateAvatarUrlMiddleware, async function (requ
         return response.status(ok ? 200 : 409).send({ ok, reason: ok ? undefined : 'unknown node, or it has no parent' });
     } catch (error) {
         console.error('Error selecting alternative:', error);
-        return response.status(500).send({ error: true });
-    }
-});
-
-/**
- * Moves a chat onto a different node.
- *
- * Loading a chat walks up from its label, so the label is what decides which path - and which opening
- * alternative - it comes back on. Switching alternatives has to move it or the reload returns the old
- * path.
- */
-router.post('/relocate', validateAvatarUrlMiddleware, async function (request, response) {
-    try {
-        const chatName = String(request.body.file_name || '');
-        const nodeId = String(request.body.node_id || '');
-        if (!chatName || !nodeId) {
-            return response.status(400).send({ error: 'file_name and node_id are required' });
-        }
-
-        const result = await relocateChat(request.user.directories, ownerOf(request), chatName, nodeId);
-        return response.status(result.ok ? 200 : 409).send(result);
-    } catch (error) {
-        console.error('Error relocating chat:', error);
         return response.status(500).send({ error: true });
     }
 });

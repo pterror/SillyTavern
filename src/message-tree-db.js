@@ -1354,51 +1354,6 @@ export async function addOpeningAlternatives(directories, ownerId, contents) {
     return { ok: true, node_ids: nodeIds, added, total };
 }
 
-/**
- * Moves a chat onto a different node.
- *
- * A chat is a label, and loading one walks UP from the labelled node - so the label is what decides
- * which path, and therefore which opening alternative, the chat comes back on. Switching to a
- * different alternative without moving the label changes nothing durable: the reload finds the label
- * still sitting on the old path and returns the old alternative, which is why a reload came back on
- * a previous selection.
- *
- * The anchor's default_child_id can't hold this. It is one value shared by every chat the character
- * has, while "which opening am I on" is per-chat.
- *
- * Metadata rides along, because it lives on the labelled node too and would otherwise be left behind.
- *
- * @returns {Promise<{ ok: boolean, reason?: string }>}
- */
-export async function relocateChat(directories, ownerId, chatName, newNodeId) {
-    const entry = await getEntry(directories);
-    if (!entry) return { ok: false, reason: 'unavailable' };
-
-    const target = entry.db.get('SELECT id, label FROM messages WHERE id = @id AND owner_id = @ownerId',
-        { id: newNodeId, ownerId });
-    if (!target) return { ok: false, reason: 'unknown node' };
-
-    const current = getLabeledNodeSync(entry.db, ownerId, chatName);
-    if (!current) return { ok: false, reason: 'unknown chat' };
-    if (current.id === newNodeId) return { ok: true };
-
-    // Refuse to land on a node that is already some other chat, rather than silently stealing its
-    // name or leaving two rows claiming it.
-    if (target.label && target.label !== chatName) {
-        return { ok: false, reason: `node already labelled "${target.label}"` };
-    }
-
-    entry.db.transaction(() => {
-        const metadata = current.metadata ?? null;
-        labelMessageSync(entry.db, current.id, null);
-        setMetadataSync(entry.db, current.id, null);
-        labelMessageSync(entry.db, newNodeId, chatName);
-        setMetadataSync(entry.db, newNodeId, metadata);
-    });
-
-    return { ok: true };
-}
-
 /** Direct handle for the migration module, which batches many writes into one transaction. */
 export async function getDbHandle(directories) {
     const entry = await getEntry(directories);
