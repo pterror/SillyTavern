@@ -12323,7 +12323,8 @@ const saveGreetingPagerAlternatesDebounced = debounce(async () => {
     const avatar = $('.open_alternate_greetings').data('avatar');
     const character = avatar ? charactersStore.get(avatar) : null;
     if (!character) return;
-    const [firstMes, ...altGreetings] = greetingPagerState.greetings;
+    const [firstMes, ...rawAltGreetings] = greetingPagerState.greetings;
+    const altGreetings = stripEmptyAlternateGreetings(rawAltGreetings, 'greeting pager save');
     character.data.first_mes = firstMes ?? '';
     character.data.alternate_greetings = altGreetings;
     try {
@@ -12356,6 +12357,24 @@ const saveGreetingPagerAlternatesDebounced = debounce(async () => {
         toastr.error(t`Failed to save the greeting. Your edit is still shown here, but it was not saved.`, t`Greeting not saved`);
     }
 }, DEFAULT_SAVE_EDIT_TIMEOUT);
+
+/**
+ * Final safety net for the "no empty string ever lands in alternate_greetings" invariant. The
+ * primary defense is that a greeting row never becomes a real array entry while it's blank (see the
+ * `pending`/`committed` handling in addAlternateGreeting) - this just catches anything that slips
+ * through regardless, and says so loudly, because at that point some path put an empty in that
+ * shouldn't have been able to.
+ * @param {string[]} alternateGreetings
+ * @param {string} context Short label identifying which write path this ran in, for the log.
+ */
+function stripEmptyAlternateGreetings(alternateGreetings, context) {
+    const filtered = alternateGreetings.filter(greeting => greeting !== '');
+    const dropped = alternateGreetings.length - filtered.length;
+    if (dropped > 0) {
+        console.warn(`[alternate_greetings] Dropped ${dropped} empty entr${dropped === 1 ? 'y' : 'ies'} before writing (${context}). An empty string should never reach alternate_greetings - something upstream let one through.`);
+    }
+    return filtered;
+}
 
 /**
  * True when this unified array's slot 0 (first_mes) is empty and there's at least one alternate
@@ -12405,10 +12424,15 @@ function openAlternateGreetings() {
     // Snapshot to detect whether any greeting was actually changed
     const originalSnapshot = JSON.stringify(unifiedGreetings);
 
-    /** Syncs the unified array back to the underlying first_mes and alternate_greetings fields. */
+    /**
+     * Syncs the unified array back to the underlying first_mes and alternate_greetings fields.
+     * @returns {{newFirstMes: string, newAltGreetings: string[]}} What actually got written, so
+     *   callers doing a follow-up server save use the exact same (filtered) list instead of
+     *   re-deriving and re-filtering it themselves.
+     */
     function syncFromUnified() {
         const newFirstMes = unifiedGreetings[0] ?? '';
-        const newAltGreetings = unifiedGreetings.slice(1);
+        const newAltGreetings = stripEmptyAlternateGreetings(unifiedGreetings.slice(1), 'alt greetings popup');
         if (menu_type == 'create') {
             create_save.first_message = newFirstMes;
             create_save.alternate_greetings = newAltGreetings;
@@ -12419,7 +12443,8 @@ function openAlternateGreetings() {
         // Keep the main editor textarea in sync
         $('#firstmessage_textarea').val(newFirstMes);
         // The popup can add, delete and reorder greetings - rebuild the pager to match.
-        setGreetingPagerGreetings(unifiedGreetings);
+        setGreetingPagerGreetings([newFirstMes, ...newAltGreetings]);
+        return { newFirstMes, newAltGreetings };
     }
 
     const popup = new Popup(template, POPUP_TYPE.TEXT, '', {
@@ -12427,7 +12452,7 @@ function openAlternateGreetings() {
         large: true,
         allowVerticalScrolling: true,
         onClose: async () => {
-            syncFromUnified();
+            const { newFirstMes, newAltGreetings } = syncFromUnified();
             if (menu_type !== 'create' && JSON.stringify(unifiedGreetings) !== originalSnapshot) {
                 const avatar = greetingsCharacter?.avatar;
                 if (avatar) {
@@ -12438,8 +12463,8 @@ function openAlternateGreetings() {
                             body: JSON.stringify({
                                 avatar: avatar,
                                 data: {
-                                    first_mes: unifiedGreetings[0] ?? '',
-                                    alternate_greetings: unifiedGreetings.slice(1),
+                                    first_mes: newFirstMes,
+                                    alternate_greetings: newAltGreetings,
                                 },
                             }),
                         });
@@ -12486,15 +12511,11 @@ function openAlternateGreetings() {
 
     template.find('.add_alternate_greeting').on('click', function () {
         const array = getArray();
-        const wasFirstMesSlotSkipped = isFirstMesSlotSkipped(array);
+        // The new row is UI-only until it has text - see the `pending` handling in
+        // addAlternateGreeting(). It doesn't get pushed into the array here, so closing the popup
+        // (or any other write) without typing into it just never sees it, no filtering needed.
         const index = array.length;
-        array.push('');
-        if (!wasFirstMesSlotSkipped && isFirstMesSlotSkipped(array)) {
-            // This card had only a blank first_mes shown as its sole slot - adding the first
-            // alternate now hides that slot, so drop its row instead of leaving a stale duplicate "1".
-            template.find('.alternate_greeting[data-index="0"]').remove();
-        }
-        addAlternateGreeting(template, '', index, getArray, popup, greetingDisplayPosition(index, array));
+        addAlternateGreeting(template, '', index, getArray, popup, greetingDisplayPosition(index, array), true);
         updateAlternateGreetingsHintVisibility(template);
         const list = template.find('.alternate_greetings_list');
         list.scrollTop(list.prop('scrollHeight'));
@@ -12567,21 +12588,50 @@ function refreshInsertionPoints(template, getArray) {
  * Adds an alternate greeting to the template.
  * @param {JQuery<HTMLElement>} template
  * @param {string} greeting
- * @param {number} index Position in the unified [first_mes, ...alternate_greetings] array.
+ * @param {number} index Position in the unified [first_mes, ...alternate_greetings] array. For a
+ *   `pending` row this is only a prediction of where it'll land once it has text - see below.
  * @param {() => any[]} getArray
  * @param {Popup} popup
  * @param {number} [displayPosition] 1-based slot number to show the user; defaults to index + 1.
  *   Callers pass this explicitly when an empty first_mes has been skipped, so the visible numbering
  *   still starts at 1 - see greetingDisplayPosition().
+ * @param {boolean} [pending] True for a just-added, still-blank row: it exists only in this DOM
+ *   block, not yet as a real entry in the array, so closing the popup (or any other write) while
+ *   it's still blank simply never sees it - no entry, nothing to filter out. The very first
+ *   non-blank keystroke commits it into the array (at whatever the end is *at that moment*, since
+ *   another pending row may have committed first); every keystroke after that is a normal update.
  */
-function addAlternateGreeting(template, greeting, index, getArray, popup, displayPosition = index + 1) {
+function addAlternateGreeting(template, greeting, index, getArray, popup, displayPosition = index + 1, pending = false) {
     const greetingBlock = $('#alternate_greeting_form_template .alternate_greeting').clone();
+    let committed = !pending;
     greetingBlock.attr('data-index', index);
     greetingBlock.find('.alternate_greeting_text')
         .attr('id', `alternate_greeting_${index}`)
         .on('input', async function () {
-            const value = $(this).val();
+            const value = String($(this).val());
             const array = getArray();
+            if (!committed) {
+                if (value === '') {
+                    // Still nothing authored - stays UI-only.
+                    return;
+                }
+                const wasFirstMesSlotSkipped = isFirstMesSlotSkipped(array);
+                index = array.length;
+                array.push(value);
+                committed = true;
+                if (!wasFirstMesSlotSkipped && isFirstMesSlotSkipped(array)) {
+                    // This card had only a blank first_mes shown as its sole slot - committing the
+                    // first alternate now hides that slot, so drop its row instead of leaving a
+                    // stale duplicate "1".
+                    template.find('.alternate_greeting[data-index="0"]').remove();
+                }
+                greetingBlock.attr('data-index', index);
+                greetingBlock.find('.editor_maximize').attr('data-for', `alternate_greeting_${index}`);
+                greetingBlock.find('.greeting_index').text(greetingDisplayPosition(index, array));
+                greetingBlock.find('.set_default_greeting').show();
+                greetingBlock.find('.pick_up_greeting').show();
+                return;
+            }
             array[index] = value;
         }).val(greeting);
     greetingBlock.find('.editor_maximize').attr('data-for', `alternate_greeting_${index}`);
@@ -12592,16 +12642,27 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, displa
         greetingBlock.find('.greeting_default_badge').show();
     }
 
-    // Show set-as-default on non-first, demote on first
+    // Show set-as-default on non-first, demote on first - a still-pending row gets neither until
+    // it's committed (see the input handler above), since there's nothing real to promote/move yet.
     if (index === 0) {
         greetingBlock.find('.demote_default_greeting').show();
-    } else {
+    } else if (!pending) {
         greetingBlock.find('.set_default_greeting').show();
+    }
+    if (pending) {
+        greetingBlock.find('.pick_up_greeting').hide();
     }
 
     greetingBlock.find('.delete_alternate_greeting').on('click', async function (event) {
         event.preventDefault();
         event.stopPropagation();
+
+        if (!committed) {
+            // Nothing's been written to the array yet - just drop the empty draft row.
+            greetingBlock.remove();
+            updateAlternateGreetingsHintVisibility(template);
+            return;
+        }
 
         const array = getArray();
         const label = index === 0 ? 'the default greeting' : 'this greeting';
@@ -12621,6 +12682,11 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, displa
     greetingBlock.find('.pick_up_greeting').on('click', function (event) {
         event.preventDefault();
         event.stopPropagation();
+
+        if (!committed) {
+            // Draft row isn't in the array - nothing to move.
+            return;
+        }
 
         const isPicked = greetingBlock.hasClass('greeting-picked');
         if (isPicked) {
@@ -12666,6 +12732,11 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, displa
     greetingBlock.find('.set_default_greeting').on('click', async function (event) {
         event.preventDefault();
         event.stopPropagation();
+
+        if (!committed) {
+            // Draft row isn't in the array - nothing to promote.
+            return;
+        }
 
         const array = getArray();
         const [moved] = array.splice(index, 1);
@@ -12736,7 +12807,7 @@ export async function createOrEditCharacter(e) {
             }
 
             formData.delete('alternate_greetings');
-            for (const value of create_save.alternate_greetings) {
+            for (const value of stripEmptyAlternateGreetings(create_save.alternate_greetings, 'create character')) {
                 formData.append('alternate_greetings', value);
             }
 
@@ -12939,7 +13010,7 @@ export async function createOrEditCharacter(e) {
                 const avatar = $('.open_alternate_greetings').data('avatar');
                 const editedGreetingsCharacter = charactersStore.get(avatar);
                 if (editedGreetingsCharacter && Array.isArray(editedGreetingsCharacter?.data?.alternate_greetings)) {
-                    for (const value of editedGreetingsCharacter.data.alternate_greetings) {
+                    for (const value of stripEmptyAlternateGreetings(editedGreetingsCharacter.data.alternate_greetings, 'edit character')) {
                         formData.append('alternate_greetings', value);
                     }
                 }
