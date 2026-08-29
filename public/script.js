@@ -10032,7 +10032,7 @@ export async function getSettings(initLoaderHandle = null, onStageChange = null)
         applyPowerUserSettings();
 
         // Load character tags
-        await loadTagsSettings(settings);
+        await loadTagsSettings();
 
         // Load background
         loadBackgroundSettings(settings);
