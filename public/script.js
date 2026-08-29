@@ -9094,14 +9094,27 @@ export async function switchToAlternativePath(mesId, swipeId) {
     updateMessage(mesId, { node_id: targetNodeId });
     chat.splice(mesId + 1, chat.length - (mesId + 1), ...(payload.messages ?? []));
 
-    // Persist the choice as the one operation it is. The node knows its own fork, so this cannot
-    // point anything at the wrong place, and it does not need a save to carry it.
+    // Persist the choice, and move the pointer onto the node now being shown.
+    //
+    // select() records which child this fork shows. On its own that was never enough: a reload
+    // resolved the character's chat pointer, and while that pointer named a position on the OLD
+    // alternative's path, walking up from it returned the old alternative every time. The choice was
+    // being written somewhere the reload never consulted.
+    //
+    // The pointer is where you are. Switching alternatives moves you, so it moves too. It does not
+    // need updating as the conversation grows, since a load descends default_child_id from wherever
+    // it points down to the leaf.
+    const avatar = getCurrentCharacter()?.avatar;
     try {
         await fetch('/api/chats/message/select', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ avatar_url: getCurrentCharacter()?.avatar, node_id: targetNodeId }),
+            body: JSON.stringify({ avatar_url: avatar, node_id: targetNodeId }),
         });
+        if (avatar) {
+            charactersStore.update(avatar, { chat: targetNodeId });
+            await saveActiveChat(avatar, targetNodeId);
+        }
     } catch (error) {
         console.warn('[switchToAlternativePath] Failed to persist the selection:', error);
     }
