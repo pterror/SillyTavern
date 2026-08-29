@@ -9686,10 +9686,14 @@ async function _mergeCardGreetingsIntoOpening() {
     // the transformed version made every already-stored greeting look brand new, which on this card
     // meant 927 phantom alternatives appearing out of nowhere.
     const { greetings } = cardToGreetingsModel(character);
+    // The speaker is the CHARACTER, taken from the card rather than from name2 - which tracks the
+    // active persona and produced "n-n" here. Speaker is part of identity, so getting it wrong made
+    // all 929 stored greetings compare as new: 1511 + 929 phantom alternatives.
+    const speaker = character.name ?? opening.name ?? name2;
     const contents = (greetings ?? [])
         .filter(text => typeof text === 'string' && text.length > 0)
         .map(text => ({
-            name: name2,
+            name: speaker,
             is_user: false,
             is_system: false,
             send_date: opening.send_date,
@@ -10424,8 +10428,10 @@ async function _openingFromTree(cardGreetings, preferredIndex) {
     };
 
     const sendDate = getMessageTimeStamp();
+    // Same reason as above: the speaker is the character on the card, not whatever name2 currently is.
+    const speaker = character.name ?? name2;
     const asMessage = text => ({
-        name: name2,
+        name: speaker,
         is_user: false,
         is_system: false,
         send_date: sendDate,
@@ -16444,6 +16450,74 @@ jQuery(async function () {
                 },
             });
         }
+    });
+
+    // Save the edit as a NEW alternative instead of over the original. The original keeps its row and
+    // its children; the new one starts its own, so continuing from here forks rather than overwrites.
+    $(document).on('click', '.mes_edit_duplicate', async function () {
+        const mesElement = $(this).closest('.mes');
+        const mesId = Number(mesElement.attr('mesid'));
+        const message = chat[mesId];
+
+        // Needs a row to sit alongside. A file-backed chat has no nodes to fork between.
+        if (!message?.node_id) {
+            toastr.info(t`This chat does not support alternatives.`);
+            return;
+        }
+
+        const text = $(this).closest('.mes_block').find('.edit_textarea').val();
+        if (typeof text !== 'string' || !text.length) {
+            return;
+        }
+
+        const content = { ...message, mes: text };
+        delete content.swipes;
+        delete content.swipe_info;
+        delete content.swipe_id;
+        delete content.swipe_speaker_default;
+        delete content.node_id;
+
+        let createdId = null;
+        try {
+            const response = await fetch('/api/chats/message/alternative', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({
+                    avatar_url: getCurrentCharacter()?.avatar,
+                    sibling_node_id: message.node_id,
+                    contents: [content],
+                }),
+            });
+            const made = response.ok ? await response.json().catch(() => null) : null;
+            createdId = made?.node_ids?.[0] ?? null;
+        } catch (error) {
+            console.warn('[duplicate] Could not create the alternative:', error);
+        }
+
+        if (!createdId) {
+            toastr.error(t`Could not create the alternative.`);
+            return;
+        }
+
+        const swipes = Array.isArray(message.swipes) ? [...message.swipes] : [message.mes ?? ''];
+        const swipeInfo = Array.isArray(message.swipe_info)
+            ? [...message.swipe_info]
+            : [{ send_date: message.send_date, extra: message.extra ?? {}, node_id: message.node_id }];
+
+        // Already there (identical text) - just move onto it rather than adding a duplicate slot.
+        let at = swipeInfo.findIndex(info => info?.node_id === createdId);
+        if (at < 0) {
+            swipes.push(text);
+            swipeInfo.push({
+                send_date: content.send_date, extra: content.extra ?? {},
+                name: content.name, is_user: !!content.is_user, node_id: createdId,
+            });
+            at = swipes.length - 1;
+        }
+        updateMessage(mesId, { swipes, swipe_info: swipeInfo });
+
+        await messageEditCancel(mesId);
+        await switchToAlternativePath(mesId, at);
     });
 
     $(document).on('click', '.mes_edit_cancel', async function () {
