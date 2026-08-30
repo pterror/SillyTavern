@@ -373,6 +373,21 @@ async function RA_autoloadchat() {
  * here.
  */
 export async function favsToHotswap() {
+    // Refreshing the hotswap row is decorative, and five of the six call sites fire it without
+    // awaiting or catching, so anything it throws becomes an unhandled rejection rather than
+    // anybody's problem to handle. Reported on boot as an aborted DOMException, coming through
+    // printCharactersDebounced() while the residency load was still settling.
+    //
+    // Owning the failure here rather than at each caller. This does not explain the abort - it only
+    // stops a decorative refresh from surfacing as an uncaught error, and keeps it in the log.
+    try {
+        return await favsToHotswapImpl();
+    } catch (error) {
+        console.warn('[favsToHotswap] Could not refresh the hotswap row:', error);
+    }
+}
+
+async function favsToHotswapImpl() {
     const container = $('#right-nav-panel .hotswap');
 
     // Hard limit is required because even if all hotswaps don't fit the screen, their images would still be loaded
