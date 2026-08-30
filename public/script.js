@@ -9988,8 +9988,10 @@ async function _mergeCardGreetingsIntoOpening() {
         }
     };
 
+    // Same reasoning as _openingFromTree: `migrated` says whether this character has had a chat saved,
+    // which has nothing to do with whether its card's greetings belong in this opening.
     const head = await ask({});
-    if (!head?.migrated) return;
+    if (!head) return;
 
     const cardOnlyCount = (head.total ?? 0) - (head.stored ?? 0);
     if (cardOnlyCount <= 0) return;
@@ -10944,8 +10946,17 @@ async function _openingFromTree(cardGreetings, preferredIndex) {
         .filter(text => typeof text === 'string' && text.length > 0)
         .map(asMessage);
 
+    // Only the store being unreachable sends a chat back to the file-era path. It used to also bail on
+    // `migrated` being false and on there being no openings yet, and neither of those is a fact about
+    // storage: `migrated` means "this character has had a chat saved" (it is a label check), and a
+    // character nobody has chatted with reads as unmigrated forever, while the save route puts that
+    // very character's first chat in the tree regardless.
+    //
+    // So the chat opened as a file, and only became tree-backed after a save had already gone out the
+    // wrong way. There is no such in-between: a greeting with no row is exactly what a provisional id
+    // is for, and one earns its row when it is used, same as any other.
     const openings = await post('/api/chats/openings', { card_greetings: contents });
-    if (!openings?.migrated || !openings.total) return null;
+    if (!openings) return null;
 
     const windowStart = openings.offset ?? 0;
     const preferredText = contents[preferredIndex]?.mes;
@@ -10955,7 +10966,11 @@ async function _openingFromTree(cardGreetings, preferredIndex) {
     }
     if (chosenOffset < 0) chosenOffset = 0;
 
-    const chosen = openings.alternatives[chosenOffset];
+    // A character with nothing stored still has the greetings on its card, and the union is built from
+    // both, so the only way there is nothing to open on is the card having no greeting at all - which
+    // is the one case the file-era path is still the right answer for.
+    const chosen = openings.alternatives[chosenOffset]
+        ?? (preferredText !== undefined ? { node_id: null, mes: preferredText, name: speaker, is_user: false, send_date: sendDate, extra: {} } : null);
     if (!chosen) return null;
 
     // Showing a greeting is not using it, so nothing is written here. A greeting the tree has no row

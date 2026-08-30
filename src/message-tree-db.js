@@ -1448,13 +1448,16 @@ export async function getOpeningAlternatives(directories, ownerId, range = {}, c
     // `migrated` distinguishes "lives in the tree and simply has no openings yet" from "still
     // file-backed", which the caller cannot tell from an empty list alone.
     const migrated = hasBranchesSync(entry.db, ownerId);
+    // No anchor is not a different kind of answer, it just means nothing is stored yet. The card's
+    // greetings are still this character's greetings, and saying "no openings at all" instead sent the
+    // caller down a path where the chat wasn't tree-backed - over an anchor row, which is a detail of
+    // how storage is laid out and not a fact about the character.
     const anchor = getAnchorSync(entry.db, ownerId);
-    if (!anchor) return { migrated, total: 0, default_index: 0, default_node_id: null, offset: 0, alternatives: [] };
 
-    const rows = entry.db.all(
+    const rows = anchor ? entry.db.all(
         'SELECT id, content FROM messages WHERE parent_id = @p ORDER BY created_at ASC, id ASC',
         { p: anchor.id },
-    );
+    ) : [];
 
     // The card's current greetings, merged in at READ time rather than copied into the tree.
     //
@@ -1464,17 +1467,20 @@ export async function getOpeningAlternatives(directories, ownerId, range = {}, c
     // conversation on does not need a row. It gets one when it is first used.
     //
     // A card greeting already present as a node is not repeated: same identity, same entry.
-    const seen = new Set(rows.map(r => nodeIdentityKey(anchor.id, r.content)));
+    // Identity is keyed against the anchor when there is one. With no anchor there are no rows to
+    // collide with, so the card's own text is key enough to keep duplicates out of the list.
+    const identity = body => (anchor ? nodeIdentityKey(anchor.id, body) : body);
+    const seen = new Set(rows.map(r => identity(r.content)));
     const virtual = [];
     for (const greeting of (Array.isArray(cardGreetings) ? cardGreetings : [])) {
         const body = sanitizeForStorage(greeting);
-        const key = nodeIdentityKey(anchor.id, body);
+        const key = identity(body);
         if (seen.has(key)) continue;
         seen.add(key);
         virtual.push(JSON.parse(body));
     }
 
-    const defaultNodeId = anchor.default_child_id ?? (rows[0]?.id ?? null);
+    const defaultNodeId = anchor?.default_child_id ?? (rows[0]?.id ?? null);
     const defaultIndex = Math.max(0, rows.findIndex(r => r.id === defaultNodeId));
 
     // Windowed like a chat load, and for the same reason: one character here has 1,508 openings, and
