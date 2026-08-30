@@ -188,6 +188,7 @@ import {
     shakeElement,
     createTimeout,
     getStringHash,
+    cancelDebounce,
 } from './scripts/utils.js';
 // Imported directly from hash-utils.js (not re-exported via utils.js like getStringHash) so this doesn't widen
 // utils.js's re-export surface - a mocked utils.js in tests/utils-findchar.test.js stubs hash-utils.js with only
@@ -11041,7 +11042,9 @@ export async function saveSettings(...keys) {
         for (const key of keys) {
             if (typeof key === 'string') pendingSettingsKeys.add(key);
         }
-        _debouncedSaveImpl.cancel();
+        // debounce() returns a plain function and tracks its timer in a WeakMap, so it has no .cancel
+        // of its own - calling one threw here every time, before the save it was guarding could run.
+        cancelDebounce(_debouncedSaveImpl);
     }
     if (!settingsReady) {
         console.warn('Settings not ready, scheduling another save');
