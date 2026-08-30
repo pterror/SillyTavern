@@ -11107,9 +11107,16 @@ export async function saveSettings(...keys) {
                 // Dotted path: extract just the addressed sub-field from the payload.
                 const topLevel = key.split('.')[0];
                 if (topLevel in payload) {
-                    partialPayload[key] = getAtPath(payload, key);
+                    // Only when the addressed field actually has a value. JSON.stringify drops an
+                    // undefined one, so it would silently vanish from `keys` while still appearing in
+                    // expectedHashes below - the client would end up asserting the key is absent on the
+                    // server while claiming not to be writing it, and any real value there is a conflict.
+                    const value = getAtPath(payload, key);
+                    if (value !== undefined) {
+                        partialPayload[key] = value;
+                    }
                 }
-            } else if (key in payload) {
+            } else if (key in payload && payload[key] !== undefined) {
                 // Top-level key: send the whole value. Call sites that want per-field granularity
                 // pass a dotted path instead (same pattern as /merge-attributes and /save-partial
                 // for quick replies).
@@ -11229,7 +11236,11 @@ export async function saveSettings(...keys) {
  * @returns {Promise<boolean>} True if the update was applied, false if it was rejected due to a conflict.
  */
 export async function savePartialSettings(partialSettings) {
-    const keys = Object.keys(partialSettings);
+    // Same reason as saveSettings()'s dotted-key handling: a key whose value is undefined is dropped
+    // by JSON.stringify, so asserting a hash for it claims something about a key this request is not
+    // sending.
+    const keys = Object.keys(partialSettings).filter(key => partialSettings[key] !== undefined);
+    if (!keys.length) return true;
     const expectedHashes = {};
     for (const key of keys) {
         expectedHashes[key] = serverKeyHashes[key] ?? 0;
