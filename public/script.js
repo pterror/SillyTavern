@@ -16650,7 +16650,12 @@ jQuery(async function () {
             });
             at = swipes.length - 1;
         }
-        updateMessage(mesId, { swipes, swipe_info: swipeInfo });
+        // `mes` has to move onto the new alternative too, not just the slot bookkeeping. The editor is
+        // about to be closed by messageEditCancel(), which redraws from `mes` - and switchToAlternativePath()
+        // only adopts the node and the swipe index, it never touches the text. Leaving `mes` on the old
+        // wording made the edit look discarded: the new row held it, the screen did not. The swipe-arrow
+        // path avoids this by calling syncMesToSwipe() before switching; this one had no equivalent.
+        updateMessage(mesId, { swipes, swipe_info: swipeInfo, mes: text });
 
         await messageEditCancel(mesId);
         await switchToAlternativePath(mesId, at);
