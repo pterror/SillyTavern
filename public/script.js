@@ -10497,6 +10497,19 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
                         updateMessage(index, { node_id });
                     }
                 }
+
+                // Rows came back, so this chat lives in the tree - learn that from the answer rather
+                // than from what was known when the chat was opened.
+                //
+                // A character that hadn't been migrated yet has no openings to start from, so the chat
+                // begins on a plain card greeting with no row and is marked as not tree-backed. Its
+                // very first save is what migrates the character, and from that moment the chat IS
+                // tree-backed - but nothing said so until the next reload, so for the rest of the
+                // session the client kept treating it as a file: every save handed the whole array
+                // over (the route our frontend is not supposed to use, and where a save can speak for
+                // rows it never received), and the card's greetings were never merged into the opening,
+                // so editing one changed nothing on screen.
+                chat_metadata._tree_stored = true;
             }
 
             // Update content snapshots for next save's change detection
