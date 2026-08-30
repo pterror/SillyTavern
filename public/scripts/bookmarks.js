@@ -16,6 +16,7 @@ import {
     getCurrentChatDetails,
     updateMessage,
     hydrateSwipes,
+    ensureOpeningRow,
 } from '../script.js';
 import { humanizedDateTime } from './RossAscends-mods.js';
 import {
@@ -233,8 +234,12 @@ export async function createBranch(mesId, { swipeId = null } = {}) {
         return;
     }
 
+    // Naming a point requires the point to exist. An opening still sitting on a card-only greeting has
+    // no row yet, and being branched at is one of the things that earns it one.
+    const branchNodeId = await ensureOpeningRow(mesId);
+
     // Tree DB path: O(1) fork via the fork API — no data is copied
-    if (isTreeStored() && !selected_group && lastMes.node_id) {
+    if (isTreeStored() && !selected_group && branchNodeId) {
         // If a specific swipe was selected, save the current chat first so the swipe state is
         // persisted to the tree, then fork at the node.
         if (selectedSwipeId !== null) {
@@ -256,7 +261,7 @@ export async function createBranch(mesId, { swipeId = null } = {}) {
             headers: getRequestHeaders(),
             body: JSON.stringify({
                 avatar_url: character?.avatar,
-                node_id: lastMes.node_id,
+                node_id: branchNodeId,
                 label: name,
             }),
         });
@@ -531,7 +536,11 @@ export async function createNewBookmark(mesId, { forceName = null } = {}) {
     // Bookmarking names the node, and that is the whole of it. There is nothing to copy - the node
     // already exists, and a label on it is what makes it findable. Forking as well used to leave a
     // second thing pointing at the same place.
-    if (isTreeStored() && !selected_group && lastMes.node_id) {
+    // Same as branching: a label needs a row to sit on, and an opening on a card-only greeting earns
+    // one by being checkpointed.
+    const bookmarkNodeId = await ensureOpeningRow(mesId);
+
+    if (isTreeStored() && !selected_group && bookmarkNodeId) {
         const character = getCurrentCharacter();
 
         // Label the node (the checkpoint name)
@@ -540,7 +549,7 @@ export async function createNewBookmark(mesId, { forceName = null } = {}) {
             headers: getRequestHeaders(),
             body: JSON.stringify({
                 avatar_url: character?.avatar,
-                node_id: lastMes.node_id,
+                node_id: bookmarkNodeId,
                 label: name,
             }),
         });
@@ -749,7 +758,9 @@ export async function forkChat(mesId, { swipeId = null } = {}) {
     }
 
     const lastMes = chat[mesId];
-    const nodeId = lastMes?.node_id;
+    // Resolved before the branch is made, not after: createBranch() may move the client to the new
+    // chat, and by then chat[mesId] is a different conversation's message.
+    const nodeId = await ensureOpeningRow(mesId);
 
     const fileName = await createBranch(mesId, { swipeId });
     if (!fileName) {
