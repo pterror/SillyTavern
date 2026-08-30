@@ -10148,7 +10148,7 @@ function _isBlankSlot(message, at) {
  * @param {object[]} messages the chat slice being saved
  * @returns {Promise<{ integrity?: string } | null>}
  */
-async function _saveTreeChat(fileName, metadata, messages) {
+async function _saveTreeChat(fileName, metadata, messages, addressedByName = false) {
     const avatar = getCurrentCharacter()?.avatar;
     if (!avatar) return null;
 
@@ -10343,8 +10343,47 @@ async function _saveTreeChat(fileName, metadata, messages) {
         });
     }
 
-    const meta = await post('/api/chats/metadata', { file_name: fileName, metadata });
-    return { integrity: meta.integrity };
+    // Address the chat by where it actually IS, re-read now rather than taken from the name this save
+    // was handed before it ran.
+    //
+    // Metadata is stored on the node the chat is positioned at, so it needs something that resolves to
+    // one. A freshly minted chat name does not: nothing in the tree carries it. A brand new chat on a
+    // character that isn't in the tree yet gets away with it, because its first save goes through the
+    // whole-array route and that labels a node with the name on the way past - but a new chat on a
+    // character ALREADY in the tree is tree-backed from its very first save, never takes that route,
+    // and so its name labels nothing at all. The position, meanwhile, is a real node the entire time.
+    //
+    // Only when the caller didn't name a specific chat: an explicit chatName is a deliberate target
+    // (a rename, a branch) and is not ours to second-guess.
+    // The opening is the fallback because of WHEN a brand new chat first saves: that save runs before
+    // the character has been pointed anywhere, so there is no position to read yet - but the node the
+    // chat starts from is right here, and it is the very node the pointer is about to be set to.
+    // "Names a row", not "isn't provisional". isStoredNodeId() answers the second question, and a
+    // minted chat name passes it - it is a string and it has no card: prefix - which is precisely the
+    // value that resolves to nothing. Asking whether the conversation in hand actually holds a message
+    // by that id answers the first question exactly, with no guessing at the shape of an id.
+    const position = getCurrentCharacter()?.chat;
+    const opening = chat[0]?.node_id;
+    const target = addressedByName
+        ? fileName
+        : (chat.some(m => m.node_id === position) ? position
+            : (isStoredNodeId(opening) ? opening : fileName));
+
+    // A metadata write that fails must not take the save down with it.
+    //
+    // This is the last step, and by now every message write has landed and been recorded. Letting a
+    // refusal here throw discarded the caller's snapshot pass, so every message compared as unsaved
+    // next time and the save re-sent the whole conversation - and kept doing it, growing by one
+    // message per exchange, for as long as the underlying cause persisted. The edit amplification was
+    // never a change detector believing content changed; it was bookkeeping thrown away wholesale
+    // because of an unrelated failure at the end.
+    try {
+        const meta = await post('/api/chats/metadata', { file_name: target, metadata });
+        return { integrity: meta.integrity };
+    } catch (error) {
+        console.warn('[saveChat] The messages are saved; their chat metadata is not:', error);
+        return {};
+    }
 }
 
 /**
@@ -10404,7 +10443,7 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
         // path below is only for what genuinely is a whole array: a chat with nothing persisted yet,
         // a custom snapshot (branch creation), or a chat that isn't tree-stored at all.
         if (isTreeChat) {
-            const treeResult = await _saveTreeChat(fileName, metadata, trimmedChat);
+            const treeResult = await _saveTreeChat(fileName, metadata, trimmedChat, chatName !== undefined);
             if (treeResult) {
                 if (typeof treeResult.integrity === 'string') {
                     chat_metadata.integrity = treeResult.integrity;
