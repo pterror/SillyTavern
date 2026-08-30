@@ -548,7 +548,6 @@ export async function createNewBookmark(mesId, { forceName = null } = {}) {
         const extra = typeof lastMes.extra === 'object' ? { ...lastMes.extra } : {};
         extra.bookmark_link = name;
         updateMessage(mesId, { extra });
-        updateBookmarkDisplay($(`.mes[mesid="${mesId}"]`), name);
         await saveChatConditional();
         toastr.success('Bookmarked. It shows up in the chat list.', 'Bookmark', { timeOut: 6000 });
         return name;
@@ -569,25 +568,11 @@ export async function createNewBookmark(mesId, { forceName = null } = {}) {
     extra.bookmark_link = name;
     updateMessage(mesId, { extra });
 
-    const mes = $(`.mes[mesid="${mesId}"]`);
-    updateBookmarkDisplay(mes, name);
-
     await saveChatConditional();
-    toastr.success('Click the flag icon next to the message to open the checkpoint chat.', 'Create Checkpoint', { timeOut: 10000 });
+    toastr.success('Checkpoint created. It shows up in the chat list.', 'Create Checkpoint', { timeOut: 10000 });
     return name;
 }
 
-
-/**
- * Updates the display of the bookmark on a chat message.
- * @param {JQuery<HTMLElement>} mes - The message element
- * @param {string?} [newBookmarkLink=null] - The new bookmark link (optional)
- */
-export function updateBookmarkDisplay(mes, newBookmarkLink = null) {
-    newBookmarkLink && mes.attr('bookmark_link', newBookmarkLink);
-    const bookmarkFlag = mes.find('.mes_bookmark');
-    bookmarkFlag.attr('title', `Checkpoint\n${mes.attr('bookmark_link')}\n\n${bookmarkFlag.data('tooltip')}`);
-}
 
 async function backToMainChat() {
     const mainChatName = getMainChatName();
@@ -787,7 +772,6 @@ export async function forkChat(mesId, { swipeId = null } = {}) {
         const extra = typeof lastMes.extra === 'object' ? { ...lastMes.extra } : {};
         extra.bookmark_link = fileName;
         updateMessage(mesId, { extra });
-        updateBookmarkDisplay($(`.mes[mesid="${mesId}"]`), fileName);
     }
 
     await saveItemizedPrompts(fileName);
@@ -1026,21 +1010,11 @@ export function initBookmarks() {
         await createNewBookmark(mesId);
     });
 
-    $(document).on('click', '.select_chat_block, .mes_bookmark', async function (e) {
-        // If shift is held down, we are not following the bookmark, but creating a new one
-        const mes = $(this).closest('.mes');
-        if (e.shiftKey && mes.length) {
-            const selectedMesId = mes.attr('mesid');
-            await createNewBookmark(Number(selectedMesId));
-            return;
-        }
-
+    $(document).on('click', '.select_chat_block', async function () {
         // Prefer the node. A name is not an identifier - `label` is not unique per owner, so opening
         // by name picks whichever row sorts first. The name is the fallback for file-backed chats,
         // which have no nodes at all.
-        const target = $(this).hasClass('mes_bookmark')
-            ? $(this).closest('.mes').attr('bookmark_link')
-            : ($(this).attr('node_id') || $(this).attr('file_name'));
+        const target = $(this).attr('node_id') || $(this).attr('file_name');
 
         if (!target) {
             return;
