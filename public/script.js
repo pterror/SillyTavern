@@ -10036,6 +10036,17 @@ async function _saveTreeChat(fileName, metadata, messages) {
             lastPersisted = newSelectedId;
             markSaved(i, newSelectedId);
         } else {
+            // Never send an edit that empties a message. The route refuses one outright
+            // (wouldBlankStoredText: "no legitimate edit empties a message that has text"), so posting
+            // it can only ever come back 409 - and post() throws on that, aborting the rest of the
+            // save. Overswiping a greeting reaches exactly this state: the blank slot empties `mes`
+            // while the message still names the previous greeting's row, so the save tries to write
+            // the blank over it. Mirroring the server's own rule here means no client state can
+            // produce the request, rather than guarding the one shape that was found producing it.
+            if (typeof msg.mes === 'string' && msg.mes.length === 0) {
+                continue;
+            }
+
             await post('/api/chats/message/edit', { node_id: msg.node_id, content: msg });
             markSaved(i, msg.node_id);
         }
