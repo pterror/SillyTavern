@@ -9156,7 +9156,7 @@ export async function switchToAlternativePath(mesId, swipeId) {
         return false;
     }
 
-    updateMessage(mesId, { node_id: targetNodeId });
+    updateMessage(mesId, { node_id: targetNodeId, swipe_id: swipeId });
     chat.splice(mesId + 1, chat.length - (mesId + 1), ...(payload.messages ?? []));
 
     // Persist the choice, and move the pointer onto the node now being shown.
@@ -16613,10 +16613,12 @@ jQuery(async function () {
             return;
         }
 
-        const swipes = Array.isArray(message.swipes) ? [...message.swipes] : [message.mes ?? ''];
-        const swipeInfo = Array.isArray(message.swipe_info)
-            ? [...message.swipe_info]
-            : [{ send_date: message.send_date, extra: message.extra ?? {}, node_id: message.node_id }];
+        // Re-read: the fetch above awaited, so chat[mesId] may have been replaced since.
+        const current = chat[mesId] ?? message;
+        const swipes = Array.isArray(current.swipes) ? [...current.swipes] : [current.mes ?? ''];
+        const swipeInfo = Array.isArray(current.swipe_info)
+            ? [...current.swipe_info]
+            : [{ send_date: current.send_date, extra: current.extra ?? {}, node_id: current.node_id }];
 
         // Already there (identical text) - just move onto it rather than adding a duplicate slot.
         let at = swipeInfo.findIndex(info => info?.node_id === createdId);
