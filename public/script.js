@@ -559,6 +559,55 @@ function _buildSlimPayload(messages) {
     });
 }
 
+// ---------------------------------------------------------------------------
+//  Provisional node ids.
+//
+//  A greeting that lives on the character card and has never been used has no row in the tree - and
+//  it should not get one just for being looked at, or a card with a thousand greetings mints a
+//  thousand rows the moment someone swipes through them.
+//
+//  The obvious encoding of that is a missing node_id, and it is what this used to do. It meant every
+//  reader of chat[0].node_id had to know whether the opening was "real yet", and each one answered
+//  differently: the hole repair read it as "not tree-backed", the merge read it as "card text", the
+//  save read it as "brand new alternative to create". One absent field standing for three different
+//  facts is what made greeting handling fragile.
+//
+//  So an unstored greeting carries an id too - one derived from its own content, so it is stable
+//  across reloads and identical wherever the same greeting appears. Every consumer can then just use
+//  the id it is handed: as a map key, an equality check, a slot marker. Only the handful of places
+//  that genuinely need a ROW (appending after it, labelling it, forking at it, editing it) have to
+//  ask, and they all go through ensureOpeningRow(), which is the single writer that turns a
+//  provisional id into a real one.
+//
+//  The scheme mirrors the server's own message identity (nodeIdentityKey in message-tree-db.js):
+//  speaker plus text, nothing else. It deliberately does NOT reproduce the server's hash - nothing
+//  looks a provisional id up server-side, and cyrb53 is available synchronously here where sha1 is
+//  not. The prefix is what makes "is this a real row" a total, local question.
+// ---------------------------------------------------------------------------
+
+const PROVISIONAL_NODE_PREFIX = 'card:';
+
+/**
+ * The id an unstored card greeting carries. Content-derived, so the same greeting is the same id in
+ * every chat and across reloads.
+ * @param {string} speaker who says it - part of identity, same as server-side
+ * @param {string} mes the greeting text
+ * @returns {string}
+ */
+function provisionalNodeId(speaker, mes) {
+    return PROVISIONAL_NODE_PREFIX + getStringHash(`c${speaker ?? ''} ${mes ?? ''}`);
+}
+
+/** True when this id names a row that actually exists in the tree. */
+export function isStoredNodeId(nodeId) {
+    return typeof nodeId === 'string' && nodeId.length > 0 && !nodeId.startsWith(PROVISIONAL_NODE_PREFIX);
+}
+
+/** True when this id stands for a greeting the card has and the tree does not. */
+export function isProvisionalNodeId(nodeId) {
+    return typeof nodeId === 'string' && nodeId.startsWith(PROVISIONAL_NODE_PREFIX);
+}
+
 /**
  * @type {import('./scripts/constants.js').SWIPE_STATE}
  */
@@ -9034,15 +9083,39 @@ export async function hydrateSwipes(mesId, { index = null, all = false } = {}) {
         return false;
     }
 
-    const body = { node_id: message.node_id };
+    // The opening is not addressed like the rest of the chat.
+    //
+    // Its alternatives are the UNION of the character's stored openings and the greetings that only
+    // exist on the card, computed by the openings endpoint - which is what sized this swipe array in
+    // the first place. Asking /alternatives for siblings of the opening's row returns only the stored
+    // half, in a different order past the stored prefix, so the text landing in each hole would be the
+    // wrong greeting. It also cannot answer at all for an opening that has no row yet, which under
+    // provisional ids is the ordinary case rather than an edge one.
+    const isOpening = mesId === 0 && !!chat_metadata?._tree_stored;
+    const { character, contents } = isOpening ? _cardGreetingContents() : { character: null, contents: [] };
+    if (isOpening && !character) {
+        return false;
+    }
+    if (!isOpening && !isStoredNodeId(message.node_id)) {
+        return false;
+    }
+
+    const body = isOpening
+        ? { avatar_url: character.avatar, card_greetings: contents }
+        : { node_id: message.node_id };
     if (!all) {
         body.offset = Math.max(0, index - ALTERNATIVE_FETCH_WINDOW);
         body.limit = ALTERNATIVE_FETCH_WINDOW * 2 + 1;
+    } else if (isOpening) {
+        // The openings endpoint windows by default (a character here has over 1,500 of them), so
+        // "every hole" has to be asked for as a range rather than by leaving the range off.
+        body.offset = 0;
+        body.limit = message.swipes.length;
     }
 
     let payload;
     try {
-        const response = await fetch('/api/chats/alternatives', {
+        const response = await fetch(isOpening ? '/api/chats/openings' : '/api/chats/alternatives', {
             method: 'POST',
             headers: getRequestHeaders(),
             body: JSON.stringify(body),
@@ -9065,7 +9138,8 @@ export async function hydrateSwipes(mesId, { index = null, all = false } = {}) {
 
     const swipes = [...current.swipes];
     const swipeInfo = Array.isArray(current.swipe_info) ? [...current.swipe_info] : new Array(swipes.length).fill(null);
-    const from = body.offset ?? 0;
+    // The openings endpoint answers with the window it actually served, which it is free to clamp.
+    const from = (isOpening ? payload.offset : undefined) ?? body.offset ?? 0;
 
     payload.alternatives.forEach((alt, i) => {
         const at = from + i;
@@ -9074,15 +9148,16 @@ export async function hydrateSwipes(mesId, { index = null, all = false } = {}) {
         // saved yet would otherwise be clobbered by the stored copy.
         if (typeof swipes[at] === 'string') return;
         swipes[at] = alt.mes ?? '';
-        // node_id is what marks this slot as an existing row. Without it the save path reads a
-        // hydrated slot as a brand new alternative forever: it posts a create for every one on every
-        // save (harmless, since adding is idempotent, but endless) and selects the shown one on top.
+        // An id is what marks this slot as settled. Without one the save path reads a hydrated slot as
+        // a brand new alternative forever: it posts a create for every one on every save (harmless,
+        // since adding is idempotent, but endless) and selects the shown one on top. A card-only
+        // opening has no row to name, so it gets its provisional id here for the same reason.
         swipeInfo[at] = {
             send_date: alt.send_date,
             extra: alt.extra ?? {},
             name: alt.name,
             is_user: alt.is_user,
-            node_id: alt.node_id,
+            node_id: alt.node_id ?? (isOpening ? provisionalNodeId(alt.name ?? character.name ?? message.name, alt.mes ?? '') : undefined),
         };
     });
 
@@ -9115,61 +9190,38 @@ export async function hydrateSwipes(mesId, { index = null, all = false } = {}) {
  */
 export async function switchToAlternativePath(mesId, swipeId) {
     const message = chat[mesId];
-    let targetNodeId = message?.swipe_info?.[swipeId]?.node_id;
-    let mintedForSlot = false;
+    const targetNodeId = message?.swipe_info?.[swipeId]?.node_id;
 
-    // An opening with no node_id is a greeting that lives on the card and has no row yet. Moving onto
-    // it is what gives it one - only the greeting actually used, not the whole card.
-    // The text has to be there, not merely be a string. Overswiping the greeting opens an empty slot
-    // to type into and moves onto it, which lands here - and '' is a string, so this used to give that
-    // empty slot a real row before anything had been written. Cancelling then dropped the local slot
-    // while the blank opening stayed behind, since nothing is ever deleted from the tree.
-    if (!targetNodeId && mesId === 0 && String(message?.swipes?.[swipeId] ?? '').length > 0 && message.node_id) {
-        try {
-            const response = await fetch('/api/chats/openings/ensure', {
-                method: 'POST',
-                headers: getRequestHeaders(),
-                body: JSON.stringify({
-                    avatar_url: getCurrentCharacter()?.avatar,
-                    contents: [{
-                        name: message.name ?? name2,
-                        is_user: false,
-                        is_system: false,
-                        send_date: getMessageTimeStamp(),
-                        mes: message.swipes[swipeId],
-                        extra: {},
-                    }],
-                }),
-            });
-            const made = response.ok ? await response.json().catch(() => null) : null;
-            targetNodeId = made?.node_ids?.[0] ?? null;
-            mintedForSlot = !!targetNodeId;
-        } catch (error) {
-            console.warn('[switchToAlternativePath] Could not create a row for the chosen greeting:', error);
-        }
-    }
-
-    // Still nothing means this isn't tree-backed (a JSONL chat), where swipes are just an array on
-    // the message and there is no separate path to move onto.
+    // Nothing to move onto. Either this isn't tree-backed (a JSONL chat, where swipes are just an
+    // array on the message and there is no separate path), or the slot is a blank one that overswiping
+    // opened to type into and nothing has been written yet.
     if (!targetNodeId || message.node_id === targetNodeId) {
         return false;
     }
 
-    let payload;
-    try {
-        const response = await fetch('/api/chats/continuation', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ node_id: targetNodeId, chat_name: getCurrentChatId() }),
-        });
-        if (!response.ok) {
-            console.warn(`[switchToAlternativePath] HTTP ${response.status} fetching continuation for ${targetNodeId}`);
+    // Moving onto a greeting the tree has no row for. Showing it is not using it, so no row is minted
+    // here - it gets one from ensureOpeningRow() when something actually needs one. That also settles
+    // what follows it: a greeting nothing has ever been said to has no continuation, which is a fact,
+    // not a failed lookup. Asking the server would only turn it into a 404 that reads as an error and
+    // aborts the switch.
+    const unstored = isProvisionalNodeId(targetNodeId);
+    let payload = { messages: [] };
+    if (!unstored) {
+        try {
+            const response = await fetch('/api/chats/continuation', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ node_id: targetNodeId, chat_name: getCurrentChatId() }),
+            });
+            if (!response.ok) {
+                console.warn(`[switchToAlternativePath] HTTP ${response.status} fetching continuation for ${targetNodeId}`);
+                return false;
+            }
+            payload = await response.json();
+        } catch (error) {
+            console.warn('[switchToAlternativePath] Failed to fetch continuation:', error);
             return false;
         }
-        payload = await response.json();
-    } catch (error) {
-        console.warn('[switchToAlternativePath] Failed to fetch continuation:', error);
-        return false;
     }
 
     // Re-check: the await means the chat may have moved on while the fetch was in flight.
@@ -9177,13 +9229,7 @@ export async function switchToAlternativePath(mesId, swipeId) {
         return false;
     }
 
-    // Choosing a card-only greeting is what turns it into a row, so that slot stops being card text.
-    // Without this it keeps its card_only mark and no node_id, and the save path would skip the
-    // alternative it now genuinely has.
-    const nextSwipeInfo = mintedForSlot && Array.isArray(message.swipe_info)
-        ? message.swipe_info.map((info, k) => (k === swipeId ? { ...(info ?? {}), node_id: targetNodeId, card_only: false } : info))
-        : null;
-    updateMessage(mesId, { node_id: targetNodeId, swipe_id: swipeId, ...(nextSwipeInfo ? { swipe_info: nextSwipeInfo } : {}) });
+    updateMessage(mesId, { node_id: targetNodeId, swipe_id: swipeId });
     chat.splice(mesId + 1, chat.length - (mesId + 1), ...(payload.messages ?? []));
 
     // Persist the choice, and move the pointer onto the node now being shown.
@@ -9196,19 +9242,26 @@ export async function switchToAlternativePath(mesId, swipeId) {
     // The pointer is where you are. Switching alternatives moves you, so it moves too. It does not
     // need updating as the conversation grows, since a load descends default_child_id from wherever
     // it points down to the leaf.
+    //
+    // An unstored greeting has nothing to persist and nothing to point at: naming it as the selected
+    // child or as the character's position would write an id no row answers to, and the next load
+    // would resolve it to nowhere. It becomes persistable the moment ensureOpeningRow() gives it a
+    // row, which is also the moment there is something worth coming back to.
     const avatar = getCurrentCharacter()?.avatar;
-    try {
-        await fetch('/api/chats/message/select', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ avatar_url: avatar, node_id: targetNodeId }),
-        });
-        if (avatar) {
-            charactersStore.update(avatar, { chat: targetNodeId });
-            await saveActiveChat(avatar, targetNodeId);
+    if (!unstored) {
+        try {
+            await fetch('/api/chats/message/select', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ avatar_url: avatar, node_id: targetNodeId }),
+            });
+            if (avatar) {
+                charactersStore.update(avatar, { chat: targetNodeId });
+                await saveActiveChat(avatar, targetNodeId);
+            }
+        } catch (error) {
+            console.warn('[switchToAlternativePath] Failed to persist the selection:', error);
         }
-    } catch (error) {
-        console.warn('[switchToAlternativePath] Failed to persist the selection:', error);
     }
 
     // Everything in the chat now matches what is stored: the messages below came straight from the
@@ -9733,6 +9786,156 @@ function _isBlankUnwrittenSwipe(message) {
 }
 
 /**
+ * The card's greetings in the shape the openings endpoint merges against.
+ *
+ * Every caller that asks for openings has to send the SAME set, because the union's ordering and
+ * total are computed from it: ask with a different set and the offsets no longer line up with the
+ * swipe array they are meant to fill.
+ *
+ * Raw card text, deliberately unregexed, and the speaker taken from the card rather than name2 -
+ * identity is the message as stored, and a regexed body or a persona name makes every stored greeting
+ * compare as new.
+ *
+ * @returns {{ character: object|null, speaker: string, contents: object[] }}
+ */
+function _cardGreetingContents() {
+    const character = getCurrentCharacter();
+    if (!character?.avatar) return { character: null, speaker: '', contents: [] };
+    const { greetings } = cardToGreetingsModel(character);
+    const speaker = character.name ?? name2;
+    const sendDate = getMessageTimeStamp();
+    const contents = (greetings ?? [])
+        .filter(text => typeof text === 'string' && text.length > 0)
+        .map(text => ({
+            name: speaker,
+            is_user: false,
+            is_system: false,
+            send_date: sendDate,
+            mes: text,
+            extra: {},
+        }));
+    return { character, speaker, contents };
+}
+
+/** In-flight ensureOpeningRow() calls, keyed by provisional id, so two callers make one row. */
+const _openingRowInFlight = new Map();
+
+/**
+ * Turns the opening's provisional id into a real row, and is the ONLY thing that ever writes
+ * chat[0].node_id.
+ *
+ * A greeting earns a row by being used, not by being shown, so the row is minted here - at the
+ * moment something genuinely needs one: replying into the chat, labelling the node, forking at it,
+ * or saving an edit to it. Everywhere else is happy with the provisional id.
+ *
+ * Being the single writer is the point. When several places could each mint one, they raced: two
+ * rows for one greeting, two ideas of which was the opening, and a swipe_info still naming a third.
+ * Here the id, the slot bookkeeping and the snapshot all move together, so there is no window in
+ * which they disagree.
+ *
+ * @param {number} [mesId] index into `chat`; only an opening can be provisional
+ * @returns {Promise<string|null>} the real node id, or null when there cannot be one
+ */
+export async function ensureOpeningRow(mesId = 0) {
+    const message = chat[mesId];
+    if (!message) return null;
+    if (isStoredNodeId(message.node_id)) return message.node_id;
+    // No id at all means this is not a tree-backed opening (a JSONL chat, or a message that has
+    // simply never been saved); minting an opening for it would be inventing one.
+    if (!isProvisionalNodeId(message.node_id)) return null;
+
+    const character = getCurrentCharacter();
+    const text = typeof message.mes === 'string' ? message.mes : '';
+    // An opening with no text is not a greeting - the server refuses to store one, so asking is only
+    // a round trip that comes back null.
+    if (!character?.avatar || !text.trim()) return null;
+
+    const provisional = message.node_id;
+    const wasClean = _messageSnapshots.get(provisional) === message;
+
+    let pending = _openingRowInFlight.get(provisional);
+    if (!pending) {
+        pending = (async () => {
+            const response = await fetch('/api/chats/openings/ensure', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({
+                    avatar_url: character.avatar,
+                    contents: [{
+                        name: message.name ?? character.name ?? name2,
+                        is_user: !!message.is_user,
+                        is_system: false,
+                        send_date: message.send_date ?? getMessageTimeStamp(),
+                        mes: text,
+                        extra: message.extra ?? {},
+                    }],
+                }),
+            });
+            const made = response.ok ? await response.json().catch(() => null) : null;
+            return made?.node_ids?.[0] ?? null;
+        })().finally(() => _openingRowInFlight.delete(provisional));
+        _openingRowInFlight.set(provisional, pending);
+    }
+
+    let realId = null;
+    try {
+        realId = await pending;
+    } catch (error) {
+        console.warn('[greetings] Could not give this greeting a row:', error);
+        return null;
+    }
+    if (!realId) return null;
+
+    // Re-read: the await means the opening may have been replaced or the chat moved on.
+    const current = chat[mesId];
+    if (!current || current.node_id !== provisional) {
+        return isStoredNodeId(chat[mesId]?.node_id) ? chat[mesId].node_id : null;
+    }
+
+    // The slot that is showing IS this row now, so it stops being card-only in the same breath as the
+    // message adopting the id. Leaving the slot behind is what let the save path read the shown
+    // greeting as an alternative still waiting to be created.
+    const at = current.swipe_id ?? 0;
+    const updates = { node_id: realId };
+    if (Array.isArray(current.swipe_info)) {
+        const swipeInfo = [...current.swipe_info];
+        swipeInfo[at] = { ...(swipeInfo[at] ?? {}), node_id: realId };
+        updates.swipe_info = swipeInfo;
+    }
+    updateMessage(mesId, updates);
+
+    // The row now holds exactly what the message holds, so an opening that was in step with storage
+    // still is - under its new key. Dropping the old key keeps the map from carrying an entry nothing
+    // can ever match again.
+    _messageSnapshots.delete(provisional);
+    if (wasClean && chat[mesId]?.node_id === realId) {
+        _messageSnapshots.set(realId, chat[mesId]);
+    }
+
+    // Now that there is a row, there is somewhere to stand, and this is the only moment at which that
+    // becomes true - so recording it belongs here rather than at the swipe.
+    //
+    // Swiping onto a card-only greeting deliberately persists nothing: there is no id a reload could
+    // resolve. But the moment the greeting earns a row, the character is still pointing at whichever
+    // opening it was on before, and a load descends from the pointer - so the conversation being
+    // started here would come back under a greeting nobody chose, with the reply hanging off a
+    // sibling the load never visits.
+    try {
+        await fetch('/api/chats/message/select', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ avatar_url: character.avatar, node_id: realId }),
+        });
+        charactersStore.update(character.avatar, { chat: realId });
+        await saveActiveChat(character.avatar, realId);
+    } catch (error) {
+        console.warn('[greetings] The greeting has a row, but the position could not be recorded:', error);
+    }
+
+    return realId;
+}
+
+/**
  * Brings the card's current greetings into an already-open chat's opening alternatives.
  *
  * A loaded chat builds its opening swipes from stored siblings, so a greeting that has never been
@@ -9740,8 +9943,8 @@ function _isBlankUnwrittenSwipe(message) {
  * reload. The openings endpoint computes the union, and card-only entries sort after the stored ones,
  * so exactly those can be asked for once their count is known.
  *
- * Nothing is written. An appended slot carries no node_id, which is what marks it as text that lives
- * on the card and nowhere else; it gains a row if someone swipes onto it.
+ * Nothing is written. An appended slot carries a provisional id, which is what marks it as text that
+ * lives on the card and nowhere else; it gains a row if someone uses it.
  */
 async function _mergeCardGreetingsIntoOpening() {
     if (!chat_metadata?._tree_stored) return;
@@ -9809,7 +10012,7 @@ async function _mergeCardGreetingsIntoOpening() {
     const keptSwipes = [];
     const keptInfo = [];
     for (let k = 0; k < swipes.length; k++) {
-        const isStored = !!swipeInfo[k]?.node_id;
+        const isStored = isStoredNodeId(swipeInfo[k]?.node_id);
         const isHole = typeof swipes[k] !== 'string';
         if (isStored || isHole) {
             keptSwipes.push(swipes[k]);
@@ -9822,10 +10025,13 @@ async function _mergeCardGreetingsIntoOpening() {
         if (known.has(extra.mes)) continue;
         known.add(extra.mes);
         keptSwipes.push(extra.mes);
-        // Marked, because the absence of a node_id is not enough on its own: the save path reads a
-        // slot with no node_id as a new alternative to create, which is the opposite of what it
-        // means here.
-        keptInfo.push({ send_date: extra.send_date, extra: extra.extra ?? {}, name: extra.name, is_user: extra.is_user, card_only: true });
+        // A provisional id, not a bare absent one: the save path reads a slot with no id at all as a
+        // new alternative to create, which is the opposite of what a card greeting means.
+        keptInfo.push({
+            send_date: extra.send_date, extra: extra.extra ?? {},
+            name: extra.name, is_user: extra.is_user,
+            node_id: provisionalNodeId(extra.name ?? speaker, extra.mes),
+        });
     }
 
     const unchanged = keptSwipes.length === swipes.length
@@ -9838,17 +10044,42 @@ async function _mergeCardGreetingsIntoOpening() {
     swipeInfo.push(...keptInfo);
 
     // Whatever is being shown must survive the rebuild.
-    const shownText = current.swipes?.[current.swipe_id ?? 0];
-    const shownAt = swipes.indexOf(shownText);
+    const shownWas = current.swipe_id ?? 0;
+    const shownText = current.swipes?.[shownWas];
+    let shownAt = swipes.indexOf(shownText);
 
-    // Reading is not an edit, so a message that was saved stays saved.
+    const updates = { swipes, swipe_info: swipeInfo };
+
+    if (shownAt >= 0) {
+        updates.swipe_id = shownAt;
+    } else if (!isStoredNodeId(current.node_id) && swipes.length) {
+        // The greeting on screen was card-only and the card no longer says it - it was edited or
+        // removed while this chat sat open. Nothing was ever stored for it, so there is nothing to
+        // lose, but the message cannot be left pointing at a slot that now holds different text: `mes`
+        // said one greeting, the slot said another, and the chat log showed the mismatch.
+        //
+        // The card gives no way to tell an edit from a deletion-plus-addition, so this does not try to
+        // guess which new greeting the old one became. It keeps the position and makes the three
+        // agree.
+        shownAt = Math.min(shownWas, swipes.length - 1);
+        if (typeof swipes[shownAt] === 'string') {
+            updates.swipe_id = shownAt;
+            updates.mes = swipes[shownAt];
+            updates.name = swipeInfo[shownAt]?.name ?? speaker;
+            updates.node_id = swipeInfo[shownAt]?.node_id
+                ?? provisionalNodeId(updates.name, swipes[shownAt]);
+        }
+    }
+
+    // Reading is not an edit, so a message that was saved stays saved. An opening that merely followed
+    // the card is not an edit either: it has no row and asking for one is exactly what showing a
+    // greeting must not do.
     const wasClean = _messageSnapshots.get(current.node_id) === current;
-    updateMessage(0, {
-        swipes,
-        swipe_info: swipeInfo,
-        ...(shownAt >= 0 ? { swipe_id: shownAt } : {}),
-    });
-    if (wasClean && chat[0]?.node_id) {
+    updateMessage(0, updates);
+    if (updates.node_id && updates.node_id !== current.node_id) {
+        _messageSnapshots.delete(current.node_id);
+    }
+    if ((wasClean || updates.node_id) && chat[0]?.node_id) {
         _messageSnapshots.set(chat[0].node_id, chat[0]);
     }
     refreshSwipeButtons(true);
@@ -9865,7 +10096,10 @@ async function _mergeCardGreetingsIntoOpening() {
  */
 async function _restoreContinuation(mesId) {
     const message = chat[mesId];
-    if (!message?.node_id || !chat_metadata?._tree_stored) return;
+    if (!chat_metadata?._tree_stored) return;
+    // An opening with only a provisional id has no row, so nothing can follow it and there is nothing
+    // to put back. Asking would be a lookup for an id no row answers to.
+    if (!isStoredNodeId(message?.node_id)) return;
 
     let payload;
     try {
@@ -9963,12 +10197,45 @@ async function _saveTreeChat(fileName, metadata, messages) {
     };
 
     for (let i = 0; i < messages.length; i++) {
-        const msg = messages[i];
+        let msg = messages[i];
 
         if (!msg.node_id) {
             if (firstNewIndex < 0) firstNewIndex = i;
             continue;
         }
+
+        // A provisional id is a greeting the card has and the tree does not. This is the seam where it
+        // stops being that - and the only one, so there is exactly one moment at which the opening's
+        // id, its slot bookkeeping and its snapshot all change, together.
+        //
+        // Two questions cover everything that needs a row: was something written into the opening, and
+        // does anything follow it. Neither of them is "the greeting was shown", which is the whole
+        // point - a card of a thousand greetings swiped through end to end still writes nothing.
+        let justEnsured = false;
+        if (isProvisionalNodeId(msg.node_id)) {
+            // "Was something written into this greeting" is answerable from the message alone, because
+            // the provisional id is derived from the text it stands for: text that still hashes to its
+            // own id is text nobody has changed. That is deliberately not the same question as "is this
+            // object different from the last snapshot" - a message gets replaced for all sorts of
+            // reasons (holes filled, swipe arrays normalised, a slot's bookkeeping learned) and none of
+            // those is a reason to write a row.
+            const at = msg.swipe_id ?? 0;
+            const said = msg.swipe_info?.[at]?.name ?? msg.name;
+            const written = msg.node_id !== provisionalNodeId(said, msg.mes);
+            const followed = messages.length > i + 1;
+            if (written || followed) {
+                const realId = await ensureOpeningRow(i);
+                if (realId && chat[i]?.node_id === realId) {
+                    msg = chat[i];
+                    justEnsured = true;
+                }
+            }
+        }
+
+        // Still card-only: nothing is stored for it, so there is nothing to edit and nothing an
+        // append could attach to. Leaving lastPersisted alone is what says so.
+        if (!isStoredNodeId(msg.node_id)) continue;
+
         lastPersisted = msg.node_id;
 
         // Reference equality against the snapshot is the change detector; messages are frozen, so an
@@ -10000,12 +10267,12 @@ async function _saveTreeChat(fileName, metadata, messages) {
             for (let k = 0; k < msg.swipes.length; k++) {
                 if (typeof msg.swipes[k] !== 'string') continue;
                 if (msg.swipes[k].length === 0) continue;
+                // Any id at all, real or provisional, means this slot is not something to create. A
+                // provisional one is card text the union injected for display (see
+                // _mergeCardGreetingsIntoOpening): deliberately not a row, because a greeting earns
+                // one by being used rather than by being on the card. Reading those as "new" minted an
+                // opening for every greeting on the card, on every save of message 0.
                 if (msg.swipe_info[k]?.node_id) continue;
-                // Card text the union injected for display (see _mergeCardGreetingsIntoOpening).
-                // It has no node_id because it is deliberately not a row - a greeting earns one by
-                // being used, not by being on the card. Reading it as "new" here minted an opening
-                // for every greeting on the card, on every save of message 0.
-                if (msg.swipe_info[k]?.card_only) continue;
 
                 const created = await post('/api/chats/message/alternative', {
                     sibling_node_id: msg.node_id,
@@ -10044,6 +10311,15 @@ async function _saveTreeChat(fileName, metadata, messages) {
             // the blank over it. Mirroring the server's own rule here means no client state can
             // produce the request, rather than guarding the one shape that was found producing it.
             if (typeof msg.mes === 'string' && msg.mes.length === 0) {
+                continue;
+            }
+
+            // The row this opening just earned was created FROM this message, so it already holds
+            // what an edit would send. Posting one anyway asks the server to rewrite a row into the
+            // content it was made from, which collides with its own identity and comes back 409 -
+            // and a 409 aborts the rest of the save.
+            if (justEnsured) {
+                markSaved(i, msg.node_id);
                 continue;
             }
 
@@ -10508,6 +10784,11 @@ async function getChatResult() {
         // _openingFromTree() only returns one when the character is migrated.
         if (message?.node_id) {
             chat_metadata._tree_stored = true;
+            // The opening arrived from storage (or from the card, unchanged either way), so it is
+            // already in step with what the server holds. Saying so is what stops the very first save
+            // of a fresh chat from posting an edit that rewrites a row into the content it was just
+            // read from.
+            _snapshotMessages();
         }
 
         // Make sure the chat appears on the server
@@ -10625,17 +10906,20 @@ async function _openingFromTree(cardGreetings, preferredIndex) {
     const chosen = openings.alternatives[chosenOffset];
     if (!chosen) return null;
 
-    // Opening a conversation on a greeting is what gives it a row - only the one being used, not the
-    // whole card. Everything else stays card-only until someone starts from it.
-    let chosenNodeId = chosen.node_id;
-    if (!chosenNodeId) {
-        const made = await post('/api/chats/openings/ensure', { contents: [asMessage(chosen.mes)] });
-        chosenNodeId = made?.node_ids?.[0] ?? null;
-        if (!chosenNodeId) return null;
-    }
+    // Showing a greeting is not using it, so nothing is written here. A greeting the tree has no row
+    // for gets a provisional id instead: stable, content-derived, and enough for everything short of
+    // an operation that names a row. ensureOpeningRow() turns it into a real one at the moment
+    // something does.
+    //
+    // Minting here is what this used to do, and it meant simply swiping through a card's greetings
+    // wrote a row per greeting seen - on a card with hundreds, hundreds of rows, for a conversation
+    // that had not started.
+    const chosenNodeId = chosen.node_id ?? provisionalNodeId(chosen.name ?? speaker, chosen.mes);
 
     const message = {
-        name: chosen.name ?? name2,
+        // The same speaker the provisional id was derived from. A provisional id is only useful if it
+        // can be recomputed from the message, and the speaker is half of what it is computed from.
+        name: chosen.name ?? speaker,
         is_user: !!chosen.is_user,
         is_system: false,
         send_date: chosen.send_date ?? sendDate,
@@ -10653,16 +10937,14 @@ async function _openingFromTree(cardGreetings, preferredIndex) {
             const at = windowStart + k;
             if (at >= openings.total) return;
             swipes[at] = alt.mes;
-            const nodeId = at === windowStart + chosenOffset ? chosenNodeId : alt.node_id;
+            // Every slot carries an id, real or provisional. A card-only slot used to carry none plus
+            // a card_only flag, which the save path had to be taught to skip; a provisional id says
+            // the same thing without a second field to keep in step.
+            const nodeId = alt.node_id ?? provisionalNodeId(alt.name ?? speaker, alt.mes);
             swipeInfo[at] = {
                 send_date: alt.send_date, extra: alt.extra ?? {},
                 name: alt.name, is_user: alt.is_user,
                 node_id: nodeId,
-                // Marked, for the same reason _mergeCardGreetingsIntoOpening marks its own: a missing
-                // node_id means "the card says this, nothing stores it" here, and "new alternative,
-                // create a row for it" in the save path. Without the mark every card greeting was
-                // minted on the next save, and a save runs on every greeting swipe.
-                card_only: !nodeId,
             };
         });
         message.swipes = swipes;
@@ -14954,8 +15236,11 @@ export async function doNewChat({ deleteCurrentChat = false } = {}) {
         // exists to make the load above find nothing; keeping it as the pointer left it naming
         // something that does not exist, so metadata saves (which resolve node-then-name) failed
         // outright and the position could not be resolved back to anywhere.
+        // Only a real row can be a position. An opening still sitting on a card-only greeting has no
+        // row to point at, so the chat keeps its name as the pointer until something gives it one -
+        // storing the provisional id would leave the character pointing at nothing resolvable.
         const openingNodeId = chat[0]?.node_id;
-        const pointer = openingNodeId ?? newChatName;
+        const pointer = isStoredNodeId(openingNodeId) ? openingNodeId : newChatName;
 
         charactersStore.update(getCurrentCharacter().avatar, { chat: pointer });
         $('#selected_chat_pole').val(pointer);
@@ -16684,7 +16969,16 @@ jQuery(async function () {
             return;
         }
 
-        const content = { ...message, mes: text };
+        // Forking beside a card-only greeting is one of the things that earns it a row: there has to
+        // be something for the new alternative to be a sibling OF.
+        const siblingNodeId = await ensureOpeningRow(mesId);
+        if (isProvisionalNodeId(message.node_id) && !siblingNodeId) {
+            toastr.error(t`Could not create the alternative.`);
+            return;
+        }
+
+        // Re-read: ensureOpeningRow() above may have replaced the message with one carrying its new id.
+        const content = { ...(chat[mesId] ?? message), mes: text };
         delete content.swipes;
         delete content.swipe_info;
         delete content.swipe_id;
@@ -16698,7 +16992,7 @@ jQuery(async function () {
                 headers: getRequestHeaders(),
                 body: JSON.stringify({
                     avatar_url: getCurrentCharacter()?.avatar,
-                    sibling_node_id: message.node_id,
+                    sibling_node_id: siblingNodeId,
                     contents: [content],
                 }),
             });
