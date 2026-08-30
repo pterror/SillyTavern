@@ -9104,7 +9104,11 @@ export async function switchToAlternativePath(mesId, swipeId) {
 
     // An opening with no node_id is a greeting that lives on the card and has no row yet. Moving onto
     // it is what gives it one - only the greeting actually used, not the whole card.
-    if (!targetNodeId && mesId === 0 && typeof message?.swipes?.[swipeId] === 'string' && message.node_id) {
+    // The text has to be there, not merely be a string. Overswiping the greeting opens an empty slot
+    // to type into and moves onto it, which lands here - and '' is a string, so this used to give that
+    // empty slot a real row before anything had been written. Cancelling then dropped the local slot
+    // while the blank opening stayed behind, since nothing is ever deleted from the tree.
+    if (!targetNodeId && mesId === 0 && String(message?.swipes?.[swipeId] ?? '').length > 0 && message.node_id) {
         try {
             const response = await fetch('/api/chats/openings/ensure', {
                 method: 'POST',
