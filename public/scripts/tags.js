@@ -964,6 +964,7 @@ function filterByFolder(filterHelper) {
 async function loadTagsSettings() {
     let tagsFile = null;
     let fetchFailed = false;
+    let manifestHash = null;
 
     // Cheap freshness check before paying for the full (potentially very large) /api/tags/get response: if
     // tags_rev matches what's cached, reuse the cached `tags` and skip the fetch (and the seed/normalize save
@@ -978,6 +979,7 @@ async function loadTagsSettings() {
         });
         if (manifestResponse.ok) {
             const { hash } = await manifestResponse.json();
+            manifestHash = hash;
             if (hash !== null && hash !== undefined) {
                 const cached = await getCachedTags();
                 if (cached && cached.hash === hash) {
@@ -1041,6 +1043,14 @@ async function loadTagsSettings() {
     if (tagsFile && Array.isArray(tagsFile.assignedTagIds)) {
         serverAssignedTagIds = new Set(tagsFile.assignedTagIds);
     }
+
+    // Fill the cache the freshness check at the top reads. It was only ever written after a tag
+    // definition was saved, so a library nobody edits paid for the whole definitions payload on every
+    // boot - the check was there, it just never had anything to hit.
+    if (tagsFile && manifestHash !== null && manifestHash !== undefined) {
+        await setCachedTags(manifestHash, tags, [...serverAssignedTagIds]);
+    }
+
     invalidateCharactersFuseIndex();
     invalidateGroupsFuseIndex();
 
