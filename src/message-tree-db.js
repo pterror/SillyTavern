@@ -911,7 +911,26 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
                                 // The client received this exact row, so it is entitled to edit it.
                                 sid = existing.id;
                                 if (existing.content !== c && !wouldBlankStoredText(existing.content, c)) {
-                                    updateMessageContentSync(entry.db, sid, c);
+                                    // Being entitled to edit a row is not the same as the edit being
+                                    // possible. Rewriting it into the text a SIBLING already carries
+                                    // would make the two the same message, and the store holds one row
+                                    // per message - the unique index refuses, and since the whole save
+                                    // runs in one transaction that exception took the entire save down
+                                    // with a 500 rather than resolving one alternative.
+                                    //
+                                    // The answer is the same one the no-claim branch below already
+                                    // reaches for: identity is parent + speaker + text, so the message
+                                    // this slot now holds IS that sibling, and the slot moves onto it.
+                                    // Nothing is lost - the row the slot used to name keeps its own
+                                    // text and its own children, and swiping back reaches it.
+                                    const twin = entry.db.get(
+                                        'SELECT id FROM messages WHERE parent_id = @parentId AND identity_hash = @identity AND id != @id',
+                                        { parentId, identity: identityHashOf(parentId, c), id: sid });
+                                    if (twin) {
+                                        sid = twin.id;
+                                    } else {
+                                        updateMessageContentSync(entry.db, sid, c);
+                                    }
                                 }
                             } else {
                                 // No id, or an id that isn't a sibling of this node: the client cannot
@@ -1644,7 +1663,7 @@ export async function renameCharacterInMessages(directories, ownerId, newName) {
     if (!entry) return 0;
 
     const rows = entry.db.all(
-        `SELECT id, content FROM messages
+        `SELECT id, parent_id, content FROM messages
          WHERE owner_id = @ownerId
            AND parent_id IS NOT NULL
            AND json_extract(content, '$.is_user') IS NOT 1
@@ -1661,7 +1680,23 @@ export async function renameCharacterInMessages(directories, ownerId, newName) {
             try {
                 const msg = JSON.parse(row.content);
                 msg.name = newName;
-                updateMessageContentSync(entry.db, row.id, JSON.stringify(msg));
+                const next = JSON.stringify(msg);
+                // The speaker is part of what a message IS, so a rename moves every one of these rows
+                // to a new identity - and two alternatives that differed only by who said them arrive
+                // at the same one. The store holds a single row per message, so the second of those
+                // would throw the unique constraint and take the whole rename down partway through.
+                //
+                // The row that already carries this identity is left alone and this one keeps its old
+                // name, rather than the two being merged: they are distinct rows with distinct
+                // children, and nothing here is in a position to decide whose continuation survives.
+                const twin = entry.db.get(
+                    'SELECT id FROM messages WHERE parent_id = @parentId AND identity_hash = @identity AND id != @id',
+                    { parentId: row.parent_id, identity: identityHashOf(row.parent_id, next), id: row.id });
+                if (twin) {
+                    console.warn(`[message-tree] Not renaming ${row.id}: ${twin.id} already says the same thing under this parent.`);
+                    continue;
+                }
+                updateMessageContentSync(entry.db, row.id, next);
                 updated++;
             } catch { /* skip malformed */ }
         }
