@@ -1270,6 +1270,17 @@ export async function editMessage(directories, ownerId, nodeId, content) {
     // echoing a slot it never loaded.
     if (wouldBlankStoredText(row.content, next)) return { ok: false, reason: 'refused to blank stored text' };
 
+    // Editing a message into one of its own siblings would make them the same message, and the store
+    // holds one row per message - the unique index would throw, which the route turns into a 500
+    // rather than an answer. Say so instead, and name the row that already carries this text.
+    const parent = entry.db.get('SELECT parent_id FROM messages WHERE id = @id', { id: nodeId })?.parent_id;
+    if (parent) {
+        const twin = entry.db.get(
+            'SELECT id FROM messages WHERE parent_id = @parent AND identity_hash = @identity AND id != @id',
+            { parent, identity: identityHashOf(parent, next), id: nodeId });
+        if (twin) return { ok: false, reason: 'an alternative with this text already exists', node_id: twin.id };
+    }
+
     updateMessageContentSync(entry.db, nodeId, next);
     return { ok: true };
 }
