@@ -202,19 +202,15 @@ async function translateIncomingMessage(messageId) {
         return;
     }
 
-    if (typeof message.extra !== 'object') {
-        message.extra = {};
-    }
-
     if (isGeneratingSwipe(messageId)) {
         return;
     }
 
     const textToTranslate = substituteParams(message.mes, { name2Override: message.name });
     const translation = await translate(textToTranslate, extension_settings.translate.target_language);
-    message.extra.display_text = translation;
+    const updated = context.updateIn(messageId, ['extra', 'display_text'], translation);
 
-    updateMessageBlock(Number(messageId), message);
+    updateMessageBlock(Number(messageId), updated);
 }
 
 /**
@@ -230,17 +226,13 @@ async function translateIncomingMessageReasoning(messageId) {
         return false;
     }
 
-    if (typeof message.extra !== 'object') {
-        message.extra = {};
-    }
-
     if (!message.extra.reasoning || isGeneratingSwipe(messageId)) {
         return false;
     }
 
     const textToTranslate = substituteParams(message.extra.reasoning, { name2Override: message.name });
     const translation = await translate(textToTranslate, extension_settings.translate.target_language);
-    message.extra.reasoning_display_text = translation;
+    context.updateIn(messageId, ['extra', 'reasoning_display_text'], translation);
 
     updateReasoningUI(Number(messageId));
     return true;
@@ -525,14 +517,10 @@ async function translateOutgoingMessage(messageId) {
     const context = getContext();
     const message = context.chat[messageId];
 
-    if (typeof message.extra !== 'object') {
-        message.extra = {};
-    }
-
     const originalText = message.mes;
-    message.extra.display_text = originalText;
-    message.mes = await translate(originalText, extension_settings.translate.internal_language);
-    updateMessageBlock(messageId, message);
+    const translated = await translate(originalText, extension_settings.translate.internal_language);
+    const updated = context.updateIn(messageId, ['extra', 'display_text'], originalText);
+    updateMessageBlock(messageId, context.updateMessage(messageId, { mes: translated, extra: updated.extra }));
 
     console.log('translateOutgoingMessage', messageId);
 }

@@ -23,6 +23,7 @@ import {
     saveMetadata,
     saveSettingsDebounced,
     setUserName,
+    updateMessage,
 } from '../script.js';
 import { power_user, personaStore } from './power-user.js';
 import { getTokenCountAsync } from './tokenizers.js';
@@ -1922,8 +1923,7 @@ async function syncUserNameToPersona({ start = 0, end = chat.length - 1, quiet =
     for (let i = start; i <= end; i++) {
         const mes = chat[i];
         if (mes?.is_user && (!hasNameFilter || equalsIgnoreCaseAndAccents(mes.name, nameFilter))) {
-            mes.name = name1;
-            mes.force_avatar = getThumbnailUrl('persona', user_avatar);
+            updateMessage(i, { name: name1, force_avatar: getThumbnailUrl('persona', user_avatar) });
         }
     }
 

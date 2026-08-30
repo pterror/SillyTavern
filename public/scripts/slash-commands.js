@@ -65,6 +65,7 @@ import {
     updateMessageElement,
     updateSwipeCounter,
     closeCurrentChat,
+    updateMessage,
 } from '../script.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 import { SlashCommandParserError } from './slash-commands/SlashCommandParserError.js';
@@ -5865,13 +5866,13 @@ async function messageRoleCallback(args, role) {
             : message.is_user ? 'user' : 'assistant';
     }
 
-    message.extra = message.extra || {};
+    const extra = { ...(message.extra ?? {}) };
     if (role === 'system') {
-        message.extra.type = system_message_types.NARRATOR;
+        extra.type = system_message_types.NARRATOR;
     } else {
-        delete message.extra.type;
+        delete extra.type;
     }
-    message.is_user = role === 'user';
+    updateMessage(modifyAt, { extra, is_user: role === 'user' });
 
     await eventSource.emit(event_types.MESSAGE_EDITED, modifyAt);
     const existingMessage = chatElement.find(`.mes[mesid="${modifyAt}"]`);
@@ -5913,36 +5914,38 @@ async function messageNameCallback(args, name) {
     }
 
     let newName = '';
+    const updates = {};
 
     if (message.is_user) {
         const persona = findPersona({ name: name });
         if (persona) {
-            message.name = newName = persona.name;
-            message.force_avatar = getThumbnailUrl('persona', persona.avatar);
-            message.original_avatar = persona.avatar;
+            updates.name = newName = persona.name;
+            updates.force_avatar = getThumbnailUrl('persona', persona.avatar);
+            updates.original_avatar = persona.avatar;
         } else {
-            message.name = newName = name;
-            message.force_avatar = default_avatar;
-            message.original_avatar = default_avatar;
+            updates.name = newName = name;
+            updates.force_avatar = default_avatar;
+            updates.original_avatar = default_avatar;
         }
     } else {
         const character = findChar({ name: name });
         if (character) {
             const characterInfo = getNameAndAvatarForMessage(character, name);
-            message.name = newName = characterInfo.name;
-            message.force_avatar = characterInfo.force_avatar;
-            message.original_avatar = characterInfo.original_avatar;
+            updates.name = newName = characterInfo.name;
+            updates.force_avatar = characterInfo.force_avatar;
+            updates.original_avatar = characterInfo.original_avatar;
         } else {
-            message.name = newName = name;
-            message.force_avatar = default_avatar;
-            message.original_avatar = default_avatar;
+            updates.name = newName = name;
+            updates.force_avatar = default_avatar;
+            updates.original_avatar = default_avatar;
         }
     }
+    updateMessage(modifyAt, updates);
 
     await eventSource.emit(event_types.MESSAGE_EDITED, modifyAt);
     const existingMessage = chatElement.find(`.mes[mesid="${modifyAt}"]`);
     if (existingMessage.length) {
-        const newMessageElement = updateMessageElement(message, { messageId: modifyAt });
+        const newMessageElement = updateMessageElement(chat[modifyAt], { messageId: modifyAt });
         existingMessage.after(newMessageElement);
         existingMessage.remove();
     }

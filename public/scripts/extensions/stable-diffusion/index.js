@@ -5231,24 +5231,24 @@ async function sdMessageButton($icon, { animate } = {}) {
     const messageId = Number(messageElement.attr('mesid'));
 
     /** @type {ChatMessage} */
-    const message = context.chat[messageId];
+    let message = context.chat[messageId];
 
     if (!message) {
         console.error('Could not find message for SD generation button');
         return;
     }
 
-    if (!message.extra || typeof message.extra !== 'object') {
-        message.extra = {};
-    }
-
-    if (!Array.isArray(message.extra.media)) {
-        message.extra.media = [];
-    }
-
-    if (!message.extra.media.length && !message.extra.media_display) {
-        message.extra.media_display = MEDIA_DISPLAY.GALLERY;
-    }
+    // Normalise up front, same as before, but through the lens - the message is frozen.
+    message = context.updateIn(messageId, ['extra'], (e) => {
+        const next = { ...(e ?? {}) };
+        if (!Array.isArray(next.media)) {
+            next.media = [];
+        }
+        if (!next.media.length && !next.media_display) {
+            next.media_display = MEDIA_DISPLAY.GALLERY;
+        }
+        return next;
+    });
 
     /** @type {MediaAttachment} */
     const selectedMedia = message.extra.media.length > 0
@@ -5273,9 +5273,12 @@ async function sdMessageButton($icon, { animate } = {}) {
     }
 
     // If already contains an image and it's not inline - leave it as is
-    message.extra.inline_image = !(message.extra.media.length && !message.extra.inline_image);
-    message.extra.media.push(newMediaAttachment);
-    message.extra.media_index = message.extra.media.length - 1;
+    message = context.updateIn(messageId, ['extra'], (e) => ({
+        ...e,
+        inline_image: !(e.media.length && !e.inline_image),
+        media: [...e.media, newMediaAttachment],
+        media_index: e.media.length,
+    }));
 
     appendMediaToMessage(message, messageElement, SCROLL_BEHAVIOR.KEEP);
 
