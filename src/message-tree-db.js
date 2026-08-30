@@ -739,8 +739,20 @@ export async function isAvailable(directories) {
     return !!(await getEntry(directories));
 }
 
-/** Has this owner got anything listable in the tree yet? */
-export async function isMigrated(directories, ownerId) {
+/**
+ * Has this owner got any saved chats - anything labelled, and so anything listable?
+ *
+ * Was called isMigrated(), which is not what it answers and cost a long night's debugging. A label
+ * goes on a node when a chat is saved or a point is named, so this says "this character has chat
+ * history", nothing more. It is emphatically NOT "this character's data has moved into the tree":
+ * a character nobody has chatted with returns false here forever, while its very first chat still
+ * goes into the tree like everyone else's. Reading it as a question about STORAGE is what had the
+ * client open such a chat as a file.
+ *
+ * Whether the tree is where a chat lives is not a per-character question at all. isAvailable() is
+ * the only thing that can answer it.
+ */
+export async function hasSavedChats(directories, ownerId) {
     const entry = await getEntry(directories);
     if (!entry) return false;
     return hasBranchesSync(entry.db, ownerId);
@@ -1439,15 +1451,19 @@ export async function setChatMetadata(directories, ownerId, chatName, metadata) 
  * Windowed around the default, with `total` so the caller can size its arrays and fill the rest in
  * on demand.
  *
- * @returns {Promise<{ migrated: boolean, total: number, default_index: number, default_node_id: string|null, offset: number, alternatives: object[] } | null>}
+ * @returns {Promise<{ has_saved_chats: boolean, total: number, default_index: number, default_node_id: string|null, offset: number, alternatives: object[] } | null>}
  */
 export async function getOpeningAlternatives(directories, ownerId, range = {}, cardGreetings = []) {
     const entry = await getEntry(directories);
     if (!entry) return null;
 
-    // `migrated` distinguishes "lives in the tree and simply has no openings yet" from "still
-    // file-backed", which the caller cannot tell from an empty list alone.
-    const migrated = hasBranchesSync(entry.db, ownerId);
+    // Whether this character has any chat history. Reported because it is worth knowing, and named
+    // for what it is: it used to go out as `migrated`, which reads like a statement about where this
+    // character's data lives, and callers duly took it as one and opened tree chats as files.
+    //
+    // A null return above is the only thing here that says anything about storage, and it says the
+    // store could not be reached at all.
+    const hasSavedChats = hasBranchesSync(entry.db, ownerId);
     // No anchor is not a different kind of answer, it just means nothing is stored yet. The card's
     // greetings are still this character's greetings, and saying "no openings at all" instead sent the
     // caller down a path where the chat wasn't tree-backed - over an anchor row, which is a detail of
@@ -1504,7 +1520,7 @@ export async function getOpeningAlternatives(directories, ownerId, range = {}, c
     const to = Math.min(all.length, from + width);
 
     return {
-        migrated,
+        has_saved_chats: hasSavedChats,
         total: all.length,
         stored: rows.length,
         default_index: defaultIndex,

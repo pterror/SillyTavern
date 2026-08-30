@@ -24,7 +24,7 @@ import { invalidateThumbnail, getThumbnailVersion } from './thumbnails.js';
 import { importRisuSprites } from './sprites.js';
 import { getUserDirectories } from '../users.js';
 import { getChatInfo } from './chats.js';
-import { isMigrated as isTreeMigrated, listBranches as listTreeBranches } from '../message-tree-db.js';
+import { hasSavedChats, listBranches as listTreeBranches } from '../message-tree-db.js';
 import { ByafParser } from '../byaf.js';
 import { CharXParser, persistCharXAssets } from '../charx.js';
 import cacheBuster from '../middleware/cacheBuster.js';
@@ -3090,7 +3090,7 @@ router.post('/chats', validateAvatarUrlMiddleware, async function (request, resp
         }
 
         // Tree DB path: if the character is migrated, list branches from the tree DB
-        if (await isTreeMigrated(request.user.directories, characterDirectory)) {
+        if (await hasSavedChats(request.user.directories, characterDirectory)) {
             const branches = await listTreeBranches(request.user.directories, characterDirectory);
 
             if (request.body.simple) {
