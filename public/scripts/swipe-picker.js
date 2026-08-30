@@ -49,7 +49,9 @@ export function canJumpToSwipeForMessage(messageId) {
  * @returns {Promise<void>}
  */
 async function openSwipePicker(messageId) {
-    const message = chat[messageId];
+    // Re-read rather than captured: every write path replaces chat[messageId] with a new frozen
+    // object, so a reference taken once here goes stale the moment anything below awaits.
+    let message = chat[messageId];
 
     if (!canOpenSwipePickerForMessage(messageId)) {
         toastr.info(t`This message has no alternate swipes yet.`, t`Jump to Swipe`);
@@ -59,6 +61,7 @@ async function openSwipePicker(messageId) {
     // The picker lists every alternative, so it is the one place that genuinely needs all of them.
     // Pull the holes in before rendering rather than drawing a list of blanks.
     await hydrateSwipes(messageId, { all: true });
+    message = chat[messageId];
 
     const canJumpToSwipe = canJumpToSwipeForMessage(messageId);
     let selectedSwipeId = clamp(Number(message.swipe_id ?? 0), 0, message.swipes.length - 1);
@@ -128,6 +131,8 @@ async function openSwipePicker(messageId) {
     }
 
     async function renderSwipeList() {
+        // Deleting a swipe replaces the message too, and this re-runs afterwards.
+        message = chat[messageId];
         const swipeBlocks = await Promise.all(message.swipes.map(async (swipe, index) => {
             const swipeText = String(swipe ?? '');
             const template = $('#past_chat_template .select_chat_block_wrapper').clone();
