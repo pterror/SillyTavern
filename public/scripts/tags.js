@@ -36,6 +36,7 @@ import { t, translate } from './i18n.js';
 import { accountStorage } from './util/AccountStorage.js';
 import { enumTypes, SlashCommandEnumValue } from './slash-commands/SlashCommandEnumValue.js';
 import { getCachedTags, setCachedTags } from './tags-cache.js';
+import { DEFAULT_DIGEST_BUCKET_COUNT, bucketOf, contentHashOf, emptyDigest, combineDigest, digestsEqual } from './hash-utils.js';
 import { checkCharactersExistOrNull } from './character-existence-check.js';
 
 export {
@@ -961,6 +962,89 @@ function filterByFolder(filterHelper) {
  * a single compact whole-library fetch, see seedTagMapFromRecords() below (called from script.js's boot sequence
  * right after `getCharacters()`).
  */
+/**
+ * Repairs a cached copy of the tag definitions against the server without refetching all of them.
+ *
+ * Asks for the server's bucket digest (~2.7KB at 62k definitions), recomputes the same buckets locally from
+ * the cache, and only looks at the buckets that disagree. For each of those it fetches that bucket's
+ * {id, hash} membership and works out which ids it is missing, holding a stale copy of, or holding something
+ * the server no longer has - then fetches only those definitions. A deleted tag needs no tombstone: it is
+ * simply absent from its bucket's membership.
+ *
+ * This verifies rather than replays. It compares content, so it repairs drift however the cache came to be
+ * wrong - including from a bug on this side. A revision counter or a change log can only report what the
+ * server believes changed recently, which cannot notice a cache that was already wrong before the window
+ * started, and would happily keep layering deltas on top of it.
+ *
+ * @param {object[]} cachedTags
+ * @returns {Promise<object[]|null>} The repaired definitions, or null to fall back to a full fetch.
+ */
+async function syncTagDefinitionsFromDigest(cachedTags) {
+    const post = async (path, body) => {
+        const response = await fetch(path, {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify(body),
+            cache: 'no-cache',
+        });
+        return response.ok ? await response.json().catch(() => null) : null;
+    };
+
+    const remote = await post('/api/tags/digest', {});
+    if (!remote || !Array.isArray(remote.buckets)) return null;
+    const bucketCount = remote.bucketCount ?? DEFAULT_DIGEST_BUCKET_COUNT;
+
+    const byId = new Map();
+    const idsPerBucket = Array.from({ length: bucketCount }, () => new Set());
+    const local = Array.from({ length: bucketCount }, () => emptyDigest());
+    for (const tag of cachedTags) {
+        if (!tag?.id) continue;
+        const id = String(tag.id);
+        byId.set(id, tag);
+        const b = bucketOf(id, bucketCount);
+        idsPerBucket[b].add(id);
+        local[b] = combineDigest(local[b], id, contentHashOf(tag));
+    }
+
+    const mismatched = [];
+    for (let b = 0; b < bucketCount; b++) {
+        if (!digestsEqual(local[b], remote.buckets[b] ?? emptyDigest())) mismatched.push(b);
+    }
+    if (!mismatched.length) return cachedTags;
+
+    // Past a certain spread, asking bucket by bucket costs more round trips than simply taking the lot.
+    if (mismatched.length > bucketCount / 2) return null;
+
+    const wanted = new Set();
+    const gone = new Set();
+    for (const bucket of mismatched) {
+        const info = await post('/api/tags/bucket', { bucket, bucketCount });
+        if (!info || !Array.isArray(info.members)) return null;
+
+        const serverIds = new Set();
+        for (const member of info.members) {
+            const id = String(member.id);
+            serverIds.add(id);
+            const mine = byId.get(id);
+            if (!mine || contentHashOf(mine) !== member.hash) wanted.add(id);
+        }
+        for (const id of idsPerBucket[bucket]) {
+            if (!serverIds.has(id)) gone.add(id);
+        }
+    }
+
+    if (wanted.size) {
+        const fetched = await post('/api/tags/by-ids', { ids: [...wanted] });
+        if (!fetched || !Array.isArray(fetched.tags)) return null;
+        for (const tag of fetched.tags) {
+            if (tag?.id) byId.set(String(tag.id), tag);
+        }
+    }
+    for (const id of gone) byId.delete(id);
+
+    return [...byId.values()];
+}
+
 async function loadTagsSettings() {
     let tagsFile = null;
     let fetchFailed = false;
@@ -997,6 +1081,31 @@ async function loadTagsSettings() {
         }
     } catch (error) {
         console.error('Error loading tags manifest:', error);
+    }
+
+    // The manifest says the definitions moved, so the cached copy is not current - but "not current" is not
+    // "worthless". Repair it against the server's digest and fetch only what actually differs, instead of
+    // paying for all of them again. Falls through to the full path when there is no cache to repair, when the
+    // divergence is wide enough that repairing costs more than refetching, or on any error.
+    if (manifestHash !== null && manifestHash !== undefined) {
+        try {
+            const cached = await getCachedTags();
+            if (cached && Array.isArray(cached.tags) && cached.tags.length) {
+                const repaired = await syncTagDefinitionsFromDigest(cached.tags);
+                if (repaired) {
+                    tags = repaired;
+                    tag_map = Object.create(null);
+                    serverAssignedTagIds = new Set(cached.assignedTagIds ?? []);
+                    rebuildTagStores();
+                    await setCachedTags(manifestHash, tags, [...serverAssignedTagIds]);
+                    invalidateCharactersFuseIndex();
+                    invalidateGroupsFuseIndex();
+                    return;
+                }
+            }
+        } catch (error) {
+            console.error('Error repairing tags from digest:', error);
+        }
     }
 
     try {

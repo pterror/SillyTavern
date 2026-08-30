@@ -10,6 +10,9 @@ import {
     getTagDefinitions,
     saveTagDefinitions,
     getTagsHash,
+    getTagsDigest,
+    getTagsBucketMembers,
+    getTagDefinitionsByIds,
 } from '../character-metadata-db.js';
 
 export const router = express.Router();
@@ -53,6 +56,74 @@ router.post('/get', async (request, response) => {
         response.send({ tags, assignedTagIds: assignedTagIds ?? [] });
     } catch (err) {
         console.error('Could not read tag definitions', err);
+        response.sendStatus(500);
+    }
+});
+
+/**
+ * Bucketed digest of every tag definition (see getTagsDigest()). ~2.7KB against a 9MB full fetch at 62k
+ * definitions, so a client can establish that its cached copy is actually correct for almost nothing.
+ *
+ * This is the verification half, and it is the half that matters: a revision counter or a change log only
+ * reports what something claimed to change, so a write that skipped the log, a partial apply, or a plain bug
+ * drifts silently and the log keeps cheerfully serving deltas on top of it. Comparing content answers whether
+ * the client is right, which is a different question from what has happened lately.
+ */
+router.post('/digest', async (request, response) => {
+    try {
+        const bucketCount = Number(request.body?.bucketCount);
+        const digest = await getTagsDigest(
+            request.user.directories,
+            Number.isFinite(bucketCount) && bucketCount > 0 ? Math.trunc(bucketCount) : undefined,
+        );
+        if (digest === null) {
+            return response.send({ digest: null });
+        }
+        response.send(digest);
+    } catch (err) {
+        console.error('Could not compute the tag digest', err);
+        response.sendStatus(500);
+    }
+});
+
+/**
+ * The {id, hash} membership of one bucket, for a client that found that bucket disagreeing. It diffs locally
+ * to name the ids that changed, appeared or vanished, then asks /by-ids for just those. A deleted tag needs no
+ * tombstone: it is simply not in the membership any more.
+ */
+router.post('/bucket', async (request, response) => {
+    try {
+        const bucket = Number(request.body?.bucket);
+        if (!Number.isFinite(bucket) || bucket < 0) {
+            return response.status(400).send({ error: true, reason: 'bucket-required' });
+        }
+        const bucketCount = Number(request.body?.bucketCount);
+        const result = await getTagsBucketMembers(
+            request.user.directories,
+            Math.trunc(bucket),
+            Number.isFinite(bucketCount) && bucketCount > 0 ? Math.trunc(bucketCount) : undefined,
+        );
+        if (result === null) {
+            return response.send({ members: null });
+        }
+        response.send(result);
+    } catch (err) {
+        console.error('Could not read tag bucket members', err);
+        response.sendStatus(500);
+    }
+});
+
+/** The definitions for a named set of ids - the repair fetch, once the bucket diff has named them. */
+router.post('/by-ids', async (request, response) => {
+    try {
+        const ids = Array.isArray(request.body?.ids) ? request.body.ids : [];
+        const tags = await getTagDefinitionsByIds(request.user.directories, ids);
+        if (tags === null) {
+            return response.send({ tags: null });
+        }
+        response.send({ tags });
+    } catch (err) {
+        console.error('Could not read tag definitions by id', err);
         response.sendStatus(500);
     }
 });

@@ -19,7 +19,7 @@ import { TAGS_FILE } from './constants.js';
 // duplicated so the server's seeded random-sort ordering (design doc §5.3, decision 8/13) can never drift from
 // the client comparator (public/scripts/random-sort.js's compareByRandomSeed()) that decides the *same* ordering
 // for whatever page hasn't round-tripped to the server yet.
-import { getStringHash, DEFAULT_DIGEST_BUCKET_COUNT, characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash } from '../public/scripts/hash-utils.js';
+import { getStringHash, DEFAULT_DIGEST_BUCKET_COUNT, bucketOf, contentHashOf, emptyDigest, combineDigest, characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash } from '../public/scripts/hash-utils.js';
 import { runDigestWorkerTask } from './character-metadata-digest-dispatch.js';
 
 /** Fires a 'change' event whenever a row is written to the `changes` table, so callers (e.g. the SSE route in
@@ -3363,6 +3363,86 @@ export async function getTagDefinitions(directories) {
     const entry = await getEntry(directories);
     if (!entry) return null;
     return entry.db.all('SELECT data FROM tags').map(r => JSON.parse(r.data));
+}
+
+/**
+ * Bucketed digest over every tag definition, computed on demand and stored nowhere.
+ *
+ * There is deliberately no hash column, trigger or generated column here. Any of those is derived state
+ * somebody has to keep correct, and the write site added next year is the one that forgets - at which point
+ * the digest lies, which is worse than having none at all. A tag row is ~110 bytes, so hashing the whole
+ * table costs about 130ms at 62k rows: cheap enough that the derived state can simply not exist. Characters
+ * precompute theirs (digest_fav/digest_content/...) only because a character row carries shallow_json and
+ * there are an order of magnitude more of them.
+ *
+ * Built from the same bucketOf()/contentHashOf()/combineDigest() the character digest uses, out of the module
+ * both the client and the server import. "Both sides hash identically" is therefore a property of there being
+ * one implementation, not of two of them being kept in step by hand.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {number} [bucketCount]
+ * @returns {Promise<{ bucketCount: number, buckets: {hi: number, lo: number}[] } | null>}
+ */
+export async function getTagsDigest(directories, bucketCount = DEFAULT_DIGEST_BUCKET_COUNT) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    const buckets = Array.from({ length: bucketCount }, () => emptyDigest());
+    for (const row of entry.db.all('SELECT id, data FROM tags')) {
+        let parsed;
+        try { parsed = JSON.parse(row.data); } catch { continue; }
+        const b = bucketOf(row.id, bucketCount);
+        buckets[b] = combineDigest(buckets[b], row.id, contentHashOf(parsed));
+    }
+    return { bucketCount, buckets };
+}
+
+/**
+ * The repair half: every {id, hash} in one bucket. A client whose bucket digest disagrees asks for that
+ * bucket alone and diffs locally to see which ids changed, appeared, or are gone - deletions need no
+ * tombstone, because a tag that is no longer here is simply absent from its bucket's membership.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {number} bucket
+ * @param {number} [bucketCount]
+ * @returns {Promise<{ bucket: number, bucketCount: number, members: {id: string, hash: number}[] } | null>}
+ */
+export async function getTagsBucketMembers(directories, bucket, bucketCount = DEFAULT_DIGEST_BUCKET_COUNT) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    const members = [];
+    for (const row of entry.db.all('SELECT id, data FROM tags')) {
+        if (bucketOf(row.id, bucketCount) !== bucket) continue;
+        let parsed;
+        try { parsed = JSON.parse(row.data); } catch { continue; }
+        members.push({ id: row.id, hash: contentHashOf(parsed) });
+    }
+    return { bucket, bucketCount, members };
+}
+
+/**
+ * The definitions for a named set of ids - what a client fetches once the bucket diff above has told it
+ * exactly which ones it is missing or holding a stale copy of.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string[]} ids
+ * @returns {Promise<object[] | null>}
+ */
+export async function getTagDefinitionsByIds(directories, ids) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    const wanted = Array.isArray(ids) ? [...new Set(ids.map(String))] : [];
+    if (!wanted.length) return [];
+
+    const out = [];
+    const CHUNK = 500;
+    for (let i = 0; i < wanted.length; i += CHUNK) {
+        const slice = wanted.slice(i, i + CHUNK);
+        const placeholders = slice.map(() => '?').join(',');
+        for (const r of entry.db.all(`SELECT data FROM tags WHERE id IN (${placeholders})`, slice)) {
+            try { out.push(JSON.parse(r.data)); } catch { /* a row that will not parse cannot be repaired here */ }
+        }
+    }
+    return out;
 }
 
 /**
