@@ -1437,7 +1437,11 @@ export function addTagsToEntity(tag, entityId, { tagListSelector = null, tagList
     if (tagListSelector) printTagList(tagListSelector, tagListOptions);
     const inlineSelector = getInlineListSelector();
     if (inlineSelector) {
-        printTagList($(inlineSelector), tagListOptions);
+        // The inline row lives in the list/search view, not the edit panel - reprint it with its own
+        // read-only tagOptions (isCharacterList, no removable) instead of reusing whatever tagOptions the
+        // caller wired up for their own (possibly editable) tag list, so an edit-panel affordance like the
+        // remove (x) doesn't leak onto the read-only list row.
+        printTagList($(inlineSelector), { ...tagListOptions, tagOptions: { isCharacterList: true } });
     }
 
     return result;
