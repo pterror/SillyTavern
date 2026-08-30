@@ -10497,6 +10497,19 @@ async function getChatResult() {
             chat.push(message);
             freshChat = true;
         }
+
+        // A chat with no stored messages arrives with no header, so getChat() leaves chat_metadata
+        // empty and _tree_stored unset. Every save this chat then makes reads as non-tree and takes
+        // the whole-array legacy route, which re-sends rows that already exist - including the
+        // greeting, which already has one. That is what was tripping the identity constraint on an
+        // ordinary chat open, and it happened on every fresh chat, not in some edge case.
+        //
+        // The opening coming back carrying a node_id is what says this chat lives in the tree:
+        // _openingFromTree() only returns one when the character is migrated.
+        if (message?.node_id) {
+            chat_metadata._tree_stored = true;
+        }
+
         // Make sure the chat appears on the server
         await saveChatConditional();
     }
