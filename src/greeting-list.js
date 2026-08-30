@@ -114,6 +114,13 @@ export function applyGreetingsModelToCard(card, model) {
     const { firstMes, alternateGreetings, greetingDefaultPosition } = greetingsModelToCardFields(model);
     card.first_mes = firstMes;
     card.data = card.data ?? {};
+    // Both copies, always. A card carries the default greeting twice - the v1 field and the v2 one -
+    // and every read reconciles them by taking v2 and overwriting v1 with it (see
+    // character-card-normalize.js). Writing only v1 therefore does not half-save the edit, it discards
+    // it: the operation returns ok, the client's own copy is right for the rest of the session, and
+    // the next read from disk hands back the old text. Which looked exactly like the editor reverting
+    // an edit, with the stale copy also showing up as a duplicate greeting in the chat.
+    card.data.first_mes = firstMes;
     card.data.alternate_greetings = alternateGreetings;
     if (greetingDefaultPosition === null) {
         if (card.data.extensions) delete card.data.extensions[GREETING_DEFAULT_POSITION_KEY];
