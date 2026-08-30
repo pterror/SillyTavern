@@ -1040,13 +1040,7 @@ function setMemoryContext(value, saveToMessage, index = null) {
     const context = getContext();
     if (saveToMessage && context.chat.length) {
         const idx = index ?? context.chat.length - 2;
-        const mes = context.chat[idx < 0 ? 0 : idx];
-
-        if (!mes.extra) {
-            mes.extra = {};
-        }
-
-        mes.extra.memory = value;
+        context.updateIn(idx < 0 ? 0 : idx, ['extra', 'memory'], value);
         saveChatDebounced();
     }
 }

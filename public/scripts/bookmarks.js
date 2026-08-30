@@ -545,7 +545,9 @@ export async function createNewBookmark(mesId, { forceName = null } = {}) {
             }),
         });
 
-        lastMes.extra.bookmark_link = name;
+        const extra = typeof lastMes.extra === 'object' ? { ...lastMes.extra } : {};
+        extra.bookmark_link = name;
+        updateMessage(mesId, { extra });
         updateBookmarkDisplay($(`.mes[mesid="${mesId}"]`), name);
         await saveChatConditional();
         toastr.success('Bookmarked. It shows up in the chat list.', 'Bookmark', { timeOut: 6000 });
@@ -563,7 +565,9 @@ export async function createNewBookmark(mesId, { forceName = null } = {}) {
         await saveChat({ chatName: name, withMetadata: newMetadata, mesId });
     }
 
-    lastMes.extra.bookmark_link = name;
+    const extra = typeof lastMes.extra === 'object' ? { ...lastMes.extra } : {};
+    extra.bookmark_link = name;
+    updateMessage(mesId, { extra });
 
     const mes = $(`.mes[mesid="${mesId}"]`);
     updateBookmarkDisplay(mes, name);

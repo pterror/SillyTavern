@@ -167,16 +167,31 @@ async function captionExistingMessage(message, mediaIndex) {
 
     const messageText = String(message.mes).trim();
 
-    if (!messageText) {
-        message.extra.inline_image = false;
-        message.mes = wrappedCaption;
-        mediaAttachment.title = wrappedCaption;
-        mediaAttachment.captioned = true;
+    // The attachment lives inside the frozen `extra.media`, so it gets replaced, not poked.
+    const nextAttachment = {
+        ...mediaAttachment,
+        title: wrappedCaption,
+        captioned: true,
+        ...(messageText ? { append_title: true } : {}),
+    };
+    const nextExtra = {
+        ...message.extra,
+        inline_image: !!messageText,
+        media: message.extra.media.map((m, i) => (i === mediaIndex ? nextAttachment : m)),
+    };
+
+    const captionContext = getContext();
+    const mesId = captionContext.chat.indexOf(message);
+    if (mesId >= 0) {
+        captionContext.updateMessage(mesId, {
+            extra: nextExtra,
+            ...(messageText ? {} : { mes: wrappedCaption }),
+        });
     } else {
-        message.extra.inline_image = true;
-        mediaAttachment.append_title = true;
-        mediaAttachment.title = wrappedCaption;
-        mediaAttachment.captioned = true;
+        message.extra = nextExtra;
+        if (!messageText) {
+            message.mes = wrappedCaption;
+        }
     }
 }
 
@@ -767,7 +782,7 @@ export async function init() {
             const mediaIndex = Number(mediaContainer.attr('data-index'));
             const data = getContext().chat[messageId];
             await captionExistingMessage(data, mediaIndex);
-            appendMediaToMessage(data, messageBlock, SCROLL_BEHAVIOR.KEEP);
+            appendMediaToMessage(getContext().chat[messageId], messageBlock, SCROLL_BEHAVIOR.KEEP);
             await saveChatConditional();
         } catch (e) {
             console.error('Message image recaption failed', e);

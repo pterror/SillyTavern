@@ -30,6 +30,7 @@ import {
     getMediaDisplay,
     chatElement,
     charactersStore,
+    updateIn,
 } from '../script.js';
 import { selected_group } from './group-chats.js';
 import { power_user } from './power-user.js';
@@ -200,7 +201,7 @@ export async function unhideChatMessage(messageId, _messageBlock) {
 export async function populateFileAttachment(message, inputId = 'file_form_input') {
     try {
         if (!message) return;
-        if (!message.extra || typeof message.extra !== 'object') message.extra = {};
+        const extra = { ...(message.extra ?? {}) };
         const fileInput = document.getElementById(inputId);
         if (!(fileInput instanceof HTMLInputElement)) return;
 
@@ -214,9 +215,7 @@ export async function populateFileAttachment(message, inputId = 'file_form_input
             const mediaType = MEDIA_TYPE.getFromMime(file.type);
             if (mediaType) {
                 const imageUrl = await saveBase64AsFile(base64Data, name2, fileNamePrefix, extension);
-                if (!Array.isArray(message.extra.media)) {
-                    message.extra.media = [];
-                }
+                extra.media = Array.isArray(extra.media) ? [...extra.media] : [];
                 /** @type {MediaAttachment} */
                 const mediaAttachment = {
                     url: imageUrl,
@@ -224,9 +223,9 @@ export async function populateFileAttachment(message, inputId = 'file_form_input
                     title: file.name,
                     source: MEDIA_SOURCE.UPLOAD,
                 };
-                message.extra.media.push(mediaAttachment);
-                message.extra.media_index = message.extra.media.length - 1;
-                message.extra.inline_image = true;
+                extra.media.push(mediaAttachment);
+                extra.media_index = extra.media.length - 1;
+                extra.inline_image = true;
             } else {
                 const uniqueFileName = `${fileNamePrefix}.txt`;
 
@@ -247,17 +246,22 @@ export async function populateFileAttachment(message, inputId = 'file_form_input
                     continue;
                 }
 
-                if (!Array.isArray(message.extra.files)) {
-                    message.extra.files = [];
-                }
+                extra.files = Array.isArray(extra.files) ? [...extra.files] : [];
 
-                message.extra.files.push({
+                extra.files.push({
                     url: fileUrl,
                     size: file.size,
                     name: file.name,
                     created: Date.now(),
                 });
             }
+        }
+
+        const mesId = chat.indexOf(message);
+        if (mesId >= 0) {
+            updateIn(mesId, ['extra'], extra);
+        } else {
+            message.extra = extra;
         }
     } catch (error) {
         console.error('Could not upload file', error);
@@ -420,12 +424,12 @@ async function deleteMessageFile(messageBlock, messageId, fileIndex) {
     }
 
     const url = message.extra.files[fileIndex]?.url;
-    message.extra.files.splice(fileIndex, 1);
+    const updated = updateIn(messageId, ['extra', 'files'], (list) => list.filter((_, i) => i !== fileIndex));
 
     await saveChatConditional();
     await deleteFileFromServer(url);
 
-    appendMediaToMessage(message, messageBlock, SCROLL_BEHAVIOR.KEEP);
+    appendMediaToMessage(updated, messageBlock, SCROLL_BEHAVIOR.KEEP);
 }
 
 /**
@@ -511,21 +515,33 @@ export async function appendFileContent(message, messageText) {
     if (!message || !message.extra || typeof message.extra !== 'object') {
         return messageText;
     }
-    if (message.extra.fileLength >= 0) {
-        delete message.extra.fileLength;
+    const extra = { ...message.extra };
+    const commit = () => {
+        const mesId = chat.indexOf(message);
+        if (mesId >= 0) {
+            updateIn(mesId, ['extra'], extra);
+        } else {
+            message.extra = extra;
+        }
+    };
+
+    if (extra.fileLength >= 0) {
+        delete extra.fileLength;
     }
-    if (Array.isArray(message.extra?.files) && message.extra.files.length > 0) {
+    if (Array.isArray(extra.files) && extra.files.length > 0) {
         const fileTexts = [];
-        for (const file of message.extra.files) {
+        for (const file of extra.files) {
             const fileText = file.text || (await getFileAttachment(file.url));
             if (fileText) {
                 fileTexts.push(fileText);
             }
         }
         const mergedFileTexts = fileTexts.join('\n\n') + '\n\n';
-        message.extra.fileLength = mergedFileTexts.length;
+        extra.fileLength = mergedFileTexts.length;
+        commit();
         return mergedFileTexts + messageText;
     }
+    commit();
     return messageText;
 }
 
@@ -1063,22 +1079,25 @@ async function deleteMessageMedia(messageId, mediaIndex, messageBlock) {
     }
 
     deleteUrls.push(message.extra.media[mediaIndex].url);
-    message.extra.media.splice(mediaIndex, 1);
 
-    if (message.extra.media_index === mediaIndex) {
+    const extra = { ...message.extra, media: message.extra.media.filter((_, i) => i !== mediaIndex) };
+
+    if (extra.media_index === mediaIndex) {
         const newIndex = mediaIndex > 0 ? mediaIndex - 1 : 0;
-        message.extra.media_index = clamp(newIndex, 0, message.extra.media.length - 1);
+        extra.media_index = clamp(newIndex, 0, extra.media.length - 1);
     }
 
     if (value === POPUP_RESULT.CUSTOM1) {
-        for (const media of message.extra.media) {
+        for (const media of extra.media) {
             deleteUrls.push(media.url);
         }
-        delete message.extra.media;
-        delete message.extra.inline_image;
-        delete message.extra.title;
-        delete message.extra.append_title;
+        delete extra.media;
+        delete extra.inline_image;
+        delete extra.title;
+        delete extra.append_title;
     }
+
+    const updatedMessage = updateIn(messageId, ['extra'], extra);
 
     if (deleteFromServer) {
         for (const url of deleteUrls) {
@@ -1088,7 +1107,7 @@ async function deleteMessageMedia(messageId, mediaIndex, messageBlock) {
     }
 
     await saveChatConditional();
-    appendMediaToMessage(message, messageBlock, SCROLL_BEHAVIOR.KEEP);
+    appendMediaToMessage(updatedMessage, messageBlock, SCROLL_BEHAVIOR.KEEP);
 }
 
 /**
@@ -2124,17 +2143,17 @@ async function onImageSwiped(messageId, element, direction) {
     // Switch to previous image or wrap around if at the beginning
     if (direction === SWIPE_DIRECTION.LEFT) {
         const newIndex = currentIndex === 0 ? media.length - 1 : currentIndex - 1;
-        message.extra.media_index = newIndex;
+        updateIn(messageId, ['extra', 'media_index'], newIndex);
     }
 
     // Switch to next image or generate a new one if at the end
     if (direction === SWIPE_DIRECTION.RIGHT) {
         const newIndex = currentIndex === media.length - 1 ? 0 : currentIndex + 1;
-        message.extra.media_index = newIndex >= media.length ? 0 : newIndex;
+        updateIn(messageId, ['extra', 'media_index'], newIndex >= media.length ? 0 : newIndex);
     }
 
     await saveChatConditional();
-    appendMediaToMessage(message, element);
+    appendMediaToMessage(chat[messageId], element);
 }
 
 export function initChatUtilities() {

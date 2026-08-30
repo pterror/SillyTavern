@@ -479,6 +479,45 @@ export function updateMessage(mesId, updates) {
 }
 
 /**
+ * The write path for nested fields. `updateMessage` shallow-merges, so it can only replace
+ * whole top-level properties - `{ ...old }` leaves `extra` pointing at the original frozen
+ * object, and touching it throws.
+ *
+ * This copies only the nodes along `path` and shares every other subtree with the old message,
+ * so the cost is the depth of the write, not the size of the message. `deepFreeze` stops at
+ * anything already frozen, so the freeze walk is the same few nodes.
+ *
+ *   updateIn(id, ['extra', 'media_index'], 3);
+ *   updateIn(id, ['extra', 'media'], list => [...(list ?? []), item]);
+ *
+ * @param {number} mesId Index in the chat array
+ * @param {(string|number)[]} path Property path to write, from the message root
+ * @param {*|((current: *) => *)} value New value, or a function from the current value to it
+ * @returns {object} The new frozen message, or the existing value if there is no such message
+ */
+export function updateIn(mesId, path, value) {
+    const old = chat[mesId];
+    if (!old) return old;
+
+    const rebuild = (node, depth) => {
+        if (depth === path.length) {
+            return typeof value === 'function' ? value(node) : value;
+        }
+        const key = path[depth];
+        // A missing level is created as an object, matching what the old mutating code did
+        // when it wrote through an absent `extra`.
+        const src = (node === null || typeof node !== 'object') ? {} : node;
+        const copy = Array.isArray(src) ? src.slice() : { ...src };
+        copy[key] = rebuild(src[key], depth + 1);
+        return copy;
+    };
+
+    const result = deepFreeze(rebuild(old, 0));
+    chat[mesId] = result;
+    return result;
+}
+
+/**
  * Snapshot: maps node_id -> message reference, taken after load/save.
  * Reference equality against the snapshot is the change-detection mechanism.
  * With deep-frozen messages, in-place mutation is impossible (throws TypeError),
@@ -6372,7 +6411,11 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         let options = { isPrompt: true, depth: (coreChat.length - index - (isContinue ? 2 : 1)) };
 
         let regexedMessage = getRegexedString(message, regexType, options);
+        const residentId = chat.indexOf(chatItem);
         regexedMessage = await appendFileContent(chatItem, regexedMessage);
+        if (residentId >= 0) {
+            chatItem = chat[residentId];
+        }
 
         const titles = [];
         if (chatItem?.extra?.append_title && chatItem?.extra?.title) {
@@ -9265,14 +9308,17 @@ export function syncSwipeToMes(messageId = null, swipeId = null, targetMessage =
  */
 function saveImageToMessage(img, mes) {
     if (mes && img.image) {
-        if (!mes.extra || typeof mes.extra !== 'object') {
-            mes.extra = {};
+        const extra = { ...(typeof mes.extra === 'object' && mes.extra !== null ? mes.extra : {}) };
+        extra.media = Array.isArray(extra.media) ? [...extra.media] : [];
+        extra.media.push({ url: img.image, type: MEDIA_TYPE.IMAGE, title: img.title, source: MEDIA_SOURCE.API });
+        extra.inline_image = img.inline;
+
+        const mesId = chat.indexOf(mes);
+        if (mesId >= 0) {
+            updateIn(mesId, ['extra'], extra);
+        } else {
+            mes.extra = extra;
         }
-        if (!Array.isArray(mes.extra.media)) {
-            mes.extra.media = [];
-        }
-        mes.extra.media.push({ url: img.image, type: MEDIA_TYPE.IMAGE, title: img.title, source: MEDIA_SOURCE.API });
-        mes.extra.inline_image = img.inline;
     }
 }
 

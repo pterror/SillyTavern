@@ -9,6 +9,7 @@ import {
     is_send_press,
     isStreamingEnabled,
     substituteParamsExtended,
+    updateMessage,
 } from '../script.js';
 import { debounce, delay, getStringHash } from './utils.js';
 import { decodeTextTokens, getTokenizerBestMatch } from './tokenizers.js';
@@ -425,8 +426,8 @@ function createSwipe(messageId, prompt) {
         extra: { ...structuredClone(msg.extra), from_logprobs: new Date().getTime() },
     };
 
-    msg.swipes = msg.swipes || [];
-    msg.swipe_info = msg.swipe_info || [];
+    const swipes = [...(msg.swipes ?? [])];
+    const swipeInfo = [...(msg.swipe_info ?? [])];
 
     // Add our new swipe, then make sure the active swipe is the one just before
     // it. The call to `swipe_right` in addGeneration() will switch to it immediately.
@@ -436,14 +437,18 @@ function createSwipe(messageId, prompt) {
         //cleaned prompt goes into reasoning
         newSwipeInfo.extra.reasoning = cleanedPrompt;
         //mes_text becomes empty, causing the reasoning handler to parse the reasoning first
-        msg.swipes.push('');
+        swipes.push('');
     } else {
         //otherwise just add the cleaned prompt to the message and continue
-        msg.swipes.push(cleanedPrompt);
+        swipes.push(cleanedPrompt);
     }
 
-    msg.swipe_info.push(newSwipeInfo);
-    msg.swipe_id = Math.max(0, msg.swipes.length - 2);
+    swipeInfo.push(newSwipeInfo);
+    updateMessage(messageId, {
+        swipes,
+        swipe_info: swipeInfo,
+        swipe_id: Math.max(0, swipes.length - 2),
+    });
 }
 
 /**
