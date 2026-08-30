@@ -1422,6 +1422,13 @@ export async function addOpeningAlternatives(directories, ownerId, contents) {
         }
 
         for (const content of list) {
+            // An opening with no text is not a greeting. Overswiping opens an empty slot to type into,
+            // and giving that a row before anything has been written leaves a blank greeting behind
+            // for good, because nothing is ever deleted from this table. Guarded here rather than at
+            // the one caller that hit it, so no future one can do it either. A null keeps the caller's
+            // node_ids[i] lined up with the content it passed, and reads as "nothing was created".
+            if (!String(content?.mes ?? '').trim()) { nodeIds.push(null); continue; }
+
             const body = sanitizeForStorage(content);
             const key = nodeIdentityKey(anchor.id, body);
             const existing = byIdentity.get(key);
