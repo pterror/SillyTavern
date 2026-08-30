@@ -9730,7 +9730,10 @@ async function _mergeCardGreetingsIntoOpening() {
 
     const opening = chat[0];
     const character = getCurrentCharacter();
-    if (!opening?.node_id || !character?.avatar) return;
+    // No node_id requirement: an opening nobody has spoken into deliberately has no row now, and
+    // showing the card's current greetings is a display concern that does not need one. Requiring it
+    // here meant editing a greeting changed nothing on screen until the chat was reloaded.
+    if (!opening || !character?.avatar) return;
 
     // Raw card text, deliberately unregexed. Identity is the message as stored, and stored openings
     // hold the card's own text - regex is a display transform applied on the way to the screen. Sending
@@ -9778,7 +9781,9 @@ async function _mergeCardGreetingsIntoOpening() {
     if (!extras.length) return;
 
     const current = chat[0];
-    if (!current?.node_id || current.node_id !== opening.node_id) return;
+    // Still the same opening? Compared by node_id including when both are absent, which is the normal
+    // state for one that has not been spoken into.
+    if (!current || current.node_id !== opening.node_id) return;
 
     const swipes = Array.isArray(current.swipes) ? [...current.swipes] : [current.mes ?? ''];
     const swipeInfo = Array.isArray(current.swipe_info)
