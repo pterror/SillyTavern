@@ -908,7 +908,11 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
                         // +k keeps sibling order == swipe order under the (created_at, id) sort.
                         createdAt: now + k,
                     });
-                    byContent.set(c, sid);
+                    // Keyed by the identity key, the same thing this map is read with. Filing it
+                    // under the raw content meant a row inserted during this call was recorded
+                    // where nothing would ever look for it, so a second occurrence of the same
+                    // content in the same call missed and inserted again.
+                    byContent.set(ck, sid);
                 }
                 if (k === selected) chosenId = sid;
             }
