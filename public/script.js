@@ -9101,6 +9101,7 @@ export async function hydrateSwipes(mesId, { index = null, all = false } = {}) {
 export async function switchToAlternativePath(mesId, swipeId) {
     const message = chat[mesId];
     let targetNodeId = message?.swipe_info?.[swipeId]?.node_id;
+    let mintedForSlot = false;
 
     // An opening with no node_id is a greeting that lives on the card and has no row yet. Moving onto
     // it is what gives it one - only the greeting actually used, not the whole card.
@@ -9127,6 +9128,7 @@ export async function switchToAlternativePath(mesId, swipeId) {
             });
             const made = response.ok ? await response.json().catch(() => null) : null;
             targetNodeId = made?.node_ids?.[0] ?? null;
+            mintedForSlot = !!targetNodeId;
         } catch (error) {
             console.warn('[switchToAlternativePath] Could not create a row for the chosen greeting:', error);
         }
@@ -9160,7 +9162,13 @@ export async function switchToAlternativePath(mesId, swipeId) {
         return false;
     }
 
-    updateMessage(mesId, { node_id: targetNodeId, swipe_id: swipeId });
+    // Choosing a card-only greeting is what turns it into a row, so that slot stops being card text.
+    // Without this it keeps its card_only mark and no node_id, and the save path would skip the
+    // alternative it now genuinely has.
+    const nextSwipeInfo = mintedForSlot && Array.isArray(message.swipe_info)
+        ? message.swipe_info.map((info, k) => (k === swipeId ? { ...(info ?? {}), node_id: targetNodeId, card_only: false } : info))
+        : null;
+    updateMessage(mesId, { node_id: targetNodeId, swipe_id: swipeId, ...(nextSwipeInfo ? { swipe_info: nextSwipeInfo } : {}) });
     chat.splice(mesId + 1, chat.length - (mesId + 1), ...(payload.messages ?? []));
 
     // Persist the choice, and move the pointer onto the node now being shown.
@@ -9799,7 +9807,10 @@ async function _mergeCardGreetingsIntoOpening() {
         if (known.has(extra.mes)) continue;
         known.add(extra.mes);
         keptSwipes.push(extra.mes);
-        keptInfo.push({ send_date: extra.send_date, extra: extra.extra ?? {}, name: extra.name, is_user: extra.is_user });
+        // Marked, because the absence of a node_id is not enough on its own: the save path reads a
+        // slot with no node_id as a new alternative to create, which is the opposite of what it
+        // means here.
+        keptInfo.push({ send_date: extra.send_date, extra: extra.extra ?? {}, name: extra.name, is_user: extra.is_user, card_only: true });
     }
 
     const unchanged = keptSwipes.length === swipes.length
@@ -9956,6 +9967,11 @@ async function _saveTreeChat(fileName, metadata, messages) {
                 if (typeof msg.swipes[k] !== 'string') continue;
                 if (msg.swipes[k].length === 0) continue;
                 if (msg.swipe_info[k]?.node_id) continue;
+                // Card text the union injected for display (see _mergeCardGreetingsIntoOpening).
+                // It has no node_id because it is deliberately not a row - a greeting earns one by
+                // being used, not by being on the card. Reading it as "new" here minted an opening
+                // for every greeting on the card, on every save of message 0.
+                if (msg.swipe_info[k]?.card_only) continue;
 
                 const created = await post('/api/chats/message/alternative', {
                     sibling_node_id: msg.node_id,
