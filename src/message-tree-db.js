@@ -165,7 +165,7 @@ function migrateIdentityHashSync(db) {
                 db.run('UPDATE messages SET identity_hash = @hash WHERE id = @id',
                     { id: row.id, hash: identityHashOf(row.parent_id, row.content) });
             }
-        })();
+        });
     }
 
     try {
