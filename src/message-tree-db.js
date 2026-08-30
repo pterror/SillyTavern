@@ -915,13 +915,25 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
                                 }
                             } else {
                                 // No id, or an id that isn't a sibling of this node: the client cannot
-                                // show it received this row, so it does not get to speak for one. Write
-                                // a new row instead of overwriting something it never held. A duplicate
-                                // is recoverable; a clobbered alternative is not.
-                                sid = newId();
-                                insertMessageSync(entry.db, {
-                                    id: sid, parentId, ownerId, content: c, createdAt: now + k,
-                                });
+                                // show it received this row, so it does not get to speak for one and
+                                // must not overwrite something it never held.
+                                //
+                                // It can still land on one, though. A sibling already carrying this
+                                // exact content under this exact parent IS this message - identity is
+                                // parent + speaker + text, and the database enforces that now. Reusing
+                                // it clobbers nothing, because nothing about it would change. Only when
+                                // no such row exists is this genuinely new.
+                                const twin = entry.db.get(
+                                    'SELECT id FROM messages WHERE parent_id = @parentId AND identity_hash = @identity',
+                                    { parentId, identity: identityHashOf(parentId, c) });
+                                if (twin) {
+                                    sid = twin.id;
+                                } else {
+                                    sid = newId();
+                                    insertMessageSync(entry.db, {
+                                        id: sid, parentId, ownerId, content: c, createdAt: now + k,
+                                    });
+                                }
                             }
                             if (k === selected) chosenId = sid;
                         }
@@ -1281,10 +1293,19 @@ export async function appendMessages(directories, ownerId, afterNodeId, contents
     entry.db.transaction(() => {
         let cursor = afterNodeId;
         for (const c of contents) {
-            const id = newId();
-            insertMessageSync(entry.db, {
-                id, parentId: cursor, ownerId, content: sanitizeForStorage(c), createdAt: now + nodeIds.length,
-            });
+            const body = sanitizeForStorage(c);
+            // Appending a message the parent already has is that same message, not a second copy of
+            // it - the database will not hold two, and a retry or a double-send should land on the row
+            // that is already there rather than fail.
+            const twin = entry.db.get(
+                'SELECT id FROM messages WHERE parent_id = @parentId AND identity_hash = @identity',
+                { parentId: cursor, identity: identityHashOf(cursor, body) });
+            const id = twin ? twin.id : newId();
+            if (!twin) {
+                insertMessageSync(entry.db, {
+                    id, parentId: cursor, ownerId, content: body, createdAt: now + nodeIds.length,
+                });
+            }
             setDefaultChildSync(entry.db, cursor, id);
             nodeIds.push(id);
             cursor = id;
