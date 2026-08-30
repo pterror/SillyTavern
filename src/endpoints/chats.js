@@ -28,12 +28,11 @@ import { bumpCharacterDateLastChat, bumpGroupChatStats } from '../character-meta
 import { upsertChatFromSave, upsertChatFromParse, getChatRow, deleteChatRow, renameChatRow } from '../chat-metadata-db.js';
 import { searchChatMessages } from './chat-content-search-index.js';
 import {
-    isAvailable as isTreeAvailable, isMigrated as isTreeMigrated,
+    isAvailable as isTreeAvailable, hasSavedChats,
     saveChatToTree, loadBranch, forkBranch, labelNode,
     deleteBranch, renameBranch as renameBranchInTree, listBranches, listRecentBranches, searchBranchesByContent,
     renameCharacterInMessages, getAlternatives, getContinuation, editMessage, appendMessages, addAlternatives, setChatMetadata, getOpeningAlternatives, addOpeningAlternatives, loadAtNode, listLabels, setNodeMetadata, selectDefaultChild,
 } from '../message-tree-db.js';
-import { migrateCharacterChats } from '../message-tree-migration.js';
 
 const isBackupEnabled = !!getConfigValue('backups.chat.enabled', true, 'boolean');
 const maxTotalChatBackups = Number(getConfigValue('backups.chat.maxTotalBackups', -1, 'number'));
@@ -572,59 +571,6 @@ export async function getOrComputeChatInfo(directories, pathToFile, mtimeMs, add
     return chatInfo;
 }
 
-/**
- * Ensures a character's chats are migrated to the tree DB, if the tree DB is available.
- * Lazy migration: runs on first access per character, so only active characters pay the cost.
- * Returns true if the character's chats are now in the tree DB, false if JSONL fallback should be used.
- * @param {import('../users.js').UserDirectoryList} directories
- * @param {string} ownerId Character avatar (without .png)
- * @param {boolean} [isGroup=false]
- * @returns {Promise<boolean>}
- */
-/** Cache of ownerIds confirmed as tree-migrated. Keyed by `${directories.root}\0${ownerId}`. */
-const treeMigratedCache = new Set();
-
-async function ensureTreeMigrated(directories, ownerId, isGroup = false) {
-    const cacheKey = `${directories.root}\0${ownerId}`;
-    if (treeMigratedCache.has(cacheKey)) return true;
-
-    if (!await isTreeAvailable(directories)) return false;
-    if (await isTreeMigrated(directories, ownerId)) {
-        treeMigratedCache.add(cacheKey);
-        return true;
-    }
-
-    const chatDir = isGroup
-        ? directories.groupChats
-        : path.join(directories.chats, ownerId);
-
-    if (!fs.existsSync(chatDir)) {
-        // No chat directory yet (brand new character) — tree is ready for new chats, no migration needed
-        treeMigratedCache.add(cacheKey);
-        return true;
-    }
-
-    const hasJsonlFiles = fs.readdirSync(chatDir).some(f => f.endsWith('.jsonl'));
-    if (!hasJsonlFiles) {
-        // No existing JSONL files to migrate — tree DB is ready for new chats
-        treeMigratedCache.add(cacheKey);
-        return true;
-    }
-
-    try {
-        const result = await migrateCharacterChats(directories, ownerId, chatDir, isGroup);
-        if (result.errors.length > 0) {
-            console.error('[message-tree] Migration errors:', result.errors);
-        }
-        const migrated = result.migrated > 0 || await isTreeMigrated(directories, ownerId);
-        if (migrated) treeMigratedCache.add(cacheKey);
-        return migrated;
-    } catch (err) {
-        console.error('[message-tree] Migration failed, falling back to JSONL:', err);
-        return false;
-    }
-}
-
 export const router = express.Router();
 
 // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Error
@@ -716,7 +662,12 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
         // (/message/edit, /message/append, /message/alternative, /message/select, /metadata), each of
         // which names the row it acts on - so our client cannot speak for a row it never received,
         // which is the shape that let a windowed load's unfilled slots overwrite stored greetings.
-        const useTree = await ensureTreeMigrated(request.user.directories, cardName);
+        // Tree state is assumed, not checked-and-migrated: any character with real chat history has
+        // already been through the one-time bulk migration (or, for a brand new character, has nothing
+        // to migrate in the first place). This only drops to JSONL when the tree backend itself is down
+        // - a global outage, not a per-character migration question - never as a per-request "is this
+        // one migrated yet" check.
+        const useTree = await isTreeAvailable(request.user.directories);
         if (useTree) {
             const result = await saveChatToTree(request.user.directories, cardName, chatName, chatData, false);
             if (result) {
@@ -777,8 +728,9 @@ router.post('/get', validateAvatarUrlMiddleware, async function (request, respon
         const dirName = String(request.body.avatar_url).replace('.png', '');
         const chatName = String(request.body.file_name || '');
 
-        // Tree DB path
-        const useTree = await ensureTreeMigrated(request.user.directories, dirName);
+        // Tree DB path. Assumed available, not migrated-on-demand - see the /save handler's comment on
+        // why a chat open no longer triggers a per-character migration.
+        const useTree = await isTreeAvailable(request.user.directories);
         if (useTree && chatName) {
             // The pointer may be a node id or a legacy chat name. A node id is what identifies a
             // position; a name only ever resolved to one by lookup, and not uniquely - `label` is not
@@ -855,7 +807,7 @@ router.post('/rename', validateAvatarUrlMiddleware, async function (request, res
         const ownerId = request.body.is_group ? null : String(request.body.avatar_url).replace('.png', '');
 
         // Tree DB path (solo chats only for now)
-        if (ownerId && await isTreeMigrated(request.user.directories, ownerId)) {
+        if (ownerId && await hasSavedChats(request.user.directories, ownerId)) {
             const oldName = String(request.body.original_file).replace(/\.jsonl$/, '');
             const newName = String(request.body.renamed_file).replace(/\.jsonl$/, '');
             const renamed = await renameBranchInTree(request.user.directories, ownerId, oldName, newName);
@@ -907,7 +859,7 @@ router.post('/delete', validateAvatarUrlMiddleware, async function (request, res
         const chatName = String(request.body.chatfile).replace(/\.jsonl$/, '');
 
         // Tree DB path
-        if (await isTreeMigrated(request.user.directories, dirName)) {
+        if (await hasSavedChats(request.user.directories, dirName)) {
             const deleted = await deleteBranch(request.user.directories, dirName, chatName);
             if (deleted) {
                 return response.send({ ok: true });
@@ -1008,8 +960,10 @@ router.post('/tree/rename-in-content', validateAvatarUrlMiddleware, async functi
 
         const ownerId = String(avatar_url).replace('.png', '');
 
-        if (!await isTreeMigrated(request.user.directories, ownerId)) {
-            return response.status(400).send({ error: 'Character not tree-migrated' });
+        // Nothing to rename the speaker in. Says that, rather than "not tree-migrated", which was
+        // never what the check answered and reads as a storage problem the caller might act on.
+        if (!await hasSavedChats(request.user.directories, ownerId)) {
+            return response.status(400).send({ error: 'Character has no saved chats' });
         }
 
         const updated = await renameCharacterInMessages(request.user.directories, ownerId, String(new_name));
@@ -1300,7 +1254,7 @@ router.post('/export', validateAvatarUrlMiddleware, async function (request, res
     const exportfilename = request.body.exportfilename;
 
     // Tree DB path: generate JSONL from tree data on demand
-    if (ownerId && await isTreeMigrated(request.user.directories, ownerId)) {
+    if (ownerId && await hasSavedChats(request.user.directories, ownerId)) {
         try {
             const result = await loadBranch(request.user.directories, ownerId, chatName);
             if (!result) {
@@ -1639,7 +1593,7 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
         // directly against the same owner id returned all 4 branches correctly either way.
         if (!group_id && avatar_url) {
             const ownerId = String(avatar_url).replace('.png', '');
-            const treeMigrated = await ensureTreeMigrated(request.user.directories, ownerId);
+            const treeMigrated = await isTreeAvailable(request.user.directories);
 
             if (treeMigrated) {
                 // Content search (or list-all when no query) via tree DB

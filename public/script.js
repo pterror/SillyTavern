@@ -9988,7 +9988,7 @@ async function _mergeCardGreetingsIntoOpening() {
         }
     };
 
-    // Same reasoning as _openingFromTree: `migrated` says whether this character has had a chat saved,
+    // Same reasoning as _openingFromTree: this used to bail unless the character had chat history,
     // which has nothing to do with whether its card's greetings belong in this opening.
     const head = await ask({});
     if (!head) return;
@@ -10503,9 +10503,9 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
                 // Rows came back, so this chat lives in the tree - learn that from the answer rather
                 // than from what was known when the chat was opened.
                 //
-                // A character that hadn't been migrated yet has no openings to start from, so the chat
-                // begins on a plain card greeting with no row and is marked as not tree-backed. Its
-                // very first save is what migrates the character, and from that moment the chat IS
+                // A character with no chat history used to be read as not having tree storage at all,
+                // so the chat began on a plain card greeting and was marked as not tree-backed. Its
+                // very first save put it in the tree anyway, and from that moment the chat IS
                 // tree-backed - but nothing said so until the next reload, so for the rest of the
                 // session the client kept treating it as a file: every save handed the whole array
                 // over (the route our frontend is not supposed to use, and where a save can speak for
@@ -10835,7 +10835,7 @@ async function getChatResult() {
         // ordinary chat open, and it happened on every fresh chat, not in some edge case.
         //
         // The opening coming back carrying a node_id is what says this chat lives in the tree:
-        // _openingFromTree() only returns one when the character is migrated.
+        // _openingFromTree() returns one whenever the store can be reached, real or provisional.
         if (message?.node_id) {
             chat_metadata._tree_stored = true;
             // The opening arrived from storage (or from the card, unchanged either way), so it is
@@ -10947,10 +10947,11 @@ async function _openingFromTree(cardGreetings, preferredIndex) {
         .map(asMessage);
 
     // Only the store being unreachable sends a chat back to the file-era path. It used to also bail on
-    // `migrated` being false and on there being no openings yet, and neither of those is a fact about
-    // storage: `migrated` means "this character has had a chat saved" (it is a label check), and a
-    // character nobody has chatted with reads as unmigrated forever, while the save route puts that
-    // very character's first chat in the tree regardless.
+    // the character having no chat history and on there being no openings yet, and neither of those is
+    // a fact about storage. That flag went out as `migrated` back then, which is what made it read
+    // like one; it says whether a chat has ever been saved, and a character nobody has chatted with
+    // answers no forever, while the save route puts that very character's first chat in the tree
+    // regardless.
     //
     // So the chat opened as a file, and only became tree-backed after a save had already gone out the
     // wrong way. There is no such in-between: a greeting with no row is exactly what a provisional id
