@@ -1964,7 +1964,7 @@ function isSearchSortSelected() {
  * @returns {boolean}
  */
 function canUseServerQueryForEntitiesList() {
-    if (isSearchSortSelected()) return Boolean(entitiesFilter.getFilterData(FILTER_TYPES.SEARCH));
+    if (isSearchSortSelected()) return String(entitiesFilter.getFilterData(FILTER_TYPES.SEARCH) ?? '').trim().length > 0;
     const sortField = power_user.sort_order === 'random' ? 'random' : power_user.sort_field;
     return isServerQueryableSort(sortField);
 }
@@ -15399,7 +15399,7 @@ let lastKnownSearchBackend = null;
 export async function fetchServerCharacterSearchResults(searchQuery) {
     const resultCount = $('#character_search_result_count');
 
-    if (!searchQuery) {
+    if (!String(searchQuery ?? '').trim()) {
         entitiesFilter.setServerSearchResults(null);
         resultCount.hide();
         return;

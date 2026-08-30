@@ -127,7 +127,11 @@ export function buildCharacterQuery({
 } = {}) {
     /** @type {CharacterQueryFilter} */
     const filter = {};
-    if (searchTerm) filter.search = searchTerm;
+    // Trimmed, because the route trims before deciding whether a search is present. Comparing raw
+    // truthiness here instead means a box holding one space reads as a search on this side and as no
+    // search on that one, and 'search' sort is rejected outright for having nothing to rank by.
+    const search = String(searchTerm ?? '').trim();
+    if (search) filter.search = search;
     if (tagsInclude.length > 0 || tagsExclude.length > 0) {
         filter.tags = { include: tagsInclude, exclude: tagsExclude, mode: 'and' };
     }
@@ -396,7 +400,18 @@ export class CharacterRepository {
      * @returns {Promise<CharacterQueryResult>}
      */
     async query(filter = {}, sort = undefined, page = 1, pageSize = 100, want = DEFAULT_QUERY_WANT) {
-        return postJson('/api/characters/query', { filter, sort, page, pageSize, want });
+        // Mirrors the route's own rule rather than trusting each caller to have applied it: relevance
+        // order requires something to rank by, so a blank or whitespace-only term cannot ask for it.
+        // Callers that build their filter by hand (rather than via buildCharacterQuery()) reach the
+        // request through here too, so this is the one place that can guarantee the two agree.
+        const search = typeof filter.search === 'string' ? filter.search.trim() : '';
+        const normalizedFilter = search ? { ...filter, search } : (() => {
+            const rest = { ...filter };
+            delete rest.search;
+            return rest;
+        })();
+        const normalizedSort = sort?.field === 'search' && !search ? undefined : sort;
+        return postJson('/api/characters/query', { filter: normalizedFilter, sort: normalizedSort, page, pageSize, want });
     }
 
     /**
