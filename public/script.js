@@ -3610,6 +3610,20 @@ export async function sendTextareaMessage() {
     }
     if (swipeState !== SWIPE_STATE.NONE) return; // don't proceed if mid-swipe.
     if (is_send_press) return;
+
+    // Overswiping a user message opens a blank slot at the end to type into, and truncates the view to
+    // it. Nothing has been written yet, so there is nothing to send - generating from here puts an empty
+    // user turn at the end of the prompt.
+    //
+    // Asked of the slot rather than of a flag. The SWIPE_STATE.EDITING check above was meant to cover
+    // this, but nothing in the client ever assigns that state, so it can never fire (option_continue
+    // survives only because it also checks this_edit_mes_id, which is genuinely maintained). A state
+    // nobody sets is the same hazard as one nobody clears; the slot's own emptiness cannot get stuck.
+    const lastIndex = chat.length - 1;
+    if (lastIndex >= 0 && _isBlankUnwrittenSwipe(chat[lastIndex])) {
+        toastr.warning(t`Write something in the message first, or cancel the edit.`, t`Nothing to send`);
+        return;
+    }
     if (isExecutingCommandsFromChatInput) return;
 
     hideSwipeButtons(); //Swipe buttons must be hidden now, otherwise concurrent generations are possible.
