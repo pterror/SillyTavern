@@ -9942,6 +9942,25 @@ async function _saveTreeChat(fileName, metadata, messages) {
     let lastPersisted = null;
     let firstNewIndex = -1;
 
+    // Record a message as saved the moment its own write lands, rather than leaving all of it to the
+    // single _snapshotMessages() the caller runs after the whole save succeeds.
+    //
+    // post() throws on any non-ok response and /message/edit answers 409 whenever the server declines an
+    // edit, so one message failing aborts the rest of the save before that snapshot ever runs. Every
+    // message then still compares as unsaved next time - including all the ones whose writes did land -
+    // so the save re-sends the entire chat, and keeps doing it, growing by one message per exchange. That
+    // is the duplicate-edit growth: not a detector that thinks content changed, but bookkeeping that is
+    // discarded wholesale whenever any part of the batch fails.
+    //
+    // Reads the live object out of `chat` rather than trusting the loop's own copy, since updateMessage()
+    // may have replaced it earlier in this same iteration.
+    const markSaved = (index, nodeId) => {
+        const live = index < chat.length ? chat[index] : null;
+        if (live?.node_id && live.node_id === nodeId) {
+            _messageSnapshots.set(live.node_id, live);
+        }
+    };
+
     for (let i = 0; i < messages.length; i++) {
         const msg = messages[i];
 
@@ -10014,8 +10033,10 @@ async function _saveTreeChat(fileName, metadata, messages) {
             swipeInfo[selected] = { ...(swipeInfo[selected] || {}), node_id: newSelectedId };
             if (i < chat.length) updateMessage(i, { node_id: newSelectedId, swipe_info: swipeInfo });
             lastPersisted = newSelectedId;
+            markSaved(i, newSelectedId);
         } else {
             await post('/api/chats/message/edit', { node_id: msg.node_id, content: msg });
+            markSaved(i, msg.node_id);
         }
     }
 
@@ -10030,6 +10051,7 @@ async function _saveTreeChat(fileName, metadata, messages) {
         (result.node_ids ?? []).forEach((node_id, offset) => {
             const index = firstNewIndex + offset;
             if (index < chat.length) updateMessage(index, { node_id });
+            markSaved(index, node_id);
         });
     }
 
