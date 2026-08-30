@@ -30,7 +30,7 @@ import { searchChatMessages } from './chat-content-search-index.js';
 import {
     isAvailable as isTreeAvailable, isMigrated as isTreeMigrated,
     saveChatToTree, loadBranch, forkBranch, labelNode,
-    deleteBranch, renameBranch as renameBranchInTree, listBranches, searchBranchesByContent,
+    deleteBranch, renameBranch as renameBranchInTree, listBranches, listRecentBranches, searchBranchesByContent,
     renameCharacterInMessages, getAlternatives, getContinuation, editMessage, appendMessages, addAlternatives, setChatMetadata, getOpeningAlternatives, addOpeningAlternatives, loadAtNode, listLabels, setNodeMetadata, selectDefaultChild,
 } from '../message-tree-db.js';
 import { migrateCharacterChats } from '../message-tree-migration.js';
@@ -1856,11 +1856,37 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
 
 router.post('/recent', async function (request, response) {
     try {
-        /** @typedef {{pngFile?: string, groupId?: string, filePath: string, mtime: number}} ChatFile */
+        /** @typedef {{pngFile?: string, groupId?: string, filePath: string, mtime: number, branch?: object}} ChatFile */
         /** @type {ChatFile[]} */
         const allChatFiles = [];
         /** @type {import('../../public/scripts/welcome-screen.js').PinnedChat[]} */
         const pinnedChats = Array.isArray(request.body.pinned) ? request.body.pinned : [];
+        const max = parseInt(request.body.max ?? Number.MAX_SAFE_INTEGER) + pinnedChats.length;
+
+        // Tree-stored chats have no file to stat. They are branches, and how recent one is means
+        // when it was last spoken in - the file scans below still run, and simply find nothing for
+        // any character whose chats have already moved into the tree.
+        const getTreeBranches = async () => {
+            for (const branch of await listRecentBranches(request.user.directories, max)) {
+                allChatFiles.push({
+                    pngFile: `${branch.owner_id}.png`,
+                    filePath: `${branch.name}.jsonl`,
+                    mtime: branch.last_activity ?? branch.created_at,
+                    branch,
+                });
+            }
+        };
+
+        const treeChatInfo = (branch, withMetadata) => ({
+            node_id: branch.id,
+            file_name: `${branch.name}.jsonl`,
+            avatar: `${branch.owner_id}.png`,
+            file_size: 0,
+            chat_items: branch.message_count,
+            mes: branch.last_mes || '[No messages]',
+            last_mes: branch.last_activity ?? branch.created_at,
+            chat_metadata: withMetadata && branch.metadata ? JSON.parse(branch.metadata) : undefined,
+        });
 
         const getCharacterChatFiles = async () => {
             const pngDirents = await fs.promises.readdir(request.user.directories.characters, { withFileTypes: true });
@@ -1924,9 +1950,8 @@ router.post('/recent', async function (request, response) {
             }
         };
 
-        await Promise.allSettled([getCharacterChatFiles(), getGroupChatFiles(), getRootChatFiles()]);
+        await Promise.allSettled([getTreeBranches(), getCharacterChatFiles(), getGroupChatFiles(), getRootChatFiles()]);
 
-        const max = parseInt(request.body.max ?? Number.MAX_SAFE_INTEGER) + pinnedChats.length;
         const isPinned = (/** @type {ChatFile} */ chatFile) => pinnedChats.some(p => p.file_name === path.basename(chatFile.filePath) && (p.avatar === chatFile.pngFile || p.group === chatFile.groupId));
         const recentChats = allChatFiles.sort((a, b) => {
             const isAPinned = isPinned(a);
@@ -1939,6 +1964,9 @@ router.post('/recent', async function (request, response) {
         }).slice(0, max);
         const jsonFilesPromise = recentChats.map((file) => {
             const withMetadata = !!request.body.metadata;
+            if (file.branch) {
+                return Promise.resolve(treeChatInfo(file.branch, withMetadata));
+            }
             return file.groupId
                 ? getOrComputeChatInfo(request.user.directories, file.filePath, file.mtime, { group: file.groupId }, withMetadata)
                 : getOrComputeChatInfo(request.user.directories, file.filePath, file.mtime, { avatar: file.pngFile }, withMetadata);

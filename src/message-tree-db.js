@@ -551,6 +551,9 @@ function branchViewSync(db, node) {
         message_count: countRow?.c ?? 0,
         last_mes: leaf ? extractLastMes(leaf.content) : null,
         created_at: node.created_at,
+        // When the branch was last spoken in. `created_at` is when its label was made, which never
+        // moves again - ordering anything "recent" by that freezes the moment a bookmark is created.
+        last_activity: leaf?.created_at ?? node.created_at,
     };
 }
 
@@ -964,6 +967,42 @@ export async function listBranches(directories, ownerId) {
     const entry = await getEntry(directories);
     if (!entry) return [];
     return listLabeledNodesSync(entry.db, ownerId).map(n => branchViewSync(entry.db, n));
+}
+
+/**
+ * The branches spoken in most recently, across every owner.
+ *
+ * Ordered by each branch's leaf, so a branch you keep talking in rises. Owners are shortlisted by
+ * their newest message first, which is one grouped scan, and only that shortlist pays for the
+ * per-branch leaf walk - walking every labelled node in the database would not be worth it for a
+ * list nobody scrolls.
+ *
+ * @param {object} directories
+ * @param {number} max How many branches to return
+ */
+export async function listRecentBranches(directories, max) {
+    const entry = await getEntry(directories);
+    if (!entry) return [];
+
+    const limit = Math.max(1, Number(max) || 1);
+    // Bounded independently of `limit`: callers may pass MAX_SAFE_INTEGER, and the shortlist is what
+    // decides how many leaf walks happen.
+    const shortlist = Math.min(limit, 500);
+
+    const owners = entry.db.all(
+        'SELECT owner_id, MAX(created_at) AS t FROM messages GROUP BY owner_id ORDER BY t DESC LIMIT @shortlist',
+        { shortlist },
+    );
+
+    const branches = [];
+    for (const o of owners) {
+        for (const node of listLabeledNodesSync(entry.db, o.owner_id)) {
+            branches.push(branchViewSync(entry.db, node));
+        }
+    }
+
+    branches.sort((a, b) => (b.last_activity ?? 0) - (a.last_activity ?? 0));
+    return branches.slice(0, limit);
 }
 
 /**

@@ -3100,11 +3100,13 @@ router.post('/chats', validateAvatarUrlMiddleware, async function (request, resp
             const chatData = branches.map(b => {
                 const meta = b.metadata ? JSON.parse(b.metadata) : {};
                 return {
+                    node_id: b.id,
                     file_name: b.name + '.jsonl',
                     file_size: 0,
                     chat_items: b.message_count,
                     mes: b.last_mes || '[No messages]',
-                    last_mes: b.created_at,
+                    // The branch's leaf, not its label's birthday - see branchViewSync().
+                    last_mes: b.last_activity ?? b.created_at,
                     chat_metadata: request.body.metadata ? meta : undefined,
                 };
             });
