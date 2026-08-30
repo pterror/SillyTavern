@@ -10629,10 +10629,16 @@ async function _openingFromTree(cardGreetings, preferredIndex) {
             const at = windowStart + k;
             if (at >= openings.total) return;
             swipes[at] = alt.mes;
+            const nodeId = at === windowStart + chosenOffset ? chosenNodeId : alt.node_id;
             swipeInfo[at] = {
                 send_date: alt.send_date, extra: alt.extra ?? {},
                 name: alt.name, is_user: alt.is_user,
-                node_id: at === windowStart + chosenOffset ? chosenNodeId : alt.node_id,
+                node_id: nodeId,
+                // Marked, for the same reason _mergeCardGreetingsIntoOpening marks its own: a missing
+                // node_id means "the card says this, nothing stores it" here, and "new alternative,
+                // create a row for it" in the save path. Without the mark every card greeting was
+                // minted on the next save, and a save runs on every greeting swipe.
+                card_only: !nodeId,
             };
         });
         message.swipes = swipes;
