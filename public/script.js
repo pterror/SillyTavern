@@ -133,7 +133,6 @@ import {
 import {
     initBookmarks,
     showBookmarksButtons,
-    updateBookmarkDisplay,
 } from './scripts/bookmarks.js';
 
 import {
@@ -4525,7 +4524,6 @@ export function updateMessageElement(mes, { messageId = chat.length - 1, message
     const momentDate = timestampToMoment(mes.send_date);
     const timestamp = momentDate.isValid() ? momentDate.format('LL LT') : '';
     const messageHTML = getMessageTextHTML(mes, { messageId });
-    const bookmarkLink = mes?.extra?.bookmark_link;
     const tokenCount = mes.extra?.token_count;
     const { timerValue, timerTitle } = formatGenerationTimer(mes.gen_started, mes.gen_finished, mes.extra?.token_count, mes.extra?.reasoning_duration, mes.extra?.time_to_first_token);
 
@@ -4535,7 +4533,6 @@ export function updateMessageElement(mes, { messageId = chat.length - 1, message
         'ch_name': mes.name,
         'is_user': mes.is_user,
         'is_system': !!mes.is_system,
-        'bookmark_link': bookmarkLink,
         'force_avatar': !!mes.force_avatar,
         'timestamp': timestamp,
         // ...(type ?? { type }),
@@ -4549,7 +4546,6 @@ export function updateMessageElement(mes, { messageId = chat.length - 1, message
     tokenCount && messageElement.find('.tokenCounterDisplay').text(`${tokenCount}t`);
     mes.title && messageElement.attr('title', mes.title);
     timerValue && messageElement.find('.mes_timer').attr('title', timerTitle).text(timerValue);
-    bookmarkLink && updateBookmarkDisplay(messageElement);
 
     if (mes.extra?.bias !== '') {
         const bias = messageFormatting(mes.extra?.bias, '', false, false, -1, {}, false);

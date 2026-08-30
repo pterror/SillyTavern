@@ -495,7 +495,14 @@ const UPSERT_SQL = `
         name_fold = excluded.name_fold,
         fav = excluded.fav,
         create_date = excluded.create_date,
-        date_last_chat = excluded.date_last_chat,
+        -- date_last_chat is deliberately absent, for the same reason it is absent from the groups
+        -- upsert below: it is owned by bumpCharacterDateLastChat() (the /message/append write hook),
+        -- not by this function's callers. The candidate every caller supplies comes from
+        -- calculateChatSize(), which takes the newest mtime in the character's chats directory - and
+        -- messages live in the tree now, so that directory only holds retired .pre-migration files
+        -- whose mtimes never move again. Leaving it here meant every rescan reset a freshly bumped
+        -- row back to a pre-migration timestamp, so recency looked frozen. A genuine first INSERT
+        -- still seeds it from VALUES, which is the right historical starting point.
         chat_size = excluded.chat_size,
         data_size = excluded.data_size,
         file_mtime = excluded.file_mtime,
