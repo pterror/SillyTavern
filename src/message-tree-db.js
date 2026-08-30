@@ -50,7 +50,12 @@ const SCHEMA_SQL = `
         label            TEXT,
         created_at       INTEGER NOT NULL,
         default_child_id TEXT REFERENCES messages(id),
-        metadata         TEXT
+        metadata         TEXT,
+        -- sha1 of nodeIdentityKey(): parent + speaker + the message text. Stored so the database
+        -- itself can hold the identity rule, instead of it being a convention every insert path has to
+        -- remember. Hashed rather than indexing the text directly - message bodies are 259MB of this
+        -- file, and an index over them costs that again, where the digest costs about 36MB.
+        identity_hash    TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_messages_parent      ON messages(parent_id);
     CREATE INDEX IF NOT EXISTS idx_messages_owner       ON messages(owner_id);
@@ -129,9 +134,46 @@ async function getEntry(directories) {
     }
     const db = engine.openDatabase(getDbPath(directories));
     db.exec(SCHEMA_SQL);
+    migrateIdentityHashSync(db);
     const entry = { db };
     entries.set(key, entry);
     return entry;
+}
+
+/**
+ * Brings an existing store up to holding its own identity rule.
+ *
+ * Adds identity_hash if it predates this, fills it in for rows that have none, then puts the unique
+ * index on. Kept out of SCHEMA_SQL because the index cannot be created before the column exists, and a
+ * throw there would stop the store opening at all.
+ *
+ * If the index will not build, the store still opens: a database carrying duplicates from before this
+ * existed is worse off unreadable than it is unconstrained. It says so loudly instead, naming how many
+ * collide, and the constraint appears by itself once they are gone.
+ * @param {object} db
+ */
+function migrateIdentityHashSync(db) {
+    const columns = new Set(db.all('PRAGMA table_info(messages)').map(c => c.name));
+    if (!columns.has('identity_hash')) {
+        db.exec('ALTER TABLE messages ADD COLUMN identity_hash TEXT');
+    }
+
+    const pending = db.all('SELECT id, parent_id, content FROM messages WHERE parent_id IS NOT NULL AND identity_hash IS NULL');
+    if (pending.length) {
+        db.transaction(() => {
+            for (const row of pending) {
+                db.run('UPDATE messages SET identity_hash = @hash WHERE id = @id',
+                    { id: row.id, hash: identityHashOf(row.parent_id, row.content) });
+            }
+        })();
+    }
+
+    try {
+        db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_identity ON messages(identity_hash) WHERE parent_id IS NOT NULL');
+    } catch (error) {
+        const clashing = db.get('SELECT COUNT(*) AS c FROM (SELECT identity_hash FROM messages WHERE identity_hash IS NOT NULL AND parent_id IS NOT NULL GROUP BY identity_hash HAVING COUNT(*) > 1)');
+        console.error(`[message-tree] Identity constraint not applied: ${clashing?.c ?? '?'} groups of rows are duplicates of each other. They must be merged before the database can hold this rule.`, error);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -325,6 +367,16 @@ function rowToMessage(row, siblings) {
  * @param {string} contentJson sanitized content blob
  * @returns {string}
  */
+/**
+ * nodeIdentityKey() reduced to a fixed-width digest, for the column the unique index is built on.
+ * @param {string} parentId
+ * @param {string} contentJson
+ * @returns {string}
+ */
+export function identityHashOf(parentId, contentJson) {
+    return crypto.createHash('sha1').update(nodeIdentityKey(parentId, contentJson)).digest('base64');
+}
+
 export function nodeIdentityKey(parentId, contentJson) {
     let speaker = '';
     let mes = '';
@@ -376,11 +428,14 @@ function extractLastMes(contentJson) {
  */
 function insertMessageSync(db, { id, parentId, ownerId, content, label, createdAt, defaultChildId, metadata }) {
     db.run(
-        `INSERT INTO messages (id, parent_id, owner_id, content, label, created_at, default_child_id, metadata)
-         VALUES (@id, @parentId, @ownerId, @content, @label, @createdAt, @defaultChildId, @metadata)`,
+        `INSERT INTO messages (id, parent_id, owner_id, content, label, created_at, default_child_id, metadata, identity_hash)
+         VALUES (@id, @parentId, @ownerId, @content, @label, @createdAt, @defaultChildId, @metadata, @identityHash)`,
         {
             id,
             parentId: parentId ?? null,
+            // Written here, at the one place rows are created, so no caller can leave it out and no
+            // caller has to remember to put it in.
+            identityHash: parentId ? identityHashOf(parentId, content) : null,
             ownerId,
             content,
             label: label ?? null,
@@ -410,7 +465,11 @@ function wouldBlankStoredText(stored, incoming) {
 }
 
 function updateMessageContentSync(db, id, content) {
-    db.run('UPDATE messages SET content = @content WHERE id = @id', { id, content });
+    // Changing the text changes what the row is, so its identity moves with it.
+    const row = db.get('SELECT parent_id FROM messages WHERE id = @id', { id });
+    const identityHash = row?.parent_id ? identityHashOf(row.parent_id, content) : null;
+    db.run('UPDATE messages SET content = @content, identity_hash = @identityHash WHERE id = @id',
+        { id, content, identityHash });
 }
 
 function labelMessageSync(db, id, label) {
