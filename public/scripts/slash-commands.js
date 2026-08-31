@@ -4668,17 +4668,18 @@ async function addSwipeCallback(args, value) {
         return '';
     }
 
-    if (!Array.isArray(lastMessage.swipes)) {
-        lastMessage.swipes = [lastMessage.mes];
-        lastMessage.swipe_info = [{}];
-        lastMessage.swipe_id = 0;
-    }
-    if (!Array.isArray(lastMessage.swipe_info)) {
-        lastMessage.swipe_info = lastMessage.swipes.map(() => ({}));
-    }
+    // Built as new arrays and handed to updateMessage(), rather than assigned and pushed onto the
+    // message in place. A message is deep-frozen, so writing to one is a TypeError, not a silent
+    // no-op: this command threw "object is not extensible" on any tree-backed chat and added nothing
+    // at all. updateMessage() is the only way a message changes.
+    const hadSlots = Array.isArray(lastMessage.swipes);
+    const swipes = hadSlots ? [...lastMessage.swipes] : [lastMessage.mes];
+    const swipeInfo = Array.isArray(lastMessage.swipe_info)
+        ? [...lastMessage.swipe_info]
+        : swipes.map(() => ({}));
 
-    lastMessage.swipes.push(value);
-    lastMessage.swipe_info.push({
+    swipes.push(value);
+    swipeInfo.push({
         send_date: getMessageTimeStamp(),
         gen_started: null,
         gen_finished: null,
@@ -4690,12 +4691,20 @@ async function addSwipeCallback(args, value) {
         },
     });
 
-    const newSwipeId = lastMessage.swipes.length - 1;
+    updateMessage(lastMessageId, {
+        swipes,
+        swipe_info: swipeInfo,
+        ...(hadSlots ? {} : { swipe_id: 0 }),
+    });
+
+    const newSwipeId = swipes.length - 1;
 
     if (isTrueBoolean(args.switch)) {
         await swipe(null, SWIPE_DIRECTION.RIGHT, { source: SWIPE_SOURCE.SLASH_COMMAND, repeated: false, forceMesId: lastMessageId, forceSwipeId: newSwipeId });
     } else {
-        await updateSwipeCounter(lastMessageId, { message: lastMessage });
+        // Re-read: updateMessage() above replaced the message, so the one captured at the top is the
+        // pre-update copy and its slot count is one short.
+        await updateSwipeCounter(lastMessageId, { message: chat[lastMessageId] });
         refreshSwipeButtons();
     }
 
