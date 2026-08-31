@@ -2572,7 +2572,13 @@ async function fetchCharactersDelta() {
     // own `.filter(c => c.name)` behavior) correctly stays absent instead of resurfacing from a stale local var.
     const allCached = await getAllCachedCharacters();
 
-    return Array.from(allCached.values());
+    // `changed` tells getCharacters() whether this sync actually touched anything - `changes` already covers
+    // both upserts and deletes (op: 'upsert'|'delete'), and `previousFailures` covers the retry-refetch path
+    // (a record this function re-pulled even though the server-reported delta for THIS call was empty). An
+    // empty delta with no retries means the cache genuinely didn't move, which is what lets getCharacters() skip
+    // its O(library) merge-and-reindex pass instead of unconditionally repeating it (2026-08 repeated-`/query`
+    // investigation) on every boot/nav/SSE-triggered call, most of which find nothing new.
+    return { list: Array.from(allCached.values()), changed: changes.length > 0 || previousFailures.length > 0 };
 }
 
 // Only run the state-digest anti-entropy check once per page session (see verifyCharacterCacheDigest()'s own
@@ -3156,8 +3162,18 @@ function mergeShallowCharacterCustomizer(_objValue, srcValue) {
 
 export async function getCharacters({ silent = false, silentGroups = false } = {}) {
     let newCharacters;
+    // Whether the character sync actually found anything to apply - drives whether the O(library) merge below
+    // (and the reindex/this_avatar-reselect work that follows it) runs at all. `fetchAllCharacters()`'s full-list
+    // fallback has no cheap way to know this (it always returns the whole library, not a delta), so that path
+    // stays conservative and always reports a change - this optimization only targets the common
+    // fetchCharactersDelta() path, which already knows (2026-08 repeated-`/query` investigation: getCharacters()
+    // used to pay this merge and an unconditional trailing printCharacters(true) on every call, even the many
+    // that fetchCharactersDelta() itself found nothing to sync).
+    let charactersChanged = true;
     try {
-        newCharacters = await fetchCharactersDelta();
+        const delta = await fetchCharactersDelta();
+        newCharacters = delta.list;
+        charactersChanged = delta.changed;
     } catch (error) {
         console.error('Character manifest/delta fetch failed, falling back to a full character list fetch:', error);
         newCharacters = await fetchAllCharacters();
@@ -3169,6 +3185,7 @@ export async function getCharacters({ silent = false, silentGroups = false } = {
         return;
     }
 
+    if (charactersChanged) {
     // Merge newCharacters into the existing `characters` array in place rather than wholesale-replacing it.
     // newCharacters can legitimately be a *shallow* projection of the library (toShallow() / useShallowCharacters)
     // that simply omits heavy fields like data.alternate_greetings - that omission means "not included in this
@@ -3241,6 +3258,7 @@ export async function getCharacters({ silent = false, silentGroups = false } = {
             return location.reload();
         }
     }
+    } // end if (charactersChanged)
 
     await getGroups({ silent: silentGroups });
     await printCharacters(true);
@@ -10083,6 +10101,13 @@ async function _mergeCardGreetingsIntoOpening() {
     }
     if ((wasClean || updates.node_id) && chat[0]?.node_id) {
         _messageSnapshots.set(chat[0].node_id, chat[0]);
+    }
+    // Changing which greeting the opening holds has to reach the screen. Only the swipe buttons were
+    // being refreshed, so editing the greeting a chat was sitting on updated `mes`, the slot list and
+    // the id, and left the message on screen still reading the text from before the edit - which looked
+    // exactly like the edit having done nothing at all.
+    if (updates.mes !== undefined && chat[0]) {
+        updateMessageBlock(0, chat[0]);
     }
     refreshSwipeButtons(true);
 }
