@@ -1183,6 +1183,32 @@ export async function labelNode(directories, nodeId, label) {
  * Sets which child of `parentId` is the shown continuation. This is the whole of "swiping" now.
  * Touches exactly one row.
  */
+/**
+ * The conversation ends here: this node stops showing a continuation.
+ *
+ * Nothing is removed. The children stay exactly where they are, keeping their own text and their own
+ * subtrees, and pointing at one again brings the whole thing back - this only says which of them is
+ * currently shown, and the answer becomes "none".
+ *
+ * It has to be said on the NODE rather than by moving the chat's position, because a load descends
+ * default_child_id from wherever it points down to a leaf and then reads the path off that leaf's
+ * parents. A position part-way up a chain is walked straight past. What ends a conversation is the
+ * last message having nothing selected after it.
+ *
+ * @returns {Promise<boolean>} true when the node exists and now shows nothing after it
+ */
+export async function endPathAt(directories, ownerId, nodeId) {
+    const entry = await getEntry(directories);
+    if (!entry) return false;
+
+    const node = entry.db.get('SELECT id FROM messages WHERE id = @id AND owner_id = @ownerId',
+        { id: nodeId, ownerId });
+    if (!node) return false;
+
+    entry.db.run('UPDATE messages SET default_child_id = NULL WHERE id = @id', { id: nodeId });
+    return true;
+}
+
 export async function selectDefaultChild(directories, childId) {
     const entry = await getEntry(directories);
     if (!entry) return false;
