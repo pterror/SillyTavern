@@ -1618,6 +1618,34 @@ function updateCharacterBlock(node, item, id) {
  */
 const SERVER_PAGINATED_DATA_SOURCE = '/api/characters/query';
 
+/**
+ * The one place that turns "how many matches does the active search have" into the `#character_search_result_
+ * count` text ("Showing X of Y matches" / "N matches") - reads `entitiesFilter.serverSearchResults`
+ * (fetchServerCharacterSearchResults()'s own fetch, the single existing authority on a search's real match
+ * total - it's also what printCharacters()'s fallback-path pagination navigator already keys off, and what the
+ * server-paginated branch below now keys off too) instead of computing or fetching its own copy of that number.
+ * 2026-08 "500 of 501" investigation: this text and the pagination navigator used to come from two independent
+ * `/query` fetches (this one, and printCharacters()'s own), each with its own pageSize/sort and therefore its
+ * own approximate total for the exact same search - collapsing both onto this one read is what makes them unable
+ * to disagree again, rather than diagnosing which of the two was currently wrong.
+ */
+function updateSearchResultCount() {
+    const resultCount = $('#character_search_result_count');
+    const searchTerm = entitiesFilter.getFilterData(FILTER_TYPES.SEARCH);
+    const searchResults = entitiesFilter.serverSearchResults;
+    if (!searchTerm || !searchResults || searchResults.searchValue !== searchTerm) {
+        resultCount.hide();
+        return;
+    }
+    const shown = searchResults.characterScores.size + searchResults.groupScores.size;
+    const total = searchResults.total;
+    if (total > shown) {
+        resultCount.text(t`Showing ${shown} of ${total} matches`).show();
+    } else {
+        resultCount.text(t`${total} ${total === 1 ? 'match' : 'matches'}`).show();
+    }
+}
+
 export async function printCharacters(fullRefresh = false) {
     const storageKey = 'Characters_PerPage';
     const listId = '#rm_print_characters_block';
@@ -1777,6 +1805,8 @@ export async function printCharacters(fullRefresh = false) {
             ? searchResults.total
             : undefined;
 
+        updateSearchResultCount();
+
         $('#rm_print_characters_pagination').pagination({
             ...sharedPaginationOptions,
             dataSource: entities,
@@ -1849,10 +1879,28 @@ export async function printCharacters(fullRefresh = false) {
             // change) fetches for real.
             let pendingFirstPage = firstPage;
 
+            // Same single-source rule as renderLocalPaginated()'s own `realMatchTotal` above: when the active
+            // search term's own fetch (fetchServerCharacterSearchResults(), entitiesFilter.serverSearchResults)
+            // reports a higher total than this render's own just-fetched page, defer to that shared total for
+            // the *displayed* navigator text rather than trusting this render's own number - the two no longer
+            // computed their own independent totals for the same search (2026-08 "500 of 501" investigation).
+            // `matchTotal` (closed over by `callback`/`totalNumberLocator` above) still drives the actual
+            // page-turn math from this render's own fetch, unaffected - paging still can't go past what this
+            // request actually returned, exactly like the fallback path's own disclosed compromise.
+            const searchTerm = entitiesFilter.getFilterData(FILTER_TYPES.SEARCH);
             $('#rm_print_characters_pagination').pagination({
                 ...sharedPaginationOptions,
                 dataSource: SERVER_PAGINATED_DATA_SOURCE,
                 locator: 'rows',
+                formatNavigator: function (currentPage, _totalPage, totalNumber) {
+                    const searchResults = entitiesFilter.serverSearchResults;
+                    const realMatchTotal = searchTerm && searchResults?.searchValue === searchTerm && searchResults.total > totalNumber
+                        ? searchResults.total
+                        : totalNumber;
+                    const rangeStart = (currentPage - 1) * pageSize + 1;
+                    const rangeEnd = Math.min(currentPage * pageSize, totalNumber);
+                    return `${rangeStart}-${rangeEnd} .. ${realMatchTotal}`;
+                },
                 // Seed pagination.js's dynamic-total boot math with the last real total we saw (see
                 // saveCharactersTotal's own doc comment above) - without this, `self.getTotalNumber()` reads 0
                 // until the first ajax response of *this* reconstruction lands, which clamps the boot page
@@ -1884,6 +1932,7 @@ export async function printCharacters(fullRefresh = false) {
                             saveCharactersTotal = Number.isFinite(parsedTotal) ? parsedTotal : 0;
                             matchTotal = saveCharactersTotal + folderTiles.length;
                             const combined = page === 1 ? [...folderTiles, ...pageEntities] : pageEntities;
+                            updateSearchResultCount();
                             ajaxParams.success({ rows: combined, total: result.total });
                         })
                         .catch(error => {
@@ -8992,7 +9041,20 @@ export function ensureSwipes(message, mesId = undefined) {
     if (updated) {
         mesId ??= chat.indexOf(message);
         if (mesId >= 0) {
+            // Giving a message the swipe arrays it was missing is not an edit to it. The text is
+            // untouched; this only fills in shape the loader does not send, and a user message never
+            // has any, so a chat full of them arrives needing this on every single one.
+            //
+            // updateMessage() replaces the object, and a message that is not the object the snapshot
+            // holds reads as changed - so without saying otherwise, merely opening a chat left every
+            // message dirty and the next save rewrote every row with the content it already had. One
+            // full rewrite of the conversation per load, which is what the write amplification looked
+            // like from the outside.
+            const wasClean = _messageSnapshots.get(message.node_id) === message;
             updateMessage(mesId, updates);
+            if (wasClean && chat[mesId]?.node_id) {
+                _messageSnapshots.set(chat[mesId].node_id, chat[mesId]);
+            }
         } else if (!Object.isFrozen(message)) {
             // Not in the chat array and not frozen (e.g., newly created message) — mutate directly
             Object.assign(message, updates);
@@ -10462,7 +10524,24 @@ async function _saveTreeChat(fileName, metadata, messages, addressedByName = fal
 
         // Reference equality against the snapshot is the change detector; messages are frozen, so an
         // unchanged message is literally the same object.
-        if (_messageSnapshots.get(msg.node_id) === msg) continue;
+        const seen = _messageSnapshots.get(msg.node_id);
+        if (seen === msg) continue;
+
+        // A different object is not the same thing as different content, and this is where that
+        // distinction was being lost. Plenty replaces a message without changing it - the loader fills
+        // in swipe arrays a user message never has, a slot learns the id it turned out to be - and
+        // every one of those made the message compare as changed. Measured: opening a chat and saving
+        // it, having touched nothing, sent an edit for every message in it, each carrying content
+        // byte-identical to the row it was rewriting.
+        //
+        // Comparing the content itself only ever suppresses a write that provably changes nothing, so
+        // it cannot lose an edit: anything that differs at all still goes. It is not an attempt to
+        // work out what the caller did - that question belongs to the operations above, which are told
+        // rather than left to guess.
+        if (seen && JSON.stringify(seen) === JSON.stringify(msg)) {
+            _markMessageSaved(i, msg.node_id);
+            continue;
+        }
 
         // One rule for every slot: no node_id means no row yet, so it is new. Holes are skipped
         // (never loaded, nothing to say about them) and so are empty slots (overswiping opens a blank
@@ -16063,11 +16142,9 @@ let lastKnownSearchBackend = null;
  * @returns {Promise<void>}
  */
 export async function fetchServerCharacterSearchResults(searchQuery) {
-    const resultCount = $('#character_search_result_count');
-
     if (!String(searchQuery ?? '').trim()) {
         entitiesFilter.setServerSearchResults(null);
-        resultCount.hide();
+        updateSearchResultCount();
         return;
     }
 
@@ -16106,16 +16183,14 @@ export async function fetchServerCharacterSearchResults(searchQuery) {
 
         entitiesFilter.setServerSearchResults({ searchValue: searchQuery, favOnly, characterScores, groupScores, total });
 
-        // The client's own list/grid pagination (printCharacters(), Characters_PerPage) already shows a
-        // "rangeStart-rangeEnd .. N" navigator, but N there is just `rows.length` - at most `total` capped
-        // at this call's own pageSize, not necessarily the real match count. Without this, a broad query that
-        // matches more than that limit looks like it matched *exactly* the limit, with no indication anything
-        // was left out.
-        if (total > rows.length) {
-            resultCount.text(t`Showing ${rows.length} of ${total} matches`).show();
-        } else {
-            resultCount.text(t`${total} ${total === 1 ? 'match' : 'matches'}`).show();
-        }
+        // `updateSearchResultCount()` (below) is the one place that turns `serverSearchResults` into the
+        // "Showing X of Y matches" text - it reads the value just stored above rather than this function
+        // computing its own copy of the same "how many matches" text a second time, which is what let this text
+        // and printCharacters()'s own pagination navigator disagree (2026-08 "500 of 501" investigation: two
+        // independent fetches - this one and printCharacters()'s own server-paginated branch - each computing a
+        // total under their own pageSize/sort, could each land on a different approximate count for the exact
+        // same search).
+        updateSearchResultCount();
 
         const indicatorInfo = SEARCH_BACKEND_INDICATOR[searchBackend] ?? null;
         const indicator = $('#character_search_backend_indicator');
@@ -16133,7 +16208,7 @@ export async function fetchServerCharacterSearchResults(searchQuery) {
     } catch (error) {
         console.error('Server-side character search failed, falling back to client-side search', error);
         entitiesFilter.setServerSearchResults(null);
-        resultCount.hide();
+        updateSearchResultCount();
     }
 }
 
