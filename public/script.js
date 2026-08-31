@@ -14707,8 +14707,18 @@ export async function swipe(event, direction, { source, repeated, message = chat
             }
             //Out of bounds swipes should not be saved.
         } else if (source != SWIPE_SOURCE.BACK && !_isBlankUnwrittenSwipe(chat[mesId])) {
-            //Save the chat if swipe_id has changed.
-            saveChatDebounced();
+            // A tree-backed chat has already recorded this: switchToAlternativePath() posts the
+            // selection against the row it is moving onto, at the moment the move happens. Asking for
+            // a whole-conversation save on top of that adds nothing it could write - the choice is
+            // already stored - and costs an edit per message, because the comparison it runs sees
+            // objects that swiping replaced and reads them as changed. Measured: six swipes sent four
+            // edits, every one re-sending text nobody had touched.
+            //
+            // A file-backed chat has no such op. Its swipe_id lives in the saved array and nowhere
+            // else, so there the save IS the persistence.
+            if (!chat_metadata?._tree_stored) {
+                saveChatDebounced();
+            }
         }
 
         //Allow for another swipe.
