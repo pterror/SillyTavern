@@ -31,7 +31,7 @@ import {
     isAvailable as isTreeAvailable, hasSavedChats,
     saveChatToTree, loadBranch, forkBranch, labelNode,
     deleteBranch, renameBranch as renameBranchInTree, listBranches, listRecentBranches, searchBranchesByContent,
-    renameCharacterInMessages, getAlternatives, getContinuation, editMessage, appendMessages, addAlternatives, setChatMetadata, getOpeningAlternatives, addOpeningAlternatives, loadAtNode, listLabels, setNodeMetadata, selectDefaultChild,
+    renameCharacterInMessages, getAlternatives, getContinuation, editMessage, appendMessages, addAlternatives, setChatMetadata, getOpeningAlternatives, addOpeningAlternatives, loadAtNode, listLabels, setNodeMetadata, selectDefaultChild, endPathAt,
 } from '../message-tree-db.js';
 
 const isBackupEnabled = !!getConfigValue('backups.chat.enabled', true, 'boolean');
@@ -1169,6 +1169,26 @@ router.post('/message/alternative', validateAvatarUrlMiddleware, async function 
  * Shows this alternative. The fork it belongs to follows from the node itself, so the caller never
  * names a parent and therefore can never name the wrong one.
  */
+/**
+ * Ends the conversation at this node: it stops showing anything after it.
+ *
+ * The counterpart to select. Deleting the tail of a chat, or cutting it back to a point, is this and
+ * not a removal - the messages below keep their rows, their text and their own continuations, and
+ * selecting one again restores the whole thing. Nothing in this store is ever destroyed.
+ */
+router.post('/message/end-path', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const nodeId = String(request.body.node_id || '');
+        if (!nodeId) return response.status(400).send({ error: 'node_id is required' });
+
+        const ok = await endPathAt(request.user.directories, ownerOf(request), nodeId);
+        return response.status(ok ? 200 : 409).send({ ok, reason: ok ? undefined : 'unknown node' });
+    } catch (error) {
+        console.error('Error ending the path:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
 router.post('/message/select', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const child = String(request.body.node_id || '');

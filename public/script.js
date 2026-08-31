@@ -3628,6 +3628,19 @@ export async function deleteMessage(id, swipeDeletionIndex = undefined, askConfi
 
     chat_metadata.tainted = true;
 
+    // Removing the tail of a conversation is the store's "this ends here", said on the message it now
+    // ends at. Without it the comparison-driven save had nothing to send: it walks the messages it was
+    // handed and writes them, and a message no longer in the array is simply never mentioned, so the
+    // deletion showed on screen and came back on the next load.
+    //
+    // Only for a removal that reaches the end. Taking one out of the middle cannot be said this way -
+    // the conversation is read off the last message's chain of parents, so a node in the middle of
+    // that chain is not something a selection can step around - and it is still unhandled.
+    if (chat_metadata?._tree_stored && chat.length > 0 && Math.min(...messageIds) === chat.length) {
+        await chatOpEndPath(chat.length - 1).catch(error =>
+            console.error('Could not end the conversation at the last remaining message:', error));
+    }
+
     const startIndex = firstMessageId <= minId ? firstMessageId : null;
     updateViewMessageIds(startIndex);
     saveChatDebounced();
@@ -10272,6 +10285,27 @@ export async function chatOpAddAlternative(mesId, text) {
         contents: [_alternativeContent(msg, text)],
     });
     return created?.node_ids?.[0] ?? null;
+}
+
+/**
+ * The conversation ends at this message. Whatever followed stops being shown.
+ *
+ * This is what cutting a chat back to a point is, and what deleting from the end is. Nothing is
+ * removed: the messages below keep their rows and their own continuations, and swiping or selecting
+ * back onto one brings all of it back.
+ *
+ * It has to be said on the message rather than by moving the chat's position, because a load descends
+ * from wherever the chat points down to a leaf and reads the conversation off that leaf's parents. A
+ * position part-way up is walked straight past, which is why truncating by moving it did nothing.
+ *
+ * @returns {Promise<boolean>} true when the conversation now ends here
+ */
+export async function chatOpEndPath(mesId) {
+    const msg = chat[mesId];
+    if (!isStoredNodeId(msg?.node_id)) return false;
+
+    await _chatOpPost('/api/chats/message/end-path', { node_id: msg.node_id });
+    return true;
 }
 
 /**
@@ -16958,6 +16992,13 @@ jQuery(async function () {
             chatElement.find(`.mes[mesid="${this_del_mes}"]`).remove();
             chat.length = this_del_mes;
             chat_metadata.tainted = true;
+            // Cutting a chat back to a point is the store's "this ends here", said on the message it
+            // now ends at. The messages below keep their rows and their own continuations; selecting
+            // one again brings the whole thing back.
+            if (chat_metadata?._tree_stored && chat.length > 0) {
+                await chatOpEndPath(chat.length - 1).catch(error =>
+                    console.error('Could not cut the conversation back:', error));
+            }
             await saveChatConditional();
             chatElement.scrollTop(chatElement[0].scrollHeight);
             await eventSource.emit(event_types.MESSAGE_DELETED, chat.length);
