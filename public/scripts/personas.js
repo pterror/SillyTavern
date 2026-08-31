@@ -24,6 +24,7 @@ import {
     saveSettingsDebounced,
     setUserName,
     updateMessage,
+    chatOpEditMany,
 } from '../script.js';
 import { power_user, personaStore } from './power-user.js';
 import { getTokenCountAsync } from './tokenizers.js';
@@ -1920,14 +1921,24 @@ async function syncUserNameToPersona({ start = 0, end = chat.length - 1, quiet =
         }
     }
 
+    const changed = [];
     for (let i = start; i <= end; i++) {
         const mes = chat[i];
         if (mes?.is_user && (!hasNameFilter || equalsIgnoreCaseAndAccents(mes.name, nameFilter))) {
             updateMessage(i, { name: name1, force_avatar: getThumbnailUrl('persona', user_avatar) });
+            changed.push(i);
         }
     }
 
-    await saveChatConditional();
+    // One act, one request. Attributing a run of messages to a persona is a single thing the reader
+    // decided, and it used to go out as one edit per message: the whole-conversation save has no idea
+    // this was one decision, so it worked it out afterwards by comparing, and sent N of them.
+    if (chat_metadata?._tree_stored) {
+        await chatOpEditMany(changed).catch(error =>
+            console.error('Could not attribute those messages to this persona:', error));
+    } else {
+        await saveChatConditional();
+    }
     await reloadCurrentChat();
 }
 

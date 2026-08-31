@@ -31,7 +31,7 @@ import {
     isAvailable as isTreeAvailable, hasSavedChats,
     saveChatToTree, loadBranch, forkBranch, labelNode,
     deleteBranch, renameBranch as renameBranchInTree, listBranches, listRecentBranches, searchBranchesByContent,
-    renameCharacterInMessages, getAlternatives, getContinuation, editMessage, appendMessages, addAlternatives, setChatMetadata, getOpeningAlternatives, addOpeningAlternatives, loadAtNode, listLabels, setNodeMetadata, selectDefaultChild, endPathAt,
+    renameCharacterInMessages, getAlternatives, getContinuation, editMessage, editMessages, appendMessages, addAlternatives, setChatMetadata, getOpeningAlternatives, addOpeningAlternatives, loadAtNode, listLabels, setNodeMetadata, selectDefaultChild, endPathAt,
 } from '../message-tree-db.js';
 
 const isBackupEnabled = !!getConfigValue('backups.chat.enabled', true, 'boolean');
@@ -1070,6 +1070,26 @@ router.post('/message/edit', validateAvatarUrlMiddleware, async function (reques
         return response.status(result.ok ? 200 : 409).send(result);
     } catch (error) {
         console.error('Error editing message:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/**
+ * Applies one change that spans many messages, as one thing.
+ *
+ * Attributing a run of messages to a persona, or hiding a range, is a single act - it was being sent
+ * as one request per message, which is N round trips for one decision and N chances to end up half
+ * applied. Refusals are reported per message rather than stopping the rest.
+ */
+router.post('/message/edit-batch', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const edits = Array.isArray(request.body.edits) ? request.body.edits : null;
+        if (!edits) return response.status(400).send({ error: 'edits is required' });
+
+        const result = await editMessages(request.user.directories, ownerOf(request), edits);
+        return response.status(result.ok ? 200 : 409).send(result);
+    } catch (error) {
+        console.error('Error editing messages:', error);
         return response.status(500).send({ error: true });
     }
 });
