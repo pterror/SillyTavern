@@ -10158,6 +10158,138 @@ function _isBlankSlot(message, at) {
     return !message.swipe_info?.[at]?.node_id;
 }
 
+// ---------------------------------------------------------------------------
+//  The writes a chat can make.
+//
+//  One function per thing that can happen to a conversation, each naming the row it acts on and
+//  owning the bookkeeping that goes with it: the id the message ends up carrying, and recording it as
+//  in step with storage. Call one at the moment the thing happens and there is nothing to work out
+//  afterwards.
+//
+//  This is where the knowledge belongs. A save that compares the conversation against a snapshot can
+//  only guess which of these took place, and guesses wrong in a way that costs writes - see
+//  _saveTreeChat below, which is now a compatibility path for callers that mutate `chat` and ask for
+//  a save without saying what they did. Our own code should call these directly and never go near it.
+// ---------------------------------------------------------------------------
+
+/** Posts one operation. Throws on refusal, so a caller cannot mistake a refusal for a write. */
+async function _chatOpPost(path, body) {
+    const avatar = getCurrentCharacter()?.avatar;
+    if (!avatar) throw new Error('no character is selected');
+    const response = await fetch(path, {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ avatar_url: avatar, ...body }),
+    });
+    if (!response.ok) throw new Error(`${path} responded ${response.status}`);
+    return response.json().catch(() => ({}));
+}
+
+/**
+ * Records that this message is in step with the row it names.
+ *
+ * Reads the live object rather than a caller's copy, since updateMessage() may have replaced it.
+ */
+function _markMessageSaved(mesId, nodeId) {
+    const live = mesId < chat.length ? chat[mesId] : null;
+    if (live?.node_id && live.node_id === nodeId) {
+        _messageSnapshots.set(live.node_id, live);
+    }
+}
+
+/** Content for one alternative, with the swipe machinery stripped - it is a message, not a set. */
+function _alternativeContent(msg, text) {
+    const alt = { ...msg, mes: text };
+    delete alt.swipes;
+    delete alt.swipe_info;
+    delete alt.swipe_id;
+    delete alt.swipe_speaker_default;
+    return alt;
+}
+
+/**
+ * This message's text changed. Writes it to the row the message names.
+ *
+ * Never sends an edit that would empty a message: the route refuses one outright, so posting it can
+ * only come back 409, and mirroring the rule here means no client state can produce the request.
+ *
+ * @returns {Promise<boolean>} true when the row now holds this message's content
+ */
+export async function chatOpEdit(mesId) {
+    const msg = chat[mesId];
+    if (!isStoredNodeId(msg?.node_id)) return false;
+    if (typeof msg.mes === 'string' && msg.mes.length === 0) return false;
+
+    await _chatOpPost('/api/chats/message/edit', { node_id: msg.node_id, content: msg });
+    _markMessageSaved(mesId, msg.node_id);
+    return true;
+}
+
+/**
+ * These messages are new and follow what is already there. Appends them after the last stored node
+ * above them.
+ *
+ * An opening that has no row yet earns one here, because an append has to name the row it attaches
+ * to - that is the one moment a greeting being replied to becomes a greeting that was used.
+ *
+ * @param {number} fromIndex first of the new messages
+ * @returns {Promise<string[]>} the ids they were given
+ */
+export async function chatOpAppend(fromIndex) {
+    let after = null;
+    for (let i = fromIndex - 1; i >= 0; i--) {
+        if (isProvisionalNodeId(chat[i]?.node_id)) await ensureOpeningRow(i);
+        if (isStoredNodeId(chat[i]?.node_id)) { after = chat[i].node_id; break; }
+    }
+    if (!after) return [];
+
+    const result = await _chatOpPost('/api/chats/message/append', {
+        after_node_id: after,
+        messages: chat.slice(fromIndex),
+    });
+    const ids = result.node_ids ?? [];
+    ids.forEach((node_id, offset) => {
+        const index = fromIndex + offset;
+        if (index < chat.length) updateMessage(index, { node_id });
+        _markMessageSaved(index, node_id);
+    });
+    return ids;
+}
+
+/**
+ * Another alternative belongs alongside this message. Adds it as a sibling and tells the caller which
+ * row it turned out to be - which may be one that already existed, since asserting the same
+ * alternative twice is the same statement made twice.
+ *
+ * @returns {Promise<string|null>} the sibling's row id
+ */
+export async function chatOpAddAlternative(mesId, text) {
+    const msg = chat[mesId];
+    if (!isStoredNodeId(msg?.node_id) || typeof text !== 'string' || !text.length) return null;
+
+    const created = await _chatOpPost('/api/chats/message/alternative', {
+        sibling_node_id: msg.node_id,
+        contents: [_alternativeContent(msg, text)],
+    });
+    return created?.node_ids?.[0] ?? null;
+}
+
+/**
+ * This alternative is the one being shown. Points the fork at it and moves the message onto its row.
+ *
+ * @returns {Promise<boolean>} true when the selection was recorded
+ */
+export async function chatOpSelect(mesId, swipeId) {
+    const msg = chat[mesId];
+    const nodeId = msg?.swipe_info?.[swipeId]?.node_id;
+    if (!isStoredNodeId(nodeId)) return false;
+
+    await _chatOpPost('/api/chats/message/select', { node_id: nodeId });
+    if (msg.node_id !== nodeId) updateMessage(mesId, { node_id: nodeId });
+    _markMessageSaved(mesId, nodeId);
+    return true;
+}
+
 /**
  * Saves a tree-backed chat by RECONSTRUCTING operations from a before-and-after comparison, and
  * sending those.
@@ -10207,37 +10339,14 @@ async function _saveTreeChat(fileName, metadata, messages, addressedByName = fal
         return response.json().catch(() => ({}));
     };
 
-    /** Content for one alternative, with the swipe machinery stripped - it is a message, not a set. */
-    const alternativeContent = (msg, text) => {
-        const alt = { ...msg, mes: text };
-        delete alt.swipes;
-        delete alt.swipe_info;
-        delete alt.swipe_id;
-        delete alt.swipe_speaker_default;
-        return alt;
-    };
-
     let lastPersisted = null;
     let firstNewIndex = -1;
 
-    // Record a message as saved the moment its own write lands, rather than leaving all of it to the
-    // single _snapshotMessages() the caller runs after the whole save succeeds.
-    //
-    // post() throws on any non-ok response and /message/edit answers 409 whenever the server declines an
-    // edit, so one message failing aborts the rest of the save before that snapshot ever runs. Every
-    // message then still compares as unsaved next time - including all the ones whose writes did land -
-    // so the save re-sends the entire chat, and keeps doing it, growing by one message per exchange. That
-    // is the duplicate-edit growth: not a detector that thinks content changed, but bookkeeping that is
-    // discarded wholesale whenever any part of the batch fails.
-    //
-    // Reads the live object out of `chat` rather than trusting the loop's own copy, since updateMessage()
-    // may have replaced it earlier in this same iteration.
-    const markSaved = (index, nodeId) => {
-        const live = index < chat.length ? chat[index] : null;
-        if (live?.node_id && live.node_id === nodeId) {
-            _messageSnapshots.set(live.node_id, live);
-        }
-    };
+    // Each operation records its own message as saved the moment its write lands, rather than leaving
+    // all of it to the single _snapshotMessages() the caller runs after the whole save succeeds. One
+    // message failing used to abort the rest before that snapshot ever ran, so every message still
+    // compared as unsaved next time - including the ones whose writes did land - and the save re-sent
+    // the entire chat, growing by one per exchange.
 
     for (let i = 0; i < messages.length; i++) {
         let msg = messages[i];
@@ -10317,11 +10426,7 @@ async function _saveTreeChat(fileName, metadata, messages, addressedByName = fal
                 // opening for every greeting on the card, on every save of message 0.
                 if (msg.swipe_info[k]?.node_id) continue;
 
-                const created = await post('/api/chats/message/alternative', {
-                    sibling_node_id: msg.node_id,
-                    contents: [alternativeContent(msg, msg.swipes[k])],
-                });
-                const createdId = created?.node_ids?.[0];
+                const createdId = await chatOpAddAlternative(i, msg.swipes[k]);
                 if (!createdId) continue;
 
                 // Remember the row this slot turned out to be. Without this the slot stays id-less and
@@ -10338,13 +10443,10 @@ async function _saveTreeChat(fileName, metadata, messages, addressedByName = fal
 
         if (newSelectedId) {
             // The slot being shown is itself brand new, so it becomes this message's node rather than
-            // the old one being rewritten underneath it.
-            await post('/api/chats/message/select', { node_id: newSelectedId });
-            const swipeInfo = [...(chat[i]?.swipe_info ?? msg.swipe_info)];
-            swipeInfo[selected] = { ...(swipeInfo[selected] || {}), node_id: newSelectedId };
-            if (i < chat.length) updateMessage(i, { node_id: newSelectedId, swipe_info: swipeInfo });
+            // the old one being rewritten underneath it. The slot already learned its id just above,
+            // which is what lets the select name it.
+            await chatOpSelect(i, selected);
             lastPersisted = newSelectedId;
-            markSaved(i, newSelectedId);
         } else {
             // Never send an edit that empties a message. The route refuses one outright
             // (wouldBlankStoredText: "no legitimate edit empties a message that has text"), so posting
@@ -10362,28 +10464,18 @@ async function _saveTreeChat(fileName, metadata, messages, addressedByName = fal
             // content it was made from, which collides with its own identity and comes back 409 -
             // and a 409 aborts the rest of the save.
             if (justEnsured) {
-                markSaved(i, msg.node_id);
+                _markMessageSaved(i, msg.node_id);
                 continue;
             }
 
-            await post('/api/chats/message/edit', { node_id: msg.node_id, content: msg });
-            markSaved(i, msg.node_id);
+            await chatOpEdit(i);
         }
     }
 
     if (!lastPersisted) return null;
 
     if (firstNewIndex >= 0) {
-        const appended = messages.slice(firstNewIndex);
-        const result = await post('/api/chats/message/append', {
-            after_node_id: lastPersisted,
-            messages: appended,
-        });
-        (result.node_ids ?? []).forEach((node_id, offset) => {
-            const index = firstNewIndex + offset;
-            if (index < chat.length) updateMessage(index, { node_id });
-            markSaved(index, node_id);
-        });
+        await chatOpAppend(firstNewIndex);
     }
 
     // Address the chat by where it actually IS, re-read now rather than taken from the name this save
