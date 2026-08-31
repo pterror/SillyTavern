@@ -595,7 +595,7 @@ const PROVISIONAL_NODE_PREFIX = 'card:';
  * @returns {string}
  */
 function provisionalNodeId(speaker, mes) {
-    return PROVISIONAL_NODE_PREFIX + getStringHash(`c${speaker ?? ''} ${mes ?? ''}`);
+    return PROVISIONAL_NODE_PREFIX + getStringHash(`c\u0001${speaker ?? ''}\u0000${mes ?? ''}`);
 }
 
 /** True when this id names a row that actually exists in the tree. */
