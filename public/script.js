@@ -13193,18 +13193,8 @@ export function getOverswipeBehavior(messageId, message = undefined) {
     //to REGENERATE below and call the LLM. Supersedes the pristine-loop behaviour from
     //https://github.com/SillyTavern/SillyTavern/pull/4712#issuecomment-3557893373
     else if (isGreeting) return OVERSWIPE_BEHAVIOR.EDIT_GENERATE;
-    //Non-user and non-prompt hidden messages will regenerate - but only the last one, because that is
-    //the only one a generation can currently be aimed at. Generate('swipe') is not told which message
-    //it is regenerating; getNextMessageId('swipe') answers that with chat.length - 1, flatly. So
-    //overswiping an EARLIER response ran a generation that landed on the last message instead,
-    //overwriting the alternative it was showing, while the message actually overswiped got nothing.
-    //
-    //Nothing above this line prevented that; what did was a bug elsewhere that stopped the branch
-    //being reached at all for earlier messages, and fixing that exposed this. Until a generation can
-    //be aimed at a message, an earlier one loops rather than firing at the wrong target.
-    else if (!message?.is_user && !message?.is_system) {
-        return messageId === chat.length - 1 ? OVERSWIPE_BEHAVIOR.REGENERATE : OVERSWIPE_BEHAVIOR.LOOP;
-    }
+    //Non-user and non-prompt hidden messages will regenerate.
+    else if (!message?.is_user && !message?.is_system) return OVERSWIPE_BEHAVIOR.REGENERATE;
     //User messages will open the editor on a new, empty swipe.
     else if (message?.is_user) return OVERSWIPE_BEHAVIOR.EDIT_GENERATE;
     //By default, all other messages will loop. Their swipe chevrons will only be shown if there is more than one swipe.
@@ -15196,6 +15186,29 @@ export async function swipe(event, direction, { source, repeated, message = chat
                 await endSwipe();
                 return;
             } else if (overswipe == OVERSWIPE_BEHAVIOR.REGENERATE) {
+                // Asking for another response to THIS message means the conversation now ends here.
+                // What followed was the previous alternative's continuation, not this one's - the new
+                // one has none yet - so it stops being shown, exactly as the edit branch below does.
+                // Nothing is deleted: those messages keep their rows under the alternative they belong
+                // to, and swiping back to it brings them straight back.
+                //
+                // It is also what makes the generation land on the right message. Every part of the
+                // generate path answers "which message is this for" with chat.length - 1: the prompt
+                // drops the last entry, the itemizer records it, the streaming write targets it, and
+                // saveReply appends the new alternative to it. Aiming meant either teaching all of
+                // them to handle a target that is not the last message, or making the last message BE
+                // the target. Truncating first does the second, so there is one truth about where the
+                // conversation ends instead of five places agreeing to disagree with it.
+                // Redrawn from the message AFTER this one, deliberately. Redrawing from this one
+                // rebuilds its element, and the swipe already holds a reference to the old one - the
+                // "..." placeholder, the timer reset and the media all go through it, so they would
+                // land on a node no longer in the document and silently do nothing.
+                if (chat.length > mesId + 1) {
+                    chat.splice(mesId + 1);
+                    await redisplayChat({ startIndex: mesId + 1 });
+                    updateViewMessageIds();
+                }
+
                 //Regenerate the message
                 updateMessage(mesId, clearMessageData(chat[mesId]));
                 let run_generate = true;
