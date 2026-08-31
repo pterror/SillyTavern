@@ -1316,6 +1316,46 @@ export async function getContinuation(directories, nodeId, branchName = null) {
 export async function editMessage(directories, ownerId, nodeId, content) {
     const entry = await getEntry(directories);
     if (!entry) return { ok: false, reason: 'unavailable' };
+    return editMessageSync(entry.db, ownerId, nodeId, content);
+}
+
+/**
+ * One logical change that happens to span many messages, applied as one thing.
+ *
+ * Attributing a run of messages to a persona, or hiding a range, is a single act the reader took. It
+ * was being sent as one request per message, which is both N round trips for one decision and N
+ * chances to end up half-applied. Here they land or they don't, in one transaction.
+ *
+ * A message the store declines - it would blank stored text, or it would become the twin of a sibling
+ * - is reported rather than silently skipped, and does not stop the others.
+ *
+ * @param {{ node_id: string, content: object }[]} edits
+ * @returns {Promise<{ ok: boolean, applied: number, refused: { node_id: string, reason: string }[] }>}
+ */
+export async function editMessages(directories, ownerId, edits) {
+    const entry = await getEntry(directories);
+    if (!entry) return { ok: false, applied: 0, refused: [] };
+
+    const list = Array.isArray(edits) ? edits : [];
+    let applied = 0;
+    const refused = [];
+
+    entry.db.transaction(() => {
+        for (const edit of list) {
+            const nodeId = String(edit?.node_id || '');
+            if (!nodeId) continue;
+            const result = editMessageSync(entry.db, ownerId, nodeId, edit.content);
+            if (result.ok) applied++;
+            else refused.push({ node_id: nodeId, reason: result.reason ?? 'refused' });
+        }
+    });
+
+    return { ok: true, applied, refused };
+}
+
+/** The rules one edit follows, with no transaction of its own so a batch can hold them all. */
+function editMessageSync(db, ownerId, nodeId, content) {
+    const entry = { db };
 
     const row = entry.db.get('SELECT id, content FROM messages WHERE id = @id AND owner_id = @ownerId',
         { id: nodeId, ownerId });

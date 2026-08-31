@@ -10239,6 +10239,42 @@ export async function chatOpEdit(mesId) {
 }
 
 /**
+ * One change that spans many messages, sent as one thing.
+ *
+ * Attributing a run of messages to a persona, or hiding a range, is a single act the reader took, and
+ * goes as a single request. Sending it as one edit per message is N round trips for one decision, and
+ * N chances to end up half applied.
+ *
+ * @param {number[]} mesIds the messages whose current content should be written
+ * @returns {Promise<number>} how many the store accepted
+ */
+export async function chatOpEditMany(mesIds) {
+    const edits = [];
+    for (const mesId of mesIds) {
+        const msg = chat[mesId];
+        if (!isStoredNodeId(msg?.node_id)) continue;
+        if (typeof msg.mes === 'string' && msg.mes.length === 0) continue;
+        edits.push({ node_id: msg.node_id, content: msg, _mesId: mesId });
+    }
+    if (!edits.length) return 0;
+
+    const result = await _chatOpPost('/api/chats/message/edit-batch', {
+        edits: edits.map(({ node_id, content }) => ({ node_id, content })),
+    });
+
+    // Only the ones the store took are in step with it. A refusal is named, so the rest stay dirty
+    // rather than every message being marked saved because the request as a whole came back ok.
+    const refused = new Set((result.refused ?? []).map(r => r.node_id));
+    for (const edit of edits) {
+        if (!refused.has(edit.node_id)) _markMessageSaved(edit._mesId, edit.node_id);
+    }
+    if (refused.size) {
+        console.warn('[chat] Some messages were not changed:', result.refused);
+    }
+    return result.applied ?? 0;
+}
+
+/**
  * These messages are new and follow what is already there. Appends them after the last stored node
  * above them.
  *
