@@ -10159,13 +10159,29 @@ function _isBlankSlot(message, at) {
 }
 
 /**
- * Saves a tree-backed chat as the operations it actually is, rather than by handing the whole
- * conversation over.
+ * Saves a tree-backed chat by RECONSTRUCTING operations from a before-and-after comparison, and
+ * sending those.
  *
- * The tree already stores the path, so there is nothing to restate. Everything the UI can do maps to
- * one of: edit this node, append after this node, add an alternative alongside this node. Each names
- * a row, so a row the client never received cannot be touched - which is the shape that let a
- * windowed load's unfilled slots overwrite stored greetings.
+ * It used to say it saved "the operations it actually is", which is not what it does and is worth
+ * being blunt about, because the difference is the whole problem. It has no idea what the user did.
+ * It walks the conversation, asks of each message "is this the same object the last snapshot held",
+ * and turns every answer of no into an edit.
+ *
+ * Reference equality is standing in for "the content changed", and it is not that. updateMessage()
+ * replaces a message for plenty of reasons that are not edits: moving to a different swipe, clearing
+ * generation data, filling in a hole that was fetched, recording the id a slot turned out to have. So
+ * swiping produces edits that re-send text nobody touched, which is the write amplification, and it
+ * is inherent to guessing after the fact rather than a flaw in how the guess is made.
+ *
+ * The operations themselves are the right shape - edit this node, append after this node, add an
+ * alternative alongside this node, each naming a row, so a row the client never received cannot be
+ * touched. What is wrong is deriving which one happened instead of being told. The client knows at
+ * the time: a message was typed, an edit was confirmed, a swipe was chosen. Every caller here has
+ * already thrown that away by the time it asks for a save.
+ *
+ * Untangling that reaches past this function - roughly fifty callers ask for a save with no
+ * operation attached, extensions among them, through a context API whose whole contract is "I
+ * changed `chat`, please persist it".
  *
  * Returns null when the chat has nothing persisted yet (a brand new chat), because "create this
  * conversation" genuinely is a whole-array operation and there is no node to hang anything off.
