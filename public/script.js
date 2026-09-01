@@ -1292,6 +1292,11 @@ async function firstLoadInit() {
     // `/api/tags/for` call, not blocking first paint since this promise runs concurrently with the initial render.
     let residencyResolved = false;
     const characterResidencyPromise = (async () => {
+        // Seed from the persisted local cache first - no network dependency, so on a warm cache this makes
+        // `characters`/`charactersStore` non-empty far sooner than the network delta fetch below ever could
+        // (see seedCharactersFromCache()'s own doc comment). getCharacters() then reconciles the real network
+        // delta on top of this seed exactly like it already does for any other already-resident entry.
+        await seedCharactersFromCache();
         await getCharacters();
         // Must run after getCharacters() (which also awaits getGroups() internally), since building the
         // tag_map needs both the populated `characters` array and the group ids to fetch group tags for.
@@ -3236,6 +3241,40 @@ function mergeShallowCharacterCustomizer(_objValue, srcValue) {
         return srcValue;
     }
     return undefined;
+}
+
+/**
+ * Seeds in-memory character residency (`characters`/`charactersStore`) from the persisted IndexedDB cache
+ * (character-cache.js) before getCharacters() ever makes a network call. character-cache.js's own doc comment
+ * explains what the cache is *for* - avoiding re-shipping character data the client already has on every boot
+ * - but until now that avoidance only ever paid off for *bandwidth* (fetchCharactersDelta() only re-fetches
+ * what actually changed, via `/api/characters/changes`), never for *latency*: `characters` starts as an empty
+ * array (see its declaration above) and stayed that way on every single refresh until the network round trip
+ * gating fetchCharactersDelta() completed and it read the cache back at the very end - even though virtually
+ * everything it needed was already sitting locally the whole time, readable with no network dependency at all.
+ *
+ * This only ever grows `characters` from empty - it's a no-op if something (a previous call, a concurrent
+ * boot path) already populated it, so it can never clobber fresher in-memory state with a stale cached one.
+ * getCharacters()'s own merge logic (mergeWith onto an already-present entry by avatar, not a wholesale
+ * replace) is what reconciles the subsequent network delta on top of this seed - the exact same merge it
+ * already does for a repeat call against an already-populated array, so seeding first changes nothing about
+ * eventual correctness, only how soon `characters` stops being empty.
+ */
+async function seedCharactersFromCache() {
+    if (characters.length > 0) {
+        return;
+    }
+    const cached = await getAllCachedCharacters();
+    if (cached.size === 0) {
+        return;
+    }
+    for (const character of cached.values()) {
+        characters.push(character);
+    }
+    // Fuse-index invalidation etc. handled by the charactersStore.onChange subscriber - reset() is the right
+    // call here (not reindex()) since this is a bulk "the whole collection just appeared" event, same as
+    // getCharacters()'s own non-silent path.
+    charactersStore.reset();
 }
 
 export async function getCharacters({ silent = false, silentGroups = false } = {}) {
