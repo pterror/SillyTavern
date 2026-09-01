@@ -239,14 +239,20 @@ async function regenerateGroup() {
 
 /**
  * Loads group chat messages from the server.
+ *
+ * The group's own id goes along with the chat's. A chat is stored under its group, and the group is the only
+ * thing that can be looked up by - the server can work it out from the chat id alone (that reverse lookup has
+ * to keep existing for the stock API, which carries no group id at all), but that means reading the whole
+ * groups directory on a path that runs every time a chat is opened. Sending what we already know skips it.
  * @param {string} chatId Chat ID
+ * @param {string} groupId The owning group's ID
  * @returns {Promise<ChatFile>} Array of chat messages
  */
-async function loadGroupChat(chatId) {
+async function loadGroupChat(chatId, groupId) {
     const response = await fetch('/api/chats/group/get', {
         method: 'POST',
         headers: getRequestHeaders(),
-        body: JSON.stringify({ id: chatId }),
+        body: JSON.stringify({ id: chatId, group_id: groupId }),
     });
 
     if (response.ok) {
@@ -397,7 +403,7 @@ export async function getGroupChat(groupId, reload = false) {
     await unshallowGroupMembers(groupId);
 
     const chat_id = group.chat_id;
-    const data = await loadGroupChat(chat_id);
+    const data = await loadGroupChat(chat_id, group.id);
     const metadata = data?.[0]?.chat_metadata ?? {};
     const freshChat = !metadata.tainted && (!Array.isArray(data) || !data.length);
 
@@ -802,7 +808,7 @@ async function saveGroupChat(groupId, shouldSaveGroup, force = false) {
     const saveGroupChatRequest = await compressRequest({
         method: 'POST',
         headers: getRequestHeaders(),
-        body: JSON.stringify({ id: chatId, chat: [chatHeader, ...chat], force: force }),
+        body: JSON.stringify({ id: chatId, group_id: group.id, chat: [chatHeader, ...chat], force: force }),
     });
     const response = await fetch('/api/chats/group/save', saveGroupChatRequest);
 
@@ -2435,24 +2441,25 @@ export async function getGroupPastChats(groupId) {
         return [];
     }
 
-    const chats = [];
-
+    // One request for the whole group, asked of the store, rather than one request per chat id asked of the
+    // filesystem. The per-chat version could only ever report chats the group's own descriptor happens to
+    // name, and reported nothing at all for a chat whose file had moved into the tree.
     try {
-        for (const chatId of group.chats) {
-            const response = await fetch('/api/chats/group/info', {
-                method: 'POST',
-                headers: getRequestHeaders(),
-                body: JSON.stringify({ id: chatId }),
-            });
-            if (response.ok) {
-                const data = await response.json();
-                chats.push(data);
+        const response = await fetch('/api/chats/group/branches', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ group_id: groupId }),
+        });
+        if (response.ok) {
+            const data = await response.json();
+            if (Array.isArray(data)) {
+                return data;
             }
         }
     } catch (err) {
         console.error(err);
     }
-    return chats;
+    return [];
 }
 
 /**
@@ -2523,7 +2530,10 @@ export async function deleteGroupChatByName(groupId, chatName) {
     const response = await fetch('/api/chats/group/delete', {
         method: 'POST',
         headers: getRequestHeaders(),
-        body: JSON.stringify({ id: chatName }),
+        // Required here, not just an optimization like it is on save/get: the chat has already been spliced
+        // out of `group.chats` above, so the server's reverse lookup from chat id can no longer find which
+        // group owns it, and without an owner there is no branch to unlabel.
+        body: JSON.stringify({ id: chatName, group_id: group.id }),
     });
 
     if (!response.ok) {
@@ -2574,7 +2584,9 @@ export async function deleteGroupChat(groupId, chatId, { jumpToNewChat = true } 
     const response = await fetch('/api/chats/group/delete', {
         method: 'POST',
         headers: getRequestHeaders(),
-        body: JSON.stringify({ id: chatId }),
+        // See deleteGroupChatByName() - the chat is already out of `group.chats`, so the group id is the
+        // only thing left that can name the owner.
+        body: JSON.stringify({ id: chatId, group_id: group.id }),
     });
 
     if (response.ok) {
@@ -2598,6 +2610,11 @@ export async function deleteGroupChat(groupId, chatId, { jumpToNewChat = true } 
  * @returns {Promise<string[]>} List of imported file names
  */
 export async function importGroupChat(formData, { refresh = true } = {}) {
+    // The import lands under whichever group is open - the same group this function attaches the returned
+    // chat id to below. The server needs to know that before it writes, not after: an imported chat has to
+    // be ingested under its owner, or it becomes a file sitting in a directory nothing reads any more.
+    formData.append('group_id', selected_group);
+
     const fetchResult = await fetch('/api/chats/group/import', {
         method: 'POST',
         headers: getRequestHeaders({ omitContentType: true }),
@@ -2667,7 +2684,7 @@ export async function saveGroupBookmarkChat(groupId, name, metadata, mesId, chat
     const saveChatRequest = await compressRequest({
         method: 'POST',
         headers: getRequestHeaders(),
-        body: JSON.stringify({ id: name, chat: [chatHeader, ...trimmedChat] }),
+        body: JSON.stringify({ id: name, group_id: groupId, chat: [chatHeader, ...trimmedChat] }),
     });
     const response = await fetch('/api/chats/group/save', saveChatRequest);
 
