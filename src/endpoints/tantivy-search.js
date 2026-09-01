@@ -156,10 +156,13 @@ function fieldGroupQuery(tantivy, schema, word, fieldNames, fieldWeights) {
  * @param {Record<string, number>} fieldWeights Map of every searchable field name -> its relevance weight
  * @param {Record<string, string[]>} fieldLabels Map of recognized lowercase label -> the field name(s) it scopes
  * a token to (analogous to search-query.js's FTS5-column-expression maps, but as field-name arrays)
- * @returns {import('@oxdev03/node-tantivy-binding').Query | null}
+ * @returns {{ query: import('@oxdev03/node-tantivy-binding').Query, negate: boolean } | null} The token's query
+ * plus whether it was a negated (`-label:value`) token - negation is resolved here (parseLabeledToken() only
+ * parses the flag) so buildSearchQuery() can compose each token with Must or MustNot accordingly.
  */
 function tokenQuery(tantivy, schema, token, fieldWeights, fieldLabels) {
     const labeled = parseLabeledToken(token, fieldLabels);
+    const negate = labeled ? labeled.negate : false;
     const rawValue = labeled ? labeled.value : token;
     const term = unquoteSearchTerm(rawValue).trim();
     if (!term) {
@@ -186,8 +189,10 @@ function tokenQuery(tantivy, schema, token, fieldWeights, fieldLabels) {
                 return tantivy.Query.boostQuery(q, fieldWeights[name]);
             });
         if (fieldQueries.length === 0) return null;
-        if (fieldQueries.length === 1) return fieldQueries[0];
-        return tantivy.Query.booleanQuery(fieldQueries.map(query => ({ occur: tantivy.Occur.Should, query })));
+        const query = fieldQueries.length === 1
+            ? fieldQueries[0]
+            : tantivy.Query.booleanQuery(fieldQueries.map(query => ({ occur: tantivy.Occur.Should, query })));
+        return { query, negate };
     }
 
     const wordQueries = words
@@ -197,10 +202,10 @@ function tokenQuery(tantivy, schema, token, fieldWeights, fieldLabels) {
     if (wordQueries.length === 0) {
         return null;
     }
-    if (wordQueries.length === 1) {
-        return wordQueries[0];
-    }
-    return tantivy.Query.booleanQuery(wordQueries.map(query => ({ occur: tantivy.Occur.Must, query })));
+    const query = wordQueries.length === 1
+        ? wordQueries[0]
+        : tantivy.Query.booleanQuery(wordQueries.map(query => ({ occur: tantivy.Occur.Must, query })));
+    return { query, negate };
 }
 
 /**
@@ -231,17 +236,40 @@ export function buildSearchQuery(tantivy, schema, searchTerm, fieldWeights, fiel
         return null;
     }
 
-    const perTokenQueries = tokens
+    const perTokenResults = tokens
         .map(token => tokenQuery(tantivy, schema, token, fieldWeights, fieldLabels))
         .filter(Boolean);
 
-    if (perTokenQueries.length === 0) {
+    if (perTokenResults.length === 0) {
         return null;
     }
 
-    const textQuery = perTokenQueries.length === 1
-        ? perTokenQueries[0]
-        : tantivy.Query.booleanQuery(perTokenQueries.map(query => ({ occur: tantivy.Occur.Must, query })));
+    // Positive (non-negated) tokens AND together as Must, same as before negation existed. Negated
+    // (`-label:value`) tokens each become a MustNot clause in the same outer boolean query - general to
+    // every label, not special-cased to tags (see parseLabeledToken()'s doc comment in search-query.js).
+    // A query made of MustNot clauses alone has nothing to restrict *from* - tantivy's booleanQuery (unlike
+    // some other engines) does not implicitly fall back to "match everything" in that case, confirmed by
+    // this module's test suite - so an all-negative query needs an explicit Query.allQuery() Must clause as
+    // its positive base.
+    const mustQueries = perTokenResults.filter(r => !r.negate).map(r => r.query);
+    const mustNotQueries = perTokenResults.filter(r => r.negate).map(r => r.query);
+
+    const subqueries = [];
+    if (mustQueries.length > 0) {
+        const positiveQuery = mustQueries.length === 1
+            ? mustQueries[0]
+            : tantivy.Query.booleanQuery(mustQueries.map(query => ({ occur: tantivy.Occur.Must, query })));
+        subqueries.push({ occur: tantivy.Occur.Must, query: positiveQuery });
+    } else {
+        subqueries.push({ occur: tantivy.Occur.Must, query: tantivy.Query.allQuery() });
+    }
+    for (const query of mustNotQueries) {
+        subqueries.push({ occur: tantivy.Occur.MustNot, query });
+    }
+
+    const textQuery = subqueries.length === 1
+        ? subqueries[0].query
+        : tantivy.Query.booleanQuery(subqueries);
 
     if (!favOnly) {
         return textQuery;

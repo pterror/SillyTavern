@@ -115,6 +115,54 @@ describe('tantivy-search.js', () => {
         expect(hits).toHaveLength(1);
         expect(JSON.parse(hits[0].raw)).toEqual(docs[3]);
     });
+
+    test('a negated label:value token (-tag:foo) excludes matching docs instead of matching on them', () => {
+        // Without negation, tag:gothic matches Vampire Lord and Werewolf Lord (see the test above). Negating it
+        // should invert that: everything EXCEPT those two.
+        const { names: matched } = names(index, schema, '-tag:gothic');
+        expect(matched.sort()).toEqual(['Sunny Bard', 'Vampire Hunter']);
+    });
+
+    test('negation is general to any recognized label, not special-cased to tag:', () => {
+        const { names: matched } = names(index, schema, '-name:vamp');
+        expect(matched.sort()).toEqual(['Sunny Bard', 'Werewolf Lord']);
+    });
+
+    test('a normal (non-negated) query is unaffected by negation support existing', () => {
+        const { names: matched } = names(index, schema, 'tag:gothic');
+        expect(matched.sort()).toEqual(['Vampire Lord', 'Werewolf Lord']);
+    });
+
+    test('negation combines with a positive term: AND-must the positive, AND-exclude the negative', () => {
+        // "lord" alone matches Vampire Lord + Werewolf Lord; excluding tag:romance should drop Vampire Lord
+        // (whose tags include "romance"), leaving only Werewolf Lord.
+        const { names: matched } = names(index, schema, 'lord -tag:romance');
+        expect(matched).toEqual(['Werewolf Lord']);
+    });
+
+    test('negating a label:value that matches nothing excludes nothing - all docs still match', () => {
+        const { names: matched } = names(index, schema, '-tag:nonexistentzzz');
+        expect(matched.sort()).toEqual(['Sunny Bard', 'Vampire Hunter', 'Vampire Lord', 'Werewolf Lord']);
+    });
+
+    test('a query made entirely of negated tokens still matches (falls back to allQuery as the positive base)', () => {
+        const { names: matched } = names(index, schema, '-tag:gothic -tag:cheerful');
+        expect(matched.sort()).toEqual(['Vampire Hunter']);
+    });
+
+    test('a double leading dash (--tag:foo) is not parsed as a label filter at all (regex requires exactly one)', () => {
+        // parseLabeledToken()'s regex only captures a single optional leading '-', so "--tag:foo" doesn't match
+        // the label pattern and falls through to a bare-word search instead - it should not throw, and should
+        // find nothing since no doc's searchable fields contain the literal text "--tag:foo".
+        expect(() => names(index, schema, '--tag:gothic')).not.toThrow();
+        expect(names(index, schema, '--tag:gothic').names).toEqual([]);
+    });
+
+    test('an unrecognized label negated (-nope:foo) is not a filter and is not silently dropped', () => {
+        // "nope" isn't in FIELD_LABELS, so parseLabeledToken() returns null and this whole token falls back to a
+        // bare-word search across the default field set - it should not silently vanish from the query.
+        expect(names(index, schema, '-nope:gothic').names).toEqual([]);
+    });
 });
 
 // Real bug this covers: characters.js's /api/characters/all search branch caps results at `maxRows` by text
