@@ -16,6 +16,7 @@ import {
 import { forwardFetchResponse, trimV1, getConfigValue } from '../../util.js';
 import { setAdditionalHeaders } from '../../additional-headers.js';
 import { createHash } from 'node:crypto';
+import { pipeLlamaCppCompactStream, getLlamaCppStreamMeta } from './llamacpp-compact-stream.js';
 
 export const router = express.Router();
 
@@ -406,8 +407,13 @@ router.post('/generate', async function (request, response) {
             parseOllamaStream(stream, request, response);
         } else if (request.body.stream) {
             const completionsStream = await fetch(url, args);
-            // Pipe remote SSE stream to Express response
-            await forwardFetchResponse(completionsStream, response);
+            if (request.body.api_type === TEXTGEN_TYPES.LLAMACPP) {
+                // Compact wire format for the llama.cpp raw-completions path only - see llamacpp-compact-stream.js.
+                await pipeLlamaCppCompactStream(completionsStream, response);
+            } else {
+                // Pipe remote SSE stream to Express response
+                await forwardFetchResponse(completionsStream, response);
+            }
         } else {
             const completionsReply = await fetch(url, args);
 
@@ -441,6 +447,22 @@ router.post('/generate', async function (request, response) {
             ? response.send(value)
             : response.end();
     }
+});
+
+/**
+ * Retrieves the final-event metadata (prompt, generation_settings, timings, etc.) that the compact
+ * llama.cpp stream format stashes instead of sending over the wire, keyed by the `X-Generation-Id`
+ * header returned with that stream. Nothing calls this today - it exists so the data stays reachable
+ * without costing anything for the (currently universal) case where nobody needs it.
+ */
+router.get('/generate/meta/:id', function (request, response) {
+    const meta = getLlamaCppStreamMeta(request.params.id);
+
+    if (!meta) {
+        return response.sendStatus(404);
+    }
+
+    return response.json(meta);
 });
 
 const ollama = express.Router();
