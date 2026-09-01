@@ -1109,7 +1109,21 @@ router.post('/continuation', async function (request, response) {
 //  row the client never received simply cannot be addressed.
 // ---------------------------------------------------------------------------
 
-const ownerOf = (request) => String(request.body.avatar_url).replace('.png', '');
+/**
+ * Which owner an operation is against.
+ *
+ * An owner is a character for one kind of chat and a group for the other, and the tree does not care
+ * which - `owner_id` is just a string it filters on. What differs is how the request names it: a
+ * character by its avatar, a group by its own id, because a group has no avatar to be named by. So a
+ * request that carries `group_id` is speaking for a group, and nothing downstream needs to know that.
+ *
+ * No migration precondition here on purpose. These routes act on a row the client is already holding,
+ * which it can only be holding because a load put it there, and the load is what runs migrate-on-touch.
+ * Re-asking on every keystroke-level operation would be the per-request check this design refuses.
+ */
+const ownerOf = (request) => (request.body.group_id
+    ? String(request.body.group_id)
+    : String(request.body.avatar_url).replace('.png', ''));
 
 /** Edits one message's content. */
 router.post('/message/edit', validateAvatarUrlMiddleware, async function (request, response) {
