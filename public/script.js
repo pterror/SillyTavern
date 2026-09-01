@@ -4718,10 +4718,12 @@ export function updateMessageElement(mes, { messageId = chat.length - 1, message
     messageElement.find('.mes_text').html(messageHTML);
     addCopyToCodeBlocks(messageElement);
 
-    // Set the swipes counter for all non-user messages.
-    if (!mes.is_user) {
-        updateSwipeCounter(messageId, { message: mes, messageElement });
-    }
+    // Set the swipes counter. User messages carry alternatives too in this fork (not just
+    // character messages), so this used to skip them - "for all non-user messages" was true
+    // upstream, where only character messages could have swipes, but leaving user messages
+    // out here meant their M/N indicator was never computed on initial render: it stayed blank
+    // until something else happened to call refreshSwipeButtons(true), which most callers don't.
+    updateSwipeCounter(messageId, { message: mes, messageElement });
 
     return messageElement;
 }
