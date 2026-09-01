@@ -9,6 +9,9 @@ import {
     charactersStore,
     chat,
     chatElement,
+    chatOpAddAlternative,
+    chatOpAppend,
+    chatOpEdit,
     chat_metadata,
     comment_avatar,
     deactivateSendButtons,
@@ -4699,6 +4702,21 @@ async function addSwipeCallback(args, value) {
 
     const newSwipeId = swipes.length - 1;
 
+    // A new alternative sibling is exactly what /addswipe does. Recorded before the switch/no-switch
+    // branch below, since selecting onto it (the switch:true path) has to name a row that already
+    // knows its own node_id.
+    if (chat_metadata?._tree_stored) {
+        const createdId = await chatOpAddAlternative(lastMessageId, value).catch(error => {
+            console.error('Could not save the new swipe as an alternative:', error);
+            return null;
+        });
+        if (createdId) {
+            const info = [...chat[lastMessageId].swipe_info];
+            info[newSwipeId] = { ...(info[newSwipeId] || {}), node_id: createdId };
+            updateMessage(lastMessageId, { swipe_info: info });
+        }
+    }
+
     if (isTrueBoolean(args.switch)) {
         await swipe(null, SWIPE_DIRECTION.RIGHT, { source: SWIPE_SOURCE.SLASH_COMMAND, repeated: false, forceMesId: lastMessageId, forceSwipeId: newSwipeId });
     } else {
@@ -4708,7 +4726,9 @@ async function addSwipeCallback(args, value) {
         refreshSwipeButtons();
     }
 
-    await saveChatConditional();
+    if (!chat_metadata?._tree_stored) {
+        await saveChatConditional();
+    }
 
     return String(newSwipeId);
 }
@@ -5891,7 +5911,12 @@ async function messageRoleCallback(args, role) {
         existingMessage.remove();
     }
     await eventSource.emit(event_types.MESSAGE_UPDATED, modifyAt);
-    await saveChatConditional();
+    if (chat_metadata?._tree_stored) {
+        await chatOpEdit(modifyAt).catch(error =>
+            console.error('Could not save the role change for that message:', error));
+    } else {
+        await saveChatConditional();
+    }
 
     return role;
 }
@@ -5959,7 +5984,12 @@ async function messageNameCallback(args, name) {
         existingMessage.remove();
     }
     await eventSource.emit(event_types.MESSAGE_UPDATED, modifyAt);
-    await saveChatConditional();
+    if (chat_metadata?._tree_stored) {
+        await chatOpEdit(modifyAt).catch(error =>
+            console.error('Could not save the name change for that message:', error));
+    } else {
+        await saveChatConditional();
+    }
 
     return newName;
 }
@@ -6045,11 +6075,17 @@ export async function sendMessageAs(args, text) {
         await reloadCurrentChat();
         await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, insertAt, 'command');
     } else {
+        const newIndex = chat.length;
         chat.push(message);
         await eventSource.emit(event_types.MESSAGE_RECEIVED, (chat.length - 1), 'command');
         addOneMessage(message);
         await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, (chat.length - 1), 'command');
-        await saveChatConditional();
+        if (chat_metadata?._tree_stored) {
+            await chatOpAppend(newIndex).catch(error =>
+                console.error('Could not save the new message:', error));
+        } else {
+            await saveChatConditional();
+        }
     }
 
     return await slashCommandReturnHelper.doReturn(args.return ?? 'none', message, { objectToStringFunc: x => x.mes });
@@ -6097,11 +6133,17 @@ export async function sendNarratorMessage(args, text) {
         await reloadCurrentChat();
         await eventSource.emit(event_types.USER_MESSAGE_RENDERED, insertAt);
     } else {
+        const newIndex = chat.length;
         chat.push(message);
         await eventSource.emit(event_types.MESSAGE_SENT, (chat.length - 1));
         addOneMessage(message);
         await eventSource.emit(event_types.USER_MESSAGE_RENDERED, (chat.length - 1));
-        await saveChatConditional();
+        if (chat_metadata?._tree_stored) {
+            await chatOpAppend(newIndex).catch(error =>
+                console.error('Could not save the new message:', error));
+        } else {
+            await saveChatConditional();
+        }
     }
 
     return await slashCommandReturnHelper.doReturn(args.return ?? 'none', message, { objectToStringFunc: x => x.mes });
@@ -6145,11 +6187,17 @@ export async function promptQuietForLoudResponse(who, text) {
 
     chat_metadata.tainted = true;
 
+    const newIndex = chat.length;
     chat.push(message);
     await eventSource.emit(event_types.MESSAGE_SENT, (chat.length - 1));
     addOneMessage(message);
     await eventSource.emit(event_types.USER_MESSAGE_RENDERED, (chat.length - 1));
-    await saveChatConditional();
+    if (chat_metadata?._tree_stored) {
+        await chatOpAppend(newIndex).catch(error =>
+            console.error('Could not save the new message:', error));
+    } else {
+        await saveChatConditional();
+    }
 }
 
 async function sendCommentMessage(args, text) {
@@ -6187,11 +6235,17 @@ async function sendCommentMessage(args, text) {
         await reloadCurrentChat();
         await eventSource.emit(event_types.USER_MESSAGE_RENDERED, insertAt);
     } else {
+        const newIndex = chat.length;
         chat.push(message);
         await eventSource.emit(event_types.MESSAGE_SENT, (chat.length - 1));
         addOneMessage(message);
         await eventSource.emit(event_types.USER_MESSAGE_RENDERED, (chat.length - 1));
-        await saveChatConditional();
+        if (chat_metadata?._tree_stored) {
+            await chatOpAppend(newIndex).catch(error =>
+                console.error('Could not save the new message:', error));
+        } else {
+            await saveChatConditional();
+        }
     }
 
     return await slashCommandReturnHelper.doReturn(args.return ?? 'none', message, { objectToStringFunc: x => x.mes });
