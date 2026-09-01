@@ -1515,6 +1515,14 @@ export async function selectCharacterByAvatar(avatar, { switchMenu = true } = {}
             setCharacterId(entity);
             chat_metadata = {};
             await getChat();
+        } else {
+            // A generation appears to be in flight, so switching mid-reply is refused - same reasoning
+            // as the isChatSaving guard just above. This used to fail the exact same way but silently:
+            // no toast, no console line, nothing - a click that visibly did nothing looked identical to
+            // the character list simply being broken. Telling the user why is the whole fix; whether
+            // is_send_press itself ever gets stuck true after generation has genuinely finished is a
+            // separate question this doesn't answer, but at minimum the failure is no longer invisible.
+            toastr.info(t`Please wait until the current generation finishes before switching characters.`, t`Generation in progress...`);
         }
     } else {
         //if clicked on character that was already selected
