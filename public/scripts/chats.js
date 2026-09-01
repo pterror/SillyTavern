@@ -15,6 +15,8 @@ import {
     reloadCurrentChat,
     saveSettingsDebounced,
     saveChatConditional,
+    chatOpEdit,
+    chatOpEditMany,
     updateMessage,
     chat_metadata,
     neutralCharacterName,
@@ -151,6 +153,7 @@ export async function hideChatMessageRange(start, end, unhide, nameFitler = null
     if (isNaN(start)) return;
     if (!end) end = start;
     const hide = !unhide;
+    const changed = [];
 
     for (let messageId = start; messageId <= end; messageId++) {
         const message = chat[messageId];
@@ -158,6 +161,7 @@ export async function hideChatMessageRange(start, end, unhide, nameFitler = null
         if (nameFitler && message.name !== nameFitler) continue;
 
         updateMessage(messageId, { is_system: hide });
+        changed.push(messageId);
 
         // Also toggle "hidden" state for all visible messages
         const messageBlock = $(`.mes[mesid="${messageId}"]`);
@@ -168,7 +172,14 @@ export async function hideChatMessageRange(start, end, unhide, nameFitler = null
     // Reload swipes. Useful when a last message is hidden.
     refreshSwipeButtons();
 
-    await saveChatConditional();
+    // Hiding/unhiding a range is a single decision the reader made, not one edit per message
+    // discovered afterwards by diffing.
+    if (chat_metadata?._tree_stored) {
+        await chatOpEditMany(changed).catch(error =>
+            console.error('Could not save the hidden state for those messages:', error));
+    } else {
+        await saveChatConditional();
+    }
 }
 
 /**
@@ -426,7 +437,12 @@ async function deleteMessageFile(messageBlock, messageId, fileIndex) {
     const url = message.extra.files[fileIndex]?.url;
     const updated = updateIn(messageId, ['extra', 'files'], (list) => list.filter((_, i) => i !== fileIndex));
 
-    await saveChatConditional();
+    if (chat_metadata?._tree_stored) {
+        await chatOpEdit(messageId).catch(error =>
+            console.error('Could not save the file removal for that message:', error));
+    } else {
+        await saveChatConditional();
+    }
     await deleteFileFromServer(url);
 
     appendMediaToMessage(updated, messageBlock, SCROLL_BEHAVIOR.KEEP);
@@ -501,7 +517,12 @@ function embedMessageFile(messageId, messageBlock) {
         await populateFileAttachment(message, 'embed_file_input');
         await eventSource.emit(event_types.MESSAGE_FILE_EMBEDDED, messageId);
         appendMediaToMessage(message, messageBlock, SCROLL_BEHAVIOR.KEEP);
-        await saveChatConditional();
+        if (chat_metadata?._tree_stored) {
+            await chatOpEdit(messageId).catch(error =>
+                console.error('Could not save the embedded file for that message:', error));
+        } else {
+            await saveChatConditional();
+        }
     }
 }
 
@@ -1106,7 +1127,12 @@ async function deleteMessageMedia(messageId, mediaIndex, messageBlock) {
         }
     }
 
-    await saveChatConditional();
+    if (chat_metadata?._tree_stored) {
+        await chatOpEdit(messageId).catch(error =>
+            console.error('Could not save the media removal for that message:', error));
+    } else {
+        await saveChatConditional();
+    }
     appendMediaToMessage(updatedMessage, messageBlock, SCROLL_BEHAVIOR.KEEP);
 }
 
@@ -1134,7 +1160,12 @@ async function switchMessageMediaDisplay(messageId, messageBlock, targetDisplay)
     updateMessage(messageId, { extra: { ...existingExtra, media_display: targetDisplay } });
     message = chat[messageId];
 
-    await saveChatConditional();
+    if (chat_metadata?._tree_stored) {
+        await chatOpEdit(messageId).catch(error =>
+            console.error('Could not save the media display mode for that message:', error));
+    } else {
+        await saveChatConditional();
+    }
     appendMediaToMessage(message, messageBlock, SCROLL_BEHAVIOR.KEEP);
 }
 
@@ -2152,7 +2183,12 @@ async function onImageSwiped(messageId, element, direction) {
         updateIn(messageId, ['extra', 'media_index'], newIndex >= media.length ? 0 : newIndex);
     }
 
-    await saveChatConditional();
+    if (chat_metadata?._tree_stored) {
+        await chatOpEdit(messageId).catch(error =>
+            console.error('Could not save the swiped media index for that message:', error));
+    } else {
+        await saveChatConditional();
+    }
     appendMediaToMessage(chat[messageId], element);
 }
 
