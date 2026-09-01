@@ -2337,7 +2337,10 @@ export async function init() {
     addVisualNovelMode();
     migrateSettings();
     await addSettings();
-    const wrapper = new ModuleWorkerWrapper(moduleWorker);
+    // Watchdog timeout guards against a hung fetch (e.g. after a laptop sleep/wake or a dropped
+    // connection during a long-running tab) permanently stalling the mutex and silently disabling
+    // all future expression updates for the rest of the session.
+    const wrapper = new ModuleWorkerWrapper(moduleWorker, 120000);
     const updateFunction = wrapper.update.bind(wrapper);
     setInterval(updateFunction, UPDATE_INTERVAL);
     moduleWorker();
