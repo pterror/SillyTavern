@@ -760,7 +760,10 @@ async function sendMakerSuiteRequest(request, response) {
             const responseContent = candidates[0].content ?? candidates[0].output;
             const functionCall = (candidates?.[0]?.content?.parts ?? []).some(part => part.functionCall);
             const inlineData = (candidates?.[0]?.content?.parts ?? []).some(part => part.inlineData);
-            console.debug(`${apiName} response:`, util.inspect(generateResponseJson, { depth: 5, colors: true }));
+            // Pass the object raw, not a pre-formatted util.inspect() dump - the depth-5 inspect ran
+            // unconditionally even when minLogLevel gates console.debug down to a no-op, same shape as the
+            // Model properties fix in text-completions.js.
+            console.debug(`${apiName} response:`, generateResponseJson);
 
             const responseText = typeof responseContent === 'string' ? responseContent : responseContent?.parts?.filter(part => !part.thought)?.map(part => part.text)?.join('\n\n');
             if (!responseText && !functionCall && !inlineData) {

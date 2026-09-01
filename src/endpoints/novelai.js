@@ -255,7 +255,9 @@ router.post('/generate', async function (req, res) {
         }
     }
 
-    console.debug(util.inspect(data, { depth: 4 }));
+    // Pass the object raw, not a pre-formatted util.inspect() dump - see the same fix in chat-completions.js
+    // and text-completions.js for why the eager inspect/stringify defeats minLogLevel's no-op gate.
+    console.debug('NAI request:', data);
 
     const args = {
         body: JSON.stringify(data),

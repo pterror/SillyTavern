@@ -261,7 +261,10 @@ router.post('/props', async function (request, response) {
             props.chat_template = props.chat_template.slice(0, -1) + '\n';
         }
         props.chat_template_hash = createHash('sha256').update(props.chat_template).digest('hex');
-        console.debug(`Model properties: ${JSON.stringify(props)}`);
+        // Pass the object, not a pre-stringified template - JSON.stringify() here ran unconditionally even
+        // when minLogLevel gates console.debug down to a no-op (see util.js's overwriteConsole()), paying the
+        // full serialize-the-whole-props-blob-including-chat_template cost regardless of whether it's read.
+        console.debug('Model properties:', props);
         return response.send(props);
     } catch (error) {
         console.error(error);

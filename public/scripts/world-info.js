@@ -4854,7 +4854,10 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
             let headerLogged = false;
             function log(...args) {
                 if (!headerLogged) {
-                    console.debug(`[WI] Entry ${entry.uid}`, `from '${entry.world}' processing`, entry);
+                    // Identity only, not the full entry - `entry.content` can run to paragraphs of prose,
+                    // and this header fires for every entry on every scan regardless of whether the specific
+                    // branch below actually has anything worth logging (e.g. just "disabled").
+                    console.debug(`[WI] Entry ${entry.uid}`, `from '${entry.world}' processing`, { uid: entry.uid, world: entry.world, comment: entry.comment });
                     headerLogged = true;
                 }
                 console.debug(`[WI] Entry ${entry.uid}`, ...args);
@@ -5140,7 +5143,8 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
             }
 
             allActivatedEntries.set(`${entry.world}.${entry.uid}`, entry);
-            console.debug(`[WI] Entry ${entry.uid} activation successful, adding to prompt`, entry);
+            // Identity only, not the full entry - see the `log()` header comment above on why.
+            console.debug(`[WI] Entry ${entry.uid} activation successful, adding to prompt`, { uid: entry.uid, world: entry.world, comment: entry.comment });
         }
 
         const successfulNewEntries = newEntries.filter(x => !failedProbabilityChecks.has(x));
