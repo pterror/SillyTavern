@@ -210,12 +210,11 @@ body.charGalleryView #right-nav-panel.galleryFullscreen[data-active-menu="rm_cha
     display: none;
 }
 
-/* Search bar + result count: #form_character_search_form is already a row flexbox (style.css), but its two
-   main children (#character_search_bar_wrapper, which itself wraps search pills + the text input, and
-   #character_search_result_count) had no explicit no-wrap/basis guard - once the input's search-pill row grew
-   past a couple of tags, or the layout got squeezed, the row would concede height rather than width and the
-   result count ended up pushed onto its own line below the input. Pin both to a single row explicitly so this
-   view never wastes vertical space on that regardless of pill count. */
+/* Search bar: #form_character_search_form is already a row flexbox (style.css), but its main child
+   (#character_search_bar_wrapper, which wraps search pills + the text input) had no explicit no-wrap/basis
+   guard - once the input's search-pill row grew past a couple of tags, or the layout got squeezed, the row
+   would concede height rather than width. Pin it to a single row explicitly so this view never wastes vertical
+   space on that regardless of pill count. */
 /* Controls and search layout: only in fullscreen gallery mode. In sidebar mode, the default stacked
    layout applies since there isn't enough horizontal room for side-by-side controls. */
 body.charGalleryView #right-nav-panel.galleryFullscreen #form_character_search_form {
@@ -226,10 +225,6 @@ body.charGalleryView #right-nav-panel.galleryFullscreen #form_character_search_f
 body.charGalleryView #right-nav-panel.galleryFullscreen #character_search_bar_wrapper {
     flex-wrap: nowrap;
     overflow-x: auto;
-}
-
-body.charGalleryView #right-nav-panel.galleryFullscreen #character_search_result_count {
-    flex: 0 0 auto;
 }
 
 body.charGalleryView #right-nav-panel.galleryFullscreen #charListFixedTop {
