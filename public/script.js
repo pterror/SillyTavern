@@ -1448,9 +1448,44 @@ export function resultCheckStatus() {
  * @returns {Promise<void>} A promise that resolves when the character is switched.
  */
 export async function selectCharacterByAvatar(avatar, { switchMenu = true } = {}) {
-    const entity = charactersStore.get(avatar);
+    let entity = charactersStore.get(avatar);
     if (!entity) {
-        return;
+        // Not yet resident in charactersStore - most commonly hit inside firstLoadInit()'s boot residency-fill
+        // window (docs/design/boot-residency-decoupling.md): printCharacters(true) renders the visible list via
+        // the server-query path, which needs no local residency at all, before charactersStore's own boot
+        // hydration (characterResidencyPromise: getCharacters() + tag-map seeding) has finished - so a row can
+        // be on screen, clickable, before its character is resident. CharacterRepository.full()'s own doc
+        // comment (character-repository.js) names this exact gap - "entry-level fault-in for a non-resident id
+        // is not implemented" - and deliberately throws there rather than silently deciding whether a fetch
+        // should grow charactersStore, because that's a real residency-model call for an anonymous read. A user
+        // explicitly clicking a character to open it isn't an anonymous read, though - it's the one unambiguous
+        // case where making the row resident is obviously correct, the same thing unshallowCharacter()/
+        // getOneCharacter() already do for an entry that exists, just extended to cover "doesn't have an entry
+        // yet". Without this, opening silently did nothing whenever the click landed before residency caught up
+        // - indistinguishable from the character list itself being broken, and with no correlation to whether
+        // the character's own tags/description/etc. were "ready": the row was just never in charactersStore.
+        try {
+            const response = await fetch('/api/characters/get', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ avatar_url: avatar }),
+            });
+            if (response.ok) {
+                const data = await response.json();
+                data.chat = String(data.chat);
+                data.shallow = false;
+                // Re-check after the await: the boot fill (or another concurrent fetch) may have made this
+                // avatar resident while this request was in flight. Prefer whatever's already there rather than
+                // fighting/duplicating charactersStore's own state.
+                entity = charactersStore.get(avatar) ?? charactersStore.create(data)?.entity;
+            }
+        } catch (error) {
+            console.error('Failed to resolve character for open:', avatar, error);
+        }
+        if (!entity) {
+            toastr.error(t`Character ${avatar} not found`, t`Error`, { timeOut: 5000, preventDuplicates: true });
+            return;
+        }
     }
 
     if (isChatSaving) {
