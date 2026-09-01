@@ -84,6 +84,33 @@ export function setAtPath(obj, dottedPath, value) {
  * @param {string[]} keys Top-level keys or dotted paths to hash
  * @returns {Record<string, number>} Map of key -> hash of that key's current value
  */
+/**
+ * Recursively hashes every dotted path within a settings-shaped object - not just the top level, and not just
+ * one level of nesting - writing hash(JSON.stringify(value, null, 4)) into `map` at each path. A
+ * saveSettingsDebounced() call can mark an arbitrarily deep dotted path dirty (e.g.
+ * 'power_user.reasoning.name', three levels), so a cache that only reaches one or two levels deep misses those
+ * paths entirely. That miss must never be read as "the hash is 0" - 0 is a real hash value (it's what
+ * hashSettingsKeys() computes for a path that genuinely doesn't exist), and conflating "not cached" with
+ * "confirmed absent" is exactly the class of bug this exists to prevent. Callers should check whether a path
+ * ended up in `map` before using it, rather than defaulting a miss to 0.
+ *
+ * Arrays are treated as opaque leaves (hashed as a whole at their own path, not recursed into by index) -
+ * matching hashSettingsKeys()'s own object-vs-array handling.
+ * @param {Record<string, number>} map Hash map to populate (mutated in place)
+ * @param {*} obj The (sub)object to walk
+ * @param {string} [prefix] Dotted path prefix for `obj` itself; omit/empty to seed only obj's own children as top-level paths
+ */
+export function seedKeyHashes(map, obj, prefix = '') {
+    if (prefix) {
+        map[prefix] = getStringHash(JSON.stringify(obj, null, 4));
+    }
+    if (obj != null && typeof obj === 'object' && !Array.isArray(obj)) {
+        for (const key of Object.keys(obj)) {
+            seedKeyHashes(map, obj[key], prefix ? `${prefix}.${key}` : key);
+        }
+    }
+}
+
 export function hashSettingsKeys(obj, keys) {
     /** @type {Record<string, number>} */
     const result = {};

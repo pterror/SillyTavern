@@ -193,7 +193,7 @@ import {
 // Imported directly from hash-utils.js (not re-exported via utils.js like getStringHash) so this doesn't widen
 // utils.js's re-export surface - a mocked utils.js in tests/utils-findchar.test.js stubs hash-utils.js with only
 // getStringHash, and this stays independent of that.
-import { getAtPath, treeNodeAt, digestsEqual128, foldDigests128, emptyDigest128, DEFAULT_TREE_BRANCHING, characterDigestFieldsHash, characterDigestCardBodyHash, combineDigest128, characterDigestFavHash, characterDigestTagIdsHash } from './scripts/hash-utils.js';
+import { getAtPath, seedKeyHashes, treeNodeAt, digestsEqual128, foldDigests128, emptyDigest128, DEFAULT_TREE_BRANCHING, characterDigestFieldsHash, characterDigestCardBodyHash, combineDigest128, characterDigestFavHash, characterDigestTagIdsHash } from './scripts/hash-utils.js';
 import { debounce_timeout, GENERATION_TYPE_TRIGGERS, IGNORE_SYMBOL, inject_ids, MEDIA_DISPLAY, MEDIA_SOURCE, MEDIA_TYPE, OVERSWIPE_BEHAVIOR, SCROLL_BEHAVIOR, SWIPE_DIRECTION, SWIPE_SOURCE, SWIPE_STATE } from './scripts/constants.js';
 
 import { cancelDebouncedMetadataSave, doDailyExtensionUpdatesCheck, extension_settings, initExtensions, loadExtensionSettings, runGenerationInterceptors } from './scripts/extensions.js';
@@ -11513,15 +11513,9 @@ export async function getSettings(initLoaderHandle = null, onStageChange = null)
         // this matches what the server will hash on the next save. See knownServerSettingsHash's doc comment.
         knownServerSettingsHash = getStringHash(data.settings);
         settings = JSON.parse(data.settings);
-        // Seed per-key hashes for partial-save conflict detection.
-        for (const key of Object.keys(settings)) {
-            serverKeyHashes[key] = getStringHash(JSON.stringify(settings[key], null, 4));
-            if (settings[key] != null && typeof settings[key] === 'object' && !Array.isArray(settings[key])) {
-                for (const subKey of Object.keys(settings[key])) {
-                    serverKeyHashes[`${key}.${subKey}`] = getStringHash(JSON.stringify(settings[key][subKey], null, 4));
-                }
-            }
-        }
+        // Seed per-key hashes for partial-save conflict detection. Recursive (not just one level of
+        // nesting) - a dirty key can be an arbitrarily deep dotted path (e.g. 'power_user.reasoning.name').
+        seedKeyHashes(serverKeyHashes, settings);
         if (settings.username !== undefined && settings.username !== '') {
             name1 = settings.username;
             $('#your_name').text(name1);
@@ -11773,9 +11767,17 @@ export async function saveSettings(...keys) {
             return;
         }
 
+        // A key with no cached hash means this client never observed the server's value at that path (not
+        // that the value is 0/absent - see seedKeyHashes()'s doc comment) - omit it rather than asserting a
+        // fabricated 0, which the server would (correctly) read as "I know this is absent" and conflict
+        // against any real value it finds there. Omitting a key from expectedHashes just skips the
+        // conflict check for it server-side (see /save-partial's doc comment), same as expectedHashes being
+        // absent entirely.
         const expectedHashes = {};
         for (const key of Object.keys(partialPayload)) {
-            expectedHashes[key] = serverKeyHashes[key] ?? 0;
+            if (key in serverKeyHashes) {
+                expectedHashes[key] = serverKeyHashes[key];
+            }
         }
 
         try {
@@ -11798,9 +11800,10 @@ export async function saveSettings(...keys) {
                 throw new Error(`Failed to save partial settings: ${result.statusText}`);
             }
 
-            // Update per-key hashes for what was just written.
+            // Update per-key hashes for what was just written (and, recursively, anything nested under it -
+            // a parent key's cached hash going stale would leave any child dotted path under it stale too).
             for (const key of Object.keys(partialPayload)) {
-                serverKeyHashes[key] = getStringHash(JSON.stringify(partialPayload[key], null, 4));
+                seedKeyHashes(serverKeyHashes, partialPayload[key], key);
             }
             lastSavedSettingsHash = payloadHash;
             // The server returns the whole-file hash so knownServerSettingsHash stays in sync
@@ -11842,15 +11845,8 @@ export async function saveSettings(...keys) {
                 throw new Error(`Failed to save settings: ${result.statusText}`);
             }
 
-            // Update per-key hashes from the full payload.
-            for (const key of Object.keys(payload)) {
-                serverKeyHashes[key] = getStringHash(JSON.stringify(payload[key], null, 4));
-                if (payload[key] != null && typeof payload[key] === 'object' && !Array.isArray(payload[key])) {
-                    for (const subKey of Object.keys(payload[key])) {
-                        serverKeyHashes[`${key}.${subKey}`] = getStringHash(JSON.stringify(payload[key][subKey], null, 4));
-                    }
-                }
-            }
+            // Update per-key hashes from the full payload (recursively - see seedKeyHashes()).
+            seedKeyHashes(serverKeyHashes, payload);
             lastSavedSettingsHash = payloadHash;
             knownServerSettingsHash = getStringHash(canonicalSettingsString);
             await eventSource.emit(event_types.SETTINGS_UPDATED);
@@ -11886,9 +11882,13 @@ export async function savePartialSettings(partialSettings) {
     // sending.
     const keys = Object.keys(partialSettings).filter(key => partialSettings[key] !== undefined);
     if (!keys.length) return true;
+    // Same reasoning as the debounced partial-save path above: a key with no cached hash means "never
+    // observed", not "hash is 0" - omit it instead of asserting a fabricated 0.
     const expectedHashes = {};
     for (const key of keys) {
-        expectedHashes[key] = serverKeyHashes[key] ?? 0;
+        if (key in serverKeyHashes) {
+            expectedHashes[key] = serverKeyHashes[key];
+        }
     }
 
     const result = await fetch('/api/settings/save-partial', {
@@ -11914,7 +11914,7 @@ export async function savePartialSettings(partialSettings) {
     }
 
     for (const key of Object.keys(partialSettings)) {
-        serverKeyHashes[key] = getStringHash(JSON.stringify(partialSettings[key], null, 4));
+        seedKeyHashes(serverKeyHashes, partialSettings[key], key);
     }
     return true;
 }
