@@ -17,6 +17,7 @@ import {
     updateMessage,
     hydrateSwipes,
     ensureOpeningRow,
+    switchToNode,
 } from '../script.js';
 import { humanizedDateTime } from './RossAscends-mods.js';
 import {
@@ -77,6 +78,11 @@ async function getExistingChatNames() {
 
     if (response.ok) {
         const data = await response.json();
+        // /api/characters/chats sends { error: true } (not an array) on a real read failure - guard against
+        // that here instead of crashing on x.file_name of an object that isn't a chat entry.
+        if (!Array.isArray(data)) {
+            return [];
+        }
         const chats = Object.values(data).map(x => x.file_name.replace('.jsonl', ''));
         return [...chats];
     }
@@ -1025,9 +1031,21 @@ export function initBookmarks() {
         // Prefer the node. A name is not an identifier - `label` is not unique per owner, so opening
         // by name picks whichever row sorts first. The name is the fallback for file-backed chats,
         // which have no nodes at all.
-        const target = $(this).attr('node_id') || $(this).attr('file_name');
+        const nodeId = $(this).attr('node_id');
+        const target = nodeId || $(this).attr('file_name');
 
         if (!target) {
+            return;
+        }
+
+        // A bookmark's node very often shares most of its ancestry with whatever is already on screen
+        // (another bookmark a few messages further down the same branch, or a sibling branch off it) -
+        // switchToNode() finds that overlap and replaces only what's actually different. It only
+        // handles solo tree-backed chats and only actually does anything when there IS shared
+        // ancestry to build on; anything else (a group chat, a legacy chat, a genuinely unrelated
+        // conversation) falls through to the full open below exactly as before.
+        if (nodeId && await switchToNode(nodeId)) {
+            $('#shadow_select_chat_popup').css('display', 'none');
             return;
         }
 
