@@ -3076,6 +3076,13 @@ export async function assignEntityTag(directories, id, tagId) {
         entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@id, @tagId)', { id, tagId });
         // Update shallow_json.tag_ids and record a field-level change so the delta sync
         // path knows only tag_ids changed, not the whole record.
+        //
+        // Deliberately NOT followed by updateTagsHashSync() (see its own doc comment): this only ever touches
+        // character_tags, never the tags table updateTagsHashSync() hashes, so it can never change what that
+        // call would compute - it was pure wasted work (a full SELECT+hash over every tag definition, i.e.
+        // O(library-wide tag count) on a single-row write) that also never told anyone anything true. The
+        // insertChange() call just above already bumps the change-seq counter this assignment's actual
+        // freshness consumer (characters-search-index.js's getFreshnessSignature()) reads.
         const charRow = entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id });
         if (charRow) {
             const currentTagIds = entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id }).map(r => r.tag_id);
@@ -3084,12 +3091,18 @@ export async function assignEntityTag(directories, id, tagId) {
             const lastInsertRowid = insertChange(entry.db, id, 'upsert', JSON.stringify(['tag_ids']));
             entry.db.run('UPDATE characters SET shallow_json = @shallowJson, change_seq = @changeSeq, digest_tag_ids = @digestTagIds WHERE id = @id', { id, shallowJson: JSON.stringify(shallow), changeSeq: Number(lastInsertRowid), digestTagIds: characterDigestTagIdsHash(shallow) % 4294967296 });
         }
-        updateTagsHashSync(entry.db);
         return 'ok';
     }
     if (entry.db.get('SELECT 1 FROM groups WHERE id = @id', { id })) {
+        // Same reasoning as the characters branch above: group_tags isn't the tags table either, so
+        // updateTagsHashSync() here was equally dead weight - and, unlike the characters branch, it was never
+        // even a redundant stand-in for a real freshness signal: groups have no change-log entry to bump
+        // instead (see unassignEntityTag()'s own comment - "groups don't have shallow_json/change entries"), so
+        // groups-search-index.js's getFreshnessSignature() (groupsDirMtime + getTagsHash()) has no way to detect
+        // a pure group-tag reassignment today, before or after this change. That's a real, separate gap - fixing
+        // it means giving groups their own change-tracking the way characters already have, not something this
+        // single-row write can paper over by calling a hash function that can't see group_tags either way.
         entry.db.run('INSERT OR IGNORE INTO group_tags (group_id, tag_id) VALUES (@id, @tagId)', { id, tagId });
-        updateTagsHashSync(entry.db);
         return 'ok';
     }
     return 'not_found';
@@ -3124,7 +3137,13 @@ export async function unassignEntityTag(directories, id, tagId) {
 
     entry.db.run('DELETE FROM character_tags WHERE character_id = @id AND tag_id = @tagId', { id, tagId });
     entry.db.run('DELETE FROM group_tags WHERE group_id = @id AND tag_id = @tagId', { id, tagId });
-    // Update shallow_json.tag_ids for characters (groups don't have shallow_json/change entries)
+    // Update shallow_json.tag_ids for characters (groups don't have shallow_json/change entries).
+    //
+    // No updateTagsHashSync() here either, same reasoning as assignEntityTag()'s own comment above: an
+    // unassign only ever touches character_tags/group_tags, never the tags table that call hashes, so it was
+    // guaranteed to recompute the exact same value every time - a full O(library-wide tag count) SELECT+hash
+    // for zero signal. insertChange() just below is what characters-search-index.js's freshness check actually
+    // reads for this; groups still have no equivalent (pre-existing, separate gap - see assignEntityTag()).
     const charRow = entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id });
     if (charRow) {
         const currentTagIds = entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id }).map(r => r.tag_id);
@@ -3133,7 +3152,6 @@ export async function unassignEntityTag(directories, id, tagId) {
         const lastInsertRowid = insertChange(entry.db, id, 'upsert', JSON.stringify(['tag_ids']));
         entry.db.run('UPDATE characters SET shallow_json = @shallowJson, change_seq = @changeSeq, digest_tag_ids = @digestTagIds WHERE id = @id', { id, shallowJson: JSON.stringify(shallow), changeSeq: Number(lastInsertRowid), digestTagIds: characterDigestTagIdsHash(shallow) % 4294967296 });
     }
-    updateTagsHashSync(entry.db);
     return 'ok';
 }
 
