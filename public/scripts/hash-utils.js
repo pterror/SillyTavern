@@ -96,17 +96,42 @@ export function setAtPath(obj, dottedPath, value) {
  *
  * Arrays are treated as opaque leaves (hashed as a whole at their own path, not recursed into by index) -
  * matching hashSettingsKeys()'s own object-vs-array handling.
+ *
+ * Cycle-safe two ways, since settings-shaped objects aren't guaranteed acyclic (an extension can stash a
+ * back-reference in its own settings slice): (1) JSON.stringify() itself throws "cyclic object value" if the
+ * subtree at a given path contains one anywhere below it - that's caught per-path and just leaves that one
+ * path out of `map` rather than caching nothing at all or letting the error propagate. A path missing from
+ * `map` already means "unknown" to every caller (see the expectedHashes-building call sites in script.js),
+ * which is exactly the right meaning for "couldn't hash this". (2) independently of that, the recursive walk
+ * itself would loop forever on a genuine cycle in the object graph (unrelated to whether JSON.stringify would
+ * also choke on it) - an `ancestors` set of objects currently on the walk's own call stack stops descending
+ * back into one of its own ancestors. A stringify failure at one path doesn't block recursing into that
+ * object's own children - the cycle may only taint that one path, not every path under it.
  * @param {Record<string, number>} map Hash map to populate (mutated in place)
  * @param {*} obj The (sub)object to walk
  * @param {string} [prefix] Dotted path prefix for `obj` itself; omit/empty to seed only obj's own children as top-level paths
+ * @param {Set<object>} [ancestors] Internal - objects currently on this walk's call stack, to detect real cycles
  */
-export function seedKeyHashes(map, obj, prefix = '') {
+export function seedKeyHashes(map, obj, prefix = '', ancestors = new Set()) {
     if (prefix) {
-        map[prefix] = getStringHash(JSON.stringify(obj, null, 4));
+        try {
+            map[prefix] = getStringHash(JSON.stringify(obj, null, 4));
+        } catch (error) {
+            // Unstringifiable (cyclic) at this exact path - leave it out of the cache instead of caching a
+            // wrong value or throwing. Still fall through to recurse into its children below.
+        }
     }
     if (obj != null && typeof obj === 'object' && !Array.isArray(obj)) {
-        for (const key of Object.keys(obj)) {
-            seedKeyHashes(map, obj[key], prefix ? `${prefix}.${key}` : key);
+        if (ancestors.has(obj)) {
+            return;
+        }
+        ancestors.add(obj);
+        try {
+            for (const key of Object.keys(obj)) {
+                seedKeyHashes(map, obj[key], prefix ? `${prefix}.${key}` : key, ancestors);
+            }
+        } finally {
+            ancestors.delete(obj);
         }
     }
 }
