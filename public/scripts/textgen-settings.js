@@ -23,6 +23,7 @@ import { power_user, registerDebugFunction } from './power-user.js';
 import { getActiveManualApiSamplers, loadApiSelectedSamplers, isSamplerManualPriorityEnabled } from './samplerSelect.js';
 import { SECRET_KEYS, writeSecret } from './secrets.js';
 import { getEventSourceStream } from './sse-stream.js';
+import { CompactStreamDecoder } from './llamacpp-compact-stream.js';
 import { getCurrentDreamGenModelTokenizer, getCurrentOpenRouterModelTokenizer, loadAphroditeModels, loadDreamGenModels, loadFeatherlessModels, loadGenericModels, loadInfermaticAIModels, loadLlamaCppModels, loadMancerModels, loadOllamaModels, loadOpenRouterModels, loadTabbyModels, loadTogetherAIModels, loadVllmModels, updateOpenRouterProvidersWarning } from './textgen-models.js';
 import { ENCODE_TOKENIZERS, TEXTGEN_TOKENIZERS, TOKENIZER_SUPPORTED_KEY, getTextTokens, getTokenizerBestMatch, tokenizers } from './tokenizers.js';
 import { AbortReason } from './util/AbortReason.js';
@@ -1318,6 +1319,58 @@ export async function generateTextGenWithStreaming(generate_data, signal) {
     if (!response.ok) {
         tryParseStreamingError(response, await response.text());
         throw new Error(`Got response status ${response.status}`);
+    }
+
+    // Compact wire format used only for the llama.cpp raw-completions streaming path - see
+    // llamacpp-compact-stream.js. Every other backend keeps using the SSE-JSON path below, unchanged.
+    if (response.headers.get('X-ST-Stream-Format') === 'compact-v1') {
+        return async function* streamData() {
+            const reader = response.body.getReader();
+            const decoder = new CompactStreamDecoder();
+            let text = '';
+            /** @type {import('./logprobs.js').TokenLogprobs | null} */
+            let logprobs = null;
+            const swipes = [];
+            const toolCalls = [];
+            const state = { reasoning: '' };
+            let currentIndex = 0;
+            /** @type {any} Probabilities frame waiting to be paired with the content event right after it. */
+            let pendingProbabilities = null;
+
+            /** @param {{content: string}} event */
+            function* applyContent(event) {
+                if (currentIndex > 0) {
+                    const swipeIndex = currentIndex - 1;
+                    swipes[swipeIndex] = (swipes[swipeIndex] || '') + event.content;
+                    pendingProbabilities = null;
+                } else {
+                    text += event.content;
+                    logprobs = pendingProbabilities ? parseTextgenLogprobs(event.content, pendingProbabilities) : null;
+                    pendingProbabilities = null;
+                }
+                yield { text, swipes, logprobs, toolCalls, state };
+            }
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                if (!value || value.length === 0) continue;
+
+                for (const event of decoder.push(value)) {
+                    if ('index' in event) {
+                        currentIndex = event.index;
+                    } else if ('probabilities' in event) {
+                        pendingProbabilities = event.probabilities;
+                    } else if ('content' in event) {
+                        yield* applyContent(event);
+                    }
+                }
+            }
+
+            for (const event of decoder.flush()) {
+                yield* applyContent(event);
+            }
+        };
     }
 
     const eventStream = getEventSourceStream();
