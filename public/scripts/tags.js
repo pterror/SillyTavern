@@ -2375,27 +2375,31 @@ function printTagFilters(type = tag_filter_type.character) {
     // Remove just the action/inList-action pills from any previous render (by their known, fixed ids) instead
     // of the old unconditional $(FILTER_SELECTOR).empty() - that would also wipe out the (potentially huge) real
     // tag pill list below, which is exactly the rebuild we're trying to avoid doing on every render.
+    // Resolved once and reused for every $(FILTER_SELECTOR) use below instead of re-running the selector fresh
+    // per loop iteration (see the same fix, and its rationale, in printBigTagFilterList()).
+    const $filterContainer = $(FILTER_SELECTOR);
+
     const actionAndInListTags = [...actionTags, ...inListActionTags];
     for (const tag of actionAndInListTags) {
-        $(FILTER_SELECTOR).find(`.tag[id="${tag.id}"]`).remove();
+        $filterContainer.find(`.tag[id="${tag.id}"]`).remove();
     }
 
     // Build them directly into the real (attached) container - appendTagToList/getFilterHelper resolve the
     // correct FilterHelper (group members/candidates vs main list) by walking up from the element at build time,
     // which only works if it's actually attached under its real ancestor when built, not a detached scratch div.
-    printTagList($(FILTER_SELECTOR), { empty: false, sort: false, tags: actionTags, tagActionSelector: tag => tag.action, tagOptions: { isGeneralList: true } });
-    printTagList($(FILTER_SELECTOR), { empty: false, sort: false, tags: inListActionTags, tagActionSelector: tag => tag.action, tagOptions: { isGeneralList: true } });
+    printTagList($filterContainer, { empty: false, sort: false, tags: actionTags, tagActionSelector: tag => tag.action, tagOptions: { isGeneralList: true } });
+    printTagList($filterContainer, { empty: false, sort: false, tags: inListActionTags, tagActionSelector: tag => tag.action, tagOptions: { isGeneralList: true } });
 
     // They just got appended at the end (after whatever real tag pills are still there) - move them back to the
     // front as a block, preserving their relative order, same position as the old always-rebuilt version had.
     for (const tag of [...actionAndInListTags].reverse()) {
-        $(FILTER_SELECTOR).find(`.tag[id="${tag.id}"]`).prependTo($(FILTER_SELECTOR));
+        $filterContainer.find(`.tag[id="${tag.id}"]`).prependTo($filterContainer);
     }
 
     printBigTagFilterList(type, FILTER_SELECTOR, tagsToDisplay, inactiveTags);
 
     // Print bogus folder navigation
-    const bogusDrilldown = $(FILTER_SELECTOR).siblings('.rm_tag_bogus_drilldown');
+    const bogusDrilldown = $filterContainer.siblings('.rm_tag_bogus_drilldown');
     bogusDrilldown.empty();
     if (power_user.bogus_folders && bogusDrilldown.length > 0) {
         const navigatedTags = getOpenBogusFolders();
@@ -2435,6 +2439,13 @@ function printBigTagFilterList(type, FILTER_SELECTOR, tagsToDisplay, inactiveTag
     const newInactiveIds = new Set(inactiveTags);
     const cached = tagFilterRenderCache.get(type);
 
+    // Resolved once and reused everywhere below - re-running $(FILTER_SELECTOR) (a full document query) inside
+    // the per-tag loops here used to re-evaluate the whole '#rm_characters_block .rm_tag_filter' selector once
+    // per cached tag id (up to ~9700 of them) on every fullRebuild(), which is what actually shows up as an
+    // 18+ second single-selector cost in the profiler at this install's DOM size - not the selector itself being
+    // slow once, but the same selector re-run thousands of times in a tight loop.
+    const $container = $(FILTER_SELECTOR);
+
     const fullRebuild = () => {
         // There's no top-level $(FILTER_SELECTOR).empty() anymore (that would nuke the action tag pills too, see
         // printTagFilters above), so any pills from a previous render need to be explicitly cleared here first -
@@ -2442,10 +2453,10 @@ function printBigTagFilterList(type, FILTER_SELECTOR, tagsToDisplay, inactiveTag
         // tagsToDisplay.
         if (cached) {
             for (const id of cached.ids) {
-                $(FILTER_SELECTOR).find(`.tag[id="${id}"]`).remove();
+                $container.find(`.tag[id="${id}"]`).remove();
             }
         }
-        printTagList($(FILTER_SELECTOR), { empty: false, tags: tagsToDisplay, tagOptions: { isFilter: true, isGeneralList: true }, inactiveTags: inactiveTags });
+        printTagList($container, { empty: false, tags: tagsToDisplay, tagOptions: { isFilter: true, isGeneralList: true }, inactiveTags: inactiveTags });
         tagFilterRenderCache.set(type, { ids: newIds, inactiveIds: newInactiveIds });
     };
 
@@ -2462,7 +2473,6 @@ function printBigTagFilterList(type, FILTER_SELECTOR, tagsToDisplay, inactiveTag
         }
     }
 
-    const $container = $(FILTER_SELECTOR);
     const isExpanded = $container.hasClass('tags-expanded');
 
     // Case 2: capped, cheap regardless - let printTagList do its normal thing (also handles the mandatory-tag/
