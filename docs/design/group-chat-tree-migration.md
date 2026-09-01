@@ -91,6 +91,32 @@ None of these fail loudly. They report an empty list, which is indistinguishable
 no history". That is the same failure class as the bug that started the retirement work, so shipping
 save+get without the other five is not a safe partial state — it is the unsafe one.
 
+## Found while building this: two chats that share an opening
+
+Groups made an existing weakness in the store reachable on an ordinary day, and it is worth writing down
+separately because only half of it is fixed.
+
+Row identity is (parent, speaker, text). Two chats in one group are both seeded from the members'
+greetings, so the second one's opening message is byte-identical to the first's and lands on the *same
+row* rather than getting one of its own. Two consequences follow, and they are not the same problem:
+
+1. **A new chat's name used to overwrite the older chat's.** `saveChatToTree()` names a brand-new chat
+   at its first message; when that message is an existing chat's entry point, the `UPDATE ... SET label`
+   simply took the older name away. The older chat's history stayed in the tree with nothing pointing at
+   it, and nothing was reported. Fixed: the name goes on the first *unlabeled* node along the chat's own
+   path, and if every node on it is already claimed the failure is logged rather than resolved by taking
+   someone else's name. This follows the rule the JSONL migration already states for the same situation
+   (two files landing on one leaf: report, never overwrite).
+
+2. **A chat that is a strict prefix of another still cannot be distinguished on load. Open.** Resolution
+   is "find the label, then follow `default_child_id` down to a leaf", and the longer chat owns that
+   pointer, so the shorter chat loads as the longer one. `endPathAt()` exists to terminate a path and
+   nothing on this route calls it. This is a property of the model rather than of groups - two character
+   chats where one is a prefix of the other behave the same way - but characters rarely produce that
+   shape and groups produce it the moment a second chat is started. Deliberately not resolved here: it
+   is a question about how the store represents a terminated path, not about group routing, and guessing
+   at it inside a migration change is how the last round of silent data loss happened.
+
 ## Client surface
 
 `saveGroupChat()`/`getGroupChat()` in `group-chats.js` are the only two callers of the group

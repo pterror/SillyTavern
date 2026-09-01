@@ -559,6 +559,26 @@ function descendDefaultSync(db, nodeId) {
     }
 }
 
+/**
+ * The first node from `nodeId` downwards (following default_child_id, so: this chat's own path) that
+ * carries no label, or null if every one of them is already some chat's entry point.
+ *
+ * Used when naming a newly saved chat. See saveChatToTree()'s labeling block for why a name cannot
+ * simply go on the path's first node.
+ */
+function firstUnlabeledOnPathSync(db, nodeId) {
+    let current = nodeId;
+    const seen = new Set();
+    while (current && !seen.has(current)) {
+        seen.add(current);
+        const row = db.get('SELECT label, default_child_id FROM messages WHERE id = @id', { id: current });
+        if (!row) return null;
+        if (!row.label) return current;
+        current = row.default_child_id;
+    }
+    return null;
+}
+
 /** Ordered siblings of a node (rows sharing its parent), including the node itself. */
 function getSiblingsSync(db, parentId, nodeId) {
     if (!parentId) {
@@ -1032,7 +1052,27 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
             setMetadataSync(entry.db, existingNode.id, metadataJson);
         } else if (firstId) {
             // Brand new chat: label its first message so the whole chain hangs below the label.
-            db_label(entry.db, firstId, chatName, metadataJson);
+            //
+            // Except when that message is already somebody else's entry point. Identity here is
+            // (parent, speaker, text), so a new chat that opens the way an existing one opens does not
+            // get a new row for it - it lands on the existing one. Writing the label straight onto that
+            // row silently renamed the older chat out of existence: its history stayed in the tree with
+            // nothing left pointing at it, no error anywhere. Reachable in ordinary use, not a corner
+            // case - two chats in the same group both seeded from the members' greetings open with
+            // byte-identical messages, and so does any imported chat that shares a prefix with one
+            // already stored.
+            //
+            // A label is only an entry point, and this chat's own path is what default_child_id now
+            // points at, so any unlabeled node along it resolves to exactly the same conversation. Take
+            // the first one. If the entire path is already claimed the chat genuinely has nowhere of its
+            // own to be named, and that is reported rather than resolved by taking someone else's name
+            // away - the same rule the JSONL migration already follows when two files land on one leaf.
+            const target = firstUnlabeledOnPathSync(entry.db, firstId);
+            if (target) {
+                db_label(entry.db, target, chatName, metadataJson);
+            } else {
+                console.error(color.red(`[message-tree] Could not name chat "${chatName}" for ${ownerId}: every node on its path is already another chat's entry point. The messages are stored; the name is not.`));
+            }
         }
     });
 
@@ -1269,6 +1309,28 @@ export async function getAlternatives(directories, nodeId, range = {}) {
     });
 
     return { selected: selected < 0 ? 0 : selected, total: siblings.length, alternatives };
+}
+
+/**
+ * The path from the owner's anchor down to `nodeId`, inclusive - by actual parentage, not by
+ * whichever child each fork currently has marked default. A bookmark can sit off the default path
+ * entirely, so this is how a client that already has part of a conversation loaded finds out what
+ * sits between its own position and the bookmark, without paying to re-fetch the shared prefix or the
+ * branch's whole leaf-ward continuation past the bookmark.
+ *
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} nodeId
+ * @returns {Promise<object[] | null>} messages root-to-node, oldest first; null if the node is unknown
+ */
+export async function getAncestorPath(directories, nodeId) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    const node = entry.db.get('SELECT id FROM messages WHERE id = @id', { id: nodeId });
+    if (!node) return null;
+
+    const rows = getPathSync(entry.db, nodeId).filter(r => !isAnchorRow(r));
+    return buildPathMessages(entry.db, rows, null);
 }
 
 /**
