@@ -1174,7 +1174,7 @@ describe('phase 3 extension: tag definitions (owner decision - tags.json removal
         expect(await metadataDb.getTagDefinitions(directories)).toEqual([{ id: 'tag2', name: 'Serious' }]);
     });
 
-    test('getTagsHash advances on a definitions save and on assign/unassign', async () => {
+    test('getTagsHash advances on a definitions save, but not on assign/unassign', async () => {
         const before = await metadataDb.getTagsHash(directories);
         expect(before).toBe(0);
 
@@ -1182,11 +1182,19 @@ describe('phase 3 extension: tag definitions (owner decision - tags.json removal
         const afterSave = await metadataDb.getTagsHash(directories);
         expect(afterSave).toBeGreaterThanOrEqual(before);
 
+        // assignEntityTag()/unassignEntityTag() deliberately do NOT touch getTagsHash() (see their own doc
+        // comments) - it hashes the `tags` (definitions) table, which an assignment never writes to, so it's
+        // provably unchanged either way. Regression coverage for the perf fix: a hot per-assign O(library-wide
+        // tag count) SELECT+hash used to run here for a value that could never have moved.
         await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
         await new Promise(resolve => setTimeout(resolve, 2));
         await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag1');
         const afterAssign = await metadataDb.getTagsHash(directories);
-        expect(afterAssign).toBeGreaterThanOrEqual(afterSave);
+        expect(afterAssign).toBe(afterSave);
+
+        await metadataDb.unassignEntityTag(directories, 'Bob.png', 'tag1');
+        const afterUnassign = await metadataDb.getTagsHash(directories);
+        expect(afterUnassign).toBe(afterSave);
     });
 });
 
