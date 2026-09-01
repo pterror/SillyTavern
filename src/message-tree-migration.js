@@ -15,7 +15,14 @@ import {
  * 1. Ensure the owner's synthetic anchor row exists. Every walk starts there, uniformly — a character
  *    with one JSONL file and a character with 1085 divergent openings produce the same shape, so no
  *    code downstream ever has to special-case "the first message".
- * 2. Read all .jsonl files in a deterministic (sorted) order.
+ * 2. Read the owner's .jsonl files in a deterministic (sorted) order. Which files those ARE is not
+ *    always a property of the directory: a character owns everything in `chats/<cardName>/`, so
+ *    scanning is exactly right, but every group chat of every group sits flat in the one shared
+ *    `groupChats/` directory and the group's own descriptor is the only thing that says which chat
+ *    ids belong to it. Scanning there would file every group's history under whichever owner
+ *    happened to migrate first, so callers in that position hand in an explicit file list instead
+ *    (see the `fileNames` parameter). Everything after this step is identical either way - the two
+ *    modes differ only in how the list is obtained, never in what is done with it.
  * 3. Walk each file's messages. Each message expands into its alternatives: a `swipes` array of length
  *    N becomes N sibling rows sharing a parent, with `swipe_info[i]`'s send_date/extra folded onto
  *    alternative i (once the array is gone there is nowhere else for that per-alternative data to
@@ -39,11 +46,15 @@ import {
 /**
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} ownerId Character avatar (without .png) or group ID
- * @param {string} chatDir Absolute path to the character's chat directory
+ * @param {string} chatDir Absolute path to the directory holding this owner's chat files
  * @param {boolean} isGroup
+ * @param {string[]|null} [fileNames] Explicit list of file names within `chatDir` to migrate, for an
+ * owner whose files can't be identified by scanning (groups - see step 2 of the algorithm above).
+ * Names only, no path segments; entries naming a file that doesn't exist are dropped, since a
+ * group's `chats` array outlives the files it points at. `null` means scan `chatDir` instead.
  * @returns {Promise<{ migrated: number, skipped: number, errors: string[] }>}
  */
-export async function migrateCharacterChats(directories, ownerId, chatDir, isGroup = false) {
+export async function migrateCharacterChats(directories, ownerId, chatDir, isGroup = false, fileNames = null) {
     const db = await getDbHandle(directories);
     if (!db) return { migrated: 0, skipped: 0, errors: ['No SQLite backend available'] };
 
@@ -54,7 +65,20 @@ export async function migrateCharacterChats(directories, ownerId, chatDir, isGro
         return { migrated: 0, skipped: 0, errors: [] };
     }
 
-    const allFiles = fs.readdirSync(chatDir).filter(f => f.endsWith('.jsonl')).sort();
+    // A scanned directory can only yield names that are already real entries in it. A caller-supplied
+    // list cannot: it comes from a group descriptor, which is user-editable JSON that names chat ids
+    // this process has never validated, and every name here goes on to be read from and renamed
+    // inside chatDir. So the supplied list is held to what the scan would have produced anyway - a
+    // bare .jsonl file name, no path segments, naming a file that actually exists - rather than
+    // trusted. A stale entry (a chat id whose file is already gone) is ordinary, not an error: a
+    // group's `chats` array outlives its files.
+    const allFiles = (Array.isArray(fileNames)
+        ? fileNames.filter(f => typeof f === 'string'
+            && f.endsWith('.jsonl')
+            && !f.includes('/') && !f.includes('\\') && path.basename(f) === f
+            && fs.existsSync(path.join(chatDir, f)))
+        : fs.readdirSync(chatDir).filter(f => f.endsWith('.jsonl'))
+    ).sort();
     if (allFiles.length === 0) {
         return { migrated: 0, skipped: 0, errors: [] };
     }

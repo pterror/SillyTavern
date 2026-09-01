@@ -208,6 +208,90 @@ describe('message deduplication during migration', () => {
         const rerun = await migration.migrateCharacterChats(directories, 'migrate-char', chatDir, false);
         expect(rerun).toEqual({ migrated: 0, skipped: 0, errors: [] });
     });
+
+    test('an explicit file list migrates only that owner\'s files out of a shared directory', async () => {
+        // Groups don't get a directory per owner the way characters do - every group chat of every
+        // group lives flat in one shared folder, and only the group's own descriptor says which chat
+        // ids are its. This is the case the scan cannot express: point it at the shared folder and
+        // both groups' histories land under whichever owner ran first.
+        const directories = makeDirectories();
+        const sharedDir = path.join(directories.root, 'group chats');
+        fs.mkdirSync(sharedDir, { recursive: true });
+
+        const writeChat = (name, texts, metadata = {}) => {
+            const lines = [{ chat_metadata: metadata }, ...texts.map((t, i) => makeMessage({ mes: t, sendDate: `d${i}` }))];
+            fs.writeFileSync(path.join(sharedDir, `${name}.jsonl`), lines.map(l => JSON.stringify(l)).join('\n') + '\n');
+        };
+
+        writeChat('chat-alpha-1', ['a0', 'a1']);
+        writeChat('chat-alpha-2', ['a0', 'a2']);
+        writeChat('chat-beta-1', ['b0']);
+
+        const alpha = await migration.migrateCharacterChats(
+            directories, 'group-alpha', sharedDir, true,
+            // A stale entry (no such file) and a traversal attempt are both dropped without failing
+            // the run - the descriptor this list comes from is user-editable and outlives its files.
+            ['chat-alpha-1.jsonl', 'chat-alpha-2.jsonl', 'chat-deleted-long-ago.jsonl', '../escape.jsonl'],
+        );
+        expect(alpha.errors).toEqual([]);
+        expect(alpha.migrated).toBe(2);
+
+        // Beta's file was never touched by alpha's run - still sitting there unmigrated.
+        expect(fs.existsSync(path.join(sharedDir, 'chat-beta-1.jsonl'))).toBe(true);
+        expect(fs.existsSync(path.join(sharedDir, 'chat-alpha-1.jsonl.pre-migration'))).toBe(true);
+
+        const beta = await migration.migrateCharacterChats(
+            directories, 'group-beta', sharedDir, true, ['chat-beta-1.jsonl'],
+        );
+        expect(beta.migrated).toBe(1);
+        expect(fs.existsSync(path.join(sharedDir, 'chat-beta-1.jsonl.pre-migration'))).toBe(true);
+
+        // Each group owns exactly its own chats, and alpha's shared 'a0' prefix still dedups to one row.
+        const alphaBranches = await treeDb.listBranches(directories, 'group-alpha');
+        expect(alphaBranches.map(b => b.name).sort()).toEqual(['chat-alpha-1', 'chat-alpha-2']);
+        expect(alphaBranches.every(b => b.is_group === 1)).toBe(true);
+
+        const betaBranches = await treeDb.listBranches(directories, 'group-beta');
+        expect(betaBranches.map(b => b.name)).toEqual(['chat-beta-1']);
+
+        const alpha1 = await treeDb.loadBranch(directories, 'group-alpha', 'chat-alpha-1');
+        const alpha2 = await treeDb.loadBranch(directories, 'group-alpha', 'chat-alpha-2');
+        expect(alpha1.messages.map(m => m.mes)).toEqual(['a0', 'a1']);
+        expect(alpha2.messages.map(m => m.mes)).toEqual(['a0', 'a2']);
+        expect(alpha1.messages[0].node_id).toBe(alpha2.messages[0].node_id);
+        // The is-a-group marker is storage bookkeeping, not chat metadata the client should see.
+        expect(alpha1.metadata.__is_group).toBeUndefined();
+
+        // Beta's 'b0' is a different owner's row even though nothing about the text differs.
+        const beta1 = await treeDb.loadBranch(directories, 'group-beta', 'chat-beta-1');
+        expect(beta1.messages.map(m => m.mes)).toEqual(['b0']);
+
+        // Same idempotency gate as the scan path: a second touch of an already-migrated owner is a no-op.
+        const rerun = await migration.migrateCharacterChats(
+            directories, 'group-alpha', sharedDir, true, ['chat-alpha-1.jsonl', 'chat-alpha-2.jsonl'],
+        );
+        expect(rerun).toEqual({ migrated: 0, skipped: 0, errors: [] });
+    });
+
+    test('an owner with no surviving files is left untouched, not marked migrated', async () => {
+        // The state a brand-new group is in: a descriptor with chat ids whose files don't exist yet.
+        // Nothing to migrate must stay "nothing has happened here", so the first real save still
+        // creates the owner's rows normally rather than finding a half-built owner.
+        const directories = makeDirectories();
+        const sharedDir = path.join(directories.root, 'group chats');
+        fs.mkdirSync(sharedDir, { recursive: true });
+
+        const result = await migration.migrateCharacterChats(
+            directories, 'group-empty', sharedDir, true, ['never-written.jsonl'],
+        );
+        expect(result).toEqual({ migrated: 0, skipped: 0, errors: [] });
+        expect(await treeDb.hasSavedChats(directories, 'group-empty')).toBe(false);
+
+        const header = { chat_metadata: {} };
+        await treeDb.saveChatToTree(directories, 'group-empty', 'first-chat', [header, makeMessage({ mes: 'hello', sendDate: 'd0' })], true);
+        const loaded = await treeDb.loadBranch(directories, 'group-empty', 'first-chat');
+        expect(loaded.messages.map(m => m.mes)).toEqual(['hello']);
+    });
 });
 
 describe('labeling nodes', () => {
