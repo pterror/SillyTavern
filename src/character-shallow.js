@@ -78,6 +78,73 @@ export function calculateGroupChatStats(groupChatsDir, chatIds) {
 }
 
 /**
+ * Answers "which group owns this chat, and what else does it own" - the (owner id, file list) pair that every
+ * group-side tree operation needs and that no group route is actually handed.
+ *
+ * A character route receives its owner directly (`avatar_url`) and the owner's chats are simply the contents of
+ * a directory named after it. Neither holds for groups: the routes receive `group.chat_id` (a *chat's* id, never
+ * the group's own), and all chats of all groups live flat in one shared `groupChats` directory, so the only
+ * statement anywhere of which chat ids belong to which group is the group descriptor's own `chats` array. Both
+ * halves of the answer come from the same file, which is why this returns them together rather than making
+ * callers re-read it.
+ *
+ * Two ways in, same answer:
+ * - `groupId` known (our own client always knows it): one direct read of that descriptor.
+ * - `groupId` absent (the stock API shape, which carries no group id at all): scan `groupsDir` for the descriptor
+ *   whose `chats` contains `chatId`. Affordable here in a way it would not be for characters - groups are a
+ *   user-curated set, nowhere near the scale the residency redesign guards against - and this is the lookup
+ *   bumpGroupChatStats() has always done on every single group save anyway.
+ *
+ * A supplied `groupId` is checked for existence but NOT for membership of `chatId`: a chat that was just created
+ * client-side is legitimately not in the descriptor yet, and refusing it would break the very first save of every
+ * new group chat.
+ *
+ * @param {string} groupsDir `directories.groups`
+ * @param {object} params
+ * @param {string} [params.chatId] A chat id owned by the group, used for the scan when `groupId` is absent
+ * @param {string} [params.groupId] The group's own persistent id, when the caller knows it
+ * @returns {{ id: string, chats: string[] } | null} `null` when no group claims this chat (also covers an
+ * unreadable/missing groups directory). A null is emphatically not "assume it's fine" - a group chat whose owner
+ * cannot be established has no addressable place in the tree, and callers must surface that rather than writing
+ * it somewhere nothing will read again.
+ */
+export function resolveGroupOwner(groupsDir, { chatId, groupId } = {}) {
+    if (!fs.existsSync(groupsDir)) return null;
+
+    const readDescriptor = (filePath) => {
+        try {
+            const group = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+            if (typeof group?.id !== 'string') return null;
+            return { id: group.id, chats: Array.isArray(group.chats) ? group.chats : [] };
+        } catch {
+            // An unreadable/corrupt descriptor is skipped, the same tolerance getGroupsData() and
+            // bootstrapGroupsIfNeeded() already have for this exact directory.
+            return null;
+        }
+    };
+
+    if (typeof groupId === 'string' && groupId) {
+        // path.basename pins the read inside groupsDir - the id reaches here from a request body.
+        const fileName = `${path.basename(groupId)}.json`;
+        const filePath = path.join(groupsDir, fileName);
+        if (fs.existsSync(filePath)) {
+            const resolved = readDescriptor(filePath);
+            if (resolved) return resolved;
+        }
+        // A group id that names nothing readable falls through to the scan rather than failing outright:
+        // the chat id may still identify its owner, and answering correctly beats answering fast.
+    }
+
+    if (typeof chatId !== 'string' || !chatId) return null;
+
+    for (const file of fs.readdirSync(groupsDir).filter(f => f.endsWith('.json'))) {
+        const resolved = readDescriptor(path.join(groupsDir, file));
+        if (resolved?.chats.includes(chatId)) return resolved;
+    }
+    return null;
+}
+
+/**
  * Calculate the total string length of the data object.
  * @param {object} data Character `data` object (Spec V2)
  * @returns {number} Total string length across every value in `data`

@@ -44,6 +44,48 @@ import {
  */
 
 /**
+ * The precondition every chat route runs before touching the tree: if this owner's chats are still
+ * files, move them in, once, now.
+ *
+ * The shape here is the entire point, so it is worth being exact about what this is NOT. It is not a
+ * question the caller asks and then chooses a code path from. `ensureTreeMigrated()` was that, and it
+ * was deleted for it: asking "is this migrated?" per request means two live storage paths forever,
+ * the file one quietly accruing features and bugs of its own, and every route carrying a branch that
+ * is wrong in one of its two arms. Callers of this run it unconditionally, ignore what it returns,
+ * and then have exactly one path - the tree. Nothing downstream may branch on the result, and this
+ * returns `void` so that nothing can.
+ *
+ * Cheap enough to sit on a hot path: for an owner that has already been through it, this is one
+ * indexed `LIMIT 1` lookup inside migrateCharacterChats() and nothing else - no directory read, no
+ * file I/O.
+ *
+ * Failures are deliberately NOT swallowed. If a migration dies partway, its transaction rolls back
+ * and no file is renamed, so the owner is exactly where it started - but only if the request that
+ * triggered it stops there too. Letting the caller carry on and write to the tree anyway is the bad
+ * outcome: that write labels a node, the owner now looks migrated to the idempotency gate, and the
+ * chats still sitting in JSONL are stranded where nothing will ever look for them again. So this
+ * throws, the request fails, and the user retries - rather than half the group's history quietly
+ * ceasing to exist.
+ *
+ * Both owner kinds use this. Characters are not exempt: the bulk migration that makes /save's
+ * "tree state is assumed" comment true was a one-off run against one install's data, and nothing
+ * committed would catch a character that was never part of it - a fresh install, a card restored
+ * from a backup, anything that slipped through.
+ *
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {object} params
+ * @param {string} params.ownerId Character avatar (without .png), or a group's own persistent id
+ * @param {string} params.chatDir Directory holding this owner's chat files
+ * @param {boolean} [params.isGroup]
+ * @param {string[]|null} [params.fileNames] See migrateCharacterChats() - required for groups, whose
+ * files cannot be identified by scanning `chatDir`
+ * @returns {Promise<void>}
+ */
+export async function migrateOwnerOnTouch(directories, { ownerId, chatDir, isGroup = false, fileNames = null }) {
+    await migrateCharacterChats(directories, ownerId, chatDir, isGroup, fileNames);
+}
+
+/**
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} ownerId Character avatar (without .png) or group ID
  * @param {string} chatDir Absolute path to the directory holding this owner's chat files
