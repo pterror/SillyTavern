@@ -10,7 +10,7 @@ import { color, getConfigValue, mapWithConcurrency, parseCreateDateToEpochMs } f
 import extract from 'png-chunks-extract';
 import { parse as parseCharacterCard, readCharaChunkPristineFromChunks, computeAvatarIdentityHashFromChunks } from './character-card-parser.js';
 import { getCharaCardV2, computeContentIdentityHash } from './character-card-normalize.js';
-import { calculateChatSize, calculateDataSize, calculateGroupChatStats, toShallow } from './character-shallow.js';
+import { calculateChatSize, calculateDataSize, calculateGroupChatStats, resolveGroupOwner, toShallow } from './character-shallow.js';
 import { readTagsData } from './endpoints/tags-data.js';
 import { getSqliteEngine } from './endpoints/sqlite-engine.js';
 import { TAGS_FILE } from './constants.js';
@@ -3256,44 +3256,6 @@ export async function upsertGroupRow(directories, id, name, { fav } = {}) {
 }
 
 /**
- * Finds which group owns a given chat id, by scanning `directories.groups` for a group whose `chats` array
- * contains it. Needed because chats.js's `/group/save` route only ever receives the *chat's* own id
- * (group-chats.js's client-side saveGroupChat() posts `group.chat_id`, which is not the group's own persistent
- * id - a group's active chat can be renamed/switched independently of the group id itself), so bumpGroupChatStats()
- * below has no group id handed to it directly and has to resolve one.
- *
- * This IS a groups-directory-wide read, unlike everything else this extension adds for groups - deliberately, and
- * safely: there is currently no chat-id -> group-id index anywhere (SQL or otherwise) to look this up in O(1),
- * and building one is out of this extension's scope given there's no route that supplies a group id to key it
- * from. The tradeoff doesn't face the scale this design otherwise guards against: characters are the
- * 300k-then-10M target (design doc §1); groups are a user-curated set of characters, and this module's own header
- * already scopes the whole `groups` table as "minimal... aren't part of the character residency redesign
- * otherwise" - realistically nowhere near enough groups exist for a per-save directory scan to matter, and this
- * only runs once per chat save, never on a per-request list-render path (the thing this whole design exists to
- * eliminate for characters).
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} chatId
- * @returns {{ id: string, chats: string[] } | null} The owning group's id and chat-id list, or `null` if no
- * group's `chats` array contains this chat id (also covers an unreadable/missing groups directory).
- */
-function resolveGroupForChat(directories, chatId) {
-    if (!fs.existsSync(directories.groups)) return null;
-    const files = fs.readdirSync(directories.groups).filter(f => f.endsWith('.json'));
-    for (const file of files) {
-        try {
-            const group = JSON.parse(fs.readFileSync(path.join(directories.groups, file), 'utf8'));
-            if (typeof group?.id === 'string' && Array.isArray(group.chats) && group.chats.includes(chatId)) {
-                return { id: group.id, chats: group.chats };
-            }
-        } catch {
-            // Skip an unreadable/corrupt group file - same tolerance bootstrapGroupsIfNeeded() already has for
-            // this exact directory.
-        }
-    }
-    return null;
-}
-
-/**
  * Write-path hook for chats.js's /save route - bumps date_last_chat on every individual-character
  * chat save, the same way bumpGroupChatStats() does for groups. Without this, date_last_chat is
  * only refreshed when the character card itself is re-saved (via calculateChatSize() inside
@@ -3314,9 +3276,17 @@ export async function bumpCharacterDateLastChat(directories, avatar) {
  * Write-path hook for chats.js's `/group/save` route, called with the just-saved chat's own id after the write
  * succeeds - keeps `date_last_chat`/`chat_size` fresh the same way character writes keep those columns fresh for
  * characters (upsertCharacterFromWrite()'s own calculateChatSize() call). Resolves the owning group via
- * resolveGroupForChat() (see that function's own doc comment for why a chat id, not a group id, is what this
- * hook actually receives), then stats only that group's own chat files (calculateGroupChatStats(),
+ * resolveGroupOwner() (see that function's own doc comment for why a chat id, not a group id, is what this
+ * hook has historically received), then stats only that group's own chat files (calculateGroupChatStats(),
  * character-shallow.js) - never the whole `groupChats` directory.
+ *
+ * Statting files stops being able to answer the question once a group's chats live in the tree: the files are
+ * renamed away, every stat misses, and both columns collapse to 0 - which reads as "never chatted with", sorting
+ * a group's whole history to the bottom of every recency list. So a caller that already knows the answer says
+ * so via `stats`, and this uses it verbatim instead of re-deriving it from files that are not the source of
+ * truth anymore. That is a fact the caller holds, not a question about storage: a save just happened, so
+ * date_last_chat is now, and the chat's size is the size of the payload it was just handed. Nothing here asks
+ * whether the group is migrated, and nothing branches on it.
  *
  * A plain UPDATE, not an upsert - by the time a chat is ever saved for a group, /create's upsertGroupRow() call
  * has necessarily already inserted the row (a group chat can't exist before its group does), so there is nothing
@@ -3325,17 +3295,22 @@ export async function bumpCharacterDateLastChat(directories, avatar) {
  * affects zero rows rather than erroring - the next bootstrap/edit pass will populate it correctly instead.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} chatId The id of the chat that was just saved (NOT the group's own id - see
- * resolveGroupForChat()'s doc comment).
+ * resolveGroupOwner()'s doc comment).
+ * @param {object} [options]
+ * @param {string} [options.groupId] The owning group's id, when the caller already knows it - turns the
+ * resolution into one direct descriptor read instead of a directory scan.
+ * @param {{ chatSize: number, dateLastChat: number }} [options.stats] Values the caller already knows, used
+ * verbatim in place of statting the group's chat files.
  * @returns {Promise<void>}
  */
-export async function bumpGroupChatStats(directories, chatId) {
+export async function bumpGroupChatStats(directories, chatId, { groupId, stats } = {}) {
     const entry = await getEntry(directories);
     if (!entry) return;
 
-    const group = resolveGroupForChat(directories, chatId);
+    const group = resolveGroupOwner(directories.groups, { chatId, groupId });
     if (!group) return; // Not a group chat this store knows about - nothing to bump.
 
-    const { chatSize, dateLastChat } = calculateGroupChatStats(directories.groupChats, group.chats);
+    const { chatSize, dateLastChat } = stats ?? calculateGroupChatStats(directories.groupChats, group.chats);
     entry.db.run('UPDATE groups SET date_last_chat = @dateLastChat, chat_size = @chatSize WHERE id = @id', { dateLastChat, chatSize, id: group.id });
 }
 
