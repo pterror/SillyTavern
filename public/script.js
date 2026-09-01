@@ -9039,9 +9039,21 @@ export function ensureSwipes(message, mesId = undefined) {
     //
     // isMessageSwipeable() runs this on the way past, so simply asking whether the arrows should be
     // shown was enough to do it.
+    //
+    // A node_id belongs to exactly one slot, never two. Overswiping opens a genuinely new, blank slot
+    // and moves swipe_id onto it - the message's OWN row is still sitting in whatever slot it was
+    // always in, still correctly carrying its real node_id. The instant something (a streamed chunk,
+    // syncMesToSwipe()) writes real text into that new slot, it stops being blank, and without this
+    // guard the check above would stamp it with the SAME node_id the original slot already has - one
+    // row, claimed by two slots. The save path then reads the new slot as "already has a row" and
+    // never creates the alternative; it falls through to editing the OLD row with the NEW text
+    // instead, silently overwriting it. Skipping the stamp whenever some other slot already carries
+    // this node_id is what keeps a row pointing at exactly the slot it actually is.
     const selectedSlot = updates.swipe_id ?? message.swipe_id ?? 0;
     const slotIsBlank = typeof swipes[selectedSlot] === 'string' && swipes[selectedSlot].length === 0;
-    if (message.node_id && !slotIsBlank && swipeInfo[selectedSlot] && !swipeInfo[selectedSlot].node_id) {
+    const nodeIdClaimedElsewhere = message.node_id
+        && swipeInfo.some((info, i) => i !== selectedSlot && info?.node_id === message.node_id);
+    if (message.node_id && !slotIsBlank && !nodeIdClaimedElsewhere && swipeInfo[selectedSlot] && !swipeInfo[selectedSlot].node_id) {
         swipeInfo[selectedSlot] = { ...swipeInfo[selectedSlot], node_id: message.node_id };
         swipeInfoDirty = true;
         updated = true;
@@ -11203,6 +11215,19 @@ export async function getChat({ isNewChat = false } = {}) {
             chat_metadata.integrity = uuidv4();
         }
         await getChatResult();
+
+        // printMessages() (inside getChatResult()) just ran ensureSwipes() over every message on the
+        // way past - synthesising swipes/swipe_id/swipe_info for whichever ones arrived without them
+        // (any message with only one alternative, since the loader only sends that shape for forks
+        // wider than one). Each synthesis replaces the object via updateMessage(), so the snapshot
+        // taken before printMessages() ran no longer matches: a message that got nothing but its
+        // missing shape filled in now differs from its own snapshot by exactly those keys, and reads
+        // as edited. Re-snapshotting now, after the fill-in has already happened, is what keeps
+        // merely opening a chat from queueing an edit for every single-alternative message in it on
+        // the next save.
+        if (chat_metadata?._tree_stored) {
+            _snapshotMessages();
+        }
 
         eventSource.emit(event_types.CHAT_LOADED, { detail: { character: getCurrentCharacter() } });
 
@@ -13533,7 +13558,53 @@ export async function deleteSwipe(swipeId = null, messageId = chat.length - 1) {
     return newSwipeId;
 }
 
+/**
+ * Persists chat_metadata alone, without touching a single message - the metadata-only counterpart to
+ * saveChat()'s tree path. A metadata change (locking a persona, setting a note) says nothing about
+ * what happened to any message, so routing it through saveChatConditional() -> _saveTreeChat() dragged
+ * the entire per-message diff along for a write that never touched `chat` at all: opening a chat and
+ * locking a persona to it, having typed nothing, posted an edit for every message ensureSwipes() had
+ * to fill shape into on the way past.
+ *
+ * Resolves the same target node _saveTreeChat() would (the character's current position, falling back
+ * to the opening) and posts straight to /api/chats/metadata - duplicated rather than shared, because
+ * sharing it would mean threading a "skip the messages" flag through the one function whose whole job
+ * is reconciling `chat` against the tree.
+ *
+ * Falls back to the whole-chat save for anything this can't address on its own: a group chat, a chat
+ * that isn't tree-backed, nothing persisted yet to hang metadata off of, or the direct write failing -
+ * a brand-new chat's first save is genuinely a whole-array operation regardless of what triggered it,
+ * and the old behaviour is still the correct one to fall back on rather than silently dropping the
+ * metadata change.
+ */
 export async function saveMetadata() {
+    const metadata = chat_metadata;
+    const avatar = getCurrentCharacter()?.avatar;
+    if (!selected_group && avatar && metadata?._tree_stored) {
+        const position = getCurrentCharacter()?.chat;
+        const opening = chat[0]?.node_id;
+        const target = chat.some(m => m.node_id === position) ? position
+            : (isStoredNodeId(opening) ? opening : null);
+        if (target) {
+            try {
+                const response = await fetch('/api/chats/metadata', {
+                    method: 'POST',
+                    headers: getRequestHeaders(),
+                    body: JSON.stringify({ avatar_url: avatar, file_name: target, metadata }),
+                });
+                if (response.ok) {
+                    const result = await response.json().catch(() => ({}));
+                    if (typeof result.integrity === 'string') {
+                        chat_metadata.integrity = result.integrity;
+                    }
+                    return;
+                }
+                console.warn(`[saveMetadata] /api/chats/metadata responded ${response.status}, falling back to the whole-chat save`);
+            } catch (error) {
+                console.warn('[saveMetadata] Failed to save metadata directly, falling back to the whole-chat save:', error);
+            }
+        }
+    }
     return await saveChatConditional();
 }
 
