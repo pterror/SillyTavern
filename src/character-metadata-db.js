@@ -5,6 +5,7 @@ import { promises as fsPromises } from 'node:fs';
 import path from 'node:path';
 
 import _ from 'lodash';
+import sanitize from 'sanitize-filename';
 
 import { color, getConfigValue, mapWithConcurrency, parseCreateDateToEpochMs } from './util.js';
 import extract from 'png-chunks-extract';
@@ -19,7 +20,7 @@ import { TAGS_FILE } from './constants.js';
 // duplicated so the server's seeded random-sort ordering (design doc §5.3, decision 8/13) can never drift from
 // the client comparator (public/scripts/random-sort.js's compareByRandomSeed()) that decides the *same* ordering
 // for whatever page hasn't round-tripped to the server yet.
-import { getStringHash, DEFAULT_DIGEST_BUCKET_COUNT, bucketOf, contentHashOf, emptyDigest, combineDigest, characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash } from '../public/scripts/hash-utils.js';
+import { getStringHash, DEFAULT_DIGEST_BUCKET_COUNT, bucketOf, contentHashOf, emptyDigest, combineDigest, characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash, groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash } from '../public/scripts/hash-utils.js';
 import { runDigestWorkerTask } from './character-metadata-digest-dispatch.js';
 
 /** Fires a 'change' event whenever a row is written to the `changes` table, so callers (e.g. the SSE route in
@@ -880,6 +881,61 @@ function migrateGroupsColumns(db, directories) {
 }
 
 /**
+ * Adds `digest_fav`/`digest_tag_ids`/`digest_content` to an existing `groups` table that predates them (2026-09,
+ * extending /query's hash-only mode to `includeGroups: true` requests - see groupFavFingerprint()/
+ * groupTagIdsFingerprint()/groupContentFingerprint(), hash-utils.js, for what each covers).
+ *
+ * Deliberately NOT the same "ALTER then leave NULL, populate lazily on next write" shape
+ * migrateDigestColumns() (characters' own version, just above migrateGroupsColumns()) uses - that shape is
+ * exactly what produced the finding this comment is reacting to: spot-checking the live characters table found
+ * ~99.6% of rows still NULL (a long-lived library whose rows were never individually rewritten since those
+ * columns were added) and, worse, some non-NULL rows actually disagreeing with a fresh recompute. Groups are
+ * "far fewer than characters" (design doc's own words) - cheap enough to backfill for real, right here, rather
+ * than accept the same lazy-and-drifting shape for a second table. A backfill failure for one group (unreadable/
+ * corrupt JSON file, e.g.) leaves that row's digests NULL, which hash-mode's own read path already treats as "no
+ * trustworthy stored digest" (recomputes live) - see the /query route's group hash-row builder.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {import('./users.js').UserDirectoryList} directories
+ */
+function migrateGroupDigestColumns(db, directories) {
+    const columns = db.all('PRAGMA table_info(groups)');
+    const columnNames = new Set(columns.map(c => c.name));
+    const isNewColumn = !columnNames.has('digest_fav');
+    if (!columnNames.has('digest_fav')) db.exec('ALTER TABLE groups ADD COLUMN digest_fav INTEGER');
+    if (!columnNames.has('digest_tag_ids')) db.exec('ALTER TABLE groups ADD COLUMN digest_tag_ids INTEGER');
+    if (!columnNames.has('digest_content')) db.exec('ALTER TABLE groups ADD COLUMN digest_content INTEGER');
+
+    // Already backfilled by a previous run of this function (columns existed already) - nothing left to do.
+    if (!isNewColumn) return;
+
+    const existingIds = db.all('SELECT id FROM groups').map(r => r.id);
+    if (existingIds.length === 0) return;
+
+    db.transaction(() => {
+        for (const id of existingIds) {
+            try {
+                const filePath = path.join(directories.groups, `${id}.json`);
+                const raw = fs.readFileSync(filePath, 'utf8');
+                const group = JSON.parse(raw);
+                const tagIds = db.all('SELECT tag_id FROM group_tags WHERE group_id = @id', { id }).map(r => r.tag_id);
+                const fingerprintSource = { ...group, tag_ids: tagIds };
+                db.run(
+                    'UPDATE groups SET digest_fav = @favHash, digest_tag_ids = @tagIdsHash, digest_content = @contentHash WHERE id = @id',
+                    {
+                        id,
+                        favHash: groupDigestFavHash(fingerprintSource),
+                        tagIdsHash: groupDigestTagIdsHash(fingerprintSource),
+                        contentHash: groupDigestContentHash(fingerprintSource),
+                    },
+                );
+            } catch (err) {
+                console.error(`[character-metadata] Group digest backfill failed for ${id}, leaving digests NULL (hash-mode falls back to computing live):`, err.message);
+            }
+        }
+    });
+}
+
+/**
  * Adds `fields` to an existing `changes` table that predates it - same ALTER-if-missing shape as
  * migrateContentHashColumn() above. Nullable TEXT column storing a JSON array of field names (e.g.
  * '["fav"]', '["tag_ids"]') when only specific fields changed, or NULL when the whole record changed
@@ -987,6 +1043,7 @@ async function getEntry(directories) {
     migrateDigestColumns(db);
     migrateAllowGlobalStylesColumn(db);
     migrateGroupsColumns(db, directories);
+    migrateGroupDigestColumns(db, directories);
     migrateFavSortIndex(db);
     // Design doc §5.3, decisions 8/13: random-sort order is a per-query `ORDER BY <hash>(id, seed)`, never a
     // materialized column (a materialized seeded column is O(users × rerolls) to maintain - see the decision's
@@ -1397,6 +1454,32 @@ export async function getCharacterFavsByIds(directories, ids) {
         const batch = ids.slice(i, i + FAV_LOOKUP_BATCH_SIZE);
         const placeholders = batch.map(() => '?').join(',');
         const rows = entry.db.all(`SELECT id, fav FROM characters WHERE id IN (${placeholders})`, batch);
+        for (const row of rows) {
+            result[row.id] = !!row.fav;
+        }
+    }
+    return result;
+}
+
+/**
+ * Group equivalent of getCharacterFavsByIds() above - db-authoritative `fav` for a known set of group ids, one
+ * batched query. Used by `/api/groups/batch`'s field-filtered mode (2026-09, /query hash-mode for groups) to
+ * stamp `fav` onto the file-read group object, same "db wins, file is stale for this one field" rule
+ * upsertGroupRow()'s own header already establishes.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string[]} ids
+ * @returns {Promise<{[id: string]: boolean}>}
+ */
+export async function getGroupFavsByIds(directories, ids) {
+    const entry = await getEntry(directories);
+    if (!entry || !Array.isArray(ids) || ids.length === 0) return {};
+
+    /** @type {{[id: string]: boolean}} */
+    const result = {};
+    for (let i = 0; i < ids.length; i += FAV_LOOKUP_BATCH_SIZE) {
+        const batch = ids.slice(i, i + FAV_LOOKUP_BATCH_SIZE);
+        const placeholders = batch.map(() => '?').join(',');
+        const rows = entry.db.all(`SELECT id, fav FROM groups WHERE id IN (${placeholders})`, batch);
         for (const row of rows) {
             result[row.id] = !!row.fav;
         }
@@ -3103,6 +3186,10 @@ export async function assignEntityTag(directories, id, tagId) {
         // it means giving groups their own change-tracking the way characters already have, not something this
         // single-row write can paper over by calling a hash function that can't see group_tags either way.
         entry.db.run('INSERT OR IGNORE INTO group_tags (group_id, tag_id) VALUES (@id, @tagId)', { id, tagId });
+        // digest_tag_ids hook (2026-09, /query hash-mode for groups) - mirrors the characters branch's own
+        // digest_tag_ids update just above, minus the shallow_json/change-log bookkeeping groups don't have.
+        const currentTagIds = entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id', { id }).map(r => r.tag_id);
+        entry.db.run('UPDATE groups SET digest_tag_ids = @digestTagIds WHERE id = @id', { id, digestTagIds: groupDigestTagIdsHash({ tag_ids: currentTagIds }) });
         return 'ok';
     }
     return 'not_found';
@@ -3137,6 +3224,13 @@ export async function unassignEntityTag(directories, id, tagId) {
 
     entry.db.run('DELETE FROM character_tags WHERE character_id = @id AND tag_id = @tagId', { id, tagId });
     entry.db.run('DELETE FROM group_tags WHERE group_id = @id AND tag_id = @tagId', { id, tagId });
+    // digest_tag_ids hook for groups (2026-09, /query hash-mode) - unconditional like the deletes just above
+    // (an UPDATE against a nonexistent group id is simply a no-op, same "cheaper than resolving which table
+    // first" reasoning this function's own header already gives for running both deletes unconditionally).
+    entry.db.run(
+        'UPDATE groups SET digest_tag_ids = @digestTagIds WHERE id = @id',
+        { id, digestTagIds: groupDigestTagIdsHash({ tag_ids: entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id', { id }).map(r => r.tag_id) }) },
+    );
     // Update shallow_json.tag_ids for characters (groups don't have shallow_json/change entries).
     //
     // No updateTagsHashSync() here either, same reasoning as assignEntityTag()'s own comment above: an
@@ -3189,12 +3283,18 @@ export async function getAllTagUsage(directories) {
 }
 
 const GROUP_UPSERT_SQL = `
-    INSERT INTO groups (id, name, name_fold, fav, date_added, date_last_chat, chat_size)
-    VALUES (@id, @name, @nameFold, @fav, @dateAdded, @dateLastChat, @chatSize)
+    INSERT INTO groups (id, name, name_fold, fav, date_added, date_last_chat, chat_size, digest_fav, digest_content)
+    VALUES (@id, @name, @nameFold, @fav, @dateAdded, @dateLastChat, @chatSize, @digestFav, @digestContent)
     ON CONFLICT(id) DO UPDATE SET
         name = excluded.name,
         name_fold = excluded.name_fold,
-        fav = excluded.fav
+        fav = excluded.fav,
+        digest_fav = excluded.digest_fav,
+        digest_content = excluded.digest_content
+    -- digest_tag_ids is deliberately absent here too, same reasoning characters' own UPSERT_SQL already has for
+    -- the exact same column: it's owned by assignEntityTag()/unassignEntityTag()'s own group branch, not by this
+    -- upsert, so a /create or /edit request (which never carries tag_ids in its body) can't clobber it back to
+    -- whatever this call's candidate happens to be.
     -- date_added/date_last_chat/chat_size are deliberately absent from this SET list, for two different reasons:
     --   - date_added is write-once, exactly mirroring characters' UPSERT_SQL (see this module's header on
     --     "date_added IS RECORDED ONCE") - only a genuine first INSERT's VALUES candidate is ever used.
@@ -3215,11 +3315,14 @@ const GROUP_UPSERT_SQL = `
  * @param {string} row.id
  * @param {string} row.name
  * @param {boolean|undefined} row.fav
+ * @param {object|undefined} [row.group] The full group object, feeding digest_content only
+ * (groupContentFingerprint(), hash-utils.js) - none of its fields besides `name`/`fav` are stored in their own
+ * `groups` row column; they live in the group's own JSON file, same as they always have.
  * @param {number} row.dateAdded Only used if this is a genuine insert - see GROUP_UPSERT_SQL's own comment.
  * @param {number} row.dateLastChat Likewise.
  * @param {number} row.chatSize Likewise.
  */
-function upsertGroupRowSync(db, { id, name, fav, dateAdded, dateLastChat, chatSize }) {
+function upsertGroupRowSync(db, { id, name, fav, group, dateAdded, dateLastChat, chatSize }) {
     db.run(GROUP_UPSERT_SQL, {
         id,
         name: name ?? '',
@@ -3228,6 +3331,13 @@ function upsertGroupRowSync(db, { id, name, fav, dateAdded, dateLastChat, chatSi
         dateAdded,
         dateLastChat,
         chatSize,
+        digestFav: groupDigestFavHash({ fav: !!fav }),
+        // groupContentFingerprint() (hash-utils.js) strips id/fav/tag_ids itself - passing the whole `group`
+        // object through (not a hand-picked field subset) is what makes this cover every field a group object
+        // carries, current or future, without this call site needing to know their names. See that function's
+        // own doc comment for why a narrower, list-display-only fingerprint (the first version of this) was
+        // wrong for groups specifically.
+        digestContent: groupDigestContentHash(group ?? {}),
     });
 }
 
@@ -3244,15 +3354,19 @@ function upsertGroupRowSync(db, { id, name, fav, dateAdded, dateLastChat, chatSi
  * @param {string} name
  * @param {object} [extra]
  * @param {boolean} [extra.fav]
+ * @param {object} [extra.group] The full group object just written (2026-09, /query hash-mode for groups) - feeds
+ * digest_content (groupContentFingerprint() strips id/fav/tag_ids itself, so the whole object is safe to pass
+ * through unfiltered). groups.js's /create and /edit both already have this in hand (`groupMetadata`/
+ * `request.body`), so it's threaded through rather than re-read from the just-written file.
  * @returns {Promise<void>}
  */
-export async function upsertGroupRow(directories, id, name, { fav } = {}) {
+export async function upsertGroupRow(directories, id, name, { fav, group } = {}) {
     const entry = await getEntry(directories);
     if (!entry) return;
     // dateAdded/dateLastChat/dateLastChat/chatSize candidates only matter on a genuine first insert (see
     // GROUP_UPSERT_SQL) - Date.now()/0/0 are the right "just discovered this id" defaults, matching how
     // upsertCharacterFromWrite() treats any non-bootstrap discovery.
-    upsertGroupRowSync(entry.db, { id, name, fav, dateAdded: Date.now(), dateLastChat: 0, chatSize: 0 });
+    upsertGroupRowSync(entry.db, { id, name, fav, group, dateAdded: Date.now(), dateLastChat: 0, chatSize: 0 });
 }
 
 /**
@@ -3374,6 +3488,7 @@ export async function bootstrapGroupsIfNeeded(directories) {
                             id: group.id,
                             name: group.name,
                             fav: !!group.fav,
+                            group,
                             dateAdded: Math.round(stat.birthtimeMs),
                             dateLastChat,
                             chatSize,
@@ -4482,13 +4597,18 @@ export async function queryEntities(directories, params = {}) {
         sortField, sortOrder, seed,
         offset, limit, handle,
         wantRows = true, wantTotal = true,
+        // Hash-only mode for includeGroups requests (2026-09, closing the characters-only gap the /query route's
+        // wantHashes flag started with) - see toHashRowFromMerged() below for the row shape and the group-side
+        // trust decision (unlike characters, group digests ARE trusted when non-NULL here - see that function's
+        // own comment for why that's a verified, not pattern-copied, call).
+        wantHashes = false,
     } = params;
 
     const seqRow = entry.db.get('SELECT COALESCE(MAX(seq), 0) as seq FROM changes');
     const seq = Number(seqRow?.seq ?? 0);
 
     if (Array.isArray(ids) && ids.length === 0) {
-        return { rows: wantRows ? [] : undefined, total: wantTotal ? 0 : undefined, seq };
+        return { rows: wantRows ? [] : undefined, hashRows: wantHashes ? [] : undefined, total: wantTotal ? 0 : undefined, seq };
     }
 
     const charWhere = buildWhereClause({ tags, fav, world, excludeIds, ids });
@@ -4507,8 +4627,75 @@ export async function queryEntities(directories, params = {}) {
         total = Number(countRow?.total ?? 0);
     }
 
-    let rows;
-    if (wantRows) {
+    // Shared row-shaping helper for both branches below (random / non-random ORDER BY) - turns one merged raw SQL
+    // row (character or group) into either a plain `rows` entry or a hash-mode `hashRows` entry.
+    //
+    // Character rows always recompute their three hashes live from `shallow_json`, never trust
+    // digest_fav/digest_tag_ids/digest_content - same distrust, same reasoning, as queryCharacters()'s own
+    // wantHashes branch (see that function's inline comment: spot-checked against the live table and found
+    // stored values disagreeing with a fresh recompute for a meaningful share of non-NULL rows, no version column
+    // to explain it).
+    //
+    // Group rows DO trust their stored digest_fav/digest_tag_ids/digest_content when non-NULL - a deliberately
+    // different call from the characters one above, made only after tracing every write path that touches those
+    // three columns (upsertGroupRowSync(), assignEntityTag()/unassignEntityTag()'s group branch,
+    // migrateGroupDigestColumns()'s backfill): all three compute the digest in the same function call, from the
+    // same data, immediately before the write that persists it - there is no other path that mutates a group's
+    // name/avatar_url/members/fav/tag_ids without also going through one of those three hooks, unlike characters'
+    // longer-accumulated write surface where the actual drift's root cause was never pinned down. A NULL digest
+    // (an install that predates the migration and whose one-time backfill failed for that specific group, e.g. an
+    // unreadable file) still falls back to a live recompute here - cheap for groups ("far fewer than characters"),
+    // unlike the same fallback would be at character-library scale.
+    const groupIdsNeedingFileFallback = new Set();
+    /** @param {object} r merged raw row (character or group; group rows carry `type`, `digest_fav`, etc. only when wantHashes and type === 'group') */
+    const toHashRow = (r) => {
+        let favHash, tagIdsHash, contentHash, chat = null;
+        if (r.type === 'character') {
+            const shallow = JSON.parse(r.shallow_json);
+            favHash = characterDigestFavHash(shallow) % 4294967296;
+            tagIdsHash = characterDigestTagIdsHash(shallow);
+            contentHash = characterDigestFieldsHash(shallow) % 4294967296;
+            chat = shallow.chat ?? null;
+        } else if (r.digest_fav != null && r.digest_tag_ids != null && r.digest_content != null) {
+            favHash = r.digest_fav;
+            tagIdsHash = r.digest_tag_ids;
+            contentHash = r.digest_content;
+        } else {
+            // Rare NULL fallback - re-read the group's own file + group_tags directly (character-metadata-db.js
+            // can't import groups.js's getGroupsByIds() - see this module's own header on the leaf-module import
+            // rule groups.js itself depends on).
+            groupIdsNeedingFileFallback.add(r.id);
+            favHash = tagIdsHash = contentHash = 0; // placeholder, corrected in the fallback pass below
+        }
+        return {
+            id: r.id, isGroup: r.type === 'group', chat,
+            date_added: Number(r.date_added), create_date: r.create_date === null || r.create_date === undefined ? null : Number(r.create_date),
+            date_last_chat: Number(r.date_last_chat), chat_size: Number(r.chat_size),
+            data_size: r.data_size === null || r.data_size === undefined ? 0 : Number(r.data_size),
+            favHash: favHash >>> 0, tagIdsHash: tagIdsHash >>> 0, contentHash: contentHash >>> 0,
+        };
+    };
+    /** Resolves the placeholder hashes toHashRow() left for NULL-digest group rows, in place. */
+    const resolveFileFallbackHashes = (hashRowList) => {
+        if (groupIdsNeedingFileFallback.size === 0) return;
+        for (const hr of hashRowList) {
+            if (!hr.isGroup || !groupIdsNeedingFileFallback.has(hr.id)) continue;
+            try {
+                const filePath = path.join(directories.groups, sanitize(`${hr.id}.json`));
+                const group = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+                const tagIds = entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id', { id: hr.id }).map(r => r.tag_id);
+                const fingerprintSource = { ...group, tag_ids: tagIds };
+                hr.favHash = groupDigestFavHash(fingerprintSource) >>> 0;
+                hr.tagIdsHash = groupDigestTagIdsHash(fingerprintSource) >>> 0;
+                hr.contentHash = groupDigestContentHash(fingerprintSource) >>> 0;
+            } catch (err) {
+                console.error(`[character-metadata] queryEntities() hash-mode file fallback failed for group ${hr.id}, shipping a zero hash (forces the client to always treat this row as stale):`, err.message);
+            }
+        }
+    };
+
+    let rows, hashRows;
+    if (wantRows || wantHashes) {
         const orderParts = [];
         if (sortField === 'random') {
             // See queryCharacters()'s identical branch - RANDHASH is the same registered SQL function, and
@@ -4571,7 +4758,8 @@ export async function queryEntities(directories, params = {}) {
 
             // Hydrate the page IDs
             if (pageIds.length === 0) {
-                rows = [];
+                rows = wantRows ? [] : undefined;
+                hashRows = wantHashes ? [] : undefined;
             } else {
                 const pageIdsJson = JSON.stringify(pageIds);
                 const charPageRows = entry.db.all(
@@ -4580,21 +4768,26 @@ export async function queryEntities(directories, params = {}) {
                     [pageIdsJson],
                 );
                 const groupPageRows = entry.db.all(
-                    `SELECT id, 'group' as type, name_fold, fav, date_added, date_last_chat, chat_size, date_added as create_date, NULL as data_size, NULL as shallow_json
+                    `SELECT id, 'group' as type, name_fold, fav, date_added, date_last_chat, chat_size, date_added as create_date, NULL as data_size, NULL as shallow_json, digest_fav, digest_tag_ids, digest_content
                     FROM groups WHERE id IN (SELECT value FROM json_each(?))`,
                     [pageIdsJson],
                 );
                 const rowById = new Map([...charPageRows, ...groupPageRows].map(r => [r.id, r]));
                 const rawRows = pageIds.map(id => rowById.get(id)).filter(Boolean);
-                rows = rawRows.map(r => ({
-                    type: r.type,
-                    id: r.id,
-                    fav: !!r.fav,
-                    date_added: Number(r.date_added),
-                    date_last_chat: Number(r.date_last_chat),
-                    chat_size: Number(r.chat_size),
-                    item: r.type === 'character' ? JSON.parse(r.shallow_json) : null,
-                }));
+                if (wantHashes) {
+                    hashRows = rawRows.map(toHashRow);
+                    resolveFileFallbackHashes(hashRows);
+                } else {
+                    rows = rawRows.map(r => ({
+                        type: r.type,
+                        id: r.id,
+                        fav: !!r.fav,
+                        date_added: Number(r.date_added),
+                        date_last_chat: Number(r.date_last_chat),
+                        chat_size: Number(r.chat_size),
+                        item: r.type === 'character' ? JSON.parse(r.shallow_json) : null,
+                    }));
+                }
             }
         } else {
             // create_date: a group DOES have a real creation timestamp - its own date_added column (populated at
@@ -4629,7 +4822,7 @@ export async function queryEntities(directories, params = {}) {
 
             const groupArgs = [...groupWhere.args, ...orderArgs, fetchLimit];
             const groupRawRows = entry.db.all(
-                `SELECT id, 'group' as type, name_fold, fav, date_added, date_last_chat, chat_size, date_added as create_date, NULL as data_size, NULL as shallow_json
+                `SELECT id, 'group' as type, name_fold, fav, date_added, date_last_chat, chat_size, date_added as create_date, NULL as data_size, NULL as shallow_json, digest_fav, digest_tag_ids, digest_content
                 FROM groups ${groupWhere.where}
                 ${groupOrderBy}
                 LIMIT ?`,
@@ -4640,19 +4833,24 @@ export async function queryEntities(directories, params = {}) {
             const merged = mergeSortedRows(charRawRows, groupRawRows, comparator);
             const rawRows = merged.slice(numericOffset, numericOffset + numericLimit);
 
-            rows = rawRows.map(r => ({
-                type: r.type,
-                id: r.id,
-                fav: !!r.fav,
-                date_added: Number(r.date_added),
-                date_last_chat: Number(r.date_last_chat),
-                chat_size: Number(r.chat_size),
-                item: r.type === 'character' ? JSON.parse(r.shallow_json) : null,
-            }));
+            if (wantHashes) {
+                hashRows = rawRows.map(toHashRow);
+                resolveFileFallbackHashes(hashRows);
+            } else {
+                rows = rawRows.map(r => ({
+                    type: r.type,
+                    id: r.id,
+                    fav: !!r.fav,
+                    date_added: Number(r.date_added),
+                    date_last_chat: Number(r.date_last_chat),
+                    chat_size: Number(r.chat_size),
+                    item: r.type === 'character' ? JSON.parse(r.shallow_json) : null,
+                }));
+            }
         }
     }
 
-    return { rows, total, seq };
+    return { rows, hashRows, total, seq };
 }
 
 /**

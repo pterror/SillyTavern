@@ -550,6 +550,64 @@ export function characterDigestTagIdsHash(character) {
 }
 
 /**
+ * Group equivalents of characterFavFingerprint()/characterTagIdsFingerprint()/characterContentFieldsFingerprint()
+ * above (2026-09, extending /query's hash-only mode to `includeGroups: true` requests). Same three-way split -
+ * fav changes independently (no `data.extensions.fav` duplicate for groups, so this one's simpler: a single
+ * field), tag_ids changes independently via assignEntityTag()/unassignEntityTag() same as characters.
+ *
+ * `content` is deliberately NOT narrowed to list-display fields the way characterContentFieldsFingerprint() is
+ * for characters - that narrowing is safe for characters because `/query` characters are already a `toShallow()`
+ * projection (a real full-card fetch is a separate, unaffected path - `CharacterRepository.full()`). Groups have
+ * no such split: `filter.includeGroups: true`'s existing JSON path (hydrateEntityRows()/getGroupsByIds(),
+ * characters.js/groups.js) already returns the group's ENTIRE object as `item` - chat_id/chats/
+ * activation_strategy/generation_mode/disabled_members/auto_mode_delay/generation_mode_join_prefix/suffix, not
+ * just name/avatar_url/members. A narrower content fingerprint would silently miss a change to any of those
+ * other fields and let hash-mode's cache go stale for them - found this while wiring the client resolver, before
+ * it shipped, not after. So `content` here is "the whole group object minus `id` (identity, not content), `fav`
+ * (its own digest), and `tag_ids` (its own digest)" - whatever fields a group object happens to carry, current or
+ * future, all covered without this function needing to know their names.
+ *
+ * No hand-unrolled fast path the way the character digest functions above have one - those exist because
+ * getStateDigest()/getBucketMembers() run them over the entire (326k-row) character library in a hot loop;
+ * groups are "far fewer than characters" (design doc's own words) and nothing here runs at that scale, so the
+ * generic contentHashOf(canonicalStringify(...)) path is simpler and just as correct without the
+ * hand-rolled-JSON-string duplication risk a fast path would add for no measured benefit.
+ * @param {object} group
+ * @returns {object}
+ */
+export function groupFavFingerprint(group) {
+    return { fav: group?.fav };
+}
+
+/** @param {object} group @returns {object} */
+export function groupTagIdsFingerprint(group) {
+    const tagIds = group?.tag_ids;
+    return { tag_ids: Array.isArray(tagIds) && tagIds.length > 0 ? [...tagIds].sort() : null };
+}
+
+/** @param {object} group @returns {object} */
+export function groupContentFingerprint(group) {
+    if (!group || typeof group !== 'object') return {};
+    const { id, fav, tag_ids, ...content } = group;
+    return content;
+}
+
+/** @param {object} group @returns {number} 32-bit unsigned integer */
+export function groupDigestFavHash(group) {
+    return contentHashOf(groupFavFingerprint(group)) % 4294967296;
+}
+
+/** @param {object} group @returns {number} 32-bit unsigned integer */
+export function groupDigestTagIdsHash(group) {
+    return contentHashOf(groupTagIdsFingerprint(group)) % 4294967296;
+}
+
+/** @param {object} group @returns {number} 32-bit unsigned integer */
+export function groupDigestContentHash(group) {
+    return contentHashOf(groupContentFingerprint(group)) % 4294967296;
+}
+
+/**
  * Picks the card-body subset of a character's data: the content fields that change when a user
  * edits the character through the form (description, personality, scenario, first_mes, mes_example,
  * system_prompt, post_history_instructions, alternate_greetings, talkativeness, depth_prompt).

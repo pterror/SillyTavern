@@ -2447,7 +2447,10 @@ function serializeQueryHashesBinary({ seq, total, approxTotal, hashRows, searchB
 
     for (const row of hashRows) {
         const hasCreateDate = row.create_date !== null && row.create_date !== undefined;
-        const flags = (hasCreateDate ? 0b10 : 0); // bit0 (isGroup) reserved, always 0 - characters-only for now
+        // bit0 (isGroup): was "reserved, always 0 - characters-only for now" when this format first shipped;
+        // now genuinely set from the row (queryEntities()'s toHashRow() populates `row.isGroup` for real once
+        // includeGroups hash-mode landed) - see deserializeQueryHashesBinary()'s matching read, character-repository.js.
+        const flags = (row.isGroup ? 0b01 : 0) | (hasCreateDate ? 0b10 : 0);
         buf.writeUInt8(flags, offset); offset += 1;
 
         const idBytes = Buffer.byteLength(row.id, 'utf8');
@@ -2521,17 +2524,13 @@ router.post('/query', async function (request, response) {
         const wantTotal = want.includes('total');
         // Hash-only mode (2026-09 /query bandwidth pass, see queryCharacters()'s own doc comment for the field
         // split rationale): mutually exclusive with `rows` (one shape or the other per request, not both - keeps
-        // the response building below unambiguous) and not supported alongside `includeGroups` yet, since the
-        // `groups` table has no digest_fav/digest_tag_ids/digest_content columns at all - extending the digest
-        // system to groups is a real schema migration, out of scope here. Both rejected with an explicit 400
-        // rather than silently downgrading to the JSON shape, so a client that asks for hashes always gets either
-        // hashes or a clear error, never a shape it didn't ask for.
+        // the response building below unambiguous). Originally characters-only (groups had no digest columns at
+        // all); now also covers `includeGroups: true` requests - see queryEntities()'s own doc comment for the
+        // group-side trust decision (group digests are trusted when non-NULL, unlike characters', because every
+        // write path that touches them was traced and confirmed atomic - see that comment for the full reasoning).
         const wantHashes = want.includes('hashes');
         if (wantHashes && wantRows) {
             return response.status(400).send({ error: true, reason: 'hashes-and-rows-exclusive', message: 'want cannot include both "rows" and "hashes" in the same request.' });
-        }
-        if (wantHashes && includeGroups) {
-            return response.status(400).send({ error: true, reason: 'hashes-not-supported-with-groups', message: 'want: "hashes" is characters-only for now - groups have no digest columns yet.' });
         }
 
         // Cheap re-fetch guard (2026-08 repeated-call investigation): a caller that already has a response for
@@ -2689,7 +2688,7 @@ router.post('/query', async function (request, response) {
                 const combinedIds = [...effectiveIds, ...effectiveGroupIds];
                 const entityParams = {
                     tags: filter.tags, fav: filter.fav, excludeIds: filter.excludeIds,
-                    ids: combinedIds, wantRows, wantTotal,
+                    ids: combinedIds, wantRows, wantTotal, wantHashes,
                 };
                 if (sort.field === 'search') {
                     // No SQL column for relevance - fetch every matched row unbounded (LIMIT sized to the full
@@ -2714,13 +2713,25 @@ router.post('/query', async function (request, response) {
                 }
 
                 let rows = result.rows;
-                if (sort.field === 'search' && wantRows) {
+                let hashRows = result.hashRows;
+                if (sort.field === 'search' && (wantRows || wantHashes)) {
                     // No SQL column for relevance - queryEntities() above returned every matched row (id-order
                     // only), reorder by the merged score map and slice here in JS, mirroring
-                    // queryCharacters()'s own 'search' branch.
-                    rows = rows.slice().sort((a, b) => combinedScoresById.get(a.id) - combinedScoresById.get(b.id)).slice(offset, offset + pageSize);
+                    // queryCharacters()'s own 'search' branch. Same reorder+slice for hashRows as for rows -
+                    // hashRows carry `.id` too, so the score map lookup works unchanged.
+                    if (wantRows) rows = rows.slice().sort((a, b) => combinedScoresById.get(a.id) - combinedScoresById.get(b.id)).slice(offset, offset + pageSize);
+                    if (wantHashes) hashRows = hashRows.slice().sort((a, b) => combinedScoresById.get(a.id) - combinedScoresById.get(b.id)).slice(offset, offset + pageSize);
                 }
 
+                if (wantHashes) {
+                    return sendHashQueryResponse(response, {
+                        seq: result.seq,
+                        total: wantTotal ? result.total : undefined,
+                        approxTotal,
+                        hashRows,
+                        searchBackend,
+                    });
+                }
                 const payload = { seq: result.seq };
                 if (wantTotal) payload.total = approxTotal ? `~${result.total}` : result.total;
                 if (wantRows) payload.rows = hydrateEntityRows(request.user.directories, rows);
@@ -2739,6 +2750,15 @@ router.post('/query', async function (request, response) {
                 return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
             }
 
+            if (wantHashes) {
+                return sendHashQueryResponse(response, {
+                    seq: result.seq,
+                    total: wantTotal ? result.total : undefined,
+                    approxTotal: false,
+                    hashRows: result.hashRows,
+                    searchBackend: undefined,
+                });
+            }
             const payload = { seq: result.seq };
             if (wantTotal) payload.total = result.total;
             if (wantRows) payload.rows = hydrateEntityRows(request.user.directories, result.rows);
