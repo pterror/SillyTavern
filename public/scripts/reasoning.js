@@ -1,7 +1,7 @@
 import {
     moment,
 } from '../lib.js';
-import { chat, closeMessageEditor, event_types, eventSource, main_api, messageFormatting, saveChatConditional, saveChatDebounced, saveSettingsDebounced, substituteParams, syncMesToSwipe, updateMessage, updateMessageBlock } from '../script.js';
+import { chat, chat_metadata, chatOpEdit, closeMessageEditor, event_types, eventSource, main_api, messageFormatting, saveChatConditional, saveChatDebounced, saveSettingsDebounced, substituteParams, syncMesToSwipe, updateMessage, updateMessageBlock } from '../script.js';
 import { getRegexedString, regex_placement } from './extensions/regex/engine.js';
 import { getCurrentLocale, t, translate } from './i18n.js';
 import { macros, MacroCategory } from './macros/macro-system.js';
@@ -966,7 +966,12 @@ function registerReasoningSlashCommands() {
                 },
             });
             message = chat[messageId];
-            await saveChatConditional();
+            if (chat_metadata?._tree_stored) {
+                await chatOpEdit(messageId).catch(error =>
+                    console.error('Could not save the edited reasoning block:', error));
+            } else {
+                await saveChatConditional();
+            }
 
             closeMessageEditor('reasoning');
             updateMessageBlock(messageId, message);
@@ -1334,7 +1339,12 @@ function setReasoningEventHandlers() {
             return;
         }
         updateReasoningFromValue(messageId, message, newReasoning);
-        await saveChatConditional();
+        if (chat_metadata?._tree_stored) {
+            await chatOpEdit(messageId).catch(error =>
+                console.error('Could not save the edited reasoning block:', error));
+        } else {
+            await saveChatConditional();
+        }
         updateMessageBlock(messageId, chat[messageId]);
         closeReasoningDetailsWithoutContent(messageBlock);
 
@@ -1404,7 +1414,12 @@ function setReasoningEventHandlers() {
         delete cleanExtra.reasoning_type;
         delete cleanExtra.reasoning_duration;
         updateMessage(messageId, { extra: cleanExtra });
-        await saveChatConditional();
+        if (chat_metadata?._tree_stored) {
+            await chatOpEdit(messageId).catch(error =>
+                console.error('Could not save the cleared reasoning block:', error));
+        } else {
+            await saveChatConditional();
+        }
         updateMessageBlock(messageId, chat[messageId]);
         const textarea = messageBlock.find('.reasoning_edit_textarea');
         textarea.remove();
