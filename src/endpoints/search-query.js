@@ -38,18 +38,22 @@ export function unquoteSearchTerm(value) {
  * the caller uses to represent "which field(s) this label targets" (a field-name array for tantivy-search.js
  * callers) - this function is agnostic to that shape, it just looks the label up and hands the value back
  * untouched.
- * @returns {{ column: string | string[], value: string } | null} The resolved column-filter expression and this
- * token's (still possibly quoted) value, or null if `token` isn't a `label:value` filter for a label the caller
- * recognizes.
+ * @returns {{ column: string | string[], value: string, label: string, negate: boolean } | null} The resolved
+ * column-filter expression, this token's (still possibly quoted) value, the matched lowercase label itself (so a
+ * caller that special-cases one particular label - e.g. tantivy-search.js's exact tag-id matching - doesn't have
+ * to re-derive it from `column`), and whether the token carried a leading `-` (e.g. `-tag:villain`), or null if
+ * `token` isn't a `label:value` (optionally `-label:value`) filter for a label the caller recognizes. Negation is
+ * general to every label, not special-cased to any one of them - see tantivy-search.js's buildSearchQuery() for
+ * how a caller turns this into a MustNot composition.
  */
 export function parseLabeledToken(token, fieldLabels) {
-    const match = token.match(/^([A-Za-z][A-Za-z0-9_]*):(.+)$/);
+    const match = token.match(/^(-)?([A-Za-z][A-Za-z0-9_]*):(.+)$/);
     if (!match) {
         return null;
     }
-    const label = match[1].toLowerCase();
+    const label = match[2].toLowerCase();
     if (!Object.prototype.hasOwnProperty.call(fieldLabels, label)) {
         return null;
     }
-    return { column: fieldLabels[label], value: match[2] };
+    return { column: fieldLabels[label], value: match[3], label, negate: match[1] === '-' };
 }
