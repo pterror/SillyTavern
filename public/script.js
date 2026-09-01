@@ -9382,6 +9382,116 @@ export async function switchToAlternativePath(mesId, swipeId) {
 }
 
 /**
+ * Moves onto any node in the currently-open tree-backed chat - a bookmark, most often - not just a
+ * sibling swipe at the message already showing. Selecting a bookmark used to mean a full
+ * clearChat()+getChat(): tear the whole view down and reload the whole conversation from scratch, even
+ * when the bookmark sits a few messages off a branch that is already on screen. This is that same case
+ * switchToAlternativePath() handles for one fork, generalized to jump straight to an arbitrary node: it
+ * asks the server only for the path between the node and the root (cheap - ids and text for that
+ * segment only, not the whole conversation), finds the deepest point in that path that is already
+ * loaded, and replaces only what is actually different.
+ *
+ * A node's own position never depends on any fork's default_child_id above it - reloading later
+ * resolves the stored pointer by parentage the same way this does - so nothing needs to be marked
+ * default along the way for the new position to be correct on the next load.
+ *
+ * Solo, tree-backed chats only. Returns false without changing anything when there is no such thing to
+ * build on - a group chat, a legacy JSONL chat, nothing loaded yet, or a node with no ancestry shared
+ * with what is on screen (a genuinely different chat) - so the caller can fall back to a full open.
+ */
+export async function switchToNode(targetNodeId) {
+    if (selected_group || !chat_metadata?._tree_stored || chat.length === 0) {
+        return false;
+    }
+
+    // Already part of what's loaded - an earlier message on the branch already showing, most likely.
+    // The stored position still needs to move onto it, but nothing about the view does.
+    const alreadyLoadedAt = chat.findIndex(m => m.node_id === targetNodeId);
+    if (alreadyLoadedAt >= 0) {
+        const avatar = getCurrentCharacter()?.avatar;
+        if (avatar) {
+            charactersStore.update(avatar, { chat: targetNodeId });
+            await saveActiveChat(avatar, targetNodeId).catch(error =>
+                console.warn('[switchToNode] Failed to persist the selection:', error));
+        }
+        return true;
+    }
+
+    let ancestry;
+    try {
+        const response = await fetch('/api/chats/ancestry', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ node_id: targetNodeId }),
+        });
+        if (!response.ok) {
+            return false;
+        }
+        ancestry = (await response.json())?.messages;
+    } catch (error) {
+        console.warn('[switchToNode] Failed to fetch ancestry:', error);
+        return false;
+    }
+    if (!Array.isArray(ancestry) || ancestry.length === 0) {
+        return false;
+    }
+
+    // The deepest ancestor of the target that is already part of the loaded chat - where the two paths
+    // fork. Walked from the target backward so a long shared prefix is found at its closest point, not
+    // its furthest.
+    let forkPos = -1;
+    let forkAncestryIdx = -1;
+    for (let j = ancestry.length - 1; j >= 0; j--) {
+        const idx = chat.findIndex(m => m.node_id === ancestry[j].node_id);
+        if (idx >= 0) {
+            forkPos = idx;
+            forkAncestryIdx = j;
+            break;
+        }
+    }
+    // No shared ancestry at all - a genuinely different chat. Let the caller do a full open.
+    if (forkPos < 0) {
+        return false;
+    }
+
+    const between = ancestry.slice(forkAncestryIdx + 1);
+
+    let below = [];
+    try {
+        const response = await fetch('/api/chats/continuation', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ node_id: targetNodeId, chat_name: getCurrentChatId() }),
+        });
+        if (response.ok) {
+            below = (await response.json())?.messages ?? [];
+        }
+    } catch (error) {
+        // Not fatal - the segment through the target is still correct, it just won't carry on past it.
+        console.warn('[switchToNode] Failed to fetch the continuation past the target:', error);
+    }
+
+    chat.splice(forkPos + 1, chat.length - (forkPos + 1), ...between, ...below);
+
+    const avatar = getCurrentCharacter()?.avatar;
+    if (avatar) {
+        charactersStore.update(avatar, { chat: targetNodeId });
+        await saveActiveChat(avatar, targetNodeId).catch(error =>
+            console.warn('[switchToNode] Failed to persist the selection:', error));
+    }
+
+    // Same reason switchToAlternativePath() does this: the spliced-in messages came straight from the
+    // server and the snapshot has never seen them, so without this the next save reads every one as
+    // changed and posts a needless edit for it.
+    _snapshotMessages();
+
+    await redisplayChat({ startIndex: forkPos + 1 });
+    updateViewMessageIds();
+    refreshSwipeButtons(true);
+    return true;
+}
+
+/**
  * Syncs swipe data back to the message data at the given message ID (or the last message if no ID is given).
  * If the swipe ID is not provided, the current swipe ID in the message object is used.
  *
