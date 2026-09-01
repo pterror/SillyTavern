@@ -10,6 +10,7 @@ import {
     getThumbnailUrl,
     getCharacters,
     chat,
+    chatOpEdit,
     saveChatConditional,
     saveItemizedPrompts,
     setActiveGroup,
@@ -563,7 +564,8 @@ export async function createNewBookmark(mesId, { forceName = null } = {}) {
         const extra = typeof lastMes.extra === 'object' ? { ...lastMes.extra } : {};
         extra.bookmark_link = name;
         updateMessage(mesId, { extra });
-        await saveChatConditional();
+        await chatOpEdit(mesId).catch(error =>
+            console.error('Could not save the bookmark link on that message:', error));
         toastr.success('Bookmarked. It shows up in the chat list.', 'Bookmark', { timeOut: 6000 });
         return name;
     }
