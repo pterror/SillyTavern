@@ -1063,6 +1063,20 @@ const pendingSettingsKeys = new Set();
 const serverKeyHashes = {};
 /** Module-scope retry counter for TempResponseLength customization, replacing the old loopCounter parameter. */
 let _saveRetryCounter = 0;
+/**
+ * Serializes saveSettings()'s actual save work (drain pendingSettingsKeys -> read serverKeyHashes -> fetch ->
+ * write serverKeyHashes) so at most one invocation's body runs at a time. Without this, two overlapping
+ * invocations - e.g. two debounce windows more than DEFAULT_SAVE_EDIT_TIMEOUT apart, or an immediate
+ * keys-based saveSettings(key) call landing while a debounced one is still awaiting its fetch - can each read
+ * serverKeyHashes at the same stale snapshot before either has written its own result back. The second one
+ * then sends a request built from a hash the first invocation's write has already invalidated, and gets a
+ * false "changed by another session" conflict on itself, even though nothing but this same client touched the
+ * key. Chaining every call onto this promise guarantees each invocation only starts once every save that was
+ * already running when it was called has fully finished (including its serverKeyHashes update), so its own
+ * snapshot is always current.
+ * @type {Promise<void>}
+ */
+let _saveQueue = Promise.resolve();
 export let amount_gen = 80; //default max length of AI generated responses
 export let max_context = 2048;
 
@@ -11703,6 +11717,18 @@ export async function saveSettings(...keys) {
     }
     _saveRetryCounter = 0;
 
+    // Queue behind any save already in flight - see _saveQueue's own doc comment for why.
+    const run = () => performSave();
+    const queued = _saveQueue.then(run, run);
+    _saveQueue = queued.catch(() => {});
+    return queued;
+}
+
+/**
+ * The actual body of saveSettings(), pulled out so saveSettings() can queue invocations of this behind
+ * _saveQueue instead of letting them run concurrently. Not exported - always reached through saveSettings().
+ */
+async function performSave() {
     // Drain accumulated keys before the async gap - anything added after this point belongs to the next save.
     const dirtyKeys = pendingSettingsKeys.size > 0 ? [...pendingSettingsKeys] : null;
     pendingSettingsKeys.clear();
