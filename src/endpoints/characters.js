@@ -2389,6 +2389,102 @@ function hydrateEntityRows(directories, rows) {
     }).filter(Boolean);
 }
 
+/**
+ * Search-backend enum codes for the binary hash-mode `/query` response - keeps the wire format numeric instead
+ * of carrying the string values ('tantivy'|'native'|'wasm'|'unavailable', see script.js's SEARCH_BACKEND_INDICATOR)
+ * as text. 0 means "absent" (not a search request, or search wasn't reached on this response path).
+ */
+const HASH_QUERY_SEARCH_BACKEND_CODES = { tantivy: 1, native: 2, wasm: 3, unavailable: 4 };
+
+/**
+ * Serializes `/query`'s hash-only mode (`want: ['hashes']`) into a compact binary response - same general shape
+ * as `serializeTreeDescendBinary()` above (fixed-width integers where JSON would use key names, positional where
+ * JSON would be self-describing), a sibling encoder rather than a reuse since the fields differ. See
+ * `deserializeQueryHashesBinary()` client-side (character-repository.js) for the matching decoder.
+ *
+ * This is the owner's explicit call (2026-09 /query bandwidth pass): hash-mode ships binary, not JSON, because
+ * per-row content here is genuinely fixed-width/binary-shaped data (three digest ints, a handful of
+ * timestamps/sizes) with only two variable-length pieces (`id`, `chat`) - there's no self-describing JSON
+ * structure actually earning its keep at this row count.
+ *
+ * Header (20 bytes): headerFlags(1) [bit0=hasTotal, bit1=totalApprox] + searchBackendCode(1) + seq(8, float64) +
+ * total(8, float64, meaningful only if hasTotal) + rowCount(2, uint16).
+ *
+ * Per row: flags(1) [bit0=isGroup - reserved, always 0 today, see the /query route's own doc comment on why
+ * group rows never reach hash-mode yet; bit1=hasCreateDate, since `create_date` is a genuinely nullable column
+ * unlike the other date/size fields] + idLen(2) + id(idLen, utf8) + favHash(4) + tagIdsHash(4) + contentHash(4) +
+ * date_added(8, float64) + create_date(8, float64, 0 if !hasCreateDate) + date_last_chat(8, float64) +
+ * chat_size(8, float64) + data_size(8, float64) + chatLen(2) + chat(chatLen, utf8, omitted entirely if chatLen
+ * is 0 - a character with no active chat has a genuinely absent `chat`, not an empty-string one).
+ *
+ * Timestamps/sizes are float64 rather than a narrower int width deliberately: epoch-ms values (~1.7-1.8e12 today)
+ * already exceed uint32's range, and float64 safely represents every integer this schema actually stores (all
+ * well under Number.MAX_SAFE_INTEGER) with no hi/lo-word splitting needed, unlike the 128-bit tree-descend digest
+ * above (which genuinely needs more than 53 bits).
+ * @param {{seq:number, total:number|undefined, approxTotal:boolean, hashRows:object[], searchBackend?:string}} params
+ * @returns {Buffer}
+ */
+function serializeQueryHashesBinary({ seq, total, approxTotal, hashRows, searchBackend }) {
+    const hasTotal = typeof total === 'number';
+    const searchBackendCode = HASH_QUERY_SEARCH_BACKEND_CODES[searchBackend] ?? 0;
+
+    let totalSize = 1 + 1 + 8 + 8 + 2; // header
+    for (const row of hashRows) {
+        const idBytes = Buffer.byteLength(row.id, 'utf8');
+        const chatBytes = row.chat ? Buffer.byteLength(row.chat, 'utf8') : 0;
+        totalSize += 1 + 2 + idBytes + 4 + 4 + 4 + 8 + 8 + 8 + 8 + 8 + 2 + chatBytes;
+    }
+
+    const buf = Buffer.allocUnsafe(totalSize);
+    let offset = 0;
+
+    const headerFlags = (hasTotal ? 0b01 : 0) | (hasTotal && approxTotal ? 0b10 : 0);
+    buf.writeUInt8(headerFlags, offset); offset += 1;
+    buf.writeUInt8(searchBackendCode, offset); offset += 1;
+    buf.writeDoubleLE(seq ?? 0, offset); offset += 8;
+    buf.writeDoubleLE(hasTotal ? total : 0, offset); offset += 8;
+    buf.writeUInt16LE(hashRows.length, offset); offset += 2;
+
+    for (const row of hashRows) {
+        const hasCreateDate = row.create_date !== null && row.create_date !== undefined;
+        const flags = (hasCreateDate ? 0b10 : 0); // bit0 (isGroup) reserved, always 0 - characters-only for now
+        buf.writeUInt8(flags, offset); offset += 1;
+
+        const idBytes = Buffer.byteLength(row.id, 'utf8');
+        buf.writeUInt16LE(idBytes, offset); offset += 2;
+        buf.write(row.id, offset, idBytes, 'utf8'); offset += idBytes;
+
+        buf.writeUInt32LE(row.favHash >>> 0, offset); offset += 4;
+        buf.writeUInt32LE(row.tagIdsHash >>> 0, offset); offset += 4;
+        buf.writeUInt32LE(row.contentHash >>> 0, offset); offset += 4;
+
+        buf.writeDoubleLE(row.date_added ?? 0, offset); offset += 8;
+        buf.writeDoubleLE(hasCreateDate ? row.create_date : 0, offset); offset += 8;
+        buf.writeDoubleLE(row.date_last_chat ?? 0, offset); offset += 8;
+        buf.writeDoubleLE(row.chat_size ?? 0, offset); offset += 8;
+        buf.writeDoubleLE(row.data_size ?? 0, offset); offset += 8;
+
+        const chatBytes = row.chat ? Buffer.byteLength(row.chat, 'utf8') : 0;
+        buf.writeUInt16LE(chatBytes, offset); offset += 2;
+        if (chatBytes > 0) {
+            buf.write(row.chat, offset, chatBytes, 'utf8'); offset += chatBytes;
+        }
+    }
+
+    return buf;
+}
+
+/**
+ * Sends a hash-mode `/query` response as `application/octet-stream` - the one call site every hash-mode return
+ * point in the route below goes through, so the content-type/serialization pairing can't drift between them.
+ * @param {import("express").Response} response
+ * @param {{seq:number, total:number|undefined, approxTotal:boolean, hashRows:object[], searchBackend?:string}} params
+ */
+function sendHashQueryResponse(response, params) {
+    response.set('Content-Type', 'application/octet-stream');
+    return response.send(serializeQueryHashesBinary(params));
+}
+
 router.post('/query', async function (request, response) {
     try {
         const body = request.body ?? {};
@@ -2411,7 +2507,7 @@ router.post('/query', async function (request, response) {
             return response.status(400).send({ error: true, reason: 'random-seed-required', message: 'sort.field "random" requires a finite sort.seed - design doc §5.3 decision 10, the client mints and persists this (public/scripts/random-sort.js).' });
         }
         for (const w of want) {
-            if (w !== 'rows' && w !== 'total') {
+            if (w !== 'rows' && w !== 'total' && w !== 'hashes') {
                 return response.status(400).send({ error: true, reason: 'want-not-supported', message: `want: "${w}" is not implemented yet.` });
             }
         }
@@ -2423,6 +2519,20 @@ router.post('/query', async function (request, response) {
         const offset = (page - 1) * pageSize;
         const wantRows = want.includes('rows');
         const wantTotal = want.includes('total');
+        // Hash-only mode (2026-09 /query bandwidth pass, see queryCharacters()'s own doc comment for the field
+        // split rationale): mutually exclusive with `rows` (one shape or the other per request, not both - keeps
+        // the response building below unambiguous) and not supported alongside `includeGroups` yet, since the
+        // `groups` table has no digest_fav/digest_tag_ids/digest_content columns at all - extending the digest
+        // system to groups is a real schema migration, out of scope here. Both rejected with an explicit 400
+        // rather than silently downgrading to the JSON shape, so a client that asks for hashes always gets either
+        // hashes or a clear error, never a shape it didn't ask for.
+        const wantHashes = want.includes('hashes');
+        if (wantHashes && wantRows) {
+            return response.status(400).send({ error: true, reason: 'hashes-and-rows-exclusive', message: 'want cannot include both "rows" and "hashes" in the same request.' });
+        }
+        if (wantHashes && includeGroups) {
+            return response.status(400).send({ error: true, reason: 'hashes-not-supported-with-groups', message: 'want: "hashes" is characters-only for now - groups have no digest columns yet.' });
+        }
 
         // Cheap re-fetch guard (2026-08 repeated-call investigation): a caller that already has a response for
         // this exact request shape can pass back the `seq` it was given and skip paying for row hydration/search
@@ -2454,6 +2564,7 @@ router.post('/query', async function (request, response) {
             limit: pageSize,
             wantRows,
             wantTotal,
+            wantHashes,
         };
         // Whether a total computed against a search-narrowed candidate set is exact or has to be flagged
         // approximate (design doc §5 decision 6: "approximate is fine, capped is not" - the wire convention is a
@@ -2483,7 +2594,10 @@ router.post('/query', async function (request, response) {
                 if (sortedResult !== null) {
                     searchBackend = sortedResult.backend;
                     if (sortedResult.ids.length === 0) {
-                        const seq = (await queryCharacters(request.user.directories, { ids: [], wantRows: false, wantTotal: false }))?.rev ?? 0;
+                        const seq = (await queryCharacters(request.user.directories, { ids: [], wantRows: false, wantTotal: false }))?.seq ?? 0;
+                        if (wantHashes) {
+                            return sendHashQueryResponse(response, { seq, total: wantTotal ? 0 : undefined, approxTotal: false, hashRows: [], searchBackend });
+                        }
                         const payload = { seq, searchBackend };
                         if (wantRows) payload.rows = [];
                         if (wantTotal) payload.total = 0;
@@ -2492,16 +2606,28 @@ router.post('/query', async function (request, response) {
                     // Hydrate just the page-sized id set - no sorting, no counting in SQL.
                     const result = await queryCharacters(request.user.directories, {
                         ids: sortedResult.ids,
-                        wantRows, wantTotal: false,
+                        wantRows, wantHashes, wantTotal: false,
                     });
                     if (result === null) {
                         return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
                     }
-                    const payload = { seq: result.rev };
+                    if (wantHashes) {
+                        // queryCharacters returns hashRows in id order; re-order to match tantivy's sort - same
+                        // reasoning as the wantRows branch just below.
+                        const idToHashRow = new Map(result.hashRows.map(r => [r.id, r]));
+                        const orderedHashRows = sortedResult.ids.map(id => idToHashRow.get(id)).filter(Boolean);
+                        return sendHashQueryResponse(response, { seq: result.seq, total: wantTotal ? sortedResult.total : undefined, approxTotal: false, hashRows: orderedHashRows, searchBackend });
+                    }
+                    const payload = { seq: result.seq };
                     if (wantTotal) payload.total = sortedResult.total;
                     if (wantRows) {
-                        // queryCharacters returns rows in id order; re-order to match tantivy's sort.
-                        const idToRow = new Map(result.rows.map(r => [r.id ?? r.item?.avatar, r]));
+                        // queryCharacters returns rows in id order; re-order to match tantivy's sort. Rows here
+                        // are always plain toShallow() projections (this branch only ever calls queryCharacters(),
+                        // never queryEntities()), so the id lives at `.avatar`, not `.id`/`.item.avatar` - those
+                        // two never existed on this shape and previously left every lookup missing, silently
+                        // emptying `rows` out for any search that combined a tantivy-fast-field sort with
+                        // want:['rows'] (2026-09 fix, found while wiring hash-mode into this same branch).
+                        const idToRow = new Map(result.rows.map(r => [r.avatar, r]));
                         payload.rows = sortedResult.ids.map(id => idToRow.get(id)).filter(Boolean);
                     }
                     if (searchBackend !== undefined) payload.searchBackend = searchBackend;
@@ -2545,7 +2671,10 @@ router.post('/query', async function (request, response) {
             approxTotal = Number.isFinite(idFetchCap) && (searchResult.total > idFetchCap || (includeGroups && groupSearchResult.total > idFetchCap));
 
             if (effectiveIds.length === 0 && effectiveGroupIds.length === 0) {
-                const seq = (await queryCharacters(request.user.directories, { ids: [], wantRows: false, wantTotal: false }))?.rev ?? 0;
+                const seq = (await queryCharacters(request.user.directories, { ids: [], wantRows: false, wantTotal: false }))?.seq ?? 0;
+                if (wantHashes) {
+                    return sendHashQueryResponse(response, { seq, total: wantTotal ? 0 : undefined, approxTotal: false, hashRows: [], searchBackend });
+                }
                 const payload = { seq, searchBackend };
                 if (wantRows) payload.rows = [];
                 if (wantTotal) payload.total = 0;
@@ -2592,7 +2721,7 @@ router.post('/query', async function (request, response) {
                     rows = rows.slice().sort((a, b) => combinedScoresById.get(a.id) - combinedScoresById.get(b.id)).slice(offset, offset + pageSize);
                 }
 
-                const payload = { seq: result.rev };
+                const payload = { seq: result.seq };
                 if (wantTotal) payload.total = approxTotal ? `~${result.total}` : result.total;
                 if (wantRows) payload.rows = hydrateEntityRows(request.user.directories, rows);
                 if (searchBackend !== undefined) payload.searchBackend = searchBackend;
@@ -2610,7 +2739,7 @@ router.post('/query', async function (request, response) {
                 return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
             }
 
-            const payload = { seq: result.rev };
+            const payload = { seq: result.seq };
             if (wantTotal) payload.total = result.total;
             if (wantRows) payload.rows = hydrateEntityRows(request.user.directories, result.rows);
             return response.send(payload);
@@ -2626,7 +2755,16 @@ router.post('/query', async function (request, response) {
         // branch (queryEntities()'s UNION ALL, above) and the !hasSearch+includeGroups branch each already
         // returned their own response before this point, so this is unconditionally the characters-only,
         // bare-Character[] shape (search or not).
-        const payload = { seq: result.rev };
+        if (wantHashes) {
+            return sendHashQueryResponse(response, {
+                seq: result.seq,
+                total: wantTotal ? result.total : undefined,
+                approxTotal,
+                hashRows: result.hashRows,
+                searchBackend,
+            });
+        }
+        const payload = { seq: result.seq };
         if (wantRows) payload.rows = result.rows;
         if (wantTotal) payload.total = approxTotal ? `~${result.total}` : result.total;
         if (searchBackend !== undefined) payload.searchBackend = searchBackend;
