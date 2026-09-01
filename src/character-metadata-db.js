@@ -3022,12 +3022,38 @@ export async function getEntityTagIdsForMany(directories, ids) {
 }
 
 /**
+ * Patches a still-buffered batch-import row's tag ids in place (both `pending.tagIds` - what `writeRowSync()`
+ * inserts into `character_tags` at flush, see `applyOrBuffer()`/`flushBatch()` - and the embedded
+ * `pending.row.shallow_json`/`digest_tag_ids`, so a `/query` or digest read that happens to land before this
+ * row flushes still sees the assignment). Mirrors the SQL-table branch of `assignEntityTag()`/`unassignEntityTag()`
+ * below exactly, just against the pending object instead of a row already in `characters`.
+ * @param {{row: object, tagIds: string[]}} pending
+ */
+function patchPendingRowTagIds(pending) {
+    const shallow = JSON.parse(pending.row.shallow_json);
+    shallow.tag_ids = pending.tagIds;
+    pending.row.shallow_json = JSON.stringify(shallow);
+    pending.row.digest_tag_ids = characterDigestTagIdsHash(shallow) % 4294967296;
+}
+
+/**
  * Phase 3 (extended by owner decision to groups): `POST /api/tags/assign`'s backing write - a single-row insert
  * into `character_tags` or `group_tags`, whichever table `id` actually exists in, replacing the old
  * whole-tags.json rewrite. Requires the entity to actually exist (checked against `characters` then `groups`,
  * not just attempted blind) so a typo'd id can't create a permanently dangling tag row nothing will ever clean
  * up - neither table has a foreign key enforcing that itself (SQLite FKs are opt-in and this schema doesn't turn
  * them on).
+ *
+ * Also checks the batch-import pending buffer (see `findCharacterIdByContentHash()`'s doc comment for why that's
+ * deliberate, not an oversight) - a character imported during a multi-file drop can still be sitting in
+ * `entry.batch.pending` rather than the `characters` table (buffered until `BATCH_FLUSH_SIZE` rows accumulate or
+ * batch mode ends) at the exact moment its own just-imported tags get auto-assigned, since the client fires that
+ * assign immediately after the import response, with no wait for a flush. Before this check existed, that raced
+ * against the flush: whichever side of it a given character's row happened to land on decided whether its tags
+ * survived, which is why a bulk-imported library shows tags on some cards and not others with no other
+ * explanable difference between them (the actual reported symptom this was fixing - confirmed against this
+ * install's real data: a spot check across the most recently imported 20 characters found roughly half missing
+ * every one of their tags despite having them embedded in the card itself).
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} id Character avatar or group id
  * @param {string} tagId
@@ -3036,6 +3062,15 @@ export async function getEntityTagIdsForMany(directories, ids) {
 export async function assignEntityTag(directories, id, tagId) {
     const entry = await getEntry(directories);
     if (!entry) return null;
+
+    const pending = entry.batch?.pending.get(id);
+    if (pending) {
+        if (!pending.tagIds.includes(tagId)) {
+            pending.tagIds.push(tagId);
+        }
+        patchPendingRowTagIds(pending);
+        return 'ok';
+    }
 
     if (entry.db.get('SELECT 1 FROM characters WHERE id = @id', { id })) {
         entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@id, @tagId)', { id, tagId });
@@ -3067,6 +3102,10 @@ export async function assignEntityTag(directories, id, tagId) {
  * doesn't exist either, so there's nothing to reject. Runs the delete against both tables unconditionally rather
  * than resolving which one first - cheaper than a lookup, and harmless since an id is only ever a row in one of
  * them (a character avatar and a group id can't collide in practice - see this module's header on identity).
+ *
+ * Also checks the batch-import pending buffer first, same reasoning as `assignEntityTag()` above - an unassign
+ * fired at a still-buffered row would otherwise be a silent no-op (nothing in `character_tags` yet to delete),
+ * and the tag would reappear once the row finally flushes with its buffered `pending.tagIds` intact.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} id Character avatar or group id
  * @param {string} tagId
@@ -3075,6 +3114,13 @@ export async function assignEntityTag(directories, id, tagId) {
 export async function unassignEntityTag(directories, id, tagId) {
     const entry = await getEntry(directories);
     if (!entry) return null;
+
+    const pending = entry.batch?.pending.get(id);
+    if (pending) {
+        pending.tagIds = pending.tagIds.filter(t => t !== tagId);
+        patchPendingRowTagIds(pending);
+        return 'ok';
+    }
 
     entry.db.run('DELETE FROM character_tags WHERE character_id = @id AND tag_id = @tagId', { id, tagId });
     entry.db.run('DELETE FROM group_tags WHERE group_id = @id AND tag_id = @tagId', { id, tagId });

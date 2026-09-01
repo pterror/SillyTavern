@@ -371,6 +371,38 @@ describe('batch import mode', () => {
         await metadataDb.endBatchImport(directories);
         expect(await metadataDb.getCharacterMetadataRow(directories, 'Bob.png')).toBeDefined();
     });
+
+    // Regression: the real client fires POST /api/tags/assign for a card's auto-imported tags immediately after
+    // /api/characters/import responds - with no wait for a flush. During a multi-file drop (useBatchImportMode),
+    // that import's own metadata row can still be sitting unflushed in the pending buffer at that exact moment,
+    // and assignEntityTag()/unassignEntityTag() used to only ever check the `characters` SQL table, never the
+    // buffer - so the assign silently 404'd (fire-and-forget on the client, never retried) and the tag never made
+    // it into the row once it did flush. Confirmed against this install's real data: a spot check across the most
+    // recently imported 20 characters found roughly half missing every one of their tags despite having them
+    // embedded in the card itself - this is what reproduced that live.
+    test('assignEntityTag/unassignEntityTag reach a row still sitting in the batch-import pending buffer', async () => {
+        await writeCardFile('Bob.png', { name: 'Bob', data: { name: 'Bob', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } });
+
+        await metadataDb.beginBatchImport(directories);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+
+        // Still buffered, not in the table yet - the exact moment the client's post-import tag assign lands.
+        expect(await metadataDb.getCharacterMetadataRow(directories, 'Bob.png')).toBeUndefined();
+        expect(await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag1')).toBe('ok');
+        expect(await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag2')).toBe('ok');
+        // Re-assigning while still pending is a no-op, not a duplicate - matches the flushed-row behavior.
+        expect(await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag1')).toBe('ok');
+        expect(await metadataDb.unassignEntityTag(directories, 'Bob.png', 'tag2')).toBe('ok');
+
+        await metadataDb.endBatchImport(directories);
+
+        const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+        expect(row).toBeDefined();
+        expect(await metadataDb.getCharacterTagIds(directories, 'Bob.png')).toEqual(['tag1']);
+        // The row's own shallow_json (what /query actually serves) has to carry it too, not just the
+        // character_tags table - that's the field the client's getTagsList()/entityTagIds fallback reads.
+        expect(JSON.parse(row.shallow_json).tag_ids).toEqual(['tag1']);
+    });
 });
 
 describe('content_hash / findCharacterIdByContentHash (bulk-import exact-duplicate dedup)', () => {
