@@ -7,8 +7,8 @@ import sanitize from 'sanitize-filename';
 import { sync as writeFileAtomicSync, default as writeFileAtomic } from 'write-file-atomic';
 
 import { color, tryParse } from '../util.js';
-import { getFileNameValidationFunction } from '../middleware/validateFileName.js';
-import { upsertGroupRow, deleteGroupRow } from '../character-metadata-db.js';
+import { getFileNameValidationFunction, forbiddenRegExp } from '../middleware/validateFileName.js';
+import { upsertGroupRow, deleteGroupRow, getGroupFavsByIds, getEntityTagIdsForMany } from '../character-metadata-db.js';
 import { calculateGroupChatStats } from '../character-shallow.js';
 
 export const router = express.Router();
@@ -187,6 +187,66 @@ router.post('/all', (request, response) => {
     return response.send(getGroupsData(request.user.directories));
 });
 
+/**
+ * `POST /api/groups/batch` - the group-side counterpart to `/api/characters/batch`'s field-filtered mode
+ * (2026-09, extending /query's hash-mode client caching to `includeGroups: true` requests). Given `{ids, fields}`,
+ * reads each id's group file via `getGroupsByIds()` (bounded to just these ids, not a whole-directory listing),
+ * stamps db-authoritative `fav` (getGroupFavsByIds()) and `tag_ids` (getEntityTagIdsForMany()) onto it - same
+ * "db wins over the file's own possibly-stale copy" rule `/api/characters/batch`'s full-mode path already
+ * follows for characters - then, when `fields` is present, filters down to just those fields (plus `id`, always
+ * included, mirroring `/api/characters/batch`'s always-included `avatar`).
+ *
+ * `fields` omitted -> full mode: every field the group object + fav/tag_ids stamp carries. This is what
+ * `CharacterRepository`'s hash-mode stale-row resolver actually calls with - unlike characters (where `/query`'s
+ * hash-covered surface is a narrow `toShallow()` projection with a separate full-card fetch for anything more),
+ * groups have no shallow/full split: `groupContentFingerprint()`'s content hash already covers the WHOLE group
+ * object (hash-utils.js - deliberately widened after checking that `includeGroups: true`'s existing JSON path
+ * already returns every group field, not a list-display subset), so the cache this endpoint feeds has to carry
+ * every field too, or a change outside the hand-picked list characters use would go undetected.
+ * @param  {import("express").Request} request
+ * @param  {import("express").Response} response
+ * @return {void}
+ */
+router.post('/batch', async (request, response) => {
+    try {
+        const ids = Array.isArray(request.body?.ids) ? request.body.ids : [];
+        const fields = Array.isArray(request.body?.fields) ? request.body.fields : null;
+        for (const id of ids) {
+            if (typeof id !== 'string' || forbiddenRegExp.test(id)) {
+                return response.sendStatus(400);
+            }
+        }
+        if (ids.length === 0) {
+            return response.send([]);
+        }
+
+        const groupsById = getGroupsByIds(request.user.directories, ids);
+        const [favById, tagIdsById] = await Promise.all([
+            getGroupFavsByIds(request.user.directories, ids),
+            getEntityTagIdsForMany(request.user.directories, ids),
+        ]);
+
+        const data = ids
+            .filter(id => groupsById[id])
+            .map(id => {
+                const full = { ...groupsById[id], id, fav: !!favById[id], tag_ids: tagIdsById?.[id] ?? [] };
+                if (!fields) return full;
+                /** @type {Record<string, any>} */
+                const filtered = { id };
+                for (const field of fields) {
+                    if (field in full) {
+                        filtered[field] = full[field];
+                    }
+                }
+                return filtered;
+            });
+        return response.send(data);
+    } catch (err) {
+        console.error(err);
+        response.status(500).send({ error: true });
+    }
+});
+
 router.post('/create', async (request, response) => {
     if (!request.body) {
         return response.sendStatus(400);
@@ -224,7 +284,7 @@ router.post('/create', async (request, response) => {
     // existence against. Awaited but not fatal to the request if it fails - same tolerance characters.js's own
     // hooks use elsewhere (see e.g. its /rename route), since the metadata store is a derived index, not the
     // group's own source of truth (the JSON file just written is).
-    await upsertGroupRow(request.user.directories, groupMetadata.id, groupMetadata.name, { fav: groupMetadata.fav }).catch(err =>
+    await upsertGroupRow(request.user.directories, groupMetadata.id, groupMetadata.name, { fav: groupMetadata.fav, group: groupMetadata }).catch(err =>
         console.error(`Could not update group metadata store for ${groupMetadata.id}:`, err));
 
     return response.send(groupMetadata);
@@ -242,7 +302,7 @@ router.post('/edit', getFileNameValidationFunction('id'), async (request, respon
     writeFileAtomicSync(pathToFile, fileData);
 
     // Same phase 3 write-path hook as /create above - a group's name/fav can change here.
-    await upsertGroupRow(request.user.directories, id, request.body.name, { fav: request.body.fav }).catch(err =>
+    await upsertGroupRow(request.user.directories, id, request.body.name, { fav: request.body.fav, group: request.body }).catch(err =>
         console.error(`Could not update group metadata store for ${id}:`, err));
 
     return response.send({ ok: true });

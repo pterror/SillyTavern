@@ -25,7 +25,7 @@
  */
 
 import { charactersStore, getRequestHeaders, unshallowCharacter } from '../script.js';
-import { getCachedEntriesByIds, saveCachedCharacters } from './character-cache.js';
+import { getCachedEntriesByIds, saveCachedCharacters, getCachedGroupEntriesByIds, saveCachedGroups } from './character-cache.js';
 
 /**
  * @typedef {import('../script.js').Character} Character
@@ -399,6 +399,22 @@ async function fetchBatchFields(ids, fields) {
 }
 
 /**
+ * Fetches full group objects (every field - see `/api/groups/batch`'s own doc comment on why groups get no
+ * field-filtering the way `fetchBatchFields()` above does for characters) for specific ids, chunked the same way.
+ * @param {string[]} ids
+ * @returns {Promise<object[]>}
+ */
+async function fetchGroupBatchFields(ids) {
+    if (ids.length === 0) return [];
+    const chunks = [];
+    for (let i = 0; i < ids.length; i += BATCH_FIELDS_CHUNK_SIZE) {
+        chunks.push(ids.slice(i, i + BATCH_FIELDS_CHUNK_SIZE));
+    }
+    const chunkResults = await Promise.all(chunks.map(chunk => postJson('/api/groups/batch', { ids: chunk })));
+    return chunkResults.flat();
+}
+
+/**
  * The small set of fields hash-mode ships live on every row regardless of cache state - see
  * `queryCharacters()`'s own doc comment (character-metadata-db.js) for why these specifically stay outside the
  * per-field hash's coverage. Always taken from the just-received hash row, never from a cached/fetched character
@@ -572,19 +588,20 @@ export class CharacterRepository {
         const signature = JSON.stringify(requestShape);
         const cached = queryResponseCache.get(signature);
 
-        // Hash mode (2026-09 /query bandwidth pass): whenever this request actually wants `rows` and isn't
-        // merging in groups (the server's hash-only mode is characters-only for now - see the route's own doc
-        // comment, characters.js), transport the row data as `{id, hash}` plus a handful of live fields instead
-        // of full shallow character JSON, and resolve each row from the persisted per-id cache
-        // (character-cache.js's IndexedDB store, the same one boot's manifest/batch/changes sync already
-        // maintains) when its stored hashes match - zero refetch on a hash match, `/api/characters/batch` only
-        // for ids that are missing or whose hash actually changed. Falls back to the plain JSON path for
-        // `includeGroups` requests and for a bare `want: ['total']` (no `rows` to speak of, nothing to gain from
-        // hash mode) - both keep working exactly as before, byte-for-byte.
-        const useHashMode = want.includes('rows') && normalizedFilter.includeGroups !== true;
+        // Hash mode (2026-09 /query bandwidth pass, extended to `includeGroups: true` requests once the server
+        // gained group digest columns): whenever this request actually wants `rows`, transport the row data as
+        // `{id, hash}` plus a handful of live fields instead of full character/group JSON, and resolve each row
+        // from the persisted per-id cache (character-cache.js's IndexedDB store(s) - one for characters, a
+        // separate one for groups, see getCachedEntriesByIds()/getCachedGroupEntriesByIds()) when its stored
+        // hashes match - zero refetch on a hash match, a batched `/api/characters/batch` or `/api/groups/batch`
+        // call only for ids that are missing or whose hash actually changed. Falls back to the plain JSON path
+        // only for a bare `want: ['total']` (no `rows` to speak of, nothing to gain from hash mode) - that one
+        // keeps working exactly as before, byte-for-byte.
+        const useHashMode = want.includes('rows');
+        const includeGroups = normalizedFilter.includeGroups === true;
 
         const result = useHashMode
-            ? await this.#queryHashMode(requestShape, cached)
+            ? await this.#queryHashMode(requestShape, cached, includeGroups)
             : await postJson('/api/characters/query', cached ? { ...requestShape, ifSeq: cached.seq } : requestShape);
 
         // Server confirmed nothing changed since the cached response's `seq` - reuse it rather than the
@@ -611,9 +628,10 @@ export class CharacterRepository {
      * needs to know which transport actually ran.
      * @param {{filter: object, sort: object|undefined, page: number, pageSize: number, want: string[]}} requestShape
      * @param {CharacterQueryResult|undefined} cached
+     * @param {boolean} includeGroups
      * @returns {Promise<CharacterQueryResult|{unchanged: true}>}
      */
-    async #queryHashMode(requestShape, cached) {
+    async #queryHashMode(requestShape, cached, includeGroups) {
         const hashWant = requestShape.want.map(w => w === 'rows' ? 'hashes' : w);
         const body = { ...requestShape, want: hashWant };
         if (cached) body.ifSeq = cached.seq;
@@ -627,54 +645,88 @@ export class CharacterRepository {
         const result = { seq: decoded.seq };
         if (decoded.total !== undefined) result.total = decoded.totalApprox ? `~${decoded.total}` : decoded.total;
         if (decoded.searchBackend !== undefined) result.searchBackend = decoded.searchBackend;
-        result.rows = await this.#resolveHashRows(decoded.hashRows);
+        result.rows = await this.#resolveHashRows(decoded.hashRows, includeGroups);
         return result;
     }
 
     /**
-     * Resolves hash-mode's `{id, favHash, tagIdsHash, contentHash, ...live fields}` rows into full `Character`
-     * objects. A row whose three hashes all match what's stored in the local per-id cache is answered from that
-     * cache directly, with ZERO refetch - the cached `character` object as-is, only its live fields (chat/dates/
-     * sizes, never hash-covered) overlaid from this response. Every other row (cache miss, or a real hash
-     * mismatch) goes through one batched `/api/characters/batch` call for just those ids, then gets cached for
-     * next time.
+     * Resolves hash-mode's `{id, isGroup, favHash, tagIdsHash, contentHash, ...live fields}` rows into full
+     * `Character`/group objects. A row whose three hashes all match what's stored in the local per-id cache is
+     * answered from that cache directly, with ZERO refetch - the cached object as-is, only its live fields (chat/
+     * dates/sizes, never hash-covered) overlaid from this response. Every other row (cache miss, or a real hash
+     * mismatch) goes through one batched fetch for just those ids - `/api/characters/batch` for character rows,
+     * `/api/groups/batch` for group rows (kept as two separate batch calls rather than one merged one: different
+     * endpoints, different response shapes, different local caches to write back to) - then gets cached for next
+     * time.
+     *
+     * When `includeGroups` is true, every resolved item is wrapped `{type, item}` (normalizeQueryRow()'s own
+     * shape) to match what the JSON path already returns for the same request; otherwise (the common case) items
+     * come back bare, matching the JSON path's own bare-`Character[]` contract for a non-includeGroups request.
      * @param {ReturnType<typeof deserializeQueryHashesBinary>['hashRows']} hashRows
-     * @returns {Promise<Character[]>}
+     * @param {boolean} includeGroups
+     * @returns {Promise<Array<Character|{type: 'character'|'group', item: Character|object}>>}
      */
-    async #resolveHashRows(hashRows) {
+    async #resolveHashRows(hashRows, includeGroups) {
         if (hashRows.length === 0) return [];
 
+        const charHashRows = hashRows.filter(r => !r.isGroup);
+        const groupHashRows = includeGroups ? hashRows.filter(r => r.isGroup) : [];
+
+        const [resolvedChars, resolvedGroups] = await Promise.all([
+            this.#resolveCharacterHashRows(charHashRows),
+            groupHashRows.length > 0 ? this.#resolveGroupHashRows(groupHashRows) : new Map(),
+        ]);
+
+        const resolved = hashRows.map(hr => {
+            if (hr.isGroup) {
+                const group = resolvedGroups.get(hr.id);
+                if (!group) return undefined;
+                return includeGroups ? { type: 'group', item: group } : undefined;
+            }
+            const character = resolvedChars.get(hr.id);
+            if (!character) return undefined;
+            return includeGroups ? { type: 'character', item: character } : character;
+        });
+
+        // An id that its own batch call didn't return for (deleted out from under this response between the two
+        // calls) is simply dropped, rather than shipping a hole - same tolerance hydrateEntityRows() already has
+        // server-side for a group whose metadata row outlived its JSON file.
+        return resolved.filter(Boolean);
+    }
+
+    /**
+     * The character half of #resolveHashRows() above - split out because it needs its own cache/batch-endpoint
+     * pair, distinct from the group half.
+     * @param {ReturnType<typeof deserializeQueryHashesBinary>['hashRows']} hashRows Already filtered to `!isGroup`.
+     * @returns {Promise<Map<string, Character>>} keyed by id.
+     */
+    async #resolveCharacterHashRows(hashRows) {
+        const result = new Map();
+        if (hashRows.length === 0) return result;
+
         const cachedEntries = await getCachedEntriesByIds(hashRows.map(r => r.id));
+        const staleRows = [];
 
-        /** @type {(Character|undefined)[]} */
-        const resolved = new Array(hashRows.length);
-        /** @type {string[]} */
-        const staleIds = [];
-        /** @type {Map<string, number>} */
-        const indexById = new Map();
-
-        for (let i = 0; i < hashRows.length; i++) {
-            const hr = hashRows[i];
-            indexById.set(hr.id, i);
+        for (const hr of hashRows) {
             const entry = cachedEntries.get(hr.id);
             const hit = entry && entry.hashes.fav === hr.favHash && entry.hashes.tagIds === hr.tagIdsHash && entry.hashes.content === hr.contentHash;
             if (hit) {
-                resolved[i] = { ...entry.character, ...liveFieldsFromHashRow(hr), avatar: hr.id, shallow: true };
+                result.set(hr.id, { ...entry.character, ...liveFieldsFromHashRow(hr), avatar: hr.id, shallow: true });
             } else {
-                staleIds.push(hr.id);
+                staleRows.push(hr);
             }
         }
 
-        if (staleIds.length > 0) {
-            const fetched = await fetchBatchFields(staleIds, HASH_MODE_BATCH_FIELDS);
+        if (staleRows.length > 0) {
+            const fetched = await fetchBatchFields(staleRows.map(hr => hr.id), HASH_MODE_BATCH_FIELDS);
+            const fetchedByAvatar = new Map(fetched.map(c => [c.avatar, c]));
             /** @type {{avatar: string, character: Character}[]} */
             const toCache = [];
-            for (const partial of fetched) {
-                const i = indexById.get(partial.avatar);
-                if (i === undefined) continue;
-                const hr = hashRows[i];
+            for (const hr of staleRows) {
+                const partial = fetchedByAvatar.get(hr.id);
+                if (!partial) continue;
                 const merged = { ...partial, ...liveFieldsFromHashRow(hr), avatar: hr.id, shallow: true };
-                resolved[i] = merged;
+                result.set(hr.id, merged);
                 toCache.push({ avatar: hr.id, character: merged });
             }
             if (toCache.length > 0) {
@@ -682,10 +734,51 @@ export class CharacterRepository {
             }
         }
 
-        // A stale id that /batch didn't return for (deleted out from under this response between the two calls)
-        // is simply dropped, rather than shipping a hole - same tolerance hydrateEntityRows() already has
-        // server-side for a group whose metadata row outlived its JSON file.
-        return /** @type {Character[]} */ (resolved.filter(Boolean));
+        return result;
+    }
+
+    /**
+     * The group half of #resolveHashRows() above - same shape as #resolveCharacterHashRows(), against the
+     * group-side persisted cache (character-cache.js's getCachedGroupEntriesByIds()/saveCachedGroups()) and
+     * `/api/groups/batch` instead.
+     * @param {ReturnType<typeof deserializeQueryHashesBinary>['hashRows']} hashRows Already filtered to `isGroup`.
+     * @returns {Promise<Map<string, object>>} keyed by id.
+     */
+    async #resolveGroupHashRows(hashRows) {
+        const result = new Map();
+        if (hashRows.length === 0) return result;
+
+        const cachedEntries = await getCachedGroupEntriesByIds(hashRows.map(r => r.id));
+        const staleRows = [];
+
+        for (const hr of hashRows) {
+            const entry = cachedEntries.get(hr.id);
+            const hit = entry && entry.hashes.fav === hr.favHash && entry.hashes.tagIds === hr.tagIdsHash && entry.hashes.content === hr.contentHash;
+            if (hit) {
+                result.set(hr.id, { ...entry.group, ...liveFieldsFromHashRow(hr), id: hr.id });
+            } else {
+                staleRows.push(hr);
+            }
+        }
+
+        if (staleRows.length > 0) {
+            const fetched = await fetchGroupBatchFields(staleRows.map(hr => hr.id));
+            const fetchedById = new Map(fetched.map(g => [g.id, g]));
+            /** @type {{id: string, group: object}[]} */
+            const toCache = [];
+            for (const hr of staleRows) {
+                const partial = fetchedById.get(hr.id);
+                if (!partial) continue;
+                const merged = { ...partial, ...liveFieldsFromHashRow(hr), id: hr.id };
+                result.set(hr.id, merged);
+                toCache.push({ id: hr.id, group: merged });
+            }
+            if (toCache.length > 0) {
+                await saveCachedGroups(toCache);
+            }
+        }
+
+        return result;
     }
 
     /**

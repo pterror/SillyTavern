@@ -1,6 +1,6 @@
 import { localforage } from '../lib.js';
 import { getCurrentUserHandle } from './user.js';
-import { characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash } from './hash-utils.js';
+import { characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash, groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash } from './hash-utils.js';
 
 /**
  * Client-side residency cache for character data (see getCharacters()/fetchCharactersDelta() in script.js).
@@ -384,4 +384,84 @@ export async function clearCharacterCache() {
     } catch (error) {
         console.error('Failed to clear character cache:', error);
     }
+}
+
+/**
+ * Group-side persisted cache (2026-09, extending /query's hash-mode client caching to `includeGroups: true`
+ * requests). A separate IndexedDB instance, not a second key namespace inside the character store above -
+ * groups were never part of that store's boot-time manifest/batch/changes sync (they're "always resident" per
+ * the design doc, never lazily faulted in the way characters are), so this is a genuinely new cache, not an
+ * extension of an existing one. Same per-id `{group, hashes: {fav, tagIds, content, v}}` shape as the character
+ * store, same `HASH_VERSION` migrate-on-read convention, for the same reasons (see that constant's own comment
+ * above) - kept as its own constant (`GROUP_HASH_VERSION`) rather than shared, since a future change to either
+ * digest scheme shouldn't force a cache-wide invalidation of the other.
+ */
+const GROUP_HASH_VERSION = 1;
+
+/** @type {Map<string, LocalForage>} */
+const groupStoresByHandle = new Map();
+
+/** @returns {LocalForage} The group cache store for the currently logged-in user. */
+function getGroupCacheStore() {
+    const handle = getCurrentUserHandle();
+    let store = groupStoresByHandle.get(handle);
+    if (!store) {
+        store = localforage.createInstance({ name: `SillyTavern_GroupCache_${handle}` });
+        groupStoresByHandle.set(handle, store);
+    }
+    return store;
+}
+
+/**
+ * Reads full cached entries (group + hashes) for a specific set of group ids - the group-side counterpart to
+ * getCachedEntriesByIds() above. See that function's own doc comment for the full reasoning (identical here,
+ * just against the group store instead of the character one).
+ * @param {string[]} ids
+ * @returns {Promise<Map<string, {group: object, hashes: {fav: number, tagIds: number, content: number}}>>}
+ */
+export async function getCachedGroupEntriesByIds(ids) {
+    const store = getGroupCacheStore();
+    const result = new Map();
+    await Promise.all(ids.map(async (id) => {
+        try {
+            const record = await store.getItem(id);
+            if (record?.group && record?.hashes?.v === GROUP_HASH_VERSION) {
+                result.set(id, record);
+            }
+        } catch (error) {
+            console.error(`Failed to read cached group entry for ${id}:`, error);
+        }
+    }));
+    return result;
+}
+
+/**
+ * Persists freshly-fetched groups into the cache, keyed by id - the group-side counterpart to
+ * saveCachedCharacters() above. Computes and stores the same three-way digest split
+ * (groupDigestFavHash/TagIdsHash/ContentHash, hash-utils.js) the server's own write-path hooks compute
+ * (upsertGroupRowSync()/assignEntityTag()'s group branch, character-metadata-db.js) - same shared-module
+ * guarantee that keeps the two sides comparable, same reasoning characters already rely on.
+ * @param {{id: string, group: object}[]} entries
+ * @returns {Promise<string[]>} ids that failed to write.
+ */
+export async function saveCachedGroups(entries) {
+    const store = getGroupCacheStore();
+    const failed = [];
+    const SAVE_BATCH = 500;
+    for (let i = 0; i < entries.length; i += SAVE_BATCH) {
+        const batch = entries.slice(i, i + SAVE_BATCH);
+        await Promise.all(batch.map(({ id, group }) => {
+            const hashes = {
+                fav: groupDigestFavHash(group),
+                tagIds: groupDigestTagIdsHash(group),
+                content: groupDigestContentHash(group),
+                v: GROUP_HASH_VERSION,
+            };
+            return store.setItem(id, { group, hashes }).catch(error => {
+                console.error(`Failed to cache group data for ${id}:`, error);
+                failed.push(id);
+            });
+        }));
+    }
+    return failed;
 }
