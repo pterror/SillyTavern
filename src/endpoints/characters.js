@@ -31,7 +31,7 @@ import cacheBuster from '../middleware/cacheBuster.js';
 import { searchCharacters, searchCharacterIds, searchCharacterIdsSorted, rebuildCharacterSearchIndex, TANTIVY_SORT_FIELDS } from './characters-search-index.js';
 import { searchGroups, searchGroupIds } from './groups-search-index.js';
 import { getGroupsData, getGroupsByIds } from './groups.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, resolveFingerprints, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, resolveFingerprints, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq } from '../character-metadata-db.js';
 import { DEFAULT_DIGEST_BUCKET_COUNT, characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
 import { hashGreetingText, opAdd, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault } from '../greeting-ops.js';
@@ -2424,6 +2424,22 @@ router.post('/query', async function (request, response) {
         const wantRows = want.includes('rows');
         const wantTotal = want.includes('total');
 
+        // Cheap re-fetch guard (2026-08 repeated-call investigation): a caller that already has a response for
+        // this exact request shape can pass back the `seq` it was given and skip paying for row hydration/search
+        // entirely when nothing has changed since. This is coarser than the tags digest work's per-bucket content
+        // hashing - it invalidates on ANY character/group write anywhere, not just ones that would actually affect
+        // this filter/sort/page - but it reuses the change log's existing high-water mark (the same cursor
+        // fetchCharactersDelta()/getChangesSince() already track) rather than inventing a second, finer-grained
+        // digest over a candidate set whose membership is itself filter/sort-dependent and would need its own
+        // bucket-tree design to do properly. `ifSeq` is optional and additive - a caller that never sends it gets
+        // byte-identical behavior to before this existed.
+        if (Number.isFinite(Number(body.ifSeq))) {
+            const currentSeq = await getCurrentSeq(request.user.directories);
+            if (currentSeq !== null && currentSeq === Math.trunc(Number(body.ifSeq))) {
+                return response.send({ seq: currentSeq, unchanged: true });
+            }
+        }
+
         let searchBackend;
         let queryParams = {
             tags: filter.tags,
@@ -3117,8 +3133,13 @@ router.post('/chats', validateAvatarUrlMiddleware, async function (request, resp
         // JSONL fallback path
         const chatsDirectory = path.join(request.user.directories.chats, characterDirectory);
 
+        // No chats directory yet means no chats yet - the same "nothing to report" case the
+        // `!characterDirectory` and `jsonFiles.length === 0` branches below already answer with `[]`, not an
+        // error. Returning `{ error: true }` here (a caller-crashing non-array shape - see the catch block's own
+        // comment) made this one case indistinguishable from a real failure, even though it's the ordinary state
+        // for a freshly created/renamed character that hasn't been chatted with yet.
         if (!fs.existsSync(chatsDirectory)) {
-            return response.send({ error: true });
+            return response.send([]);
         }
 
         const files = fs.readdirSync(chatsDirectory, { withFileTypes: true });
@@ -3144,6 +3165,12 @@ router.post('/chats', validateAvatarUrlMiddleware, async function (request, resp
         return response.send(validFiles);
     } catch (error) {
         console.error(error);
+        // Every non-error return above is an array; this is the one remaining case where the response isn't
+        // one. Left as `{ error: true }` rather than `[]` on purpose - unlike the "no chats directory yet" case
+        // just above (which really is empty, not broken), an exception here means something actually went
+        // wrong reading the chat files, and silently reporting that as "zero chats" would hide a real failure
+        // instead of surfacing it. Every caller of this route needs to allow for this shape and treat it as
+        // "couldn't get chats" rather than assuming the response is always an array.
         return response.send({ error: true });
     }
 });

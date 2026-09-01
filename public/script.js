@@ -3355,7 +3355,10 @@ export async function deleteCharacterChatByName(avatar, fileName) {
             headers: getRequestHeaders(),
             body: JSON.stringify({ avatar_url: character.avatar }),
         });
-        const chats = Object.values(await chatsResponse.json());
+        const chatsData = await chatsResponse.json();
+        // /api/characters/chats sends { error: true } (not an array) on a real read failure - guard against
+        // that here instead of crashing on chats[0].file_name of a non-chat entry.
+        const chats = Array.isArray(chatsData) ? chatsData : [];
         chats.sort((a, b) => sortMoments(timestampToMoment(a.last_mes), timestampToMoment(b.last_mes)));
         const newChatName = chats.length && typeof chats[0] === 'object' ? chats[0].file_name.replace('.jsonl', '') : `${character.name} - ${humanizedDateTime()}`;
         await updateRemoteChatName(character.avatar, newChatName);
