@@ -25,6 +25,7 @@
  */
 
 import { charactersStore, getRequestHeaders, unshallowCharacter } from '../script.js';
+import { getCachedEntriesByIds, saveCachedCharacters } from './character-cache.js';
 
 /**
  * @typedef {import('../script.js').Character} Character
@@ -79,6 +80,21 @@ import { charactersStore, getRequestHeaders, unshallowCharacter } from '../scrip
  */
 
 const DEFAULT_QUERY_WANT = /** @type {const} */ (['rows', 'total']);
+
+/**
+ * Cache of the last-seen `/query` response per exact request shape (filter+sort+page+pageSize+want serialized to
+ * a string), keyed so a caller that repeats the same request can send back the `seq` it was given and let the
+ * server skip row hydration entirely when nothing's changed since (see the route's own doc comment,
+ * src/endpoints/characters.js `router.post('/query'`) - this is what turns two boot-time
+ * `printCharacters(true)` calls with an identical filter/sort/page into one real fetch plus one ~20-byte
+ * "unchanged" response instead of two full row payloads. Capped defensively (cleared wholesale past the limit,
+ * not LRU-evicted - this only exists to bound worst-case memory for a tab that mints many distinct signatures,
+ * e.g. a fresh random-sort seed per session; losing the whole cache occasionally just costs one extra full fetch,
+ * never a correctness issue, since a cache hit is always re-verified against the server's current `seq`).
+ * @type {Map<string, any>}
+ */
+const queryResponseCache = new Map();
+const QUERY_RESPONSE_CACHE_LIMIT = 100;
 
 /**
  * The server's own page cap (`MAX_QUERY_PAGE_SIZE`, src/endpoints/characters.js) - `queryAll()` below chunks its
@@ -260,6 +276,147 @@ async function postJson(url, body) {
 }
 
 /**
+ * Search-backend enum codes for `/query`'s binary hash-mode response - mirrors HASH_QUERY_SEARCH_BACKEND_CODES
+ * server-side (src/endpoints/characters.js). 0 means "absent".
+ */
+const HASH_QUERY_SEARCH_BACKEND_NAMES = { 1: 'tantivy', 2: 'native', 3: 'wasm', 4: 'unavailable' };
+
+/**
+ * Decodes `/query`'s hash-only mode (`want: ['hashes']`) binary response. See
+ * `serializeQueryHashesBinary()`/`sendHashQueryResponse()` server-side (src/endpoints/characters.js) for the
+ * matching encoder and the full field-by-field layout spec (that doc comment is the source of truth for the wire
+ * format; this function just walks it with a `DataView`, the same approach script.js's own
+ * `deserializeTreeDescendBinary()` uses for the sibling tree-descend binary format).
+ * @param {ArrayBuffer} buffer
+ * @returns {{seq: number, total: number|undefined, totalApprox: boolean, searchBackend: string|undefined, hashRows: {id:string, isGroup:boolean, favHash:number, tagIdsHash:number, contentHash:number, date_added:number, create_date:number|null, date_last_chat:number, chat_size:number, data_size:number, chat:string|null}[]}}
+ */
+function deserializeQueryHashesBinary(buffer) {
+    const view = new DataView(buffer);
+    const decoder = new TextDecoder();
+    let offset = 0;
+
+    const headerFlags = view.getUint8(offset); offset += 1;
+    const hasTotal = (headerFlags & 0b01) !== 0;
+    const totalApprox = (headerFlags & 0b10) !== 0;
+    const searchBackendCode = view.getUint8(offset); offset += 1;
+    const searchBackend = HASH_QUERY_SEARCH_BACKEND_NAMES[searchBackendCode];
+    const seq = view.getFloat64(offset, true); offset += 8;
+    const total = view.getFloat64(offset, true); offset += 8;
+    const rowCount = view.getUint16(offset, true); offset += 2;
+
+    const hashRows = [];
+    for (let i = 0; i < rowCount; i++) {
+        const flags = view.getUint8(offset); offset += 1;
+        const isGroup = (flags & 0b1) !== 0;
+        const hasCreateDate = (flags & 0b10) !== 0;
+
+        const idLen = view.getUint16(offset, true); offset += 2;
+        const id = decoder.decode(new Uint8Array(buffer, offset, idLen)); offset += idLen;
+
+        const favHash = view.getUint32(offset, true); offset += 4;
+        const tagIdsHash = view.getUint32(offset, true); offset += 4;
+        const contentHash = view.getUint32(offset, true); offset += 4;
+
+        const date_added = view.getFloat64(offset, true); offset += 8;
+        const createDateRaw = view.getFloat64(offset, true); offset += 8;
+        const date_last_chat = view.getFloat64(offset, true); offset += 8;
+        const chat_size = view.getFloat64(offset, true); offset += 8;
+        const data_size = view.getFloat64(offset, true); offset += 8;
+
+        const chatLen = view.getUint16(offset, true); offset += 2;
+        const chat = chatLen > 0 ? decoder.decode(new Uint8Array(buffer, offset, chatLen)) : null;
+        offset += chatLen;
+
+        hashRows.push({
+            id, isGroup, favHash, tagIdsHash, contentHash,
+            date_added, create_date: hasCreateDate ? createDateRaw : null, date_last_chat, chat_size, data_size, chat,
+        });
+    }
+
+    return { seq, total: hasTotal ? total : undefined, totalApprox, searchBackend, hashRows };
+}
+
+/**
+ * Sends `/query` with `want: ['hashes', ...]` and parses the binary (or, on an `ifSeq` cache hit, small JSON
+ * `{seq, unchanged: true}`) response. Mirrors `postJson()`'s error handling for the non-ok case.
+ * @param {object} body
+ * @returns {Promise<{unchanged: true}|ReturnType<typeof deserializeQueryHashesBinary>>}
+ */
+async function postHashQuery(body) {
+    const response = await fetch('/api/characters/query', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+        /** @type {any} */
+        let errorBody;
+        try {
+            errorBody = await response.json();
+        } catch {
+            // Response body wasn't JSON (or was empty) - fall through with just the status.
+        }
+        const reason = errorBody?.reason;
+        const detail = errorBody?.message ?? reason ?? '';
+        throw new CharacterQueryError(`/api/characters/query (hashes) failed with ${response.status}${detail ? `: ${detail}` : ''}`, { status: response.status, reason, body: errorBody });
+    }
+    const contentType = response.headers.get('content-type') ?? '';
+    if (contentType.includes('application/json')) {
+        // Only ever the ifSeq "unchanged" stub in hash mode - the route sends that shape (never an error, since
+        // errors above already went through the !response.ok branch) before it ever branches into hash-row
+        // building. See sendHashQueryResponse()/the /query route's own ifSeq check, characters.js.
+        return response.json();
+    }
+    return deserializeQueryHashesBinary(await response.arrayBuffer());
+}
+
+// Mirrors script.js's own CHARACTER_BATCH_CHUNK_SIZE - `/api/characters/batch` bodies stay chunked at the same
+// size every other caller already uses, rather than sizing hash-mode's own stale-id batch to `/query`'s (larger)
+// MAX_QUERY_PAGE_SIZE.
+const BATCH_FIELDS_CHUNK_SIZE = 500;
+
+// The hash-covered fields hash-mode never ships on the wire itself - resolved per id from the local per-id cache
+// when its stored hashes match what `/query` just reported, otherwise fetched here via `/api/characters/batch`'s
+// field-filtered mode. Exactly `characterDigestFingerprint()`'s own field list (hash-utils.js) minus `avatar`
+// (which `/batch`'s field-filtered mode always includes regardless of what's requested).
+const HASH_MODE_BATCH_FIELDS = /** @type {const} */ (['name', 'fav', 'tags', 'tag_ids', 'data']);
+
+/**
+ * Fetches specific fields for specific ids via `/api/characters/batch`'s field-filtered mode, chunked the same
+ * way script.js's own `/batch` callers already are.
+ * @param {string[]} ids
+ * @param {readonly string[]} fields
+ * @returns {Promise<object[]>}
+ */
+async function fetchBatchFields(ids, fields) {
+    if (ids.length === 0) return [];
+    const chunks = [];
+    for (let i = 0; i < ids.length; i += BATCH_FIELDS_CHUNK_SIZE) {
+        chunks.push(ids.slice(i, i + BATCH_FIELDS_CHUNK_SIZE));
+    }
+    const chunkResults = await Promise.all(chunks.map(chunk => postJson('/api/characters/batch', { avatars: chunk, fields: [...fields] })));
+    return chunkResults.flat();
+}
+
+/**
+ * The small set of fields hash-mode ships live on every row regardless of cache state - see
+ * `queryCharacters()`'s own doc comment (character-metadata-db.js) for why these specifically stay outside the
+ * per-field hash's coverage. Always taken from the just-received hash row, never from a cached/fetched character
+ * object, so a stale cache entry can never leave a character showing an outdated chat pointer or date/size.
+ * @param {{chat:string|null, date_added:number, create_date:number|null, date_last_chat:number, chat_size:number, data_size:number}} hashRow
+ */
+function liveFieldsFromHashRow(hashRow) {
+    return {
+        chat: hashRow.chat,
+        date_added: hashRow.date_added,
+        create_date: hashRow.create_date,
+        date_last_chat: hashRow.date_last_chat,
+        chat_size: hashRow.chat_size,
+        data_size: hashRow.data_size,
+    };
+}
+
+/**
  * Owns character residency for internal (non-extension) client code. See the module doc comment above for the
  * resident/non-resident contract this exists to make explicit.
  */
@@ -411,7 +568,124 @@ export class CharacterRepository {
             return rest;
         })();
         const normalizedSort = sort?.field === 'search' && !search ? undefined : sort;
-        return postJson('/api/characters/query', { filter: normalizedFilter, sort: normalizedSort, page, pageSize, want });
+        const requestShape = { filter: normalizedFilter, sort: normalizedSort, page, pageSize, want };
+        const signature = JSON.stringify(requestShape);
+        const cached = queryResponseCache.get(signature);
+
+        // Hash mode (2026-09 /query bandwidth pass): whenever this request actually wants `rows` and isn't
+        // merging in groups (the server's hash-only mode is characters-only for now - see the route's own doc
+        // comment, characters.js), transport the row data as `{id, hash}` plus a handful of live fields instead
+        // of full shallow character JSON, and resolve each row from the persisted per-id cache
+        // (character-cache.js's IndexedDB store, the same one boot's manifest/batch/changes sync already
+        // maintains) when its stored hashes match - zero refetch on a hash match, `/api/characters/batch` only
+        // for ids that are missing or whose hash actually changed. Falls back to the plain JSON path for
+        // `includeGroups` requests and for a bare `want: ['total']` (no `rows` to speak of, nothing to gain from
+        // hash mode) - both keep working exactly as before, byte-for-byte.
+        const useHashMode = want.includes('rows') && normalizedFilter.includeGroups !== true;
+
+        const result = useHashMode
+            ? await this.#queryHashMode(requestShape, cached)
+            : await postJson('/api/characters/query', cached ? { ...requestShape, ifSeq: cached.seq } : requestShape);
+
+        // Server confirmed nothing changed since the cached response's `seq` - reuse it rather than the
+        // (rows/total-less) `unchanged` stub. If a caller somehow got here with a cached signature that no
+        // longer resolves (shouldn't happen - cache entries are only ever written from a real response for this
+        // exact signature), fall through and treat the stub as the real answer rather than throwing.
+        if (result?.unchanged === true && cached) {
+            return cached;
+        }
+
+        if (result && typeof result.seq === 'number') {
+            if (queryResponseCache.size >= QUERY_RESPONSE_CACHE_LIMIT) queryResponseCache.clear();
+            queryResponseCache.set(signature, result);
+        }
+
+        return result;
+    }
+
+    /**
+     * The hash-mode transport for `query()` above: sends `want: ['hashes', ...]` instead of `want: ['rows', ...]`,
+     * decodes the binary response, and resolves each row to a full `Character` object - from the local per-id
+     * cache on a hash match (zero refetch), otherwise via `/api/characters/batch`. Returns the exact same
+     * `{rows, total, seq, searchBackend}` shape `query()`'s JSON path returns, so nothing downstream of `query()`
+     * needs to know which transport actually ran.
+     * @param {{filter: object, sort: object|undefined, page: number, pageSize: number, want: string[]}} requestShape
+     * @param {CharacterQueryResult|undefined} cached
+     * @returns {Promise<CharacterQueryResult|{unchanged: true}>}
+     */
+    async #queryHashMode(requestShape, cached) {
+        const hashWant = requestShape.want.map(w => w === 'rows' ? 'hashes' : w);
+        const body = { ...requestShape, want: hashWant };
+        if (cached) body.ifSeq = cached.seq;
+
+        const decoded = await postHashQuery(body);
+        if (decoded?.unchanged === true) {
+            return decoded;
+        }
+
+        /** @type {CharacterQueryResult} */
+        const result = { seq: decoded.seq };
+        if (decoded.total !== undefined) result.total = decoded.totalApprox ? `~${decoded.total}` : decoded.total;
+        if (decoded.searchBackend !== undefined) result.searchBackend = decoded.searchBackend;
+        result.rows = await this.#resolveHashRows(decoded.hashRows);
+        return result;
+    }
+
+    /**
+     * Resolves hash-mode's `{id, favHash, tagIdsHash, contentHash, ...live fields}` rows into full `Character`
+     * objects. A row whose three hashes all match what's stored in the local per-id cache is answered from that
+     * cache directly, with ZERO refetch - the cached `character` object as-is, only its live fields (chat/dates/
+     * sizes, never hash-covered) overlaid from this response. Every other row (cache miss, or a real hash
+     * mismatch) goes through one batched `/api/characters/batch` call for just those ids, then gets cached for
+     * next time.
+     * @param {ReturnType<typeof deserializeQueryHashesBinary>['hashRows']} hashRows
+     * @returns {Promise<Character[]>}
+     */
+    async #resolveHashRows(hashRows) {
+        if (hashRows.length === 0) return [];
+
+        const cachedEntries = await getCachedEntriesByIds(hashRows.map(r => r.id));
+
+        /** @type {(Character|undefined)[]} */
+        const resolved = new Array(hashRows.length);
+        /** @type {string[]} */
+        const staleIds = [];
+        /** @type {Map<string, number>} */
+        const indexById = new Map();
+
+        for (let i = 0; i < hashRows.length; i++) {
+            const hr = hashRows[i];
+            indexById.set(hr.id, i);
+            const entry = cachedEntries.get(hr.id);
+            const hit = entry && entry.hashes.fav === hr.favHash && entry.hashes.tagIds === hr.tagIdsHash && entry.hashes.content === hr.contentHash;
+            if (hit) {
+                resolved[i] = { ...entry.character, ...liveFieldsFromHashRow(hr), avatar: hr.id, shallow: true };
+            } else {
+                staleIds.push(hr.id);
+            }
+        }
+
+        if (staleIds.length > 0) {
+            const fetched = await fetchBatchFields(staleIds, HASH_MODE_BATCH_FIELDS);
+            /** @type {{avatar: string, character: Character}[]} */
+            const toCache = [];
+            for (const partial of fetched) {
+                const i = indexById.get(partial.avatar);
+                if (i === undefined) continue;
+                const hr = hashRows[i];
+                const merged = { ...partial, ...liveFieldsFromHashRow(hr), avatar: hr.id, shallow: true };
+                resolved[i] = merged;
+                toCache.push({ avatar: hr.id, character: merged });
+            }
+            if (toCache.length > 0) {
+                await saveCachedCharacters(toCache);
+            }
+        }
+
+        // A stale id that /batch didn't return for (deleted out from under this response between the two calls)
+        // is simply dropped, rather than shipping a hole - same tolerance hydrateEntityRows() already has
+        // server-side for a group whose metadata row outlived its JSON file.
+        return /** @type {Character[]} */ (resolved.filter(Boolean));
     }
 
     /**

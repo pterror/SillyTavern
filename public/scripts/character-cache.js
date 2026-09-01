@@ -286,6 +286,38 @@ export async function getCachedHashesByIds(ids) {
 }
 
 /**
+ * Reads full cached entries (character + hashes) for a specific set of ids in one pass - the per-id-cache half
+ * of `/query`'s hash-only mode (2026-09 /query bandwidth pass, `CharacterRepository.query()` in
+ * character-repository.js): given the `{id, favHash, tagIdsHash, contentHash}` rows the server's hash-mode
+ * response carries, a caller checks each id's hashes against what's stored here - a match means the cached
+ * `character` object can be used as-is with zero refetch; a miss (or absent entry) means the id needs to go
+ * through `/api/characters/batch` for its actual field values.
+ *
+ * Deliberately a single combined read (character + hashes together) rather than `getCachedHashesByIds()` followed
+ * by a second per-id character read: they're stored under the same key in the same IDB write already
+ * (`saveCachedCharacters()` below), so reading them apart would just be two IDB round trips for data that's
+ * always fetched and used together here.
+ * @param {string[]} ids
+ * @returns {Promise<Map<string, {character: object, hashes: {fav: number, tagIds: number, content: number}}>>}
+ * keyed by id; ids with no cached entry, or whose stored hash predates `HASH_VERSION`, are simply absent.
+ */
+export async function getCachedEntriesByIds(ids) {
+    const store = getCharacterCacheStore();
+    const result = new Map();
+    await Promise.all(ids.map(async (id) => {
+        try {
+            const record = await store.getItem(id);
+            if (record?.character && record?.hashes?.v === HASH_VERSION) {
+                result.set(id, record);
+            }
+        } catch (error) {
+            console.error(`Failed to read cached entry for ${id}:`, error);
+        }
+    }));
+    return result;
+}
+
+/**
  * Persists freshly-fetched characters into the cache, keyed by avatar. Callers should pass already fully
  * processed character objects (DOMPurify-sanitized name, defaulted chat, etc. - i.e. exactly what would've been
  * assigned into the `characters` array before this cache existed), since getAllCachedCharacters() returns cache

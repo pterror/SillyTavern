@@ -4090,12 +4090,24 @@ function buildWhereClause({ tags, fav, world, excludeIds, ids } = {}) {
  * @param {number} [params.limit]
  * @param {boolean} [params.wantRows] Default true.
  * @param {boolean} [params.wantTotal] Default true.
- * @returns {Promise<{ rows: object[] | undefined, total: number | undefined, seq: number } | null>} `rows` are
- * already-parsed `toShallow()` projections, ready to ship as-is. `seq` is the change log's current high-water
- * mark (doc §5's "`seq` lets the client detect that its cache is stale relative to what it just rendered"), always
- * present regardless of `want`. `null` means the metadata store itself is unavailable on this install (no usable
- * SQLite backend) - callers must treat that as a hard "can't serve this endpoint right now", not silently fall
- * back to a live filesystem scan (see this module's `getEntry()` for the one place that's already logged).
+ * @param {boolean} [params.wantHashes] Default false. Hash-only mode (2026-09 /query bandwidth pass): returns
+ * `hashRows` instead of `rows` - `{id, chat, date_added, create_date, date_last_chat, chat_size, data_size,
+ * favHash, tagIdsHash, contentHash}` per row, computed live from shallow_json on every call (NOT read from the
+ * digest_fav/digest_tag_ids/digest_content columns - those were found to disagree with a fresh recompute for a
+ * meaningful share of real rows on this install, not just be NULL for untouched ones; see this function's own
+ * inline comment where hashRows is built for the specifics) plus the small set of fields that stay outside those
+ * hashes' coverage on purpose (characterDigestFingerprint()'s own header, hash-utils.js, explains why: `chat`/
+ * `chat_size`/`date_last_chat`/`date_added`/`create_date` are recomputed live on other read paths and would
+ * false-positive a hash mismatch if included). A caller resolves the hash-covered fields (name/fav/tags/tag_ids/
+ * data.*) itself - from its own per-id cache when `{favHash, tagIdsHash, contentHash}` matches what it already has, otherwise via
+ * a targeted fetch (`/api/characters/batch`) for just the ids that don't match or aren't cached yet.
+ * @returns {Promise<{ rows: object[] | undefined, hashRows: object[] | undefined, total: number | undefined, seq: number } | null>}
+ * `rows` are already-parsed `toShallow()` projections, ready to ship as-is. `seq` is the change log's current
+ * high-water mark (doc §5's "`seq` lets the client detect that its cache is stale relative to what it just
+ * rendered"), always present regardless of `want`. `null` means the metadata store itself is unavailable on this
+ * install (no usable SQLite backend) - callers must treat that as a hard "can't serve this endpoint right now",
+ * not silently fall back to a live filesystem scan (see this module's `getEntry()` for the one place that's
+ * already logged).
  */
 export async function queryCharacters(directories, params = {}) {
     const entry = await getEntry(directories);
@@ -4106,6 +4118,13 @@ export async function queryCharacters(directories, params = {}) {
         sortField, sortOrder, seed, idOrder,
         offset, limit,
         wantRows = true, wantTotal = true,
+        // Hash-only mode (2026-09 /query bandwidth pass): selects the pre-computed digest_fav/digest_tag_ids/
+        // digest_content columns plus the small set of live-recomputed-elsewhere fields (active_chat, the four
+        // date/size columns) instead of parsing shallow_json - see `hashRows`' shape below and the /query route's
+        // own doc comment for why these specific fields stay outside the hash's coverage (characterDigestFingerprint()'s
+        // own header, hash-utils.js). Mutually exclusive with wantRows in practice (the /query route picks one or
+        // the other per request) but not enforced here - both can technically be requested together.
+        wantHashes = false,
     } = params;
 
     const seqRow = entry.db.get('SELECT COALESCE(MAX(seq), 0) as seq FROM changes');
@@ -4114,7 +4133,7 @@ export async function queryCharacters(directories, params = {}) {
     if (Array.isArray(ids) && ids.length === 0) {
         // "Resolve exactly these ids" over zero ids - trivially empty, and worth short-circuiting rather than
         // building `id IN ()` (invalid SQL) or `id IN (NULL)` (a footgun that means something else entirely).
-        return { rows: wantRows ? [] : undefined, total: wantTotal ? 0 : undefined, seq };
+        return { rows: wantRows ? [] : undefined, hashRows: wantHashes ? [] : undefined, total: wantTotal ? 0 : undefined, seq };
     }
 
     const { where, args } = buildWhereClause({ tags, fav, world, excludeIds, ids });
@@ -4125,21 +4144,69 @@ export async function queryCharacters(directories, params = {}) {
         total = Number(countRow?.total ?? 0);
     }
 
-    let rows;
-    if (wantRows && sortField === 'search') {
+    // Columns for hash-only mode - everything a hash-row needs, none of shallow_json's text-heavy fields
+    // (name/tags/tag_ids/data.*, all covered instead by three live-computed digest hashes - the client resolves
+    // those fields from its own cache or a /batch fetch when a hash doesn't match what it already has).
+    //
+    // The three digest columns (digest_fav/digest_tag_ids/digest_content) deliberately are NOT selected or
+    // trusted here, even where non-NULL - found while verifying this against the live table (2026-09): ~327.5k
+    // of ~328.7k rows (99.6%) have NULL digests (a long-lived bulk-imported library whose rows mostly predate
+    // these columns and haven't been individually touched by a write since), which would already be a problem
+    // (NULL read as a real zero-hash would make every untouched row "equal" regardless of content) - but
+    // spot-checking rows that DO have a stored value turned up real drift too: a stored digest_fav that disagrees
+    // with characterDigestFavHash() recomputed fresh from that exact same row's own shallow_json (one example:
+    // stored 989021974 vs. recomputed 272117939, for shallow.fav=true/shallow.data.extensions.fav=false) - not a
+    // NULL-vs-present question, an actual mismatch between the persisted digest and the content it's supposed to
+    // describe, with no version column on these columns to detect or explain it. Until that's root-caused,
+    // hash-mode always recomputes live from shallow_json instead - correct by construction (the hash always
+    // matches what actually gets hashed), at the cost of the shallow_json-parse-per-row this mode was hoping to
+    // skip. The wire savings (small hash rows instead of full shallow rows) hold regardless of where the hash
+    // computation itself runs.
+    const HASH_COLUMNS = 'id, active_chat, date_added, create_date, date_last_chat, chat_size, data_size, shallow_json';
+    /** @param {object} r raw SQL row selected via HASH_COLUMNS */
+    const toHashRow = (r) => {
+        const shallow = JSON.parse(r.shallow_json);
+        const favHash = characterDigestFavHash(shallow) % 4294967296;
+        const tagIdsHash = characterDigestTagIdsHash(shallow);
+        const contentHash = characterDigestFieldsHash(shallow) % 4294967296;
+        return {
+            id: r.id,
+            chat: r.active_chat,
+            date_added: r.date_added,
+            create_date: r.create_date,
+            date_last_chat: r.date_last_chat,
+            chat_size: r.chat_size,
+            data_size: r.data_size,
+            favHash: favHash >>> 0,
+            tagIdsHash: tagIdsHash >>> 0,
+            contentHash: contentHash >>> 0,
+        };
+    };
+
+    let rows, hashRows;
+    if ((wantRows || wantHashes) && sortField === 'search') {
         // Relevance order has no SQL column - fetch every candidate row (already bounded by the `ids` restriction
         // buildWhereClause() applied above, which the /query route sizes to the search engine's own matched-id
         // cap, not this table's size) with no SQL ORDER BY/LIMIT, then reorder and slice in JS to match idOrder.
         const orderedIds = Array.isArray(idOrder) ? idOrder : [];
-        const rawRows = entry.db.all(`SELECT id, shallow_json FROM characters ${where}`, args);
-        const shallowById = new Map(rawRows.map(r => [r.id, r.shallow_json]));
         const numericOffset = Number.isFinite(offset) && offset > 0 ? Math.trunc(offset) : 0;
         const numericLimit = Number.isFinite(limit) && limit >= 0 ? Math.trunc(limit) : DEFAULT_QUERY_LIMIT;
-        rows = orderedIds
-            .filter(id => shallowById.has(id))
-            .slice(numericOffset, numericOffset + numericLimit)
-            .map(id => JSON.parse(shallowById.get(id)));
-    } else if (wantRows) {
+        if (wantHashes) {
+            const rawRows = entry.db.all(`SELECT ${HASH_COLUMNS} FROM characters ${where}`, args);
+            const rowById = new Map(rawRows.map(r => [r.id, r]));
+            hashRows = orderedIds
+                .filter(id => rowById.has(id))
+                .slice(numericOffset, numericOffset + numericLimit)
+                .map(id => toHashRow(rowById.get(id)));
+        } else {
+            const rawRows = entry.db.all(`SELECT id, shallow_json FROM characters ${where}`, args);
+            const shallowById = new Map(rawRows.map(r => [r.id, r.shallow_json]));
+            rows = orderedIds
+                .filter(id => shallowById.has(id))
+                .slice(numericOffset, numericOffset + numericLimit)
+                .map(id => JSON.parse(shallowById.get(id)));
+        }
+    } else if (wantRows || wantHashes) {
         const orderParts = [];
         if (sortField === 'random') {
             // Design doc §5.3, decisions 8/13: a per-query hash order, computed via the RANDHASH SQL function
@@ -4176,11 +4243,16 @@ export async function queryCharacters(directories, params = {}) {
         // args, so its bind value goes right after `args` and before the LIMIT/OFFSET pair - SQLite binds `?`
         // placeholders strictly in the order they appear in the SQL text.
         const orderArgs = sortField === 'random' ? [Number(seed) || 0] : [];
-        const rawRows = entry.db.all(`SELECT shallow_json FROM characters ${where} ${orderBy} LIMIT ? OFFSET ?`, [...args, ...orderArgs, numericLimit, numericOffset]);
-        rows = rawRows.map(r => JSON.parse(r.shallow_json));
+        if (wantHashes) {
+            const rawRows = entry.db.all(`SELECT ${HASH_COLUMNS} FROM characters ${where} ${orderBy} LIMIT ? OFFSET ?`, [...args, ...orderArgs, numericLimit, numericOffset]);
+            hashRows = rawRows.map(toHashRow);
+        } else {
+            const rawRows = entry.db.all(`SELECT shallow_json FROM characters ${where} ${orderBy} LIMIT ? OFFSET ?`, [...args, ...orderArgs, numericLimit, numericOffset]);
+            rows = rawRows.map(r => JSON.parse(r.shallow_json));
+        }
     }
 
-    return { rows, total, seq };
+    return { rows, hashRows, total, seq };
 }
 
 // Mirrors characters.js's own DEFAULT_PAGE_LIMIT - a caller genuinely omitting `limit` (rather than the /query
