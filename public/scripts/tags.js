@@ -454,6 +454,22 @@ function rebuildTagStores() {
             serverAssignedTagIds.add(change.relatedId);
         }
     });
+
+    // getTagsList() now reads a resident character's tags straight off its own tag_ids field instead of
+    // tag_map (see its doc comment) - mirror every tag_map key this store just touched back onto the matching
+    // character entity's tag_ids, so a tag toggle still shows up immediately instead of waiting on the next
+    // delta sync to pull the server's own tag_ids update back down. A no-op for group ids / any other key that
+    // doesn't resolve to a resident character (charactersStore.has() gates it). Key rename/copy ops
+    // ('keyRenamed'/'keyCopied') are deliberately not handled here - that's the character-identity-change case,
+    // out of scope for this mirror.
+    tagMapStore.onChange((change) => {
+        const keys = change.op === 'relatedRemoved' ? (change.affectedKeys ?? []) : (change.key ? [change.key] : []);
+        for (const key of keys) {
+            if (charactersStore.has(key)) {
+                charactersStore.update(key, { tag_ids: tagMapStore.get(key) });
+            }
+        }
+    });
 }
 
 /**
@@ -1248,16 +1264,62 @@ function createTagMapFromList(listElement, key) {
 }
 
 /**
+ * Resolves an array of tag ids straight to their tag objects, via `tagsStore` - the shared last step of both
+ * `getTagsList()` branches (and the residency-bypass path below), factored out so both stay in exact agreement
+ * on what "ids to tags" means (dedupe-via-Map lookup, drop unknown ids, sort).
+ * @param {string[]} tagIds
+ * @param {boolean} sort
+ * @returns {Tag[]}
+ */
+function tagIdsToTagList(tagIds, sort) {
+    const list = tagIds.map(x => tagsStore.get(x)).filter(x => x);
+    if (sort) list.sort(compareTagsForSort);
+    return list;
+}
+
+/**
  * Gets a list of all tags for a given entity key.
  * If you have an entity, you can get it's key easily via `getTagKeyForEntity(entity)`.
  *
  * @param {string} key - The key for which to get tags via the tag map
  * @param {boolean} [sort=true] - Whether the tag list should be sorted
+ * @param {string[]} [residencyFallbackTagIds] - Tag ids to use when `key` doesn't resolve to a
+ * `charactersStore`-resident character (see below) - the caller's own already-in-hand `tag_ids` for that entity,
+ * if it has any. Only consulted on a residency miss; a resident character's own `tag_ids` always wins.
  * @returns {Tag[]} A list of tags
  */
-function getTagsList(key, sort = true) {
+function getTagsList(key, sort = true, residencyFallbackTagIds = undefined) {
     if (key === null || key === undefined) {
         return [];
+    }
+
+    // A character carries its own tag_ids straight off the (delta-synced) record it's already resident with -
+    // read that directly instead of tag_map[key], which is only ever populated in bulk once at boot
+    // (seedTagMapFromRecords(), script.js) and never rebuilt afterward. A character that starts existing
+    // client-side after that one seed (an SSE push, a fresh search page, anything reached post-boot) has a
+    // correct tag_ids on its own object the whole time, but no entry here - reading tag_map for it was the bug.
+    // Groups have no tag_ids field of their own (see seedTagMapFromRecords()'s doc comment), so they - and any
+    // other key that doesn't resolve to a resident character - keep going through tag_map exactly as before.
+    const character = charactersStore.get(key);
+    if (character) {
+        const tagIds = Array.isArray(character.tag_ids) ? character.tag_ids : [];
+        return tagIdsToTagList(tagIds, sort);
+    }
+
+    // Not `charactersStore`-resident is NOT the same as "not a character" - under `lazyLoadCharacters` (the
+    // common case for a library too large to boot-load in full), most characters shown in the list/search view
+    // are rendered straight from a `CharacterRepository.query()`/`/query` row that's never written back into
+    // `charactersStore` (see that method's own doc comment on why not) and never seeded into `tag_map` either
+    // (`seedTagMapFromRecords()` only ever iterates the boot-resident `characters` array). Those rows still
+    // carry a correct, live `tag_ids` straight from the server (confirmed live: `/api/characters/query` returns
+    // it immediately after a `/api/tags/assign`) - a caller that's already holding one of these rows (e.g.
+    // `printTagList()`'s `entityTagIds` from `renderCharacterBlock()`'s own `item.tag_ids`) passes it here so it
+    // gets used instead of silently falling through to `tag_map[key]`, which was never populated for this key
+    // and would just render as "no tags". This was the actual remaining bug behind the tags-not-showing report:
+    // the earlier per-character `tag_ids`-based fix only covered the resident branch above, and this install's
+    // 328k-character library with `lazyLoadCharacters: true` hits the non-resident case for nearly every row.
+    if (Array.isArray(residencyFallbackTagIds)) {
+        return tagIdsToTagList(residencyFallbackTagIds, sort);
     }
 
     if (!Array.isArray(tag_map[key])) {
@@ -1265,11 +1327,7 @@ function getTagsList(key, sort = true) {
         return [];
     }
 
-    const list = tag_map[key]
-        .map(x => tagsStore.get(x))
-        .filter(x => x);
-    if (sort) list.sort(compareTagsForSort);
-    return list;
+    return tagIdsToTagList(tag_map[key], sort);
 }
 
 function getInlineListSelector() {
@@ -1901,6 +1959,11 @@ function newTag(tagName) {
  * If set, the selector is executed on each tag as input argument. This allows a list of tags to be provided and each tag can have it's action based on the tag object itself.
  * @property {TagOptions} [tagOptions={}] - Options for tag behavior. (Same object will be passed into "appendTagToList")
  * @property {string[]} [inactiveTags=[]] - List of tag IDs that are considered inactive (for styling purposes).
+ * @property {string[]} [entityTagIds=undefined] - The entity's own `tag_ids`, if the caller already has them in
+ * hand (e.g. a character row's server-fetched data) - used by `getTagsList()` as a fallback source of truth when
+ * `forEntityOrKey` doesn't resolve to a `charactersStore`-resident character (see that function's doc comment on
+ * why a non-resident id still legitimately needs this - `lazyLoadCharacters` installs render most of their list/
+ * search view straight from non-resident `/query` rows). Ignored when `tags` is also passed.
  */
 
 /**
@@ -1909,10 +1972,10 @@ function newTag(tagName) {
  * @param {JQuery<HTMLElement>|string} element - The container element where the tags are to be printed. (Optionally can also be a string selector for the element, which will then be resolved)
  * @param {PrintTagListOptions} [options] - Optional parameters for printing the tag list.
  */
-function printTagList(element, { tags = undefined, addTag = undefined, forEntityOrKey = undefined, empty = true, sort = true, tagActionSelector = undefined, tagOptions = {}, inactiveTags = [] } = {}) {
+function printTagList(element, { tags = undefined, addTag = undefined, forEntityOrKey = undefined, empty = true, sort = true, tagActionSelector = undefined, tagOptions = {}, inactiveTags = [], entityTagIds = undefined } = {}) {
     const $element = (typeof element === 'string') ? $(element) : element;
     const key = forEntityOrKey !== undefined ? getTagKeyForEntity(forEntityOrKey) : getTagKey();
-    let printableTags = tags ? (typeof tags === 'function' ? tags() : tags) : getTagsList(key, sort);
+    let printableTags = tags ? (typeof tags === 'function' ? tags() : tags) : getTagsList(key, sort, entityTagIds);
 
     if (tagOptions.isCharacterList) {
         printableTags = printableTags.filter(tag => !tag.is_hidden_on_character_card);

@@ -1589,8 +1589,18 @@ function renderCharacterBlock(template, item, id) {
 
     // Display inline tags. printTagList() clears and rebuilds this container itself, so it's already
     // safe to call against a reused row.
+    //
+    // entityTagIds: this row's own item.tag_ids, passed through as printTagList()/getTagsList()'s residency
+    // fallback - `item` isn't always the same object charactersStore holds. Under `lazyLoadCharacters` (this
+    // install's actual config, and the common case for a library too large to boot-load in full), most rows
+    // reaching this function come straight from a `CharacterRepository.query()` page and were never written back
+    // into charactersStore (by design - see that method's doc comment), so `getTagsList()`'s charactersStore
+    // lookup misses for them even though the row itself carries a correct, live tag_ids. Without this, tags
+    // silently rendered empty for every non-resident row - confirmed live (2026-09 tag-pill investigation): the
+    // server's `/query` response always has the right `tag_ids`, charactersStore just never gets a copy of it
+    // for a character nothing has opened yet.
     const tagsElement = template.find('.tags');
-    printTagList(tagsElement, { forEntityOrKey: id, tagOptions: { isCharacterList: true } });
+    printTagList(tagsElement, { forEntityOrKey: id, entityTagIds: item.tag_ids, tagOptions: { isCharacterList: true } });
 }
 
 function getCharacterBlock(item, id) {
