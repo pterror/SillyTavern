@@ -12443,8 +12443,22 @@ async function messageEditDone(div) {
     }
 
     await eventSource.emit(event_types.MESSAGE_UPDATED, this_edit_mes_id);
+    const editedMesId = this_edit_mes_id;
     this_edit_mes_id = undefined;
-    await saveChatConditional();
+    // An edit was confirmed on this row - say so directly rather than letting the fallback save infer
+    // it from a snapshot diff. Still falls back to the whole-chat save for a chat that isn't tree-backed
+    // yet (chatOpEdit() has no row to write against there) or if the direct write itself failed.
+    let editedViaOp = false;
+    if (chat_metadata?._tree_stored) {
+        try {
+            editedViaOp = await chatOpEdit(editedMesId);
+        } catch (error) {
+            console.error('Could not save the edit directly, falling back to the whole-chat save:', error);
+        }
+    }
+    if (!editedViaOp) {
+        await saveChatConditional();
+    }
     showSwipeButtons();
 }
 
@@ -16221,6 +16235,7 @@ export async function doNavbarIconClick() {
 
 function addDebugFunctions() {
     const doBackfill = async () => {
+        const editedIds = [];
         for (let i = 0; i < chat.length; i++) {
             const message = chat[i];
 
@@ -16232,9 +16247,24 @@ function addDebugFunctions() {
             const tokenCountText = (message?.extra?.reasoning || '') + message.mes;
             const tokenCount = await getTokenCountAsync(tokenCountText, 0);
             updateMessage(i, { extra: { ...(chat[i].extra || {}), token_count: tokenCount } });
+            editedIds.push(i);
         }
 
-        await saveChatConditional();
+        // Every recalculated message changed the same way (its token count), so this is one batch edit
+        // rather than something the fallback save has to work out from a diff. Still falls back to the
+        // whole-chat save for a chat that isn't tree-backed yet.
+        let editedViaOp = false;
+        if (chat_metadata?._tree_stored && editedIds.length) {
+            try {
+                await chatOpEditMany(editedIds);
+                editedViaOp = true;
+            } catch (error) {
+                console.error('Could not save the token count backfill directly, falling back to the whole-chat save:', error);
+            }
+        }
+        if (!editedViaOp) {
+            await saveChatConditional();
+        }
         await reloadCurrentChat();
     };
 
