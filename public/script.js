@@ -4475,9 +4475,12 @@ export function appendMediaToMessage(mes, messageElement, scrollBehavior = SCROL
 
     // Add files to message
     if (hasFiles) {
+        // Resolved once and reused for every per-file clone below instead of re-running the selector fresh
+        // per loop iteration (same fix, and rationale, as the tags.js selector-in-loop fix).
+        const $fileTemplate = $('#message_file_template .mes_file_container');
         for (let index = 0; index < mes.extra.files.length; index++) {
             const file = mes.extra.files[index];
-            const template = $('#message_file_template .mes_file_container').clone();
+            const template = $fileTemplate.clone();
             template.attr('data-index', index);
             template.find('.mes_file_name').text(file.name).attr('title', file.name);
             template.find('.mes_file_size').text(humanFileSize(file.size)).attr('title', file.size);
@@ -12470,7 +12473,11 @@ async function displayChats(searchQuery, currentChat, displayName, avatarImg, se
         }
 
         const filteredData = await response.json();
-        $('#select_chat_div').empty();
+        // Resolved once and reused for every per-chat clone/append/scroll below instead of re-running the
+        // selectors fresh per loop iteration (same fix, and rationale, as the tags.js selector-in-loop fix).
+        const $chatDiv = $('#select_chat_div');
+        const $chatTemplate = $('#past_chat_template .select_chat_block_wrapper');
+        $chatDiv.empty();
 
         filteredData.sort((a, b) => sortMoments(timestampToMoment(a.last_mes), timestampToMoment(b.last_mes)));
 
@@ -12479,7 +12486,7 @@ async function displayChats(searchQuery, currentChat, displayName, avatarImg, se
             // lookup, and not uniquely, so the id is the thing that actually identifies it. The name
             // stays for display and for the file-backed path, which has no nodes.
             const isSelected = currentChat === chat.file_name || (!!chat.node_id && currentChat === chat.node_id);
-            const template = $('#past_chat_template .select_chat_block_wrapper').clone();
+            const template = $chatTemplate.clone();
             template.find('.select_chat_block').attr('file_name', chat.file_name);
             if (chat.node_id) {
                 template.find('.select_chat_block').attr('node_id', chat.node_id);
@@ -12500,11 +12507,11 @@ async function displayChats(searchQuery, currentChat, displayName, avatarImg, se
                 template.find('.select_chat_block').attr('highlight', String(true));
             }
 
-            $('#select_chat_div').append(template);
+            $chatDiv.append(template);
 
             if (Array.isArray(highlightNames) && highlightNames.includes(chat.file_name)) {
                 const templateOffset = template.offset().top - template.parent().offset().top;
-                $('#select_chat_div').scrollTop(templateOffset);
+                $chatDiv.scrollTop(templateOffset);
                 flashHighlight(template, debounce_timeout.extended);
             }
         }
