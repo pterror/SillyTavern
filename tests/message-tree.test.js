@@ -273,6 +273,65 @@ describe('message deduplication during migration', () => {
         expect(rerun).toEqual({ migrated: 0, skipped: 0, errors: [] });
     });
 
+    test('ingesting a new chat under a migrated group leaves its existing branches intact', async () => {
+        // The /group/import ordering hazard, from the store's side: an import ingests under the group's
+        // owner id exactly like a save does, and once it labels a node the migration gate is satisfied
+        // forever. So the group's own files have to already be in by then - and the ingest itself must not
+        // disturb what migration put there.
+        const directories = makeDirectories();
+        const sharedDir = path.join(directories.root, 'group chats');
+        fs.mkdirSync(sharedDir, { recursive: true });
+
+        const lines = [{ chat_metadata: {} }, makeMessage({ mes: 'existing', sendDate: 'd0' })];
+        fs.writeFileSync(path.join(sharedDir, 'old-chat.jsonl'), lines.map(l => JSON.stringify(l)).join('\n') + '\n');
+
+        await migration.migrateCharacterChats(directories, 'grp', sharedDir, true, ['old-chat.jsonl']);
+
+        const imported = [{ chat_metadata: {} }, makeMessage({ mes: 'existing', sendDate: 'd0' }), makeMessage({ mes: 'imported tail', sendDate: 'd1' })];
+        await treeDb.saveChatToTree(directories, 'grp', 'imported-chat', imported, true);
+
+        const branches = await treeDb.listBranches(directories, 'grp');
+        expect(branches.map(b => b.name).sort()).toEqual(['imported-chat', 'old-chat']);
+        expect(branches.every(b => b.is_group === 1)).toBe(true);
+
+        const old = await treeDb.loadBranch(directories, 'grp', 'old-chat');
+        const fresh = await treeDb.loadBranch(directories, 'grp', 'imported-chat');
+        expect(fresh.messages.map(m => m.mes)).toEqual(['existing', 'imported tail']);
+        // The shared opening is one row, not a second copy - the import converged onto migrated history
+        // rather than duplicating it.
+        expect(fresh.messages[0].node_id).toBe(old.messages[0].node_id);
+        // What old-chat loads as is the strict-prefix question the test below leaves open on purpose.
+    });
+
+    test('a new chat that opens like an existing one does not take over its name', async () => {
+        // Identity is (parent, speaker, text), so a second chat opening with the same message lands on the
+        // first chat's row rather than getting one of its own. Naming a new chat at its first message
+        // therefore used to write over whatever name that row already carried, and the older chat became
+        // unreachable - history still stored, nothing pointing at it, nothing reported. Two group chats
+        // seeded from the same members' greetings hit this on an ordinary day.
+        const directories = makeDirectories();
+        const greeting = makeMessage({ mes: 'hello there', sendDate: 'd0' });
+
+        await treeDb.saveChatToTree(directories, 'grp-x', 'chat-one', [{ chat_metadata: {} }, greeting], true);
+        await treeDb.saveChatToTree(directories, 'grp-x', 'chat-two', [
+            { chat_metadata: {} }, greeting, makeMessage({ mes: 'diverges here', sendDate: 'd1' }),
+        ], true);
+
+        const names = (await treeDb.listBranches(directories, 'grp-x')).map(b => b.name).sort();
+        expect(names).toEqual(['chat-one', 'chat-two']);
+
+        expect((await treeDb.loadBranch(directories, 'grp-x', 'chat-two')).messages.map(m => m.mes))
+            .toEqual(['hello there', 'diverges here']);
+
+        // NOT asserted, and deliberately so: what chat-one loads as. Both names survive now, but a chat
+        // whose messages are a strict prefix of another chat's still cannot be told apart from that other
+        // chat on load - resolution is "label, then follow default_child_id down", and the longer chat owns
+        // that pointer. Terminating the shorter chat's path is what endPathAt() exists for and nothing calls
+        // it here. That is a pre-existing property of the model, not of groups, but groups reach it far more
+        // often than characters do, because two chats in one group start from the same greetings verbatim.
+        // Left open on purpose rather than papered over - see docs/design/group-chat-tree-migration.md.
+    });
+
     test('an owner with no surviving files is left untouched, not marked migrated', async () => {
         // The state a brand-new group is in: a descriptor with chat ids whose files don't exist yet.
         // Nothing to migrate must stay "nothing has happened here", so the first real save still
