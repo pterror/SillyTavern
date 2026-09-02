@@ -629,7 +629,6 @@ async function importFromYaml(uploadPath, context, preservedFileName) {
     const fileText = fs.readFileSync(uploadPath, 'utf8');
     fs.unlinkSync(uploadPath);
     const yamlData = yaml.parse(fileText);
-    console.info('Importing from YAML');
     yamlData.name = sanitize(yamlData.name);
     const fileName = preservedFileName || mintCharacterId(context.request.user.directories);
     let char = convertToV2({
@@ -710,7 +709,6 @@ async function importFromCharX(uploadPath, { request, contentHash }, preservedFi
 async function importFromByaf(uploadPath, { request, contentHash }, preservedFileName) {
     const data = getArrayBufferSlice(await fsPromises.readFile(uploadPath));
     await fsPromises.unlink(uploadPath);
-    console.info('Importing from BYAF');
 
     const byafData = await new ByafParser(data).parse();
     const card = readFromV2(byafData.card);
@@ -815,7 +813,6 @@ export function buildJsonImportData(rawText, directories) {
     let jsonData = JSON.parse(rawText);
 
     if (jsonData.spec !== undefined) {
-        console.info(`Importing from ${jsonData.spec} json`);
         importRisuSprites(directories, jsonData);
         // Same pre-mutation snapshot as buildPngImportData() below, and for the same reason - see its comment.
         const rawName = jsonData.data?.name || jsonData.name;
@@ -830,7 +827,6 @@ export function buildJsonImportData(rawText, directories) {
         omitInstallLocalFields(jsonData);
         return JSON.stringify(jsonData);
     } else if (jsonData.name !== undefined) {
-        console.info('Importing from v1 json');
         jsonData.name = sanitize(jsonData.name);
         if (jsonData.creator_notes) {
             jsonData.creator_notes = jsonData.creator_notes.replace('Creator\'s notes go here.', '');
@@ -855,7 +851,6 @@ export function buildJsonImportData(rawText, directories) {
         return JSON.stringify(char);
     } else if (jsonData.char_name !== undefined) {
         //json Pygmalion notepad
-        console.info('Importing from gradio json');
         jsonData.char_name = sanitize(jsonData.char_name);
         if (jsonData.creator_notes) {
             jsonData.creator_notes = jsonData.creator_notes.replace('Creator\'s notes go here.', '');
@@ -937,15 +932,12 @@ export function buildPngImportData(rawText, directories) {
     jsonData.name = sanitize(String(rawName || ''));
 
     if (jsonData.spec !== undefined) {
-        console.info(`Found a ${jsonData.spec} character file.`);
         importRisuSprites(directories, jsonData);
         jsonData = readFromV2(jsonData);
         jsonData.create_date = new Date().toISOString();
         omitInstallLocalFields(jsonData);
         return JSON.stringify(jsonData);
     } else if (jsonData.name !== undefined) {
-        console.info('Found a v1 character file.');
-
         if (jsonData.creator_notes) {
             jsonData.creator_notes = jsonData.creator_notes.replace('Creator\'s notes go here.', '');
         }

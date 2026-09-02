@@ -372,7 +372,6 @@ async function checkChatIntegrity(filePath, integritySlug) {
 
     // If the chat has no integrity metadata, assume it's intact (legacy chats created before integrity checks existed)
     if (!chatIntegrity) {
-        console.debug(`File "${filePath}" does not have integrity metadata matching "${integritySlug}". The integrity validation has been skipped.`);
         return true;
     }
 
@@ -866,7 +865,6 @@ router.post('/rename', validateAvatarUrlMiddleware, async function (request, res
 
         fs.copyFileSync(pathToOriginalFile, pathToRenamedFile);
         fs.unlinkSync(pathToOriginalFile);
-        console.info('Successfully renamed chat file.');
 
         await renameChatRow(request.user.directories, pathToOriginalFile, pathToRenamedFile).catch(err =>
             console.error('[chat-metadata] Failed to update chat metadata store after rename:', err));
@@ -1446,7 +1444,6 @@ router.post('/export', validateAvatarUrlMiddleware, async function (request, res
             }
         });
         rl.on('close', () => {
-            console.info(`Chat exported as ${exportfilename}`);
             return response.status(200).json({
                 message: `Chat saved to ${exportfilename}`,
                 result: buffer,
