@@ -387,12 +387,10 @@ function createSwipe(messageId, prompt) {
 
     //if we have pre-existing reasoning and are currently autoparsing
     if (isReasoningAutoParsed && msgHasParsedReasoning) {
-        console.debug('saw autoparse on with reasoning in message');
         //but the reroll prompt does not include the end of reasoning
         if (cleanedPrompt.includes(reasoningPrefix) && !cleanedPrompt.includes(reasoningSuffix)) {
             //we need to send the results to the reasoning block
             //this will involve the ReasoningHandler from reasoning.js
-            console.debug('..with start tag but no end tag... reroll reasoning');
             shouldRerollReasoning = true;
         }
 
@@ -404,19 +402,15 @@ function createSwipe(messageId, prompt) {
         //..with only the end think tag (implying prefilled think start)
         if (hasReasoningPrefix && hasReasoningSuffix) {
             //we need to send the results to the response block without reasoning attached
-            console.debug('...incl. end tag...rerolling response');
             const endOfThink = cleanedPrompt.indexOf(reasoningSuffix) + reasoningSuffix.length;
             cleanedPrompt = cleanedPrompt.substring(endOfThink);
         }
 
         //if cleanedprompt includes the think prefix, but no suffix..
         if (hasReasoningPrefix && !hasReasoningSuffix) {
-            console.debug('..no end tag...rerolling reasoning, so removing prefix');
             cleanedPrompt = cleanedPrompt.replace(reasoningPrefix, '');
         }
     }
-
-    console.debug('cleanedPrompt: ', cleanedPrompt);
 
     /** @type {SwipeInfo} */
     const newSwipeInfo = {

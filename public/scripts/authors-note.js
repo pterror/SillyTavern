@@ -324,24 +324,12 @@ function loadSettings() {
 export function setFloatingPrompt() {
     const context = getContext();
     if (!context.groupId && context.characterId === undefined) {
-        console.debug('setFloatingPrompt: Not in a chat. Skipping.');
         shouldWIAddPrompt = false;
         return;
     }
 
     // take the count of messages
     let lastMessageNumber = Array.isArray(context.chat) && context.chat.length ? context.chat.filter(m => m.is_user).length : 0;
-
-    console.debug(`
-    setFloatingPrompt entered
-    ------
-    lastMessageNumber = ${lastMessageNumber}
-    metadata_keys.interval = ${chat_metadata[metadata_keys.interval]}
-    metadata_keys.position = ${chat_metadata[metadata_keys.position]}
-    metadata_keys.depth = ${chat_metadata[metadata_keys.depth]}
-    metadata_keys.role = ${chat_metadata[metadata_keys.role]}
-    ------
-    `);
 
     // interval 1 should be inserted no matter what
     if (chat_metadata[metadata_keys.interval] === 1) {

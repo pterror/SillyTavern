@@ -483,7 +483,6 @@ async function openRecentCharacterChat(avatarId, fileName) {
         saveSettingsDebounced('active_character', 'active_group');
         const currentChatId = getCurrentChatId();
         if (currentChatId === fileName) {
-            console.debug(`Chat ${fileName} is already open.`);
             return;
         }
         await openCharacterChat(fileName);
@@ -511,7 +510,6 @@ async function openRecentGroupChat(groupId, fileName) {
         saveSettingsDebounced('active_character', 'active_group');
         const currentChatId = getCurrentChatId();
         if (currentChatId === fileName) {
-            console.debug(`Chat ${fileName} is already open.`);
             return;
         }
         await openGroupChat(groupId, fileName);
@@ -536,7 +534,6 @@ async function renameRecentCharacterChat(avatarId, fileName) {
         const popupText = await renderTemplateAsync('chatRename');
         const newName = await callGenericPopup(popupText, POPUP_TYPE.INPUT, fileName);
         if (!newName || typeof newName !== 'string' || newName === fileName) {
-            console.log('No new name provided, aborting');
             return;
         }
         await renameGroupOrCharacterChat({
@@ -569,7 +566,6 @@ async function renameRecentGroupChat(groupId, fileName) {
         const popupText = await renderTemplateAsync('chatRename');
         const newName = await callGenericPopup(popupText, POPUP_TYPE.INPUT, fileName);
         if (!newName || newName === fileName) {
-            console.log('No new name provided, aborting');
             return;
         }
         await renameGroupOrCharacterChat({
@@ -600,7 +596,6 @@ async function deleteRecentCharacterChat(avatarId, fileName) {
     try {
         const confirm = await callGenericPopup(t`Delete the Chat File?`, POPUP_TYPE.CONFIRM);
         if (!confirm) {
-            console.log('Deletion cancelled by user');
             return;
         }
         await deleteCharacterChatByName(avatarId, fileName);
@@ -626,7 +621,6 @@ async function deleteRecentGroupChat(groupId, fileName) {
     try {
         const confirm = await callGenericPopup(t`Delete the Chat File?`, POPUP_TYPE.CONFIRM);
         if (!confirm) {
-            console.log('Deletion cancelled by user');
             return;
         }
         await deleteGroupChatByName(groupId, fileName);

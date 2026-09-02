@@ -230,13 +230,9 @@ export function findItemizedPromptSet(itemizedPrompts, incomingMesId) {
     priorPromptArrayItemForRawPromptDisplay = -1;
 
     for (let i = 0; i < itemizedPrompts.length; i++) {
-        console.log(`looking for ${incomingMesId} vs ${itemizedPrompts[i].mesId}`);
         if (itemizedPrompts[i].mesId === incomingMesId) {
-            console.log(`found matching mesID ${i}`);
             thisPromptSet = i;
             PromptArrayItemForRawPromptDisplay = i;
-            console.log(`wanting to raw display of ArrayItem: ${PromptArrayItemForRawPromptDisplay} which is mesID ${incomingMesId}`);
-            console.log(itemizedPrompts[thisPromptSet]);
             break;
         } else if (itemizedPrompts[i].rawPrompt) {
             priorPromptArrayItemForRawPromptDisplay = i;
@@ -246,14 +242,11 @@ export function findItemizedPromptSet(itemizedPrompts, incomingMesId) {
 }
 
 export async function promptItemize(itemizedPrompts, requestedMesId) {
-    console.log('PROMPT ITEMIZE ENTERED');
     var incomingMesId = Number(requestedMesId);
-    console.debug(`looking for MesId ${incomingMesId}`);
     var thisPromptSet = findItemizedPromptSet(itemizedPrompts, incomingMesId);
 
     if (thisPromptSet === undefined) {
         console.log(`couldnt find the right mesId. looked for ${incomingMesId}`);
-        console.log(itemizedPrompts);
         return null;
     }
 
@@ -305,11 +298,6 @@ export async function promptItemize(itemizedPrompts, requestedMesId) {
     });
 
     popup.dlg.querySelector('#showRawPrompt').addEventListener('click', async function () {
-        //console.log(itemizedPrompts[PromptArrayItemForRawPromptDisplay].rawPrompt);
-        console.log(PromptArrayItemForRawPromptDisplay);
-        console.log(itemizedPrompts);
-        console.log(itemizedPrompts[PromptArrayItemForRawPromptDisplay].rawPrompt);
-
         const rawPrompt = flatten(itemizedPrompts[PromptArrayItemForRawPromptDisplay].rawPrompt);
 
         // Mobile needs special handholding. The side-view on the popup wouldn't work,
@@ -343,7 +331,6 @@ export function initItemizedPrompts() {
 
     $(document).on('pointerup', '.mes_prompt', async function () {
         let mesIdForItemization = $(this).closest('.mes').attr('mesId');
-        console.log(`looking for mesID: ${mesIdForItemization}`);
         if (itemizedPrompts.length !== undefined && itemizedPrompts.length !== 0) {
             await promptItemize(itemizedPrompts, mesIdForItemization);
         }

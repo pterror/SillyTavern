@@ -602,7 +602,6 @@ export function getGroupDepthPrompts(groupId, characterAvatar) {
         return [];
     }
 
-    console.debug('getGroupDepthPrompts entered for group: ', groupId);
     const group = groupsStore.get(groupId);
 
     if (!group || !Array.isArray(group.members) || !group.members.length) {
@@ -619,12 +618,10 @@ export function getGroupDepthPrompts(groupId, characterAvatar) {
         const character = charactersStore.get(member);
 
         if (!character) {
-            console.debug(`Skipping missing member: ${member}`);
             continue;
         }
 
         if (group.disabled_members.includes(member) && characterAvatar !== member) {
-            console.debug(`Skipping disabled group member: ${member}`);
             continue;
         }
 
@@ -2042,7 +2039,6 @@ async function onGroupSelfResponsesClick() {
 async function onHideMutedSpritesClick(value) {
     if (openGroupId) {
         groupsStore.update(openGroupId, { hideMutedSprites: value });
-        console.log(`hideMutedSprites = ${value}`);
         await editGroup(openGroupId, false, false);
         await eventSource.emit(event_types.GROUP_UPDATED);
     }
@@ -2721,7 +2717,6 @@ function stopAutoModeGeneration() {
 function doCurMemberListPopout() {
     //repurposes the zoomed avatar template to server as a floating group member list
     if ($('#groupMemberListPopout').length === 0) {
-        console.debug('did not see popout yet, creating');
         const memberListClone = $(this).parent().parent().find('.inline-drawer-content').html();
         const template = $('#zoomed_avatar_template').html();
         const controlBarHtml = `<div class="panelControlBar flex-container">
@@ -2751,7 +2746,6 @@ function doCurMemberListPopout() {
         // Re-add pagination not working in popout
         printGroupMembers();
     } else {
-        console.debug('saw existing popout, removing');
         $('#groupMemberListPopout').fadeOut(animation_duration, () => { $('#groupMemberListPopout').remove(); });
     }
 }

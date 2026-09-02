@@ -772,8 +772,6 @@ export function saveCaretPosition(element) {
         end: range.endOffset,
     };
 
-    console.debug('Caret saved', position);
-
     return position;
 }
 
@@ -787,8 +785,6 @@ export function restoreCaretPosition(element, position) {
     if (!position) {
         return;
     }
-
-    console.debug('Caret restored', position);
 
     // Create a new range object
     const range = new Range();
@@ -1470,7 +1466,6 @@ export class RateLimiter {
 
         // Update the last resolve time
         this.lastResolveTime = Date.now() + this.interval;
-        console.debug(`RateLimiter.waitForResolve() ${this.lastResolveTime}`);
     }
 }
 
@@ -1483,7 +1478,6 @@ export class RateLimiter {
  * @returns {object} The extracted JSON object.
  */
 export function extractDataFromPng(data, identifier = 'chara') {
-    console.log('Attempting PNG import...');
     let uint8 = new Uint8Array(4);
     let uint32 = new Uint32Array(uint8.buffer);
 
@@ -1581,7 +1575,6 @@ export function extractDataFromPng(data, identifier = 'chara') {
                 b64buf += String.fromCharCode(bytes[i]);
             }
             let decoded = JSON.parse(atob(b64buf));
-            console.log(decoded);
             return decoded;
         } catch (e) {
             console.log('Error decoding b64 in image: ' + e);

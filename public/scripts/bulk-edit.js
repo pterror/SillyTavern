@@ -34,7 +34,6 @@ const toggleBulkEditMode = (isBulkEdit) => {
  * Toggles bulk edit mode on/off when the edit button is clicked.
  */
 function onEditButtonClick() {
-    console.log('Edit button clicked');
     toggleBulkEditMode(is_bulk_edit);
 }
 
@@ -42,7 +41,6 @@ function onEditButtonClick() {
  * Toggles the select state of all characters in bulk edit mode to selected. If all are selected, they'll be deselected.
  */
 function onSelectAllButtonClick() {
-    console.log('Bulk select all button clicked');
     const characters = Array.from(document.querySelectorAll('#' + BulkEditOverlay.containerId + ' .' + BulkEditOverlay.characterClass));
     let atLeastOneSelected = false;
     for (const character of characters) {
@@ -68,8 +66,6 @@ function onSelectAllButtonClick() {
  * Deletes all characters that have been selected via the bulk checkboxes.
  */
 async function onDeleteButtonClick() {
-    console.log('Delete button clicked');
-
     // We just let the button trigger the context menu delete option
     await characterGroupOverlay.handleContextMenuDelete();
 }

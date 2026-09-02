@@ -227,7 +227,6 @@ function handleGlobalKeyDown(event) {
 
         // Trigger click if a valid interactable is found and it's not disabled
         if (target && !target.classList.contains(DISABLED_CONTROL_CLASS)) {
-            console.debug('Triggering click on keyboard-focused interactable control via Enter', target);
             target.click();
         }
     }
