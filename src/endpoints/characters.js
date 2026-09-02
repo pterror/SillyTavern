@@ -31,7 +31,7 @@ import cacheBuster from '../middleware/cacheBuster.js';
 import { searchCharacters, searchCharacterIds, searchCharacterIdsSorted, rebuildCharacterSearchIndex, TANTIVY_SORT_FIELDS } from './characters-search-index.js';
 import { searchGroups, searchGroupIds } from './groups-search-index.js';
 import { getGroupsData, getGroupsByIds } from './groups.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, resolveFingerprints, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, resolveFingerprints, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq } from '../character-metadata-db.js';
 import { DEFAULT_DIGEST_BUCKET_COUNT, characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
 import { hashGreetingText, opAdd, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault } from '../greeting-ops.js';
@@ -2362,18 +2362,30 @@ const MAX_QUERY_PAGE_SIZE = 2000;
  */
 /**
  * Turns queryEntities()'s (character-metadata-db.js) raw UNION ALL rows into the `/query` route's wire shape -
- * `{type: 'character', item}` rows already carry their full item from `shallow_json`, but a group row only
- * carries its own SQL-side columns (`id`/`fav`/`date_added`/`date_last_chat`/`chat_size`) and needs its actual
- * group JSON hydrated separately (getGroupsByIds() - bounded to just this result's group ids, never a
- * whole-directory read) before it can go out. Shared by the plain browse/sort `includeGroups` path and the
- * search+`includeGroups` path below so the hydration/stamping/dropped-group logic can't drift between the two.
+ * `{type: 'character', item}` rows already carry their full item from `shallow_json` (tag_ids included - see
+ * toShallow()/writeRowSync()), but a group row only carries its own SQL-side columns
+ * (`id`/`fav`/`date_added`/`date_last_chat`/`chat_size`) and needs its actual group JSON hydrated separately
+ * (getGroupsByIds() - bounded to just this result's group ids, never a whole-directory read) before it can go
+ * out. Shared by the plain browse/sort `includeGroups` path and the search+`includeGroups` path below so the
+ * hydration/stamping/dropped-group logic can't drift between the two.
+ *
+ * `tag_ids` (2026-09): a group's own JSON file never carries tag assignments (unlike characters, groups have no
+ * shallow_json/tag_ids field at all - tags live only in the `group_tags` table, see character-metadata-db.js's
+ * schema comment), so it's stamped here the same way fav/date_added/date_last_chat/chat_size already are -
+ * db-authoritative, batched via getEntityTagIdsForMany() (the same source `/api/groups/batch`'s full-mode path
+ * already uses). Before this, a group's tags reached the list view only through the client's separate
+ * `tag_map[key]` lookup (tags.js's getTagsList()/printTagList()) - this closes that gap so group rows carry
+ * `tag_ids` inline, the same shape characters already have.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {{type: 'character'|'group', id: string, fav: boolean, date_added: number, date_last_chat: number, chat_size: number, item: object|null}[]} rows
- * @returns {{type: 'character'|'group', item: object}[]}
+ * @returns {Promise<{type: 'character'|'group', item: object}[]>}
  */
-function hydrateEntityRows(directories, rows) {
+async function hydrateEntityRows(directories, rows) {
     const groupIds = rows.filter(r => r.type === 'group').map(r => r.id);
-    const groupsById = groupIds.length > 0 ? getGroupsByIds(directories, groupIds) : {};
+    const [groupsById, groupTagIdsById] = await Promise.all([
+        groupIds.length > 0 ? getGroupsByIds(directories, groupIds) : {},
+        groupIds.length > 0 ? getEntityTagIdsForMany(directories, groupIds) : {},
+    ]);
     return rows.map(r => {
         if (r.type === 'character') {
             return { type: 'character', item: r.item };
@@ -2385,7 +2397,7 @@ function hydrateEntityRows(directories, rows) {
             // self-correcting: the next /delete or /edit reconciles the metadata row against reality.
             return null;
         }
-        return { type: 'group', item: { ...group, fav: r.fav, date_added: r.date_added, date_last_chat: r.date_last_chat, chat_size: r.chat_size } };
+        return { type: 'group', item: { ...group, fav: r.fav, date_added: r.date_added, date_last_chat: r.date_last_chat, chat_size: r.chat_size, tag_ids: groupTagIdsById?.[r.id] ?? [] } };
     }).filter(Boolean);
 }
 
@@ -2734,7 +2746,7 @@ router.post('/query', async function (request, response) {
                 }
                 const payload = { seq: result.seq };
                 if (wantTotal) payload.total = approxTotal ? `~${result.total}` : result.total;
-                if (wantRows) payload.rows = hydrateEntityRows(request.user.directories, rows);
+                if (wantRows) payload.rows = await hydrateEntityRows(request.user.directories, rows);
                 if (searchBackend !== undefined) payload.searchBackend = searchBackend;
                 return response.send(payload);
             }
@@ -2761,7 +2773,7 @@ router.post('/query', async function (request, response) {
             }
             const payload = { seq: result.seq };
             if (wantTotal) payload.total = result.total;
-            if (wantRows) payload.rows = hydrateEntityRows(request.user.directories, result.rows);
+            if (wantRows) payload.rows = await hydrateEntityRows(request.user.directories, result.rows);
             return response.send(payload);
         }
 
