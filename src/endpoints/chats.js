@@ -26,6 +26,8 @@ import {
 } from '../util.js';
 import { bumpCharacterDateLastChat, bumpGroupChatStats } from '../character-metadata-db.js';
 import { resolveGroupOwner } from '../character-shallow.js';
+import { readCharacterData } from './characters.js';
+import { cardToGreetingsModel } from '../greeting-list.js';
 import { migrateOwnerOnTouch } from '../message-tree-migration.js';
 import { upsertChatFromSave, upsertChatFromParse, getChatRow, deleteChatRow, renameChatRow } from '../chat-metadata-db.js';
 import { searchChatMessages } from './chat-content-search-index.js';
@@ -1184,24 +1186,62 @@ router.post('/message/append', validateAvatarUrlMiddleware, async function (requ
 });
 
 /**
+ * Reads a character's card fresh off disk and returns its greetings in the message-object shape
+ * {@link getOpeningAlternatives} merges against (see that function's `cardGreetings` param and
+ * `nodeIdentityKey()` in message-tree-db.js, which only ever look at `name`/`is_user`/`mes` - `send_date`
+ * and `extra` carry no identity weight, so any values here are fine).
+ *
+ * The server reads its own on-disk copy rather than trusting a caller-supplied array. A greeting only
+ * ever reaches disk through the confirmed round trip of one of the six `/greetings/*` ops (see
+ * characters.js's `applyGreetingOperation` - it writes and only THEN reports success), and the client
+ * never mutates its in-memory character object until that op comes back ok. So there is no "the client
+ * has an edit the disk doesn't know about yet" case here to accommodate - the on-disk card already IS
+ * the freshest copy of the truth by the time anything asks for openings, which is what makes reading it
+ * server-side strictly better than requiring the caller to ship it: same answer, without the client
+ * having to hold, serialize, and transmit potentially hundreds of greetings' full text on every call.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {string} avatar avatar filename (e.g. "char.png")
+ * @returns {Promise<object[]>} Empty array if the character can't be read.
+ */
+async function _cardGreetingsFromDisk(directories, avatar) {
+    try {
+        const avatarPath = path.join(directories.characters, avatar);
+        const pngStringData = await readCharacterData(avatarPath);
+        if (!pngStringData) return [];
+        const character = JSON.parse(pngStringData);
+        const { greetings } = cardToGreetingsModel(character);
+        const speaker = character?.name ?? character?.data?.name ?? '';
+        const sendDate = Date.now();
+        return (greetings ?? [])
+            .filter(text => typeof text === 'string' && text.length > 0)
+            .map(text => ({ name: speaker, is_user: false, is_system: false, send_date: sendDate, mes: text, extra: {} }));
+    } catch (error) {
+        console.error(`Error reading card greetings for "${avatar}":`, error);
+        return [];
+    }
+}
+
+/**
  * The openings a character can start on: every greeting any of its chats has ever opened from.
  *
  * Addressed by character rather than by node, because starting a chat has no node to start from yet.
  * A new chat picks one of these and holds its id, instead of copying a greeting off the card into a
  * fresh message the way file-backed chats had to.
  *
- * The card's own greetings are merged in at read time. An entry with no node_id is a greeting that
- * exists on the card and has no row yet; it gets one when someone actually opens a conversation on
- * it. That is why nothing needs syncing: edit a greeting on the card and the next read reflects it.
+ * The card's own greetings are merged in at read time, read fresh off disk here rather than supplied
+ * by the caller (see {@link _cardGreetingsFromDisk}'s doc comment for why that's safe). An entry with
+ * no node_id is a greeting that exists on the card and has no row yet; it gets one when someone
+ * actually opens a conversation on it. That is why nothing needs syncing: edit a greeting on the card
+ * and the next read reflects it.
  */
 router.post('/openings', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const offset = Number.isFinite(Number(request.body.offset)) ? Number(request.body.offset) : undefined;
         const limit = Number.isFinite(Number(request.body.limit)) ? Number(request.body.limit) : undefined;
-        // The card's greetings come from the caller and are merged read-only. Nothing is written, so
-        // this is not the client asserting anything about stored rows - it is supplying the card's
-        // current contents, which it legitimately holds, for a union computed here.
-        const cardGreetings = Array.isArray(request.body.card_greetings) ? request.body.card_greetings : [];
+        const avatar = String(request.body.avatar_url || '');
+        // Group chats have no single card to read greetings off of - openings for those are whatever
+        // is already stored, same as before this endpoint stopped taking a caller-supplied array.
+        const cardGreetings = avatar ? await _cardGreetingsFromDisk(request.user.directories, avatar) : [];
         const result = await getOpeningAlternatives(request.user.directories, ownerOf(request), { offset, limit }, cardGreetings);
         if (!result) return response.status(404).send({ error: 'Tree storage unavailable' });
         return response.send(result);
