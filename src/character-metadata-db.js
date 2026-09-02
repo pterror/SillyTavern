@@ -2515,33 +2515,21 @@ export async function initializeMetadataStores(directoriesList) {
 
         startWatcher(entry);
 
-        // Boot-perf instrumentation (kept permanently, same spirit as server-main.js's own `[boot-timing]` marks
-        // around preSetupTasks()'s top-level steps) - times each stage of this background bootstrap chain so a
-        // slow stage shows up by name in the log instead of someone having to re-instrument from scratch the
-        // next time boot gets slow again.
-        const __chainStart = process.hrtime.bigint();
-        const __stage = async (label, fn) => {
-            const s = process.hrtime.bigint();
-            const result = await fn();
-            console.log(`[boot-timing] [metadata-chain] ${label}: ${Number(process.hrtime.bigint() - s) / 1e6}ms (chain total so far: ${Number(process.hrtime.bigint() - __chainStart) / 1e6}ms)`);
-            return result;
-        };
-
         // Ordering matters: migrateTagsJsonIfNeeded() classifies tag_map's keys against the characters/groups
         // tables, so both bootstraps have to have already populated them (bootstrapIfNeeded() for characters,
         // bootstrapGroupsIfNeeded() for groups) before it runs, or every key would look unresolvable on a
         // brand-new install's very first boot.
-        entry.bootstrapPromise = __stage('bootstrapIfNeeded', () => bootstrapIfNeeded(directories))
-            .then(() => __stage('bootstrapGroupsIfNeeded', () => bootstrapGroupsIfNeeded(directories)))
-            .then(() => __stage('migrateTagsJsonIfNeeded', () => migrateTagsJsonIfNeeded(directories)))
-            .then(() => __stage('backfillCardTagsIfNeeded', () => backfillCardTagsIfNeeded(directories)))
-            .then(() => __stage('backfillTagIdsInShallowJson', () => backfillTagIdsInShallowJson(directories)))
-            .then(() => __stage('reconcile', () => reconcile(directories)))
+        entry.bootstrapPromise = bootstrapIfNeeded(directories)
+            .then(() => bootstrapGroupsIfNeeded(directories))
+            .then(() => migrateTagsJsonIfNeeded(directories))
+            .then(() => backfillCardTagsIfNeeded(directories))
+            .then(() => backfillTagIdsInShallowJson(directories))
+            .then(() => reconcile(directories))
             // Runs LAST in the chain, after reconcile() - so this pass sees the maximal set of poisoned rows a
             // single boot can discover (reconcile() may itself have just inserted rows for files dropped in
             // while the server was down).
-            .then(() => __stage('backfillContentIdentityHashes', () => backfillContentIdentityHashes(directories)))
-            .then(() => __stage('backfillActiveChatFromCards', () => backfillActiveChatFromCards(directories)))
+            .then(() => backfillContentIdentityHashes(directories))
+            .then(() => backfillActiveChatFromCards(directories))
             .catch(err => console.error(`[character-metadata] Bootstrap failed for ${directories.root}:`, err));
     }
 }

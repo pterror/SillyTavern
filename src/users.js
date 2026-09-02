@@ -1039,7 +1039,6 @@ export function requireLoginMiddleware(request, response, next) {
  */
 export async function loginPageMiddleware(request, response) {
     if (!ENABLE_ACCOUNTS) {
-        console.log('User accounts are disabled. Redirecting to index page.');
         return response.redirect('/');
     }
 
@@ -1157,7 +1156,6 @@ export async function createBackupArchive(handle, response) {
 
     // On stream closed we can end the request
     archive.on('end', function () {
-        console.info('Archive wrote %d bytes', archive.pointer());
         response.end(); // End the Express response
     });
 
