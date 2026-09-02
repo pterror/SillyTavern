@@ -400,7 +400,6 @@ router.post('/generate-image', async (request, response) => {
         }
 
         try {
-            console.info('Upscaling image...');
             const upscaleUrl = `${API_NOVELAI}/ai/upscale`;
             const upscaleResult = await fetch(upscaleUrl, {
                 method: 'POST',

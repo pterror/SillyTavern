@@ -1738,7 +1738,6 @@ async function sendAzureOpenAIRequest(request, response) {
         signal: controller.signal,
     };
 
-    console.info(`Sending request to Azure OpenAI: ${endpointUrl}`);
     console.debug('Azure OpenAI Request Body:', apiRequestBody);
     try {
         const fetchResponse = await fetch(endpointUrl, config);
@@ -2131,8 +2130,7 @@ router.post('/status', async function (request, statusResponse) {
 
                 console.info('Available OpenRouter models:', models);
             } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.MISTRALAI) {
-                const models = data?.data;
-                console.info(models);
+                // no-op
             } else {
                 const models = data?.data;
 
@@ -2692,7 +2690,6 @@ router.post('/generate', async function (request, response) {
         const fetchResponse = await fetch(endpointUrl, config);
 
         if (request.body.stream) {
-            console.info('Streaming request in progress');
             return await forwardFetchResponse(fetchResponse, response);
         }
 

@@ -58,7 +58,6 @@ async function parseOllamaStream(jsonStream, request, response) {
         });
 
         jsonStream.body.on('end', () => {
-            console.info('Streaming request finished');
             response.write('data: [DONE]\n\n');
             response.end();
         });
@@ -106,7 +105,6 @@ router.post('/status', async function (request, response) {
             request.body.api_server = request.body.api_server.replace('localhost', '127.0.0.1');
         }
 
-        console.debug('Trying to connect to API', request.body);
         const baseUrl = trimV1(request.body.api_server);
 
         const args = {
@@ -419,7 +417,6 @@ router.post('/generate', async function (request, response) {
             if (completionsReply.ok) {
                 /** @type {any} */
                 const data = await completionsReply.json();
-                console.debug('Endpoint response:', data);
 
                 // Map InfermaticAI response to OAI completions format
                 if (apiType === TEXTGEN_TYPES.INFERMATICAI) {

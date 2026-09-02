@@ -421,7 +421,6 @@ router.post('/version', async (request, response) => {
         // get only the working branch
         const currentBranchName = currentBranch.current;
         await git.fetch('origin');
-        console.debug(extensionNameSanitized, currentBranchName, currentCommitHash);
         const { isUpToDate, remoteUrl } = await checkIfRepoIsUpToDate(extensionPath);
 
         return response.send({ currentBranchName, currentCommitHash, isUpToDate, remoteUrl });
@@ -528,7 +527,6 @@ router.get('/discover', function (request, response) {
 
     // Combine all extensions
     const allExtensions = [...builtInExtensions, ...userExtensions, ...globalExtensions];
-    console.debug('Extensions available for', request.user.profile.handle, allExtensions);
 
     return response.send(allExtensions);
 });

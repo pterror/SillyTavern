@@ -185,7 +185,6 @@ router.post('/generate-text', async (request, response) => {
     const url = 'https://aihorde.net/api/v2/generate/text/async';
     const agent = await getClientAgent();
 
-    console.debug(request.body);
     try {
         const result = await fetch(url, {
             method: 'POST',

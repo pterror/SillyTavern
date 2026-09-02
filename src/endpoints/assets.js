@@ -248,7 +248,6 @@ router.post('/download', async (request, response) => {
         }
 
         // Move into asset place
-        console.info('Download finished, moving file from', temp_path, 'to', file_path);
         fs.copyFileSync(temp_path, file_path);
         fs.unlinkSync(temp_path);
         response.sendStatus(200);
@@ -295,7 +294,6 @@ router.post('/delete', async (request, response) => {
         }
 
         await fs.promises.unlink(file_path);
-        console.info('Asset deleted.');
         return response.sendStatus(200);
     } catch (error) {
         console.error(error);

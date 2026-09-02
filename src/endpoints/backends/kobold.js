@@ -80,7 +80,6 @@ router.post('/generate', async function (request, response_generate) {
         }
     }
 
-    console.debug(this_settings);
     const args = {
         body: JSON.stringify(this_settings),
         headers: Object.assign(
@@ -116,7 +115,6 @@ router.post('/generate', async function (request, response_generate) {
                 }
 
                 const data = await response.json();
-                console.debug('Endpoint response:', data);
                 return response_generate.send(data);
             }
         } catch (error) {
