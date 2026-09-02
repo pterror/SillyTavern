@@ -418,7 +418,6 @@ async function deleteMessageFile(messageBlock, messageId, fileIndex) {
     const confirm = await callGenericPopup('Are you sure you want to delete this file?', POPUP_TYPE.CONFIRM);
 
     if (confirm !== POPUP_RESULT.AFFIRMATIVE) {
-        console.debug('Delete file cancelled');
         return;
     }
 
@@ -1341,12 +1340,10 @@ async function moveAttachment(attachment, source, callback) {
     const result = await callGenericPopup(template, POPUP_TYPE.CONFIRM, '', { wide: false, large: false, okButton: 'Move', cancelButton: 'Cancel' });
 
     if (result !== POPUP_RESULT.AFFIRMATIVE) {
-        console.debug('Move attachment cancelled');
         return;
     }
 
     if (selectedTarget === source) {
-        console.debug('Move attachment cancelled: same source and target');
         return;
     }
 
@@ -1598,7 +1595,6 @@ async function openAttachmentManager() {
         });
         const result = await callGenericPopup(targetSelectTemplate, POPUP_TYPE.CONFIRM, '', { wide: false, large: false, okButton: 'Upload', cancelButton: 'Cancel' });
         if (result !== POPUP_RESULT.AFFIRMATIVE) {
-            console.log('File upload cancelled');
             return;
         }
         for (const file of files) {

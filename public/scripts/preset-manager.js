@@ -444,7 +444,6 @@ class PresetManager {
      */
     async updatePreset(option = { skipUpdate: false }) {
         const selected = $(this.select).find('option:selected');
-        console.log(selected);
 
         if (selected.val() == 'gui') {
             toastr.info(t`Cannot update GUI preset`);

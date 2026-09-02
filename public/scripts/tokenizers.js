@@ -180,7 +180,6 @@ async function loadTokenCache() {
 
 export async function saveTokenCache() {
     try {
-        console.debug('Chat Completions: saving token cache');
         await objectStore.setItem('tokenCache', tokenCache);
     } catch (e) {
         console.log('Chat Completions: unable to save token cache', e);

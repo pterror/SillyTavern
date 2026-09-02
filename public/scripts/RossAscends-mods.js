@@ -594,7 +594,6 @@ function restoreUserInput() {
 function saveUserInput() {
     const userInput = String($('#send_textarea').val());
     localStorage.setItem(getUserInputKey(), userInput);
-    console.debug('User Input -- ', userInput);
 }
 const saveUserInputDebounced = debounce(saveUserInput);
 
@@ -1331,7 +1330,6 @@ export function initRossMods() {
         }
 
         if (event.key == 'ArrowUp') { //edits last message if chatbar is empty and focused
-            console.log('got uparrow input');
             if (
                 hotkeyTargets.send_textarea.value === '' &&
                 chatbarInFocus === true &&
@@ -1453,7 +1451,6 @@ export function initRossMods() {
         if (event.ctrlKey && /^[1-9]$/.test(event.key)) {
             // This will eventually be to trigger quick replies
             // event.preventDefault();
-            console.log('Ctrl +' + event.key + ' pressed!');
         }
     }
 }

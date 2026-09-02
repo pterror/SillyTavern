@@ -38,8 +38,6 @@ async function showSamplerSelectPopup() {
     setSamplerListListeners();
 
     $('#resetSelectedSamplers').off('click').on('click', async function () {
-        console.log('saw sampler select reset click');
-
         if (main_api === 'textgenerationwebui') {
             $('#prioritizeManuallySelectedSamplers').toggleClass('toggleEnabled', false);
             await resetApiSelectedSamplers(null, true);
@@ -173,21 +171,17 @@ function setSamplerListListeners() {
 
         if (isChecked === false) {
             if (previousState === SELECT_SAMPLER.SHOWN) {
-                console.log('saw previously custom shown sampler => new state:', isChecked, samplerName);
                 relatedDOMElement.removeData(SELECT_SAMPLER.DATA);
                 popupInputLabel.removeAttr('style');
             } else {
-                console.log('saw previous untouched sampler => new state:', isChecked, samplerName);
                 relatedDOMElement.data(SELECT_SAMPLER.DATA, SELECT_SAMPLER.HIDDEN);
                 popupInputLabel.attr('style', forcedOffColoring);
             }
         } else {
             if (previousState === SELECT_SAMPLER.HIDDEN) {
-                console.log('saw previously custom hidden sampler => new state:', isChecked, samplerName);
                 relatedDOMElement.removeData(SELECT_SAMPLER.DATA);
                 popupInputLabel.removeAttr('style');
             } else {
-                console.log('saw previous untouched sampler => new state:', isChecked, samplerName);
                 relatedDOMElement.data(SELECT_SAMPLER.DATA, SELECT_SAMPLER.SHOWN);
                 popupInputLabel.attr('style', forcedOnColoring);
             }
@@ -198,8 +192,6 @@ function setSamplerListListeners() {
         relatedDOMElement.css('display', shouldDisplay);
 
         if (main_api === 'textgenerationwebui') setApiSamplersState(samplerName, shouldDisplay !== 'none');
-
-        console.log(samplerName, relatedDOMElement.data(SELECT_SAMPLER.DATA), shouldDisplay);
     });
 }
 
@@ -224,7 +216,6 @@ async function listSamplers(main_api, arrayOnly = false) {
     }
 
     if (arrayOnly) {
-        console.debug('returning full samplers array');
         return availableSamplers;
     }
 
@@ -251,8 +242,6 @@ async function listSamplers(main_api, arrayOnly = false) {
 
             return finalState;
         };
-
-        console.log(sampler, relatedDOMElement.prop('id'), isInDefaultState, shouldBeChecked());
 
         if (displayname === undefined) displayname = sampler;
         if (main_api === 'textgenerationwebui') setApiSamplersState(sampler, shouldBeChecked());

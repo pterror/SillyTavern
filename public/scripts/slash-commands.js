@@ -4222,12 +4222,10 @@ async function getMessagesCallback(args, value) {
         }
 
         if (role && !filterByRole(msg)) {
-            console.debug(`/messages: Skipping message with ID ${mesId} due to role filter`);
             return null;
         }
 
         if (!includeHidden && msg.is_system) {
-            console.debug(`/messages: Skipping hidden message with ID ${mesId}`);
             return null;
         }
 
@@ -4414,7 +4412,6 @@ function fuzzyCallback(args, searchInValue) {
             // each item in the "list" is searched within "search_item", if any matches it returns the matched "item"
             for (const searchItem of list) {
                 const result = fuse.search(searchItem);
-                console.debug('/fuzzy: result', result);
                 if (result.length > 0) {
                     console.info('/fuzzy: first matched', searchItem);
                     return searchItem;

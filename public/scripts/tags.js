@@ -2312,8 +2312,6 @@ function toggleTagThreeState(element, { stateOverride = undefined, simulateClick
         for (let i = 0; i < clickCount; i++) {
             $(element).trigger('click');
         }
-
-        console.debug('manually click-toggle three-way filter from', states[currentStateIndex], 'to', states[targetStateIndex], 'on', element);
     } else {
         element.attr('data-toggle-state', states[targetStateIndex]);
 
@@ -2321,10 +2319,6 @@ function toggleTagThreeState(element, { stateOverride = undefined, simulateClick
         states.forEach(state => {
             element.toggleClass(FILTER_STATES[state].class, state === states[targetStateIndex]);
         });
-
-        if (states[currentStateIndex] !== states[targetStateIndex]) {
-            console.debug('toggle three-way filter from', states[currentStateIndex], 'to', states[targetStateIndex], 'on', element);
-        }
     }
 
 
@@ -2823,7 +2817,6 @@ async function onTagRestoreFileSelect(e) {
     const file = e.target.files[0];
 
     if (!file) {
-        console.log('Tag restore: No file selected.');
         return;
     }
 
@@ -2831,13 +2824,11 @@ async function onTagRestoreFileSelect(e) {
 
     if (!data) {
         toastr.warning('Empty file data', 'Tag Restore');
-        console.log('Tag restore: File data empty.');
         return;
     }
 
     if (!data.tags || !data.tag_map || !Array.isArray(data.tags) || typeof data.tag_map !== 'object') {
         toastr.warning('Invalid file format', 'Tag Restore');
-        console.log('Tag restore: Invalid file format.');
         return;
     }
 

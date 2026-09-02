@@ -403,7 +403,6 @@ export class ToolManager {
         for (const tool of ToolManager.tools) {
             const register = await tool.shouldRegister();
             if (!register) {
-                console.log('[ToolManager] Skipping tool registration:', tool);
                 continue;
             }
             tools.push(tool.toFunctionOpenAI());

@@ -80,7 +80,6 @@ let saveMetadataTimeout = null;
 
 export function cancelDebouncedMetadataSave() {
     if (saveMetadataTimeout) {
-        console.debug('Debounced metadata save cancelled');
         clearTimeout(saveMetadataTimeout);
         saveMetadataTimeout = null;
     }
@@ -106,9 +105,7 @@ export function saveMetadataDebounced() {
             return;
         }
 
-        console.debug('Saving metadata...');
         await newContext.saveMetadata();
-        console.debug('Saved metadata...');
     }, debounce_timeout.relaxed);
 }
 

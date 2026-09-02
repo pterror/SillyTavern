@@ -488,7 +488,6 @@ async function getNewBackgroundName(referenceElement) {
     const oldBg = exampleBlock.attr('bgfile');
 
     if (!oldBg) {
-        console.debug('no bgfile');
         return;
     }
 
@@ -498,14 +497,12 @@ async function getNewBackgroundName(referenceElement) {
     const newBgExtensionless = await Popup.show.input(t`Enter new background name:`, null, oldBgExtensionless);
 
     if (!newBgExtensionless) {
-        console.debug('no new_bg_extensionless');
         return;
     }
 
     const newBg = `${newBgExtensionless}.${fileExtension}`;
 
     if (oldBgExtensionless === newBgExtensionless) {
-        console.debug('new_bg === old_bg');
         return;
     }
 

@@ -1087,7 +1087,6 @@ async function CreateZenSliders(elmnt) {
                         //this just selects all the text in the handle so user can overwrite easily
                         //needed because JQUery UI uses left/right arrow keys as well as home/end to move the slider..
                         valueBeforeManualInput = newSlider.val();
-                        console.log(valueBeforeManualInput);
                         let handleElement = handle.get(0);
                         let range = document.createRange();
                         range.selectNodeContents(handleElement);
@@ -1118,7 +1117,6 @@ async function CreateZenSliders(elmnt) {
                             } else {
                                 //if value not ok, warn and reset to last known valid value
                                 toastr.warning(`Invalid value. Must be between ${sliderMin} and ${sliderMax}`);
-                                console.log(valueBeforeManualInput);
                                 newSlider.val(valueBeforeManualInput);
                                 handle.text(valueBeforeManualInput);
                                 handleSlideEvent.call(newSlider, null, { value: parseFloat(valueBeforeManualInput) }, 'manual');
@@ -1138,7 +1136,6 @@ async function CreateZenSliders(elmnt) {
         var numVal = parseFloat(Number(ui.value).toFixed(decimals));
         offVal = parseFloat(Number(offVal).toFixed(decimals));
         allVal = parseFloat(Number(allVal).toFixed(decimals));
-        console.log(numVal, sliderMin, sliderMax, numVal > sliderMax, numVal < sliderMin);
         if (numVal > sliderMax) { numVal = sliderMax; }
         if (numVal < sliderMin) { numVal = sliderMin; }
         var stepNumber = parseFloat(((ui.value - sliderMin) / stepScale).toFixed(0));
@@ -2293,7 +2290,6 @@ async function loadContextSettings() {
             } else {
                 power_user.context[control.property] = value;
             }
-            console.debug(`Setting ${$element.prop('id')} to ${value}`);
             if (!CSS.supports('field-sizing', 'content') && $(this).is('textarea')) {
                 await resetScrollHeight($(this));
             }
@@ -3463,13 +3459,11 @@ export function generatedTextFiltered(text) {
     if (text.length > 0) {
         if (power_user.auto_swipe_minimum_length) {
             if (text.length < power_user.auto_swipe_minimum_length) {
-                console.log('Generated text size too small');
                 return true;
             }
         }
         if (power_user.auto_swipe_blacklist.length && power_user.auto_swipe_blacklist_threshold) {
             if (containsBlacklistedWords(text, power_user.auto_swipe_blacklist, power_user.auto_swipe_blacklist_threshold)) {
-                console.log('Generated text has blacklisted words');
                 return true;
             }
         }
@@ -3594,7 +3588,6 @@ jQuery(() => {
                 try {
                     var elmnt = $('#' + $.escapeSelector(elmntName));
                     if (elmnt.length) {
-                        console.log(`scaling ${elmntName} by ${scaleX}x${scaleY} to ${newWidth}x${newHeight}`);
                         elmnt.css('height', newHeight);
                         elmnt.css('width', newWidth);
                         elmnt.css('inset', `${newTop}px ${newRight}px ${newBottom}px ${newLeft}px`);
@@ -3604,16 +3597,12 @@ jQuery(() => {
                         power_user.movingUIState[elmntName].bottom = newBottom;
                         power_user.movingUIState[elmntName].left = newLeft;
                         power_user.movingUIState[elmntName].right = newRight;
-                    } else {
-                        console.log(`skipping ${elmntName} because it doesn't exist in the DOM`);
                     }
                 } catch (err) {
                     console.log(`error occurred while processing ${elmntName}: ${err}`);
                 }
             }
             saveSettingsDebounced('power_user.movingUIState');
-        } else {
-            console.debug('aborting MUI reset', Object.keys(power_user.movingUIState).length);
         }
         coreTruthWinWidth = window.innerWidth;
         coreTruthWinHeight = window.innerHeight;
@@ -4021,7 +4010,6 @@ jQuery(() => {
             .split(',')
             .map(str => str.trim())
             .filter(str => str);
-        console.log('power_user.auto_swipe_blacklist', power_user.auto_swipe_blacklist);
         saveSettingsDebounced('power_user.auto_swipe_blacklist');
     });
 

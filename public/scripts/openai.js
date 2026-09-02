@@ -4774,7 +4774,6 @@ async function onPresetImportFileChange(e) {
         const popupResult = await Popup.show.confirm(textHeader, textMessage, popupOptions);
 
         if (popupResult === POPUP_RESULT.CANCELLED) {
-            console.log('Import cancelled by user');
             return;
         }
 
@@ -4844,7 +4843,6 @@ async function onExportPresetClick() {
         const popupResult = await Popup.show.confirm(textHeader, textMessage, popupOptions);
 
         if (popupResult === POPUP_RESULT.CANCELLED) {
-            console.log('Export cancelled by user');
             return;
         }
 

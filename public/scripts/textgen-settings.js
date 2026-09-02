@@ -457,11 +457,6 @@ function getCustomTokenBans(settings = null) {
         .filter(onlyUnique)
         .map(x => substituteParams(x));
 
-    //debug
-    if (textgenerationwebui_banned_in_macros.length) {
-        console.log('=== Found banned word sequences in the macros:', textgenerationwebui_banned_in_macros, 'Resulting array of banned sequences (will be used this generation turn):', sequences);
-    }
-
     //clean old temporary bans found in macros before, for the next generation turn.
     textgenerationwebui_banned_in_macros = [];
 
@@ -1026,7 +1021,6 @@ export function initTextGenSettings() {
                 inputElement.val(valueToSet).trigger('input');
                 if (power_user.enableZenSliders) {
                     let masterElementID = inputElement.prop('id');
-                    console.log(masterElementID);
                     let zenSlider = $(`#${masterElementID}_zenslider`).slider();
                     zenSlider.slider('option', 'value', value);
                     zenSlider.slider('option', 'slide')

@@ -482,7 +482,6 @@ export class FilterHelper {
             typeScores.set(uid, score);
         }
         this.scoreCache.set(type, typeScores);
-        console.debug('search scores cached', type, typeScores);
     }
 
     /**
