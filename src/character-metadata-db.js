@@ -3802,38 +3802,156 @@ const CARD_TAGS_EXCLUDED = new Set(['ROOT', 'TAVERN']);
 const CARD_TAGS_MAX_PER_CARD = 50;
 
 /**
- * Shared classify-and-insert core for seeding `character_tags` from one character's card-embedded `data.tags`
- * array - used by both backfillCardTagsIfNeeded() (the one-time backfill below) and
- * seedCardTagsForSingleCharacter() (the forward-looking per-import path), so a card's embedded tags are always
- * turned into real tag definitions + assignments the same way regardless of when that card is seen.
+ * Classifies one character's card-embedded `data.tags` array against the tag-definition namespace, resolving
+ * each name to an existing tag id (case-insensitively) or minting a new one - the shared decision core behind
+ * `seedCardTagsForCharacter()` below, split out so `onlyExisting` (ALL vs ONLY_EXISTING tag-import mode) has one
+ * place to change the rule, not two copies of the filter/dedup/cap logic to keep in sync.
  *
  * `tagNameToId` is a case-insensitive `name.toLowerCase() -> id` map the caller owns across an entire pass (or a
  * single call) - this function looks up AND populates it, so a tag name introduced by one card in a batch is
  * immediately reused (not re-created) by the next card in the same batch that carries the same name.
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- * @param {string} avatar Character id (the `characters.id` / `character_tags.character_id` value).
  * @param {string[]} cardTags Raw `data.tags` array as embedded in the card.
  * @param {Map<string, string>} tagNameToId Case-insensitive name -> tag id map, looked up and mutated in place.
- * @param {(params: { id: string, data: string }) => void} insertTag `INSERT OR IGNORE INTO tags` runner.
- * @param {(params: { characterId: string, tagId: string }) => void} insertAssignment `INSERT OR IGNORE INTO character_tags` runner.
+ * @param {(params: { id: string, data: string }) => void} insertTag `INSERT OR IGNORE INTO tags` runner - never
+ * called when `onlyExisting` is true, since that mode must not mint new tag definitions.
+ * @param {{ onlyExisting?: boolean }} [options]
+ * @returns {string[]} Resolved tag ids this card should end up assigned to (order-preserving, not deduped against
+ * what the character already has - callers `INSERT OR IGNORE` so a re-assignment of an existing one is harmless).
  */
-function seedCardTagsForCharacter(db, avatar, cardTags, tagNameToId, insertTag, insertAssignment) {
+function resolveCardTagIds(cardTags, tagNameToId, insertTag, { onlyExisting = false } = {}) {
     const filtered = cardTags
         .filter(t => typeof t === 'string')
         .map(t => t.trim())
         .filter(t => t.length > 0 && !CARD_TAGS_EXCLUDED.has(t))
         .slice(0, CARD_TAGS_MAX_PER_CARD);
 
+    const tagIds = [];
     for (const tagName of filtered) {
         const key = tagName.toLowerCase();
         let tagId = tagNameToId.get(key);
         if (!tagId) {
+            if (onlyExisting) continue;
             tagId = crypto.randomUUID();
             insertTag({ id: tagId, data: JSON.stringify({ id: tagId, name: tagName, create_date: Date.now() }) });
             tagNameToId.set(key, tagId);
         }
+        tagIds.push(tagId);
+    }
+    return tagIds;
+}
+
+/**
+ * Shared classify-and-insert core for seeding `character_tags` from one character's card-embedded `data.tags`
+ * array - used by both backfillCardTagsIfNeeded() (the one-time backfill below) and
+ * seedCardTagsForSingleCharacter() (the forward-looking per-import path), so a card's embedded tags are always
+ * turned into real tag definitions + assignments the same way regardless of when that card is seen.
+ *
+ * Deliberately does NOT touch `shallow_json.tag_ids`/`digest_tag_ids` itself - unlike `assignEntityTag()`, which
+ * owns exactly one row and can afford to patch it inline, this can be called across a whole backfill pass where
+ * the caller controls batching/transaction boundaries and (for the batch-import forward path) whether the row is
+ * still a buffered pending write rather than a committed one - see `seedCardTagsForSingleCharacter()`'s own doc
+ * comment for why that split matters. Every caller of this function is responsible for reconciling
+ * `shallow_json.tag_ids` itself once it knows the row's real final tag id set (found live, 2026-09: this gap -
+ * `character_tags` correct, `shallow_json.tag_ids` stale - was the actual cause of tags showing correctly
+ * nowhere except the raw tag-assignment table, on 145 characters on this install whose card tags were seeded via
+ * this function before it grew this doc comment).
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} avatar Character id (the `characters.id` / `character_tags.character_id` value).
+ * @param {string[]} cardTags Raw `data.tags` array as embedded in the card.
+ * @param {Map<string, string>} tagNameToId Case-insensitive name -> tag id map, looked up and mutated in place.
+ * @param {(params: { id: string, data: string }) => void} insertTag `INSERT OR IGNORE INTO tags` runner.
+ * @param {(params: { characterId: string, tagId: string }) => void} insertAssignment `INSERT OR IGNORE INTO character_tags` runner.
+ * @param {{ onlyExisting?: boolean }} [options]
+ * @returns {string[]} The tag ids this call resolved and assigned (see resolveCardTagIds()'s own return doc).
+ */
+function seedCardTagsForCharacter(db, avatar, cardTags, tagNameToId, insertTag, insertAssignment, options) {
+    const tagIds = resolveCardTagIds(cardTags, tagNameToId, insertTag, options);
+    for (const tagId of tagIds) {
         insertAssignment({ characterId: avatar, tagId });
     }
+    return tagIds;
+}
+
+/**
+ * Patches one already-committed character row's `shallow_json.tag_ids`/`digest_tag_ids` (plus a change-log entry
+ * and `change_seq` bump) to match whatever `character_tags` currently holds for it - the same write
+ * `assignEntityTag()`'s own characters-table branch does after a single-tag insert, generalized so a caller that
+ * just seeded a whole batch of tags at once (seedCardTagsForCharacter()) only pays for one shallow_json rewrite
+ * per character, not one per tag. Re-reads `character_tags` rather than trusting the caller's own resolved list,
+ * so it's correct even when the character already carried other tag assignments the card-tags pass never touched.
+ * No-op (returns false) if the row doesn't exist - never expected in practice since every caller only reaches
+ * this after its own insert into `character_tags` already succeeded against that same id.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} avatar
+ * @returns {boolean} Whether the row was found and patched.
+ */
+function syncShallowTagIdsFromTable(db, avatar) {
+    const row = db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: avatar });
+    if (!row) return false;
+    const currentTagIds = db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id: avatar }).map(r => r.tag_id);
+    const shallow = JSON.parse(row.shallow_json);
+    shallow.tag_ids = currentTagIds;
+    const lastInsertRowid = insertChange(db, avatar, 'upsert', JSON.stringify(['tag_ids']));
+    db.run(
+        'UPDATE characters SET shallow_json = @shallowJson, change_seq = @changeSeq, digest_tag_ids = @digestTagIds WHERE id = @id',
+        { id: avatar, shallowJson: JSON.stringify(shallow), changeSeq: Number(lastInsertRowid), digestTagIds: characterDigestTagIdsHash(shallow) % 4294967296 },
+    );
+    return true;
+}
+
+/**
+ * One-time repair for the specific `shallow_json.tag_ids`-stale-but-`character_tags`-correct gap
+ * `seedCardTagsForCharacter()` used to leave behind before it grew its `syncShallowTagIdsFromTable()` call (see
+ * that function's own doc comment) - `backfillCardTagsIfNeeded()`'s historical pass and `seedCardTagsForSingleCharacter()`'s
+ * forward-import path both wrote real `character_tags` rows this way without ever patching the matching
+ * `shallow_json.tag_ids`, and `backfillTagIdsInShallowJson()`'s own one-time pass only ever targets rows missing
+ * a `tag_ids` key outright - a row that already had *some* `tag_ids` value (even `[]`) before either of those
+ * card-tags writes landed was silently skipped by it, and (being flag-gated, one-time-ever) never gets a second
+ * chance. Confirmed live (2026-09) against this install's full 328,883-row library: 145 characters in exactly
+ * that state - `character_tags` fully correct, `shallow_json.tag_ids` stale - which is what `/query` and every
+ * list-view render actually reads, so those 145 characters showed no tags in the list despite being tagged.
+ *
+ * Safe to call more than once (every write here is idempotent - a row already in sync is simply left alone,
+ * `syncShallowTagIdsFromTable()` re-derives from `character_tags` rather than applying a delta), and touches only
+ * rows a full-table comparison actually finds mismatched - never a blind re-sync of the whole library.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {{ dryRun?: boolean }} [options] `dryRun: true` reports what would be touched without writing anything.
+ * @returns {Promise<{ scanned: number, mismatched: string[] }>} `mismatched` are the affected character ids
+ * (found regardless of `dryRun`; only actually repaired when `dryRun` is false).
+ */
+export async function repairStaleShallowTagIds(directories, { dryRun = false } = {}) {
+    const entry = await getEntry(directories);
+    if (!entry) return { scanned: 0, mismatched: [] };
+
+    const rows = entry.db.all(
+        `SELECT c.id, c.shallow_json, GROUP_CONCAT(ct.tag_id) AS tagIds
+         FROM characters c LEFT JOIN character_tags ct ON ct.character_id = c.id
+         GROUP BY c.id`,
+    );
+
+    const mismatched = [];
+    for (const row of rows) {
+        let shallow;
+        try {
+            shallow = JSON.parse(row.shallow_json);
+        } catch {
+            continue; // Unparseable shallow_json is a separate, pre-existing problem - not this pass's job.
+        }
+        const shallowSet = new Set(Array.isArray(shallow.tag_ids) ? shallow.tag_ids : []);
+        const tableSet = new Set(row.tagIds ? row.tagIds.split(',') : []);
+        const same = shallowSet.size === tableSet.size && [...shallowSet].every(id => tableSet.has(id));
+        if (!same) mismatched.push(row.id);
+    }
+
+    if (!dryRun) {
+        entry.db.transaction(() => {
+            for (const id of mismatched) {
+                syncShallowTagIdsFromTable(entry.db, id);
+            }
+        });
+    }
+
+    return { scanned: rows.length, mismatched };
 }
 
 /**
@@ -3920,7 +4038,17 @@ export async function backfillCardTagsIfNeeded(directories) {
             for (const row of chunk) {
                 const cardTags = extractCardTags(row.shallow_json);
                 if (cardTags.length === 0) continue;
-                seedCardTagsForCharacter(entry.db, row.id, cardTags, tagNameToId, insertTag, insertAssignment);
+                const tagIds = seedCardTagsForCharacter(entry.db, row.id, cardTags, tagNameToId, insertTag, insertAssignment);
+                // Keep shallow_json.tag_ids (what /query and every list-view render actually read - see
+                // syncShallowTagIdsFromTable()'s own doc comment) in sync with character_tags right here, in the
+                // same transaction as the insert above - not left for backfillTagIdsInShallowJson()'s separate
+                // one-time pass, which only ever targets rows *missing* a tag_ids key outright and would silently
+                // skip a row that already had one (even an empty `[]`) before this pass added real assignments to
+                // it. That mismatch - character_tags correct, shallow_json stale - was confirmed live as the
+                // actual cause of 145 characters showing no tags in the list view despite being tagged.
+                if (tagIds.length > 0) {
+                    syncShallowTagIdsFromTable(entry.db, row.id);
+                }
             }
         });
 
@@ -3946,46 +4074,98 @@ export async function backfillCardTagsIfNeeded(directories) {
 }
 
 /**
- * Forward-looking counterpart to backfillCardTagsIfNeeded() - called from the local-import path for a single
- * newly-imported character so a card's embedded `data.tags` get turned into real `character_tags` rows at
- * import time, the same way the backfill retroactively does for the existing library. Reads the character's own
- * `shallow_json` back out of the `characters` table (rather than requiring the caller to pass the parsed card),
- * so it composes with import call sites that only have the avatar id in hand by this point.
+ * Forward-looking counterpart to backfillCardTagsIfNeeded() - called from the interactive `/api/characters/import`
+ * route (ALL/ONLY_EXISTING tag-import modes - ASK stays client-driven, it genuinely needs the interactive popup)
+ * and from the local-import-scan headless path, so a card's embedded `data.tags` get turned into real
+ * `character_tags` rows (and a correctly-synced `shallow_json.tag_ids`) atomically at import time, the same way
+ * the backfill retroactively does for the existing library.
+ *
+ * Batch-import-mode aware, unlike the plain SQL reads/writes this used before: a character imported inside a
+ * multi-file drop can still be sitting in `entry.batch.pending` rather than committed to the `characters` table
+ * (buffered until `BATCH_FLUSH_SIZE` rows accumulate or batch mode ends) at the exact moment its own import
+ * response comes back and this runs - same race `assignEntityTag()`'s own pending-buffer check exists for (see
+ * that function's doc comment), just reached from the import path instead of a client-fired `/api/tags/assign`.
+ * Before this check, a card's embedded tags would silently vanish for every character imported while batch mode
+ * was active, exactly the failure class the two earlier tag-loading fixes tonight were chasing.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} avatar
- * @returns {Promise<void>}
+ * @param {{ onlyExisting?: boolean }} [options] `onlyExisting: true` (ONLY_EXISTING mode) resolves only tag names
+ * that already match an existing tag definition, never minting a new one; default (ALL mode) mints as needed.
+ * @returns {Promise<{ tagIds: string[], tagDefinitions: object[] }>} `tagIds` actually resolved/assigned (empty
+ * if the card had no tags, or none matched under `onlyExisting`). `tagDefinitions` is the full tag-definition
+ * object for every one of those ids (not just newly-minted ones) - a caller building an atomic import response
+ * needs these too, not just the ids: a client that has never seen a server-minted-this-request tag definition
+ * before has nothing to resolve that id to (`tagIdsToTagList()`, tags.js, silently drops an id it can't find a
+ * definition for), so shipping ids alone here would leave a real, correctly-assigned tag invisible in the same
+ * session's own UI until an unrelated future tag-definitions refetch happened to pull it in.
  */
-export async function seedCardTagsForSingleCharacter(directories, avatar) {
+export async function seedCardTagsForSingleCharacter(directories, avatar, { onlyExisting = false } = {}) {
     const entry = await getEntry(directories);
-    if (!entry) return;
+    if (!entry) return { tagIds: [], tagDefinitions: [] };
 
-    const row = entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: avatar });
-    if (!row) return;
+    const pending = entry.batch?.pending.get(avatar);
+    const shallowJson = pending ? pending.row.shallow_json : entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: avatar })?.shallow_json;
+    if (!shallowJson) return { tagIds: [], tagDefinitions: [] };
 
-    const cardTags = extractCardTags(row.shallow_json);
-    if (cardTags.length === 0) return;
+    const cardTags = extractCardTags(shallowJson);
+    if (cardTags.length === 0) return { tagIds: [], tagDefinitions: [] };
 
     /** @type {Map<string, string>} */
     const tagNameToId = new Map();
+    /** @type {Map<string, object>} id -> parsed tag definition, for every row in `tags` - reused below to build
+     * the `tagDefinitions` return value without a second table scan. */
+    const tagIdToDefinition = new Map();
     for (const tagRow of entry.db.all('SELECT id, data FROM tags')) {
         try {
             const tag = JSON.parse(tagRow.data);
             if (tag && typeof tag.name === 'string' && tag.name) {
                 tagNameToId.set(tag.name.toLowerCase(), tagRow.id);
+                tagIdToDefinition.set(tagRow.id, tag);
             }
         } catch {
             // Malformed tag definition row - skip it.
         }
     }
 
-    const insertTag = (params) => entry.db.run('INSERT OR IGNORE INTO tags (id, data) VALUES (@id, @data)', params);
-    const insertAssignment = (params) => entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@characterId, @tagId)', params);
+    // Tag *definitions* always go straight to the `tags` table, batch mode or not - only `characters`/
+    // `character_tags` rows for a not-yet-flushed import are what batch mode buffers (see pending branch below).
+    const tagDefinitionsBefore = tagNameToId.size;
+    const insertTag = (params) => {
+        entry.db.run('INSERT OR IGNORE INTO tags (id, data) VALUES (@id, @data)', params);
+        tagIdToDefinition.set(params.id, JSON.parse(params.data));
+    };
+    const tagIds = resolveCardTagIds(cardTags, tagNameToId, insertTag, { onlyExisting });
+    if (tagIds.length === 0) return { tagIds: [], tagDefinitions: [] };
+
+    const tagDefinitions = tagIds.map(id => tagIdToDefinition.get(id)).filter(Boolean);
+
+    // Only when this call actually minted a new tag definition (ALL mode, a name with no existing match) -
+    // ONLY_EXISTING and a pure re-assignment of already-known tags never change what tags_hash covers, so
+    // there's nothing for this O(all tag definitions) rehash to actually refresh in that case.
+    if (tagNameToId.size > tagDefinitionsBefore) {
+        updateTagsHashSync(entry.db);
+    }
+
+    if (pending) {
+        // Mirrors assignEntityTag()'s own pending branch: patch the buffered row in place (both `pending.tagIds`,
+        // what writeRowSync() inserts into character_tags at flush, and the embedded shallow_json/digest_tag_ids
+        // - see patchPendingRowTagIds()'s own doc comment) rather than inserting into character_tags directly,
+        // since the character row itself doesn't exist in `characters` yet for a not-yet-flushed pending write.
+        for (const tagId of tagIds) {
+            if (!pending.tagIds.includes(tagId)) pending.tagIds.push(tagId);
+        }
+        patchPendingRowTagIds(pending);
+        return { tagIds, tagDefinitions };
+    }
 
     entry.db.transaction(() => {
-        seedCardTagsForCharacter(entry.db, avatar, cardTags, tagNameToId, insertTag, insertAssignment);
+        for (const tagId of tagIds) {
+            entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@characterId, @tagId)', { characterId: avatar, tagId });
+        }
+        syncShallowTagIdsFromTable(entry.db, avatar);
     });
 
-    updateTagsHashSync(entry.db);
+    return { tagIds, tagDefinitions };
 }
 
 /**

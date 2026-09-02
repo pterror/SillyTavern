@@ -214,6 +214,7 @@ import {
     createTagMapFromList,
     renameTagKey,
     importTags,
+    mergeServerTagDefinitions,
     tag_filter_type,
     compareTagsForSort,
     initTags,
@@ -15684,7 +15685,15 @@ export async function processDroppedFiles(files, data = new Map()) {
             avatarFileNames.push(result.avatarFileName);
 
             let tagsAdded = false;
-            if (power_user.tag_import_setting !== tag_import_setting.NONE) {
+            if (result.serverHandledTags) {
+                // ALL/ONLY_EXISTING: the server already resolved and assigned this card's tags atomically as
+                // part of the import request itself (characters.js's `/import` route) - no separate
+                // `/api/tags/assign` round trip needed here, that was the actual bug. `result.character.tag_ids`
+                // already reflects it (db-authoritative stamp, same response). Only local bookkeeping left is
+                // merging in any tag definitions this client had never seen before this request.
+                mergeServerTagDefinitions(result.tagDefinitions);
+                tagsAdded = Array.isArray(result.character?.tag_ids) && result.character.tag_ids.length > 0;
+            } else if (power_user.tag_import_setting !== tag_import_setting.NONE) {
                 tagsAdded = await importTags(result.character, { suppressSuccessToast: true });
             }
 
@@ -15826,6 +15835,20 @@ async function importCharacter(file, { preserveFileName = '' } = {}) {
     formData.append('user_name', name1);
     if (preserveFileName) formData.append('preserved_name', preserveFileName);
 
+    // ALL/ONLY_EXISTING tag-import modes have no interactive decision to make (unlike ASK, which needs the
+    // review popup - showTagImportPopup(), tags.js), so there's no reason to import the card, THEN separately
+    // round-trip every one of its tags back to the server via `/api/tags/assign` the way processDroppedFiles()'s
+    // own importTags() call still has to for ASK/NONE. Telling the server the mode up front lets it seed those
+    // two modes atomically, in the same request that creates the row - see characters.js's `/import` route and
+    // seedCardTagsForSingleCharacter()'s own doc comment for the "why" (this was the actual root cause behind
+    // tonight's recurring "tags missing after import" reports for exactly these two modes).
+    const effectiveTagSetting = Object.values(tag_import_setting).find(setting => setting === power_user.tag_import_setting) ?? tag_import_setting.ASK;
+    if (effectiveTagSetting === tag_import_setting.ALL) {
+        formData.append('tagImportMode', 'all');
+    } else if (effectiveTagSetting === tag_import_setting.ONLY_EXISTING) {
+        formData.append('tagImportMode', 'existing');
+    }
+
     try {
         const result = await fetch('/api/characters/import', {
             method: 'POST',
@@ -15860,7 +15883,18 @@ async function importCharacter(file, { preserveFileName = '' } = {}) {
 
             // No toast here - processDroppedFiles() (this function's only caller) folds this result together
             // with the tag-import outcome into a single combined notification per character.
-            return { avatarFileName, replaced: exists, character: data.character };
+            //
+            // serverHandledTags mirrors whether `tagImportMode` was actually sent above (ALL/ONLY_EXISTING) - lets
+            // processDroppedFiles() skip its own client-driven importTags() call for those two modes, since the
+            // server already resolved and assigned the card's tags atomically as part of this same request.
+            // tagDefinitions carries the (existing-or-newly-minted) tag definitions the server resolved this
+            // card's tags to - the client's local tag-definitions store has no other way to learn about a
+            // brand-new-this-request tag id (see characters.js's `/import` route doc comment on why).
+            return {
+                avatarFileName, replaced: exists, character: data.character,
+                serverHandledTags: effectiveTagSetting === tag_import_setting.ALL || effectiveTagSetting === tag_import_setting.ONLY_EXISTING,
+                tagDefinitions: Array.isArray(data.tagDefinitions) ? data.tagDefinitions : [],
+            };
         }
     } catch (error) {
         console.error('Error importing character', error);
