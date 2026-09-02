@@ -131,8 +131,6 @@ EventEmitter.prototype.emit = async function (event) {
     let args = [].slice.call(arguments, 1);
     if (localStorage.getItem('eventTracing') === 'true') {
         console.trace('Event emitted: ' + event, args);
-    } else {
-        console.debug('Event emitted: ' + event);
     }
 
     let i, listeners, length;
@@ -161,8 +159,6 @@ EventEmitter.prototype.emitAndWait = function (event) {
     let args = [].slice.call(arguments, 1);
     if (localStorage.getItem('eventTracing') === 'true') {
         console.trace('Event emitted: ' + event, args);
-    } else {
-        console.debug('Event emitted: ' + event);
     }
 
     let i, listeners, length;
