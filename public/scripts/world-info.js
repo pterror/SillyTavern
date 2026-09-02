@@ -26,6 +26,16 @@ import { getOrCreatePersonaDescriptor, setPersonaDescription, user_avatar } from
 import { characterRepository } from './character-repository.js';
 import { checkCharactersExistOrNull } from './character-existence-check.js';
 
+/**
+ * Whether the verbose [WI] step-by-step scan trace should print. Off by default - the trace fires
+ * unconditionally on every message (phase dividers, loop state, per-entry checks) regardless of how
+ * many entries actually activate, same shape as eventemitter.js's eventTracing toggle.
+ * @returns {boolean}
+ */
+function isWorldInfoTracingEnabled() {
+    return localStorage.getItem('worldInfoTracing') === 'true';
+}
+
 export const world_info_insertion_strategy = {
     evenly: 0,
     character_first: 1,
@@ -533,7 +543,7 @@ class WorldInfoTimedEffects {
          * @param {WIScanEntry} entry Entry that ended cooldown
          */
         'cooldown': (entry) => {
-            console.debug('[WI] Cooldown ended for entry', entry.uid);
+            if (isWorldInfoTracingEnabled()) console.debug('[WI] Cooldown ended for entry', entry.uid);
         },
 
         'delay': () => { },
@@ -816,7 +826,7 @@ export function getWorldInfoSettings() {
  * @param {string[]} [activeWorldInfo] - Optional array of active world info names
  */
 export function updateWorldInfoSettings(settings, activeWorldInfo) {
-    console.debug('[WI] Updating world info settings', settings, activeWorldInfo);
+    if (isWorldInfoTracingEnabled()) console.debug('[WI] Updating world info settings', settings, activeWorldInfo);
 
     /** @type {Record<keyof WorldInfoSettings, (value: any) => void>} */
     const fields = {
@@ -1619,7 +1629,7 @@ function registerWorldInfoSlashCommands() {
 
         let entries = selected_world_info.slice();
 
-        console.debug(`[WI] Selected global world info has ${entries.length} entries`, selected_world_info);
+        if (isWorldInfoTracingEnabled()) console.debug(`[WI] Selected global world info has ${entries.length} entries`, selected_world_info);
 
         return JSON.stringify(entries);
     }
@@ -2123,13 +2133,13 @@ function addMissingWorldInfoFields(data) {
 
         // Ensure that the key is always an array
         if (!Array.isArray(entry.key)) {
-            console.debug('[WI] Fixing invalid "key" field for entry', entry);
+            if (isWorldInfoTracingEnabled()) console.debug('[WI] Fixing invalid "key" field for entry', entry);
             entry.key = [];
         }
 
         // Ensure that the keysecondary is always an array
         if (!Array.isArray(entry.keysecondary)) {
-            console.debug('[WI] Fixing invalid "keysecondary" field for entry', entry);
+            if (isWorldInfoTracingEnabled()) console.debug('[WI] Fixing invalid "keysecondary" field for entry', entry);
             entry.keysecondary = [];
         }
 
@@ -4554,17 +4564,17 @@ async function getCharacterLore() {
     let entries = [];
     for (const worldName of worldsToSearch) {
         if (selected_world_info.includes(worldName)) {
-            console.debug(`[WI] Character ${name}'s world ${worldName} is already activated in global world info! Skipping...`);
+            if (isWorldInfoTracingEnabled()) console.debug(`[WI] Character ${name}'s world ${worldName} is already activated in global world info! Skipping...`);
             continue;
         }
 
         if (chat_metadata[METADATA_KEY] === worldName) {
-            console.debug(`[WI] Character ${name}'s world ${worldName} is already activated in chat lore! Skipping...`);
+            if (isWorldInfoTracingEnabled()) console.debug(`[WI] Character ${name}'s world ${worldName} is already activated in chat lore! Skipping...`);
             continue;
         }
 
         if (power_user.persona_description_lorebook === worldName) {
-            console.debug(`[WI] Character ${name}'s world ${worldName} is already activated in persona lore! Skipping...`);
+            if (isWorldInfoTracingEnabled()) console.debug(`[WI] Character ${name}'s world ${worldName} is already activated in persona lore! Skipping...`);
             continue;
         }
 
@@ -4573,7 +4583,7 @@ async function getCharacterLore() {
         entries = entries.concat(newEntries);
 
         if (!newEntries.length) {
-            console.debug(`[WI] Character ${name}'s world ${worldName} could not be found or is empty`);
+            if (isWorldInfoTracingEnabled()) console.debug(`[WI] Character ${name}'s world ${worldName} could not be found or is empty`);
         }
     }
 
@@ -4584,10 +4594,10 @@ async function getCharacterLore() {
             .map(x => converted.entries[x])
             .map(({ uid, ...rest }) => ({ uid, world: '__embedded__', ...rest }));
         entries = entries.concat(embeddedEntries);
-        console.debug(`[WI] Character ${name}'s embedded lorebook has ${embeddedEntries.length} entries (activated directly)`);
+        if (isWorldInfoTracingEnabled()) console.debug(`[WI] Character ${name}'s embedded lorebook has ${embeddedEntries.length} entries (activated directly)`);
     }
 
-    console.debug(`[WI] Character ${name}'s lore has ${entries.length} world info entries`, [...worldsToSearch]);
+    if (isWorldInfoTracingEnabled()) console.debug(`[WI] Character ${name}'s lore has ${entries.length} world info entries`, [...worldsToSearch]);
     return entries;
 }
 
@@ -4603,7 +4613,7 @@ async function getGlobalLore() {
         entries = entries.concat(newEntries);
     }
 
-    console.debug(`[WI] Global world info has ${entries.length} entries`, selected_world_info);
+    if (isWorldInfoTracingEnabled()) console.debug(`[WI] Global world info has ${entries.length} entries`, selected_world_info);
 
     return entries;
 }
@@ -4616,14 +4626,14 @@ async function getChatLore() {
     }
 
     if (selected_world_info.includes(chatWorld)) {
-        console.debug(`[WI] Chat world ${chatWorld} is already activated in global world info! Skipping...`);
+        if (isWorldInfoTracingEnabled()) console.debug(`[WI] Chat world ${chatWorld} is already activated in global world info! Skipping...`);
         return [];
     }
 
     const data = await loadWorldInfo(chatWorld);
     const entries = data ? Object.keys(data.entries).map((x) => data.entries[x]).map(({ uid, ...rest }) => ({ uid, world: chatWorld, ...rest })) : [];
 
-    console.debug(`[WI] Chat lore has ${entries.length} entries`, [chatWorld]);
+    if (isWorldInfoTracingEnabled()) console.debug(`[WI] Chat lore has ${entries.length} entries`, [chatWorld]);
 
     return entries;
 }
@@ -4637,19 +4647,19 @@ async function getPersonaLore() {
     }
 
     if (chatWorld === personaWorld) {
-        console.debug(`[WI] Persona world ${personaWorld} is already activated in chat world! Skipping...`);
+        if (isWorldInfoTracingEnabled()) console.debug(`[WI] Persona world ${personaWorld} is already activated in chat world! Skipping...`);
         return [];
     }
 
     if (selected_world_info.includes(personaWorld)) {
-        console.debug(`[WI] Persona world ${personaWorld} is already activated in global world info! Skipping...`);
+        if (isWorldInfoTracingEnabled()) console.debug(`[WI] Persona world ${personaWorld} is already activated in global world info! Skipping...`);
         return [];
     }
 
     const data = await loadWorldInfo(personaWorld);
     const entries = data ? Object.keys(data.entries).map((x) => data.entries[x]).map(({ uid, ...rest }) => ({ uid, world: personaWorld, ...rest })) : [];
 
-    console.debug(`[WI] Persona lore has ${entries.length} entries`, [personaWorld]);
+    if (isWorldInfoTracingEnabled()) console.debug(`[WI] Persona lore has ${entries.length} entries`, [personaWorld]);
 
     return entries;
 }
@@ -4700,7 +4710,7 @@ export async function getSortedEntries() {
             return { ...entry, hash };
         });
 
-        console.debug(`[WI] Found ${entries.length} world lore entries. Sorted by strategy`, Object.entries(world_info_insertion_strategy).find((x) => x[1] === world_info_character_strategy));
+        if (isWorldInfoTracingEnabled()) console.debug(`[WI] Found ${entries.length} world lore entries. Sorted by strategy`, Object.entries(world_info_insertion_strategy).find((x) => x[1] === world_info_character_strategy));
 
         // Need to deep clone the entries to avoid modifying the cached data
         return structuredClone(entries);
@@ -4777,7 +4787,7 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
     const context = getContext();
     const buffer = new WorldInfoBuffer(chat, globalScanData);
 
-    console.debug(`[WI] --- START WI SCAN (on ${chat.length} messages, trigger = ${globalScanData.trigger})${isDryRun ? ' (DRY RUN)' : ''} ---`);
+    if (isWorldInfoTracingEnabled()) console.debug(`[WI] --- START WI SCAN (on ${chat.length} messages, trigger = ${globalScanData.trigger})${isDryRun ? ' (DRY RUN)' : ''} ---`);
 
     // Combine the chat
 
@@ -4803,11 +4813,11 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
     let budget = Math.round(world_info_budget * maxContext / 100) || 1;
 
     if (world_info_budget_cap > 0 && budget > world_info_budget_cap) {
-        console.debug(`[WI] Budget ${budget} exceeds cap ${world_info_budget_cap}, using cap`);
+        if (isWorldInfoTracingEnabled()) console.debug(`[WI] Budget ${budget} exceeds cap ${world_info_budget_cap}, using cap`);
         budget = world_info_budget_cap;
     }
 
-    console.debug(`[WI] Context size: ${maxContext}; WI budget: ${budget} (max% = ${world_info_budget}%, cap = ${world_info_budget_cap})`);
+    if (isWorldInfoTracingEnabled()) console.debug(`[WI] Context size: ${maxContext}; WI budget: ${budget} (max% = ${world_info_budget}%, cap = ${world_info_budget_cap})`);
     const sortedEntries = await getSortedEntries();
     const timedEffects = new WorldInfoTimedEffects(chat, sortedEntries, isDryRun);
 
@@ -4825,23 +4835,23 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
     // Already preset with the first level
     let currentRecursionDelayLevel = availableRecursionDelayLevels.shift() ?? 0;
     if (currentRecursionDelayLevel > 0 && availableRecursionDelayLevels.length) {
-        console.debug('[WI] Preparing first delayed recursion level', currentRecursionDelayLevel, '. Still delayed:', availableRecursionDelayLevels);
+        if (isWorldInfoTracingEnabled()) console.debug('[WI] Preparing first delayed recursion level', currentRecursionDelayLevel, '. Still delayed:', availableRecursionDelayLevels);
     }
 
-    console.debug(`[WI] --- SEARCHING ENTRIES (on ${sortedEntries.length} entries) ---`);
+    if (isWorldInfoTracingEnabled()) console.debug(`[WI] --- SEARCHING ENTRIES (on ${sortedEntries.length} entries) ---`);
 
     while (scanState) {
         //if world_info_max_recursion_steps is non-zero min activations are disabled, and vice versa
         if (world_info_max_recursion_steps && world_info_max_recursion_steps <= count) {
-            console.debug('[WI] Search stopped by reaching max recursion steps', world_info_max_recursion_steps);
+            if (isWorldInfoTracingEnabled()) console.debug('[WI] Search stopped by reaching max recursion steps', world_info_max_recursion_steps);
             break;
         }
 
         // Track how many times the loop has run. May be useful for debugging.
         count++;
 
-        console.debug(`[WI] --- LOOP #${count} START ---`);
-        console.debug('[WI] Scan state', Object.entries(scan_state).find(x => x[1] === scanState));
+        if (isWorldInfoTracingEnabled()) console.debug(`[WI] --- LOOP #${count} START ---`);
+        if (isWorldInfoTracingEnabled()) console.debug('[WI] Scan state', Object.entries(scan_state).find(x => x[1] === scanState));
 
         // Until decided otherwise, we set the loop to stop scanning after this
         let nextScanState = scan_state.NONE;
@@ -4857,10 +4867,10 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
                     // Identity only, not the full entry - `entry.content` can run to paragraphs of prose,
                     // and this header fires for every entry on every scan regardless of whether the specific
                     // branch below actually has anything worth logging (e.g. just "disabled").
-                    console.debug(`[WI] Entry ${entry.uid}`, `from '${entry.world}' processing`, { uid: entry.uid, world: entry.world, comment: entry.comment });
+                    if (isWorldInfoTracingEnabled()) console.debug(`[WI] Entry ${entry.uid}`, `from '${entry.world}' processing`, { uid: entry.uid, world: entry.world, comment: entry.comment });
                     headerLogged = true;
                 }
-                console.debug(`[WI] Entry ${entry.uid}`, ...args);
+                if (isWorldInfoTracingEnabled()) console.debug(`[WI] Entry ${entry.uid}`, ...args);
             }
 
             // Already processed, considered and then skipped entries should still be skipped
@@ -5060,7 +5070,7 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
             continue;
         }
 
-        console.debug(`[WI] Search done. Found ${activatedNow.size} possible entries.`);
+        if (isWorldInfoTracingEnabled()) console.debug(`[WI] Search done. Found ${activatedNow.size} possible entries.`);
 
         // Sort the entries for the probability and the budget limit checks
         let newEntries;
@@ -5083,8 +5093,8 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
 
         filterByInclusionGroups(newEntries, allActivatedEntries, buffer, scanState, timedEffects);
 
-        console.debug('[WI] --- PROBABILITY CHECKS ---');
-        !newEntries.length && console.debug('[WI] No probability checks to do');
+        if (isWorldInfoTracingEnabled()) console.debug('[WI] --- PROBABILITY CHECKS ---');
+        if (isWorldInfoTracingEnabled() && !newEntries.length) console.debug('[WI] No probability checks to do');
 
         let ignoresBudget = newEntries.filter(e => e.ignoreBudget).length;
 
@@ -5100,19 +5110,19 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
             function verifyProbability() {
                 // If we don't need to roll, it's always true
                 if (!entry.useProbability || entry.probability === 100) {
-                    console.debug(`WI entry ${entry.uid} does not use probability`);
+                    if (isWorldInfoTracingEnabled()) console.debug(`WI entry ${entry.uid} does not use probability`);
                     return true;
                 }
 
                 const isSticky = timedEffects.isEffectActive('sticky', entry);
                 if (isSticky) {
-                    console.debug(`WI entry ${entry.uid} is sticky, does not need to re-roll probability`);
+                    if (isWorldInfoTracingEnabled()) console.debug(`WI entry ${entry.uid} is sticky, does not need to re-roll probability`);
                     return true;
                 }
 
                 const rollValue = Math.random() * 100;
                 if (rollValue <= entry.probability) {
-                    console.debug(`WI entry ${entry.uid} passed probability check of ${entry.probability}%`);
+                    if (isWorldInfoTracingEnabled()) console.debug(`WI entry ${entry.uid} passed probability check of ${entry.probability}%`);
                     return true;
                 }
 
@@ -5122,7 +5132,7 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
 
             const success = verifyProbability();
             if (!success) {
-                console.debug(`WI entry ${entry.uid} failed probability check, removing from activated entries`, entry);
+                if (isWorldInfoTracingEnabled()) console.debug(`WI entry ${entry.uid} failed probability check, removing from activated entries`, entry);
                 continue;
             }
 
@@ -5132,12 +5142,12 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
 
             if (!entry.ignoreBudget && (textToScanTokens + (await getTokenCountAsync(newContent))) >= budget) {
                 if (!token_budget_overflowed) {
-                    console.debug('[WI] --- BUDGET OVERFLOW CHECK ---');
+                    if (isWorldInfoTracingEnabled()) console.debug('[WI] --- BUDGET OVERFLOW CHECK ---');
                     if (world_info_overflow_alert) {
                         console.warn(`[WI] budget of ${budget} reached, stopping after ${allActivatedEntries.size} entries`);
                         toastr.warning(`World info budget reached after ${allActivatedEntries.size} entries.`, 'World Info');
                     } else {
-                        console.debug(`[WI] budget of ${budget} reached, stopping after ${allActivatedEntries.size} entries`);
+                        if (isWorldInfoTracingEnabled()) console.debug(`[WI] budget of ${budget} reached, stopping after ${allActivatedEntries.size} entries`);
                     }
                     token_budget_overflowed = true;
                 }
@@ -5146,24 +5156,26 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
 
             allActivatedEntries.set(`${entry.world}.${entry.uid}`, entry);
             // Identity only, not the full entry - see the `log()` header comment above on why.
-            console.debug(`[WI] Entry ${entry.uid} activation successful, adding to prompt`, { uid: entry.uid, world: entry.world, comment: entry.comment });
+            if (isWorldInfoTracingEnabled()) console.debug(`[WI] Entry ${entry.uid} activation successful, adding to prompt`, { uid: entry.uid, world: entry.world, comment: entry.comment });
         }
 
         const successfulNewEntries = newEntries.filter(x => !failedProbabilityChecks.has(x));
         const successfulNewEntriesForRecursion = successfulNewEntries.filter(x => !x.preventRecursion);
 
-        console.debug(`[WI] --- LOOP #${count} RESULT ---`);
+        if (isWorldInfoTracingEnabled()) console.debug(`[WI] --- LOOP #${count} RESULT ---`);
         if (!newEntries.length) {
-            console.debug('[WI] No new entries activated.');
+            if (isWorldInfoTracingEnabled()) console.debug('[WI] No new entries activated.');
         } else if (!successfulNewEntries.length) {
-            console.debug('[WI] Probability checks failed for all activated entries. No new entries activated.');
+            if (isWorldInfoTracingEnabled()) console.debug('[WI] Probability checks failed for all activated entries. No new entries activated.');
         } else {
-            console.debug(`[WI] Successfully activated ${successfulNewEntries.length} new entries to prompt. ${allActivatedEntries.size} total entries activated.`, successfulNewEntries);
+            if (isWorldInfoTracingEnabled()) console.debug(`[WI] Successfully activated ${successfulNewEntries.length} new entries to prompt. ${allActivatedEntries.size} total entries activated.`, successfulNewEntries);
         }
 
         function logNextState(...args) {
-            args.length && console.debug(args.shift(), ...args);
-            console.debug('[WI] Setting scan state', Object.entries(scan_state).find(x => x[1] === scanState));
+            if (isWorldInfoTracingEnabled()) {
+                args.length && console.debug(args.shift(), ...args);
+                console.debug('[WI] Setting scan state', Object.entries(scan_state).find(x => x[1] === scanState));
+            }
         }
 
         // After processing and rolling entries is done, see if we should continue with normal recursion
@@ -5182,7 +5194,7 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
         // If scanning is planned to stop, but min activations is set and not satisfied, check if we should continue
         const minActivationsNotSatisfied = world_info_min_activations > 0 && (allActivatedEntries.size < world_info_min_activations);
         if (!nextScanState && !token_budget_overflowed && minActivationsNotSatisfied) {
-            console.debug('[WI] --- MIN ACTIVATIONS CHECK ---');
+            if (isWorldInfoTracingEnabled()) console.debug('[WI] --- MIN ACTIVATIONS CHECK ---');
 
             let over_max = (
                 world_info_min_activations_depth_max > 0 &&
@@ -5194,7 +5206,7 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
                 logNextState(`[WI] Min activations not reached (${allActivatedEntries.size}/${world_info_min_activations}), advancing depth to ${buffer.getDepth() + 1}, starting another scan`);
                 buffer.advanceScan();
             } else {
-                console.debug(`[WI] Min activations not reached (${allActivatedEntries.size}/${world_info_min_activations}), but reached on of depth. Stopping`);
+                if (isWorldInfoTracingEnabled()) console.debug(`[WI] Min activations not reached (${allActivatedEntries.size}/${world_info_min_activations}), but reached on of depth. Stopping`);
             }
         }
 
@@ -5259,7 +5271,7 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
         token_budget_overflowed = args.budget.overflowed;
     }
 
-    console.debug('[WI] --- BUILDING PROMPT ---');
+    if (isWorldInfoTracingEnabled()) console.debug('[WI] --- BUILDING PROMPT ---');
 
     // Forward-sorted list of entries for joining
     const WIBeforeEntries = [];
@@ -5278,7 +5290,7 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
         const content = getRegexedString(entry.content, regex_placement.WORLD_INFO, { depth: regexDepth, isMarkdown: false, isPrompt: true });
 
         if (!content) {
-            console.debug(`[WI] Entry ${entry.uid}`, 'skipped adding to prompt due to empty content', entry);
+            if (isWorldInfoTracingEnabled()) console.debug(`[WI] Entry ${entry.uid}`, 'skipped adding to prompt due to empty content', entry);
             return;
         }
 
@@ -5349,7 +5361,7 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
     timedEffects.cleanUp();
 
     console.log(`[WI] ${isDryRun ? 'Hypothetically adding' : 'Adding'} ${allActivatedEntries.size} entries to prompt`, Array.from(allActivatedEntries.values()));
-    console.debug(`[WI] --- DONE${isDryRun ? ' (DRY RUN)' : ''} ---`);
+    if (isWorldInfoTracingEnabled()) console.debug(`[WI] --- DONE${isDryRun ? ' (DRY RUN)' : ''} ---`);
 
     return { worldInfoBefore, worldInfoAfter, EMEntries, WIDepthEntries, ANBeforeEntries: ANTopEntries, ANAfterEntries: ANBottomEntries, outletEntries: WIOutletEntries, allActivatedEntries: new Set(allActivatedEntries.values()) };
 }
@@ -5366,20 +5378,20 @@ function filterGroupsByScoring(groups, buffer, removeEntry, scanState, hasSticky
     for (const [key, group] of Object.entries(groups)) {
         // Group scoring is disabled both globally and for the group entries
         if (!world_info_use_group_scoring && !group.some(x => x.useGroupScoring)) {
-            console.debug(`[WI] Skipping group scoring for group '${key}'`);
+            if (isWorldInfoTracingEnabled()) console.debug(`[WI] Skipping group scoring for group '${key}'`);
             continue;
         }
 
         // If the group has any sticky entries, the rest are already removed by the timed effects filter
         const hasAnySticky = hasStickyMap.get(key);
         if (hasAnySticky) {
-            console.debug(`[WI] Skipping group scoring check, group '${key}' has sticky entries`);
+            if (isWorldInfoTracingEnabled()) console.debug(`[WI] Skipping group scoring check, group '${key}' has sticky entries`);
             continue;
         }
 
         const scores = group.map(entry => buffer.getScore(entry, scanState));
         const maxScore = Math.max(...scores);
-        console.debug(`[WI] Group '${key}' max score:`, maxScore);
+        if (isWorldInfoTracingEnabled()) console.debug(`[WI] Group '${key}' max score:`, maxScore);
         //console.table(group.map((entry, i) => ({ uid: entry.uid, key: JSON.stringify(entry.key), score: scores[i] })));
 
         for (let i = 0; i < group.length; i++) {
@@ -5390,7 +5402,7 @@ function filterGroupsByScoring(groups, buffer, removeEntry, scanState, hasSticky
             }
 
             if (scores[i] < maxScore) {
-                console.debug(`[WI] Entry ${group[i].uid}`, `removed as score loser from inclusion group '${key}'`, group[i]);
+                if (isWorldInfoTracingEnabled()) console.debug(`[WI] Entry ${group[i].uid}`, `removed as score loser from inclusion group '${key}'`, group[i]);
                 removeEntry(group[i]);
                 group.splice(i, 1);
                 scores.splice(i, 1);
@@ -5422,7 +5434,7 @@ function filterGroupsByTimedEffects(groups, timedEffects, removeEntry) {
                     continue;
                 }
 
-                console.debug(`[WI] Entry ${entry.uid}`, `removed as a non-sticky loser from inclusion group '${key}'`, entry);
+                if (isWorldInfoTracingEnabled()) console.debug(`[WI] Entry ${entry.uid}`, `removed as a non-sticky loser from inclusion group '${key}'`, entry);
                 removeEntry(entry);
             }
 
@@ -5432,7 +5444,7 @@ function filterGroupsByTimedEffects(groups, timedEffects, removeEntry) {
         // It should not be possible for an entry on cooldown/delay to event get into the grouping phase but @Wolfsblvt told me to leave it here.
         const cooldownEntries = group.filter(x => timedEffects.isEffectActive('cooldown', x));
         if (cooldownEntries.length) {
-            console.debug(`[WI] Inclusion group '${key}' has entries on cooldown. They will be removed.`, cooldownEntries);
+            if (isWorldInfoTracingEnabled()) console.debug(`[WI] Inclusion group '${key}' has entries on cooldown. They will be removed.`, cooldownEntries);
             for (const entry of cooldownEntries) {
                 removeEntry(entry);
             }
@@ -5440,7 +5452,7 @@ function filterGroupsByTimedEffects(groups, timedEffects, removeEntry) {
 
         const delayEntries = group.filter(x => timedEffects.isEffectActive('delay', x));
         if (delayEntries.length) {
-            console.debug(`[WI] Inclusion group '${key}' has entries with delay. They will be removed.`, delayEntries);
+            if (isWorldInfoTracingEnabled()) console.debug(`[WI] Inclusion group '${key}' has entries with delay. They will be removed.`, delayEntries);
             for (const entry of delayEntries) {
                 removeEntry(entry);
             }
@@ -5459,7 +5471,7 @@ function filterGroupsByTimedEffects(groups, timedEffects, removeEntry) {
  * @param {WorldInfoTimedEffects} timedEffects The timed effects currently active
  */
 function filterByInclusionGroups(newEntries, allActivatedEntries, buffer, scanState, timedEffects) {
-    console.debug('[WI] --- INCLUSION GROUP CHECKS ---');
+    if (isWorldInfoTracingEnabled()) console.debug('[WI] --- INCLUSION GROUP CHECKS ---');
 
     const grouped = newEntries.filter(x => x.group).reduce((acc, item) => {
         item.group.split(/,\s*/).filter(x => x).forEach(group => {
@@ -5472,7 +5484,7 @@ function filterByInclusionGroups(newEntries, allActivatedEntries, buffer, scanSt
     }, {});
 
     if (Object.keys(grouped).length === 0) {
-        console.debug('[WI] No inclusion groups found');
+        if (isWorldInfoTracingEnabled()) console.debug('[WI] No inclusion groups found');
         return;
     }
 
@@ -5483,7 +5495,7 @@ function filterByInclusionGroups(newEntries, allActivatedEntries, buffer, scanSt
                 continue;
             }
 
-            if (logging) console.debug(`[WI] Entry ${entry.uid}`, `removed as loser from inclusion group '${entry.group}'`, entry);
+            if (logging && isWorldInfoTracingEnabled()) console.debug(`[WI] Entry ${entry.uid}`, `removed as loser from inclusion group '${entry.group}'`, entry);
             removeEntry(entry);
         }
     }
@@ -5492,31 +5504,31 @@ function filterByInclusionGroups(newEntries, allActivatedEntries, buffer, scanSt
     filterGroupsByScoring(grouped, buffer, removeEntry, scanState, hasStickyMap);
 
     for (const [key, group] of Object.entries(grouped)) {
-        console.debug(`[WI] Checking inclusion group '${key}' with ${group.length} entries`, group);
+        if (isWorldInfoTracingEnabled()) console.debug(`[WI] Checking inclusion group '${key}' with ${group.length} entries`, group);
 
         // If the group has any sticky entries, the rest are already removed by the timed effects filter
         const hasAnySticky = hasStickyMap.get(key);
         if (hasAnySticky) {
-            console.debug(`[WI] Skipping inclusion group check, group '${key}' has sticky entries`);
+            if (isWorldInfoTracingEnabled()) console.debug(`[WI] Skipping inclusion group check, group '${key}' has sticky entries`);
             continue;
         }
 
         if (Array.from(allActivatedEntries.values()).some(x => x.group === key)) {
-            console.debug(`[WI] Skipping inclusion group check, group '${key}' was already activated`);
+            if (isWorldInfoTracingEnabled()) console.debug(`[WI] Skipping inclusion group check, group '${key}' was already activated`);
             // We need to forcefully deactivate all other entries in the group
             removeAllBut(group, null, false);
             continue;
         }
 
         if (!Array.isArray(group) || group.length <= 1) {
-            console.debug('[WI] Skipping inclusion group check, only one entry');
+            if (isWorldInfoTracingEnabled()) console.debug('[WI] Skipping inclusion group check, only one entry');
             continue;
         }
 
         // Check for group prio
         const prios = group.filter(x => x.groupOverride).sort(sortFn);
         if (prios.length) {
-            console.debug(`[WI] Entry ${prios[0].uid}`, `activated as prio winner from inclusion group '${key}'`, prios[0]);
+            if (isWorldInfoTracingEnabled()) console.debug(`[WI] Entry ${prios[0].uid}`, `activated as prio winner from inclusion group '${key}'`, prios[0]);
             removeAllBut(group, prios[0]);
             continue;
         }
@@ -5531,14 +5543,14 @@ function filterByInclusionGroups(newEntries, allActivatedEntries, buffer, scanSt
             currentWeight += (entry.groupWeight ?? DEFAULT_WEIGHT);
 
             if (rollValue <= currentWeight) {
-                console.debug(`[WI] Entry ${entry.uid}`, `activated as roll winner from inclusion group '${key}'`, entry);
+                if (isWorldInfoTracingEnabled()) console.debug(`[WI] Entry ${entry.uid}`, `activated as roll winner from inclusion group '${key}'`, entry);
                 winner = entry;
                 break;
             }
         }
 
         if (!winner) {
-            console.debug(`[WI] Failed to activate inclusion group '${key}', no winner found`);
+            if (isWorldInfoTracingEnabled()) console.debug(`[WI] Failed to activate inclusion group '${key}', no winner found`);
             continue;
         }
 
