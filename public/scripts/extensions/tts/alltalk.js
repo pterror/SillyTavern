@@ -260,7 +260,6 @@ class AllTalkTtsProvider {
         $('#rvc_narrator_pitch').val(this.settings.rvc_narrator_pitch);
         $('#server_version').val(this.settings.server_version);
 
-        console.debug('AllTalkTTS: Settings loaded');
         try {
             // Check if TTS provider is ready
             this.setupEventListeners();
@@ -354,10 +353,8 @@ class AllTalkTtsProvider {
             // Check if the response is 'Ready'
             if (statusText === 'Ready') {
                 this.ready = true; // Set the ready flag to true
-                console.log('TTS service is ready.');
             } else {
                 this.ready = false;
-                console.log('TTS service is not ready.');
             }
         } catch (error) {
             console.error('Error checking TTS service readiness:', error);
@@ -394,7 +391,6 @@ class AllTalkTtsProvider {
             return [];
         }
 
-        console.log('Fetching RVC Voices');
         try {
             const response = await fetch(`${this.settings.provider_endpoint}/api/rvcvoices`);
             if (!response.ok) {
@@ -624,9 +620,7 @@ class AllTalkTtsProvider {
     setupEventListeners() {
         // Define the event handler function
         const onModelSelectChange = async (event) => {
-            console.log('Model select change event triggered');
             const selectedModel = event.target.value;
-            console.log(`Selected model: ${selectedModel}`);
             updateStatus('Processing');
             try {
                 const response = await fetch(`${this.settings.provider_endpoint}/api/reload?tts_method=${encodeURIComponent(selectedModel)}`, {
@@ -963,7 +957,6 @@ class AllTalkTtsProvider {
             if (this.settings.at_generation_method === 'streaming_enabled') {
                 // Construct the streaming URL
                 const streamingUrl = `${this.settings.provider_endpoint}/api/tts-generate-streaming?text=${encodeURIComponent(inputText)}&voice=${encodeURIComponent(voiceId)}&language=${encodeURIComponent(this.settings.language)}&output_file=stream_output.wav`;
-                console.log('Streaming URL:', streamingUrl);
 
                 // Return the streaming URL directly
                 return streamingUrl;

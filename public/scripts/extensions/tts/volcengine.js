@@ -184,11 +184,6 @@ class VolcengineTtsProvider {
     }
 
     async loadSettings(settings) {
-        // Populate Provider UI given input settings
-        if (Object.keys(settings).length == 0) {
-            console.info('Using default TTS Provider settings');
-        }
-
         // Only accept keys defined in defaultSettings
         this.settings = { ...this.defaultSettings };
 
@@ -241,8 +236,6 @@ class VolcengineTtsProvider {
         });
 
         await this.checkReady();
-
-        console.info('Volcengine TTS: Settings loaded');
     }
 
     async createNewVoice() {
@@ -293,7 +286,6 @@ class VolcengineTtsProvider {
         return response;
     }
     async fetchTtsGeneration(text, voice_speaker) {
-        console.info(`Generating new TTS for voice_id ${voice_speaker}`);
         const response = await fetch('/api/volcengine/generate-voice', {
             method: 'POST',
             headers: getRequestHeaders(),

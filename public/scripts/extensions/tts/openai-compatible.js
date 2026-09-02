@@ -55,11 +55,6 @@ class OpenAICompatibleTtsProvider {
     }
 
     async loadSettings(settings) {
-        // Populate Provider UI given input settings
-        if (Object.keys(settings).length == 0) {
-            console.info('Using default TTS Provider settings');
-        }
-
         // Only accept keys defined in defaultSettings
         this.settings = this.defaultSettings;
 
@@ -93,8 +88,6 @@ class OpenAICompatibleTtsProvider {
         });
 
         await this.checkReady();
-
-        console.debug('OpenAI Compatible TTS: Settings loaded');
     }
 
     onSettingsChange() {
@@ -157,7 +150,6 @@ class OpenAICompatibleTtsProvider {
     }
 
     async fetchTtsGeneration(inputText, voiceId) {
-        console.info(`Generating new TTS for voice_id ${voiceId}`);
         const response = await fetch('/api/openai/custom/generate-voice', {
             method: 'POST',
             headers: getRequestHeaders(),

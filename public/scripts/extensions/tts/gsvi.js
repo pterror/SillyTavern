@@ -144,11 +144,6 @@ class GSVITtsProvider {
     }
 
     async loadSettings(settings) {
-        // Populate Provider UI given input settings
-        if (Object.keys(settings).length === 0) {
-            console.info('Using default TTS Provider settings');
-        }
-
         // Only accept keys defined in defaultSettings
         this.settings = { ...this.defaultSettings, ...settings };
 
@@ -187,7 +182,6 @@ class GSVITtsProvider {
         $('#gsvi_stream_chunk_size').on('input', () => { this.onSettingsChange(); });
 
         await this.checkReady();
-        console.debug('GSVI: Settings loaded');
     }
 
 
@@ -226,16 +220,12 @@ class GSVITtsProvider {
         if (this.voices.length == 0) {
             await this.fetchCharacterList();
         }
-        console.log(this.voices);
         const voices = this.voices.map(x => ({ name: x, voice_id: x, preview_url: false, lang: 'zh-CN' }));
         return voices;
     }
 
 
     async fetchTtsGeneration(inputText, voiceId) {
-        console.info(`Generating new TTS for voice_id ${voiceId}`);
-
-
         const params = new URLSearchParams();
         params.append('text', inputText);
         params.append('cha_name', voiceId);

@@ -521,8 +521,6 @@ async function translateOutgoingMessage(messageId) {
     const translated = await translate(originalText, extension_settings.translate.internal_language);
     const updated = context.updateIn(messageId, ['extra', 'display_text'], originalText);
     updateMessageBlock(messageId, context.updateMessage(messageId, { mes: translated, extra: updated.extra }));
-
-    console.log('translateOutgoingMessage', messageId);
 }
 
 function shouldTranslate(types) {

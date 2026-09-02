@@ -288,7 +288,6 @@ class SystemTtsProvider {
                 chunkLength: 200,
             }, function () {
                 resolve(silence);
-                console.log('System TTS done');
             });
         });
     }

@@ -357,7 +357,6 @@ async function playAudioData(audioJob) {
     }
     audioElement.addEventListener('ended', completeCurrentAudioJob);
     audioElement.addEventListener('canplay', () => {
-        console.debug('Starting TTS playback');
         audioElement.playbackRate = extension_settings.tts.playback_rate;
         audioElement.play();
     });
@@ -469,7 +468,6 @@ async function addAudioJob(response, char) {
         mimeType = audioBlob.type;
     }
     audioJobQueue.push({ audioBlob, char });
-    console.debug('Pushed audio job to queue.');
     return { audioBlob, mimeType };
 }
 
@@ -499,7 +497,6 @@ const ttsJobQueue = [];
 let currentTtsJob = null; // Null if nothing is currently being processed
 
 function completeTtsJob() {
-    console.info(`Current TTS job for ${currentTtsJob?.name} completed.`);
     currentTtsJob = null;
 }
 
@@ -603,7 +600,6 @@ async function processTtsQueue() {
         return;
     }
 
-    console.debug('New message found, running TTS');
     currentTtsJob = ttsJobQueue.shift();
 
     // Handle segmented jobs that already have processed text
@@ -611,8 +607,6 @@ async function processTtsQueue() {
         const char = currentTtsJob.name;
         const segmentText = currentTtsJob.segmentText;
         const segmentType = currentTtsJob.segmentType;
-
-        console.log(`TTS (${segmentType}): ${segmentText}`);
 
         try {
             let voiceMapKey = char;
@@ -713,7 +707,6 @@ async function processTtsQueue() {
     // Collapse newlines and spaces into single space
     text = text.replace(/\s+/g, ' ').trim();
 
-    console.log(`TTS: ${text}`);
     const char = currentTtsJob.name;
 
     // Remove character name from start of the line if power user setting is disabled
@@ -1000,7 +993,6 @@ function onSkipTagsClick() {
 function onPassAsterisksClick() {
     extension_settings.tts.pass_asterisks = !!$('#tts_pass_asterisks').prop('checked');
     saveSettingsDebounced('extension_settings');
-    console.log('setting pass asterisks', extension_settings.tts.pass_asterisks);
 }
 
 function onMultiVoiceClick() {
@@ -1182,8 +1174,6 @@ async function onMessageEvent(messageId, lastCharIndex) {
     // New messages, add new chat to history
     lastMessageHash = hashNew;
     lastChatId = context.chatId;
-
-    console.debug(`Adding message from ${message.name} for TTS processing: "${message.mes}"`);
 
     if (extension_settings.tts.periodic_auto_generation && isStreamingEnabled()) {
         message.id = messageId;

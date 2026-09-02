@@ -376,7 +376,6 @@ async function uploadFile(file, url) {
  * @returns {Promise<void>} - Promise representing the completion of the draggable container creation.
  */
 async function makeMovable(url) {
-    console.debug('making new container from template');
     const id = 'gallery';
     const template = $('#generic_draggable_template').html();
     const newElement = $(template);
@@ -559,7 +558,6 @@ async function makeMovable(url) {
     });
 
     $(`.draggable[forChar="${id}"] img`).on('dragstart', (e) => {
-        console.log('saw drag on avatar!');
         e.preventDefault();
         return false;
     });
@@ -699,7 +697,6 @@ function makeDragImg(id, url) {
 
         // Prevent dragging the image
         $(`#${uniqueId} img`).on('dragstart', (e) => {
-            console.log('saw drag on avatar!');
             e.preventDefault();
             return false;
         });

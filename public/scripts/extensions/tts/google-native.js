@@ -158,7 +158,6 @@ export class GoogleNativeTtsProvider {
     }
 
     async fetchNativeTtsGeneration(text, voiceId) {
-        console.info(`Generating native Google TTS for voice_id ${voiceId}`);
         const useReverseProxy = oai_settings.reverse_proxy && isValidUrl(oai_settings.reverse_proxy);
 
         const response = await fetch('/api/google/generate-native-tts', {

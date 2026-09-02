@@ -24,11 +24,6 @@ class GoogleTranslateTtsProvider {
     }
 
     async loadSettings(settings) {
-        // Populate Provider UI given input settings
-        if (Object.keys(settings).length == 0) {
-            console.info('Using default TTS Provider settings');
-        }
-
         // Only accept keys defined in defaultSettings
         this.settings = this.defaultSettings;
 
@@ -42,7 +37,6 @@ class GoogleTranslateTtsProvider {
 
         try {
             await this.checkReady();
-            console.debug('Google Translate TTS: Settings loaded');
         } catch {
             console.debug('Google Translate TTS: Settings loaded, but not ready');
         }
