@@ -50,7 +50,7 @@ import {
     uuidv4,
 } from './utils.js';
 
-const bookmarkNameToken = 'Checkpoint #';
+const bookmarkNameToken = 'Bookmark #';
 
 /**
  * Gets the names of existing chats for the current character or group.
@@ -105,7 +105,7 @@ async function getBookmarkName({ isReplace = false, forceName = null } = {}) {
     const suggestedName = getUniqueName(mainChatName, (x) => existingChats.includes(x), { nameBuilder: buildCheckpointName, startIndex: 1 });
 
     const body = await renderTemplateAsync('createCheckpoint', { isReplace: isReplace, suggestedName: suggestedName });
-    let name = forceName ?? await Popup.show.input('Create Checkpoint', body, suggestedName);
+    let name = forceName ?? await Popup.show.input('Bookmark', body, suggestedName);
     // Special handling for confirmed empty input (=> auto-generate name)
     if (name === '') {
         name = suggestedName;
@@ -163,7 +163,7 @@ export function showBookmarksButtons() {
 
 async function saveBookmarkMenu() {
     if (!chat.length) {
-        toastr.warning('The chat is empty.', 'Checkpoint creation failed');
+        toastr.warning('The chat is empty.', 'Bookmark creation failed');
         return;
     }
 
@@ -515,15 +515,15 @@ export async function branchSwipe(mesId, direction) {
  */
 export async function createNewBookmark(mesId, { forceName = null } = {}) {
     if (getSelectionState().type === 'none') {
-        toastr.info('No character selected.', 'Create Checkpoint');
+        toastr.info('No character selected.', 'Bookmark');
         return null;
     }
     if (!chat.length) {
-        toastr.warning('The chat is empty.', 'Create Checkpoint');
+        toastr.warning('The chat is empty.', 'Bookmark');
         return null;
     }
     if (!chat[mesId]) {
-        toastr.warning('Invalid message ID.', 'Create Checkpoint');
+        toastr.warning('Invalid message ID.', 'Bookmark');
         return null;
     }
 
@@ -586,7 +586,7 @@ export async function createNewBookmark(mesId, { forceName = null } = {}) {
     updateMessage(mesId, { extra });
 
     await saveChatConditional();
-    toastr.success('Checkpoint created. It shows up in the chat list.', 'Create Checkpoint', { timeOut: 10000 });
+    toastr.success('Bookmarked. It shows up in the chat list.', 'Bookmark', { timeOut: 10000 });
     return name;
 }
 
