@@ -1219,7 +1219,6 @@ router.post('/edit-avatar', validateAvatarUrlMiddleware, async function (request
  * @returns {void}
  */
 router.post('/edit-attribute', validateAvatarUrlMiddleware, async function (request, response) {
-    console.debug(request.body);
     if (!request.body) {
         console.warn('Error: no response body detected');
         return response.status(400).send('Error: no response body detected');

@@ -283,7 +283,6 @@ router.post('/generate', async function (request, response) {
 
         const apiType = request.body.api_type;
         const baseUrl = request.body.api_server;
-        console.debug(request.body);
 
         const controller = new AbortController();
         request.socket.removeAllListeners('close');
