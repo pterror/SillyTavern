@@ -9292,8 +9292,10 @@ export async function hydrateSwipes(mesId, { index = null, all = false } = {}) {
     // wrong greeting. It also cannot answer at all for an opening that has no row yet, which under
     // provisional ids is the ordinary case rather than an edge one.
     const isOpening = mesId === 0 && !!chat_metadata?._tree_stored;
-    const { character, contents } = isOpening ? _cardGreetingContents() : { character: null, contents: [] };
-    if (isOpening && !character) {
+    // The server reads the card's greetings itself now (see chats.js's `_cardGreetingsFromDisk` and its
+    // doc comment) - nothing here needs to hold or send the card's text any more, just which character.
+    const character = isOpening ? getCurrentCharacter() : null;
+    if (isOpening && !character?.avatar) {
         return false;
     }
     if (!isOpening && !isStoredNodeId(message.node_id)) {
@@ -9301,7 +9303,7 @@ export async function hydrateSwipes(mesId, { index = null, all = false } = {}) {
     }
 
     const body = isOpening
-        ? { avatar_url: character.avatar, card_greetings: contents }
+        ? { avatar_url: character.avatar }
         : { node_id: message.node_id };
     if (!all) {
         body.offset = Math.max(0, index - ALTERNATIVE_FETCH_WINDOW);
@@ -10101,38 +10103,6 @@ function _isBlankUnwrittenSwipe(message) {
     return !message.swipe_info?.[at]?.node_id;
 }
 
-/**
- * The card's greetings in the shape the openings endpoint merges against.
- *
- * Every caller that asks for openings has to send the SAME set, because the union's ordering and
- * total are computed from it: ask with a different set and the offsets no longer line up with the
- * swipe array they are meant to fill.
- *
- * Raw card text, deliberately unregexed, and the speaker taken from the card rather than name2 -
- * identity is the message as stored, and a regexed body or a persona name makes every stored greeting
- * compare as new.
- *
- * @returns {{ character: object|null, speaker: string, contents: object[] }}
- */
-function _cardGreetingContents() {
-    const character = getCurrentCharacter();
-    if (!character?.avatar) return { character: null, speaker: '', contents: [] };
-    const { greetings } = cardToGreetingsModel(character);
-    const speaker = character.name ?? name2;
-    const sendDate = getMessageTimeStamp();
-    const contents = (greetings ?? [])
-        .filter(text => typeof text === 'string' && text.length > 0)
-        .map(text => ({
-            name: speaker,
-            is_user: false,
-            is_system: false,
-            send_date: sendDate,
-            mes: text,
-            extra: {},
-        }));
-    return { character, speaker, contents };
-}
-
 /** In-flight ensureOpeningRow() calls, keyed by provisional id, so two callers make one row. */
 const _openingRowInFlight = new Map();
 
@@ -10269,33 +10239,17 @@ async function _mergeCardGreetingsIntoOpening() {
     const character = getCurrentCharacter();
     if (!opening?.node_id || !character?.avatar) return;
 
-    // Raw card text, deliberately unregexed. Identity is the message as stored, and stored openings
-    // hold the card's own text - regex is a display transform applied on the way to the screen. Sending
-    // the transformed version made every already-stored greeting look brand new, which on this card
-    // meant 927 phantom alternatives appearing out of nowhere.
-    const { greetings } = cardToGreetingsModel(character);
-    // The speaker is the CHARACTER, taken from the card rather than from name2 - which tracks the
-    // active persona and produced "n-n" here. Speaker is part of identity, so getting it wrong made
-    // all 929 stored greetings compare as new: 1511 + 929 phantom alternatives.
-    const speaker = character.name ?? opening.name ?? name2;
-    const contents = (greetings ?? [])
-        .filter(text => typeof text === 'string' && text.length > 0)
-        .map(text => ({
-            name: speaker,
-            is_user: false,
-            is_system: false,
-            send_date: opening.send_date,
-            mes: text,
-            extra: {},
-        }));
-    if (!contents.length) return;
-
+    // The server reads the card's greetings itself now (chats.js's `_cardGreetingsFromDisk`) - this
+    // used to build that array here (raw, unregexed text under the card's own speaker name - identity
+    // is the message as stored, and getting either of those wrong once made every existing greeting
+    // compare as new, which is how a 943-greeting card produced hundreds of phantom alternatives) and
+    // ship it on every call. Nothing here needs that any more, just which character to read.
     const ask = async (body) => {
         try {
             const response = await fetch('/api/chats/openings', {
                 method: 'POST',
                 headers: getRequestHeaders(),
-                body: JSON.stringify({ avatar_url: character.avatar, card_greetings: contents, ...body }),
+                body: JSON.stringify({ avatar_url: character.avatar, ...body }),
             });
             return response.ok ? await response.json().catch(() => null) : null;
         } catch (error) {
@@ -11458,8 +11412,9 @@ async function _openingFromTree(cardGreetings, preferredIndex) {
         extra: {},
     });
 
-    // The card's greetings go along with the read and are merged there. Nothing is copied into the
-    // tree: an opening with no node_id is a greeting that lives on the card and has no row yet.
+    // Only used locally below, for the preferred-index fallback match and the nothing-stored-yet
+    // fallback object - the server merges the card's own greetings in at read time itself now (see
+    // chats.js's `_cardGreetingsFromDisk`), so this is no longer sent along with the request.
     const contents = (cardGreetings ?? [])
         .filter(text => typeof text === 'string' && text.length > 0)
         .map(asMessage);
@@ -11474,7 +11429,7 @@ async function _openingFromTree(cardGreetings, preferredIndex) {
     // So the chat opened as a file, and only became tree-backed after a save had already gone out the
     // wrong way. There is no such in-between: a greeting with no row is exactly what a provisional id
     // is for, and one earns its row when it is used, same as any other.
-    const openings = await post('/api/chats/openings', { card_greetings: contents });
+    const openings = await post('/api/chats/openings', {});
     if (!openings) return null;
 
     const windowStart = openings.offset ?? 0;

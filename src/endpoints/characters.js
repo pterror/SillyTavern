@@ -213,7 +213,7 @@ function getCacheKey(inputFile, precomputedStat = undefined) {
  * @param {fs.Stats} [precomputedStat] See getCacheKey()'s doc comment.
  * @returns {Promise<string | undefined>} - Character card data
  */
-async function readCharacterData(inputFile, inputFormat = 'png', precomputedStat = undefined) {
+export async function readCharacterData(inputFile, inputFormat = 'png', precomputedStat = undefined) {
     const cacheKey = getCacheKey(inputFile, precomputedStat);
     if (memoryCache.has(cacheKey)) {
         return memoryCache.get(cacheKey);
