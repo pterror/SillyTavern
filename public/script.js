@@ -10449,14 +10449,18 @@ function _markMessageSaved(mesId, nodeId) {
     }
 }
 
-/** Content for one alternative, with the swipe machinery stripped - it is a message, not a set. */
-function _alternativeContent(msg, text) {
-    const alt = { ...msg, mes: text };
-    delete alt.swipes;
-    delete alt.swipe_info;
-    delete alt.swipe_id;
-    delete alt.swipe_speaker_default;
-    return alt;
+/**
+ * One message's content, with the swipe machinery and its own node_id stripped - it is a single row,
+ * not a set, and the row it belongs to is already named by the op's own `node_id` field.
+ */
+function _messageContent(msg, text = msg.mes) {
+    const content = { ...msg, mes: text };
+    delete content.node_id;
+    delete content.swipes;
+    delete content.swipe_info;
+    delete content.swipe_id;
+    delete content.swipe_speaker_default;
+    return content;
 }
 
 /**
@@ -10472,7 +10476,7 @@ export async function chatOpEdit(mesId) {
     if (!isStoredNodeId(msg?.node_id)) return false;
     if (typeof msg.mes === 'string' && msg.mes.length === 0) return false;
 
-    await _chatOpPost('/api/chats/message/edit', { node_id: msg.node_id, content: msg });
+    await _chatOpPost('/api/chats/message/edit', { node_id: msg.node_id, content: _messageContent(msg) });
     _markMessageSaved(mesId, msg.node_id);
     return true;
 }
@@ -10493,7 +10497,7 @@ export async function chatOpEditMany(mesIds) {
         const msg = chat[mesId];
         if (!isStoredNodeId(msg?.node_id)) continue;
         if (typeof msg.mes === 'string' && msg.mes.length === 0) continue;
-        edits.push({ node_id: msg.node_id, content: msg, _mesId: mesId });
+        edits.push({ node_id: msg.node_id, content: _messageContent(msg), _mesId: mesId });
     }
     if (!edits.length) return 0;
 
@@ -10557,7 +10561,7 @@ export async function chatOpAddAlternative(mesId, text) {
 
     const created = await _chatOpPost('/api/chats/message/alternative', {
         sibling_node_id: msg.node_id,
-        contents: [_alternativeContent(msg, text)],
+        contents: [_messageContent(msg, text)],
     });
     return created?.node_ids?.[0] ?? null;
 }
