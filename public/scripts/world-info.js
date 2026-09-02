@@ -4869,7 +4869,9 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
             }
 
             if (entry.disable == true) {
-                log('disabled');
+                // Not logged: this fires for every disabled entry on every single scan (every
+                // message), and conveys nothing beyond "the user turned this entry off in the UI" -
+                // it was the single largest source of WI console volume with zero diagnostic value.
                 continue;
             }
 
