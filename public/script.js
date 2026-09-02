@@ -9990,12 +9990,18 @@ async function renamePastChats(oldAvatar, newAvatar, newName) {
                 throw new Error('Server-side rename failed');
             }
             const data = await result.json();
+            if (data.noSavedChats) {
+                // Nothing to rename - the character has no saved chats yet. Not a failure.
+                console.debug('[renamePastChats] Tree DB: no saved chats, nothing to rename');
+                return false;
+            }
             console.debug(`[renamePastChats] Tree DB: renamed ${data.updated} messages`);
+            return true;
         } catch (error) {
             toastr.error(t`Past chats could not be renamed`);
             console.error(error);
+            return false;
         }
-        return;
     }
 
     // JSONL fallback: fetch and re-save each chat file individually
