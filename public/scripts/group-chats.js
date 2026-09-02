@@ -1017,8 +1017,15 @@ export function getGroupBlock(group) {
     template.find('.group_select_block_list').text(namesList.join(', '));
 
     // Display inline tags
+    //
+    // entityTagIds: group.tag_ids, the same residency-fallback wiring renderCharacterBlock() (script.js) already
+    // uses for characters. Groups have no tag_ids field of their own on disk and no charactersStore-equivalent
+    // residency, so without this getTagsList() fell all the way through to tag_map[key] - the only path a group's
+    // tags could reach the list view through before /query started stamping tag_ids onto group rows
+    // (hydrateEntityRows(), src/endpoints/characters.js, 2026-09). tag_map stays a valid fallback for callers
+    // that don't have a row in hand; this just gives this call site a live source when it does.
     const tagsElement = template.find('.tags');
-    printTagList(tagsElement, { forEntityOrKey: group.id, tagOptions: { isCharacterList: true } });
+    printTagList(tagsElement, { forEntityOrKey: group.id, entityTagIds: group.tag_ids, tagOptions: { isCharacterList: true } });
 
     const avatar = getGroupAvatar(group);
     if (avatar) {
