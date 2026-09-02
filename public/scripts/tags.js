@@ -539,9 +539,22 @@ async function runWithConcurrency(items, worker, chunkSize = 8) {
 }
 
 /**
- * Single-row POST /api/tags/assign. Fire-and-forget - see persistTagMapChange()'s doc comment for the failure
- * tolerance (matches the old debounced-whole-file-save's: a failed fetch is logged, never retried or rolled
- * back, same gap as before just at finer grain now).
+ * Single-row POST /api/tags/assign. Fire-and-forget as far as retry/rollback goes - see persistTagMapChange()'s
+ * doc comment for that failure tolerance (matches the old debounced-whole-file-save's: a failed fetch is
+ * logged, never retried or rolled back, same gap as before just at finer grain now).
+ *
+ * NOT fire-and-forget for the *row's own display*, though: this call races a concurrently-issued
+ * `/api/characters/query` (e.g. a `printCharactersDebounced()` full re-render that `redrawAfterTagChange()`
+ * triggers immediately after this same tag_map mutation, before this fetch has resolved) - confirmed live
+ * (2026-09, the "tags not loading after import" report): racing `/api/tags/assign` against `/api/characters/query`
+ * for the same id reproducibly gets a `/query` response still carrying the pre-assignment `tag_ids`, even though
+ * the assign itself lands correctly moments later. A non-resident row (the common case under
+ * `lazyLoadCharacters`, and always true for a character freshly imported this session - see getTagsList()'s own
+ * residency-fallback doc comment) renders its tags from exactly that /query snapshot with no other source of
+ * truth to self-correct from, so a redraw that lands on the stale side of this race shows an untagged character
+ * *permanently*, not just for one frame - nothing else ever re-prints that row once this fetch actually
+ * completes. Patching the row here, once the assign is actually confirmed, closes that gap without giving up
+ * the fire-and-forget retry/rollback semantics documented above.
  * @param {string} id Character avatar or group id (a tagMapStore key)
  * @param {string} tagId
  * @returns {Promise<void>}
@@ -557,16 +570,19 @@ async function assignTagOnServer(id, tagId) {
         if (!response.ok) {
             throw new Error(`Failed to assign tag: ${response.statusText}`);
         }
+        updateEntityRowTags([id]);
     } catch (error) {
         console.error(`Error assigning tag ${tagId} to ${id}:`, error);
     }
 }
 
 /**
- * Single-row POST /api/tags/unassign. Same fire-and-forget tolerance as assignTagOnServer() - unassigning an
- * unknown/already-untagged id is a harmless server-side no-op, so this is also safe to call redundantly (e.g.
- * when the underlying character/group is itself mid-deletion and the server's own delete cascade already
- * removed the row).
+ * Single-row POST /api/tags/unassign. Same fire-and-forget retry/rollback tolerance as assignTagOnServer() -
+ * unassigning an unknown/already-untagged id is a harmless server-side no-op, so this is also safe to call
+ * redundantly (e.g. when the underlying character/group is itself mid-deletion and the server's own delete
+ * cascade already removed the row) - and the same post-completion row patch assignTagOnServer() does, for the
+ * same reason (see its doc comment): closes the identical race against a concurrently-issued `/query` re-render
+ * for a non-resident row.
  * @param {string} id Character avatar or group id (a tagMapStore key)
  * @param {string} tagId
  * @returns {Promise<void>}
@@ -582,6 +598,7 @@ async function unassignTagOnServer(id, tagId) {
         if (!response.ok) {
             throw new Error(`Failed to unassign tag: ${response.statusText}`);
         }
+        updateEntityRowTags([id]);
     } catch (error) {
         console.error(`Error unassigning tag ${tagId} from ${id}:`, error);
     }
