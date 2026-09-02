@@ -64,6 +64,7 @@ export {
     invalidateAssignedTagIdsCache,
     getAssignedTagIds,
     tagsStore,
+    mergeServerTagDefinitions,
 };
 
 const CHARACTER_FILTER_SELECTOR = '#rm_characters_block .rm_tag_filter';
@@ -1742,6 +1743,40 @@ function getExistingTags(newTags) {
         }
     }
     return existingTags;
+}
+
+/**
+ * Merges tag definitions the server resolved on the client's behalf (the ALL/ONLY_EXISTING atomic import path,
+ * `/api/characters/import`'s `tagDefinitions` response field - see that route's own doc comment) into the local
+ * `tagsStore`, for any id this client doesn't already have a definition for. Needed because `tagIdsToTagList()`
+ * (this file, the shared "resolve ids to pills" step both `getTagsList()` branches use) silently drops any id it
+ * can't find a definition for - a server-minted-this-request new tag would otherwise be correctly assigned but
+ * invisible in this same session's own UI until an unrelated future tag-definitions refetch happened to pull it
+ * in.
+ *
+ * Deliberately does NOT go through `tagsStore.create()` - these definitions are already persisted server-side
+ * (`seedCardTagsForSingleCharacter()`, character-metadata-db.js), so `create()`'s own `saveTagsDebounced` onChange
+ * side effect (a full `POST /api/tags/save` of the entire tag-definitions array) would just be a redundant,
+ * unnecessary write of a multi-tens-of-thousands-row array for a purely local cache-sync operation. Pushes
+ * straight into the backing array and calls `EntityStore.reindex()` (no per-entity change emitted - see that
+ * method's own doc comment), then invalidates the tags/characters search indexes once at the end if anything was
+ * actually new, mirroring what `tagsStore.onChange`'s own subscriber would have done for a `created` op.
+ * @param {object[]} tagDefinitions
+ */
+function mergeServerTagDefinitions(tagDefinitions) {
+    if (!Array.isArray(tagDefinitions) || tagDefinitions.length === 0) return;
+
+    let addedAny = false;
+    for (const tag of tagDefinitions) {
+        if (!tag || typeof tag.id !== 'string' || tagsStore.has(tag.id)) continue;
+        tags.push(tag);
+        addedAny = true;
+    }
+    if (addedAny) {
+        tagsStore.reindex();
+        invalidateTagsFuseIndex();
+        invalidateCharactersFuseIndex();
+    }
 }
 
 const IMPORT_EXLCUDED_TAGS = ['ROOT', 'TAVERN'];

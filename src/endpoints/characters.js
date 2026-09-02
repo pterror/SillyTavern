@@ -31,7 +31,7 @@ import cacheBuster from '../middleware/cacheBuster.js';
 import { searchCharacters, searchCharacterIds, searchCharacterIdsSorted, rebuildCharacterSearchIndex, TANTIVY_SORT_FIELDS } from './characters-search-index.js';
 import { searchGroups, searchGroupIds } from './groups-search-index.js';
 import { getGroupsData, getGroupsByIds } from './groups.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, resolveFingerprints, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, resolveFingerprints, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, seedCardTagsForSingleCharacter } from '../character-metadata-db.js';
 import { DEFAULT_DIGEST_BUCKET_COUNT, characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
 import { hashGreetingText, opAdd, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault } from '../greeting-ops.js';
@@ -3493,14 +3493,47 @@ router.post('/import', async function (request, response) {
             invalidateThumbnail(request.user.directories, 'avatar', `${preservedFileName}.png`);
         }
 
+        // ALL/ONLY_EXISTING tag-import modes (power_user.tag_import_setting, public/scripts/tags.js) done here,
+        // atomically, as part of the same import request - not as a separate client-fired round of
+        // `/api/tags/assign` calls after the fact (the old behavior, still what ASK mode does below this comment
+        // has to stay true for it, since ASK genuinely needs the client's interactive review popup - see
+        // seedCardTagsForSingleCharacter()'s own doc comment). That old split was the actual root cause behind
+        // tonight's "tags not loading after import" reports for the two modes that never needed a client
+        // round-trip at all: no popup, no user decision, nothing that couldn't already happen server-side in the
+        // same request that created the row. `tagImportMode` is optional and additive - a caller that never
+        // sends it (or sends 'ask'/'none') gets byte-identical behavior to before, tag import still entirely
+        // client-driven.
+        const tagImportMode = request.body.tagImportMode;
+        /** @type {object[]} Tag definitions (existing or newly-minted) the ALL/ONLY_EXISTING seed below actually
+         * resolved this card's tags to - shipped back to the client alongside `character` so it can merge them
+         * into its local tag-definitions store without a second `/api/tags/get` round trip (see
+         * seedCardTagsForSingleCharacter()'s own doc comment on why the definitions, not just the ids, have to
+         * travel here). Empty for ASK/NONE, where tag import stays entirely client-driven. */
+        let tagDefinitions = [];
+        if (tagImportMode === 'all' || tagImportMode === 'existing') {
+            try {
+                ({ tagDefinitions } = await seedCardTagsForSingleCharacter(request.user.directories, `${fileName}.png`, { onlyExisting: tagImportMode === 'existing' }));
+            } catch (err) {
+                // Card-tag seeding failing must not fail the import itself - the character row already exists at
+                // this point, and the client's own tag-import fallback (importTags(), tags.js) still runs for
+                // 'ask'/'none' regardless, so a tag-seed error here is a real but non-fatal problem to log.
+                console.error(`Failed to seed card tags for ${fileName}.png:`, err);
+            }
+        }
+
         // Hands the client the freshly-imported character's data in the same response, shaped by the identical
         // processCharacter() /batch and /get already use - this is what lets the client (processDroppedFiles(),
         // public/script.js) insert the new character straight into charactersStore and run its tag-import logic
         // immediately, per-card, instead of a second full-library fetch afterward just to learn what it itself
         // already just uploaded. One extra parse of the single file just written - not a library-wide cost.
         const character = await processCharacter(`${fileName}.png`, request.user.directories, { shallow: useShallowCharacters });
+        // db-authoritative tag_ids stamp (same as /batch, /get, /query) - needed here specifically so a
+        // server-side ALL/ONLY_EXISTING seed above is actually visible in this same response, not just on the
+        // next fetch. Harmless no-op for ASK/NONE (whatever seedCardTagsForSingleCharacter() didn't touch is
+        // simply whatever tag_ids already existed on the row, i.e. none for a brand new character).
+        await stampDbTagIds(request.user.directories, [character]);
 
-        response.send({ file_name: fileName, character });
+        response.send({ file_name: fileName, character, tagDefinitions });
     } catch (err) {
         console.error(err);
         response.status(500).send({ error: true });
