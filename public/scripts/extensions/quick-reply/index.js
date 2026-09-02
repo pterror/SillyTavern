@@ -14,10 +14,13 @@ import { selected_group } from '../../group-chats.js';
 export { debounceAsync };
 
 
-const _VERBOSE = true;
+// Off by default - this gated every generation-cycle hook call (onBeforeGeneration, onUserMessage,
+// onWIActivation, onAiMessage, etc.), firing unconditionally on every message. warn is intentionally
+// NOT gated by this - real warnings should always be visible, same as every other extension here.
+const _VERBOSE = false;
 export const debug = (...msg) => _VERBOSE ? console.debug('[QR2]', ...msg) : null;
 export const log = (...msg) => _VERBOSE ? console.log('[QR2]', ...msg) : null;
-export const warn = (...msg) => _VERBOSE ? console.warn('[QR2]', ...msg) : null;
+export const warn = (...msg) => console.warn('[QR2]', ...msg);
 
 
 const defaultConfig = {
