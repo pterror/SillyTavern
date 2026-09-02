@@ -73,8 +73,6 @@ function createAssetButton(asset, assetType, index) {
     const label = $('<i class="fa-fw fa-solid fa-download fa-lg"></i>');
     element.append(label);
 
-    console.debug(DEBUG_PREFIX, 'Checking asset', asset.id, asset.url);
-
     const assetInstall = async function () {
         element.off('click');
         label.removeClass('fa-download');
@@ -119,7 +117,6 @@ function createAssetButton(asset, assetType, index) {
     };
 
     if (isAssetInstalled(assetType, asset.id)) {
-        console.debug(DEBUG_PREFIX, 'installed, checked');
         label.toggleClass('fa-download');
         label.toggleClass('fa-check');
         element.on('click', assetDelete);
@@ -133,7 +130,6 @@ function createAssetButton(asset, assetType, index) {
             label.removeClass('redOverlayGlow');
         });
     } else {
-        console.debug(DEBUG_PREFIX, 'not installed, unchecked');
         element.prop('checked', false);
         element.on('click', assetInstall);
     }
@@ -149,8 +145,6 @@ function createAssetButton(asset, assetType, index) {
  * @returns {JQuery} The asset block element
  */
 function createAssetBlock(asset, assetType, element) {
-    console.debug(DEBUG_PREFIX, 'Created element for ', asset.id);
-
     const displayName = DOMPurify.sanitize(asset.name || asset.id);
     const description = DOMPurify.sanitize(asset.description || '');
     const url = isValidUrl(asset.url) ? asset.url : '';
@@ -252,7 +246,6 @@ async function populateAssetsMenu(json) {
         availableAssets[i.type].push(i);
     }
 
-    console.debug(DEBUG_PREFIX, 'Updated available assets to', availableAssets);
     // First extensions, then everything else
     const assetTypes = Object.keys(availableAssets).sort((a, b) => (a === 'extension') ? -1 : (b === 'extension') ? 1 : 0);
 
@@ -376,13 +369,10 @@ function isAssetInstalled(assetType, filename) {
  * @returns {Promise<boolean>} True if the asset was successfully installed, false otherwise
  */
 async function installAsset(url, assetType, filename) {
-    console.debug(DEBUG_PREFIX, 'Downloading ', url);
     const category = assetType;
     try {
         if (category === 'extension') {
-            console.debug(DEBUG_PREFIX, 'Installing extension ', url);
             const result = await installExtension(url, false);
-            console.debug(DEBUG_PREFIX, 'Extension installed.');
             return result;
         }
 
@@ -394,14 +384,11 @@ async function installAsset(url, assetType, filename) {
             cache: 'no-cache',
         });
         if (result.ok) {
-            console.debug(DEBUG_PREFIX, 'Download success.');
             if (category === 'character') {
-                console.debug(DEBUG_PREFIX, 'Importing character ', filename);
                 const blob = await result.blob();
                 const file = new File([blob], filename, { type: blob.type });
                 const fileNameMap = new Map([[file, filename]]);
                 await processDroppedFiles([file], fileNameMap);
-                console.debug(DEBUG_PREFIX, 'Character downloaded.');
             }
             return true;
         }
@@ -419,13 +406,10 @@ async function installAsset(url, assetType, filename) {
  * @returns {Promise<boolean>} True if the asset was successfully deleted, false otherwise
  */
 async function deleteAsset(assetType, filename) {
-    console.debug(DEBUG_PREFIX, 'Deleting ', assetType, filename);
     const category = assetType;
     try {
         if (category === 'extension') {
-            console.debug(DEBUG_PREFIX, 'Deleting extension ', filename);
             await deleteExtension(filename);
-            console.debug(DEBUG_PREFIX, 'Extension deleted.');
             return true;
         }
 
@@ -437,7 +421,6 @@ async function deleteAsset(assetType, filename) {
             cache: 'no-cache',
         });
         if (result.ok) {
-            console.debug(DEBUG_PREFIX, 'Deletion success.');
             return true;
         }
         return false;
@@ -510,7 +493,6 @@ async function openCharacterBrowser(forceDefault) {
 //#############################//
 
 async function updateCurrentAssets() {
-    console.debug(DEBUG_PREFIX, 'Checking installed assets...');
     try {
         const result = await fetch('/api/assets/get', {
             method: 'POST',
@@ -572,7 +554,6 @@ export async function init() {
 
         if (confirmation) {
             try {
-                console.debug(DEBUG_PREFIX, 'Confimation, loading assets...');
                 downloadAssetsList(url);
                 connectButton.removeClass('fa-plug-circle-exclamation');
                 connectButton.removeClass('redOverlayGlow');
@@ -584,8 +565,6 @@ export async function init() {
                 connectButton.addClass('fa-plug-circle-exclamation');
                 connectButton.removeClass('redOverlayGlow');
             }
-        } else {
-            console.debug(DEBUG_PREFIX, 'Connection refused by user');
         }
     });
 

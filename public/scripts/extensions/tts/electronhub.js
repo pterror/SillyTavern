@@ -110,10 +110,6 @@ class ElectronHubTtsProvider {
     }
 
     async loadSettings(settings) {
-        if (Object.keys(settings).length == 0) {
-            console.info('Using default Electron Hub TTS settings');
-        }
-
         this.settings = { ...this.defaultSettings, ...settings };
 
         await this.loadModels();
@@ -157,7 +153,6 @@ class ElectronHubTtsProvider {
         await this.checkReady();
         this.updateConditionalBlocks();
         this.renderDynamicParams();
-        console.debug('Electron Hub TTS: Settings loaded');
     }
 
     async onSettingsChange() {
@@ -400,7 +395,6 @@ class ElectronHubTtsProvider {
     }
 
     async fetchTtsGeneration(inputText, voiceId) {
-        console.info(`Generating Electron Hub TTS for voice_id ${voiceId}`);
         const body = {
             input: inputText,
             voice: voiceId,

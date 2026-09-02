@@ -118,7 +118,6 @@ class CosyVoiceProvider {
         const match = this.voices.filter(
             v => v.name == voiceName,
         )[0];
-        console.log(match);
         if (!match) {
             throw `TTS Voice name ${voiceName} not found`;
         }
@@ -136,7 +135,6 @@ class CosyVoiceProvider {
     //###########//
     async fetchTtsVoiceObjects() {
         const response = await fetch(`${this.settings.provider_endpoint}/speakers`);
-        console.info(response);
 
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}: ${await response.json()}`);
@@ -160,7 +158,6 @@ class CosyVoiceProvider {
      * @returns {Promise<Response|string>} Fetch response
      */
     async fetchTtsGeneration(inputText, voiceId, lang = null, forceNoStreaming = false) {
-        console.info(`Generating new TTS for voice_id ${voiceId}`);
 
         const streaming = this.settings.streaming;
 

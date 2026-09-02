@@ -692,10 +692,9 @@ class MiniMaxTtsProvider {
             const voice = await this.getVoice(voiceId);
             if (voice && voice.lang) {
                 language = this.mapLanguageToMiniMaxFormat(voice.lang);
-                console.debug(`MiniMax TTS: Using voice language ${voice.lang}, API language: ${language}`);
             }
         } catch (error) {
-            console.debug('MiniMax TTS: Could not determine voice language, using default');
+            // Could not determine voice language, fall back to default
         }
 
         return await this.fetchTtsGeneration(text, voiceId, language);
@@ -767,8 +766,6 @@ class MiniMaxTtsProvider {
     }
 
     async fetchTtsGeneration(inputText, voiceId, language = null) {
-        console.info(`Generating new MiniMax TTS for voice_id ${voiceId}`);
-
         if (!secret_state[SECRET_KEYS.MINIMAX]) {
             const error = new Error('API Key is required');
             console.error('MiniMax TTS fetchTtsGeneration error:', error.message);
@@ -791,10 +788,6 @@ class MiniMaxTtsProvider {
             format: this.settings.format || this.defaultSettings.format,
             language: language,
         };
-
-        console.debug('MiniMax TTS Request:', {
-            body: { ...requestBody, voiceId: '[REDACTED]' },
-        });
 
         try {
             const response = await fetch('/api/minimax/generate-voice', {
@@ -829,7 +822,6 @@ class MiniMaxTtsProvider {
             }
 
             // Backend handles all the complex processing and returns audio data directly
-            console.debug('MiniMax TTS: Audio response received from backend');
             return response;
         } catch (error) {
             console.error('Error in MiniMax TTS generation:', error);
@@ -913,7 +905,6 @@ class MiniMaxTtsProvider {
 
             // Use the same method as other TTS providers - convert to base64 data URL
             const srcUrl = await getBase64Async(audio);
-            console.debug('MiniMax TTS: Base64 data URL created');
 
             // Clean up previous event listener to prevent memory leaks
             this.audioElement.onended = null;
@@ -937,7 +928,6 @@ class MiniMaxTtsProvider {
 
             try {
                 await this.audioElement.play();
-                console.debug('MiniMax TTS: Audio playback started successfully');
             } catch (playError) {
                 console.error('MiniMax TTS: Play error:', playError);
                 throw new Error(`Audio playback failed: ${playError.message}`);

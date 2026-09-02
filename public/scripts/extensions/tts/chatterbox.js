@@ -604,8 +604,6 @@ class ChatterboxTtsProvider {
                 requestBody.predefined_voice_id = actualVoiceId || this.settings.predefined_voice;
             }
 
-            console.log('Generating TTS with params:', requestBody);
-
             const response = await fetch(`${this.settings.provider_endpoint}/tts`, {
                 method: 'POST',
                 headers: {

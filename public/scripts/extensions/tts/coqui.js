@@ -319,8 +319,6 @@ class CoquiTtsProvider {
             return;
         }
 
-        console.debug(DEBUG_PREFIX, 'Current custom voices: ', this.settings.customVoices);
-
         this.settings.voiceMapDict[voiceName] = { model_type: 'coqui-api', model_id: model_id, model_language: model_setting_language, model_speaker: model_setting_speaker };
 
         console.debug(DEBUG_PREFIX, 'Registered new voice map: ', voiceName, ':', this.settings.voiceMapDict[voiceName]);
@@ -389,7 +387,6 @@ class CoquiTtsProvider {
                 if (language in languageLabels)
                     languageLabel = languageLabels[language];
                 $('#coqui_api_language').append(new Option(languageLabel, language));
-                console.log(DEBUG_PREFIX, 'added language', languageLabel, '(', language, ')');
             }
 
             $('#coqui_api_model_div').show();
@@ -411,7 +408,6 @@ class CoquiTtsProvider {
                 if (language in languageLabels)
                     languageLabel = languageLabels[language];
                 $('#coqui_api_language').append(new Option(languageLabel, language));
-                console.log(DEBUG_PREFIX, 'added language', languageLabel, '(', language, ')');
             }
 
             $('#coqui_api_model_div').show();
@@ -431,7 +427,6 @@ class CoquiTtsProvider {
         $('#coqui_api_model_settings').hide();
         const model_origin = $('#coqui_model_origin').val();
         const model_language = $('#coqui_api_language').val();
-        console.debug(model_language);
 
         if (model_language == 'none') {
             $('#coqui_api_model_name').hide();
@@ -682,8 +677,6 @@ class CoquiTtsProvider {
         let speaker = 'none';
         const tokens = voiceId.replaceAll(']', '').replaceAll('"', '').split('[');
         const model_id = tokens[0];
-
-        console.debug(DEBUG_PREFIX, 'Preparing TTS request for', tokens);
 
         // First option
         if (tokens.length > 1) {

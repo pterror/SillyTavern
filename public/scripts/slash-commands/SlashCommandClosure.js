@@ -314,7 +314,6 @@ export class SlashCommandClosure {
             // get executor before execution
             step = await stepper.next();
             if (step.value instanceof SlashCommandBreakPoint) {
-                console.log('encountered SlashCommandBreakPoint');
                 if (this.debugController) {
                     // resolve args
                     step = await stepper.next();
@@ -347,7 +346,6 @@ export class SlashCommandClosure {
             // resolve args
             step = await stepper.next();
             if (step.value instanceof SlashCommandBreak) {
-                console.log('encountered SlashCommandBreak');
                 if (this.breakController) {
                     this.breakController?.break();
                     break;

@@ -1693,8 +1693,6 @@ async function updateAutoRemoteModel() {
         if (!result.ok) {
             throw new Error('SD WebUI returned an error.');
         }
-
-        console.log('Model successfully updated on SD WebUI remote.');
     } catch (error) {
         console.error(error);
         toastr.error(`Could not update SD WebUI model: ${error.message}`);
@@ -1708,10 +1706,6 @@ async function updateExtrasRemoteModel() {
         method: 'POST',
         body: JSON.stringify({ model: extension_settings.sd.model }),
     });
-
-    if (getCurrentModelResult.ok) {
-        console.log('Model successfully updated on SD remote.');
-    }
 }
 
 async function loadSamplers() {
@@ -3213,7 +3207,6 @@ function restoreOriginalDimensions(savedParams) {
  */
 async function getPrompt(generationType, message, trigger, quietPrompt, combineNegatives) {
     let prompt;
-    console.log('getPrompt: Generation mode', generationType, 'triggered with', trigger);
     switch (generationType) {
         case generationMode.RAW_LAST:
             prompt = message || getRawLastMessage();
@@ -4319,9 +4312,6 @@ async function generateComfyImageCommon(prompt, negativePrompt, signal, basePath
             workflow = workflow.replaceAll('"%char_avatar%"', JSON.stringify(PNG_PIXEL));
         }
     }
-    console.log(`{
-        "prompt": ${workflow}
-    }`);
     const promptResult = await fetch(`${basePath}/generate`, {
         method: 'POST',
         headers: getRequestHeaders(),
@@ -5116,7 +5106,6 @@ async function addSDGenButtons() {
         const param = idParamMap[id];
 
         if (param) {
-            console.log('doing /sd ' + param);
             generatePicture(initiators.wand, {}, param);
         }
     });

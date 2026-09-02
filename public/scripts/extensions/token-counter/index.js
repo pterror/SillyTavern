@@ -93,8 +93,6 @@ async function doCount() {
     //concat all the messages into a single string
     const allMessages = messages.join(' ');
 
-    console.debug('All messages:', allMessages);
-
     //toastr success with the token count of the chat
     const count = await getTokenCountAsync(allMessages);
     toastr.success(`Token count: ${count}`);

@@ -61,11 +61,6 @@ class AzureTtsProvider {
     }
 
     async loadSettings(settings) {
-        // Populate Provider UI given input settings
-        if (Object.keys(settings).length == 0) {
-            console.info('Using default TTS Provider settings');
-        }
-
         // Only accept keys defined in defaultSettings
         this.settings = this.defaultSettings;
 
@@ -85,7 +80,6 @@ class AzureTtsProvider {
 
         try {
             await this.checkReady();
-            console.debug('Azure: Settings loaded');
         } catch {
             console.debug('Azure: Settings loaded, but not ready');
         }

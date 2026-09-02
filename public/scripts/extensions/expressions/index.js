@@ -590,7 +590,6 @@ async function moduleWorker({ newChat = false } = {}) {
         const timeSinceLastServerResponse = now - lastServerResponseTime;
 
         if (timeSinceLastServerResponse < STREAMING_UPDATE_INTERVAL) {
-            console.log('Streaming in progress: throttling expression update. Next update at ' + new Date(lastServerResponseTime + STREAMING_UPDATE_INTERVAL));
             return;
         }
     }
@@ -686,7 +685,6 @@ export async function sendExpressionCall(spriteFolderName, expression, { force =
  */
 async function setSpriteFolderCommand({ name }, folder) {
     if (!folder) {
-        console.log('Clearing sprite set');
         folder = '';
     }
 
@@ -1101,9 +1099,6 @@ export async function getExpressionLabel(text, expressionsApi = extension_settin
     text = sampleClassifyText(text);
 
     filterAvailable ??= extension_settings.expressions.filterAvailable;
-    if (filterAvailable && ![EXPRESSION_API.llm, EXPRESSION_API.webllm].includes(expressionsApi)) {
-        console.debug('Filter available is only supported for LLM and WebLLM expressions');
-    }
 
     try {
         switch (expressionsApi) {
@@ -1248,7 +1243,6 @@ async function validateImages(spriteFolderName, forceRedrawCached = false) {
 
     if (spriteCache[spriteFolderName]) {
         if (forceRedrawCached && $('#image_list').data('name') !== spriteFolderName) {
-            console.debug('force redrawing character sprites list');
             await drawSpritesList(spriteFolderName, labels, spriteCache[spriteFolderName]);
         }
 
@@ -1348,8 +1342,6 @@ async function getListItem(expression, { images, isCustom = false } = {}) {
  */
 
 async function getSpritesList(name) {
-    console.debug('getting sprites list');
-
     try {
         const result = await fetch(`/api/sprites/get?name=${encodeURIComponent(name)}`);
         /** @type {{ label: string, path: string }[]} */
@@ -1762,7 +1754,6 @@ async function onClickExpressionAddCustom() {
     let expressionName = await Popup.show.input(null, template);
 
     if (!expressionName) {
-        console.debug('No custom expression name provided');
         return;
     }
 
@@ -1798,7 +1789,6 @@ async function onClickExpressionRemoveCustom() {
     const noCustomExpressions = extension_settings.expressions.custom.length === 0;
 
     if (!selectedExpression || noCustomExpressions) {
-        console.debug('No custom expression selected');
         return;
     }
 
@@ -1806,7 +1796,6 @@ async function onClickExpressionRemoveCustom() {
     const confirmation = await Popup.show.confirm(null, template);
 
     if (!confirmation) {
-        console.debug('Custom expression removal cancelled');
         return;
     }
 
@@ -1934,7 +1923,6 @@ async function onClickExpressionUpload(event) {
         const file = e.target.files[0];
 
         if (!file || !file.name) {
-            console.debug('No valid file selected');
             return;
         }
 
@@ -1964,7 +1952,6 @@ async function onClickExpressionUpload(event) {
                         text: t`Replace Existing`,
                         result: POPUP_RESULT.NEGATIVE,
                         action: () => {
-                            console.debug('Replacing existing sprite');
                             spriteName = withoutExtension(clickedFileName);
                         },
                     });
@@ -2092,8 +2079,6 @@ async function onClickExpressionOverrideRemoveAllButton() {
         const expression = await getExpressionLabel(currentLastMessage.mes);
         await sendExpressionCall(currentLastMessage.name, expression, { force: true });
         forceUpdateVisualNovelMode();
-
-        console.debug(extension_settings.expressionOverrides);
     } catch (error) {
         console.debug(`The current expression could not be set because of error: ${error}`);
     }

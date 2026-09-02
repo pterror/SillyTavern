@@ -748,7 +748,6 @@ async function summarizeChatMain(context, force, skipWIAN) {
         return;
     }
 
-    console.log('sending summary prompt');
     let summary = '';
     let index = null;
 
@@ -1049,7 +1048,6 @@ function doPopout(e) {
     const target = e.target;
     //repurposes the zoomed avatar template to server as a floating div
     if ($('#summaryExtensionPopout').length === 0) {
-        console.debug('did not see popout yet, creating');
         const originalHTMLClone = $(target).parent().parent().parent().find('.inline-drawer-content').html();
         const originalElement = $(target).parent().parent().parent().find('.inline-drawer-content');
         const template = $('#zoomed_avatar_template').html();
@@ -1089,7 +1087,6 @@ function doPopout(e) {
             loadSettings();
         });
     } else {
-        console.debug('saw existing popout, removing');
         $('#summaryExtensionPopout').fadeOut(animation_duration, () => { $('#summaryExtensionPopoutClose').trigger('click'); });
     }
 }

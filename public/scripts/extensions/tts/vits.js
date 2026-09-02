@@ -169,11 +169,6 @@ class VITSTtsProvider {
     }
 
     async loadSettings(settings) {
-        // Pupulate Provider UI given input settings
-        if (Object.keys(settings).length == 0) {
-            console.info('Using default TTS Provider settings');
-        }
-
         // Only accept keys defined in defaultSettings
         this.settings = this.defaultSettings;
 
@@ -227,8 +222,6 @@ class VITSTtsProvider {
         $('#vits_style_weight').on('change', () => { this.onSettingsChange(); });
 
         await this.checkReady();
-
-        console.info('VITS: Settings loaded');
     }
 
     // Perform a simple readiness check by trying to fetch voiceIds
@@ -315,8 +308,6 @@ class VITSTtsProvider {
      * @returns {Promise<Response|string>} Fetch response
      */
     async fetchTtsGeneration(inputText, voiceId, lang = null, forceNoStreaming = false) {
-        console.info(`Generating new TTS for voice_id ${voiceId}`);
-
         const streaming = !forceNoStreaming && this.settings.streaming;
         const [model_type, speaker_id] = voiceId.split('&');
         const params = new URLSearchParams();

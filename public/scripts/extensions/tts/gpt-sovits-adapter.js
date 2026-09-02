@@ -156,7 +156,6 @@ class GptSoVITSAdapterProvider {
     //###########//
     async fetchTtsVoiceObjects() {
         const response = await fetch(`${this.settings.provider_endpoint}/speakers`);
-        console.info(response);
 
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}: ${await response.json()}`);
@@ -193,7 +192,6 @@ class GptSoVITSAdapterProvider {
      * @returns {Promise<Response>} Fetch response
      */
     async fetchTtsGeneration(inputText, voiceId, lang = null, forceNoStreaming = false) {
-        console.info(`Generating new TTS for voice_id ${voiceId}`);
 
         const params = {
             text: inputText,

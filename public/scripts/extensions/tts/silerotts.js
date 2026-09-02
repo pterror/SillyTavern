@@ -120,7 +120,6 @@ class SileroTtsProvider {
     }
 
     async fetchTtsGeneration(inputText, voiceId) {
-        console.info(`Generating new TTS for voice_id ${voiceId}`);
         const response = await doExtrasFetch(
             `${this.settings.provider_endpoint}/generate`,
             {

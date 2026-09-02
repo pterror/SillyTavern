@@ -1435,7 +1435,6 @@ function runRegexCallback(args, value) {
                 return value;
             }
 
-            console.debug(`Running regex callback for ${scriptName}`);
             return runRegexScript(script, value);
         }
     }
@@ -1943,7 +1942,6 @@ export async function init() {
                 await setter(newScripts);
                 saveSettingsDebounced('extension_settings');
 
-                console.debug(`Regex scripts in ${selector} reordered`);
                 await reloadCurrentChat();
                 await loadRegexScripts();
             },

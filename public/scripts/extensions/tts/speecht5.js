@@ -64,11 +64,6 @@ class SpeechT5TtsProvider {
     }
 
     async loadSettings(settings) {
-        // Pupulate Provider UI given input settings
-        if (Object.keys(settings).length == 0) {
-            console.info('Using default TTS Provider settings');
-        }
-
         // Only accept keys defined in defaultSettings
         this.settings = this.defaultSettings;
 
@@ -133,7 +128,6 @@ class SpeechT5TtsProvider {
             $(`#speecht5_tts_speaker option[value="${speaker.voice_id}"]`).remove();
 
             if (this.settings.speakers.length == 0) {
-                console.log('No speakers left');
                 return;
             }
 
@@ -142,8 +136,6 @@ class SpeechT5TtsProvider {
         });
 
         await this.checkReady();
-
-        console.debug('SpeechT5: Settings loaded');
     }
 
     async checkReady() {
@@ -164,7 +156,6 @@ class SpeechT5TtsProvider {
     }
 
     async fetchTtsGeneration(inputText, voiceId) {
-        console.info(`Generating new TTS for voice_id ${voiceId}`);
         const speaker = await this.getVoice(voiceId);
 
         if (!speaker) {

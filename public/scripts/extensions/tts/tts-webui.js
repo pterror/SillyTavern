@@ -287,8 +287,6 @@ class TtsWebuiProvider {
         $('#tts_webui_remove_milliseconds_start_output').text(this.settings.remove_milliseconds_start);
 
         await this.checkReady();
-
-        console.debug('OpenAI Compatible TTS: Settings loaded');
     }
 
     onSettingsChange() {
@@ -338,7 +336,6 @@ class TtsWebuiProvider {
 
     async onRefreshClick() {
         await this.fetchTtsVoiceObjects();
-        console.info('TTS voices refreshed');
     }
 
     async getVoice(voiceName) {
@@ -438,7 +435,6 @@ class TtsWebuiProvider {
             if (!headerParsed) {
                 // Parse WAV header to get sample rate
                 wavInfo = this.parseWavHeader(value.buffer);
-                console.log('WAV Info:', wavInfo);
 
                 // Initialize AudioWorklet with correct sample rate
                 await this.initAudioWorklet(wavInfo.sampleRate);
@@ -487,8 +483,6 @@ class TtsWebuiProvider {
     }
 
     async fetchTtsGeneration(inputText, voiceId) {
-        console.info(`Generating new TTS for voice_id ${voiceId}`);
-
         const settings = this.settings;
         const streaming = settings.streaming;
 

@@ -373,8 +373,6 @@ export class SettingsUi {
             this.prepareGlobalSetList();
             this.prepareChatSetList();
             this.prepareCharacterSetList();
-
-            console.info(`Quick Reply Set renamed from ""${oldName}" to "${newName}".`);
         }
     }
 
