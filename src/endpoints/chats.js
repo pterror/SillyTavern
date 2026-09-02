@@ -989,14 +989,15 @@ router.post('/tree/rename-in-content', validateAvatarUrlMiddleware, async functi
 
         const ownerId = String(avatar_url).replace('.png', '');
 
-        // Nothing to rename the speaker in. Says that, rather than "not tree-migrated", which was
-        // never what the check answered and reads as a storage problem the caller might act on.
+        // Nothing to rename the speaker in. This is a no-op, not a failure - respond 200 with an
+        // explicit flag so the client can tell it apart from an actual rename failure without
+        // string-matching an error message against an ambiguous 400.
         if (!await hasSavedChats(request.user.directories, ownerId)) {
-            return response.status(400).send({ error: 'Character has no saved chats' });
+            return response.send({ ok: true, updated: 0, noSavedChats: true });
         }
 
         const updated = await renameCharacterInMessages(request.user.directories, ownerId, String(new_name));
-        return response.send({ ok: true, updated });
+        return response.send({ ok: true, updated, noSavedChats: false });
     } catch (error) {
         console.error('Error renaming character in messages:', error);
         return response.status(500).send({ error: true });
