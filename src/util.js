@@ -915,7 +915,6 @@ export async function forwardFetchResponse(from, to) {
         });
 
         from.body.on('end', function () {
-            console.info('Streaming request finished');
             to.end();
         });
     } else {
@@ -960,7 +959,6 @@ export function makeHttp2Request(endpoint, method, body, headers) {
                 });
 
                 req.on('end', () => {
-                    console.debug(data);
                     resolve(data);
                 });
             });

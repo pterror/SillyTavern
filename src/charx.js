@@ -64,7 +64,6 @@ export class CharXParser {
      * @returns {Promise<CharXParseResult>}
      */
     async parse() {
-        console.info('Importing from CharX');
         const cardBuffer = await extractFileFromZipBuffer(this.#data, 'card.json');
 
         if (!cardBuffer) {
