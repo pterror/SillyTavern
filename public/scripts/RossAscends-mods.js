@@ -1199,10 +1199,12 @@ export function initRossMods() {
             }
         }
 
-        // Ctrl+Enter for Regeneration Last Response. If editing, accept the edits instead
+        // Ctrl+Enter for Regeneration Last Response. If editing THAT message, accept the edits instead.
+        // Scoped to the last message specifically - an edit box left open on some other, earlier
+        // message must not silently eat a Ctrl+Enter that was meant to regenerate.
         if (event.ctrlKey && event.key == 'Enter') {
-            const editMesDone = $('.mes_edit_done:visible');
-            const reasoningMesDone = $('.mes_reasoning_edit_done:visible');
+            const editMesDone = $('.last_mes .mes_edit_done:visible');
+            const reasoningMesDone = $('.last_mes .mes_reasoning_edit_done:visible');
             if (editMesDone.length > 0) {
                 console.debug('Accepting edits with Ctrl+Enter');
                 $('#send_textarea').trigger('focus');
