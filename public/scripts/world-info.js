@@ -4618,8 +4618,15 @@ async function getCharacterLore() {
         }
     }
 
-    // If no primary world is linked, activate the embedded character_book directly - no import needed.
-    if (!baseWorldName && character?.data?.character_book?.entries?.length) {
+    // Activate the embedded character_book directly - no import needed - whenever there's no primary world
+    // actually backing this character's lore: either none is linked at all, or extensions.world names a World
+    // that doesn't exist (world_names is the authoritative "which World files actually exist" list, same check
+    // setWorldInfoButtonClass() already trusts elsewhere in this file). A dangling link like that is common on
+    // cards imported from character-sharing sites, which often set extensions.world to the embedded book's own
+    // name as a label without ever shipping a matching World file - without this check, that non-empty-but-
+    // unresolvable baseWorldName would silently block the fallback and the embedded book would never activate.
+    const baseWorldResolves = !!baseWorldName && world_names.includes(baseWorldName);
+    if (!baseWorldResolves && character?.data?.character_book?.entries?.length) {
         const converted = convertCharacterBook(character.data.character_book);
         const embeddedEntries = Object.keys(converted.entries)
             .map(x => converted.entries[x])
