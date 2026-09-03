@@ -25,21 +25,25 @@ import { LocalImportWorkerPool, resolveWorkerPoolSize } from './local-import-wor
  * problem: fs.watch/inotify can silently drop events past its queue depth under burst load, with no `error`
  * event and no way to detect it from JS, so it can only ever be a latency optimization, never the mechanism
  * actually relied on for correctness -
- *   1. A periodic scan (scanDirectory() below, driven by the `scanIntervalMs` interval per configured
- *      directory) - the mandatory backstop. Always runs, regardless of whether fs.watch is enabled or even
- *      available on this platform/filesystem - CADENCE varies (see allOverflowConfirmed() and
- *      CONFIRMED_OVERFLOW_SCAN_INTERVAL_MS below: the pass backs off to a much longer interval once every
- *      configured directory's dedicated overflow watch is confirmed attached, since a dropped fs.watch event is
- *      no longer silent in that case - see point 2 below), but WHETHER it runs never depends on watcher state.
+ *   1. A periodic full-corpus scan (scanDirectory() below, driven by `scanIntervalMs`) - the DEFAULT backstop,
+ *      and the ONLY one whenever point 2's Linux overflow watch isn't confirmed attached for every configured
+ *      directory (wrong platform, watchEnabled off, the native addon missing/unpatched, or a watch failing to
+ *      attach). In that unconfirmed state it behaves exactly as it always has: unconditional, watcher-state-
+ *      independent, always runs.
  *   2. An optional non-recursive fs.watch() per configured directory (startWatcherFor() below, gated by
  *      `localImport.watchEnabled`) - purely a "notice new files sooner than the next scan interval" latency
  *      optimization layered on top. Its debounced handler runs the exact same per-file logic the periodic scan
  *      uses, so there is only ever one discovery/import code path, just two different triggers for it. On
  *      Linux, a separate dedicated watch (attachOverflowWatch(), watch-overflow.js) additionally catches the
- *      kernel's own IN_Q_OVERFLOW signal and triggers an immediate pass via triggerImmediateRescan() - when that
- *      watch is confirmed attached (state.overflowWatch non-null), a dropped ordinary fs.watch event stops being
- *      undetectable-from-JS, which is what lets the periodic pass above back off its cadence instead of having
- *      to assume the worst on every tick.
+ *      kernel's own IN_Q_OVERFLOW signal and triggers an immediate pass via triggerImmediateRescan() - a dropped
+ *      ordinary fs.watch event stops being undetectable-from-JS once that watch is confirmed attached
+ *      (allOverflowConfirmed(), state.overflowWatch non-null for every configured directory). ONCE that's true,
+ *      point 1's periodic full-corpus pass is replaced entirely by a much cheaper watcher-pipeline heartbeat
+ *      (checkWatcherHeartbeat(), HEARTBEAT_INTERVAL_MS) - a throwaway sentinel file whose own fs.watch event
+ *      this process must observe within HEARTBEAT_GRACE_MS - for as long as heartbeats keep succeeding and
+ *      confirmation holds; a missed heartbeat or lost confirmation immediately falls back to a real full pass
+ *      (runHeartbeatCheck()), which self-heals back into heartbeat mode the moment it reconfirms health. See
+ *      scheduleNext()'s own doc comment for exactly how the two modes hand off to each other.
  *
  * DISCOVERED-FILE IMPORT reuses the exact same hash-dedup machinery, and (for charx/byaf/yaml only - see below)
  * the exact same batched staging `/import` and its `/metadata/batch-import/begin|end` counterparts already use
@@ -109,21 +113,15 @@ const WATCH_DEBOUNCE_MS = 300;
  * watch-overflow.js's attachOverflowWatch()) - `null` on every other platform, or if attaching one failed for
  * any reason (never fatal - see that module's own doc comment). Entirely separate from `watcher` above; closed
  * independently in stopWatcherFor().
+ * @property {Map<string, () => void>} pendingHeartbeats Filename -> resolver for an in-flight
+ * checkWatcherHeartbeat() call against this directory - see that function and startWatcherFor()'s watcher
+ * callback (which intercepts a pending heartbeat's own sentinel filename before it ever reaches the normal
+ * debounce/processFile() import path).
  * @property {Map<string, Promise<void>>} [hashLocks] Per-content-hash serialization for the worker-pool era
  * (see withPerHashLock()'s own doc comment) - optional/lazily-created (withPerHashLock() populates it on
  * first use if absent) so a hand-built state literal (e.g. a test's buildState() helper, predating this
  * property) never needs updating just to keep constructing a valid DirectoryScanState.
  */
-
-/** When every configured directory's Linux overflow watch (state.overflowWatch, see startWatcherFor() and
- * watch-overflow.js) is confirmed attached, the periodic full pass backs off to this interval instead of the
- * configured `scanIntervalMs` - see allOverflowConfirmed()'s own doc comment for why a non-null overflowWatch
- * handle is sufficient confirmation on its own, with no separate probe step needed. Falls back to the regular
- * `scanIntervalMs` the moment ANY configured directory lacks a confirmed watch (wrong platform, watchEnabled
- * off, the native addon missing/unpatched, or attachOverflowWatch() failing for that one directory) - the
- * periodic pass remains the unconditional correctness backstop everywhere except this one confirmed-healthy
- * case, unchanged from before this existed. */
-const CONFIRMED_OVERFLOW_SCAN_INTERVAL_MS = getConfigValue('localImport.confirmedOverflowScanIntervalMs', 6 * 60 * 60 * 1000, 'number');
 
 /**
  * True only once every configured directory's dedicated overflow watch is confirmed attached. A non-null
@@ -132,11 +130,73 @@ const CONFIRMED_OVERFLOW_SCAN_INTERVAL_MS = getConfigValue('localImport.confirme
  * missing/unpatched, the watch itself failing to attach) per its own doc comment, so "attached" and "confirmed
  * healthy" are the same question. Empty `scanStates` (nothing configured, or watchEnabled off so
  * startWatcherFor() was never called) is never "confirmed" - there is nothing to have confirmed anything about,
- * and the regular scanIntervalMs backstop is what actually runs in that case.
+ * and the regular scanIntervalMs-paced full pass is what actually runs in that case.
  * @returns {boolean}
  */
 function allOverflowConfirmed() {
     return scanStates.length > 0 && scanStates.every(state => state.overflowWatch !== null);
+}
+
+/** How often (ms) checkWatcherHeartbeat() runs against every configured directory once allOverflowConfirmed()
+ * is true - REPLACES the periodic full-corpus pass entirely in that state, rather than merely slowing it down
+ * (see this module's own header, point 1): once the mechanism meant to make a silently-dropped fs.watch event
+ * detectable is itself confirmed live, repeatedly paying a full readdir()+stat() walk over a 300k+-file
+ * directory "just in case" defeats the reason that confirmation exists. The heartbeat instead proves the
+ * watcher PIPELINE itself - not just the overflow watch's file descriptor, but this process's ordinary
+ * fs.watch() callback actually still firing - is alive, at a cost of one throwaway file create+delete
+ * regardless of directory size. */
+const HEARTBEAT_INTERVAL_MS = getConfigValue('localImport.watcherHeartbeatIntervalMs', 60 * 1000, 'number');
+
+/** How long (ms) checkWatcherHeartbeat() waits for its sentinel file's own fs.watch event before concluding the
+ * watcher is stalled. Deliberately generous relative to HEARTBEAT_INTERVAL_MS's default: a legitimately-alive
+ * watcher can still miss this window under a big synchronous GC pause or other main-thread work elsewhere in
+ * the process, and a false "stalled" verdict costs one unnecessary full pass (self-correcting - the very next
+ * post-pass heartbeat re-confirms health), while a false "alive" verdict costs actual undetected coverage - the
+ * asymmetry favors a grace period long enough to make spurious misses rare. */
+const HEARTBEAT_GRACE_MS = getConfigValue('localImport.watcherHeartbeatGraceMs', 15 * 1000, 'number');
+
+/**
+ * Drops a throwaway sentinel file into `state.sourceDir` and resolves `true` if THIS process's own fs.watch
+ * callback (startWatcherFor()'s callback, which intercepts a pending heartbeat's sentinel filename before it
+ * ever reaches the normal debounce/processFile() import path - see that callback's own comment) fires for it
+ * within HEARTBEAT_GRACE_MS, `false` otherwise (including if the write itself fails, or no watcher is even
+ * running for this state). Always attempts to clean the sentinel file back up (best-effort - a failed unlink is
+ * logged but never thrown, since nothing else will ever touch this uniquely-named file either way).
+ * @param {DirectoryScanState} state
+ * @returns {Promise<boolean>}
+ */
+async function checkWatcherHeartbeat(state) {
+    if (!state.watcher) return false;
+
+    const filename = `.st-heartbeat-${crypto.randomUUID()}.heartbeat`;
+    const sentinelPath = path.join(state.sourceDir, filename);
+
+    const observed = await new Promise((resolve) => {
+        const timer = setTimeout(() => {
+            state.pendingHeartbeats.delete(filename);
+            resolve(false);
+        }, HEARTBEAT_GRACE_MS);
+        timer.unref?.();
+
+        state.pendingHeartbeats.set(filename, () => {
+            clearTimeout(timer);
+            resolve(true);
+        });
+
+        fsPromises.writeFile(sentinelPath, '').catch(() => {
+            clearTimeout(timer);
+            state.pendingHeartbeats.delete(filename);
+            resolve(false);
+        });
+    });
+
+    await fsPromises.unlink(sentinelPath).catch((err) => {
+        if (err.code !== 'ENOENT') {
+            console.debug(`[local-import] Failed to remove heartbeat sentinel ${sentinelPath}:`, err.message);
+        }
+    });
+
+    return observed;
 }
 
 /** @type {DirectoryScanState[]} */
@@ -678,6 +738,17 @@ function startWatcherFor(state, directories) {
             }
             if (!filename) return;
 
+            // checkWatcherHeartbeat()'s own sentinel file - resolve the waiting caller and stop here, before
+            // this ever reaches the normal debounce/processFile() path. detectFormat() would no-op on its
+            // ".heartbeat" extension anyway (processFile()'s very first line), but intercepting here means a
+            // heartbeat round-trip never even schedules a debounce timer or touches sqlite.
+            if (state.pendingHeartbeats.has(filename)) {
+                const resolveHeartbeat = state.pendingHeartbeats.get(filename);
+                state.pendingHeartbeats.delete(filename);
+                resolveHeartbeat();
+                return;
+            }
+
             const existingTimer = state.watchTimers.get(filename);
             if (existingTimer) clearTimeout(existingTimer);
             state.watchTimers.set(filename, setTimeout(() => {
@@ -787,18 +858,63 @@ async function runScanCycle(userDirectories, scanIntervalMs) {
     await pass;
 
     if (disposed) return;
-    // Only the SCHEDULING delay backs off when overflow detection is confirmed healthy - scanIntervalMs itself
-    // (both the argument threaded through to the next recursive call and capturedScanIntervalMs, which
-    // triggerImmediateRescan() reads) stays the configured base value throughout, so a directory that loses its
-    // overflow watch mid-run (or never had one) falls straight back to the regular cadence on its very next
-    // reschedule, with nothing extra to reset.
-    const effectiveIntervalMs = allOverflowConfirmed() ? CONFIRMED_OVERFLOW_SCAN_INTERVAL_MS : scanIntervalMs;
-    scanTimeout = setTimeout(() => {
-        runScanCycle(userDirectories, scanIntervalMs);
-    }, effectiveIntervalMs);
+    scheduleNext(userDirectories, scanIntervalMs);
+}
+
+/**
+ * Decides what happens after a full pass (or a successful heartbeat round) finishes: another full pass at
+ * `scanIntervalMs` (the normal case), or - once allOverflowConfirmed() is true - a cheap heartbeat check at
+ * HEARTBEAT_INTERVAL_MS instead, replacing the full pass entirely for as long as heartbeats keep succeeding.
+ * `scanIntervalMs` itself (both this argument and capturedScanIntervalMs, which triggerImmediateRescan() reads)
+ * always stays the configured base value - only which TIMER gets armed, and what it does when it fires, changes.
+ * @param {import('./users.js').UserDirectoryList} userDirectories
+ * @param {number} scanIntervalMs
+ */
+function scheduleNext(userDirectories, scanIntervalMs) {
+    if (disposed) return;
+
+    if (allOverflowConfirmed()) {
+        scanTimeout = setTimeout(() => {
+            runHeartbeatCheck(userDirectories, scanIntervalMs);
+        }, HEARTBEAT_INTERVAL_MS);
+    } else {
+        scanTimeout = setTimeout(() => {
+            runScanCycle(userDirectories, scanIntervalMs);
+        }, scanIntervalMs);
+    }
     // Same reasoning as character-metadata-db.js's reconcileInterval: unref() so this timer is never the reason
     // the process can't exit.
     scanTimeout.unref?.();
+}
+
+/**
+ * Runs checkWatcherHeartbeat() against every configured directory in parallel. If every directory is still
+ * alive AND overflow confirmation hasn't been lost since the last check, stays in heartbeat mode
+ * (scheduleNext() arms another heartbeat, not a full pass). Otherwise - any single directory's heartbeat
+ * missing its grace window, or its overflowWatch having gone null in the meantime (stopWatcherFor()/a platform
+ * change/a watch failing to reattach) - falls back to a real full pass via runScanCycle(), which is the only
+ * way to actually reconcile whatever may have gone uncaught during however long the heartbeat window covered,
+ * and which itself re-decides via scheduleNext() once it completes (so a transient miss self-heals back into
+ * heartbeat mode on the very next round, it doesn't get stuck doing full passes forever).
+ * @param {import('./users.js').UserDirectoryList} userDirectories
+ * @param {number} scanIntervalMs
+ */
+async function runHeartbeatCheck(userDirectories, scanIntervalMs) {
+    if (disposed) return;
+
+    const results = await Promise.all(scanStates.map(state => checkWatcherHeartbeat(state)));
+
+    if (disposed) return;
+
+    if (results.every(Boolean) && allOverflowConfirmed()) {
+        scheduleNext(userDirectories, scanIntervalMs);
+        return;
+    }
+
+    console.error('[local-import] Watcher heartbeat check missed its grace window (or overflow confirmation was lost) - falling back to a full reconcile pass to be safe.');
+    runScanCycle(userDirectories, scanIntervalMs).catch(err => {
+        console.error('[local-import] Heartbeat-triggered fallback scan cycle crashed unexpectedly:', err);
+    });
 }
 
 /**
@@ -873,6 +989,7 @@ export async function initializeLocalImportScan() {
         watcher: null,
         watchTimers: new Map(),
         overflowWatch: null,
+        pendingHeartbeats: new Map(),
     }));
 
     const allMtimes = await getAllLocalImportMtimes(userDirectories);
