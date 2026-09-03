@@ -224,6 +224,7 @@ import {
     tag_import_setting,
     applyCharacterTagsToMessageDivs,
     removeEntityTags,
+    tagsStore,
 } from './scripts/tags.js';
 import { checkOpenRouterAuth, initSecrets, readSecretState } from './scripts/secrets.js';
 import { markdownExclusionExt } from './scripts/showdown-exclusion.js';
@@ -1657,21 +1658,12 @@ function renderCharacterBlock(template, item, id) {
     const auxFieldValue = (item.data && item.data[auxFieldName]) || '';
     template.find('.character_version').text(auxFieldValue).toggleClass('displayNone', !auxFieldValue);
 
-    // Reconcile a resident charactersStore entry's tag_ids against this row's own - `item` isn't always the
-    // same object charactersStore holds (it can be a freshly-fetched `/query` row for an avatar that's *also*
-    // resident, e.g. seeded from the boot-time IndexedDB cache via seedCharactersFromCache() before that live
-    // fetch ever landed). getTagsList() (tags.js) unconditionally prefers a resident entity's own tag_ids over
-    // anything a caller passes in, on the theory that "resident" means "authoritative" - true for a character
-    // whose only source of tag_ids updates is in-session mutation (tagMapStore's mirror-back keeps that copy
-    // current), false for one that became resident purely from a stale cache snapshot. Since this row's own
-    // `item.tag_ids` just came straight off the server response for a render happening right now, it's always
-    // at least as fresh as - and a real mismatch means fresher than - whatever charactersStore is holding, so
-    // patch it in before the tag list ever reads through the resident branch. A no-op (`update()` skips work
-    // when the id isn't resident at all, and Object.assign() is cheap when the arrays already agree) for the
-    // overwhelmingly common case where nothing was ever stale. Confirmed live (2026-09 tag-pill investigation):
-    // this was the actual remaining "list view shows a card with no tags, opening it shows them fine" bug - the
-    // `/get` fetch a card-open does happens to overwrite the very same stale resident entry, which is why
-    // viewing a card "fixed" its tags for the rest of the session even though nothing here ever wrote to it.
+    // Keep a resident charactersStore entry's own tag_ids from drifting behind this row's fresher fetch - other
+    // surfaces (the `#tags` fuzzy-search field, filter-sidebar counts, anything reading charactersStore directly
+    // outside of this render) still go through the resident copy, so it's worth correcting even though the tag
+    // paint below no longer depends on it (see that comment). A no-op (`update()` skips work when the id isn't
+    // resident at all, and Object.assign() is cheap when the arrays already agree) for the overwhelmingly common
+    // case where nothing was ever stale.
     if (Array.isArray(item.tag_ids)) {
         const resident = charactersStore.get(id);
         if (resident && !arraysHaveSameMembers(resident.tag_ids, item.tag_ids)) {
@@ -1682,13 +1674,24 @@ function renderCharacterBlock(template, item, id) {
     // Display inline tags. printTagList() clears and rebuilds this container itself, so it's already
     // safe to call against a reused row.
     //
-    // entityTagIds: this row's own item.tag_ids, passed through as printTagList()/getTagsList()'s residency
-    // fallback - still needed for the non-resident case (most rows under `lazyLoadCharacters`, the common case
-    // for a library too large to boot-load in full: a `CharacterRepository.query()` row that was never written
-    // back into charactersStore at all, by design - see that method's own doc comment). The reconciliation
-    // above handles the resident-but-stale case; this handles the never-resident one, unchanged from before.
+    // `tags: () => ...` resolves this row's own tag pills straight from `item.tag_ids` - the same fresh row
+    // every other field on this template reads from (name/avatar/fav/description/version above), instead of
+    // routing through printTagList()'s default `getTagsList(key, sort, entityTagIds)` lookup. That lookup
+    // unconditionally prefers a *resident* charactersStore entry over whatever fallback ids a caller hands it
+    // (see getTagsList()'s own doc comment - correct for callers like the character editor's own tag list, which
+    // genuinely want "the live resident entity's current tags" mid-edit) - for a list row that's the wrong
+    // priority, since `item` can outrun a stale resident copy (see the reconciliation just above) and the row
+    // has no business ever painting anything other than what it was just handed. `forEntityOrKey: id` is still
+    // passed alongside `tags` - printTagList uses the key it derives from that for expansion-state/empty-list
+    // bookkeeping independent of tag *resolution*, which `tags` here fully overrides. Confirmed live (2026-09
+    // tag-pill investigation): this was the list-view-only "new card shows no tags, opening it shows them fine"
+    // bug - bypassing the resident lookup here removes the possibility entirely rather than only patching it out
+    // from under a still-preferred stale path.
     const tagsElement = template.find('.tags');
-    printTagList(tagsElement, { forEntityOrKey: id, entityTagIds: item.tag_ids, tagOptions: { isCharacterList: true } });
+    const rowTags = Array.isArray(item.tag_ids)
+        ? item.tag_ids.map(tagId => tagsStore.get(tagId)).filter(Boolean).sort(compareTagsForSort)
+        : [];
+    printTagList(tagsElement, { forEntityOrKey: id, tags: () => rowTags, tagOptions: { isCharacterList: true } });
 }
 
 function getCharacterBlock(item, id) {
