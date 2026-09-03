@@ -2349,6 +2349,26 @@ async function displayWorldEntries(name, data, navigation = navigation_option.no
     // Regardless of whether success is displayed or not. Make sure the delete button is available.
     // Do not put this code behind.
     $('#world_popup_delete').off('click').on('click', async () => {
+        if (name === EMBEDDED_WORLD_NAME) {
+            const confirmation = await Popup.show.confirm(t`Remove the embedded lorebook from this character?`, t`This action is irreversible!`);
+            if (!confirmation) {
+                return;
+            }
+
+            const avatar = embeddedLoreCharacterAvatar;
+            if (avatar && $('#avatar_url_pole').val() === avatar) {
+                const cardData = JSON.parse(String($('#character_json_data').val()));
+                if (cardData?.data) {
+                    cardData.data.character_book = undefined;
+                }
+                $('#character_json_data').val(JSON.stringify(cardData));
+                await createOrEditCharacter();
+            }
+
+            await hideWorldEditor();
+            return;
+        }
+
         const confirmation = await Popup.show.confirm(`Delete the World/Lorebook: "${name}"?`, 'This action is irreversible!');
         if (!confirmation) {
             return;
@@ -2494,6 +2514,10 @@ async function displayWorldEntries(name, data, navigation = navigation_option.no
     });
 
     $('#world_popup_name_button').off('click').on('click', async () => {
+        if (name === EMBEDDED_WORLD_NAME) {
+            toastr.info(t`Use "Import Card Lore" first to give the embedded lorebook its own file and a name.`);
+            return;
+        }
         await renameWorldInfo(name, data);
     });
 
@@ -4251,6 +4275,13 @@ export async function saveWorldInfo(name, data, immediately = false) {
         return;
     }
 
+    if (name === EMBEDDED_WORLD_NAME) {
+        if (immediately) {
+            return await saveEmbeddedLore(data);
+        }
+        return saveEmbeddedLoreDebounced(data);
+    }
+
     // Update cache immediately, so any future call can pull from this
     worldInfoCache.set(name, data);
 
@@ -4592,7 +4623,7 @@ async function getCharacterLore() {
         const converted = convertCharacterBook(character.data.character_book);
         const embeddedEntries = Object.keys(converted.entries)
             .map(x => converted.entries[x])
-            .map(({ uid, ...rest }) => ({ uid, world: '__embedded__', ...rest }));
+            .map(({ uid, ...rest }) => ({ uid, world: EMBEDDED_WORLD_NAME, ...rest }));
         entries = entries.concat(embeddedEntries);
         if (isWorldInfoTracingEnabled()) console.debug(`[WI] Character ${name}'s embedded lorebook has ${embeddedEntries.length} entries (activated directly)`);
     }
@@ -5758,6 +5789,140 @@ export function convertCharacterBook(characterBook) {
     return result;
 }
 
+/**
+ * Converts entries produced by {@link convertCharacterBook} back into a v2 character_book object,
+ * mirroring that function's field mapping in reverse. Used to save edits made against an embedded
+ * lorebook directly back into the character card, without ever materializing a saved World file.
+ * @param {{entries: Record<string, any>, originalData?: object}} data World-info-shaped entries (as edited in the WI editor) plus the character_book they were converted from
+ * @returns {object} An updated v2 character_book object
+ */
+export function convertToCharacterBook(data) {
+    const book = structuredClone(data.originalData) || {};
+
+    book.entries = Object.keys(data.entries).map((uid) => {
+        const entry = data.entries[uid];
+        const extensions = { ...(entry.extensions ?? {}) };
+
+        extensions.position = entry.position;
+        extensions.exclude_recursion = entry.excludeRecursion;
+        extensions.prevent_recursion = entry.preventRecursion;
+        extensions.delay_until_recursion = entry.delayUntilRecursion;
+        extensions.display_index = entry.displayIndex;
+        extensions.probability = entry.probability;
+        extensions.useProbability = entry.useProbability;
+        extensions.depth = entry.depth;
+        extensions.selectiveLogic = entry.selectiveLogic;
+        extensions.outlet_name = entry.outletName;
+        extensions.group = entry.group;
+        extensions.group_override = entry.groupOverride;
+        extensions.group_weight = entry.groupWeight;
+        extensions.scan_depth = entry.scanDepth;
+        extensions.case_sensitive = entry.caseSensitive;
+        extensions.match_whole_words = entry.matchWholeWords;
+        extensions.use_group_scoring = entry.useGroupScoring;
+        extensions.automation_id = entry.automationId;
+        extensions.role = entry.role;
+        extensions.vectorized = entry.vectorized;
+        extensions.sticky = entry.sticky;
+        extensions.cooldown = entry.cooldown;
+        extensions.delay = entry.delay;
+        extensions.match_persona_description = entry.matchPersonaDescription;
+        extensions.match_character_description = entry.matchCharacterDescription;
+        extensions.match_character_personality = entry.matchCharacterPersonality;
+        extensions.match_character_depth_prompt = entry.matchCharacterDepthPrompt;
+        extensions.match_scenario = entry.matchScenario;
+        extensions.match_creator_notes = entry.matchCreatorNotes;
+        extensions.triggers = entry.triggers ?? [];
+        extensions.ignore_budget = entry.ignoreBudget;
+
+        return {
+            id: entry.uid,
+            keys: entry.key ?? [],
+            secondary_keys: entry.keysecondary ?? [],
+            comment: entry.comment ?? '',
+            content: entry.content ?? '',
+            constant: !!entry.constant,
+            selective: !!entry.selective,
+            insertion_order: entry.order ?? 0,
+            enabled: !entry.disable,
+            position: entry.position === world_info_position.before ? 'before_char' : 'after_char',
+            extensions,
+        };
+    });
+
+    return book;
+}
+
+/** Sentinel "world name" used to route the shared World Info editor at an embedded character_book,
+ * instead of a named World file. Never appears in `world_names` - `saveWorldInfo()` special-cases it
+ * to write straight back into the bound character's card instead of hitting the worldinfo API. */
+export const EMBEDDED_WORLD_NAME = '__embedded__';
+
+/** Avatar of the character whose embedded lorebook is currently open in the WI editor, or null. */
+let embeddedLoreCharacterAvatar = null;
+
+const saveEmbeddedLoreDebounced = debounce(async (data) => await saveEmbeddedLore(data), debounce_timeout.relaxed);
+
+/**
+ * Persists edits made to an embedded lorebook back into the owning character's card (never as a
+ * saved World file). Refuses to write if the character panel has since navigated away from the
+ * character the edit belongs to, rather than risk saving it into the wrong card.
+ * @param {{entries: Record<string, any>, originalData?: object}} data Current WI-editor-shaped entries for the embedded lorebook
+ */
+async function saveEmbeddedLore(data) {
+    const avatar = embeddedLoreCharacterAvatar;
+    if (!avatar) {
+        console.warn('[WI] No character bound for embedded lorebook edit, discarding change.');
+        return;
+    }
+
+    if ($('#avatar_url_pole').val() !== avatar) {
+        console.warn('[WI] Active character panel no longer matches the embedded lorebook being edited, discarding change.');
+        return;
+    }
+
+    try {
+        const cardData = JSON.parse(String($('#character_json_data').val()));
+        cardData.data = cardData.data ?? {};
+        cardData.data.character_book = convertToCharacterBook(data);
+        $('#character_json_data').val(JSON.stringify(cardData));
+        await createOrEditCharacter();
+    } catch (error) {
+        console.error('[WI] Failed to save embedded lorebook changes.', error);
+    }
+}
+
+/**
+ * Opens the shared World Info editor against a character's embedded lorebook (character_book)
+ * directly, in memory - no World file gets created or saved just to look at or edit it. Any edits
+ * made in the editor while it's open are written straight back into the character's own card via
+ * {@link saveEmbeddedLore}.
+ * @param {string} [avatarArg] Avatar of the character to edit; defaults to the one bound to `#edit_embedded_lore`
+ */
+export async function openEmbeddedLoreEditor(avatarArg) {
+    const avatar = avatarArg ?? $('#edit_embedded_lore').data('avatar');
+
+    if (avatar === undefined || avatar === null) {
+        return;
+    }
+
+    const character = charactersStore.get(avatar);
+
+    if (!character?.data?.character_book) {
+        toastr.info(t`This character doesn't have an embedded lorebook.`);
+        return;
+    }
+
+    embeddedLoreCharacterAvatar = avatar;
+    const data = convertCharacterBook(character.data.character_book);
+
+    if (!$('#WorldInfo').is(':visible')) {
+        $('#WIDrawerIcon').trigger('click');
+    }
+
+    await displayWorldEntries(EMBEDDED_WORLD_NAME, data);
+}
+
 export function setWorldInfoButtonClass(avatar, forceValue = undefined) {
     if (forceValue !== undefined) {
         $('#set_character_world, #world_button').toggleClass('world_set', forceValue);
@@ -5775,7 +5940,7 @@ export function setWorldInfoButtonClass(avatar, forceValue = undefined) {
 }
 
 export function checkEmbeddedWorld(avatar) {
-    $('#import_character_info').hide();
+    $('#import_character_info, #edit_embedded_lore').hide();
 
     if (avatar === undefined) {
         return false;
@@ -5784,7 +5949,7 @@ export function checkEmbeddedWorld(avatar) {
     const character = charactersStore.get(avatar);
 
     if (character?.data?.character_book) {
-        $('#import_character_info').data('avatar', character?.avatar ?? null).show();
+        $('#import_character_info, #edit_embedded_lore').data('avatar', character?.avatar ?? null).show();
         return true;
     }
 
@@ -6168,7 +6333,6 @@ export async function moveWorldInfoEntry(sourceName, targetName, uid, { deleteOr
  * @param {string} name - The name of the world info to link to the character.
  */
 export async function charUpdatePrimaryWorld(name) {
-    const previousValue = $('#character_world').val();
     $('#character_world').val(name);
 
     console.debug('Character world selected:', name);
@@ -6178,21 +6342,10 @@ export async function charUpdatePrimaryWorld(name) {
         return;
     }
 
-    if (previousValue && !name) {
-        try {
-            // Dirty hack to remove embedded lorebook from character JSON data.
-            const data = JSON.parse(String($('#character_json_data').val()));
-
-            if (data?.data?.character_book) {
-                data.data.character_book = undefined;
-            }
-
-            $('#character_json_data').val(JSON.stringify(data));
-            toastr.info(t`Embedded lorebook will be removed from this character.`);
-        } catch {
-            console.error('Failed to parse character JSON data.');
-        }
-    }
+    // Unlinking the primary world does NOT touch the character's embedded lorebook (character_book).
+    // getCharacterLore() activates the embedded book directly whenever no primary world is linked,
+    // so there is nothing to clean up here - deleting it on unlink would just destroy data with no
+    // way to bring it back.
 
     await createOrEditCharacter();
 

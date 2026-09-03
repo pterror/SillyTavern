@@ -43,6 +43,7 @@ import {
     setWorldInfoSettings,
     world_names,
     importEmbeddedWorldInfo,
+    openEmbeddedLoreEditor,
     checkEmbeddedWorld,
     setWorldInfoButtonClass,
     wi_anchor_position,
@@ -18169,6 +18170,9 @@ jQuery(async function () {
             case 'import_character_info':
                 await importEmbeddedWorldInfo();
                 saveCharacterDebounced();
+                break;
+            case 'edit_embedded_lore':
+                await openEmbeddedLoreEditor();
                 break;
             case 'character_source': {
                 const source = getCharacterSource(getCurrentCharacter());
