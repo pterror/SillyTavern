@@ -1199,12 +1199,14 @@ export function initRossMods() {
             }
         }
 
-        // Ctrl+Enter for Regeneration Last Response. If editing THAT message, accept the edits instead.
-        // Scoped to the last message specifically - an edit box left open on some other, earlier
-        // message must not silently eat a Ctrl+Enter that was meant to regenerate.
+        // Ctrl+Enter for Regeneration Last Response. If editing, accept the edits instead.
+        // Unscoped is correct here: only one message can be in edit mode at a time (the .mes_edit
+        // click handler closes any prior edit via messageEditDone() before opening a new one), so
+        // this can only ever match the one message actually being edited, whichever one that is -
+        // scoping it to .last_mes (see 3a85bc6) broke accepting edits on any earlier message.
         if (event.ctrlKey && event.key == 'Enter') {
-            const editMesDone = $('.last_mes .mes_edit_done:visible');
-            const reasoningMesDone = $('.last_mes .mes_reasoning_edit_done:visible');
+            const editMesDone = $('.mes_edit_done:visible');
+            const reasoningMesDone = $('.mes_reasoning_edit_done:visible');
             if (editMesDone.length > 0) {
                 console.debug('Accepting edits with Ctrl+Enter');
                 $('#send_textarea').trigger('focus');
