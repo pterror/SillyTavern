@@ -127,6 +127,7 @@ export const power_user = {
     charGalleryView: false,
     charGalleryFullscreen: true,
     charGalleryGrid: true,
+    charInfoFullscreen: false,
     tokenizer: tokenizers.BEST_MATCH,
     token_padding: 64,
     collapse_newlines: false,
@@ -2103,6 +2104,12 @@ function loadCharListState() {
         if (btn) {
             btn.classList.toggle('fa-expand', !power_user.charGalleryFullscreen);
             btn.classList.toggle('fa-compress', power_user.charGalleryFullscreen);
+        }
+        panel.classList.toggle('charInfoFullscreen', power_user.charInfoFullscreen);
+        const infoBtn = document.getElementById('charInfoFullscreenToggle');
+        if (infoBtn) {
+            infoBtn.classList.toggle('fa-expand', !power_user.charInfoFullscreen);
+            infoBtn.classList.toggle('fa-compress', power_user.charInfoFullscreen);
         }
     }
 }
