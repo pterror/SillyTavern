@@ -27,11 +27,19 @@ import { LocalImportWorkerPool, resolveWorkerPoolSize } from './local-import-wor
  * actually relied on for correctness -
  *   1. A periodic scan (scanDirectory() below, driven by the `scanIntervalMs` interval per configured
  *      directory) - the mandatory backstop. Always runs, regardless of whether fs.watch is enabled or even
- *      available on this platform/filesystem.
+ *      available on this platform/filesystem - CADENCE varies (see allOverflowConfirmed() and
+ *      CONFIRMED_OVERFLOW_SCAN_INTERVAL_MS below: the pass backs off to a much longer interval once every
+ *      configured directory's dedicated overflow watch is confirmed attached, since a dropped fs.watch event is
+ *      no longer silent in that case - see point 2 below), but WHETHER it runs never depends on watcher state.
  *   2. An optional non-recursive fs.watch() per configured directory (startWatcherFor() below, gated by
  *      `localImport.watchEnabled`) - purely a "notice new files sooner than the next scan interval" latency
  *      optimization layered on top. Its debounced handler runs the exact same per-file logic the periodic scan
- *      uses, so there is only ever one discovery/import code path, just two different triggers for it.
+ *      uses, so there is only ever one discovery/import code path, just two different triggers for it. On
+ *      Linux, a separate dedicated watch (attachOverflowWatch(), watch-overflow.js) additionally catches the
+ *      kernel's own IN_Q_OVERFLOW signal and triggers an immediate pass via triggerImmediateRescan() - when that
+ *      watch is confirmed attached (state.overflowWatch non-null), a dropped ordinary fs.watch event stops being
+ *      undetectable-from-JS, which is what lets the periodic pass above back off its cadence instead of having
+ *      to assume the worst on every tick.
  *
  * DISCOVERED-FILE IMPORT reuses the exact same hash-dedup machinery, and (for charx/byaf/yaml only - see below)
  * the exact same batched staging `/import` and its `/metadata/batch-import/begin|end` counterparts already use
@@ -106,6 +114,30 @@ const WATCH_DEBOUNCE_MS = 300;
  * first use if absent) so a hand-built state literal (e.g. a test's buildState() helper, predating this
  * property) never needs updating just to keep constructing a valid DirectoryScanState.
  */
+
+/** When every configured directory's Linux overflow watch (state.overflowWatch, see startWatcherFor() and
+ * watch-overflow.js) is confirmed attached, the periodic full pass backs off to this interval instead of the
+ * configured `scanIntervalMs` - see allOverflowConfirmed()'s own doc comment for why a non-null overflowWatch
+ * handle is sufficient confirmation on its own, with no separate probe step needed. Falls back to the regular
+ * `scanIntervalMs` the moment ANY configured directory lacks a confirmed watch (wrong platform, watchEnabled
+ * off, the native addon missing/unpatched, or attachOverflowWatch() failing for that one directory) - the
+ * periodic pass remains the unconditional correctness backstop everywhere except this one confirmed-healthy
+ * case, unchanged from before this existed. */
+const CONFIRMED_OVERFLOW_SCAN_INTERVAL_MS = getConfigValue('localImport.confirmedOverflowScanIntervalMs', 6 * 60 * 60 * 1000, 'number');
+
+/**
+ * True only once every configured directory's dedicated overflow watch is confirmed attached. A non-null
+ * `state.overflowWatch` handle IS the confirmation - there is no separate probe step here: attachOverflowWatch()
+ * (watch-overflow.js) already resolves `null` for every failure mode (wrong platform, native addon
+ * missing/unpatched, the watch itself failing to attach) per its own doc comment, so "attached" and "confirmed
+ * healthy" are the same question. Empty `scanStates` (nothing configured, or watchEnabled off so
+ * startWatcherFor() was never called) is never "confirmed" - there is nothing to have confirmed anything about,
+ * and the regular scanIntervalMs backstop is what actually runs in that case.
+ * @returns {boolean}
+ */
+function allOverflowConfirmed() {
+    return scanStates.length > 0 && scanStates.every(state => state.overflowWatch !== null);
+}
 
 /** @type {DirectoryScanState[]} */
 let scanStates = [];
@@ -755,9 +787,15 @@ async function runScanCycle(userDirectories, scanIntervalMs) {
     await pass;
 
     if (disposed) return;
+    // Only the SCHEDULING delay backs off when overflow detection is confirmed healthy - scanIntervalMs itself
+    // (both the argument threaded through to the next recursive call and capturedScanIntervalMs, which
+    // triggerImmediateRescan() reads) stays the configured base value throughout, so a directory that loses its
+    // overflow watch mid-run (or never had one) falls straight back to the regular cadence on its very next
+    // reschedule, with nothing extra to reset.
+    const effectiveIntervalMs = allOverflowConfirmed() ? CONFIRMED_OVERFLOW_SCAN_INTERVAL_MS : scanIntervalMs;
     scanTimeout = setTimeout(() => {
         runScanCycle(userDirectories, scanIntervalMs);
-    }, scanIntervalMs);
+    }, effectiveIntervalMs);
     // Same reasoning as character-metadata-db.js's reconcileInterval: unref() so this timer is never the reason
     // the process can't exit.
     scanTimeout.unref?.();
