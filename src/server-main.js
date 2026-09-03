@@ -76,6 +76,7 @@ import { initializeMetadataStores, disposeMetadataStores } from './character-met
 import { initializeLocalImportScan, disposeLocalImportScan } from './local-import-scan.js';
 import { migrateFlatSecrets } from './endpoints/secrets.js';
 import { migrateGroupChatsMetadataFormat } from './endpoints/groups.js';
+import { runOnceAtBoot as runUnimportEmbeddedLoreAtBoot } from './migrations/unimport-embedded-lore.js';
 import { wasBrowserRecentlyConnected } from './browser-presence.js';
 
 // Work around a node v20.0.0, v20.1.0, and v20.2.0 bug. The issue was fixed in v20.3.0.
@@ -300,18 +301,37 @@ async function preSetupTasks() {
     }
     console.log();
 
+    // Boot-perf instrumentation (kept permanently per 887422854's investigation - times each top-level step of
+    // this startup chain so a slow stage shows up by name in the log instead of someone having to
+    // re-instrument from scratch the next time boot gets slow again).
+    const __t0 = process.hrtime.bigint();
+    const __mark = (label) => {
+        const now = process.hrtime.bigint();
+        console.log(`[boot-timing] ${label}: +${Number(now - __t0) / 1e6}ms total`);
+    };
+
     const directories = await getUserDirectoriesList();
+    __mark('getUserDirectoriesList');
     await migrateGroupChatsMetadataFormat(directories);
+    __mark('migrateGroupChatsMetadataFormat');
     await checkForNewContent(directories);
+    __mark('checkForNewContent');
     // Cache verification is a maintenance operation (pruning entries for deleted files), not a correctness
     // prerequisite - stale entries just waste disk space until cleaned up. Fire-and-forget so it doesn't
     // block the server from starting to listen (verify()'s own readdir + stat walk over the entire
     // characters directory is the same shape of IO that was just eliminated from reconcile()).
-    diskCache.verify(directories)
-        .catch(err => console.error('Background cache verification failed:', err));
+    {
+        const __verifyStart = process.hrtime.bigint();
+        diskCache.verify(directories)
+            .catch(err => console.error('Background cache verification failed:', err))
+            .finally(() => console.log(`[boot-timing] diskCache.verify (background) took ${Number(process.hrtime.bigint() - __verifyStart) / 1e6}ms wall, finished at +${Number(process.hrtime.bigint() - __t0) / 1e6}ms total`));
+    }
     migrateFlatSecrets(directories);
+    __mark('migrateFlatSecrets');
     cleanUploads();
+    __mark('cleanUploads');
     migrateAccessLog();
+    __mark('migrateAccessLog');
 
     // Phase 1 of the character-data-residency redesign (docs/design/character-data-residency-redesign.md):
     // opens/creates each user's character-metadata SQLite store, starts its directory watcher and reconcile
@@ -319,11 +339,27 @@ async function preSetupTasks() {
     // beyond schema creation (fast) - a large library's bootstrap backfill must never delay the server actually
     // starting to listen, per the design doc's "Runs at boot (non-blocking)".
     await initializeMetadataStores(directories);
+    __mark('initializeMetadataStores');
+
+    // One-time-per-user reversal of characters auto-converted to a linked World file by the pre-fix embedded
+    // lorebook import flow (see unimport-embedded-lore.js's own header for the full design). Started after
+    // initializeMetadataStores() since it queries that same metadata store's indexed `world` column - never a
+    // corpus walk, regardless of library size - and waits internally for that user's one-time bootstrap
+    // backfill before trusting the index. Fire-and-forget, same "must not delay the server actually starting
+    // to listen" reasoning as settingsInit() below: it can legitimately wait tens of minutes on a large,
+    // still-bootstrapping library, and it does real file writes once it runs. Each user's run is independent
+    // and already marks itself complete via the metadata store's `meta` table, so this is a no-op point-lookup
+    // on every boot after the first one that actually finds something to do.
+    for (const userDirectories of directories) {
+        runUnimportEmbeddedLoreAtBoot(userDirectories)
+            .catch(err => console.error(color.red(`[unimport-embedded-lore] Boot run failed for ${userDirectories.root}:`), err));
+    }
 
     // Config/admin-set-only "import characters from a local directory on disk" feature - inert unless
     // localImport.directories is non-empty (see that module's header). Started after initializeMetadataStores()
     // since it drives the same metadata store's batch-import/write path for whatever it discovers.
     await initializeLocalImportScan();
+    __mark('initializeLocalImportScan');
 
     // settingsInit() (settings.js's init()) is a per-user settings-snapshot backup - routine/automatic, so it no
     // longer merges in the tag_map export at all (see backupUserSettings()'s own doc comment: that was a full
@@ -332,12 +368,18 @@ async function preSetupTasks() {
     // awaited boot chain though - it's still real file IO (read settings.json, maybe write a backup file, prune
     // old backups) across every user handle, same "maintenance work that must not gate the server actually
     // starting to listen" shape as diskCache.verify() just above.
-    settingsInit()
-        .catch(err => console.error('Background settings backup failed:', err));
+    {
+        const __settingsStart = process.hrtime.bigint();
+        settingsInit()
+            .catch(err => console.error('Background settings backup failed:', err))
+            .finally(() => console.log(`[boot-timing] settingsInit (background) took ${Number(process.hrtime.bigint() - __settingsStart) / 1e6}ms wall, finished at +${Number(process.hrtime.bigint() - __t0) / 1e6}ms total`));
+    }
     await statsInit();
+    __mark('statsInit');
 
     const pluginsDirectory = path.join(serverDirectory, 'plugins');
     const cleanupPlugins = await loadPlugins(app, pluginsDirectory);
+    __mark('loadPlugins');
     const consoleTitle = process.title;
 
     let isExiting = false;
@@ -381,6 +423,7 @@ async function preSetupTasks() {
 
     // Wait for frontend libs to compile
     await webpackMiddleware.runWebpackCompiler({ pruneCache: true });
+    __mark('runWebpackCompiler');
 }
 
 /**

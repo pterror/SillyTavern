@@ -6,7 +6,7 @@ import { color } from '../util.js';
 import { parse as parseCharacterCard, writeCardToFile } from '../character-card-parser.js';
 import { getCharaCardV2 } from '../character-card-normalize.js';
 import { readWorldInfoFile } from '../endpoints/worldinfo.js';
-import { upsertCharacterFromWrite } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, getCharactersWithLinkedWorld, isMigrationMarkedComplete, markMigrationComplete, isBootstrapComplete } from '../character-metadata-db.js';
 
 /**
  * One-time reversal for characters that got auto-converted into a linked World file by the pre-fix
@@ -64,17 +64,36 @@ import { upsertCharacterFromWrite } from '../character-metadata-db.js';
  * with zero remaining primary/extension links, purely as information for the operator to review and delete
  * by hand if they actually want to.
  *
- * NOT WIRED TO SERVER BOOT
- * --------------------------
- * This deliberately follows migrate-character-ids.js's own precedent (see that module's header): a
- * migration that rewrites real character card files is an explicit, owner-triggered run (`node
- * src/migrations/unimport-embedded-lore.js`), never something that fires automatically the next time a
- * server happens to start up. "Safe to run once and not repeat" is met by being idempotent BY
- * CONSTRUCTION rather than by a ran-once flag: after a character is unimported, its `extensions.world` no
- * longer points at anything, so findCandidates() simply won't see it again on a later run - same
- * reasoning migrate-character-ids.js's header gives for skipping a single "have I run" flag in favor of
- * re-checking current state every time. Defaults to a dry run that only logs what it would do; pass
- * `--apply` (CLI) or `{ apply: true }` (programmatic) to actually write anything.
+ * NEVER WALKS THE FULL CHARACTER CORPUS
+ * ----------------------------------------
+ * findCandidates() does not read every character file, or even every metadata row, to find its (presumably
+ * tiny) candidate set - it starts from character-metadata-db.js's getCharactersWithLinkedWorld(), an indexed
+ * `WHERE world IS NOT NULL` lookup (idx_characters_world) that returns only characters that could possibly
+ * qualify. The multi-linker/"shared World" check is answered entirely from that same result set. Only past
+ * that point does this ever open an actual character PNG, and only one per still-live candidate. An install
+ * with a billion characters that never linked a world costs this migration one indexed query and nothing
+ * else - not a billion file reads, not even a billion row scans. An earlier version of this file read every
+ * character into memory up front; tested against this repo's own real (very large) character library, that
+ * OOM-crashed after ~29 minutes without producing a result. This design exists because of that, not despite it.
+ *
+ * AUTO-RUNS ONCE AT BOOT, PER USER, GATED ON A COMPLETION MARKER
+ * ------------------------------------------------------------------
+ * runOnceAtBoot() is what server-main.js actually calls, in the background after
+ * initializeMetadataStores() (never in the awaited boot chain - it does real file writes, which must not
+ * delay the server actually starting to listen). "Safe to run once and not repeat" is a real marker, not
+ * idempotent-by-construction re-derivation: isMigrationMarkedComplete()/markMigrationComplete()
+ * (character-metadata-db.js, the same `meta` key/value table bootstrap_completed already uses) records
+ * completion per user, so a later boot returns after one indexed point-lookup rather than re-running
+ * anything. It also refuses to trust getCharactersWithLinkedWorld() until isBootstrapComplete() is true for
+ * that user - initializeMetadataStores() kicks the one-time metadata backfill off in the background and does
+ * not wait for it, so querying the index before that backfill has actually populated the `world` column
+ * would silently undercount candidates; a boot where bootstrap hasn't finished yet just retries on the next
+ * boot instead of marking itself done on a partial view.
+ *
+ * The `run()`/`findCandidates()` functions below remain independently usable as a manual CLI tool (`node
+ * src/migrations/unimport-embedded-lore.js [--handle X] [--apply]`, defaults to a dry run that only logs what
+ * it would do) - useful for inspecting a report before the automatic boot pass ever runs, or for retrying a
+ * specific user/candidate by hand after fixing whatever made it fail.
  */
 
 /**
@@ -110,32 +129,18 @@ function characterBookEntriesMatch(characterBook, originalData) {
 }
 
 /**
- * Reads every character file in `directories.characters` into `{ avatar, card }` pairs, skipping (and
- * logging) any file that fails to parse rather than aborting the whole run over one bad card.
- * @param {import('../users.js').UserDirectoryList} directories
- * @param {(msg: string) => void} log
- * @returns {Promise<Array<{avatar: string, card: object}>>}
- */
-async function readAllCharacters(directories, log) {
-    if (!fs.existsSync(directories.characters)) return [];
-    const files = (await fsPromises.readdir(directories.characters)).filter(f => f.toLowerCase().endsWith('.png'));
-
-    const characters = [];
-    for (const avatar of files) {
-        try {
-            const rawJson = await parseCharacterCard(path.join(directories.characters, avatar), 'png');
-            const card = getCharaCardV2(JSON.parse(rawJson), directories, false);
-            characters.push({ avatar, card });
-        } catch (err) {
-            log(color.red(`[unimport-embedded-lore] Failed to read ${avatar}, skipping: ${err.message}`));
-        }
-    }
-    return characters;
-}
-
-/**
  * Works out, without mutating anything, which characters are safe to unimport and which are ambiguous.
  * See this module's header for the exact rules.
+ *
+ * DELIBERATELY NEVER walks the full character corpus. Everything starts from
+ * getCharactersWithLinkedWorld() - an indexed `WHERE world IS NOT NULL` lookup
+ * (character-metadata-db.js's idx_characters_world) that returns only the rows that could possibly
+ * qualify. The multi-linker check ("is this World shared by more than one character") is answered
+ * entirely from that same result set, with no file I/O at all. Only past that point - for the
+ * (presumably tiny) subset that's still a live candidate - does this ever open an actual character
+ * PNG, and it opens exactly one per remaining candidate, never anything else in the corpus. On an
+ * install with hundreds of thousands or billions of characters that never linked a world, this never
+ * reads a single one of their files.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {(msg: string) => void} log
  * @returns {Promise<{
@@ -144,13 +149,14 @@ async function readAllCharacters(directories, log) {
  * }>}
  */
 export async function findCandidates(directories, log) {
-    const characters = await readAllCharacters(directories, log);
+    const linked = await getCharactersWithLinkedWorld(directories);
+    if (linked === null) {
+        throw new Error('Character metadata store is unavailable on this install (no usable SQLite backend) - cannot find candidates without an indexed lookup, and this migration deliberately refuses to fall back to a full-corpus scan to get one. Aborting.');
+    }
 
-    /** @type {Map<string, string[]>} worldName -> avatars currently linking to it as their primary world */
+    /** @type {Map<string, string[]>} worldName -> avatars currently linking to it as their primary world - built purely from the indexed rows, no file I/O. */
     const linkersByWorld = new Map();
-    for (const { avatar, card } of characters) {
-        const worldName = card?.data?.extensions?.world;
-        if (!worldName) continue;
+    for (const { id: avatar, world: worldName } of linked) {
         const list = linkersByWorld.get(worldName) ?? [];
         list.push(avatar);
         linkersByWorld.set(worldName, list);
@@ -173,10 +179,7 @@ export async function findCandidates(directories, log) {
     const safe = [];
     const ambiguous = [];
 
-    for (const { avatar, card } of characters) {
-        const worldName = card?.data?.extensions?.world;
-        if (!worldName) continue;
-
+    for (const { id: avatar, world: worldName } of linked) {
         const world = loadWorld(worldName);
         const hasOriginalDataMarker = !!(world && world.originalData && Array.isArray(world.originalData.entries));
         if (!hasOriginalDataMarker) continue; // Not an auto-import artifact - a world the user made or picked by hand. Never touched.
@@ -186,6 +189,20 @@ export async function findCandidates(directories, log) {
             ambiguous.push({ avatar, worldName, reason: `World is currently linked by ${linkers.length} characters (${linkers.join(', ')}) - treated as deliberate sharing, not touched` });
             continue;
         }
+
+        // Only past this point do we ever open a character file - one PNG for this one remaining
+        // candidate, not a corpus walk.
+        let card;
+        try {
+            const rawJson = await parseCharacterCard(path.join(directories.characters, avatar), 'png');
+            card = getCharaCardV2(JSON.parse(rawJson), directories, false);
+        } catch (err) {
+            log(color.red(`[unimport-embedded-lore] Failed to read candidate ${avatar}, skipping: ${err.message}`));
+            continue;
+        }
+
+        // The metadata row can lag a live edit - re-check the actual card agrees before trusting it further.
+        if (card?.data?.extensions?.world !== worldName) continue;
 
         const characterBook = card?.data?.character_book;
         if (!characterBook) {
@@ -282,8 +299,12 @@ export async function run(directories, options = {}) {
     }
 
     // Report-only: worlds carrying the originalData marker that end this run with no primary linker left.
-    const characters = await readAllCharacters(directories, log);
-    const stillLinked = new Set(characters.map(c => c?.card?.data?.extensions?.world).filter(Boolean));
+    // Which worlds are still linked comes from the same indexed lookup findCandidates() used - never a
+    // character-corpus walk. The worlds directory itself is iterated below (a install can have far fewer
+    // World files than characters), which is the one place this function's own cost scales with world count
+    // rather than being purely index-driven; it never opens a character file.
+    const stillLinkedRows = await getCharactersWithLinkedWorld(directories);
+    const stillLinked = new Set((stillLinkedRows ?? []).map(r => r.world).filter(Boolean));
     const orphanedWorlds = [];
     if (fs.existsSync(directories.worlds)) {
         const worldFiles = (await fsPromises.readdir(directories.worlds)).filter(f => f.endsWith('.json'));
@@ -302,6 +323,77 @@ export async function run(directories, options = {}) {
 
     log(color.green(`[unimport-embedded-lore] Done${apply ? '' : ' (dry run, nothing written - pass --apply to write)'}: ${migrated}/${safe.length} unimported, ${failed} failed, ${ambiguous.length} left ambiguous.`));
     return { safe: safe.length, migrated, failed, ambiguous, orphanedWorlds };
+}
+
+const BOOT_MIGRATION_KEY = 'unimport_embedded_lore_completed';
+// How long a boot run waits for THIS user's metadata bootstrap backfill (see isBootstrapComplete()'s own doc
+// comment) before giving up for this boot and retrying on the next one. Generous on purpose - a library large
+// enough to matter for this migration's own "never walk the corpus" design is also large enough that its
+// bootstrap backfill can legitimately still be running well after the server started listening.
+const BOOTSTRAP_WAIT_TIMEOUT_MS = 30 * 60 * 1000;
+const BOOTSTRAP_POLL_INTERVAL_MS = 5000;
+
+/**
+ * The actual "auto-run once, for all installs" entry point (server-main.js calls this, in the background,
+ * after initializeMetadataStores() - never in the awaited boot chain: even a bounded-to-the-candidate-set
+ * migration still does real file writes, which must not delay the server actually starting to listen).
+ *
+ * Runs at most once ever per user: isMigrationMarkedComplete()/markMigrationComplete() (character-metadata-db.js,
+ * the same `meta` table bootstrap_completed already uses) is the completion marker - a later boot sees it set
+ * and returns immediately without touching the metadata store's `characters` table at all, so "safe to run once
+ * and not repeat" costs one indexed point-lookup per boot, not a scan of anything.
+ *
+ * Waits for isBootstrapComplete() before ever querying getCharactersWithLinkedWorld() - that query is only
+ * trustworthy once the one-time metadata backfill has actually populated the `world` column for every existing
+ * character; querying it mid-backfill would silently undercount real candidates, and unlike a live query
+ * endpoint that just serves a partial result once, this determines a completion marker that's set forever. If
+ * bootstrap doesn't finish within BOOTSTRAP_WAIT_TIMEOUT_MS this boot, this returns without running OR marking
+ * anything complete, so the next boot tries again from scratch - never marks itself done on a guess.
+ *
+ * Always applies (this is the real migration, not the dry-run CLI tool below) but is otherwise the exact same
+ * findCandidates()/run() as the manual path - same detection rules, same "never touch anything ambiguous", same
+ * "never delete a World file".
+ * @param {import('../users.js').UserDirectoryList} directories One user's directories.
+ * @param {object} [options]
+ * @param {(msg: string) => void} [options.log] Defaults to console.log.
+ * @param {number} [options.bootstrapWaitTimeoutMs] Overrides BOOTSTRAP_WAIT_TIMEOUT_MS - test hook only.
+ * @param {number} [options.bootstrapPollIntervalMs] Overrides BOOTSTRAP_POLL_INTERVAL_MS - test hook only.
+ * @returns {Promise<{status: 'already-complete'|'bootstrap-timeout'|'error'|'ran', result?: object}>}
+ */
+export async function runOnceAtBoot(directories, options = {}) {
+    const log = options.log ?? console.log;
+    const waitTimeoutMs = options.bootstrapWaitTimeoutMs ?? BOOTSTRAP_WAIT_TIMEOUT_MS;
+    const pollIntervalMs = options.bootstrapPollIntervalMs ?? BOOTSTRAP_POLL_INTERVAL_MS;
+
+    if (await isMigrationMarkedComplete(directories, BOOT_MIGRATION_KEY)) {
+        return { status: 'already-complete' };
+    }
+
+    const deadline = Date.now() + waitTimeoutMs;
+    while (!(await isBootstrapComplete(directories))) {
+        if (Date.now() > deadline) {
+            log(color.yellow(`[unimport-embedded-lore] (${directories.root}) Metadata bootstrap still not complete after ${Math.round(waitTimeoutMs / 60000)} minutes - giving up for this boot, will retry next boot.`));
+            return { status: 'bootstrap-timeout' };
+        }
+        await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+    }
+
+    let result;
+    try {
+        log(color.cyan(`[unimport-embedded-lore] (${directories.root}) Running one-time boot migration...`));
+        result = await run(directories, { apply: true, log });
+    } catch (err) {
+        log(color.red(`[unimport-embedded-lore] (${directories.root}) Boot migration run failed, will retry next boot: ${err.message}`));
+        return { status: 'error' };
+    }
+
+    // Marked complete regardless of any individual per-character `failed` count inside result - a failure
+    // there is something like a corrupt PNG, which retrying on a later boot would hit again identically. Loud
+    // logging already happened inside run()/unimportOne(); this is what actually satisfies "don't repeat every
+    // boot" rather than looping on the same unfixable failure forever. A failed character can still be retried
+    // deliberately later via the manual `--apply` CLI path below.
+    await markMigrationComplete(directories, BOOT_MIGRATION_KEY);
+    return { status: 'ran', result };
 }
 
 const isMain = process.argv[1] && import.meta.url === `file://${process.argv[1]}`;
