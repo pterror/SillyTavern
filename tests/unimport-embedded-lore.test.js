@@ -86,6 +86,17 @@ function autoImportedWorldFile(characterBook) {
     return { entries, originalData: characterBook };
 }
 
+/**
+ * Populates the metadata store's indexed `world` column from whatever character PNGs are currently on
+ * disk (mirrors what bootstrapIfNeeded() does for real at boot) - findCandidates()/run() read candidates
+ * exclusively through that index now (getCharactersWithLinkedWorld()), never by walking the characters
+ * directory themselves, so every test has to seed the index the same way a real install's boot would
+ * before the migration can see anything.
+ */
+async function indexCharacters() {
+    await metadataDb.bootstrapIfNeeded(directories);
+}
+
 const noLog = { log: () => {} };
 
 describe('unimport-embedded-lore - detection', () => {
@@ -93,6 +104,7 @@ describe('unimport-embedded-lore - detection', () => {
         const book = makeBook();
         writeWorldFile('SharedWorld', { entries: {} }); // no originalData - a real hand-made/linked world
         await writeCardFile('Alice.png', { data: { extensions: { world: 'SharedWorld' }, character_book: book } });
+        await indexCharacters();
 
         const { safe, ambiguous } = await migration.findCandidates(directories, noLog.log);
         expect(safe).toEqual([]);
@@ -103,6 +115,7 @@ describe('unimport-embedded-lore - detection', () => {
         const book = makeBook();
         writeWorldFile("Alice's Lorebook", autoImportedWorldFile(book));
         await writeCardFile('Alice.png', { data: { extensions: { world: "Alice's Lorebook" }, character_book: book } });
+        await indexCharacters();
 
         const { safe, ambiguous } = await migration.findCandidates(directories, noLog.log);
         expect(ambiguous).toEqual([]);
@@ -113,6 +126,7 @@ describe('unimport-embedded-lore - detection', () => {
         const book = makeBook();
         writeWorldFile("Bob's Lorebook", autoImportedWorldFile(book));
         await writeCardFile('Bob.png', { data: { extensions: { world: "Bob's Lorebook" } } }); // no character_book at all
+        await indexCharacters();
 
         const { safe, ambiguous } = await migration.findCandidates(directories, noLog.log);
         expect(ambiguous).toEqual([]);
@@ -124,6 +138,7 @@ describe('unimport-embedded-lore - detection', () => {
         const editedBook = makeBook('this got edited after import');
         writeWorldFile("Carol's Lorebook", autoImportedWorldFile(importedBook));
         await writeCardFile('Carol.png', { data: { extensions: { world: "Carol's Lorebook" }, character_book: editedBook } });
+        await indexCharacters();
 
         const { safe, ambiguous } = await migration.findCandidates(directories, noLog.log);
         expect(safe).toEqual([]);
@@ -136,6 +151,7 @@ describe('unimport-embedded-lore - detection', () => {
         writeWorldFile('SharedLore', autoImportedWorldFile(book));
         await writeCardFile('Dave.png', { data: { extensions: { world: 'SharedLore' }, character_book: book } });
         await writeCardFile('Eve.png', { data: { extensions: { world: 'SharedLore' }, character_book: book } });
+        await indexCharacters();
 
         const { safe, ambiguous } = await migration.findCandidates(directories, noLog.log);
         expect(safe).toEqual([]);
@@ -144,11 +160,35 @@ describe('unimport-embedded-lore - detection', () => {
 
     test('a character with no linked world at all is simply ignored', async () => {
         await writeCardFile('Frank.png');
+        await indexCharacters();
 
         const { safe, ambiguous } = await migration.findCandidates(directories, noLog.log);
         expect(safe).toEqual([]);
         expect(ambiguous).toEqual([]);
     });
+
+    test('a huge number of un-linked characters never gets read off disk - only the indexed candidate does', async () => {
+        // Stand-in for "999,999,950+ characters that don't have a linked world at all": these are indexed
+        // (so getCharactersWithLinkedWorld()'s WHERE excludes them) but their PNGs are deleted right after -
+        // if findCandidates() ever tried to open one of them, this test would fail on a missing file, not
+        // just on a wrong count.
+        for (let i = 0; i < 25; i++) {
+            await writeCardFile(`NoWorld${i}.png`);
+        }
+        const book = makeBook();
+        writeWorldFile("Alice's Lorebook", autoImportedWorldFile(book));
+        await writeCardFile('Alice.png', { data: { extensions: { world: "Alice's Lorebook" }, character_book: book } });
+        await indexCharacters();
+
+        for (let i = 0; i < 25; i++) {
+            fs.unlinkSync(path.join(charactersDir, `NoWorld${i}.png`));
+        }
+
+        const { safe, ambiguous } = await migration.findCandidates(directories, noLog.log);
+        expect(ambiguous).toEqual([]);
+        expect(safe).toEqual([{ avatar: 'Alice.png', worldName: "Alice's Lorebook", action: 'unlink-only' }]);
+    });
+
 });
 
 describe('unimport-embedded-lore - apply', () => {
@@ -156,6 +196,7 @@ describe('unimport-embedded-lore - apply', () => {
         const book = makeBook();
         writeWorldFile("Alice's Lorebook", autoImportedWorldFile(book));
         await writeCardFile('Alice.png', { data: { extensions: { world: "Alice's Lorebook" }, character_book: book } });
+        await indexCharacters();
 
         const result = await migration.run(directories, { log: () => {} });
         expect(result.migrated).toBe(0);
@@ -170,6 +211,7 @@ describe('unimport-embedded-lore - apply', () => {
         const book = makeBook();
         writeWorldFile("Alice's Lorebook", autoImportedWorldFile(book));
         await writeCardFile('Alice.png', { data: { extensions: { world: "Alice's Lorebook" }, character_book: book } });
+        await indexCharacters();
 
         const result = await migration.run(directories, { apply: true, log: () => {} });
         expect(result.migrated).toBe(1);
@@ -186,6 +228,7 @@ describe('unimport-embedded-lore - apply', () => {
         const book = makeBook('the only surviving copy');
         writeWorldFile("Bob's Lorebook", autoImportedWorldFile(book));
         await writeCardFile('Bob.png', { data: { extensions: { world: "Bob's Lorebook" } } });
+        await indexCharacters();
 
         const result = await migration.run(directories, { apply: true, log: () => {} });
         expect(result.migrated).toBe(1);
@@ -195,10 +238,11 @@ describe('unimport-embedded-lore - apply', () => {
         expect(card.data.character_book.entries[0].content).toBe('the only surviving copy');
     });
 
-    test('running apply twice is a no-op the second time (idempotent by construction, no marker needed)', async () => {
+    test('running apply twice is a no-op the second time (idempotent by construction at the run() level - the index itself reflects the unlink)', async () => {
         const book = makeBook();
         writeWorldFile("Alice's Lorebook", autoImportedWorldFile(book));
         await writeCardFile('Alice.png', { data: { extensions: { world: "Alice's Lorebook" }, character_book: book } });
+        await indexCharacters();
 
         const first = await migration.run(directories, { apply: true, log: () => {} });
         expect(first.migrated).toBe(1);
@@ -213,6 +257,7 @@ describe('unimport-embedded-lore - apply', () => {
         const editedBook = makeBook('this got edited after import');
         writeWorldFile("Carol's Lorebook", autoImportedWorldFile(importedBook));
         await writeCardFile('Carol.png', { data: { extensions: { world: "Carol's Lorebook" }, character_book: editedBook } });
+        await indexCharacters();
 
         const result = await migration.run(directories, { apply: true, log: () => {} });
         expect(result.migrated).toBe(0);
@@ -227,9 +272,74 @@ describe('unimport-embedded-lore - apply', () => {
         const book = makeBook();
         writeWorldFile("Alice's Lorebook", autoImportedWorldFile(book));
         await writeCardFile('Alice.png', { data: { extensions: { world: "Alice's Lorebook" }, character_book: book } });
+        await indexCharacters();
 
         const result = await migration.run(directories, { apply: true, log: () => {} });
         expect(result.orphanedWorlds).toEqual(["Alice's Lorebook"]);
         expect(fs.existsSync(path.join(worldsDir, "Alice's Lorebook.json"))).toBe(true);
+    });
+});
+
+describe('unimport-embedded-lore - runOnceAtBoot', () => {
+    test('runs and marks complete when bootstrap is already done', async () => {
+        const book = makeBook();
+        writeWorldFile("Alice's Lorebook", autoImportedWorldFile(book));
+        await writeCardFile('Alice.png', { data: { extensions: { world: "Alice's Lorebook" }, character_book: book } });
+        await indexCharacters(); // also sets bootstrap_completed
+
+        const result = await migration.runOnceAtBoot(directories, { log: () => {} });
+        expect(result.status).toBe('ran');
+        expect(result.result.migrated).toBe(1);
+
+        const card = readCard(path.join(charactersDir, 'Alice.png'));
+        expect(card.data.extensions.world).toBeFalsy();
+    });
+
+    test('a second boot call is a no-op point-lookup, not a re-run', async () => {
+        const book = makeBook();
+        writeWorldFile("Alice's Lorebook", autoImportedWorldFile(book));
+        await writeCardFile('Alice.png', { data: { extensions: { world: "Alice's Lorebook" }, character_book: book } });
+        await indexCharacters();
+
+        const first = await migration.runOnceAtBoot(directories, { log: () => {} });
+        expect(first.status).toBe('ran');
+
+        // Re-link the character to the same World by hand (simulating something that would otherwise look
+        // like a fresh candidate) and re-index it - a real re-run would still find and act on it again if
+        // the marker weren't respected.
+        await writeCardFile('Alice.png', { data: { extensions: { world: "Alice's Lorebook" }, character_book: book } });
+        await indexCharacters();
+
+        const second = await migration.runOnceAtBoot(directories, { log: () => {} });
+        expect(second.status).toBe('already-complete');
+
+        const card = readCard(path.join(charactersDir, 'Alice.png'));
+        expect(card.data.extensions.world).toBe("Alice's Lorebook"); // untouched by the second call
+    });
+
+    test('waits for bootstrap to finish before running, then runs once it does', async () => {
+        const book = makeBook();
+        writeWorldFile("Alice's Lorebook", autoImportedWorldFile(book));
+        await writeCardFile('Alice.png', { data: { extensions: { world: "Alice's Lorebook" }, character_book: book } });
+        // Deliberately NOT bootstrapped yet - the metadata store exists (getEntry() will create it) but
+        // bootstrap_completed isn't set, so runOnceAtBoot() must poll rather than trust the (empty) index.
+        const boot = migration.runOnceAtBoot(directories, { log: () => {}, bootstrapPollIntervalMs: 20 });
+
+        await new Promise(resolve => setTimeout(resolve, 60));
+        await indexCharacters(); // completes bootstrap partway through the wait
+
+        const result = await boot;
+        expect(result.status).toBe('ran');
+        expect(result.result.migrated).toBe(1);
+    });
+
+    test('gives up without marking complete if bootstrap never finishes in time', async () => {
+        await writeCardFile('Alice.png');
+        // Never call indexCharacters() - bootstrap_completed is never set.
+        const result = await migration.runOnceAtBoot(directories, { log: () => {}, bootstrapWaitTimeoutMs: 30, bootstrapPollIntervalMs: 10 });
+        expect(result.status).toBe('bootstrap-timeout');
+
+        const marked = await metadataDb.isMigrationMarkedComplete(directories, 'unimport_embedded_lore_completed');
+        expect(marked).toBe(false);
     });
 });

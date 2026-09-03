@@ -2515,21 +2515,33 @@ export async function initializeMetadataStores(directoriesList) {
 
         startWatcher(entry);
 
+        // Boot-perf instrumentation (kept permanently, same spirit as server-main.js's own `[boot-timing]` marks
+        // around preSetupTasks()'s top-level steps) - times each stage of this background bootstrap chain so a
+        // slow stage shows up by name in the log instead of someone having to re-instrument from scratch the
+        // next time boot gets slow again.
+        const __chainStart = process.hrtime.bigint();
+        const __stage = async (label, fn) => {
+            const s = process.hrtime.bigint();
+            const result = await fn();
+            console.log(`[boot-timing] [metadata-chain] ${label}: ${Number(process.hrtime.bigint() - s) / 1e6}ms (chain total so far: ${Number(process.hrtime.bigint() - __chainStart) / 1e6}ms)`);
+            return result;
+        };
+
         // Ordering matters: migrateTagsJsonIfNeeded() classifies tag_map's keys against the characters/groups
         // tables, so both bootstraps have to have already populated them (bootstrapIfNeeded() for characters,
         // bootstrapGroupsIfNeeded() for groups) before it runs, or every key would look unresolvable on a
         // brand-new install's very first boot.
-        entry.bootstrapPromise = bootstrapIfNeeded(directories)
-            .then(() => bootstrapGroupsIfNeeded(directories))
-            .then(() => migrateTagsJsonIfNeeded(directories))
-            .then(() => backfillCardTagsIfNeeded(directories))
-            .then(() => backfillTagIdsInShallowJson(directories))
-            .then(() => reconcile(directories))
+        entry.bootstrapPromise = __stage('bootstrapIfNeeded', () => bootstrapIfNeeded(directories))
+            .then(() => __stage('bootstrapGroupsIfNeeded', () => bootstrapGroupsIfNeeded(directories)))
+            .then(() => __stage('migrateTagsJsonIfNeeded', () => migrateTagsJsonIfNeeded(directories)))
+            .then(() => __stage('backfillCardTagsIfNeeded', () => backfillCardTagsIfNeeded(directories)))
+            .then(() => __stage('backfillTagIdsInShallowJson', () => backfillTagIdsInShallowJson(directories)))
+            .then(() => __stage('reconcile', () => reconcile(directories)))
             // Runs LAST in the chain, after reconcile() - so this pass sees the maximal set of poisoned rows a
             // single boot can discover (reconcile() may itself have just inserted rows for files dropped in
             // while the server was down).
-            .then(() => backfillContentIdentityHashes(directories))
-            .then(() => backfillActiveChatFromCards(directories))
+            .then(() => __stage('backfillContentIdentityHashes', () => backfillContentIdentityHashes(directories)))
+            .then(() => __stage('backfillActiveChatFromCards', () => backfillActiveChatFromCards(directories)))
             .catch(err => console.error(`[character-metadata] Bootstrap failed for ${directories.root}:`, err));
     }
 }
@@ -4318,6 +4330,73 @@ function buildWhereClause({ tags, fav, world, excludeIds, ids } = {}) {
     }
 
     return { where: clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '', args };
+}
+
+/**
+ * Returns `{id, world}` for every character whose metadata row currently has a non-empty `world` column
+ * (mirrors `data.extensions.world` - see buildRow()'s own `world:` assignment) - an indexed lookup against
+ * `idx_characters_world` that reads only those rows' `id`/`world` columns, never `shallow_json`, never a row
+ * for a character with no linked world, and never touches the character files on disk at all.
+ *
+ * Exists for callers (currently: the unimport-embedded-lore migration) that need to find a - presumably tiny
+ * - candidate set among a corpus that may be huge, and must not pay an O(all characters) cost (walking every
+ * character file, or even every metadata row) just to find the ones that matter. Start from this, then only
+ * read/touch the matched subset.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<Array<{id: string, world: string}>|null>} `null` means the metadata store itself is
+ * unavailable on this install (no usable SQLite backend) - same contract as `queryCharacters()`: callers must
+ * treat that as a hard "can't do this right now", never silently fall back to a full filesystem scan (that
+ * fallback is exactly the O(corpus) cost this function exists to let callers avoid).
+ */
+export async function getCharactersWithLinkedWorld(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    return entry.db.all("SELECT id, world FROM characters WHERE world IS NOT NULL AND world != ''");
+}
+
+/**
+ * Whether this user's one-time character-metadata bootstrap backfill (bootstrapIfNeeded()) has finished.
+ * A boot-time one-time migration that reads this store via an indexed query (getCharactersWithLinkedWorld()
+ * and friends) MUST check this first - initializeMetadataStores() kicks bootstrapIfNeeded() off in the
+ * background and does not wait for it, so a query run too early on a library that predates this store would
+ * silently see only a partially-backfilled `characters` table and undercount real candidates. `false` also
+ * covers "no usable SQLite backend at all" - either way, the honest answer is "cannot trust this store yet."
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<boolean>}
+ */
+export async function isBootstrapComplete(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return false;
+    return !!entry.db.get('SELECT value FROM meta WHERE key = @key', { key: 'bootstrap_completed' });
+}
+
+/**
+ * Generic one-time-per-user completion marker, built on the same `meta` key/value table
+ * bootstrap_completed/groups_bootstrap_completed already use internally - exposed generically here so any
+ * one-time migration (not just this module's own bootstrap passes) can record "already ran for this user,
+ * don't do it again on a later boot" without inventing its own marker file or table. `key` is the caller's
+ * own namespaced key (e.g. `'unimport_embedded_lore_completed'`) - never reused for anything else.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} key
+ * @returns {Promise<boolean>}
+ */
+export async function isMigrationMarkedComplete(directories, key) {
+    const entry = await getEntry(directories);
+    if (!entry) return false;
+    return !!entry.db.get('SELECT value FROM meta WHERE key = @key', { key });
+}
+
+/**
+ * Companion write to isMigrationMarkedComplete() - see that function's doc comment.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} key
+ * @returns {Promise<void>}
+ */
+export async function markMigrationComplete(directories, key) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+    entry.db.run('INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value', { key, value: String(Date.now()) });
 }
 
 /**
