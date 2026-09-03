@@ -703,6 +703,28 @@ async function buildTantivyIndexFromFilesystemScan(directories, tantivy) {
 }
 
 /**
+ * A narrower sibling of getTagsHash() (character-metadata-db.js), scoped to just what
+ * applyIncrementalTantivyChanges() below actually needs to know about a tag definition change: whether any tag's
+ * *name* is different, since `name` is the only definition field that ever reaches the indexed `resolved_tags`
+ * text (see makeTagNamesResolver()). getTagsHash() itself has to cover a tag definition's *entire* JSON (color,
+ * etc.) because it's shared with tags-cache.js's client-side freshness check, which does care about those other
+ * fields - reusing it here would mean a color-only edit (or any other non-name definition change) pays the same
+ * "reindex every tagged character" cost as a genuine rename, for text that never actually changed in the index.
+ * This fingerprint is private bookkeeping to this module (stored under TANTIVY_INDEX_TAGS_HASH_META_KEY, never
+ * read by anything else), so narrowing what it hashes can't affect any other consumer.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @returns {Promise<string>} A SHA-256 hex digest over every tag's `id`+`name`, order-independent.
+ */
+async function getTagNamesFingerprint(directories) {
+    const definitions = await getTagDefinitions(directories);
+    const content = (definitions ?? [])
+        .map(tag => `${tag.id}\0${tag.name ?? ''}`)
+        .sort()
+        .join('\0');
+    return crypto.createHash('sha256').update(content).digest('hex');
+}
+
+/**
  * Applies every character change since `sinceRev` (design doc §3.3 item 3's "a changed card is one
  * delete-plus-add, not a rebuild") to an already-open tantivy index/writer, in place - both the incremental
  * catch-up alternative to a full rescan for an already-populated index, AND (called with `sinceRev`/
@@ -719,7 +741,8 @@ async function buildTantivyIndexFromFilesystemScan(directories, tantivy) {
  * @param {number | null} sinceRev The rev this index was last caught up to, or `null`/non-finite to mean "assume
  * nothing" (the first incremental pass after a fresh full build already covers everything up to its own
  * `lastRev`, so this is normally a real number, not `null`, in practice).
- * @param {string | null} sinceTagsRev The tags_rev this index was last caught up to.
+ * @param {string | null} sinceTagsRev The tag-names fingerprint (getTagNamesFingerprint()) this index was last
+ * caught up to.
  * @returns {Promise<{ lastRev: number, lastTagsRev: string | null } | null>} The new watermark, or `null` if incremental
  * maintenance isn't possible right now (metadata store unavailable, or the change log was pruned past `sinceRev`
  * - `truncated: true`, not implemented as of phase 1, but this function is already correct against it) - the
@@ -727,7 +750,6 @@ async function buildTantivyIndexFromFilesystemScan(directories, tantivy) {
  */
 async function applyIncrementalTantivyChanges(directories, tantivy, index, schema, sinceSeq, prevTagsHash) {
     const currentSeq = await getCurrentSeq(directories);
-    const currentTagsHash = await getTagsHash(directories);
     if (currentSeq === null) {
         return null;
     }
@@ -740,9 +762,12 @@ async function applyIncrementalTantivyChanges(directories, tantivy, index, schem
     /** @type {Map<string, 'upsert'|'delete'>} */
     const idsToReindex = new Map(changesResult.changes.map(({ id, op }) => [id, op]));
 
-    // A tag *rename* (a tags.js definition edit, not an assignment change) bumps tags_rev without producing any
-    // `changes` row naming the characters whose indexed resolved_tags text it affects - see this module's header.
-    if (currentTagsHash !== prevTagsHash) {
+    // A tag *rename* (a tags.js definition edit, not an assignment change) bumps the fingerprint below without
+    // producing any `changes` row naming the characters whose indexed resolved_tags text it affects - see this
+    // module's header, and getTagNamesFingerprint()'s own doc comment for why this checks names specifically
+    // rather than the general (broader) tags_hash.
+    const currentTagNamesHash = await getTagNamesFingerprint(directories);
+    if (currentTagNamesHash !== prevTagsHash) {
         const taggedIds = await getAllTaggedCharacterIds(directories);
         for (const id of taggedIds ?? []) {
             if (!idsToReindex.has(id)) {
@@ -758,18 +783,31 @@ async function applyIncrementalTantivyChanges(directories, tantivy, index, schem
         const favFor = idsNeedingData.length > 0 ? await makeFavResolver(directories, idsNeedingData) : () => false;
         const tagIdsFor = idsNeedingData.length > 0 ? await makeTagIdsResolver(directories, idsNeedingData) : () => '';
 
+        // Read+parse every upserted character's data concurrently, the same way readCharacterBatches() does for
+        // a full build (see INDEX_BUILD_READ_CONCURRENCY's doc comment - measured against this install's real
+        // library, disk-bound throughput plateaus well above serial speed once concurrency passes ~4). This loop
+        // used to `await processCharacter()` one id at a time, paying full disk latency serially for every
+        // changed character - the exact same per-file work the full-build path already parallelizes, just not
+        // here. The tantivy writer calls below stay synchronous and sequential regardless (JS's single-threaded
+        // event loop already serializes them no matter how the reads were scheduled), so only the read side
+        // needed this.
+        const characters = await mapWithConcurrency(idsNeedingData, INDEX_BUILD_READ_CONCURRENCY, async (id) => {
+            try {
+                return await processCharacter(id, directories, { shallow: false });
+            } catch {
+                // File gone (raced a delete that hasn't reached the metadata store's write hook/reconciler yet,
+                // or a corrupt PNG) - leave it deleted below rather than throwing the whole incremental pass away.
+                return null;
+            }
+        });
+        const characterById = new Map(idsNeedingData.map((id, i) => [id, characters[i]]));
+
         for (const [id, op] of idsToReindex) {
             writer.deleteDocumentsByTerm(DATA_FIELD, id);
             if (op === 'delete') {
                 continue;
             }
-            let character = null;
-            try {
-                character = await processCharacter(id, directories, { shallow: false });
-            } catch {
-                // File gone (raced a delete that hasn't reached the metadata store's write hook/reconciler yet,
-                // or a corrupt PNG) - leave it deleted above rather than throwing the whole incremental pass away.
-            }
+            const character = characterById.get(id);
             if (!character?.name) {
                 continue;
             }
@@ -785,7 +823,7 @@ async function applyIncrementalTantivyChanges(directories, tantivy, index, schem
         writer.waitMergingThreads();
     }
 
-    return { lastSeq: currentSeq, lastTagsHash: currentTagsHash ?? null };
+    return { lastSeq: currentSeq, lastTagsHash: currentTagNamesHash ?? null };
 }
 
 /**
