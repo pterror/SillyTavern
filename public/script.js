@@ -18399,6 +18399,20 @@ jQuery(async function () {
         }
     });
 
+    $('#charInfoFullscreenToggle').on('click', () => {
+        const panel = document.getElementById('right-nav-panel');
+        if (panel) {
+            power_user.charInfoFullscreen = !power_user.charInfoFullscreen;
+            panel.classList.toggle('charInfoFullscreen', power_user.charInfoFullscreen);
+            const btn = document.getElementById('charInfoFullscreenToggle');
+            if (btn) {
+                btn.classList.toggle('fa-expand', !power_user.charInfoFullscreen);
+                btn.classList.toggle('fa-compress', power_user.charInfoFullscreen);
+            }
+            saveSettingsDebounced('power_user.charInfoFullscreen');
+        }
+    });
+
     $('#hideCharPanelAvatarButton').on('click', () => {
         $('#avatar-and-name-block').slideToggle();
     });

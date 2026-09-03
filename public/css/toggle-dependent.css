@@ -210,6 +210,22 @@ body.charGalleryView #right-nav-panel.galleryFullscreen[data-active-menu="rm_cha
     display: none;
 }
 
+/* Character info/edit panel fullscreen: same pattern as the character list's fullscreen toggle above, but
+   its own class (.charInfoFullscreen, toggled by #charInfoFullscreenToggle) and its own data-active-menu
+   scope (rm_ch_create_block), so toggling one view's fullscreen state never affects the other. */
+#right-nav-panel.charInfoFullscreen[data-active-menu="rm_ch_create_block"].fillRight.openDrawer {
+    left: 0;
+    right: 0;
+    width: 100vw;
+    max-width: 100vw;
+    margin: 0;
+    top: var(--topBarBlockSize);
+    height: calc(100vh - var(--topBarBlockSize));
+    height: calc(100dvh - var(--topBarBlockSize));
+    max-height: calc(100vh - var(--topBarBlockSize));
+    max-height: calc(100dvh - var(--topBarBlockSize));
+}
+
 /* Search bar: #form_character_search_form is already a row flexbox (style.css), but its main child
    (#character_search_bar_wrapper, which wraps search pills + the text input) had no explicit no-wrap/basis
    guard - once the input's search-pill row grew past a couple of tags, or the layout got squeezed, the row
