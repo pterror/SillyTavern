@@ -86,7 +86,7 @@ import {
     chatElement,
     ensureMessageMediaIsArray,
 } from '../script.js';
-import { printTagList, createTagMapFromList, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, printTagFilters, tag_filter_type, removeEntityTags } from './tags.js';
+import { printTagList, createTagMapFromList, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, printTagFilters, tag_filter_type, removeEntityTags, tagsStore, compareTagsForSort } from './tags.js';
 import { FILTER_TYPES, FilterHelper } from './filters.js';
 import { isExternalMediaAllowed } from './chats.js';
 import { POPUP_TYPE, Popup, callGenericPopup } from './popup.js';
@@ -1015,14 +1015,24 @@ export function getGroupBlock(group) {
 
     // Display inline tags
     //
-    // entityTagIds: group.tag_ids, the same residency-fallback wiring renderCharacterBlock() (script.js) already
-    // uses for characters. Groups have no tag_ids field of their own on disk and no charactersStore-equivalent
-    // residency, so without this getTagsList() fell all the way through to tag_map[key] - the only path a group's
-    // tags could reach the list view through before /query started stamping tag_ids onto group rows
-    // (hydrateEntityRows(), src/endpoints/characters.js, 2026-09). tag_map stays a valid fallback for callers
-    // that don't have a row in hand; this just gives this call site a live source when it does.
+    // `tags: () => ...` resolves this row's own tag pills straight from `group.tag_ids` - the same fresh row
+    // every other field on this template reads from (name/fav/member list above) - instead of routing through
+    // printTagList()'s default getTagsList() lookup, matching what renderCharacterBlock() (script.js) now does
+    // for character rows and for the same reason: getTagsList() unconditionally checks a resident-entity lookup
+    // first (charactersStore for a character id) before falling back to whatever a caller passes in, and a list
+    // row has no business depending on lookup priority at all when it's already holding the row it wants to
+    // paint. For a group id that resident check was always going to miss (groups have no charactersStore-
+    // equivalent residency - see this file's own header on why), so it fell through to the `entityTagIds`
+    // fallback anyway in practice - but that's the same wrong shape by coincidence, not by design, and it still
+    // meant tag *resolution* nominally depended on getTagsList()'s priority order rather than being decided here.
+    // Bypassing it entirely removes that dependency outright, the same way it now does for characters. tag_map
+    // remains getTagsList()'s own fallback for callers that don't have a row in hand - unaffected, since this
+    // call site no longer goes through getTagsList() at all.
     const tagsElement = template.find('.tags');
-    printTagList(tagsElement, { forEntityOrKey: group.id, entityTagIds: group.tag_ids, tagOptions: { isCharacterList: true } });
+    const rowTags = Array.isArray(group.tag_ids)
+        ? group.tag_ids.map(tagId => tagsStore.get(tagId)).filter(Boolean).sort(compareTagsForSort)
+        : [];
+    printTagList(tagsElement, { forEntityOrKey: group.id, tags: () => rowTags, tagOptions: { isCharacterList: true } });
 
     const avatar = getGroupAvatar(group);
     if (avatar) {
