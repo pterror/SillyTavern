@@ -2105,7 +2105,11 @@ function loadCharListState() {
             btn.classList.toggle('fa-expand', !power_user.charGalleryFullscreen);
             btn.classList.toggle('fa-compress', power_user.charGalleryFullscreen);
         }
-        panel.classList.toggle('charInfoFullscreen', power_user.charInfoFullscreen);
+    }
+    // #char-info-panel is a separate drawer from #right-nav-panel - restore its fullscreen state too.
+    const charInfoPanel = document.getElementById('char-info-panel');
+    if (charInfoPanel) {
+        charInfoPanel.classList.toggle('charInfoFullscreen', power_user.charInfoFullscreen);
         const infoBtn = document.getElementById('charInfoFullscreenToggle');
         if (infoBtn) {
             infoBtn.classList.toggle('fa-expand', !power_user.charInfoFullscreen);

@@ -211,19 +211,30 @@ body.charGalleryView #right-nav-panel.galleryFullscreen[data-active-menu="rm_cha
 }
 
 /* Character info/edit panel fullscreen: same pattern as the character list's fullscreen toggle above, but
-   its own class (.charInfoFullscreen, toggled by #charInfoFullscreenToggle) and its own data-active-menu
-   scope (rm_ch_create_block), so toggling one view's fullscreen state never affects the other. */
-#right-nav-panel.charInfoFullscreen[data-active-menu="rm_ch_create_block"].fillRight.openDrawer {
+   scoped to #char-info-panel - a separate .fillRight drawer from #right-nav-panel (character-list and
+   character-info live in different drawers; data-active-menu="rm_ch_create_block" is set on #char-info-panel,
+   not #right-nav-panel, by selectRightMenuWithAnimation in script.js). Sized to match the center chat section
+   (#sheld, width: var(--sheldWidth)) rather than the full viewport - still a drawer, not full-viewport-width. */
+#char-info-panel.charInfoFullscreen[data-active-menu="rm_ch_create_block"].fillRight.openDrawer {
     left: 0;
     right: 0;
-    width: 100vw;
-    max-width: 100vw;
-    margin: 0;
+    width: var(--sheldWidth);
+    max-width: var(--sheldWidth);
+    margin: 0 auto;
     top: var(--topBarBlockSize);
     height: calc(100vh - var(--topBarBlockSize));
     height: calc(100dvh - var(--topBarBlockSize));
     max-height: calc(100vh - var(--topBarBlockSize));
     max-height: calc(100dvh - var(--topBarBlockSize));
+}
+
+/* While the character info panel is fullscreen and actually the visible fillRight drawer (frontFillRight -
+   it now sits where #sheld normally does), hide #sheld rather than removing it from the DOM, the same
+   visibility:hidden approach the two fillRight drawers already use to keep only one of themselves visible
+   (see .fillRight.openDrawer:not(.frontFillRight) above) - extended here so only one of
+   {char-info-panel, #sheld} is visible at once too. */
+body:has(#char-info-panel.charInfoFullscreen.frontFillRight.openDrawer[data-active-menu="rm_ch_create_block"]) #sheld {
+    visibility: hidden;
 }
 
 /* Search bar: #form_character_search_form is already a row flexbox (style.css), but its main child
