@@ -18445,7 +18445,7 @@ jQuery(async function () {
     });
 
     $('#charInfoFullscreenToggle').on('click', () => {
-        const panel = document.getElementById('right-nav-panel');
+        const panel = document.getElementById('char-info-panel');
         if (panel) {
             power_user.charInfoFullscreen = !power_user.charInfoFullscreen;
             panel.classList.toggle('charInfoFullscreen', power_user.charInfoFullscreen);
