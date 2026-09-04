@@ -210,6 +210,15 @@ body.charGalleryView #right-nav-panel.galleryFullscreen[data-active-menu="rm_cha
     display: none;
 }
 
+/* While the character list panel is fullscreen and actually the visible fillRight drawer (frontFillRight -
+   it now covers the full viewport, including where #sheld sits), hide #sheld rather than removing it from
+   the DOM. Same visibility:hidden approach as the two fillRight drawers already use on each other (see
+   .fillRight.openDrawer:not(.frontFillRight) above) and as the char-info fullscreen rule below uses too, so
+   only one of {right-nav-panel, #sheld} is visible at once here as well. */
+body.charGalleryView:has(#right-nav-panel.galleryFullscreen.frontFillRight.openDrawer[data-active-menu="rm_characters_block"]) #sheld {
+    visibility: hidden;
+}
+
 /* Character info/edit panel fullscreen: same pattern as the character list's fullscreen toggle above, but
    scoped to #char-info-panel - a separate .fillRight drawer from #right-nav-panel (character-list and
    character-info live in different drawers; data-active-menu="rm_ch_create_block" is set on #char-info-panel,
