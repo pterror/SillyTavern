@@ -2826,7 +2826,8 @@ input[type="file"] {
 #lm_button_panel_pin_div,
 #WI_button_panel_pin_div,
 #charInfo_button_panel_pin_div,
-#galleryFullscreenToggle {
+#galleryFullscreenToggle,
+#charInfoFullscreenToggle {
     font-size: 24px;
     display: inline;
     padding: 1px;
