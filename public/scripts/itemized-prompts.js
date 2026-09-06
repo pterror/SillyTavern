@@ -156,10 +156,48 @@ export async function loadItemizedPrompts(chatId) {
 }
 
 /**
+ * Compresses one entry: intra-entry field-dedup against its own rawPrompt, then diff-encodes that
+ * rawPrompt against `previousRawPrompt` (the prior entry's full, undiffed rawPrompt in the same chat).
+ * Shared by compressItemizedPrompts() and compressItemizedPromptsIncremental() below.
+ * @param {DiffMatchPatch} dmp
+ * @param {object} originalEntry
+ * @param {string|undefined} previousRawPrompt
+ * @returns {{toStore: object, dedup: string[]|undefined, delta: string|undefined, rawPrompt: string|undefined}}
+ * `rawPrompt` is this entry's own full value (for the caller to thread through as the next entry's
+ * `previousRawPrompt`), regardless of whether it ended up stripped from `toStore`.
+ */
+function compressOneEntry(dmp, originalEntry, previousRawPrompt) {
+    const rawPrompt = originalEntry.rawPrompt;
+    // Intra-entry dedup (other fields byte-identical to this entry's OWN full rawPrompt) computed first,
+    // from the untouched original - the cross-entry delta below only ever replaces rawPrompt itself,
+    // never the fields this step strips.
+    const { toStore: dedupedEntry, dedup } = computeItemizedDedupSplit(originalEntry);
+
+    let toStore = dedupedEntry;
+    let delta;
+    if (typeof rawPrompt === 'string' && rawPrompt.length > 0 &&
+        typeof previousRawPrompt === 'string' && previousRawPrompt.length > 0) {
+        const encoded = dmp.diff_toDelta(dmp.diff_main(previousRawPrompt, rawPrompt));
+        // Only ever use the delta when it's actually smaller - guards against the (unlikely, e.g. wildly
+        // different consecutive prompts) case where the encoded diff would be bigger than just storing
+        // the full string.
+        if (encoded.length < rawPrompt.length) {
+            delta = encoded;
+        }
+    }
+    if (delta !== undefined) {
+        toStore = toStore === dedupedEntry ? { ...dedupedEntry } : toStore;
+        delete toStore.rawPrompt;
+    }
+
+    return { toStore, dedup, delta, rawPrompt };
+}
+
+/**
  * Compresses a chat's itemizedPrompts array into the on-disk shape (field-dedup + cross-entry rawPrompt
- * diffing) - shared by saveItemizedPrompts() (the currently-open chat's live array) and
- * migrateAllItemizedPrompts() below (every OTHER chat's already-stored legacy array, read via a full-store
- * scan). Never mutates `entries`.
+ * diffing) from scratch - used by migrateAllItemizedPrompts() below, where each chat is only ever
+ * processed once. saveItemizedPrompts() uses compressItemizedPromptsIncremental() instead (see its own
+ * doc comment on why a full recompute there would be wasteful). Never mutates `entries`.
  * @param {object[]} entries
  * @returns {{v: number, entries: object[], dedup: (string[]|undefined)[], rawPromptDelta: (string|undefined)[]}}
  */
@@ -170,38 +208,80 @@ function compressItemizedPrompts(entries) {
     /** @type {string|undefined} Previous entry's full (undiffed) rawPrompt, this compression pass. */
     let previousRawPrompt;
     const compressedEntries = entries.map((originalEntry) => {
-        const rawPrompt = originalEntry.rawPrompt;
-        // Intra-entry dedup (other fields byte-identical to this entry's OWN full rawPrompt) computed
-        // first, from the untouched original - the cross-entry delta below only ever replaces
-        // rawPrompt itself, never the fields this step strips.
-        const { toStore: dedupedEntry, dedup: dedupedFields } = computeItemizedDedupSplit(originalEntry);
-        dedup.push(dedupedFields);
-
-        let toStore = dedupedEntry;
-        let delta;
-        if (typeof rawPrompt === 'string' && rawPrompt.length > 0 &&
-            typeof previousRawPrompt === 'string' && previousRawPrompt.length > 0) {
-            const encoded = dmp.diff_toDelta(dmp.diff_main(previousRawPrompt, rawPrompt));
-            // Only ever use the delta when it's actually smaller - guards against the (unlikely, e.g.
-            // wildly different consecutive prompts) case where the encoded diff would be bigger than
-            // just storing the full string.
-            if (encoded.length < rawPrompt.length) {
-                delta = encoded;
-            }
+        const result = compressOneEntry(dmp, originalEntry, previousRawPrompt);
+        dedup.push(result.dedup);
+        rawPromptDelta.push(result.delta);
+        if (typeof result.rawPrompt === 'string') {
+            previousRawPrompt = result.rawPrompt;
         }
-        if (delta !== undefined) {
-            toStore = toStore === dedupedEntry ? { ...dedupedEntry } : toStore;
-            delete toStore.rawPrompt;
-        }
-        rawPromptDelta.push(delta);
-
-        if (typeof rawPrompt === 'string') {
-            previousRawPrompt = rawPrompt;
-        }
-        return toStore;
+        return result.toStore;
     });
 
     return { v: DEDUP_VERSION, entries: compressedEntries, dedup, rawPromptDelta };
+}
+
+/** Cache of the last compression computed for saveItemizedPrompts()'s CURRENTLY loaded chat - see
+ * compressItemizedPromptsIncremental()'s own doc comment. Naturally invalidated (never explicitly reset)
+ * whenever a different chatId is saved, since the lookup below checks chatId first. */
+let incrementalCompressionCache = /** @type {{chatId: string, sourceEntries: object[], compressed: {v: number, entries: object[], dedup: (string[]|undefined)[], rawPromptDelta: (string|undefined)[]}} | null} */ (null);
+
+/**
+ * Same contract as compressItemizedPrompts(), but reuses cached per-entry results for any prefix of
+ * `entries` that's reference-identical to what was compressed last time for this exact chatId.
+ *
+ * saveItemizedPrompts() is called after every single generated message (script.js's saveChatConditional(),
+ * which runs after every generation) - recomputing the WHOLE chat's dedup+diffs from scratch on every one
+ * of those calls would repeat the exact same work (re-diffing every already-unchanged consecutive pair)
+ * for the entire chat history on every single message, turning a chat's lifetime cost from O(length) into
+ * O(length^2) for what's almost always just one newly appended entry.
+ *
+ * Only entries from the first point of actual change onward are ever recomputed - an entry earlier in the
+ * array being edited/regenerated (script.js's finishGenerating() replaces the object at that index rather
+ * than mutating it, so this is a genuine reference change, not just an appended tail) correctly
+ * invalidates and recomputes everything from THAT point onward too, since every later entry's delta is
+ * encoded against its predecessor's rawPrompt and would otherwise silently encode against a stale base.
+ * @param {string} chatId
+ * @param {object[]} entries
+ * @returns {{v: number, entries: object[], dedup: (string[]|undefined)[], rawPromptDelta: (string|undefined)[]}}
+ */
+function compressItemizedPromptsIncremental(chatId, entries) {
+    const cached = incrementalCompressionCache?.chatId === chatId ? incrementalCompressionCache : null;
+    const cachedSource = cached?.sourceEntries ?? [];
+
+    let firstChanged = 0;
+    const maxShared = Math.min(cachedSource.length, entries.length);
+    while (firstChanged < maxShared && cachedSource[firstChanged] === entries[firstChanged]) {
+        firstChanged++;
+    }
+
+    if (cached && firstChanged === entries.length && firstChanged === cachedSource.length) {
+        // Nothing at all changed since last time - reuse the whole cached result untouched.
+        return cached.compressed;
+    }
+
+    const dmp = newPromptDiffEngine();
+    const dedup = firstChanged > 0 ? cached.compressed.dedup.slice(0, firstChanged) : [];
+    const rawPromptDelta = firstChanged > 0 ? cached.compressed.rawPromptDelta.slice(0, firstChanged) : [];
+    /** @type {string|undefined} */
+    let previousRawPrompt = firstChanged > 0 ? cachedSource[firstChanged - 1].rawPrompt : undefined;
+    if (typeof previousRawPrompt !== 'string') {
+        previousRawPrompt = undefined;
+    }
+
+    const newlyComputedEntries = entries.slice(firstChanged).map((originalEntry) => {
+        const result = compressOneEntry(dmp, originalEntry, previousRawPrompt);
+        dedup.push(result.dedup);
+        rawPromptDelta.push(result.delta);
+        if (typeof result.rawPrompt === 'string') {
+            previousRawPrompt = result.rawPrompt;
+        }
+        return result.toStore;
+    });
+
+    const reusedEntries = firstChanged > 0 ? cached.compressed.entries.slice(0, firstChanged) : [];
+    const compressed = { v: DEDUP_VERSION, entries: [...reusedEntries, ...newlyComputedEntries], dedup, rawPromptDelta };
+    incrementalCompressionCache = { chatId, sourceEntries: entries.slice(), compressed };
+    return compressed;
 }
 
 /**
@@ -214,7 +294,7 @@ export async function saveItemizedPrompts(chatId) {
             return;
         }
 
-        await promptStorage.setItem(chatId, compressItemizedPrompts(itemizedPrompts));
+        await promptStorage.setItem(chatId, compressItemizedPromptsIncremental(chatId, itemizedPrompts));
         await eventSource.emit(event_types.ITEMIZED_PROMPTS_SAVED, { chatId: chatId });
     } catch (error) {
         console.log('Error saving itemized prompts for chat', chatId, error);
