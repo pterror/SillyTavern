@@ -831,6 +831,19 @@ export const printCharactersDebounced = debounce(() => { printCharacters(false);
 
 const getCharactersDebounced = debounce(() => getCharacters(), 2000);
 
+/**
+ * Opens the one permanent SSE connection this tab holds for as long as it's alive. Carries two independent
+ * purposes over a single socket (merged - see the server route's own doc comment, characters.js
+ * `/changes/stream`, for why): pushing a "something changed, go ask `/changes`" notification, AND doubling as
+ * the presence heartbeat that lets the server tell (at its next boot) a tab is already open/reconnecting, so
+ * it skips auto-launching a new one. Each used to be its own separate EventSource; the browser's per-origin
+ * connection pool is shared across every tab/window of that origin (not per-tab), so N tabs open meant 2N
+ * permanently-occupied connections before any other request could even be sent - only a handful of tabs was
+ * enough to exhaust the ~6-connection pool entirely and stall every other request, including plain static
+ * files. One connection per tab instead of two halves that permanent cost.
+ *
+ * `EventSource` auto-reconnects on error/drop on its own (e.g. a server restart) - nothing else to do here.
+ */
 function setupCharacterChangeStream() {
     if (typeof EventSource === 'undefined') return;
     const source = new EventSource('/api/characters/changes/stream');
@@ -844,16 +857,6 @@ function setupCharacterChangeStream() {
     source.onerror = () => {
         // EventSource auto-reconnects on error; nothing to do
     };
-}
-
-/**
- * Keeps an SSE connection open for as long as this tab is alive, so the server can tell (at its next boot)
- * that a browser tab is already open and skip auto-launching a new one. `EventSource` auto-reconnects on
- * its own, which is what lets this tab "still count" through a server restart.
- */
-function setupBrowserHeartbeat() {
-    if (typeof EventSource === 'undefined') return;
-    new EventSource('/api/browser-heartbeat');
 }
 
 /**
@@ -1323,7 +1326,6 @@ async function firstLoadInit() {
     setStage('Rendering characters');
     await printCharacters(true);
     setupCharacterChangeStream();
-    setupBrowserHeartbeat();
 
     setStage('Loading assets');
     await getBackgrounds();

@@ -20,6 +20,7 @@ import { TavernCardValidator } from '../validator/TavernCardValidator.js';
 import { parse, read, write, writeCardToFile, computeAvatarIdentityHashFromImageBuffer } from '../character-card-parser.js';
 import { getCharaCardV2, convertToV2, readFromV2, charaFormatData, unsetPrivateFields, omitInstallLocalFields, omitFavField, omitChatField, computeContentIdentityHash } from '../character-card-normalize.js';
 import { calculateChatSize, calculateDataSize, toShallow } from '../character-shallow.js';
+import { touchBrowserPresence, PRESENCE_PING_INTERVAL_MS } from '../browser-presence.js';
 import { invalidateThumbnail, getThumbnailVersion } from './thumbnails.js';
 import { importRisuSprites } from './sprites.js';
 import { getUserDirectories } from '../users.js';
@@ -2983,6 +2984,15 @@ router.post('/changes', async function (request, response) {
  * gets a new row (see character-metadata-db.js's characterChangeEmitter), so a connected client can call
  * `/changes` right away instead of polling on a timer. The event payload carries no data on purpose - clients
  * already track their own `sinceSeq` cursor via `/changes`, so this is just a "something changed, go ask" ping.
+ *
+ * ALSO carries the former `/api/browser-heartbeat` endpoint's job (merged in - see browser-presence.js's own
+ * doc comment on `PRESENCE_PING_INTERVAL_MS` for why): touches the browser-presence file on connect and on
+ * every ping tick, so `wasBrowserRecentlyConnected()` still sees a live tab across a server restart. Both were
+ * independently-built permanent per-tab SSE connections with no cross-reference to each other; since the
+ * browser's per-origin connection pool is shared across every tab/window of that origin (not per-tab), N tabs
+ * open meant 2N permanently-occupied connections before any other request could even be sent - only ~3 tabs
+ * was enough to exhaust the whole pool and stall every other request (including plain static files) rather
+ * than queuing just the overflow. One merged connection halves that permanent per-tab cost.
  * @param  {import("express").Request} request The HTTP request object.
  * @param  {import("express").Response} response The HTTP response object.
  * @return {void}
@@ -2995,6 +3005,12 @@ router.get('/changes/stream', function (request, response) {
         'X-Accel-Buffering': 'no',
     });
     response.write(':ok\n\n');
+    touchBrowserPresence();
+
+    const presenceInterval = setInterval(() => {
+        response.write(':ping\n\n');
+        touchBrowserPresence();
+    }, PRESENCE_PING_INTERVAL_MS);
 
     // Debounced the same way character-metadata-db.js's own random-cache-warm listener debounces its reaction
     // to this exact emitter: a bulk write (boot-time reconcile/backfill, or an import) can call
@@ -3018,6 +3034,7 @@ router.get('/changes/stream', function (request, response) {
     request.on('close', () => {
         characterChangeEmitter.off('change', onChange);
         clearTimeout(notifyTimer);
+        clearInterval(presenceInterval);
     });
 });
 
