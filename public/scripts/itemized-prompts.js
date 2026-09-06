@@ -244,12 +244,12 @@ export async function migrateAllItemizedPrompts() {
     }
     allChatsMigrationStarted = true;
 
-    /** @type {[string, object[]][]} [chatId, legacy entries array] pairs still needing compression. */
+    /** @type {string[]} chatIds still in the legacy plain-array format as of the initial scan. */
     const legacy = [];
     try {
         await promptStorage.iterate((value, chatId) => {
             if (Array.isArray(value) && value.length > 0) {
-                legacy.push([chatId, value]);
+                legacy.push(chatId);
             }
         });
     } catch (error) {
@@ -265,14 +265,31 @@ export async function migrateAllItemizedPrompts() {
     const MIGRATE_BATCH = 20; // each entries array can itself be large (a whole chat's worth of prompts) - keep batches small.
     for (let i = 0; i < legacy.length; i += MIGRATE_BATCH) {
         const batch = legacy.slice(i, i + MIGRATE_BATCH);
-        await Promise.all(batch.map(([chatId, entries]) =>
-            promptStorage.setItem(chatId, compressItemizedPrompts(entries)).catch(error =>
-                console.log(`Error compressing itemized prompts for chat ${chatId}:`, error))));
+        await Promise.all(batch.map(async (chatId) => {
+            try {
+                // Re-read right before writing rather than reusing the entries snapshotted by the scan
+                // above: this sweep can run for a long time across thousands of chats, and if the
+                // currently-open chat generates a new message during that window, its own live
+                // saveItemizedPrompts() call writes the fresh compressed data - writing back the stale
+                // snapshot here afterward would silently revert/lose that new message. Re-checking
+                // `Array.isArray` immediately before writing means we only ever touch a chat that's still
+                // genuinely untouched since the scan (saveItemizedPrompts() always writes the compressed
+                // wrapper shape, never a plain array, so anything a live save already converted no longer
+                // looks legacy here and gets skipped instead of clobbered).
+                const current = await promptStorage.getItem(chatId);
+                if (!Array.isArray(current) || current.length === 0) {
+                    return;
+                }
+                await promptStorage.setItem(chatId, compressItemizedPrompts(current));
+            } catch (error) {
+                console.log(`Error compressing itemized prompts for chat ${chatId}:`, error);
+            }
+        }));
         // Yield to the main thread between batches - same reasoning as every other batched migration in
         // this codebase (character-cache.js): must not make the browser unresponsive for seconds.
         await new Promise(resolve => setTimeout(resolve, 0));
     }
-    console.log(`[itemized-prompts] Compression migration complete (${legacy.length} chat(s)).`);
+    console.log(`[itemized-prompts] Compression migration complete (${legacy.length} chat(s) considered).`);
 }
 
 /**
