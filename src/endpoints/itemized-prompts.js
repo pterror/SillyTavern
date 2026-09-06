@@ -87,6 +87,65 @@ router.post('/save', async function (request, response) {
     }
 });
 
+/**
+ * Bulk upload of a browser's locally-cached backlog in a single request (see
+ * migrateAllItemizedPrompts() in public/scripts/itemized-prompts.js) - one request/response for the whole
+ * backlog rather than a GET+POST per chat, since a large backlog (tens of thousands of chats) turned that
+ * per-chat round-tripping into exactly the request flood this endpoint exists to avoid. Never clobbers a
+ * chat that's already resident server-side (checked here, same "don't overwrite with a stale local
+ * snapshot" rule the old per-chat flow enforced with its own GET-then-save) - such a chat is still reported
+ * back as migrated, since either way the browser's local copy is safe to reclaim.
+ */
+router.post('/migrate', async function (request, response) {
+    try {
+        const chats = request.body?.chats;
+        if (!Array.isArray(chats)) {
+            return response.sendStatus(400);
+        }
+
+        await fs.promises.mkdir(request.user.directories.itemizedPrompts, { recursive: true });
+
+        const migrated = [];
+        await Promise.all(chats.map(async (chat) => {
+            const chatId = chat?.chatId;
+            const data = chat?.data;
+            if (!chatId || data === undefined) {
+                return;
+            }
+
+            try {
+                const filePath = getItemizedPromptsFilePath(request, chatId);
+                let alreadyPresent = true;
+                try {
+                    await fs.promises.access(filePath);
+                } catch (error) {
+                    if (error.code !== 'ENOENT') {
+                        throw error;
+                    }
+                    alreadyPresent = false;
+                }
+
+                if (!alreadyPresent) {
+                    const compressed = await zstdCompress(JSON.stringify(data));
+                    await writeFileAtomic(filePath, compressed);
+                }
+
+                migrated.push(chatId);
+            } catch (error) {
+                // Leave this one chat off the migrated list - the client keeps its local copy and
+                // retries it on a future boot - rather than failing the whole bulk request over one bad
+                // chat.
+                console.error(`[Itemized Prompts] Error migrating chat ${chatId}:`, error);
+            }
+        }));
+
+        response.json({ migrated });
+    } catch (error) {
+        console.error('[Itemized Prompts] Error in bulk migration:', error);
+        response.status(500).send({ error: true });
+    }
+});
+
 router.post('/delete', async function (request, response) {
     try {
         const chatId = request.body?.chatId;
