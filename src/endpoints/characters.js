@@ -2897,14 +2897,28 @@ router.get('/changes/stream', function (request, response) {
     });
     response.write(':ok\n\n');
 
+    // Debounced the same way character-metadata-db.js's own random-cache-warm listener debounces its reaction
+    // to this exact emitter: a bulk write (boot-time reconcile/backfill, or an import) can call
+    // characterChangeEmitter.emit('change') hundreds or thousands of times in a single synchronous burst (see
+    // flushBatch() in character-metadata-db.js, which loops over up to BATCH_FLUSH_SIZE rows per transaction
+    // with no await between emits). Without this debounce, every one of those emissions would trigger a
+    // synchronous response.write() per connected SSE client - a real event-loop stall that can hang every other
+    // in-flight request. clearTimeout/setTimeout are cheap no matter how many times they're called per tick, so
+    // this coalesces an entire burst into a single push once it quiesces, instead of writing to the socket once
+    // per change.
+    let notifyTimer = null;
     const onChange = () => {
-        response.write('data: {}\n\n');
+        clearTimeout(notifyTimer);
+        notifyTimer = setTimeout(() => {
+            response.write('data: {}\n\n');
+        }, 500);
     };
 
     characterChangeEmitter.on('change', onChange);
 
     request.on('close', () => {
         characterChangeEmitter.off('change', onChange);
+        clearTimeout(notifyTimer);
     });
 });
 
