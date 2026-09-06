@@ -1,5 +1,5 @@
 import { DiffMatchPatch, DOMPurify, localforage } from '../lib.js';
-import { chat, event_types, eventSource, getCurrentChatId, reloadCurrentChat } from '../script.js';
+import { chat, event_types, eventSource, getCurrentChatId, getRequestHeaders, reloadCurrentChat } from '../script.js';
 import { t } from './i18n.js';
 import { oai_settings } from './openai.js';
 import { Popup, POPUP_TYPE } from './popup.js';
@@ -12,6 +12,12 @@ import { copyText } from './utils.js';
 let PromptArrayItemForRawPromptDisplay;
 let priorPromptArrayItemForRawPromptDisplay;
 
+/**
+ * 2026-09 server-migration note: this used to be the ONLY storage for itemized prompts - now it's read-only
+ * legacy data, kept around purely so migrateAllItemizedPrompts() (below) has something to read while
+ * uploading each browser's locally-accumulated backlog to the server (`src/endpoints/itemized-prompts.js`),
+ * which is now the actual source of truth. Nothing in this file writes through this instance anymore.
+ */
 const promptStorage = localforage.createInstance({ name: 'SillyTavern_Prompts' });
 export let itemizedPrompts = [];
 
@@ -100,7 +106,39 @@ function newPromptDiffEngine() {
 }
 
 /**
- * Gets the itemized prompts for a chat.
+ * Decodes a stored itemized-prompts value - either this session's compressed wrapper shape
+ * (`{v, entries, dedup, rawPromptDelta}`, from the server or from a not-yet-migrated local IndexedDB
+ * record) or the legacy plain-array shape (predates all compression, local-only, pre-server-migration) -
+ * into a plain, fully-rehydrated `entries[]` array. Shared by loadItemizedPrompts() (decoding the server's
+ * response) and migrateAllItemizedPrompts() (decoding whatever's left in the local IndexedDB backlog).
+ * @param {object[]|{v: number, entries: object[], dedup: (string[]|undefined)[], rawPromptDelta: (string|undefined)[]}|null|undefined} stored
+ * @returns {object[]}
+ */
+function decodeStoredItemizedPrompts(stored) {
+    if (Array.isArray(stored)) {
+        return stored;
+    }
+    if (!stored || !Array.isArray(stored.entries)) {
+        return [];
+    }
+    const dmp = newPromptDiffEngine();
+    /** @type {string|undefined} Previous entry's already-reconstructed (full) rawPrompt. */
+    let previousRawPrompt;
+    return stored.entries.map((entry, i) => {
+        const delta = stored.rawPromptDelta?.[i];
+        if (typeof delta === 'string' && typeof previousRawPrompt === 'string') {
+            entry.rawPrompt = dmp.diff_text2(dmp.diff_fromDelta(previousRawPrompt, delta));
+        }
+        if (typeof entry.rawPrompt === 'string') {
+            previousRawPrompt = entry.rawPrompt;
+        }
+        // rawPrompt must be reconstructed above BEFORE this, since deduped fields point at it.
+        return rehydrateItemizedDedup(entry, stored.dedup?.[i]);
+    });
+}
+
+/**
+ * Gets the itemized prompts for a chat from server-side storage (`src/endpoints/itemized-prompts.js`).
  * @param {string} chatId Chat ID to load
  */
 export async function loadItemizedPrompts(chatId) {
@@ -110,42 +148,24 @@ export async function loadItemizedPrompts(chatId) {
             return;
         }
 
-        const stored = await promptStorage.getItem(chatId);
-        let legacyFormat = false;
+        const response = await fetch('/api/itemized-prompts/get', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ chatId }),
+        });
 
-        if (Array.isArray(stored)) {
-            // Predates both field-dedup and rawPrompt delta-compression - nothing to rehydrate.
-            legacyFormat = true;
-            itemizedPrompts = stored;
-        } else if (stored && Array.isArray(stored.entries)) {
-            const dmp = newPromptDiffEngine();
-            /** @type {string|undefined} Previous entry's already-reconstructed (full) rawPrompt. */
-            let previousRawPrompt;
-            itemizedPrompts = stored.entries.map((entry, i) => {
-                const delta = stored.rawPromptDelta?.[i];
-                if (typeof delta === 'string' && typeof previousRawPrompt === 'string') {
-                    entry.rawPrompt = dmp.diff_text2(dmp.diff_fromDelta(previousRawPrompt, delta));
-                }
-                if (typeof entry.rawPrompt === 'string') {
-                    previousRawPrompt = entry.rawPrompt;
-                }
-                // rawPrompt must be reconstructed above BEFORE this, since deduped fields point at it.
-                return rehydrateItemizedDedup(entry, stored.dedup?.[i]);
-            });
+        if (response.status === 404) {
+            // No itemized prompts stored yet for this chat - not an error.
+            itemizedPrompts = [];
+        } else if (response.ok) {
+            itemizedPrompts = decodeStoredItemizedPrompts(await response.json());
         } else {
+            console.log('Error loading itemized prompts for chat', chatId, response.statusText);
             itemizedPrompts = [];
         }
 
         if (!itemizedPrompts) {
             itemizedPrompts = [];
-        }
-
-        if (legacyFormat && itemizedPrompts.length > 0) {
-            // Opportunistic one-time migration: this store is loaded lazily per-chat (unlike the character
-            // cache, there's no existing full-store boot scan to piggyback on), so a chat only converges to
-            // the compressed format when it's actually reopened. Fire-and-forget - never block the chat
-            // load on a rewrite of its own just-loaded data.
-            saveItemizedPrompts(chatId);
         }
 
         await eventSource.emit(event_types.ITEMIZED_PROMPTS_LOADED, { chatId: chatId });
@@ -285,7 +305,10 @@ function compressItemizedPromptsIncremental(chatId, entries) {
 }
 
 /**
- * Saves the itemized prompts for a chat.
+ * Saves the itemized prompts for a chat to server-side storage (`src/endpoints/itemized-prompts.js`),
+ * which gzips the already-compressed payload at rest. Called after every single generated message
+ * (script.js's saveChatConditional()) - see compressItemizedPromptsIncremental()'s own doc comment on why
+ * the compression step itself stays incremental regardless of where the result is sent.
  * @param {string} chatId Chat ID to save itemized prompts for
  */
 export async function saveItemizedPrompts(chatId) {
@@ -294,29 +317,50 @@ export async function saveItemizedPrompts(chatId) {
             return;
         }
 
-        await promptStorage.setItem(chatId, compressItemizedPromptsIncremental(chatId, itemizedPrompts));
+        const data = compressItemizedPromptsIncremental(chatId, itemizedPrompts);
+        const response = await fetch('/api/itemized-prompts/save', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ chatId, data }),
+        });
+
+        if (!response.ok) {
+            console.log('Error saving itemized prompts for chat', chatId, response.statusText);
+            return;
+        }
+
         await eventSource.emit(event_types.ITEMIZED_PROMPTS_SAVED, { chatId: chatId });
     } catch (error) {
         console.log('Error saving itemized prompts for chat', chatId, error);
     }
 }
 
-/** Set once a background full-store migration has been kicked off this session (see
+/** Set once a background local-to-server migration has been kicked off this session (see
  * migrateAllItemizedPrompts()), so it's never launched more than once per session. */
 let allChatsMigrationStarted = false;
 
 /**
- * Eagerly compresses every chat's itemized prompts still in the legacy plain-array format, not just the
- * ones a user happens to reopen (loadItemizedPrompts()'s per-chat lazy migration leaves any chat nobody
- * reopens sitting at full size forever - most of a large chat history realistically never gets reopened,
- * so that path alone can't actually reclaim the bulk of this store's footprint).
+ * One-time upload of this browser's locally-accumulated IndexedDB backlog (`promptStorage`, the
+ * pre-2026-09 `SillyTavern_Prompts` store) to server-side storage, then reclaims the local space -
+ * this is the actual fix for "itemized prompts are missing on other devices/browsers": before this,
+ * every chat's itemized breakdown existed ONLY in whichever browser generated it.
  *
- * Call once at boot; safe to call unconditionally - both the in-session guard and each stored value's own
- * shape make it a no-op on every call after the first genuine sweep. Never awaited by its caller - pure
- * background disk-space reclamation, batched/yielded the same way character-cache.js's migrations are, and
- * naturally resumable if interrupted (a chat is only left in legacy format until this actually rewrites
- * it, so a browser closed mid-sweep just means the next boot's sweep finds - and only re-touches - however
- * many chats didn't get to convert yet).
+ * Not just the chats a user happens to reopen: loadItemizedPrompts() no longer touches `promptStorage` at
+ * all (server is the sole source of truth for every load/save from here on), so a chat sitting untouched
+ * in the local backlog would otherwise never get uploaded, and its browser-local bytes would never be
+ * reclaimed either. This does a full scan instead.
+ *
+ * Call once at boot; safe to call unconditionally - both the in-session guard and each chat's own
+ * "does the server already have this" check make it a no-op on every call after the backlog is drained.
+ * Never awaited by its caller. Naturally resumable if interrupted: a chat is only removed from the local
+ * backlog after the server confirms it has the data (either just-uploaded, or already present), so a
+ * browser closed mid-sweep just means the next boot's sweep finds - and only re-considers - whatever
+ * didn't finish uploading yet.
+ *
+ * Deliberately checks for existing server-side data before uploading (GET first) rather than uploading
+ * unconditionally: if the SAME chat was already migrated from another device/browser (or by an earlier,
+ * interrupted run of this same function), blindly overwriting could clobber genuinely newer server data
+ * with a stale local snapshot. An extra round-trip per chat is the cost of that safety.
  */
 export async function migrateAllItemizedPrompts() {
     if (allChatsMigrationStarted) {
@@ -324,52 +368,68 @@ export async function migrateAllItemizedPrompts() {
     }
     allChatsMigrationStarted = true;
 
-    /** @type {string[]} chatIds still in the legacy plain-array format as of the initial scan. */
-    const legacy = [];
+    /** @type {[string, object[]|object][]} [chatId, raw stored value] pairs still sitting in local IndexedDB. */
+    const local = [];
     try {
         await promptStorage.iterate((value, chatId) => {
-            if (Array.isArray(value) && value.length > 0) {
-                legacy.push(chatId);
+            const hasContent = Array.isArray(value) ? value.length > 0 : Array.isArray(value?.entries) && value.entries.length > 0;
+            if (hasContent) {
+                local.push([chatId, value]);
             }
         });
     } catch (error) {
-        console.log('Error scanning itemized prompts for migration', error);
+        console.log('Error scanning local itemized prompts for server migration', error);
         return;
     }
 
-    if (legacy.length === 0) {
+    if (local.length === 0) {
         return;
     }
 
-    console.log(`[itemized-prompts] Compressing ${legacy.length} chat(s) that predate rawPrompt dedup/diffing...`);
-    const MIGRATE_BATCH = 20; // each entries array can itself be large (a whole chat's worth of prompts) - keep batches small.
-    for (let i = 0; i < legacy.length; i += MIGRATE_BATCH) {
-        const batch = legacy.slice(i, i + MIGRATE_BATCH);
-        await Promise.all(batch.map(async (chatId) => {
+    console.log(`[itemized-prompts] Migrating ${local.length} locally-cached chat(s) to server storage...`);
+    const MIGRATE_BATCH = 10; // a GET plus maybe a POST per chat, each potentially a whole chat's worth of data - keep this network-friendly.
+    let considered = 0;
+    for (let i = 0; i < local.length; i += MIGRATE_BATCH) {
+        const batch = local.slice(i, i + MIGRATE_BATCH);
+        await Promise.all(batch.map(async ([chatId, value]) => {
             try {
-                // Re-read right before writing rather than reusing the entries snapshotted by the scan
-                // above: this sweep can run for a long time across thousands of chats, and if the
-                // currently-open chat generates a new message during that window, its own live
-                // saveItemizedPrompts() call writes the fresh compressed data - writing back the stale
-                // snapshot here afterward would silently revert/lose that new message. Re-checking
-                // `Array.isArray` immediately before writing means we only ever touch a chat that's still
-                // genuinely untouched since the scan (saveItemizedPrompts() always writes the compressed
-                // wrapper shape, never a plain array, so anything a live save already converted no longer
-                // looks legacy here and gets skipped instead of clobbered).
-                const current = await promptStorage.getItem(chatId);
-                if (!Array.isArray(current) || current.length === 0) {
+                const existing = await fetch('/api/itemized-prompts/get', {
+                    method: 'POST',
+                    headers: getRequestHeaders(),
+                    body: JSON.stringify({ chatId }),
+                });
+
+                if (existing.status !== 404 && !existing.ok) {
+                    // A real (transient) error, not "doesn't exist yet" - leave the local copy alone and
+                    // retry on a future boot rather than risk losing the only copy of this data.
                     return;
                 }
-                await promptStorage.setItem(chatId, compressItemizedPrompts(current));
+
+                if (existing.status === 404) {
+                    const entries = decodeStoredItemizedPrompts(value);
+                    const saveResponse = await fetch('/api/itemized-prompts/save', {
+                        method: 'POST',
+                        headers: getRequestHeaders(),
+                        body: JSON.stringify({ chatId, data: compressItemizedPrompts(entries) }),
+                    });
+                    if (!saveResponse.ok) {
+                        return; // Couldn't upload - leave the local copy in place, retry next boot.
+                    }
+                }
+
+                // Either just uploaded, or the server already had this chat's data - safe to reclaim the
+                // local copy either way.
+                await promptStorage.removeItem(chatId);
             } catch (error) {
-                console.log(`Error compressing itemized prompts for chat ${chatId}:`, error);
+                console.log(`Error migrating itemized prompts for chat ${chatId} to server:`, error);
             }
         }));
+        considered += batch.length;
         // Yield to the main thread between batches - same reasoning as every other batched migration in
         // this codebase (character-cache.js): must not make the browser unresponsive for seconds.
         await new Promise(resolve => setTimeout(resolve, 0));
     }
-    console.log(`[itemized-prompts] Compression migration complete (${legacy.length} chat(s) considered).`);
+    console.log(`[itemized-prompts] Server migration pass complete (${considered} chat(s) considered).`);
 }
 
 /**
@@ -393,7 +453,7 @@ export async function replaceItemizedPromptText(mesId, promptText) {
 }
 
 /**
- * Deletes the itemized prompts for a chat.
+ * Deletes the itemized prompts for a chat from server-side storage.
  * @param {string} chatId Chat ID to delete itemized prompts for
  */
 export async function deleteItemizedPrompts(chatId) {
@@ -402,7 +462,11 @@ export async function deleteItemizedPrompts(chatId) {
             return;
         }
 
-        await promptStorage.removeItem(chatId);
+        await fetch('/api/itemized-prompts/delete', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ chatId }),
+        });
         await eventSource.emit(event_types.ITEMIZED_PROMPTS_DELETED, { chatId: chatId, all: false });
     } catch {
         console.log('Error deleting itemized prompts for chat', chatId);
@@ -410,11 +474,14 @@ export async function deleteItemizedPrompts(chatId) {
 }
 
 /**
- * Empties the itemized prompts array and caches.
+ * Empties the itemized prompts array and every chat's server-side storage.
  */
 export async function clearItemizedPrompts() {
     try {
-        await promptStorage.clear();
+        await fetch('/api/itemized-prompts/clear', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+        });
         itemizedPrompts = [];
         await eventSource.emit(event_types.ITEMIZED_PROMPTS_DELETED, { all: true });
     } catch {
