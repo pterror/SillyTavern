@@ -15,7 +15,7 @@ import storage from 'node-persist';
 
 import { AVATAR_WIDTH, AVATAR_HEIGHT, DEFAULT_AVATAR_PATH } from '../constants.js';
 import { default as validateAvatarUrlMiddleware, getFileNameValidationFunction, forbiddenRegExp } from '../middleware/validateFileName.js';
-import { deepMerge, humanizedDateTime, tryParse, MemoryLimitedMap, getConfigValue, mutateJsonString, clientRelativePath, getUniqueName, sanitizeSafeCharacterReplacements, getArrayBufferSlice, uuidv7 } from '../util.js';
+import { deepMerge, humanizedDateTime, tryParse, MemoryLimitedMap, getConfigValue, mutateJsonString, clientRelativePath, getUniqueName, sanitizeSafeCharacterReplacements, getArrayBufferSlice, uuidv7, mapWithConcurrency, color } from '../util.js';
 import { TavernCardValidator } from '../validator/TavernCardValidator.js';
 import { parse, read, write, writeCardToFile, computeAvatarIdentityHashFromImageBuffer } from '../character-card-parser.js';
 import { getCharaCardV2, convertToV2, readFromV2, charaFormatData, unsetPrivateFields, omitInstallLocalFields, omitFavField, omitChatField, computeContentIdentityHash } from '../character-card-normalize.js';
@@ -269,6 +269,105 @@ export async function fireMetadataUpsertHook(directories, avatar, data, contentH
     } catch (err) {
         console.error('[character-metadata] Failed to update metadata store after a character write (the reconciler will catch it):', err);
     }
+}
+
+// Concurrency for repairFirstMesMismatches()'s corpus scan below - same bounded-concurrency-batch shape as
+// character-metadata-db.js's BOOTSTRAP_READ_CONCURRENCY (this is the same class of work: stat+parse every PNG
+// in the library), just not shared with that module directly - see character-card-normalize.js's own header on
+// why the two sides of this boundary (character-metadata-db.js / characters.js) deliberately don't import from
+// each other.
+const FIRST_MES_REPAIR_CONCURRENCY = 64;
+const FIRST_MES_REPAIR_BATCH_SIZE = 500;
+
+/**
+ * Config-gated autofix for the Spec-v1/Spec-v2 `first_mes` drift readFromV2() warns about ("has Spec v2 data
+ * mismatch with Spec v1 for field: first_mes") - some past bug let a card's top-level `first_mes` diverge from
+ * its own `data.first_mes` (the canonical Spec v2 value), and this rewrites the top-level field to match. Off
+ * by default (`performance.autofixFirstMesMismatch`, read fresh via getConfigValue() so a config change takes
+ * effect on the very next call with no restart needed, same gate shape as character-metadata-db.js's
+ * `backfillContentIdentityHashes()`) - this does real file writes, so a fresh install must not silently start
+ * rewriting cards on its own.
+ *
+ * Scoped to `first_mes` ONLY, not a general v1/v2 resync: every other field readFromV2() can warn about
+ * (name/description/personality/scenario/mes_example/tags/talkativeness/fav) is left exactly as it is on disk -
+ * this is a narrow, single-field fix, not a "sync everything" pass. V2's `data.first_mes` always wins (matching
+ * readFromV2()'s own unconditional `char.first_mes = data.first_mes` hoist) - this never writes the other
+ * direction.
+ *
+ * Idempotent and safe to run on every boot while the flag is on: a card whose `first_mes` already matches
+ * `data.first_mes` (or that has no Spec v2 `data` block at all, i.e. a plain V1 card) is left completely
+ * untouched - not rewritten, not re-hashed, not even fed through JSON.stringify() - so only files this pass
+ * actually finds mismatched are ever written, and a clean library costs one full read-only scan.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @returns {Promise<{ scanned: number, fixed: string[] }>} `fixed` are the avatar filenames actually rewritten.
+ */
+export async function repairFirstMesMismatches(directories) {
+    if (!getConfigValue('performance.autofixFirstMesMismatch', false, 'boolean')) return { scanned: 0, fixed: [] };
+    if (!fs.existsSync(directories.characters)) return { scanned: 0, fixed: [] };
+
+    const files = (await fsPromises.readdir(directories.characters)).filter(f => f.endsWith('.png'));
+    const fixed = [];
+    let processed = 0;
+
+    for (let i = 0; i < files.length; i += FIRST_MES_REPAIR_BATCH_SIZE) {
+        const chunk = files.slice(i, i + FIRST_MES_REPAIR_BATCH_SIZE);
+        const chunkFixed = await mapWithConcurrency(chunk, FIRST_MES_REPAIR_CONCURRENCY, async (file) => {
+            const filePath = path.join(directories.characters, file);
+            try {
+                const raw = await parse(filePath, 'png');
+                if (raw === undefined) return null;
+
+                let card;
+                try {
+                    card = JSON.parse(raw);
+                } catch {
+                    return null; // Not this pass's job - same "unparseable is a separate pre-existing problem" posture as repairStaleShallowTagIds().
+                }
+
+                if (card.spec === undefined || _.isUndefined(card.data)) return null; // Plain V1 card, or a V2 card missing its `data` block - nothing to compare against.
+
+                const v2FirstMes = card.data.first_mes;
+                if (_.isUndefined(v2FirstMes)) return null;
+                if (!_.isUndefined(card.first_mes) && String(card.first_mes) === String(v2FirstMes)) return null; // Already in sync.
+
+                card.first_mes = v2FirstMes;
+                const data = JSON.stringify(card);
+
+                const { avatarIdentityHash } = await writeCardToFile(filePath, filePath, data);
+                await fireMetadataUpsertHook(directories, file, data, null, avatarIdentityHash);
+
+                // Invalidate this file's cached read the same way writeCharacterData() does, so a subsequent
+                // request never serves the pre-fix in-memory copy. (Nothing further needed for diskCache here:
+                // its cache key already embeds the file's mtime - which this write just changed - so the old
+                // entry is already unreachable; the diskCache.verify() call below just reclaims its disk space.)
+                for (const key of memoryCache.keys()) {
+                    if (key.startsWith(filePath)) {
+                        memoryCache.delete(key);
+                        break;
+                    }
+                }
+
+                return file;
+            } catch (err) {
+                console.error(`[first-mes-repair] Failed to process ${file}, skipping it this pass:`, err.message);
+                return null;
+            }
+        });
+
+        for (const file of chunkFixed) {
+            if (file) fixed.push(file);
+        }
+        processed += chunk.length;
+    }
+
+    if (fixed.length > 0) {
+        console.log(color.cyan(`[first-mes-repair] Fixed ${fixed.length}/${processed} character(s) with a Spec v1/v2 first_mes mismatch.`));
+        if (useDiskCache) {
+            await diskCache.verify([directories]);
+        }
+    }
+
+    return { scanned: processed, fixed };
 }
 
 /**
