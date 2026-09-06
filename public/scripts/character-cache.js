@@ -22,6 +22,34 @@ import { characterDigestFavHash, characterDigestFieldsHash, characterDigestTagId
  * Records with a different or missing version get their hashes recomputed on first read. */
 const HASH_VERSION = 2;
 
+/**
+ * Top-level fields that Spec V2 cards commonly mirror verbatim under `data.*` for V1-client back-compat.
+ * When a character's top-level copy is byte-identical to its `data.*` copy, storing both in the cache is pure
+ * duplication (2026-09 cache-size investigation: sampled at ~6.7KB/character on average, ~31% of a typical
+ * cached record). saveCachedCharacters() strips the top-level copy when it's an exact duplicate and records
+ * which fields it stripped in the record's sibling `dedup` array (never inside the stored `character` object
+ * itself); getAllCachedCharacters()/getCachedEntriesByIds() restore it on read by copying back from `data.*`,
+ * so every reader downstream sees exactly the same shape a fresh (uncompressed) fetch would have produced.
+ */
+const DUPLICATE_FIELDS = ['description', 'first_mes', 'mes_example', 'scenario', 'tags', 'personality'];
+
+/**
+ * Restores top-level fields saveCachedCharacters() stripped as exact duplicates of their `data.*` counterpart.
+ * Mutates and returns `character` in place - safe because callers only ever call this on a freshly
+ * IDB-deserialized object with no other live references.
+ * @param {object} character
+ * @param {string[]|undefined} dedup Field names stripped at write time (record's sibling `dedup` array).
+ * @returns {object} `character`, with any stripped fields restored.
+ */
+function rehydrateDuplicateFields(character, dedup) {
+    if (dedup && dedup.length && character?.data) {
+        for (const field of dedup) {
+            character[field] = character.data[field];
+        }
+    }
+    return character;
+}
+
 /** @type {Map<string, LocalForage>} */
 const storesByHandle = new Map();
 
@@ -176,7 +204,7 @@ export async function getAllCachedCharacters() {
         await store.iterate((record, key) => {
             if (key === CURSOR_KEY || key === LEGACY_REV_KEY || key === WRITE_FAILURES_KEY) return;
             if (record && record.character) {
-                result.set(key, record.character);
+                result.set(key, rehydrateDuplicateFields(record.character, record.dedup));
             }
         });
     } catch (error) {
@@ -237,7 +265,7 @@ export async function getAllCachedHashes() {
             const batch = unhashed.slice(i, i + MIGRATE_BATCH);
             const toStore = [];
             for (const [key, record] of batch) {
-                const character = record.character;
+                const character = rehydrateDuplicateFields(record.character, record.dedup);
                 // Restore raw name from data.name if it was mangled by the now-removed
                 // DOMPurify sanitization (data.name was never sanitized).
                 if (character?.data?.name !== undefined) {
@@ -308,6 +336,7 @@ export async function getCachedEntriesByIds(ids) {
         try {
             const record = await store.getItem(id);
             if (record?.character && record?.hashes?.v === HASH_VERSION) {
+                rehydrateDuplicateFields(record.character, record.dedup);
                 result.set(id, record);
             }
         } catch (error) {
@@ -349,7 +378,24 @@ export async function saveCachedCharacters(entries) {
                 content: characterDigestFieldsHash(character) % 4294967296,
                 v: HASH_VERSION,
             };
-            return store.setItem(avatar, { character, hashes }).catch(error => {
+            // Strip top-level fields that exactly duplicate their data.* counterpart (see DUPLICATE_FIELDS'
+            // own doc comment) - computed from the original `character` above so the hashes still reflect the
+            // real full content regardless of what's actually stored. Never mutates the caller's object
+            // (which may still be live in the in-memory `characters` array) - only the clone written to IDB
+            // is stripped, and only when a field is present at all (an already-absent field, the common case
+            // for a V2-only card with no V1 mirror, must stay absent rather than becoming an explicit
+            // `undefined` key added by the clone).
+            let toStore = character;
+            let dedup;
+            for (const field of DUPLICATE_FIELDS) {
+                if (character.data && field in character &&
+                    JSON.stringify(character[field]) === JSON.stringify(character.data[field])) {
+                    if (toStore === character) toStore = { ...character };
+                    delete toStore[field];
+                    (dedup ??= []).push(field);
+                }
+            }
+            return store.setItem(avatar, { character: toStore, hashes, dedup }).catch(error => {
                 console.error(`Failed to cache character data for ${avatar}:`, error);
                 failed.push(avatar);
             });
