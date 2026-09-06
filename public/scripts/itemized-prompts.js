@@ -156,6 +156,55 @@ export async function loadItemizedPrompts(chatId) {
 }
 
 /**
+ * Compresses a chat's itemizedPrompts array into the on-disk shape (field-dedup + cross-entry rawPrompt
+ * diffing) - shared by saveItemizedPrompts() (the currently-open chat's live array) and
+ * migrateAllItemizedPrompts() below (every OTHER chat's already-stored legacy array, read via a full-store
+ * scan). Never mutates `entries`.
+ * @param {object[]} entries
+ * @returns {{v: number, entries: object[], dedup: (string[]|undefined)[], rawPromptDelta: (string|undefined)[]}}
+ */
+function compressItemizedPrompts(entries) {
+    const dmp = newPromptDiffEngine();
+    const dedup = [];
+    const rawPromptDelta = [];
+    /** @type {string|undefined} Previous entry's full (undiffed) rawPrompt, this compression pass. */
+    let previousRawPrompt;
+    const compressedEntries = entries.map((originalEntry) => {
+        const rawPrompt = originalEntry.rawPrompt;
+        // Intra-entry dedup (other fields byte-identical to this entry's OWN full rawPrompt) computed
+        // first, from the untouched original - the cross-entry delta below only ever replaces
+        // rawPrompt itself, never the fields this step strips.
+        const { toStore: dedupedEntry, dedup: dedupedFields } = computeItemizedDedupSplit(originalEntry);
+        dedup.push(dedupedFields);
+
+        let toStore = dedupedEntry;
+        let delta;
+        if (typeof rawPrompt === 'string' && rawPrompt.length > 0 &&
+            typeof previousRawPrompt === 'string' && previousRawPrompt.length > 0) {
+            const encoded = dmp.diff_toDelta(dmp.diff_main(previousRawPrompt, rawPrompt));
+            // Only ever use the delta when it's actually smaller - guards against the (unlikely, e.g.
+            // wildly different consecutive prompts) case where the encoded diff would be bigger than
+            // just storing the full string.
+            if (encoded.length < rawPrompt.length) {
+                delta = encoded;
+            }
+        }
+        if (delta !== undefined) {
+            toStore = toStore === dedupedEntry ? { ...dedupedEntry } : toStore;
+            delete toStore.rawPrompt;
+        }
+        rawPromptDelta.push(delta);
+
+        if (typeof rawPrompt === 'string') {
+            previousRawPrompt = rawPrompt;
+        }
+        return toStore;
+    });
+
+    return { v: DEDUP_VERSION, entries: compressedEntries, dedup, rawPromptDelta };
+}
+
+/**
  * Saves the itemized prompts for a chat.
  * @param {string} chatId Chat ID to save itemized prompts for
  */
@@ -165,48 +214,65 @@ export async function saveItemizedPrompts(chatId) {
             return;
         }
 
-        const dmp = newPromptDiffEngine();
-        const dedup = [];
-        const rawPromptDelta = [];
-        /** @type {string|undefined} Previous entry's full (undiffed) rawPrompt, this save pass. */
-        let previousRawPrompt;
-        const entries = itemizedPrompts.map((originalEntry) => {
-            const rawPrompt = originalEntry.rawPrompt;
-            // Intra-entry dedup (other fields byte-identical to this entry's OWN full rawPrompt) computed
-            // first, from the untouched original - the cross-entry delta below only ever replaces
-            // rawPrompt itself, never the fields this step strips.
-            const { toStore: dedupedEntry, dedup: dedupedFields } = computeItemizedDedupSplit(originalEntry);
-            dedup.push(dedupedFields);
-
-            let toStore = dedupedEntry;
-            let delta;
-            if (typeof rawPrompt === 'string' && rawPrompt.length > 0 &&
-                typeof previousRawPrompt === 'string' && previousRawPrompt.length > 0) {
-                const encoded = dmp.diff_toDelta(dmp.diff_main(previousRawPrompt, rawPrompt));
-                // Only ever use the delta when it's actually smaller - guards against the (unlikely, e.g.
-                // wildly different consecutive prompts) case where the encoded diff would be bigger than
-                // just storing the full string.
-                if (encoded.length < rawPrompt.length) {
-                    delta = encoded;
-                }
-            }
-            if (delta !== undefined) {
-                toStore = toStore === dedupedEntry ? { ...dedupedEntry } : toStore;
-                delete toStore.rawPrompt;
-            }
-            rawPromptDelta.push(delta);
-
-            if (typeof rawPrompt === 'string') {
-                previousRawPrompt = rawPrompt;
-            }
-            return toStore;
-        });
-
-        await promptStorage.setItem(chatId, { v: DEDUP_VERSION, entries, dedup, rawPromptDelta });
+        await promptStorage.setItem(chatId, compressItemizedPrompts(itemizedPrompts));
         await eventSource.emit(event_types.ITEMIZED_PROMPTS_SAVED, { chatId: chatId });
     } catch (error) {
         console.log('Error saving itemized prompts for chat', chatId, error);
     }
+}
+
+/** Set once a background full-store migration has been kicked off this session (see
+ * migrateAllItemizedPrompts()), so it's never launched more than once per session. */
+let allChatsMigrationStarted = false;
+
+/**
+ * Eagerly compresses every chat's itemized prompts still in the legacy plain-array format, not just the
+ * ones a user happens to reopen (loadItemizedPrompts()'s per-chat lazy migration leaves any chat nobody
+ * reopens sitting at full size forever - most of a large chat history realistically never gets reopened,
+ * so that path alone can't actually reclaim the bulk of this store's footprint).
+ *
+ * Call once at boot; safe to call unconditionally - both the in-session guard and each stored value's own
+ * shape make it a no-op on every call after the first genuine sweep. Never awaited by its caller - pure
+ * background disk-space reclamation, batched/yielded the same way character-cache.js's migrations are, and
+ * naturally resumable if interrupted (a chat is only left in legacy format until this actually rewrites
+ * it, so a browser closed mid-sweep just means the next boot's sweep finds - and only re-touches - however
+ * many chats didn't get to convert yet).
+ */
+export async function migrateAllItemizedPrompts() {
+    if (allChatsMigrationStarted) {
+        return;
+    }
+    allChatsMigrationStarted = true;
+
+    /** @type {[string, object[]][]} [chatId, legacy entries array] pairs still needing compression. */
+    const legacy = [];
+    try {
+        await promptStorage.iterate((value, chatId) => {
+            if (Array.isArray(value) && value.length > 0) {
+                legacy.push([chatId, value]);
+            }
+        });
+    } catch (error) {
+        console.log('Error scanning itemized prompts for migration', error);
+        return;
+    }
+
+    if (legacy.length === 0) {
+        return;
+    }
+
+    console.log(`[itemized-prompts] Compressing ${legacy.length} chat(s) that predate rawPrompt dedup/diffing...`);
+    const MIGRATE_BATCH = 20; // each entries array can itself be large (a whole chat's worth of prompts) - keep batches small.
+    for (let i = 0; i < legacy.length; i += MIGRATE_BATCH) {
+        const batch = legacy.slice(i, i + MIGRATE_BATCH);
+        await Promise.all(batch.map(([chatId, entries]) =>
+            promptStorage.setItem(chatId, compressItemizedPrompts(entries)).catch(error =>
+                console.log(`Error compressing itemized prompts for chat ${chatId}:`, error))));
+        // Yield to the main thread between batches - same reasoning as every other batched migration in
+        // this codebase (character-cache.js): must not make the browser unresponsive for seconds.
+        await new Promise(resolve => setTimeout(resolve, 0));
+    }
+    console.log(`[itemized-prompts] Compression migration complete (${legacy.length} chat(s)).`);
 }
 
 /**
@@ -474,6 +540,10 @@ export async function promptItemize(itemizedPrompts, requestedMesId) {
 }
 
 export function initItemizedPrompts() {
+    // Fire-and-forget: sweeps every OTHER chat's stored prompts into the compressed format in the
+    // background (see this function's own doc comment on why the per-chat-open path alone isn't enough).
+    migrateAllItemizedPrompts();
+
     registerDebugFunction('clearPrompts', 'Delete itemized prompts', 'Deletes all itemized prompts from the local storage.', async () => {
         await clearItemizedPrompts();
         toastr.info('Itemized prompts deleted.');
