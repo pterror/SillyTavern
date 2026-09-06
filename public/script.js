@@ -733,14 +733,6 @@ export let streamingProcessor = null;
 let crop_data = undefined;
 
 /**
- * Snapshot of form field values captured when the character editor is populated.
- * Used by createOrEditCharacter() to detect whether any field actually changed,
- * preventing spurious saves that trigger shouldRegenerateMessage and corrupt chat state.
- * @type {Object<string, string>|null}
- */
-let _characterFormSnapshot = null;
-
-/**
  * Maps form field IDs to their card paths. createOrEditCharacter()'s edit path sends the CURRENT value of
  * every one of these fields on every save (see that function's own doc comment on why this is no longer a
  * diffed subset) and uses this same map to compute per-field loaded-value hashes for conflict detection.
@@ -772,9 +764,30 @@ const FORM_TO_CARD = {
     '#character_book_json': { v2: 'data.character_book', transform: 'json' },
 };
 
-/** The form field IDs that make up the character card content (excludes db-authoritative
- *  fields like the chat pointer, which are handled through dedicated APIs). */
-const CHARACTER_FORM_FIELDS = Object.keys(FORM_TO_CARD);
+/**
+ * FORM_TO_CARD field ids (e.g. `'#description_textarea'`) whose own input/change event has fired since
+ * the character editor was last (re)populated. Mutation-tracked, not value-compared: "did this field
+ * change" is answered by "did its own event actually fire", never by diffing a currently-read value
+ * against some remembered baseline - there is no baseline stored anywhere. createOrEditCharacter() sends
+ * exactly the fields in this set on save, then clears it; select_selected_character()/select_rm_create()
+ * clear it whenever a (different) character or create-mode form gets populated, since a field set via
+ * `.val()` alone (no `.trigger()`) during that populate never enters this set in the first place - see the
+ * delegated listener right below for the only place anything gets added to it.
+ * @type {Set<string>}
+ */
+const _dirtyCharacterFields = new Set();
+
+// The only place _dirtyCharacterFields ever gets a member added: bound once, here, via delegation (never
+// re-bound per character load) so it covers every FORM_TO_CARD field regardless of when it entered the
+// DOM. Listens to both input and change - the mapped fields span plain text inputs/textareas (input) and
+// at least one range slider (change, and also input while dragging) - a field firing both for one user
+// action is harmless, since adding an already-dirty field again is a no-op. Code that sets one of these
+// fields' value PROGRAMMATICALLY as an intentional edit (e.g. world-info.js's charUpdatePrimaryWorld(),
+// saveEmbeddedLore()) MUST `.trigger('input')` (or 'change') itself for that edit to register here -
+// `.val()` alone never fires either event.
+$(document).on('input change', Object.keys(FORM_TO_CARD).join(', '), function () {
+    _dirtyCharacterFields.add(`#${this.id}`);
+});
 
 let is_delete_mode = false;
 let fav_ch_checked = false;
@@ -13034,12 +13047,9 @@ export function select_selected_character(avatar, { switchMenu = true } = {}) {
 
     $('#form_create').attr('actiontype', 'editcharacter');
 
-    // Capture form snapshot for no-op detection in createOrEditCharacter() - must be
-    // after all .val() population above so it reflects the actual loaded state.
-    _characterFormSnapshot = {};
-    for (const id of CHARACTER_FORM_FIELDS) {
-        _characterFormSnapshot[id] = String($(id).val() ?? '');
-    }
+    // This character's fields were just populated programmatically (.val(), no .trigger()), so none
+    // of that counts as a real edit - start clean. See _dirtyCharacterFields' own doc comment.
+    _dirtyCharacterFields.clear();
     $('.form_create_bottom_buttons_block .chat_lorebook_button').show();
 
     const externalMediaState = isExternalMediaAllowed();
@@ -13128,7 +13138,7 @@ function select_rm_create({ switchMenu = true } = {}) {
     checkEmbeddedWorld();
 
     $('#form_create').attr('actiontype', 'createcharacter');
-    _characterFormSnapshot = null; // No snapshot in create mode
+    _dirtyCharacterFields.clear(); // No dirty-tracking in create mode - the whole form is sent on create.
     $('.form_create_bottom_buttons_block .chat_lorebook_button').hide();
     $('#character_open_media_overrides').hide();
 }
@@ -14799,36 +14809,16 @@ export async function createOrEditCharacter(e) {
         try {
             const previousFav = getCurrentCharacter()?.fav;
 
-            // No-op guard: skip the save entirely if nothing in the form actually changed.
+            // No-op guard: skip the save entirely if no tracked field's own input/change event has
+            // fired since this character was loaded (see _dirtyCharacterFields' own doc comment).
             const avatarInput = formData.get('avatar');
             const hasNewAvatar = avatarInput instanceof File && avatarInput.size > 0;
-            if (!hasNewAvatar && _characterFormSnapshot) {
-                let hasDirtyFields = false;
-                for (const [id, originalValue] of Object.entries(_characterFormSnapshot)) {
-                    if (String($(id).val() ?? '') !== originalValue) {
-                        hasDirtyFields = true;
-                        break;
-                    }
-                }
-                if (!hasDirtyFields) {
-                    return;
-                }
+            if (!hasNewAvatar && _dirtyCharacterFields.size === 0) {
+                return;
             }
 
             const editCharacter = getCurrentCharacter();
             const avatarUrl = String(formData.get('avatar_url'));
-
-            if (!_characterFormSnapshot) {
-                // Shouldn't happen: the only place that sets actiontype to 'editcharacter'
-                // (selectCharacterById's form population) captures the snapshot immediately
-                // after, synchronously, with nothing awaited in between - so by the time this
-                // branch can run, a snapshot always exists. If this ever fires, something
-                // upstream changed; fail loudly instead of silently falling back to a
-                // whole-card save.
-                console.error('createOrEditCharacter: editing with no _characterFormSnapshot - refusing to save.');
-                toastr.error(t`Could not determine what changed on this character. Please reload it and try again.`, t`Save failed`);
-                return;
-            }
 
             // ─── Avatar image upload via edit-avatar ─────────────────────────
             // Independent of the field save below: edit-avatar re-reads the character
@@ -14866,25 +14856,24 @@ export async function createOrEditCharacter(e) {
             }
 
             // ─── Field-granular save via merge-attributes ───────────────────
-            // Sends the CURRENT value of every field FORM_TO_CARD knows about, every save - no
-            // per-field diffing against the load-time snapshot to decide what to include. The
-            // diffed-subset design this replaced silently dropped any field with no FORM_TO_CARD
-            // entry (character_book had none at all - see world-info.js's embedded-lore editor,
-            // whose saves this reached the server but the field was never even considered for
-            // inclusion), and made "is this actually current" depend on remembering to keep the
-            // mapping and the snapshot in exact sync. Sending every mapped field unconditionally
-            // needs neither: a field simply not present in FORM_TO_CARD is the only way to miss a
-            // save now, not a stale-diff bug on top of that. Still no full-card round-trip - this
-            // is bounded by FORM_TO_CARD's own field count, not the whole card.
+            // Only sends fields actually marked dirty in _dirtyCharacterFields - never a value
+            // comparison. A field can only ever be silently unsaveable by not being in FORM_TO_CARD
+            // at all (the actual root cause of character_book never saving: it had no entry there,
+            // so nothing could ever mark it dirty OR include it); it can no longer additionally be
+            // missed by a stale/desynced diff, because there is no diff - "is this dirty" and "is
+            // this in the map" are the same question now (_dirtyCharacterFields only ever holds
+            // FORM_TO_CARD ids - see that Set's own doc comment on the delegated listener that's the
+            // only thing that ever adds to it).
             //
-            // Conflict detection is correspondingly per-field across the same full set: every
-            // mapped field's loaded-value hash goes in loadedFieldHashes, so a concurrent edit to
-            // ANY field this save also touches gets caught (see _characterFormSnapshot's own
-            // no-op guard above for why fields nobody touched at all don't even reach this point).
+            // Conflict detection stays per-field: only the fields actually being sent get a
+            // loaded-value hash, so a concurrent change to a field this save doesn't touch is never
+            // flagged as a conflict.
             const mergeData = { avatar: avatarUrl };
             const loadedFieldHashes = {};
 
-            for (const [formId, mapping] of Object.entries(FORM_TO_CARD)) {
+            for (const formId of _dirtyCharacterFields) {
+                const mapping = FORM_TO_CARD[formId];
+                if (!mapping) continue; // Stale entry from a field since removed from FORM_TO_CARD - ignore, don't crash.
                 const currentValue = String($(formId).val() ?? '');
 
                 // Transform the form value to match card format
@@ -14975,12 +14964,9 @@ export async function createOrEditCharacter(e) {
             // ─── Common post-save logic ────────────────────────────────────
             await getOneCharacter(avatarUrl);
 
-            // Re-capture the form snapshot so the next save correctly detects no-op
-            if (_characterFormSnapshot) {
-                for (const id of CHARACTER_FORM_FIELDS) {
-                    _characterFormSnapshot[id] = String($(id).val() ?? '');
-                }
-            }
+            // This save succeeded for every field that was dirty - none of them are dirty relative
+            // to what's now saved, so the set is clear until the next real edit fires an event.
+            _dirtyCharacterFields.clear();
 
             if (Boolean(previousFav) !== Boolean(fav_ch_checked)) {
                 favsToHotswap();
