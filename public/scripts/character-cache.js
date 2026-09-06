@@ -50,6 +50,68 @@ function rehydrateDuplicateFields(character, dedup) {
     return character;
 }
 
+/** Bumped only if the dedup transform itself changes (e.g. DUPLICATE_FIELDS gains/loses a field) - forces
+ * every record to be reconsidered by migrateDedupCompression() below even if it already carries a stamp
+ * from an older transform. */
+const DEDUP_VERSION = 1;
+
+/** Set once a background compression migration has been kicked off this session (see getAllCachedCharacters()),
+ * so the multiple times it's called during one boot/sync cycle don't each launch their own overlapping pass. */
+let dedupMigrationStarted = false;
+
+/**
+ * Computes the {toStore, dedup} split for a single already-processed, already-rehydrated (i.e. full/
+ * uncompressed) character object - shared by saveCachedCharacters() (fresh writes) and
+ * migrateDedupCompression() (rewriting records that predate this stripping). Never mutates `character`.
+ * @param {object} character
+ * @returns {{toStore: object, dedup: string[]|undefined}}
+ */
+function computeDedupSplit(character) {
+    let toStore = character;
+    let dedup;
+    for (const field of DUPLICATE_FIELDS) {
+        if (character.data && field in character &&
+            JSON.stringify(character[field]) === JSON.stringify(character.data[field])) {
+            if (toStore === character) toStore = { ...character };
+            delete toStore[field];
+            (dedup ??= []).push(field);
+        }
+    }
+    return { toStore, dedup };
+}
+
+/**
+ * One-time background rewrite of records that predate v1/v2 field dedup (or predate a later
+ * DEDUP_VERSION bump), so the space savings actually apply to the existing cache instead of only
+ * newly-synced characters going forward. Never awaited by its caller - pure background disk-space
+ * reclamation, not something boot should ever wait on.
+ *
+ * Interruption-safe with no separate progress cursor: each record is only stamped `dedupV` after its
+ * rewrite commits, so a browser closed mid-migration simply leaves those records unstamped - the next
+ * boot's getAllCachedCharacters() scan finds them again via the same `dedupV !== DEDUP_VERSION` check
+ * and resumes from there. A second tab running its own pass concurrently is redundant work, never
+ * corruption - both converge on the same stripped bytes.
+ * @param {LocalForage} store
+ * @param {[string, object][]} unmigrated [key, record] pairs; `record.character` was already rehydrated
+ * to its full (uncompressed) shape by the caller's own iterate pass - recompressed here as-is.
+ */
+async function migrateDedupCompression(store, unmigrated) {
+    console.log(`[character-cache] Compressing ${unmigrated.length} cached record(s) that predate v1/v2 field dedup...`);
+    const MIGRATE_BATCH = 500;
+    for (let i = 0; i < unmigrated.length; i += MIGRATE_BATCH) {
+        const batch = unmigrated.slice(i, i + MIGRATE_BATCH);
+        await Promise.all(batch.map(([key, record]) => {
+            const { toStore, dedup } = computeDedupSplit(record.character);
+            return store.setItem(key, { ...record, character: toStore, dedup, dedupV: DEDUP_VERSION }).catch(error =>
+                console.error(`Failed to compress cached character data for ${key}:`, error));
+        }));
+        // Yield to the main thread between batches, same reasoning as the hash migration above - a
+        // multi-hundred-thousand-record pass must not make the browser unresponsive for seconds.
+        await new Promise(resolve => setTimeout(resolve, 0));
+    }
+    console.log(`[character-cache] Compression migration complete (${unmigrated.length} record(s)).`);
+}
+
 /** @type {Map<string, LocalForage>} */
 const storesByHandle = new Map();
 
@@ -200,15 +262,24 @@ export async function setWriteFailures(ids) {
 export async function getAllCachedCharacters() {
     const store = getCharacterCacheStore();
     const result = new Map();
+    /** @type {[string, object][]} records predating DEDUP_VERSION - queued for migrateDedupCompression() below. */
+    const unmigrated = [];
     try {
         await store.iterate((record, key) => {
             if (key === CURSOR_KEY || key === LEGACY_REV_KEY || key === WRITE_FAILURES_KEY) return;
             if (record && record.character) {
                 result.set(key, rehydrateDuplicateFields(record.character, record.dedup));
+                if (record.dedupV !== DEDUP_VERSION) {
+                    unmigrated.push([key, record]);
+                }
             }
         });
     } catch (error) {
         console.error('Failed to read cached character data:', error);
+    }
+    if (unmigrated.length > 0 && !dedupMigrationStarted) {
+        dedupMigrationStarted = true;
+        migrateDedupCompression(store, unmigrated);
     }
     return result;
 }
@@ -385,17 +456,8 @@ export async function saveCachedCharacters(entries) {
             // is stripped, and only when a field is present at all (an already-absent field, the common case
             // for a V2-only card with no V1 mirror, must stay absent rather than becoming an explicit
             // `undefined` key added by the clone).
-            let toStore = character;
-            let dedup;
-            for (const field of DUPLICATE_FIELDS) {
-                if (character.data && field in character &&
-                    JSON.stringify(character[field]) === JSON.stringify(character.data[field])) {
-                    if (toStore === character) toStore = { ...character };
-                    delete toStore[field];
-                    (dedup ??= []).push(field);
-                }
-            }
-            return store.setItem(avatar, { character: toStore, hashes, dedup }).catch(error => {
+            const { toStore, dedup } = computeDedupSplit(character);
+            return store.setItem(avatar, { character: toStore, hashes, dedup, dedupV: DEDUP_VERSION }).catch(error => {
                 console.error(`Failed to cache character data for ${avatar}:`, error);
                 failed.push(avatar);
             });
