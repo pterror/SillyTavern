@@ -1081,9 +1081,13 @@ export function initRossMods() {
             // as swipe gestures
             return;
         }
-        var SwipeButR = $('.swipe_right:last');
-        var SwipeTargetMesClassParent = $(e.target).closest('.last_mes');
-        if (SwipeTargetMesClassParent !== null) {
+        // Resolve against whichever message the gesture actually happened on, not always
+        // the last message - swipeAllMessages lets earlier messages be swiped too, and
+        // `.closest('.last_mes')` here was always truthy (a jQuery result is never `null`,
+        // even when empty), so this used to hit the last message's button unconditionally.
+        var swipeTargetMes = $(e.target).closest('.mes');
+        if (swipeTargetMes.length) {
+            var SwipeButR = swipeTargetMes.find('.swipe_right');
             if (SwipeButR.is(':visible')) {
                 SwipeButR.trigger('click');
             }
@@ -1105,9 +1109,11 @@ export function initRossMods() {
             // as swipe gestures
             return;
         }
-        var SwipeButL = $('.swipe_left:last');
-        var SwipeTargetMesClassParent = $(e.target).closest('.last_mes');
-        if (SwipeTargetMesClassParent !== null) {
+        // See the swiped-left handler above for why this resolves against the message
+        // under the gesture instead of always targeting the last message.
+        var swipeTargetMes = $(e.target).closest('.mes');
+        if (swipeTargetMes.length) {
+            var SwipeButL = swipeTargetMes.find('.swipe_left');
             if (SwipeButL.is(':visible')) {
                 SwipeButL.trigger('click');
             }
