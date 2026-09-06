@@ -308,19 +308,20 @@ let allChatsMigrationStarted = false;
  * already asked the server for, so a chat sitting untouched in the local backlog would otherwise never get
  * uploaded, and its browser-local bytes would never be reclaimed either. This does a full scan instead.
  *
- * Call once at boot; safe to call unconditionally - both the in-session guard and each chat's own
- * "does the server already have this" check make it a no-op on every call after the backlog is drained.
- * Never awaited by its caller. Naturally resumable if interrupted: a chat is only removed from the local
- * backlog after the server confirms it has the data (either just-uploaded, or already present), so a
- * browser closed mid-sweep just means the next boot's sweep finds - and only re-considers - whatever
- * didn't finish uploading yet.
+ * Call once at boot; safe to call unconditionally - both the in-session guard and the server's own "already
+ * present" check (POST /api/itemized-prompts/migrate) make it a no-op on every call after the backlog is
+ * drained. Never awaited by its caller, and never retried within a session on failure - a real (non-4xx)
+ * failure just logs once and leaves the whole local backlog in place for the next boot to pick up, rather
+ * than looping or hammering the server. Naturally resumable if interrupted: a chat is only removed from the
+ * local backlog once the server has confirmed (in its response) that it holds the data, so a browser closed
+ * mid-upload just means the next boot's scan finds - and only re-considers - whatever didn't get confirmed.
  *
- * Deliberately checks for existing server-side data before uploading (GET first) rather than uploading
- * unconditionally: if the SAME chat was already migrated from another device/browser (or by an earlier,
- * interrupted run of this same function), blindly overwriting could clobber genuinely newer server data
- * with a stale local snapshot. Runs a real batch of these chat migrations concurrently (not one chat
- * waiting on the previous chat's network round trip) to keep total wall-clock time down at real backlog
- * sizes (tens of thousands of chats) - see MIGRATE_CONCURRENCY below.
+ * The whole backlog goes up in a single request (POST /api/itemized-prompts/migrate, body { chats: [...] })
+ * rather than one GET+save round trip per chat: a real backlog can run to tens of thousands of chats, and
+ * per-chat round-tripping - even concurrent - turned into exactly the request flood (and the "why did I get
+ * a 404" confusion around each chat's very first, expected-not-found GET) this rewrite exists to remove.
+ * The "does the server already have this" check that used to be a GET per chat now happens server-side,
+ * inside that one request, so it still can't clobber a chat already migrated from another device/browser.
  */
 export async function migrateAllItemizedPrompts() {
     if (allChatsMigrationStarted) {
@@ -349,63 +350,34 @@ export async function migrateAllItemizedPrompts() {
     }
 
     console.log(`[itemized-prompts] Migrating ${local.length} locally-cached chat(s) to server storage...`);
-    // Each chat migration is at most one GET plus one POST, both cheap on the server (no compression on
-    // this request path - see src/endpoints/itemized-prompts.js) - real concurrency here, not one chat
-    // waiting on the previous chat's round trip, is what keeps a large backlog (tens of thousands of
-    // chats) from taking minutes.
-    const MIGRATE_CONCURRENCY = 64;
-    let considered = 0;
-    let cursor = 0;
 
-    async function migrateOne(chatId, value) {
-        try {
-            const existing = await fetch('/api/itemized-prompts/get', {
-                method: 'POST',
-                headers: getRequestHeaders(),
-                body: JSON.stringify({ chatId }),
-            });
+    try {
+        const chats = local.map(([chatId, value]) => ({
+            chatId,
+            data: poolDedupAll(decodeStoredItemizedPrompts(value)),
+        }));
 
-            if (existing.status !== 404 && !existing.ok) {
-                // A real (transient) error, not "doesn't exist yet" - leave the local copy alone and
-                // retry on a future boot rather than risk losing the only copy of this data.
-                return;
-            }
+        const response = await fetch('/api/itemized-prompts/migrate', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ chats }),
+        });
 
-            if (existing.status === 404) {
-                const entries = decodeStoredItemizedPrompts(value);
-                const data = poolDedupAll(entries);
-                const saveResponse = await fetch('/api/itemized-prompts/save', {
-                    method: 'POST',
-                    headers: getRequestHeaders(),
-                    body: JSON.stringify({ chatId, data }),
-                });
-                if (!saveResponse.ok) {
-                    return; // Couldn't upload - leave the local copy in place, retry next boot.
-                }
-            }
+        if (!response.ok) {
+            // A real (transient) failure, not per-chat - leave the entire local backlog alone and let
+            // the next boot's single request retry it, rather than falling back to per-chat requests.
+            console.log('Error migrating itemized prompts to server:', response.statusText);
+            return;
+        }
 
-            // Either just uploaded, or the server already had this chat's data - safe to reclaim the
-            // local copy either way.
+        const { migrated } = await response.json();
+        for (const chatId of migrated ?? []) {
             await promptStorage.removeItem(chatId);
-        } catch (error) {
-            console.log(`Error migrating itemized prompts for chat ${chatId} to server:`, error);
-        } finally {
-            considered++;
         }
+        console.log(`[itemized-prompts] Server migration pass complete (${migrated?.length ?? 0}/${local.length} chat(s) migrated).`);
+    } catch (error) {
+        console.log('Error migrating itemized prompts to server:', error);
     }
-
-    // Fixed-size worker pool rather than fixed-size sequential batches: a worker picks up the next chat as
-    // soon as its own previous one finishes, so one unusually large chat can't stall the other 63 workers
-    // until it completes.
-    async function worker() {
-        while (cursor < local.length) {
-            const [chatId, value] = local[cursor++];
-            await migrateOne(chatId, value);
-        }
-    }
-
-    await Promise.all(Array.from({ length: Math.min(MIGRATE_CONCURRENCY, local.length) }, () => worker()));
-    console.log(`[itemized-prompts] Server migration pass complete (${considered} chat(s) considered).`);
 }
 
 /**
