@@ -2357,11 +2357,7 @@ async function displayWorldEntries(name, data, navigation = navigation_option.no
 
             const avatar = embeddedLoreCharacterAvatar;
             if (avatar && $('#avatar_url_pole').val() === avatar) {
-                const cardData = JSON.parse(String($('#character_json_data').val()));
-                if (cardData?.data) {
-                    cardData.data.character_book = undefined;
-                }
-                $('#character_json_data').val(JSON.stringify(cardData));
+                $('#character_book_json').val('');
                 await createOrEditCharacter();
             }
 
@@ -5889,10 +5885,7 @@ async function saveEmbeddedLore(data) {
     }
 
     try {
-        const cardData = JSON.parse(String($('#character_json_data').val()));
-        cardData.data = cardData.data ?? {};
-        cardData.data.character_book = convertToCharacterBook(data);
-        $('#character_json_data').val(JSON.stringify(cardData));
+        $('#character_book_json').val(JSON.stringify(convertToCharacterBook(data)));
         await createOrEditCharacter();
     } catch (error) {
         console.error('[WI] Failed to save embedded lorebook changes.', error);

@@ -197,7 +197,7 @@ import {
 import { getAtPath, seedKeyHashes, treeNodeAt, digestsEqual128, foldDigests128, emptyDigest128, DEFAULT_TREE_BRANCHING, characterDigestFieldsHash, characterDigestCardBodyHash, combineDigest128, characterDigestFavHash, characterDigestTagIdsHash } from './scripts/hash-utils.js';
 import { debounce_timeout, GENERATION_TYPE_TRIGGERS, IGNORE_SYMBOL, inject_ids, MEDIA_DISPLAY, MEDIA_SOURCE, MEDIA_TYPE, OVERSWIPE_BEHAVIOR, SCROLL_BEHAVIOR, SWIPE_DIRECTION, SWIPE_SOURCE, SWIPE_STATE } from './scripts/constants.js';
 
-import { cancelDebouncedMetadataSave, doDailyExtensionUpdatesCheck, extension_settings, initExtensions, loadExtensionSettings, runGenerationInterceptors } from './scripts/extensions.js';
+import { cancelDebouncedMetadataSave, doDailyExtensionUpdatesCheck, extension_settings, initExtensions, loadExtensionSettings, runGenerationInterceptors, UNSET_VALUE } from './scripts/extensions.js';
 import { COMMENT_NAME_DEFAULT, CONNECT_API_MAP, executeSlashCommandsOnChatInput, initDefaultSlashCommands, initSlashCommandAutoComplete, isExecutingCommandsFromChatInput, pauseScriptExecution, stopScriptExecution, UNIQUE_APIS } from './scripts/slash-commands.js';
 import { initMacroAutoComplete } from './scripts/autocomplete/MacroAutoComplete.js';
 import {
@@ -740,21 +740,10 @@ let crop_data = undefined;
  */
 let _characterFormSnapshot = null;
 
-/** The form field IDs that make up the character card content (excludes db-authoritative
- *  fields like the chat pointer, which are handled through dedicated APIs). */
-const CHARACTER_FORM_FIELDS = [
-    '#character_name_pole', '#description_textarea', '#personality_textarea',
-    '#scenario_pole', '#mes_example_textarea',
-    '#creator_notes_textarea', '#system_prompt_textarea', '#post_history_instructions_textarea',
-    '#tags_textarea', '#creator_textarea', '#character_version_textarea',
-    '#talkativeness_slider', '#depth_prompt_prompt', '#depth_prompt_depth',
-    '#depth_prompt_role', '#character_world',
-];
-
 /**
- * Maps form field IDs to their card paths. Used to build merge-attributes payloads
- * with only the fields the user actually changed, and to compute per-field loaded-value
- * hashes for conflict detection.
+ * Maps form field IDs to their card paths. createOrEditCharacter()'s edit path sends the CURRENT value of
+ * every one of these fields on every save (see that function's own doc comment on why this is no longer a
+ * diffed subset) and uses this same map to compute per-field loaded-value hashes for conflict detection.
  * @type {Object<string, {v1?: string, v2: string, transform?: string}>}
  */
 const FORM_TO_CARD = {
@@ -774,7 +763,18 @@ const FORM_TO_CARD = {
     '#depth_prompt_depth': { v2: 'data.extensions.depth_prompt.depth', transform: 'int' },
     '#depth_prompt_role': { v2: 'data.extensions.depth_prompt.role' },
     '#character_world': { v2: 'data.extensions.world' },
+    // Embedded lorebook - no visible form control of its own. #character_book_json is a hidden field
+    // populated with the character's current character_book as JSON whenever the character loads (or reset
+    // to '' if it has none), and written to directly by world-info.js's embedded-lore editor
+    // (saveEmbeddedLore()) and its delete action. '' round-trips to the same "no character_book" state
+    // (UNSET_VALUE, see the 'json' transform below) whether the character never had one or one was just
+    // removed.
+    '#character_book_json': { v2: 'data.character_book', transform: 'json' },
 };
+
+/** The form field IDs that make up the character card content (excludes db-authoritative
+ *  fields like the chat pointer, which are handled through dedicated APIs). */
+const CHARACTER_FORM_FIELDS = Object.keys(FORM_TO_CARD);
 
 let is_delete_mode = false;
 let fav_ch_checked = false;
@@ -13017,6 +13017,7 @@ export function select_selected_character(avatar, { switchMenu = true } = {}) {
     $('#chat_import_avatar_url').val(character.avatar);
     $('#chat_import_character_name').val(character.name);
     $('#character_json_data').val(character.json_data);
+    $('#character_book_json').val(character.data?.character_book ? JSON.stringify(character.data.character_book) : '');
 
     updateFavButtonState(character.fav || character.fav == 'true');
 
@@ -13114,6 +13115,7 @@ function select_rm_create({ switchMenu = true } = {}) {
     $('#depth_prompt_role').val(create_save.depth_prompt_role);
     $('#mes_example_textarea').val(create_save.mes_example);
     $('#character_json_data').val('');
+    $('#character_book_json').val('');
     $('#avatar_div').css('display', 'flex');
     $('#avatar_load_preview').attr('src', default_avatar);
     $('#renameCharButton').css('display', 'none');
@@ -14864,18 +14866,26 @@ export async function createOrEditCharacter(e) {
             }
 
             // ─── Field-granular save via merge-attributes ───────────────────
-            // Only sends the fields the user actually changed, with per-field
-            // conflict detection that names the exact fields another session
-            // modified. No full-card round-trip for text-only edits.
+            // Sends the CURRENT value of every field FORM_TO_CARD knows about, every save - no
+            // per-field diffing against the load-time snapshot to decide what to include. The
+            // diffed-subset design this replaced silently dropped any field with no FORM_TO_CARD
+            // entry (character_book had none at all - see world-info.js's embedded-lore editor,
+            // whose saves this reached the server but the field was never even considered for
+            // inclusion), and made "is this actually current" depend on remembering to keep the
+            // mapping and the snapshot in exact sync. Sending every mapped field unconditionally
+            // needs neither: a field simply not present in FORM_TO_CARD is the only way to miss a
+            // save now, not a stale-diff bug on top of that. Still no full-card round-trip - this
+            // is bounded by FORM_TO_CARD's own field count, not the whole card.
+            //
+            // Conflict detection is correspondingly per-field across the same full set: every
+            // mapped field's loaded-value hash goes in loadedFieldHashes, so a concurrent edit to
+            // ANY field this save also touches gets caught (see _characterFormSnapshot's own
+            // no-op guard above for why fields nobody touched at all don't even reach this point).
             const mergeData = { avatar: avatarUrl };
             const loadedFieldHashes = {};
 
-            for (const [formId, originalValue] of Object.entries(_characterFormSnapshot)) {
+            for (const [formId, mapping] of Object.entries(FORM_TO_CARD)) {
                 const currentValue = String($(formId).val() ?? '');
-                if (currentValue === originalValue) continue;
-
-                const mapping = FORM_TO_CARD[formId];
-                if (!mapping) continue;
 
                 // Transform the form value to match card format
                 let cardValue = currentValue;
@@ -14886,6 +14896,19 @@ export async function createOrEditCharacter(e) {
                 } else if (mapping.transform === 'int') {
                     const n = Number(currentValue);
                     cardValue = !isNaN(n) ? n : 4;
+                } else if (mapping.transform === 'json') {
+                    // '' means "no value" (never set, or explicitly cleared) - unset the card path
+                    // entirely rather than writing an empty string/null over it.
+                    if (!currentValue) {
+                        cardValue = UNSET_VALUE;
+                    } else {
+                        try {
+                            cardValue = JSON.parse(currentValue);
+                        } catch (err) {
+                            console.error(`createOrEditCharacter: failed to parse JSON for ${formId}, leaving this field out of the save`, err);
+                            continue;
+                        }
+                    }
                 }
 
                 // Set both V1 and V2 paths in the merge payload
