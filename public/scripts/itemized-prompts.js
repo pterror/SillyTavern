@@ -15,6 +15,90 @@ let priorPromptArrayItemForRawPromptDisplay;
 const promptStorage = localforage.createInstance({ name: 'SillyTavern_Prompts' });
 export let itemizedPrompts = [];
 
+/** Bumped only if the dedup transform itself changes - forces every stored entry to be reconsidered by
+ * migrateLegacyItemizedPrompts() even if it already carries a stamp from an older transform. */
+const DEDUP_VERSION = 1;
+
+/**
+ * The one field in an itemized-prompt entry (script.js's `additionalPromptStuff`) that's reliably the
+ * largest and most likely to be duplicated elsewhere in the same entry: `rawPrompt` is the literal text
+ * handed to the generation API for that turn. `finalPrompt` in particular is very often byte-identical to
+ * it (both are "the assembled prompt", just captured at two different points of the same call) - but any
+ * other field that happens to hold an identical string is caught the same way (2026-09 SillyTavern_Prompts
+ * size investigation: this store measured ~8.9GB, by far the largest single IndexedDB origin consumer -
+ * ~7x the character cache's 1.2GB - because every generated message keeps its own full snapshot of the
+ * assembled prompt, forever, never pruned).
+ */
+const DEDUP_REFERENCE_FIELD = 'rawPrompt';
+
+/**
+ * Computes the {toStore, dedup} split for a single itemized-prompt entry - mirrors
+ * character-cache.js's computeDedupSplit() exactly, just against one canonical reference field instead of
+ * a fixed set of field-to-field pairs (this object has ~30 loosely related fields; checking every one of
+ * them against the one field known to reliably be the largest is simpler and just as safe, since a field
+ * only ever gets stripped when it's a confirmed byte-for-byte match). Never mutates `entry`.
+ * @param {object} entry
+ * @returns {{toStore: object, dedup: string[]|undefined}}
+ */
+function computeItemizedDedupSplit(entry) {
+    const reference = entry[DEDUP_REFERENCE_FIELD];
+    if (typeof reference !== 'string' || reference.length === 0) {
+        return { toStore: entry, dedup: undefined };
+    }
+    let toStore = entry;
+    let dedup;
+    for (const field of Object.keys(entry)) {
+        if (field === DEDUP_REFERENCE_FIELD) continue;
+        if (typeof entry[field] === 'string' && entry[field].length > 0 && entry[field] === reference) {
+            if (toStore === entry) toStore = { ...entry };
+            delete toStore[field];
+            (dedup ??= []).push(field);
+        }
+    }
+    return { toStore, dedup };
+}
+
+/**
+ * Restores fields computeItemizedDedupSplit() stripped as exact duplicates of `rawPrompt`. Mutates and
+ * returns `entry` in place - safe because callers only ever call this on a freshly IDB-deserialized object
+ * with no other live references.
+ * @param {object} entry
+ * @param {string[]|undefined} dedup Field names stripped at write time.
+ * @returns {object} `entry`, with any stripped fields restored.
+ */
+function rehydrateItemizedDedup(entry, dedup) {
+    if (dedup && dedup.length && typeof entry?.[DEDUP_REFERENCE_FIELD] === 'string') {
+        for (const field of dedup) {
+            entry[field] = entry[DEDUP_REFERENCE_FIELD];
+        }
+    }
+    return entry;
+}
+
+/**
+ * Cross-entry compression for `rawPrompt` specifically: consecutive entries in the same chat's
+ * itemizedPrompts array overwhelmingly share most of their content (the same character card, the same
+ * chat history up to a point, often the same world-info activations), which naive whole-string storage
+ * repeats in full for every single message forever. A simple "common prefix" scheme would miss most of
+ * that sharing, though - world-info entries can be inserted at arbitrary depth *within* the chat history
+ * (not just prepended at the very start), so an activation toggling on/off between two consecutive
+ * generations shifts everything after that point even when the actual chat messages around it are
+ * unchanged. diff-match-patch (already a dependency of this file, used below for the human-readable
+ * prompt-diff display) finds the real matching regions wherever they fall via its Myers diff, so it
+ * survives that kind of mid-string interruption correctly - unlike prefix/suffix matching, which would
+ * lose everything past the first divergence.
+ *
+ * `diff_toDelta()`/`diff_fromDelta()` (not `patch_make()`/`patch_apply()`) are the right pair here:
+ * patch_apply does fuzzy, best-effort matching meant for applying a patch to text that may have since
+ * drifted from its original base - unnecessary risk when the exact previous rawPrompt is always known.
+ * diff_toDelta/diff_fromDelta is an exact, lossless encoding of the diff itself.
+ */
+function newPromptDiffEngine() {
+    const dmp = new DiffMatchPatch();
+    dmp.Diff_Timeout = 2.0;
+    return dmp;
+}
+
 /**
  * Gets the itemized prompts for a chat.
  * @param {string} chatId Chat ID to load
@@ -26,15 +110,47 @@ export async function loadItemizedPrompts(chatId) {
             return;
         }
 
-        itemizedPrompts = await promptStorage.getItem(chatId);
+        const stored = await promptStorage.getItem(chatId);
+        let legacyFormat = false;
+
+        if (Array.isArray(stored)) {
+            // Predates both field-dedup and rawPrompt delta-compression - nothing to rehydrate.
+            legacyFormat = true;
+            itemizedPrompts = stored;
+        } else if (stored && Array.isArray(stored.entries)) {
+            const dmp = newPromptDiffEngine();
+            /** @type {string|undefined} Previous entry's already-reconstructed (full) rawPrompt. */
+            let previousRawPrompt;
+            itemizedPrompts = stored.entries.map((entry, i) => {
+                const delta = stored.rawPromptDelta?.[i];
+                if (typeof delta === 'string' && typeof previousRawPrompt === 'string') {
+                    entry.rawPrompt = dmp.diff_text2(dmp.diff_fromDelta(previousRawPrompt, delta));
+                }
+                if (typeof entry.rawPrompt === 'string') {
+                    previousRawPrompt = entry.rawPrompt;
+                }
+                // rawPrompt must be reconstructed above BEFORE this, since deduped fields point at it.
+                return rehydrateItemizedDedup(entry, stored.dedup?.[i]);
+            });
+        } else {
+            itemizedPrompts = [];
+        }
 
         if (!itemizedPrompts) {
             itemizedPrompts = [];
         }
 
+        if (legacyFormat && itemizedPrompts.length > 0) {
+            // Opportunistic one-time migration: this store is loaded lazily per-chat (unlike the character
+            // cache, there's no existing full-store boot scan to piggyback on), so a chat only converges to
+            // the compressed format when it's actually reopened. Fire-and-forget - never block the chat
+            // load on a rewrite of its own just-loaded data.
+            saveItemizedPrompts(chatId);
+        }
+
         await eventSource.emit(event_types.ITEMIZED_PROMPTS_LOADED, { chatId: chatId });
-    } catch {
-        console.log('Error loading itemized prompts for chat', chatId);
+    } catch (error) {
+        console.log('Error loading itemized prompts for chat', chatId, error);
         itemizedPrompts = [];
     }
 }
@@ -49,10 +165,47 @@ export async function saveItemizedPrompts(chatId) {
             return;
         }
 
-        await promptStorage.setItem(chatId, itemizedPrompts);
+        const dmp = newPromptDiffEngine();
+        const dedup = [];
+        const rawPromptDelta = [];
+        /** @type {string|undefined} Previous entry's full (undiffed) rawPrompt, this save pass. */
+        let previousRawPrompt;
+        const entries = itemizedPrompts.map((originalEntry) => {
+            const rawPrompt = originalEntry.rawPrompt;
+            // Intra-entry dedup (other fields byte-identical to this entry's OWN full rawPrompt) computed
+            // first, from the untouched original - the cross-entry delta below only ever replaces
+            // rawPrompt itself, never the fields this step strips.
+            const { toStore: dedupedEntry, dedup: dedupedFields } = computeItemizedDedupSplit(originalEntry);
+            dedup.push(dedupedFields);
+
+            let toStore = dedupedEntry;
+            let delta;
+            if (typeof rawPrompt === 'string' && rawPrompt.length > 0 &&
+                typeof previousRawPrompt === 'string' && previousRawPrompt.length > 0) {
+                const encoded = dmp.diff_toDelta(dmp.diff_main(previousRawPrompt, rawPrompt));
+                // Only ever use the delta when it's actually smaller - guards against the (unlikely, e.g.
+                // wildly different consecutive prompts) case where the encoded diff would be bigger than
+                // just storing the full string.
+                if (encoded.length < rawPrompt.length) {
+                    delta = encoded;
+                }
+            }
+            if (delta !== undefined) {
+                toStore = toStore === dedupedEntry ? { ...dedupedEntry } : toStore;
+                delete toStore.rawPrompt;
+            }
+            rawPromptDelta.push(delta);
+
+            if (typeof rawPrompt === 'string') {
+                previousRawPrompt = rawPrompt;
+            }
+            return toStore;
+        });
+
+        await promptStorage.setItem(chatId, { v: DEDUP_VERSION, entries, dedup, rawPromptDelta });
         await eventSource.emit(event_types.ITEMIZED_PROMPTS_SAVED, { chatId: chatId });
-    } catch {
-        console.log('Error saving itemized prompts for chat', chatId);
+    } catch (error) {
+        console.log('Error saving itemized prompts for chat', chatId, error);
     }
 }
 
