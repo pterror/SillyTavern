@@ -2503,8 +2503,11 @@ function finalizeFetchedCharacter(character) {
  * that function's own doc comment), so a `sinceSeq: 0` cold sync's change list already IS the full current
  * library, with no separate ground-truth listing needed to know what's been deleted since.
  *
- * Throws on any failure (network, non-OK response, etc.) - callers should fall back to the unconditional
- * full-fetch path (fetchAllCharacters()) rather than partially apply a broken delta.
+ * Throws on any failure (network, non-OK response, etc.) - callers should retry rather than partially apply a
+ * broken delta. There is deliberately no full-fetch fallback (see getCharacters()'s retry loop): this install's
+ * scale makes an unconditional `/api/characters/all` dump (every character's full data, no pagination) a
+ * multi-hundred-MB response and a server-side readdir+parse-everything scan - a real outage of its own, not a
+ * safe recovery from what's usually a transient network blip.
  *
  * Note on ordering: unlike the old manifest-diff scheme (which preserved the server's readdir order), the
  * returned list's order is cache insertion order, not any particular library order - nothing downstream should
@@ -3256,37 +3259,6 @@ async function verifyCharacterCacheDigest() {
 }
 
 /**
- * Fetches the full character list unconditionally via `/api/characters/all`, with no caching involved. This is
- * the pre-delta-cache behavior, kept as-is as the fallback path for when fetchCharactersDelta() fails for any
- * reason (e.g. the manifest/batch endpoints being unreachable) - always correct, just without the bandwidth
- * savings.
- * @returns {Promise<object[]|undefined>} The full character list, or undefined if the fetch failed (in which
- * case this function has already reported the failure itself, same as the old inline getCharacters() body did).
- */
-async function fetchAllCharacters() {
-    const response = await fetch('/api/characters/all', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({}),
-    });
-
-    if (!response.ok) {
-        console.error('Failed to fetch characters:', response.statusText);
-        const errorData = await response.json();
-        if (errorData?.overflow) {
-            await Popup.show.text(t`Character data length limit reached`, t`To resolve this, set "performance.lazyLoadCharacters" to "true" in config.yaml and restart the server.`);
-        }
-        return undefined;
-    }
-
-    const getData = await response.json();
-    for (const character of getData) {
-        finalizeFetchedCharacter(character);
-    }
-    return getData;
-}
-
-/**
  * Customizer for lodash's mergeWith(), used to merge a shallow character payload onto a resident one (see
  * getCharacters() below). Plain lodash merge() would be right for objects (recurse field-by-field, key absent
  * from source leaves the destination's value untouched) but wrong for arrays (it merges them index-by-index,
@@ -3341,28 +3313,72 @@ async function seedCharactersFromCache() {
     charactersStore.reset();
 }
 
+/** How many times getCharacters() retries a failed delta fetch before giving up - see this function's own
+ * doc comment on why there's no full-library fallback to reach for instead. */
+const DELTA_FETCH_MAX_RETRIES = 3;
+/** Backoff delay (ms) before each retry attempt - index 0 is the delay before the 2nd attempt, etc. A transient
+ * network blip (the case this exists for) is typically over well within this window; a genuinely down server
+ * or unavailable metadata store isn't fixed by retrying faster, so this doesn't spin harder than that. */
+const DELTA_FETCH_RETRY_DELAYS_MS = [1000, 3000, 8000];
+
+/**
+ * Fetches and applies the current character list. Delegates the actual network fetch to
+ * fetchCharactersDelta(), retrying it a bounded number of times (DELTA_FETCH_MAX_RETRIES) with backoff on
+ * failure. Deliberately never falls back to an unconditional full-library fetch on exhausted retries: that
+ * fallback (`/api/characters/all` with no pagination) used to turn any transient failure of the delta fetch -
+ * including an ordinary one-off `NetworkError` - into a multi-hundred-MB response and a server-side
+ * readdir+parse-every-character-file scan for a large library, i.e. a much worse outage than the blip that
+ * triggered it. On exhausted retries this reports the failure (console + a persistent toast) and returns with
+ * `characters` left exactly as it was - stale, but not corrupted, and correct as soon as a later sync succeeds
+ * (getCharactersDebounced() and the various post-mutation `getCharacters()` call sites - create/rename/delete,
+ * the SSE change-stream handler - all provide their own later opportunities to resync; nothing depends on this
+ * particular call succeeding synchronously). Never throws - every failure path here is caught and reported
+ * internally, so callers (including the boot sequence's un-`.catch()`-ed characterResidencyPromise) can safely
+ * `await` this without risking an unhandled rejection.
+ * @param {object} [options]
+ * @param {boolean} [options.silent]
+ * @param {boolean} [options.silentGroups]
+ * @returns {Promise<void>}
+ */
 export async function getCharacters({ silent = false, silentGroups = false } = {}) {
     let newCharacters;
     // Whether the character sync actually found anything to apply - drives whether the O(library) merge below
-    // (and the reindex/this_avatar-reselect work that follows it) runs at all. `fetchAllCharacters()`'s full-list
-    // fallback has no cheap way to know this (it always returns the whole library, not a delta), so that path
-    // stays conservative and always reports a change - this optimization only targets the common
-    // fetchCharactersDelta() path, which already knows (2026-08 repeated-`/query` investigation: getCharacters()
-    // used to pay this merge and an unconditional trailing printCharacters(true) on every call, even the many
-    // that fetchCharactersDelta() itself found nothing to sync).
+    // (and the reindex/this_avatar-reselect work that follows it) runs at all. Only the delta path can know this
+    // (a fresh fetch has no cheap way to tell "unchanged" apart from "changed" without one) - see the
+    // 2026-08 repeated-`/query` investigation: getCharacters() used to pay this merge and an unconditional
+    // trailing printCharacters(true) on every call, even the many that fetchCharactersDelta() itself found
+    // nothing to sync.
     let charactersChanged = true;
-    try {
-        const delta = await fetchCharactersDelta();
-        newCharacters = delta.list;
-        charactersChanged = delta.changed;
-    } catch (error) {
-        console.error('Character manifest/delta fetch failed, falling back to a full character list fetch:', error);
-        newCharacters = await fetchAllCharacters();
+    let lastError;
+    for (let attempt = 0; attempt <= DELTA_FETCH_MAX_RETRIES; attempt++) {
+        try {
+            const delta = await fetchCharactersDelta();
+            newCharacters = delta.list;
+            charactersChanged = delta.changed;
+            lastError = undefined;
+            break;
+        } catch (error) {
+            lastError = error;
+            if (attempt < DELTA_FETCH_MAX_RETRIES) {
+                const retryDelay = DELTA_FETCH_RETRY_DELAYS_MS[attempt];
+                console.warn(`Character delta fetch failed (attempt ${attempt + 1}/${DELTA_FETCH_MAX_RETRIES + 1}), retrying in ${retryDelay}ms:`, error);
+                await delay(retryDelay);
+            }
+        }
+    }
+
+    if (lastError) {
+        console.error(`Character delta fetch failed after ${DELTA_FETCH_MAX_RETRIES + 1} attempts, giving up (no full-library fallback - see this function's own doc comment):`, lastError);
+        toastr.error(
+            t`Could not sync the character list. Check your connection and refresh the page to retry.`,
+            t`Character sync failed`,
+            { timeOut: 0, extendedTimeOut: 0, preventDuplicates: true },
+        );
+        return;
     }
 
     if (newCharacters === undefined) {
-        // Both paths already reported the failure (fetchAllCharacters shows the overflow popup itself); nothing
-        // further to do - same as the old code's implicit no-op on a failed response.
+        // Nothing further to do - same as the old code's implicit no-op on a failed response.
         return;
     }
 
