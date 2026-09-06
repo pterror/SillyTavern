@@ -316,12 +316,16 @@ let allChatsMigrationStarted = false;
  * local backlog once the server has confirmed (in its response) that it holds the data, so a browser closed
  * mid-upload just means the next boot's scan finds - and only re-considers - whatever didn't get confirmed.
  *
- * The whole backlog goes up in a single request (POST /api/itemized-prompts/migrate, body { chats: [...] })
- * rather than one GET+save round trip per chat: a real backlog can run to tens of thousands of chats, and
- * per-chat round-tripping - even concurrent - turned into exactly the request flood (and the "why did I get
- * a 404" confusion around each chat's very first, expected-not-found GET) this rewrite exists to remove.
- * The "does the server already have this" check that used to be a GET per chat now happens server-side,
- * inside that one request, so it still can't clobber a chat already migrated from another device/browser.
+ * Chats go up in size-capped batches (POST /api/itemized-prompts/migrate, body { chats: [...] }) rather
+ * than one GET+save round trip per chat, and rather than the whole backlog in a single request: a real
+ * backlog can run to tens of thousands of chats totaling gigabytes, so per-chat round-tripping is a request
+ * flood (and made each chat's very first, expected-not-found 404 read as a routing bug), while one request
+ * for everything risks a single-digit-GB request body. Each batch is capped at MAX_BATCH_BYTES of
+ * serialized JSON (falling back to one oversized chat per batch if a single chat alone exceeds that), so
+ * batch count scales with backlog size but stays in the tens/hundreds rather than one-per-chat or one huge
+ * blob; BATCH_CONCURRENCY of them are in flight at once. The "does the server already have this" check
+ * that used to be a GET per chat happens server-side, inside each batch's request, so it still can't
+ * clobber a chat already migrated from another device/browser.
  */
 export async function migrateAllItemizedPrompts() {
     if (allChatsMigrationStarted) {
@@ -349,35 +353,71 @@ export async function migrateAllItemizedPrompts() {
         return;
     }
 
-    console.log(`[itemized-prompts] Migrating ${local.length} locally-cached chat(s) to server storage...`);
+    // Chosen so a batch's JSON body stays comfortably small (low single-digit MB) while still cutting a
+    // 10k+ chat backlog down to tens/hundreds of requests instead of one per chat. MAX_BATCH_CHATS is a
+    // secondary cap for backlogs of many small chats, where the byte cap alone would still pack thousands
+    // into one batch.
+    const MAX_BATCH_BYTES = 4 * 1024 * 1024;
+    const MAX_BATCH_CHATS = 200;
+    const BATCH_CONCURRENCY = 4;
 
-    try {
-        const chats = local.map(([chatId, value]) => ({
-            chatId,
-            data: poolDedupAll(decodeStoredItemizedPrompts(value)),
-        }));
+    const items = local.map(([chatId, value]) => {
+        const data = poolDedupAll(decodeStoredItemizedPrompts(value));
+        return { chatId, data, size: JSON.stringify(data).length };
+    });
 
-        const response = await fetch('/api/itemized-prompts/migrate', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ chats }),
-        });
-
-        if (!response.ok) {
-            // A real (transient) failure, not per-chat - leave the entire local backlog alone and let
-            // the next boot's single request retry it, rather than falling back to per-chat requests.
-            console.log('Error migrating itemized prompts to server:', response.statusText);
-            return;
+    /** @type {{chatId: string, data: object}[][]} */
+    const batches = [];
+    let current = [];
+    let currentBytes = 0;
+    for (const item of items) {
+        if (current.length > 0 && (currentBytes + item.size > MAX_BATCH_BYTES || current.length >= MAX_BATCH_CHATS)) {
+            batches.push(current);
+            current = [];
+            currentBytes = 0;
         }
-
-        const { migrated } = await response.json();
-        for (const chatId of migrated ?? []) {
-            await promptStorage.removeItem(chatId);
-        }
-        console.log(`[itemized-prompts] Server migration pass complete (${migrated?.length ?? 0}/${local.length} chat(s) migrated).`);
-    } catch (error) {
-        console.log('Error migrating itemized prompts to server:', error);
+        current.push({ chatId: item.chatId, data: item.data });
+        currentBytes += item.size;
     }
+    if (current.length > 0) {
+        batches.push(current);
+    }
+
+    console.log(`[itemized-prompts] Migrating ${local.length} locally-cached chat(s) to server storage in ${batches.length} batch(es)...`);
+
+    let cursor = 0;
+    let migratedCount = 0;
+
+    async function worker() {
+        while (cursor < batches.length) {
+            const batch = batches[cursor++];
+            try {
+                const response = await fetch('/api/itemized-prompts/migrate', {
+                    method: 'POST',
+                    headers: getRequestHeaders(),
+                    body: JSON.stringify({ chats: batch }),
+                });
+
+                if (!response.ok) {
+                    // A real (transient) failure, not per-chat - leave this batch's chats alone and let a
+                    // future boot's scan retry them, rather than looping or falling back to per-chat requests.
+                    console.log('Error migrating a batch of itemized prompts to server:', response.statusText);
+                    continue;
+                }
+
+                const { migrated } = await response.json();
+                for (const chatId of migrated ?? []) {
+                    await promptStorage.removeItem(chatId);
+                    migratedCount++;
+                }
+            } catch (error) {
+                console.log('Error migrating a batch of itemized prompts to server:', error);
+            }
+        }
+    }
+
+    await Promise.all(Array.from({ length: Math.min(BATCH_CONCURRENCY, batches.length) }, () => worker()));
+    console.log(`[itemized-prompts] Server migration pass complete (${migratedCount}/${local.length} chat(s) migrated across ${batches.length} batch(es)).`);
 }
 
 /**
