@@ -284,6 +284,12 @@ performance:
   # through 2/4/8/16 workers but never tested past 16 - the cap keeps the AUTOMATIC default inside evidence
   # actually gathered, without capping what you can set explicitly here.
   localImportWorkerPoolSize: 0
+  # Off by default. When enabled, runs once at boot (fire-and-forget, non-blocking) and rewrites any character
+  # card whose top-level `first_mes` field disagrees with its own Spec v2 `data.first_mes` (the canonical
+  # value) - see character-card-normalize.js's readFromV2() for the "has Spec v2 data mismatch with Spec v1 for
+  # field: first_mes" warning this fixes. Data.first_mes always wins. Only touches cards that actually have a
+  # mismatch, so it's safe to leave on permanently - a clean library costs one read-only scan per boot.
+  autofixFirstMesMismatch: false
   # Configures gzip compression for client requests with large payloads (e.g. settings or chat saves).
   requestCompression:
     # Enable request compression.

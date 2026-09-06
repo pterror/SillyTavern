@@ -71,7 +71,7 @@ import { init as statsInit, onExit as statsOnExit } from './endpoints/stats.js';
 import { checkForNewContent } from './endpoints/content-manager.js';
 import { init as settingsInit } from './endpoints/settings.js';
 import { redirectDeprecatedEndpoints, ServerStartup, setupPrivateEndpoints } from './server-startup.js';
-import { diskCache } from './endpoints/characters.js';
+import { diskCache, repairFirstMesMismatches } from './endpoints/characters.js';
 import { initializeMetadataStores, disposeMetadataStores } from './character-metadata-db.js';
 import { initializeLocalImportScan, disposeLocalImportScan } from './local-import-scan.js';
 import { migrateFlatSecrets } from './endpoints/secrets.js';
@@ -353,6 +353,16 @@ async function preSetupTasks() {
     for (const userDirectories of directories) {
         runUnimportEmbeddedLoreAtBoot(userDirectories)
             .catch(err => console.error(color.red(`[unimport-embedded-lore] Boot run failed for ${userDirectories.root}:`), err));
+    }
+
+    // Config-gated (`performance.autofixFirstMesMismatch`, default off) one-shot-per-boot repair for the Spec
+    // v1/v2 `first_mes` drift character-card-normalize.js's readFromV2() warns about - see
+    // repairFirstMesMismatches()'s own header. No-ops immediately (before touching the corpus) unless the flag
+    // is on. Fire-and-forget, same "must not delay the server actually starting to listen, does real file
+    // writes" reasoning as runUnimportEmbeddedLoreAtBoot() above.
+    for (const userDirectories of directories) {
+        repairFirstMesMismatches(userDirectories)
+            .catch(err => console.error(color.red(`[first-mes-repair] Boot run failed for ${userDirectories.root}:`), err));
     }
 
     // Config/admin-set-only "import characters from a local directory on disk" feature - inert unless
