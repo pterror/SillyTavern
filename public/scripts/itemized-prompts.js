@@ -307,8 +307,13 @@ function compressItemizedPromptsIncremental(chatId, entries) {
 /**
  * Saves the itemized prompts for a chat to server-side storage (`src/endpoints/itemized-prompts.js`),
  * which gzips the already-compressed payload at rest. Called after every single generated message
- * (script.js's saveChatConditional()) - see compressItemizedPromptsIncremental()'s own doc comment on why
- * the compression step itself stays incremental regardless of where the result is sent.
+ * (script.js's saveChatConditional()).
+ *
+ * STOPGAP (2026-09-06): no client-side compression here right now - compressItemizedPromptsIncremental()'s
+ * diff_main() call was pegging the main thread hard enough to make the app unusable, so this sends the
+ * plain in-memory array straight through. Not the final design (a real content-dedup pass is coming back,
+ * see the in-flight redesign this stopgap is deliberately landing ahead of) - this commit exists purely to
+ * stop the bleeding immediately.
  * @param {string} chatId Chat ID to save itemized prompts for
  */
 export async function saveItemizedPrompts(chatId) {
@@ -317,7 +322,7 @@ export async function saveItemizedPrompts(chatId) {
             return;
         }
 
-        const data = compressItemizedPromptsIncremental(chatId, itemizedPrompts);
+        const data = itemizedPrompts;
         const response = await fetch('/api/itemized-prompts/save', {
             method: 'POST',
             headers: getRequestHeaders(),
@@ -406,11 +411,13 @@ export async function migrateAllItemizedPrompts() {
                 }
 
                 if (existing.status === 404) {
+                    // STOPGAP (2026-09-06): uploads the plain decoded entries, no compression pass - see
+                    // saveItemizedPrompts()'s doc comment above.
                     const entries = decodeStoredItemizedPrompts(value);
                     const saveResponse = await fetch('/api/itemized-prompts/save', {
                         method: 'POST',
                         headers: getRequestHeaders(),
-                        body: JSON.stringify({ chatId, data: compressItemizedPrompts(entries) }),
+                        body: JSON.stringify({ chatId, data: entries }),
                     });
                     if (!saveResponse.ok) {
                         return; // Couldn't upload - leave the local copy in place, retry next boot.
