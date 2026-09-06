@@ -13,259 +13,124 @@ let PromptArrayItemForRawPromptDisplay;
 let priorPromptArrayItemForRawPromptDisplay;
 
 /**
- * 2026-09 server-migration note: this used to be the ONLY storage for itemized prompts - now it's read-only
- * legacy data, kept around purely so migrateAllItemizedPrompts() (below) has something to read while
- * uploading each browser's locally-accumulated backlog to the server (`src/endpoints/itemized-prompts.js`),
- * which is now the actual source of truth. Nothing in this file writes through this instance anymore.
+ * 2026-09 server-migration note: server-side storage (`src/endpoints/itemized-prompts.js`) is now the
+ * source of truth. This IndexedDB instance now serves two purposes only: a local mirror of whatever's on
+ * the server (so itemization is viewable without a network round trip - matters on a phone connection),
+ * kept in sync by loadItemizedPrompts()/saveItemizedPrompts() below, and the read-only source for
+ * migrateAllItemizedPrompts()'s one-time upload of each browser's pre-server-migration backlog.
  */
 const promptStorage = localforage.createInstance({ name: 'SillyTavern_Prompts' });
 export let itemizedPrompts = [];
 
-/** Bumped only if the dedup transform itself changes - forces every stored entry to be reconsidered by
- * migrateLegacyItemizedPrompts() even if it already carries a stamp from an older transform. */
-const DEDUP_VERSION = 1;
+/** Bumped only if the pool-dedup wire format itself changes. */
+const POOL_VERSION = 2;
 
 /**
- * The one field in an itemized-prompt entry (script.js's `additionalPromptStuff`) that's reliably the
- * largest and most likely to be duplicated elsewhere in the same entry: `rawPrompt` is the literal text
- * handed to the generation API for that turn. `finalPrompt` in particular is very often byte-identical to
- * it (both are "the assembled prompt", just captured at two different points of the same call) - but any
- * other field that happens to hold an identical string is caught the same way (2026-09 SillyTavern_Prompts
- * size investigation: this store measured ~8.9GB, by far the largest single IndexedDB origin consumer -
- * ~7x the character cache's 1.2GB - because every generated message keeps its own full snapshot of the
- * assembled prompt, forever, never pruned).
+ * Exact-content dedup, not diffing: replaces any non-empty string with a reference into a shared per-chat
+ * content pool, keyed by the string's own exact value (a plain `Map` lookup - O(1) per field, pure
+ * equality, nothing that can search/backtrack/hang the way a diff algorithm can - see the 2026-09-06
+ * removal of this file's previous diff-match-patch-based compression, which pegged the main thread hard
+ * enough to make the app unusable). Recurses into arrays and plain objects, so the same mechanism covers
+ * every shape an itemized-prompt entry's fields take:
+ *  - whole flattened strings (non-OAI's rawPrompt/finalPrompt/mesSendString) - catches the same
+ *    byte-identical-field case the old intra-entry dedup did (finalPrompt often equals rawPrompt exactly),
+ *    for free, as a side effect of pooling by content rather than needing a dedicated field-to-field check.
+ *  - `historyParts`, the per-message content list script.js's finishGenerating() captures structurally at
+ *    the source (see its own comment on why this can't be reliably reconstructed from a flattened string
+ *    after the fact) - this is where the real win is, since consecutive entries in the same chat share
+ *    almost this entire list verbatim.
+ *  - OAI's own rawPrompt shape, an array of `{role, content}` objects - `content` gets pooled the same way.
+ * @param {*} value
+ * @param {Map<string, number>} pool Content string -> pool key, mutated in place.
+ * @param {string[]} poolOut Pool key -> content string (index = key), mutated in place (appended to only).
+ * @returns {*} `value` with every non-empty string replaced by `{$r: key}`. Never mutates `value`.
  */
-const DEDUP_REFERENCE_FIELD = 'rawPrompt';
-
-/**
- * Computes the {toStore, dedup} split for a single itemized-prompt entry - mirrors
- * character-cache.js's computeDedupSplit() exactly, just against one canonical reference field instead of
- * a fixed set of field-to-field pairs (this object has ~30 loosely related fields; checking every one of
- * them against the one field known to reliably be the largest is simpler and just as safe, since a field
- * only ever gets stripped when it's a confirmed byte-for-byte match). Never mutates `entry`.
- * @param {object} entry
- * @returns {{toStore: object, dedup: string[]|undefined}}
- */
-function computeItemizedDedupSplit(entry) {
-    const reference = entry[DEDUP_REFERENCE_FIELD];
-    if (typeof reference !== 'string' || reference.length === 0) {
-        return { toStore: entry, dedup: undefined };
-    }
-    let toStore = entry;
-    let dedup;
-    for (const field of Object.keys(entry)) {
-        if (field === DEDUP_REFERENCE_FIELD) continue;
-        if (typeof entry[field] === 'string' && entry[field].length > 0 && entry[field] === reference) {
-            if (toStore === entry) toStore = { ...entry };
-            delete toStore[field];
-            (dedup ??= []).push(field);
+function poolizeValue(value, pool, poolOut) {
+    if (typeof value === 'string') {
+        if (value.length === 0) {
+            return value;
         }
+        let key = pool.get(value);
+        if (key === undefined) {
+            key = poolOut.length;
+            poolOut.push(value);
+            pool.set(value, key);
+        }
+        return { $r: key };
     }
-    return { toStore, dedup };
+    if (Array.isArray(value)) {
+        return value.map(item => poolizeValue(item, pool, poolOut));
+    }
+    if (value && typeof value === 'object') {
+        const out = {};
+        for (const key of Object.keys(value)) {
+            out[key] = poolizeValue(value[key], pool, poolOut);
+        }
+        return out;
+    }
+    return value;
 }
 
 /**
- * Restores fields computeItemizedDedupSplit() stripped as exact duplicates of `rawPrompt`. Mutates and
- * returns `entry` in place - safe because callers only ever call this on a freshly IDB-deserialized object
- * with no other live references.
- * @param {object} entry
- * @param {string[]|undefined} dedup Field names stripped at write time.
- * @returns {object} `entry`, with any stripped fields restored.
+ * Inverse of poolizeValue() - resolves every `{$r: key}` reference back to its content string.
+ * @param {*} value
+ * @param {string[]} poolOut Pool key -> content string, as produced by poolizeValue().
+ * @returns {*}
  */
-function rehydrateItemizedDedup(entry, dedup) {
-    if (dedup && dedup.length && typeof entry?.[DEDUP_REFERENCE_FIELD] === 'string') {
-        for (const field of dedup) {
-            entry[field] = entry[DEDUP_REFERENCE_FIELD];
-        }
+function unpoolizeValue(value, poolOut) {
+    if (Array.isArray(value)) {
+        return value.map(item => unpoolizeValue(item, poolOut));
     }
-    return entry;
+    if (value && typeof value === 'object') {
+        const keys = Object.keys(value);
+        if (keys.length === 1 && keys[0] === '$r' && typeof value.$r === 'number') {
+            return poolOut[value.$r];
+        }
+        const out = {};
+        for (const key of keys) {
+            out[key] = unpoolizeValue(value[key], poolOut);
+        }
+        return out;
+    }
+    return value;
 }
 
 /**
- * Cross-entry compression for `rawPrompt` specifically: consecutive entries in the same chat's
- * itemizedPrompts array overwhelmingly share most of their content (the same character card, the same
- * chat history up to a point, often the same world-info activations), which naive whole-string storage
- * repeats in full for every single message forever. A simple "common prefix" scheme would miss most of
- * that sharing, though - world-info entries can be inserted at arbitrary depth *within* the chat history
- * (not just prepended at the very start), so an activation toggling on/off between two consecutive
- * generations shifts everything after that point even when the actual chat messages around it are
- * unchanged. diff-match-patch (already a dependency of this file, used below for the human-readable
- * prompt-diff display) finds the real matching regions wherever they fall via its Myers diff, so it
- * survives that kind of mid-string interruption correctly - unlike prefix/suffix matching, which would
- * lose everything past the first divergence.
- *
- * `diff_toDelta()`/`diff_fromDelta()` (not `patch_make()`/`patch_apply()`) are the right pair here:
- * patch_apply does fuzzy, best-effort matching meant for applying a patch to text that may have since
- * drifted from its original base - unnecessary risk when the exact previous rawPrompt is always known.
- * diff_toDelta/diff_fromDelta is an exact, lossless encoding of the diff itself.
- */
-function newPromptDiffEngine() {
-    const dmp = new DiffMatchPatch();
-    dmp.Diff_Timeout = 2.0;
-    return dmp;
-}
-
-/**
- * Decodes a stored itemized-prompts value - either this session's compressed wrapper shape
- * (`{v, entries, dedup, rawPromptDelta}`, from the server or from a not-yet-migrated local IndexedDB
- * record) or the legacy plain-array shape (predates all compression, local-only, pre-server-migration) -
- * into a plain, fully-rehydrated `entries[]` array. Shared by loadItemizedPrompts() (decoding the server's
- * response) and migrateAllItemizedPrompts() (decoding whatever's left in the local IndexedDB backlog).
- * @param {object[]|{v: number, entries: object[], dedup: (string[]|undefined)[], rawPromptDelta: (string|undefined)[]}|null|undefined} stored
- * @returns {object[]}
- */
-function decodeStoredItemizedPrompts(stored) {
-    if (Array.isArray(stored)) {
-        return stored;
-    }
-    if (!stored || !Array.isArray(stored.entries)) {
-        return [];
-    }
-    const dmp = newPromptDiffEngine();
-    /** @type {string|undefined} Previous entry's already-reconstructed (full) rawPrompt. */
-    let previousRawPrompt;
-    return stored.entries.map((entry, i) => {
-        const delta = stored.rawPromptDelta?.[i];
-        if (typeof delta === 'string' && typeof previousRawPrompt === 'string') {
-            entry.rawPrompt = dmp.diff_text2(dmp.diff_fromDelta(previousRawPrompt, delta));
-        }
-        if (typeof entry.rawPrompt === 'string') {
-            previousRawPrompt = entry.rawPrompt;
-        }
-        // rawPrompt must be reconstructed above BEFORE this, since deduped fields point at it.
-        return rehydrateItemizedDedup(entry, stored.dedup?.[i]);
-    });
-}
-
-/**
- * Gets the itemized prompts for a chat from server-side storage (`src/endpoints/itemized-prompts.js`).
- * @param {string} chatId Chat ID to load
- */
-export async function loadItemizedPrompts(chatId) {
-    try {
-        if (!chatId) {
-            itemizedPrompts = [];
-            return;
-        }
-
-        const response = await fetch('/api/itemized-prompts/get', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ chatId }),
-        });
-
-        if (response.status === 404) {
-            // No itemized prompts stored yet for this chat - not an error.
-            itemizedPrompts = [];
-        } else if (response.ok) {
-            itemizedPrompts = decodeStoredItemizedPrompts(await response.json());
-        } else {
-            console.log('Error loading itemized prompts for chat', chatId, response.statusText);
-            itemizedPrompts = [];
-        }
-
-        if (!itemizedPrompts) {
-            itemizedPrompts = [];
-        }
-
-        await eventSource.emit(event_types.ITEMIZED_PROMPTS_LOADED, { chatId: chatId });
-    } catch (error) {
-        console.log('Error loading itemized prompts for chat', chatId, error);
-        itemizedPrompts = [];
-    }
-}
-
-/**
- * Compresses one entry: intra-entry field-dedup against its own rawPrompt, then diff-encodes that
- * rawPrompt against `previousRawPrompt` (the prior entry's full, undiffed rawPrompt in the same chat).
- * Shared by compressItemizedPrompts() and compressItemizedPromptsIncremental() below.
- * @param {DiffMatchPatch} dmp
- * @param {object} originalEntry
- * @param {string|undefined} previousRawPrompt
- * @returns {{toStore: object, dedup: string[]|undefined, delta: string|undefined, rawPrompt: string|undefined}}
- * `rawPrompt` is this entry's own full value (for the caller to thread through as the next entry's
- * `previousRawPrompt`), regardless of whether it ended up stripped from `toStore`.
- */
-function compressOneEntry(dmp, originalEntry, previousRawPrompt) {
-    const rawPrompt = originalEntry.rawPrompt;
-    // Intra-entry dedup (other fields byte-identical to this entry's OWN full rawPrompt) computed first,
-    // from the untouched original - the cross-entry delta below only ever replaces rawPrompt itself,
-    // never the fields this step strips.
-    const { toStore: dedupedEntry, dedup } = computeItemizedDedupSplit(originalEntry);
-
-    let toStore = dedupedEntry;
-    let delta;
-    if (typeof rawPrompt === 'string' && rawPrompt.length > 0 &&
-        typeof previousRawPrompt === 'string' && previousRawPrompt.length > 0) {
-        const encoded = dmp.diff_toDelta(dmp.diff_main(previousRawPrompt, rawPrompt));
-        // Only ever use the delta when it's actually smaller - guards against the (unlikely, e.g. wildly
-        // different consecutive prompts) case where the encoded diff would be bigger than just storing
-        // the full string.
-        if (encoded.length < rawPrompt.length) {
-            delta = encoded;
-        }
-    }
-    if (delta !== undefined) {
-        toStore = toStore === dedupedEntry ? { ...dedupedEntry } : toStore;
-        delete toStore.rawPrompt;
-    }
-
-    return { toStore, dedup, delta, rawPrompt };
-}
-
-/**
- * Compresses a chat's itemizedPrompts array into the on-disk shape (field-dedup + cross-entry rawPrompt
- * diffing) from scratch - used by migrateAllItemizedPrompts() below, where each chat is only ever
- * processed once. saveItemizedPrompts() uses compressItemizedPromptsIncremental() instead (see its own
- * doc comment on why a full recompute there would be wasteful). Never mutates `entries`.
+ * Pool-dedupes every entry in `entries` from scratch - used by migrateAllItemizedPrompts(), where each
+ * chat is only ever processed once, so there's no previous pool to reuse.
  * @param {object[]} entries
- * @returns {{v: number, entries: object[], dedup: (string[]|undefined)[], rawPromptDelta: (string|undefined)[]}}
+ * @returns {{v: number, pool: string[], entries: object[]}}
  */
-function compressItemizedPrompts(entries) {
-    const dmp = newPromptDiffEngine();
-    const dedup = [];
-    const rawPromptDelta = [];
-    /** @type {string|undefined} Previous entry's full (undiffed) rawPrompt, this compression pass. */
-    let previousRawPrompt;
-    const compressedEntries = entries.map((originalEntry) => {
-        const result = compressOneEntry(dmp, originalEntry, previousRawPrompt);
-        dedup.push(result.dedup);
-        rawPromptDelta.push(result.delta);
-        if (typeof result.rawPrompt === 'string') {
-            previousRawPrompt = result.rawPrompt;
-        }
-        return result.toStore;
-    });
-
-    return { v: DEDUP_VERSION, entries: compressedEntries, dedup, rawPromptDelta };
+function poolDedupAll(entries) {
+    const pool = new Map();
+    const poolOut = [];
+    const outEntries = entries.map(entry => poolizeValue(entry, pool, poolOut));
+    return { v: POOL_VERSION, pool: poolOut, entries: outEntries };
 }
 
-/** Cache of the last compression computed for saveItemizedPrompts()'s CURRENTLY loaded chat - see
- * compressItemizedPromptsIncremental()'s own doc comment. Naturally invalidated (never explicitly reset)
- * whenever a different chatId is saved, since the lookup below checks chatId first. */
-let incrementalCompressionCache = /** @type {{chatId: string, sourceEntries: object[], compressed: {v: number, entries: object[], dedup: (string[]|undefined)[], rawPromptDelta: (string|undefined)[]}} | null} */ (null);
+/** Cache of the last pool-dedup computed for saveItemizedPrompts()'s CURRENTLY loaded chat - see
+ * poolDedupIncremental()'s own doc comment. Naturally invalidated (never explicitly reset) whenever a
+ * different chatId is saved, since the lookup below checks chatId first. */
+let incrementalPoolCache = /** @type {{chatId: string, sourceEntries: object[], pool: Map<string, number>, poolOut: string[], entries: object[]} | null} */ (null);
 
 /**
- * Same contract as compressItemizedPrompts(), but reuses cached per-entry results for any prefix of
- * `entries` that's reference-identical to what was compressed last time for this exact chatId.
+ * Same contract as poolDedupAll(), but reuses the cached pool and already-pool-ized prefix for any prefix
+ * of `entries` that's reference-identical to what was pool-deduped last time for this exact chatId.
  *
- * saveItemizedPrompts() is called after every single generated message (script.js's saveChatConditional(),
- * which runs after every generation) - recomputing the WHOLE chat's dedup+diffs from scratch on every one
- * of those calls would repeat the exact same work (re-diffing every already-unchanged consecutive pair)
- * for the entire chat history on every single message, turning a chat's lifetime cost from O(length) into
- * O(length^2) for what's almost always just one newly appended entry.
+ * saveItemizedPrompts() is called after every single generated message (script.js's saveChatConditional()),
+ * and this whole chat's data is re-sent to the server every time (not an incremental patch) - reusing the
+ * unchanged prefix keeps each call's real work down to just the newly appended/changed entries, rather than
+ * re-walking (and re-inserting into a fresh pool) the entire chat history on every single message.
  *
- * Only entries from the first point of actual change onward are ever recomputed - an entry earlier in the
- * array being edited/regenerated (script.js's finishGenerating() replaces the object at that index rather
- * than mutating it, so this is a genuine reference change, not just an appended tail) correctly
- * invalidates and recomputes everything from THAT point onward too, since every later entry's delta is
- * encoded against its predecessor's rawPrompt and would otherwise silently encode against a stale base.
+ * An entry earlier in the array being edited/regenerated (script.js's finishGenerating() replaces the
+ * object at that index rather than mutating it, so this is a genuine reference change) correctly
+ * invalidates and recomputes everything from that point onward.
  * @param {string} chatId
  * @param {object[]} entries
- * @returns {{v: number, entries: object[], dedup: (string[]|undefined)[], rawPromptDelta: (string|undefined)[]}}
+ * @returns {{v: number, pool: string[], entries: object[]}}
  */
-function compressItemizedPromptsIncremental(chatId, entries) {
-    const cached = incrementalCompressionCache?.chatId === chatId ? incrementalCompressionCache : null;
+function poolDedupIncremental(chatId, entries) {
+    const cached = incrementalPoolCache?.chatId === chatId ? incrementalPoolCache : null;
     const cachedSource = cached?.sourceEntries ?? [];
 
     let firstChanged = 0;
@@ -276,44 +141,132 @@ function compressItemizedPromptsIncremental(chatId, entries) {
 
     if (cached && firstChanged === entries.length && firstChanged === cachedSource.length) {
         // Nothing at all changed since last time - reuse the whole cached result untouched.
-        return cached.compressed;
+        return { v: POOL_VERSION, pool: cached.poolOut, entries: cached.entries };
     }
 
-    const dmp = newPromptDiffEngine();
-    const dedup = firstChanged > 0 ? cached.compressed.dedup.slice(0, firstChanged) : [];
-    const rawPromptDelta = firstChanged > 0 ? cached.compressed.rawPromptDelta.slice(0, firstChanged) : [];
-    /** @type {string|undefined} */
-    let previousRawPrompt = firstChanged > 0 ? cachedSource[firstChanged - 1].rawPrompt : undefined;
-    if (typeof previousRawPrompt !== 'string') {
-        previousRawPrompt = undefined;
+    const pool = firstChanged > 0 ? new Map(cached.pool) : new Map();
+    const poolOut = firstChanged > 0 ? cached.poolOut.slice() : [];
+    const outEntries = firstChanged > 0 ? cached.entries.slice(0, firstChanged) : [];
+
+    for (let i = firstChanged; i < entries.length; i++) {
+        outEntries.push(poolizeValue(entries[i], pool, poolOut));
     }
 
-    const newlyComputedEntries = entries.slice(firstChanged).map((originalEntry) => {
-        const result = compressOneEntry(dmp, originalEntry, previousRawPrompt);
-        dedup.push(result.dedup);
-        rawPromptDelta.push(result.delta);
-        if (typeof result.rawPrompt === 'string') {
-            previousRawPrompt = result.rawPrompt;
-        }
-        return result.toStore;
-    });
-
-    const reusedEntries = firstChanged > 0 ? cached.compressed.entries.slice(0, firstChanged) : [];
-    const compressed = { v: DEDUP_VERSION, entries: [...reusedEntries, ...newlyComputedEntries], dedup, rawPromptDelta };
-    incrementalCompressionCache = { chatId, sourceEntries: entries.slice(), compressed };
-    return compressed;
+    incrementalPoolCache = { chatId, sourceEntries: entries.slice(), pool, poolOut, entries: outEntries };
+    return { v: POOL_VERSION, pool: poolOut, entries: outEntries };
 }
 
 /**
- * Saves the itemized prompts for a chat to server-side storage (`src/endpoints/itemized-prompts.js`),
- * which gzips the already-compressed payload at rest. Called after every single generated message
- * (script.js's saveChatConditional()).
- *
- * STOPGAP (2026-09-06): no client-side compression here right now - compressItemizedPromptsIncremental()'s
- * diff_main() call was pegging the main thread hard enough to make the app unusable, so this sends the
- * plain in-memory array straight through. Not the final design (a real content-dedup pass is coming back,
- * see the in-flight redesign this stopgap is deliberately landing ahead of) - this commit exists purely to
- * stop the bleeding immediately.
+ * Decodes a stored itemized-prompts value into a plain, fully-resolved `entries[]` array. Handles every
+ * shape this file has ever written:
+ *  - a plain array: either the legacy pre-compression format, or the 2026-09-06 stopgap's "no compression"
+ *    format - identical shapes, nothing to resolve either way.
+ *  - `{v, pool, entries}`: the current exact-content pool-dedup format (poolDedupAll()/poolDedupIncremental()).
+ *  - `{v, entries, dedup, rawPromptDelta}`: the brief diff-match-patch-based format this file used between
+ *    the server-storage move and the pool-dedup redesign - removed for pegging the main thread, but kept
+ *    readable here in case anything was ever written in this shape before the removal landed.
+ * @param {object[]|{v: number, pool: string[], entries: object[]}|{v: number, entries: object[], dedup: (string[]|undefined)[], rawPromptDelta: (string|undefined)[]}|null|undefined} stored
+ * @returns {object[]}
+ */
+function decodeStoredItemizedPrompts(stored) {
+    if (Array.isArray(stored)) {
+        return stored;
+    }
+    if (!stored || !Array.isArray(stored.entries)) {
+        return [];
+    }
+    if (Array.isArray(stored.pool)) {
+        return stored.entries.map(entry => unpoolizeValue(entry, stored.pool));
+    }
+    if (Array.isArray(stored.rawPromptDelta)) {
+        const dmp = new DiffMatchPatch();
+        dmp.Diff_Timeout = 2.0;
+        /** @type {string|undefined} */
+        let previousRawPrompt;
+        return stored.entries.map((entry, i) => {
+            const delta = stored.rawPromptDelta[i];
+            if (typeof delta === 'string' && typeof previousRawPrompt === 'string') {
+                entry.rawPrompt = dmp.diff_text2(dmp.diff_fromDelta(previousRawPrompt, delta));
+            }
+            if (typeof entry.rawPrompt === 'string') {
+                previousRawPrompt = entry.rawPrompt;
+            }
+            const dedupFields = stored.dedup?.[i];
+            if (dedupFields?.length && typeof entry.rawPrompt === 'string') {
+                for (const field of dedupFields) {
+                    entry[field] = entry.rawPrompt;
+                }
+            }
+            return entry;
+        });
+    }
+    return [];
+}
+
+/**
+ * Gets the itemized prompts for a chat. Reads the local IndexedDB mirror first (if present) for an
+ * instant, network-free result, then always reconciles against the server in the background - the server
+ * response, whenever it resolves, is authoritative and overwrites both the live `itemizedPrompts` state and
+ * the local mirror. Callers that need to know when the server-backed result has landed can listen for
+ * event_types.ITEMIZED_PROMPTS_LOADED, which fires once for the local read (if any) and again once the
+ * server reconciliation completes.
+ * @param {string} chatId Chat ID to load
+ */
+export async function loadItemizedPrompts(chatId) {
+    if (!chatId) {
+        itemizedPrompts = [];
+        return;
+    }
+
+    try {
+        const local = await promptStorage.getItem(chatId);
+        if (local) {
+            itemizedPrompts = decodeStoredItemizedPrompts(local);
+            await eventSource.emit(event_types.ITEMIZED_PROMPTS_LOADED, { chatId: chatId, fromLocalMirror: true });
+        }
+    } catch (error) {
+        console.log('Error reading local itemized-prompts mirror for chat', chatId, error);
+    }
+
+    try {
+        const response = await fetch('/api/itemized-prompts/get', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ chatId }),
+        });
+
+        // The chat may have changed out from under this call while the request was in flight (loading is
+        // fired off per chat-switch, not queued) - never clobber whatever's current with a stale response.
+        if (getCurrentChatId() !== chatId) {
+            return;
+        }
+
+        if (response.status === 404) {
+            // Nothing stored server-side yet - only actually "nothing" if the local mirror didn't have it
+            // either (checked above); otherwise leave the locally-loaded result in place.
+            if (!itemizedPrompts.length) {
+                itemizedPrompts = [];
+            }
+        } else if (response.ok) {
+            const stored = await response.json();
+            itemizedPrompts = decodeStoredItemizedPrompts(stored);
+            await promptStorage.setItem(chatId, stored);
+        } else {
+            console.log('Error loading itemized prompts for chat', chatId, response.statusText);
+        }
+
+        await eventSource.emit(event_types.ITEMIZED_PROMPTS_LOADED, { chatId: chatId });
+    } catch (error) {
+        console.log('Error loading itemized prompts for chat', chatId, error);
+    }
+}
+
+/**
+ * Saves the itemized prompts for a chat: pool-dedupes (exact-content, not diffing - see
+ * poolDedupIncremental()'s doc comment), sends the result to server-side storage
+ * (`src/endpoints/itemized-prompts.js`, which gzips it at rest), and writes the same result to the local
+ * IndexedDB mirror so it stays available without a network round trip. Called after every single generated
+ * message (script.js's saveChatConditional()).
  * @param {string} chatId Chat ID to save itemized prompts for
  */
 export async function saveItemizedPrompts(chatId) {
@@ -322,7 +275,7 @@ export async function saveItemizedPrompts(chatId) {
             return;
         }
 
-        const data = itemizedPrompts;
+        const data = poolDedupIncremental(chatId, itemizedPrompts);
         const response = await fetch('/api/itemized-prompts/save', {
             method: 'POST',
             headers: getRequestHeaders(),
@@ -334,6 +287,7 @@ export async function saveItemizedPrompts(chatId) {
             return;
         }
 
+        await promptStorage.setItem(chatId, data);
         await eventSource.emit(event_types.ITEMIZED_PROMPTS_SAVED, { chatId: chatId });
     } catch (error) {
         console.log('Error saving itemized prompts for chat', chatId, error);
@@ -350,10 +304,9 @@ let allChatsMigrationStarted = false;
  * this is the actual fix for "itemized prompts are missing on other devices/browsers": before this,
  * every chat's itemized breakdown existed ONLY in whichever browser generated it.
  *
- * Not just the chats a user happens to reopen: loadItemizedPrompts() no longer touches `promptStorage` at
- * all (server is the sole source of truth for every load/save from here on), so a chat sitting untouched
- * in the local backlog would otherwise never get uploaded, and its browser-local bytes would never be
- * reclaimed either. This does a full scan instead.
+ * Not just the chats a user happens to reopen: loadItemizedPrompts() only mirrors locally what it's
+ * already asked the server for, so a chat sitting untouched in the local backlog would otherwise never get
+ * uploaded, and its browser-local bytes would never be reclaimed either. This does a full scan instead.
  *
  * Call once at boot; safe to call unconditionally - both the in-session guard and each chat's own
  * "does the server already have this" check make it a no-op on every call after the backlog is drained.
@@ -365,7 +318,9 @@ let allChatsMigrationStarted = false;
  * Deliberately checks for existing server-side data before uploading (GET first) rather than uploading
  * unconditionally: if the SAME chat was already migrated from another device/browser (or by an earlier,
  * interrupted run of this same function), blindly overwriting could clobber genuinely newer server data
- * with a stale local snapshot. An extra round-trip per chat is the cost of that safety.
+ * with a stale local snapshot. Runs a real batch of these chat migrations concurrently (not one chat
+ * waiting on the previous chat's network round trip) to keep total wall-clock time down at real backlog
+ * sizes (tens of thousands of chats) - see MIGRATE_CONCURRENCY below.
  */
 export async function migrateAllItemizedPrompts() {
     if (allChatsMigrationStarted) {
@@ -377,7 +332,9 @@ export async function migrateAllItemizedPrompts() {
     const local = [];
     try {
         await promptStorage.iterate((value, chatId) => {
-            const hasContent = Array.isArray(value) ? value.length > 0 : Array.isArray(value?.entries) && value.entries.length > 0;
+            const hasContent = Array.isArray(value)
+                ? value.length > 0
+                : (Array.isArray(value?.entries) && value.entries.length > 0);
             if (hasContent) {
                 local.push([chatId, value]);
             }
@@ -392,50 +349,62 @@ export async function migrateAllItemizedPrompts() {
     }
 
     console.log(`[itemized-prompts] Migrating ${local.length} locally-cached chat(s) to server storage...`);
-    const MIGRATE_BATCH = 10; // a GET plus maybe a POST per chat, each potentially a whole chat's worth of data - keep this network-friendly.
+    // Each chat migration is at most one GET plus one POST, both cheap on the server (no compression on
+    // this request path - see src/endpoints/itemized-prompts.js) - real concurrency here, not one chat
+    // waiting on the previous chat's round trip, is what keeps a large backlog (tens of thousands of
+    // chats) from taking minutes.
+    const MIGRATE_CONCURRENCY = 64;
     let considered = 0;
-    for (let i = 0; i < local.length; i += MIGRATE_BATCH) {
-        const batch = local.slice(i, i + MIGRATE_BATCH);
-        await Promise.all(batch.map(async ([chatId, value]) => {
-            try {
-                const existing = await fetch('/api/itemized-prompts/get', {
+    let cursor = 0;
+
+    async function migrateOne(chatId, value) {
+        try {
+            const existing = await fetch('/api/itemized-prompts/get', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ chatId }),
+            });
+
+            if (existing.status !== 404 && !existing.ok) {
+                // A real (transient) error, not "doesn't exist yet" - leave the local copy alone and
+                // retry on a future boot rather than risk losing the only copy of this data.
+                return;
+            }
+
+            if (existing.status === 404) {
+                const entries = decodeStoredItemizedPrompts(value);
+                const data = poolDedupAll(entries);
+                const saveResponse = await fetch('/api/itemized-prompts/save', {
                     method: 'POST',
                     headers: getRequestHeaders(),
-                    body: JSON.stringify({ chatId }),
+                    body: JSON.stringify({ chatId, data }),
                 });
-
-                if (existing.status !== 404 && !existing.ok) {
-                    // A real (transient) error, not "doesn't exist yet" - leave the local copy alone and
-                    // retry on a future boot rather than risk losing the only copy of this data.
-                    return;
+                if (!saveResponse.ok) {
+                    return; // Couldn't upload - leave the local copy in place, retry next boot.
                 }
-
-                if (existing.status === 404) {
-                    // STOPGAP (2026-09-06): uploads the plain decoded entries, no compression pass - see
-                    // saveItemizedPrompts()'s doc comment above.
-                    const entries = decodeStoredItemizedPrompts(value);
-                    const saveResponse = await fetch('/api/itemized-prompts/save', {
-                        method: 'POST',
-                        headers: getRequestHeaders(),
-                        body: JSON.stringify({ chatId, data: entries }),
-                    });
-                    if (!saveResponse.ok) {
-                        return; // Couldn't upload - leave the local copy in place, retry next boot.
-                    }
-                }
-
-                // Either just uploaded, or the server already had this chat's data - safe to reclaim the
-                // local copy either way.
-                await promptStorage.removeItem(chatId);
-            } catch (error) {
-                console.log(`Error migrating itemized prompts for chat ${chatId} to server:`, error);
             }
-        }));
-        considered += batch.length;
-        // Yield to the main thread between batches - same reasoning as every other batched migration in
-        // this codebase (character-cache.js): must not make the browser unresponsive for seconds.
-        await new Promise(resolve => setTimeout(resolve, 0));
+
+            // Either just uploaded, or the server already had this chat's data - safe to reclaim the
+            // local copy either way.
+            await promptStorage.removeItem(chatId);
+        } catch (error) {
+            console.log(`Error migrating itemized prompts for chat ${chatId} to server:`, error);
+        } finally {
+            considered++;
+        }
     }
+
+    // Fixed-size worker pool rather than fixed-size sequential batches: a worker picks up the next chat as
+    // soon as its own previous one finishes, so one unusually large chat can't stall the other 63 workers
+    // until it completes.
+    async function worker() {
+        while (cursor < local.length) {
+            const [chatId, value] = local[cursor++];
+            await migrateOne(chatId, value);
+        }
+    }
+
+    await Promise.all(Array.from({ length: Math.min(MIGRATE_CONCURRENCY, local.length) }, () => worker()));
     console.log(`[itemized-prompts] Server migration pass complete (${considered} chat(s) considered).`);
 }
 
@@ -460,7 +429,7 @@ export async function replaceItemizedPromptText(mesId, promptText) {
 }
 
 /**
- * Deletes the itemized prompts for a chat from server-side storage.
+ * Deletes the itemized prompts for a chat from server-side storage and the local mirror.
  * @param {string} chatId Chat ID to delete itemized prompts for
  */
 export async function deleteItemizedPrompts(chatId) {
@@ -474,6 +443,7 @@ export async function deleteItemizedPrompts(chatId) {
             headers: getRequestHeaders(),
             body: JSON.stringify({ chatId }),
         });
+        await promptStorage.removeItem(chatId);
         await eventSource.emit(event_types.ITEMIZED_PROMPTS_DELETED, { chatId: chatId, all: false });
     } catch {
         console.log('Error deleting itemized prompts for chat', chatId);
@@ -481,7 +451,7 @@ export async function deleteItemizedPrompts(chatId) {
 }
 
 /**
- * Empties the itemized prompts array and every chat's server-side storage.
+ * Empties the itemized prompts array, every chat's server-side storage, and the local mirror.
  */
 export async function clearItemizedPrompts() {
     try {
@@ -489,6 +459,7 @@ export async function clearItemizedPrompts() {
             method: 'POST',
             headers: getRequestHeaders(),
         });
+        await promptStorage.clear();
         itemizedPrompts = [];
         await eventSource.emit(event_types.ITEMIZED_PROMPTS_DELETED, { all: true });
     } catch {

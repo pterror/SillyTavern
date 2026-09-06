@@ -7560,6 +7560,16 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             presetName: getPresetManager()?.getSelectedPresetName() || '',
             messagesCount: main_api !== 'openai' ? mesSend.length : oaiMessages.length,
             examplesCount: main_api !== 'openai' ? (pinExmString ? mesExamplesArray.length : count_exm_add) : oaiMessageExamples.length,
+            // Structural per-message content, captured here at the source rather than reconstructed later
+            // by re-splitting the flattened rawPrompt/mesSendString - itemized-prompts.js's server-upload
+            // path pool-dedupes these by exact string match (consecutive generations in the same chat
+            // share almost this entire list verbatim). Not the same array used to build finalPrompt itself
+            // (that's finalMesSend, local to getCombinedPrompt() and not reachable from here) - this is the
+            // pre-injection per-message content, which is what's actually worth deduping since it's the
+            // part that repeats byte-for-byte across entries; the last message's cfg/bias-injected suffix
+            // isn't reflected here, which only affects this one field's own use (content-dedup), not the
+            // full rawPrompt/finalPrompt text already stored separately above.
+            historyParts: main_api === 'openai' ? oaiMessages.map(m => m.content) : mesSend.map(e => e.message),
         };
 
         //console.log(additionalPromptStuff);
