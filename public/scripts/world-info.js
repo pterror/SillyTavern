@@ -2357,7 +2357,7 @@ async function displayWorldEntries(name, data, navigation = navigation_option.no
 
             const avatar = embeddedLoreCharacterAvatar;
             if (avatar && $('#avatar_url_pole').val() === avatar) {
-                $('#character_book_json').val('');
+                $('#character_book_json').val('').trigger('input');
                 await createOrEditCharacter();
             }
 
@@ -5885,7 +5885,7 @@ async function saveEmbeddedLore(data) {
     }
 
     try {
-        $('#character_book_json').val(JSON.stringify(convertToCharacterBook(data)));
+        $('#character_book_json').val(JSON.stringify(convertToCharacterBook(data))).trigger('input');
         await createOrEditCharacter();
     } catch (error) {
         console.error('[WI] Failed to save embedded lorebook changes.', error);
@@ -6333,7 +6333,7 @@ export async function moveWorldInfoEntry(sourceName, targetName, uid, { deleteOr
  * @param {string} name - The name of the world info to link to the character.
  */
 export async function charUpdatePrimaryWorld(name) {
-    $('#character_world').val(name);
+    $('#character_world').val(name).trigger('input');
 
     console.debug('Character world selected:', name);
 
