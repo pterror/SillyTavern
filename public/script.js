@@ -6696,22 +6696,28 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         setExtensionPrompt(inject_ids.DEPTH_PROMPT, depthPromptText, extension_prompt_types.IN_CHAT, depthPromptDepth, extension_settings.note.allowWIScan, depthPromptRole);
     }
 
-    // First message in fresh 1-on-1 chat reacts to user/character settings changes
+    // First message in fresh 1-on-1 chat reacts to user/character settings changes.
     //
-    // Skipped while the opening still carries a provisional id: it has no row of its own yet - a
-    // greeting earns one by being used (see ensureOpeningRow()'s doc comment), and persisting a
-    // substituted copy of it here (via updateMessage(), the one writer of node_id 0) is exactly the
-    // kind of edit that write is watching for. _saveTreeChat()'s "was something written into this
-    // opening" check (public/script.js, _saveTreeChat) compares the message's current text against
-    // what its provisional id was derived from; running it through this substitution makes that
-    // comparison see a change that was never the user's, and promotes an untouched greeting into a
-    // permanent row on the very first prompt build - even one from a generation that gets cancelled
-    // before anything else happens. A message that already has a real row (isProvisionalNodeId false)
-    // has already earned its place in the tree, so keeping its macros in step with the current
-    // persona/character names there is unaffected.
-    if (chat.length && !isProvisionalNodeId(chat[0]?.node_id)) {
-        updateMessage(0, { mes: substituteParams(chat[0].mes) });
-    }
+    // A card greeting is never "typed" the way a user message is, so nothing has ever run its macros
+    // through substituteParams() the way sendMessageAsUser() does at creation time for everything
+    // else - this is the one place that gap gets closed for prompt-building. It used to close it by
+    // writing the substituted copy straight onto chat[0] via updateMessage(), the one writer of
+    // node_id 0. That persisted the substitution into the canonical stored message, which is a
+    // problem regardless of whether the opening already has a real row: for a still-provisional one
+    // (see ensureOpeningRow()'s doc comment - a greeting earns a row by being used, not by being
+    // substituted for display), it is exactly the "was something written into this opening" signal
+    // _saveTreeChat() watches for, promoting an untouched greeting into a permanent row on the very
+    // first prompt build - even one from a generation that gets cancelled before anything else
+    // happens. And for an opening that already has a real row (e.g. the chat has since had a reply
+    // appended for real), the next save reads the mutated chat[0] as a genuine edit and pushes the
+    // substituted text out to the server, permanently overwriting the row with a persona/character-
+    // name-baked-in copy - the same corruption, just reached a different way.
+    //
+    // Neither is necessary: only the PROMPT needs the substituted text, and coreChat's own per-message
+    // map below already builds a local, non-persisted copy for everything else in the chat. Threading
+    // the substitution through there for chat[0] specifically gets prompt-building the resolved
+    // macros it needs without writing anything back onto the canonical message.
+    const substitutedFirstMessage = chat.length ? substituteParams(chat[0].mes) : null;
 
     // Collect messages with usable content
     const canUseTools = ToolManager.isToolCallingSupported();
@@ -6722,7 +6728,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     }
 
     coreChat = await Promise.all(coreChat.map(async (/** @type {ChatMessage} */ chatItem, index) => {
-        let message = chatItem.mes;
+        let message = chatItem === chat[0] ? substitutedFirstMessage : chatItem.mes;
         let regexType = chatItem.is_user ? regex_placement.USER_INPUT : regex_placement.AI_OUTPUT;
         let options = { isPrompt: true, depth: (coreChat.length - index - (isContinue ? 2 : 1)) };
 
