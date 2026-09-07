@@ -206,4 +206,34 @@ describe('characters-search-index.js: unified fresh-rebuild path (schema version
         const afterIds = (await searchIndex.searchCharacterIds('leftover-handle', directories, 'Percival')).ids;
         expect(afterIds).toEqual(['Percival.png']);
     }, 20000);
+
+    test('a catch-up covering more characters than one INDEX_BUILD_BATCH_SIZE batch indexes every one of them, not just the first/last batch', async () => {
+        // Regression coverage for the OOM-avoidance fix: applyIncrementalTantivyChanges() (the function
+        // rebuildCharacterSearchIndex() drives, per this file's own header - "fresh empty index + incremental
+        // catch-up from rev 0") used to read every upserted character's FULL data into one giant array before
+        // writing any of it - this proves the batched replacement (INDEX_BUILD_BATCH_SIZE-sized chunks) doesn't
+        // drop or duplicate characters at a batch boundary, by crossing it for real (more characters than one
+        // batch holds) rather than asserting on the implementation's own internal constant.
+        const engine = await searchEngine.resolveSearchEngine();
+        if (engine.tier !== 'tantivy') {
+            return;
+        }
+
+        const BATCH_CROSSING_COUNT = 520; // > characters-search-index.js's INDEX_BUILD_BATCH_SIZE (500)
+        const names = Array.from({ length: BATCH_CROSSING_COUNT }, (_, i) => `BatchCard${i}`);
+        for (const name of names) {
+            await writeCard(name);
+        }
+        await metadataDb.bootstrapIfNeeded(directories);
+
+        const buildResult = await searchIndex.rebuildCharacterSearchIndex('batch-crossing-handle', directories);
+        expect(buildResult).toEqual({ ok: true, backend: 'tantivy' });
+
+        // Spot-check the first, a middle, and the last name - covering both sides of the batch boundary - rather
+        // than searching for all 520 individually.
+        for (const name of [names[0], names[499], names[500], names[BATCH_CROSSING_COUNT - 1]]) {
+            const result = await searchIndex.searchCharacterIds('batch-crossing-handle', directories, name);
+            expect(result.ids).toEqual([`${name}.png`]);
+        }
+    }, 120000);
 });

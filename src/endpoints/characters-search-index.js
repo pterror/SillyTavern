@@ -783,35 +783,47 @@ async function applyIncrementalTantivyChanges(directories, tantivy, index, schem
         const favFor = idsNeedingData.length > 0 ? await makeFavResolver(directories, idsNeedingData) : () => false;
         const tagIdsFor = idsNeedingData.length > 0 ? await makeTagIdsResolver(directories, idsNeedingData) : () => '';
 
-        // Read+parse every upserted character's data concurrently, the same way readCharacterBatches() does for
-        // a full build (see INDEX_BUILD_READ_CONCURRENCY's doc comment - measured against this install's real
-        // library, disk-bound throughput plateaus well above serial speed once concurrency passes ~4). This loop
-        // used to `await processCharacter()` one id at a time, paying full disk latency serially for every
-        // changed character - the exact same per-file work the full-build path already parallelizes, just not
-        // here. The tantivy writer calls below stay synchronous and sequential regardless (JS's single-threaded
-        // event loop already serializes them no matter how the reads were scheduled), so only the read side
-        // needed this.
-        const characters = await mapWithConcurrency(idsNeedingData, INDEX_BUILD_READ_CONCURRENCY, async (id) => {
-            try {
-                return await processCharacter(id, directories, { shallow: false });
-            } catch {
-                // File gone (raced a delete that hasn't reached the metadata store's write hook/reconciler yet,
-                // or a corrupt PNG) - leave it deleted below rather than throwing the whole incremental pass away.
-                return null;
-            }
-        });
-        const characterById = new Map(idsNeedingData.map((id, i) => [id, characters[i]]));
-
-        for (const [id, op] of idsToReindex) {
+        // Delete-by-term for every touched id up front, regardless of op - a genuine delete needs nothing more,
+        // and an upsert still needs its old document gone before the new one (read+added below) lands. Splitting
+        // this from the read+add loop below (rather than interleaving them per id, as this used to) is safe:
+        // tantivy only needs delete-before-add for the SAME id, which still holds regardless of what order other
+        // ids' deletes/adds happen in.
+        for (const [id] of idsToReindex) {
             writer.deleteDocumentsByTerm(DATA_FIELD, id);
-            if (op === 'delete') {
-                continue;
+        }
+
+        // Read+parse+add upserted characters in FIXED-SIZE BATCHES (INDEX_BUILD_BATCH_SIZE), not one giant
+        // mapWithConcurrency() call over the whole `idsNeedingData` array - this used to hold every upserted
+        // character's FULL (non-shallow: description, alternate_greetings, character_book, everything)
+        // data in memory SIMULTANEOUSLY before writing any of it, which is exactly the OOM-avoidance
+        // discipline INDEX_BUILD_BATCH_SIZE's own doc comment already established readCharacterBatches() (the
+        // full-build path) needs and has - this incremental path just never actually reused it. A cold sync
+        // (`sinceSeq: 0`, whose change list IS the full current library - see this module's own header) or a
+        // large import backlog could mean `idsNeedingData` covers the ENTIRE library (300k+ characters on a
+        // real install), which used to mean a full-library's worth of full character objects retained at once -
+        // confirmed via a real heap snapshot near an actual OOM crash: hundreds of large (200KB+) full-card JSON
+        // strings retained simultaneously. Batching bounds peak memory to one batch's worth, regardless of how
+        // large `idsNeedingData` is - the same property readCharacterBatches() already has for a full build.
+        // Concurrency within each batch still uses INDEX_BUILD_READ_CONCURRENCY (see its own doc comment - disk-
+        // bound throughput plateaus well above serial speed past ~4 concurrent reads), so this doesn't sacrifice
+        // read throughput, only how many results are held in memory before being flushed to the writer.
+        for (let i = 0; i < idsNeedingData.length; i += INDEX_BUILD_BATCH_SIZE) {
+            const batchIds = idsNeedingData.slice(i, i + INDEX_BUILD_BATCH_SIZE);
+            const batchCharacters = await mapWithConcurrency(batchIds, INDEX_BUILD_READ_CONCURRENCY, async (id) => {
+                try {
+                    return await processCharacter(id, directories, { shallow: false });
+                } catch {
+                    // File gone (raced a delete that hasn't reached the metadata store's write hook/reconciler
+                    // yet, or a corrupt PNG) - leave it deleted (see the delete-by-term loop above) rather than
+                    // throwing the whole incremental pass away.
+                    return null;
+                }
+            });
+            for (let j = 0; j < batchIds.length; j++) {
+                const character = batchCharacters[j];
+                if (!character?.name) continue;
+                writer.addDocument(characterToTantivyDoc(tantivy, schema, character, tagNamesFor, favFor, tagIdsFor));
             }
-            const character = characterById.get(id);
-            if (!character?.name) {
-                continue;
-            }
-            writer.addDocument(characterToTantivyDoc(tantivy, schema, character, tagNamesFor, favFor, tagIdsFor));
         }
 
         writer.commit();
