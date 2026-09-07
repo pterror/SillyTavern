@@ -462,15 +462,18 @@ const SCHEMA_SQL = `
     );
 
     -- local-import-scan.js's durable per-file "already processed at this mtime" record - the persisted
-    -- counterpart to DirectoryScanState.lastSeenMtimeMs (in-memory-only, cold on every restart - see that
-    -- field's own doc comment). Without this, a server restart forces a full read+hash+dedup-check of every
-    -- file in every configured directory even when nothing changed since the last boot, because the in-memory
-    -- skip cache always starts empty (measured ~23 minutes for a real ~301k-file corpus - 2026-08 local-import
-    -- perf investigation). This table lets that skip survive a restart: on boot, local-import-scan.js bulk-loads
-    -- every row for a configured directory into a fresh state's lastSeenMtimeMs before the first pass runs, so a
-    -- file whose on-disk mtime still matches its recorded row is skipped in O(1) (a stat, no read/hash/import)
-    -- exactly like an in-process rescan already does - this only extends that same existing, efficiency-only,
-    -- never-relied-on-for-correctness semantics across a restart, it does not change what "unchanged" means.
+    -- counterpart to DirectoryScanState.lastSeenMtimeMs (in-memory-only, bounded to MAX_LAST_SEEN_MTIME_ENTRIES,
+    -- cold on every restart - see that field's own doc comment). Without this, a server restart (or an
+    -- in-memory cache miss - see below) forces a full read+hash+dedup-check of every unchanged file, because the
+    -- in-memory skip cache always starts empty (measured ~23 minutes for a real ~301k-file corpus - 2026-08
+    -- local-import perf investigation). This table lets that skip survive both a restart AND a bounded cache's
+    -- own evictions: getLocalImportMtime() is a single indexed point lookup local-import-scan.js falls back to
+    -- whenever lastSeenMtimeMs doesn't have an answer in memory, so a file whose on-disk mtime still matches its
+    -- recorded row is still skipped without a read/hash/import, just via one extra indexed SELECT instead of a
+    -- pure in-memory hit - this only extends that same existing, efficiency-only, never-relied-on-for-correctness
+    -- semantics across a restart or an eviction, it does not change what "unchanged" means. (This table used to
+    -- also be bulk-loaded whole into memory at boot via a since-removed getAllLocalImportMtimes() - see the
+    -- 2026-09 unbounded-memory investigation for why that was replaced with the lazy per-file lookup above.)
     -- Same source_path-is-the-key shape as local_import_skips, for the same reason (multiple configured
     -- directories can share a filename; this table is keyed per-DEFAULT_USER, not per-directory).
     CREATE TABLE IF NOT EXISTS local_import_mtimes (
@@ -2803,29 +2806,61 @@ export async function clearLocalImportSkip(directories, sourcePath) {
 }
 
 /**
- * Bulk-loads every persisted `local_import_mtimes` row for this user (see this module's SCHEMA_SQL comment on
- * that table) into a single Map, so local-import-scan.js can warm a fresh DirectoryScanState.lastSeenMtimeMs
- * with ONE query at boot instead of one lookup per file - mirrors reconcile()'s own
- * `SELECT id, file_mtime FROM characters` -> Map bulk-load pattern for the same reason (a per-file round trip
- * for a ~300k-file corpus would itself be a real cost, even though each individual lookup is cheap).
- * Not scoped to one configured directory - local-import-scan.js filters the returned Map to the source_path
- * prefixes it cares about, same as this table isn't partitioned by directory (see SCHEMA_SQL comment).
+ * Looks up local-import-scan.js's persisted "already processed at this mtime" record for one source file - the
+ * per-file read counterpart to setLocalImportMtime()'s write, and DirectoryScanState.lastSeenMtimeMs's own
+ * fallback on a cache miss (see that field's and local-import-scan.js's MAX_LAST_SEEN_MTIME_ENTRIES doc comments
+ * for the full story). Replaces the old bulk-load-the-whole-table-into-memory-at-boot getAllLocalImportMtimes(),
+ * which held one entry per file this user's local-import directories had EVER seen, for the entire life of the
+ * process, with no ceiling other than however large those directories (an ever-growing external corpus, per the
+ * 2026-09 unbounded-memory investigation) happened to have grown to. A single indexed point lookup here (
+ * source_path is this table's PRIMARY KEY) is nowhere near the cost this skip cache exists to avoid - a full
+ * read+hash of the file - so paying it lazily, per cache-miss, in exchange for a genuinely bounded in-memory
+ * footprint is the honest tradeoff.
  * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<Map<string, number>>} source_path -> mtimeMs. Empty (not null) if the metadata store is
- * unavailable - fail-open, matching this module's convention elsewhere: an empty cache just means every file
- * looks new, which is always safe (if wasteful), never incorrect.
+ * @param {string} sourcePath Absolute path to the discovered source file
+ * @returns {Promise<{ mtimeMs: number } | null>} `null` if no record is persisted, OR if the metadata store
+ * itself is unavailable (fail-open, matching this module's convention elsewhere - callers must treat that as
+ * "can't determine, don't skip", not as "confirmed not yet processed").
  */
-export async function getAllLocalImportMtimes(directories) {
+export async function getLocalImportMtime(directories, sourcePath) {
     const entry = await getEntry(directories);
-    if (!entry) return new Map();
+    if (!entry) return null;
 
-    const rows = entry.db.all('SELECT source_path, mtime_ms FROM local_import_mtimes');
-    return new Map(rows.map(row => [row.source_path, Number(row.mtime_ms)]));
+    const row = entry.db.get('SELECT mtime_ms FROM local_import_mtimes WHERE source_path = @sourcePath', { sourcePath });
+    return row ? { mtimeMs: Number(row.mtime_ms) } : null;
+}
+
+/**
+ * One page of persisted `local_import_mtimes` source_paths, ordered ascending and keyset-paginated (`source_path
+ * > afterSourcePath`, not `LIMIT/OFFSET`) so local-import-scan.js's removed-file sweep can walk the whole table
+ * `limit` rows at a time without ever holding more than one page in memory - see that function for why (the same
+ * unbounded-memory concern getLocalImportMtime() replaces getAllLocalImportMtimes() for). Keyset (not OFFSET)
+ * pagination specifically because the sweep DELETEs rows (via clearLocalImportMtime()) as it goes - OFFSET
+ * pagination over a table being deleted from mid-walk silently skips rows as later offsets shift underneath it;
+ * a `source_path >` cursor is immune to that, since a deleted row's key never reappears and never shifts a
+ * still-to-be-seen row's key.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} afterSourcePath Exclusive cursor - pass '' for the first page, then the last row's own
+ * source_path from the previous page to continue.
+ * @param {number} limit Page size.
+ * @returns {Promise<string[]>} Empty when there are no more rows, OR if the metadata store is unavailable
+ * (fail-open - an empty page just ends the sweep early, at worst leaving a removed file's stale record to be
+ * caught on a later pass, never incorrect).
+ */
+export async function getLocalImportMtimeSourcePathsAfter(directories, afterSourcePath, limit) {
+    const entry = await getEntry(directories);
+    if (!entry) return [];
+
+    const rows = entry.db.all(
+        'SELECT source_path FROM local_import_mtimes WHERE source_path > @after ORDER BY source_path LIMIT @limit',
+        { after: afterSourcePath, limit },
+    );
+    return rows.map(row => row.source_path);
 }
 
 /**
  * Records (or refreshes) local-import-scan.js's durable "already processed at this mtime" record for one source
- * file - the write-through counterpart to getAllLocalImportMtimes()'s bulk read. A no-op (fail-open) if the
+ * file - the write-through counterpart to getLocalImportMtime()'s per-file read. A no-op (fail-open) if the
  * metadata store is unavailable, same posture as setLocalImportSkip(): losing this write only means the file
  * gets re-read/re-hashed (wastefully, never incorrectly) on the next restart, not a correctness problem.
  *
