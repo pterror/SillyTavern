@@ -671,6 +671,32 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
         // via beginBatchImport()/endBatchImport()).
         const pipelineResult = await ensureWorkerPool().runPipeline(sourcePath, format, directories, allowIdentityFallback);
 
+        // Re-stat AFTER the worker has actually read (and, for png/json, written) the file, rather than reusing
+        // the pre-dispatch `stat` from the top of this function - real bug (2026-09 tail-of-batch investigation):
+        // for a large file still being streamed onto disk when the debounce/scan trigger fired, the pre-dispatch
+        // stat() can capture a mid-write, not-yet-final mtime, while runPipeline() above only resolves once the
+        // worker's read has actually completed (by which point a still-finishing write has normally caught up).
+        // markProcessed() below used to persist that STALE pre-dispatch mtime against the hash of what turned out
+        // to be the FINAL bytes - so the next look at this same file (the write's own trailing fs event, or the
+        // periodic backstop) would see the file's real on-disk mtime not match the stale recorded one, reprocess
+        // it, re-hash the exact same final bytes, and hit the alreadyImported/identityMatch branch below against
+        // the character THIS SAME invocation just created - a spurious "Deduplicated on disk" self-match with no
+        // real duplicate involved. Re-stating here means the mtime this function goes on to persist actually
+        // reflects the file's state as of the read runPipeline() just performed, closing that window. A file
+        // genuinely removed in the meantime is handled exactly like the pre-dispatch stat's own ENOENT branch
+        // above (cleanupRemovedFile(), no markProcessed call); any other stat error just falls back to the
+        // pre-dispatch value rather than blocking an otherwise-successful import on a second stat's own hiccup.
+        try {
+            const freshStat = await fsPromises.stat(sourcePath);
+            stat.mtimeMs = freshStat.mtimeMs;
+        } catch (err) {
+            if (err.code === 'ENOENT') {
+                await cleanupRemovedFile(state, directories, filename);
+                return;
+            }
+            console.debug(`[local-import] Post-read re-stat failed for ${sourcePath} (falling back to the pre-dispatch mtime):`, err.message);
+        }
+
         // Permanent-skip classification (see local-import-classify.js's classifyJsonCandidate() doc comment):
         // computed in the worker above; acted on here exactly as before - never confused with, or masking, a
         // real failure in the staging/import machinery below. Only ever short-circuits format 'json' candidates
