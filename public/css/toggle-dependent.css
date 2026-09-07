@@ -414,6 +414,10 @@ body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_blo
     margin-top: auto;
     padding-top: 6px;
     max-height: 4em;
+    overflow-y: hidden;
+}
+
+body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_block .tags_inline:hover {
     overflow-y: auto;
 }
 
