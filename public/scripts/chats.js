@@ -1012,6 +1012,50 @@ export function showMediaLightbox(url, title = '', isVideo = false) {
         event.stopPropagation();
     });
 
+    if (!isVideo) {
+        const MIN_SCALE = 1;
+        const MAX_SCALE = 5;
+        const SCALE_STEP = 0.25;
+        let scale = MIN_SCALE;
+
+        const applyScale = newScale => {
+            scale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, newScale));
+            mediaElement.style.transform = scale > MIN_SCALE ? `scale(${scale})` : '';
+            mediaHolder.style.overflow = scale > MIN_SCALE ? 'auto' : '';
+        };
+
+        mediaHolder.addEventListener('wheel', event => {
+            event.preventDefault();
+            event.stopPropagation();
+            applyScale(scale + (event.deltaY < 0 ? SCALE_STEP : -SCALE_STEP));
+        }, { passive: false });
+
+        const zoomControls = document.createElement('div');
+        zoomControls.classList.add('img_enlarged_zoom_controls');
+
+        const zoomIn = document.createElement('div');
+        zoomIn.classList.add('right_menu_button', 'fa-solid', 'fa-magnifying-glass-plus');
+        zoomIn.title = t`Zoom in`;
+
+        const zoomOut = document.createElement('div');
+        zoomOut.classList.add('right_menu_button', 'fa-solid', 'fa-magnifying-glass-minus');
+        zoomOut.title = t`Zoom out`;
+
+        const zoomReset = document.createElement('div');
+        zoomReset.classList.add('right_menu_button', 'fa-solid', 'fa-magnifying-glass');
+        zoomReset.title = t`Reset zoom`;
+
+        for (const button of [zoomIn, zoomOut, zoomReset]) {
+            button.addEventListener('click', event => event.stopPropagation());
+        }
+        zoomIn.addEventListener('click', () => applyScale(scale + SCALE_STEP));
+        zoomOut.addEventListener('click', () => applyScale(scale - SCALE_STEP));
+        zoomReset.addEventListener('click', () => applyScale(MIN_SCALE));
+
+        zoomControls.append(zoomIn, zoomOut, zoomReset);
+        mediaContainer.append(zoomControls);
+    }
+
     if (title.trim().length > 0) {
         const mediaTitlePre = document.createElement('pre');
         const mediaTitleCode = document.createElement('code');
