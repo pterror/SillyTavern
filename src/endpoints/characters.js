@@ -338,9 +338,20 @@ export async function repairFirstMesMismatches(directories) {
                 await fireMetadataUpsertHook(directories, file, data, null, avatarIdentityHash);
 
                 // Invalidate this file's cached read the same way writeCharacterData() does, so a subsequent
-                // request never serves the pre-fix in-memory copy. (Nothing further needed for diskCache here:
+                // request never serves the pre-fix in-memory copy. Nothing further needed for diskCache here:
                 // its cache key already embeds the file's mtime - which this write just changed - so the old
-                // entry is already unreachable; the diskCache.verify() call below just reclaims its disk space.)
+                // on-disk entry is already unreachable (any future read computes a fresh key from the new
+                // mtime and simply misses it). It's now orphaned dead weight on disk, not a correctness
+                // problem - reclaiming it is diskCache.verify()'s ordinary job whenever THAT runs on its own
+                // schedule (DiskCache.SYNC_INTERVAL / an explicit maintenance pass), not something this
+                // function needs to force. It deliberately does NOT call diskCache.verify() itself: that's a
+                // full-corpus walk+diff over every character file AND every cached entry (measured ~24 minutes
+                // on a 330k+-file/cached-entry library), and calling it here made it fire on every single boot
+                // that fixes even one mismatch - which, on an install where local-import keeps discovering
+                // legacy cards with this drift, is not the rare case this was written assuming. A handful of
+                // orphaned cache entries sitting unreclaimed is a trivial, bounded amount of wasted disk space;
+                // an unconditional 24-minute full-corpus scan added to every boot's critical background work is
+                // not a proportionate price for reclaiming it synchronously.
                 for (const key of memoryCache.keys()) {
                     if (key.startsWith(filePath)) {
                         memoryCache.delete(key);
@@ -363,9 +374,6 @@ export async function repairFirstMesMismatches(directories) {
 
     if (fixed.length > 0) {
         console.log(color.cyan(`[first-mes-repair] Fixed ${fixed.length}/${processed} character(s) with a Spec v1/v2 first_mes mismatch.`));
-        if (useDiskCache) {
-            await diskCache.verify([directories]);
-        }
     }
 
     return { scanned: processed, fixed };
