@@ -6508,10 +6508,21 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         setExtensionPrompt(inject_ids.DEPTH_PROMPT, depthPromptText, extension_prompt_types.IN_CHAT, depthPromptDepth, extension_settings.note.allowWIScan, depthPromptRole);
     }
 
-    // First message in fresh 1-on-1 chat reacts to user/character settings changes
-    if (chat.length) {
-        updateMessage(0, { mes: substituteParams(chat[0].mes) });
-    }
+    // First message in fresh 1-on-1 chat reacts to user/character settings changes.
+    //
+    // This used to persist the substituted copy straight onto chat[0] via updateMessage() - the same
+    // mistake message-formatting.js's header documents at length, just in Generate() instead of the
+    // formatter: a card greeting is never "typed" the way a user message is, so nothing has run its
+    // macros through substituteParams() before, and doing it here by writing chat[0].mes makes
+    // _saveTreeChat()'s "was something written into this opening" check see a change that was never
+    // the user's - promoting an untouched greeting into a permanent row on the very first prompt
+    // build, even one from a generation that gets cancelled before anything else happens, and (for an
+    // opening that already has a real row) overwriting it with a persona/character-name-baked-in copy
+    // on every later build. Only the prompt needs the substituted text, and coreChat's own per-message
+    // map immediately below already builds a local, non-persisted copy for every other message in the
+    // chat - threading the substitution through there for chat[0] specifically gets prompt-building
+    // what it needs without ever writing it back onto the canonical stored message.
+    const substitutedFirstMessage = chat.length ? substituteParams(chat[0].mes) : null;
 
     // Collect messages with usable content
     const canUseTools = ToolManager.isToolCallingSupported();
@@ -6522,7 +6533,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     }
 
     coreChat = await Promise.all(coreChat.map(async (/** @type {ChatMessage} */ chatItem, index) => {
-        let message = chatItem.mes;
+        let message = chatItem === chat[0] ? substitutedFirstMessage : chatItem.mes;
         let regexType = chatItem.is_user ? regex_placement.USER_INPUT : regex_placement.AI_OUTPUT;
         let options = { isPrompt: true, depth: (coreChat.length - index - (isContinue ? 2 : 1)) };
 
