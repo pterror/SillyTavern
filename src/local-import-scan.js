@@ -614,9 +614,27 @@ async function processFile(state, filename, directories, tagImportSetting = 3) {
                 // read of sourcePath, ever. See characters.js's buildPngImportData()/buildJsonImportData() -
                 // the exact same pure logic importFromPng()/importFromJson() themselves use for the browser
                 // `/import` route, just fed pre-parsed text instead of a staged file to re-read.
-                const data = format === 'png'
-                    ? buildPngImportData(pipelineResult.rawText, directories)
-                    : buildJsonImportData(pipelineResult.rawText, directories);
+                let data;
+                try {
+                    data = format === 'png'
+                        ? buildPngImportData(pipelineResult.rawText, directories)
+                        : buildJsonImportData(pipelineResult.rawText, directories);
+                } catch (buildErr) {
+                    // buildPngImportData()/buildJsonImportData() can throw on malformed/unexpected input
+                    // (JSON.parse, sanitize(), etc. - real risk on a scraped corpus, not hypothetical) - at this
+                    // point the worker is still sitting in the two-phase protocol's 'parsed' state (see
+                    // local-import-worker.js's own header), holding this file's full source buffer/chunk list in
+                    // memory, and its pool slot stays permanently "busy" until finish() is called (see
+                    // local-import-worker-pool.js's runPipeline() doc comment: "never calling it leaves that
+                    // worker's slot permanently stuck busy for the rest of this pool's lifetime"). Without this
+                    // catch, ONE malformed file anywhere in a large corpus would leak that buffer AND permanently
+                    // lose one worker from the pool for the rest of this process's life - a real, compounding
+                    // cost across a run that touches hundreds of thousands of files. finish() itself is
+                    // best-effort here (its own failure has nothing further this catch can do about it) - the
+                    // rethrow below is what the outer catch (this function's own) logs and retries next pass.
+                    await pipelineResult.finish({ type: 'no-write' }).catch(() => { });
+                    throw buildErr;
+                }
 
                 if (data === null) {
                     await pipelineResult.finish({ type: 'no-write' });
