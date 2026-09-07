@@ -316,16 +316,16 @@ async function preSetupTasks() {
     __mark('migrateGroupChatsMetadataFormat');
     await checkForNewContent(directories);
     __mark('checkForNewContent');
-    // Cache verification is a maintenance operation (pruning entries for deleted files), not a correctness
-    // prerequisite - stale entries just waste disk space until cleaned up. Fire-and-forget so it doesn't
-    // block the server from starting to listen (verify()'s own readdir + stat walk over the entire
-    // characters directory is the same shape of IO that was just eliminated from reconcile()).
-    {
-        const __verifyStart = process.hrtime.bigint();
-        diskCache.verify(directories)
-            .catch(err => console.error('Background cache verification failed:', err))
-            .finally(() => console.log(`[boot-timing] diskCache.verify (background) took ${Number(process.hrtime.bigint() - __verifyStart) / 1e6}ms wall, finished at +${Number(process.hrtime.bigint() - __t0) / 1e6}ms total`));
-    }
+    // No boot-time diskCache.verify() call anymore (2026-09 event-driven cache invalidation): the disk cache's
+    // key already embeds the file's mtime (getCacheKey(), endpoints/characters.js), so a file changed OUTSIDE
+    // this app entirely - the one case an in-process write-time invalidation (DiskCache.invalidateKey(), the
+    // same module) can't see - simply computes a DIFFERENT key on its next read and misses the stale entry on
+    // its own; there was never a correctness gap here for verify() to close, only orphaned entries wasting disk
+    // space until pruned. Un-pruned entries from a deleted/externally-edited file are a bounded, harmless cost -
+    // not something worth a full readdir+stat walk over the entire characters directory (measured ~24 minutes on
+    // this install's 330k+-file library) added to every single boot. verify() itself still exists as an
+    // on-demand admin/maintenance operation for anyone who wants to reclaim that space; it's just never called
+    // automatically anymore.
     migrateFlatSecrets(directories);
     __mark('migrateFlatSecrets');
     cleanUploads();
@@ -377,7 +377,7 @@ async function preSetupTasks() {
     // already live durably in the metadata store itself). Still fire-and-forget rather than sitting in the
     // awaited boot chain though - it's still real file IO (read settings.json, maybe write a backup file, prune
     // old backups) across every user handle, same "maintenance work that must not gate the server actually
-    // starting to listen" shape as diskCache.verify() just above.
+    // starting to listen" shape as repairFirstMesMismatches() above.
     {
         const __settingsStart = process.hrtime.bigint();
         settingsInit()
