@@ -6697,7 +6697,19 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     }
 
     // First message in fresh 1-on-1 chat reacts to user/character settings changes
-    if (chat.length) {
+    //
+    // Skipped while the opening still carries a provisional id: it has no row of its own yet - a
+    // greeting earns one by being used (see ensureOpeningRow()'s doc comment), and persisting a
+    // substituted copy of it here (via updateMessage(), the one writer of node_id 0) is exactly the
+    // kind of edit that write is watching for. _saveTreeChat()'s "was something written into this
+    // opening" check (public/script.js, _saveTreeChat) compares the message's current text against
+    // what its provisional id was derived from; running it through this substitution makes that
+    // comparison see a change that was never the user's, and promotes an untouched greeting into a
+    // permanent row on the very first prompt build - even one from a generation that gets cancelled
+    // before anything else happens. A message that already has a real row (isProvisionalNodeId false)
+    // has already earned its place in the tree, so keeping its macros in step with the current
+    // persona/character names there is unaffected.
+    if (chat.length && !isProvisionalNodeId(chat[0]?.node_id)) {
         updateMessage(0, { mes: substituteParams(chat[0].mes) });
     }
 
