@@ -7,11 +7,13 @@ import os from 'node:os';
 let router;
 /** @type {(str: string, seed?: number) => number} */
 let getStringHash;
+/** @type {typeof import('../src/settings-store.js')} */
+let settingsStore;
 /** @type {import('node:http').Server} */
 let server;
 let baseUrl;
 let tempDir;
-let settingsPath;
+let directories;
 
 /**
  * Mounts the real settings.js router behind a fake auth middleware, same shape as avatars-get.test.js /
@@ -22,19 +24,20 @@ let settingsPath;
 beforeAll(async () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-settings-save-test-'));
     fs.mkdirSync(path.join(tempDir, 'backups'), { recursive: true });
-    settingsPath = path.join(tempDir, 'settings.json');
+    directories = { root: tempDir, backups: path.join(tempDir, 'backups') };
 
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
 
     ({ getStringHash } = await import('../public/scripts/hash-utils.js'));
+    settingsStore = await import('../src/settings-store.js');
     ({ router } = await import('../src/endpoints/settings.js'));
     const express = (await import('express')).default;
     const app = express();
     app.use(express.json());
     app.use((req, res, next) => {
         req.user = {
-            directories: { root: tempDir, backups: path.join(tempDir, 'backups') },
+            directories,
             profile: { handle: 'test-user' },
         };
         next();
@@ -63,34 +66,42 @@ async function postSave(body, expectedHash) {
     });
 }
 
+/** Full replace via the sharded store, deleting stray per-key files from a previous test. */
 function writeSettingsFile(obj) {
-    const content = JSON.stringify(obj, null, 4);
-    fs.writeFileSync(settingsPath, content, 'utf8');
-    return content;
+    settingsStore.writeAllSettings(directories, obj);
+    return JSON.stringify(obj, null, 4);
+}
+
+function readSettingsFile() {
+    return settingsStore.readAllSettings(directories);
+}
+
+function eraseSettings() {
+    settingsStore.deleteAllSettings(directories);
 }
 
 describe('POST /api/settings/save conflict detection', () => {
     test('writes unconditionally when no X-Settings-Hash header is sent (backward compatible)', async () => {
         const response = await postSave({ a: 1 });
         expect(response.status).toBe(200);
-        expect(JSON.parse(fs.readFileSync(settingsPath, 'utf8'))).toEqual({ a: 1 });
+        expect(readSettingsFile()).toEqual({ a: 1 });
     });
 
     test('proceeds when the sent hash matches the current on-disk content', async () => {
-        const currentContent = writeSettingsFile({ a: 1 });
-        const currentHash = String(getStringHash(currentContent));
+        writeSettingsFile({ a: 1 });
+        const currentHash = String(getStringHash(settingsStore.readAllSettingsAsJson(directories)));
 
         const response = await postSave({ a: 2 }, currentHash);
 
         expect(response.status).toBe(200);
-        expect(JSON.parse(fs.readFileSync(settingsPath, 'utf8'))).toEqual({ a: 2 });
+        expect(readSettingsFile()).toEqual({ a: 2 });
     });
 
     test('rejects with 409 and leaves the file untouched when the sent hash is stale', async () => {
         // Simulates: this client last saw {a: 1} (from an earlier /get or /save), but some other tab/device has
         // since written {a: 'changed by another tab'} - this client's belief about the current state is stale.
         const staleHash = String(getStringHash(JSON.stringify({ a: 1 }, null, 4)));
-        const actualContent = writeSettingsFile({ a: 'changed by another tab' });
+        writeSettingsFile({ a: 'changed by another tab' });
 
         const response = await postSave({ a: 'clobber attempt' }, staleHash);
 
@@ -98,26 +109,30 @@ describe('POST /api/settings/save conflict detection', () => {
         const body = await response.json();
         expect(body.result).toBe('conflict');
         // The other tab's write must survive untouched - this is the actual bug the check exists to close.
-        expect(fs.readFileSync(settingsPath, 'utf8')).toBe(actualContent);
+        expect(readSettingsFile()).toEqual({ a: 'changed by another tab' });
     });
 
-    test('treats a missing settings file as empty content for the conflict check', async () => {
-        fs.rmSync(settingsPath, { force: true });
-        const emptyHash = String(getStringHash(''));
+    test('treats a missing settings store as empty content for the conflict check', async () => {
+        eraseSettings();
+        // The canonical "no settings yet" serialization is the empty object, `"{}"` - see
+        // readAllSettingsAsJson()'s own doc comment (settings-store.js) - not an empty string, since the
+        // sharded store's canonical content is always a JSON.stringify() of the reconstructed object.
+        const emptyHash = String(getStringHash(settingsStore.readAllSettingsAsJson(directories)));
 
         const matchingResponse = await postSave({ a: 'first save ever' }, emptyHash);
         expect(matchingResponse.status).toBe(200);
-        expect(JSON.parse(fs.readFileSync(settingsPath, 'utf8'))).toEqual({ a: 'first save ever' });
+        expect(readSettingsFile()).toEqual({ a: 'first save ever' });
     });
 
-    test('rejects a stale hash against a missing file when the client believed content existed', async () => {
-        fs.rmSync(settingsPath, { force: true });
+    test('rejects a stale hash against a missing store when the client believed content existed', async () => {
+        eraseSettings();
         const believedHash = String(getStringHash(JSON.stringify({ a: 'i think this exists' }, null, 4)));
 
         const response = await postSave({ a: 'clobber attempt' }, believedHash);
 
         expect(response.status).toBe(409);
-        expect(fs.existsSync(settingsPath)).toBe(false);
+        // The rejected write must not have applied - settings are still whatever they were before (empty).
+        expect(readSettingsFile()).toEqual({});
     });
 
     test('treats a malformed hash header as absent and writes unconditionally', async () => {
@@ -126,6 +141,6 @@ describe('POST /api/settings/save conflict detection', () => {
         const response = await postSave({ a: 'new value' }, 'not-a-number');
 
         expect(response.status).toBe(200);
-        expect(JSON.parse(fs.readFileSync(settingsPath, 'utf8'))).toEqual({ a: 'new value' });
+        expect(readSettingsFile()).toEqual({ a: 'new value' });
     });
 });

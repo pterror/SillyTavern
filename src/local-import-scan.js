@@ -7,6 +7,7 @@ import process from 'node:process';
 import { getConfigValue, color, mapWithConcurrency } from './util.js';
 import { DEFAULT_USER, UPLOADS_DIRECTORY } from './constants.js';
 import { getUserDirectories } from './users.js';
+import { readSettingsAtPaths } from './settings-store.js';
 import { copyCharacterFile } from './local-import-copy.js';
 import { reclaimReflinkPrefix } from './character-card-parser.js';
 import { importCharacterFileHeadless, buildPngImportData, buildJsonImportData, mintCharacterId, fireMetadataUpsertHook } from './endpoints/characters.js';
@@ -527,13 +528,9 @@ function withPerHashLock(state, hash, fn) {
 
 function readTagImportSetting(directories) {
     try {
-        const settingsPath = path.join(directories.root, 'settings.json');
-        if (fs.existsSync(settingsPath)) {
-            const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-            const val = settings.power_user?.tag_import_setting;
-            if (val === 2) return 2;
-            if (val === 4) return 4;
-        }
+        const val = readSettingsAtPaths(directories, ['power_user.tag_import_setting'])['power_user.tag_import_setting'];
+        if (val === 2) return 2;
+        if (val === 4) return 4;
     } catch { /* use default */ }
     return 3;
 }

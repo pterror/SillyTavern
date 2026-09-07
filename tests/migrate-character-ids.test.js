@@ -11,6 +11,8 @@ let cardParser;
 let migration;
 /** @type {typeof import('../src/util.js')} */
 let util;
+/** @type {typeof import('../src/settings-store.js')} */
+let settingsStore;
 
 let tempDir;
 let charactersDir;
@@ -27,6 +29,7 @@ beforeAll(async () => {
     cardParser = await import('../src/character-card-parser.js');
     migration = await import('../src/migrations/migrate-character-ids.js');
     util = await import('../src/util.js');
+    settingsStore = await import('../src/settings-store.js');
 });
 
 beforeEach(() => {
@@ -294,21 +297,20 @@ describe('migrateCharacterIds - cross-cutting reference sweep', () => {
         expect(group.members).toEqual([newAvatar, 'Someone-Else.png']);
     });
 
-    test('rewrites charLore (by extensionless stem), note.chara, and active_character in settings.json', async () => {
+    test('rewrites charLore (by extensionless stem), note.chara, and active_character in settings', async () => {
         await writeCardFile('Heidi.png');
-        const settingsPath = path.join(tempDir, 'settings.json');
-        fs.writeFileSync(settingsPath, JSON.stringify({
+        settingsStore.writeAllSettings(directories, {
             active_character: 'Heidi.png',
             world_info_settings: { world_info: { charLore: [{ name: 'Heidi', extraBooks: ['Some Book'] }] } },
             extension_settings: { note: { chara: [{ name: 'Heidi.png', useChara: true }] } },
-        }));
+        });
 
         const result = await migration.migrateCharacterIds(directories, noRebuild);
         expect(result.migrated).toBe(1);
         const newAvatar = fs.readdirSync(charactersDir)[0];
         const newStem = path.parse(newAvatar).name;
 
-        const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+        const settings = settingsStore.readAllSettings(directories);
         expect(settings.active_character).toBe(newAvatar);
         expect(settings.world_info_settings.world_info.charLore[0].name).toBe(newStem);
         expect(settings.world_info_settings.world_info.charLore[0].extraBooks).toEqual(['Some Book']);
@@ -316,22 +318,22 @@ describe('migrateCharacterIds - cross-cutting reference sweep', () => {
         expect(settings.extension_settings.note.chara[0].useChara).toBe(true);
     });
 
-    test('a second run over an already-migrated library leaves group/settings files untouched (no spurious rewrite)', async () => {
+    test('a second run over an already-migrated library leaves group/settings untouched (no spurious rewrite)', async () => {
         await writeCardFile('Ivan.png');
-        const settingsPath = path.join(tempDir, 'settings.json');
-        fs.writeFileSync(settingsPath, JSON.stringify({ active_character: 'Ivan.png' }));
+        settingsStore.writeAllSettings(directories, { active_character: 'Ivan.png' });
 
         await migration.migrateCharacterIds(directories, noRebuild);
-        const settingsAfterFirst = fs.statSync(settingsPath).mtimeMs;
+        const activeCharacterFile = path.join(tempDir, 'settings', 'active_character.json');
+        const settingsAfterFirst = fs.statSync(activeCharacterFile).mtimeMs;
 
         await new Promise(resolve => setTimeout(resolve, 20));
         await migration.migrateCharacterIds(directories, noRebuild);
-        const settingsAfterSecond = fs.statSync(settingsPath).mtimeMs;
+        const settingsAfterSecond = fs.statSync(activeCharacterFile).mtimeMs;
 
         // Content is stable either way - the key claim isn't "never touched again" (a fresh write with
         // identical content would also be harmless), it's that the referenced id didn't change or get
         // corrupted by being swept twice.
-        const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+        const settings = settingsStore.readAllSettings(directories);
         const newAvatar = fs.readdirSync(charactersDir)[0];
         expect(settings.active_character).toBe(newAvatar);
         void settingsAfterFirst;

@@ -6,11 +6,17 @@ import _ from 'lodash';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
 import bytes from 'bytes';
 
-import { SETTINGS_FILE } from '../constants.js';
 import { getConfigValue, generateTimestamp, removeOldBackups } from '../util.js';
 import { getAllUserHandles, getUserDirectories } from '../users.js';
 import { getFileNameValidationFunction } from '../middleware/validateFileName.js';
-import { getStringHash, hashSettingsKeys, setAtPath } from '../../public/scripts/hash-utils.js';
+import { getStringHash } from '../../public/scripts/hash-utils.js';
+import {
+    readAllSettingsAsJson,
+    readSettingsAtPaths,
+    writeSettingsKeys,
+    writeAllSettings,
+    settingsExist,
+} from '../settings-store.js';
 
 const ENABLE_EXTENSIONS = !!getConfigValue('extensions.enabled', true, 'boolean');
 const ENABLE_EXTENSIONS_AUTO_UPDATE = !!getConfigValue('extensions.autoUpdate', true, 'boolean');
@@ -129,15 +135,18 @@ async function backupSettings() {
 }
 
 /**
- * Makes a backup of the user's settings file - a plain copy of settings.json itself, nothing more.
+ * Makes a backup of the user's settings - the same flat object /api/settings/get reconstructs from the sharded
+ * settings/ store, serialized the same canonical way, snapshotted as one JSON file. Same restore-compatible
+ * shape a plain copy of a monolithic settings.json used to be; the sharded on-disk layout underneath is not
+ * something a backup/restore snapshot needs to know about.
  *
  * Used to also merge in a full tag definitions/tag_map export reconstructed from the metadata sqlite store
  * (a now-deleted mergeTagsIntoSnapshot() in tags.js -> getFullTagMapExport() -> a full scan of every
  * character_tags row) so the backup would carry tag_map the way the old tags.json-era backups did. That's gone,
  * on both the write side here and the restore side (restore-snapshot below, which used to import tags/tag_map
  * back out of a restored snapshot via a now-deleted splitTagsFromSnapshot()): character_tags/group_tags in the
- * metadata store already ARE the durable, backed-up-with-the-database record of tag assignments, and settings.json
- * was never authoritative for them even in the tags.json-era shape this was preserving - there's no reader
+ * metadata store already ARE the durable, backed-up-with-the-database record of tag assignments, and settings
+ * were never authoritative for them even in the tags.json-era shape this was preserving - there's no reader
  * anywhere that needs the settings path to know about tags in either direction. See getFullTagMapExport()'s own
  * doc comment on where that capability still lives if something genuinely needs a full export/import of tag
  * assignments later.
@@ -152,18 +161,15 @@ async function backupUserSettings(handle, preventDuplicates) {
         return;
     }
 
-    const sourceFile = path.join(userDirectories.root, SETTINGS_FILE);
-
-    if (!fs.existsSync(sourceFile)) {
+    if (!settingsExist(userDirectories)) {
         return;
     }
 
     let snapshotContent;
     try {
-        snapshotContent = fs.readFileSync(sourceFile, 'utf8');
-        JSON.parse(snapshotContent); // Validate it's actually valid JSON before backing it up.
+        snapshotContent = readAllSettingsAsJson(userDirectories);
     } catch (err) {
-        console.error('Could not read/parse settings file for backup', err);
+        console.error('Could not read settings for backup', err);
         return;
     }
 
@@ -218,19 +224,22 @@ export const router = express.Router();
  * is stale and its write must not proceed - otherwise it would silently clobber that other write with whatever
  * this caller had, which is the actual bug this exists to close.
  *
- * Hashes the file fresh on every call rather than keeping a separately persisted "last known hash": at this
- * file's size (tens to a couple hundred KB) that's cheap, and a cached hash could itself drift from disk
- * (external edits, a restore-snapshot, a crash mid-write) in ways a persisted value wouldn't self-correct from -
- * reading the actual current bytes is the only value that's always trustworthy.
+ * Re-reads the sharded settings store fresh on every call rather than keeping a separately persisted "last known
+ * hash": a cached hash could itself drift from disk (external edits, a restore-snapshot, a crash mid-write) in
+ * ways a persisted value wouldn't self-correct from - reading the actual current content is the only value
+ * that's always trustworthy. The canonical serialization (readAllSettingsAsJson) is the same one /api/settings/
+ * get sends and /save-partial's returned settingsHash is computed from, so a hash obtained from any of those
+ * three places is comparable against any of the others - a user with no settings at all yet hashes as the
+ * canonical empty object, `"{}"`, not an empty string.
  *
  * The header is optional and its absence skips the check entirely (today's unconditional-overwrite behavior) -
  * this keeps the endpoint backward compatible with any caller that doesn't send it, rather than hard-requiring
  * every caller to opt in before it can save at all.
  * @param {import('express').Request} request Express request
- * @param {string} pathToSettings Absolute path to the user's settings.json
+ * @param {import('../users.js').UserDirectoryList} directories User directories
  * @returns {{ ok: true } | { ok: false }} Whether the save may proceed
  */
-function checkSettingsConflict(request, pathToSettings) {
+function checkSettingsConflict(request, directories) {
     const expectedHashHeader = request.get('X-Settings-Hash');
     if (expectedHashHeader === undefined) {
         return { ok: true };
@@ -242,16 +251,15 @@ function checkSettingsConflict(request, pathToSettings) {
         return { ok: true };
     }
 
-    const currentContent = fs.existsSync(pathToSettings) ? fs.readFileSync(pathToSettings, 'utf8') : '';
-    const currentHash = getStringHash(currentContent);
+    const currentHash = getStringHash(readAllSettingsAsJson(directories));
     return { ok: currentHash === expectedHash };
 }
 
 router.post('/save', function (request, response) {
     try {
-        const pathToSettings = path.join(request.user.directories.root, SETTINGS_FILE);
+        const directories = request.user.directories;
 
-        const conflictCheck = checkSettingsConflict(request, pathToSettings);
+        const conflictCheck = checkSettingsConflict(request, directories);
         if (!conflictCheck.ok) {
             return response.status(409).send({
                 result: 'conflict',
@@ -259,9 +267,17 @@ router.post('/save', function (request, response) {
             });
         }
 
-        writeFileAtomicSync(pathToSettings, JSON.stringify(request.body, null, 4), 'utf8');
+        // Full replace: writes one file per top-level key in the body, same "whatever this body doesn't have,
+        // the store no longer has either" semantics a whole-file overwrite of settings.json used to have.
+        writeAllSettings(directories, request.body);
         triggerAutoSave(request.user.profile.handle);
-        response.send({ result: 'ok' });
+        // The client can no longer just hash its own JSON.stringify(payload) locally to know what the server
+        // now has: readAllSettingsAsJson() reconstructs top-level keys in filename (alphabetical) order, which
+        // won't generally match the client's own object's insertion order even though the content is identical.
+        // Returning the server's own canonical hash (same function checkSettingsConflict() above hashes
+        // against) is what saveSettings() now stores as knownServerSettingsHash - see its client-side doc
+        // comment.
+        response.send({ result: 'ok', settingsHash: getStringHash(readAllSettingsAsJson(directories)) });
     } catch (err) {
         console.error(err);
         response.send(err);
@@ -269,34 +285,40 @@ router.post('/save', function (request, response) {
 });
 
 /**
- * Partial-update alternative to /save: merges only the given top-level keys into the existing settings.json
- * (read-modify-write) instead of requiring the full ~148KB blob every time. New, additive capability - /save is
- * unchanged and stays the path virtually every caller uses; nothing is required to migrate. Legal because
- * settings.json's top-level shape is already a flat dict of independent subsystems (power_user,
- * extension_settings, world_info_settings, ...) with /save as its only writer - "merge only the keys present in
- * the request" has a clean, unambiguous meaning at that level.
+ * Partial-update alternative to /save: writes only the given top-level (or dotted-path) keys, via
+ * settings-store.js's writeSettingsKeys() - the on-disk file(s) for any OTHER key are never even opened, let
+ * alone rewritten. New, additive capability - /save is unchanged and stays the path virtually every caller
+ * uses; nothing is required to migrate. Legal because settings' top-level shape is already a flat dict of
+ * independent subsystems (power_user, extension_settings, world_info_settings, ...) with /save as its only
+ * full-replace writer - "merge only the keys present in the request" has a clean, unambiguous meaning at that
+ * level. This is also the actual fix for the disk-write side of things: an earlier version of this endpoint
+ * already accepted a request naming just the touched key(s) but still read, re-serialized, and rewrote the
+ * ENTIRE settings store on every call (a network-payload optimization only, not a disk-I/O one) - see
+ * settings-store.js's own module header for why sharding into one file per key was the only way to close that
+ * gap for a plain JSON store.
  *
- * Conflict check is per-key (see hashSettingsKeys), not the whole-file X-Settings-Hash /save uses - a
- * whole-file hash would reject this call on *any* concurrent change anywhere, even to a completely unrelated
- * key, which would defeat a chunk of the point of a partial-update mechanism given the flat-independent-
- * subsystems shape above. Per-key hashing lets two concurrent partial updates to genuinely disjoint keys both
- * succeed; only a real overlap gets rejected. expectedHashes is optional, same backward-compat stance as
- * X-Settings-Hash: omit it and the merge proceeds unconditionally.
+ * Conflict check is per-key (via readSettingsAtPaths, which itself only reads the top-level key file(s) the
+ * requested paths belong to), not the whole-file X-Settings-Hash /save uses - a whole-file hash would reject
+ * this call on *any* concurrent change anywhere, even to a completely unrelated key, which would defeat a chunk
+ * of the point of a partial-update mechanism given the flat-independent-subsystems shape above. Per-key hashing
+ * lets two concurrent partial updates to genuinely disjoint keys both succeed; only a real overlap gets
+ * rejected. expectedHashes is optional, same backward-compat stance as X-Settings-Hash: omit it and the merge
+ * proceeds unconditionally.
  *
- * Concurrency safety for the read-modify-write itself: this handler is synchronous start to finish
- * (readFileSync below, writeFileAtomicSync at the end, no `await` anywhere in between), so nothing else can run
- * on this process's event loop between the read and the write - Node never starts a second request's handler
- * body until the first one's synchronous code has fully returned, so two concurrent /save-partial calls can't
- * interleave their read-modify-write halves. The hash check only protects against a *stale* client; this
- * synchronous-handler property is what protects two fresh, hash-valid requests from racing each other on the
- * read (whichever one's handler runs first will have already changed the on-disk hash by the time the second
- * one's per-key check runs, so a genuine overlap still gets caught even under a race). This guarantee is
- * specific to a single Node process - if this server ever runs clustered across multiple worker processes, it
- * would need real cross-process file locking instead.
+ * Concurrency safety for the read-modify-write itself: this handler is synchronous start to finish (the
+ * settings-store reads/writes below, no `await` anywhere in between), so nothing else can run on this process's
+ * event loop between the read and the write - Node never starts a second request's handler body until the
+ * first one's synchronous code has fully returned, so two concurrent /save-partial calls can't interleave their
+ * read-modify-write halves. The hash check only protects against a *stale* client; this synchronous-handler
+ * property is what protects two fresh, hash-valid requests from racing each other on the read (whichever one's
+ * handler runs first will have already changed the on-disk hash by the time the second one's per-key check
+ * runs, so a genuine overlap still gets caught even under a race). This guarantee is specific to a single Node
+ * process - if this server ever runs clustered across multiple worker processes, it would need real
+ * cross-process file locking instead.
  */
 router.post('/save-partial', function (request, response) {
     try {
-        const pathToSettings = path.join(request.user.directories.root, SETTINGS_FILE);
+        const directories = request.user.directories;
 
         const { keys, expectedHashes } = request.body ?? {};
         if (typeof keys !== 'object' || keys === null || Array.isArray(keys)) {
@@ -306,20 +328,10 @@ router.post('/save-partial', function (request, response) {
             });
         }
 
-        const currentContent = fs.existsSync(pathToSettings) ? fs.readFileSync(pathToSettings, 'utf8') : '';
-        let currentSettings = {};
-        if (currentContent) {
-            try {
-                currentSettings = JSON.parse(currentContent);
-            } catch (err) {
-                console.error('Could not parse current settings.json for partial merge', err);
-                return response.status(500).send({ result: 'error', error: 'Current settings.json is not valid JSON, cannot merge.' });
-            }
-        }
-
         if (expectedHashes && typeof expectedHashes === 'object' && !Array.isArray(expectedHashes)) {
-            const actualHashes = hashSettingsKeys(currentSettings, Object.keys(expectedHashes));
-            const conflictingKeys = Object.keys(expectedHashes).filter(key => actualHashes[key] !== expectedHashes[key]);
+            const paths = Object.keys(expectedHashes);
+            const currentValues = readSettingsAtPaths(directories, paths);
+            const conflictingKeys = paths.filter(path => getStringHash(JSON.stringify(currentValues[path], null, 4)) !== expectedHashes[path]);
             if (conflictingKeys.length > 0) {
                 return response.status(409).send({
                     result: 'conflict',
@@ -329,20 +341,17 @@ router.post('/save-partial', function (request, response) {
             }
         }
 
-        // Merge: top-level keys replace directly; dotted keys (e.g. 'power_user.font_scale')
-        // set only the addressed sub-field via deep path, leaving sibling fields untouched.
-        const mergedSettings = { ...currentSettings };
-        for (const [key, value] of Object.entries(keys)) {
-            if (key.includes('.')) {
-                setAtPath(mergedSettings, key, value);
-            } else {
-                mergedSettings[key] = value;
-            }
+        try {
+            writeSettingsKeys(directories, keys);
+        } catch (err) {
+            console.error('Could not write partial settings update', err);
+            return response.status(400).send({ result: 'error', error: err.message });
         }
-        const mergedContent = JSON.stringify(mergedSettings, null, 4);
-        writeFileAtomicSync(pathToSettings, mergedContent, 'utf8');
+
         triggerAutoSave(request.user.profile.handle);
-        response.send({ result: 'ok', settingsHash: getStringHash(mergedContent) });
+        // Same reasoning as /save's response above: return the server's own canonical whole-store hash so the
+        // client's knownServerSettingsHash stays correct without needing to know how the store reconstructs it.
+        response.send({ result: 'ok', settingsHash: getStringHash(readAllSettingsAsJson(directories)) });
     } catch (err) {
         console.error(err);
         response.send(err);
@@ -353,8 +362,7 @@ router.post('/save-partial', function (request, response) {
 router.post('/get', (request, response) => {
     let settings;
     try {
-        const pathToSettings = path.join(request.user.directories.root, SETTINGS_FILE);
-        settings = fs.readFileSync(pathToSettings, 'utf8');
+        settings = readAllSettingsAsJson(request.user.directories);
     } catch (e) {
         return response.sendStatus(500);
     }
@@ -496,19 +504,17 @@ router.post('/restore-snapshot', getFileNameValidationFunction('name'), async (r
             return response.sendStatus(404);
         }
 
-        const pathToSettings = path.join(request.user.directories.root, SETTINGS_FILE);
         const snapshotContent = fs.readFileSync(snapshotPath, 'utf8');
-        JSON.parse(snapshotContent); // Validate it's actually valid JSON before overwriting settings.json with it.
+        const snapshotSettings = JSON.parse(snapshotContent); // Validate it's actually valid JSON, and get the object writeAllSettings() needs.
 
         // The settings path doesn't know about tags in either direction (see backupUserSettings()'s own doc
-        // comment) - a restore is a plain copy of the snapshot back over settings.json, same as a backup is a
-        // plain copy the other way. An old snapshot that happens to still carry `tags`/`tag_map` (made before
-        // that change, or a pre-phase-3 tags.json-era one) restores those bytes back into settings.json
-        // unmodified rather than importing them into the metadata store - inert leftover data, not live state -
-        // since tag definitions/assignments there were never authoritative even when a backup carried them, and
-        // this route no longer special-cases that shape.
-        fs.rmSync(pathToSettings, { force: true });
-        writeFileAtomicSync(pathToSettings, snapshotContent, 'utf8');
+        // comment) - a restore is a full replace of the sharded store from the snapshot's keys, same as a
+        // backup is a plain reconstruction the other way. An old snapshot that happens to still carry
+        // `tags`/`tag_map` (made before that change, or a pre-phase-3 tags.json-era one) restores those fields
+        // back unmodified rather than importing them into the metadata store - inert leftover data, not live
+        // state - since tag definitions/assignments there were never authoritative even when a backup carried
+        // them, and this route no longer special-cases that shape.
+        writeAllSettings(request.user.directories, snapshotSettings);
 
         response.sendStatus(204);
     } catch (error) {

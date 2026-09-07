@@ -7,34 +7,38 @@ import os from 'node:os';
 let router;
 /** @type {(obj: Record<string, unknown>, keys: string[]) => Record<string, number>} */
 let hashSettingsKeys;
+/** @type {typeof import('../src/settings-store.js')} */
+let settingsStore;
 /** @type {import('node:http').Server} */
 let server;
 let baseUrl;
 let tempDir;
-let settingsPath;
+let directories;
 
 /**
  * Mounts the real settings.js router, same shape as settings-save-conflict.test.js. Covers /api/settings/save-
- * partial: the read-modify-write merge endpoint, its per-key conflict check, and (the point of this file) that
- * concurrent partial updates racing each other never corrupt the file or silently lose a write - see the
- * "concurrent partial updates" describe block below.
+ * partial: the per-key-file write endpoint (settings-store.js's writeSettingsKeys() - see that module's own
+ * header for why storage is sharded one file per top-level key rather than a single settings.json), its per-key
+ * conflict check, and (the point of this file) that concurrent partial updates racing each other never corrupt
+ * the store or silently lose a write - see the "concurrent partial updates" describe block below.
  */
 beforeAll(async () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-settings-save-partial-test-'));
     fs.mkdirSync(path.join(tempDir, 'backups'), { recursive: true });
-    settingsPath = path.join(tempDir, 'settings.json');
+    directories = { root: tempDir, backups: path.join(tempDir, 'backups') };
 
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
 
     ({ hashSettingsKeys } = await import('../public/scripts/hash-utils.js'));
+    settingsStore = await import('../src/settings-store.js');
     ({ router } = await import('../src/endpoints/settings.js'));
     const express = (await import('express')).default;
     const app = express();
     app.use(express.json());
     app.use((req, res, next) => {
         req.user = {
-            directories: { root: tempDir, backups: path.join(tempDir, 'backups') },
+            directories,
             profile: { handle: 'test-user' },
         };
         next();
@@ -59,14 +63,19 @@ async function postPartialSave(keys, expectedHashes) {
     });
 }
 
+/**
+ * Resets the sharded store to exactly the given flat object (full replace, deleting any stray per-key files
+ * from a previous test) - the test-side equivalent of what used to be a raw settings.json overwrite.
+ */
 function writeSettingsFile(obj) {
-    const content = JSON.stringify(obj, null, 4);
-    fs.writeFileSync(settingsPath, content, 'utf8');
-    return content;
+    fs.rmSync(path.join(tempDir, 'settings'), { recursive: true, force: true });
+    fs.rmSync(path.join(tempDir, 'settings.json'), { force: true });
+    settingsStore.writeAllSettings(directories, obj);
+    return JSON.stringify(obj, null, 4);
 }
 
 function readSettingsFile() {
-    return JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    return settingsStore.readAllSettings(directories);
 }
 
 describe('POST /api/settings/save-partial', () => {
@@ -83,8 +92,9 @@ describe('POST /api/settings/save-partial', () => {
         });
     });
 
-    test('treats a missing settings file as an empty object to merge into', async () => {
-        fs.rmSync(settingsPath, { force: true });
+    test('treats a missing settings store as an empty object to merge into', async () => {
+        fs.rmSync(path.join(tempDir, 'settings'), { recursive: true, force: true });
+        fs.rmSync(path.join(tempDir, 'settings.json'), { force: true });
 
         const response = await postPartialSave({ power_user: { theme: 'dark' } });
 
@@ -140,7 +150,7 @@ describe('POST /api/settings/save-partial', () => {
         const body = await response.json();
         expect(body.result).toBe('conflict');
         expect(body.conflictingKeys).toEqual(['power_user']);
-        expect(fs.readFileSync(settingsPath, 'utf8')).toBe(actualContent);
+        expect(settingsStore.readAllSettingsAsJson(directories)).toBe(actualContent);
     });
 
     test('does NOT reject when the conflicting change is to a key this update never touched', async () => {

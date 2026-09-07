@@ -1046,17 +1046,23 @@ export let settings;
  */
 let lastSavedSettingsHash = null;
 /**
- * Hash of the settings content this client currently believes is persisted on the server, in the exact string
- * form the server itself reads/writes (JSON.stringify(..., null, 4) - see /api/settings/save in settings.js).
- * Set from the raw string /api/settings/get returns (that string IS the on-disk content verbatim), and updated
- * again after each successful save to the string this client just wrote. Sent back on the next save as
- * X-Settings-Hash so the server can detect whether some other tab/device wrote in between and reject the save
- * instead of silently clobbering that write - see checkSettingsConflict() server-side.
+ * Hash of the settings content this client currently believes is persisted on the server, matching the exact
+ * canonical string the server itself hashes against (settings-store.js's readAllSettingsAsJson() -
+ * JSON.stringify(..., null, 4) of the reconstructed settings object, top-level keys in the server's own
+ * canonical order - see /api/settings/save in settings.js). Seeded from the raw string /api/settings/get returns
+ * (that string IS the server's canonical content verbatim), and updated again after each successful save to
+ * whatever hash the server itself returns in the response (settingsHash) - NOT self-computed from this client's
+ * own JSON.stringify(payload), because the server's sharded on-disk storage reconstructs top-level keys in its
+ * own (alphabetical-by-file) order, which generally does not match this object's insertion order even when the
+ * content is identical; hashing the client's own serialization would drift from the server's the very first
+ * time an unrelated key order differed, and every subsequent full save would spuriously 409. Sent back on the
+ * next save as X-Settings-Hash so the server can detect whether some other tab/device wrote in between and
+ * reject the save instead of silently clobbering that write - see checkSettingsConflict() server-side.
  *
  * Deliberately distinct from lastSavedSettingsHash above: that one hashes a *compact*, same-session-only string
  * purely to skip redundant same-tab POSTs, and is never set from a /get. This one has to match the server's
- * on-disk byte format exactly (since it's compared against a hash of those exact bytes) and has to exist before
- * this tab's first save of the session, seeded from /get.
+ * canonical hash exactly (since it's compared against a hash the server computes the same way) and has to exist
+ * before this tab's first save of the session, seeded from /get.
  * @type {number|null}
  */
 let knownServerSettingsHash = null;
@@ -12129,8 +12135,6 @@ async function performSave() {
         }
     } else {
         // Full save path (backward compat for callers that didn't specify keys).
-        const canonicalSettingsString = JSON.stringify(payload, null, 4);
-
         try {
             const headers = getRequestHeaders();
             if (knownServerSettingsHash !== null) {
@@ -12158,7 +12162,12 @@ async function performSave() {
             // Update per-key hashes from the full payload (recursively - see seedKeyHashes()).
             seedKeyHashes(serverKeyHashes, payload);
             lastSavedSettingsHash = payloadHash;
-            knownServerSettingsHash = getStringHash(canonicalSettingsString);
+            // knownServerSettingsHash's own doc comment on why this is the server-returned hash, not a local
+            // JSON.stringify(payload) computation.
+            const saveResponse = await result.json().catch(() => ({}));
+            if (saveResponse.settingsHash != null) {
+                knownServerSettingsHash = saveResponse.settingsHash;
+            }
             await eventSource.emit(event_types.SETTINGS_UPDATED);
         } catch (error) {
             console.error('Error saving settings:', error);
