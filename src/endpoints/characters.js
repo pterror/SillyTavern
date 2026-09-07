@@ -23,7 +23,6 @@ import { calculateChatSize, calculateDataSize, toShallow } from '../character-sh
 import { touchBrowserPresence, PRESENCE_PING_INTERVAL_MS } from '../browser-presence.js';
 import { invalidateThumbnail, getThumbnailVersion } from './thumbnails.js';
 import { importRisuSprites } from './sprites.js';
-import { getUserDirectories } from '../users.js';
 import { getChatInfo } from './chats.js';
 import { hasSavedChats, listBranches as listTreeBranches } from '../message-tree-db.js';
 import { ByafParser } from '../byaf.js';
@@ -53,24 +52,8 @@ class DiskCache {
      */
     static DIRECTORY = 'characters';
 
-    /**
-     * @type {number}
-     * @readonly
-     */
-    static SYNC_INTERVAL = 5 * 60 * 1000;
-
     /** @type {import('node-persist').LocalStorage} */
     #instance;
-
-    /** @type {NodeJS.Timeout} */
-    #syncInterval;
-
-    /**
-     * Queue of user handles to sync.
-     * @type {Set<string>}
-     * @readonly
-     */
-    syncQueue = new Set();
 
     /**
      * Path to the cache directory.
@@ -86,25 +69,6 @@ class DiskCache {
      */
     get hashedKeys() {
         return fs.readdirSync(this.cachePath);
-    }
-
-    /**
-     * Processes the synchronization queue.
-     * @returns {Promise<void>}
-     */
-    async #syncCacheEntries() {
-        try {
-            if (!useDiskCache || this.syncQueue.size === 0) {
-                return;
-            }
-
-            const directories = [...this.syncQueue].map(entry => getUserDirectories(entry));
-            this.syncQueue.clear();
-
-            await this.verify(directories);
-        } catch (error) {
-            console.error('Error while synchronizing cache entries:', error);
-        }
     }
 
     /**
@@ -125,12 +89,42 @@ class DiskCache {
             maxFileDescriptors: 100,
         });
         await this.#instance.init();
-        this.#syncInterval = setInterval(this.#syncCacheEntries.bind(this), DiskCache.SYNC_INTERVAL);
         return this.#instance;
     }
 
     /**
-     * Verifies disk cache size and prunes it if necessary.
+     * Removes exactly one entry from the disk cache, by its already-computed cache key (see getCacheKey()) - O(1),
+     * no corpus-wide walk. This is the event-driven counterpart to verify()'s full-corpus reconciliation: there is
+     * no fs.watch/inotify hookup anywhere in DiskCache (nor does it need one) - every writer of a character file
+     * already knows, synchronously, exactly when and which file it just changed, since it's the one changing it.
+     * A caller that captured the file's OLD (pre-write) cache key before overwriting it calls this right after
+     * the write succeeds, invalidating precisely that entry immediately - no watcher, no timer, no periodic
+     * sweep required to eventually notice. See writeCharacterData() and repairFirstMesMismatches() for the two
+     * call sites that actually rewrite an EXISTING character file (a local-import write is always a brand-new,
+     * never-before-cached filename, so it has no stale entry to invalidate in the first place).
+     * @param {string} cacheKey
+     * @returns {Promise<void>}
+     */
+    async invalidateKey(cacheKey) {
+        if (!useDiskCache) return;
+        try {
+            const cache = await this.instance();
+            await cache.removeItem(cacheKey);
+        } catch (error) {
+            console.error(`Error invalidating disk cache entry for key ${cacheKey}:`, error);
+        }
+    }
+
+    /**
+     * Full-corpus reconciliation: walks every character file AND every cached entry to find and prune whatever
+     * invalidateKey() never got called for - a file changed/removed by something outside this app's own write
+     * path (a manual edit, a restore from backup, etc.), not the ordinary case. Deliberately NOT wired to any
+     * timer or periodic schedule (see invalidateKey()'s own doc comment on why every normal write already
+     * invalidates its own stale entry immediately, with no need for this to ever run automatically) - this is a
+     * rare/manual maintenance operation now, callable on demand, not something that fires on a schedule or as a
+     * side effect of an unrelated pass. Expensive on a large library (a full readdir+stat walk over every
+     * character file, measured ~24 minutes on a 330k+-file/cached-entry install) - callers should treat it
+     * accordingly.
      * @param {import('../users.js').UserDirectoryList[]} directoriesList List of user directories
      * @returns {Promise<void>}
      */
@@ -172,9 +166,10 @@ class DiskCache {
     }
 
     dispose() {
-        if (this.#syncInterval) {
-            clearInterval(this.#syncInterval);
-        }
+        // Nothing to tear down anymore - there is no periodic timer (see invalidateKey()'s own doc comment on
+        // why: every write invalidates its own stale entry synchronously now). Kept as a stable no-op so
+        // server-main.js's exitProcess() call site never needs to know whether there's currently anything to
+        // dispose of.
     }
 }
 
@@ -334,24 +329,19 @@ export async function repairFirstMesMismatches(directories) {
                 card.first_mes = v2FirstMes;
                 const data = JSON.stringify(card);
 
+                // Captured BEFORE the write below changes the file's mtime - see DiskCache.invalidateKey()'s
+                // own doc comment on why this direct, synchronous invalidation replaces any need for a
+                // full-corpus diskCache.verify() sweep (previously called here unconditionally whenever this
+                // pass fixed anything - a ~24-minute full walk over a 330k+-file/cached-entry library, on
+                // every single boot that found even one legacy mismatch).
+                const oldDiskCacheKey = useDiskCache ? getCacheKey(filePath) : null;
+
                 const { avatarIdentityHash } = await writeCardToFile(filePath, filePath, data);
                 await fireMetadataUpsertHook(directories, file, data, null, avatarIdentityHash);
+                if (oldDiskCacheKey) await diskCache.invalidateKey(oldDiskCacheKey);
 
                 // Invalidate this file's cached read the same way writeCharacterData() does, so a subsequent
-                // request never serves the pre-fix in-memory copy. Nothing further needed for diskCache here:
-                // its cache key already embeds the file's mtime - which this write just changed - so the old
-                // on-disk entry is already unreachable (any future read computes a fresh key from the new
-                // mtime and simply misses it). It's now orphaned dead weight on disk, not a correctness
-                // problem - reclaiming it is diskCache.verify()'s ordinary job whenever THAT runs on its own
-                // schedule (DiskCache.SYNC_INTERVAL / an explicit maintenance pass), not something this
-                // function needs to force. It deliberately does NOT call diskCache.verify() itself: that's a
-                // full-corpus walk+diff over every character file AND every cached entry (measured ~24 minutes
-                // on a 330k+-file/cached-entry library), and calling it here made it fire on every single boot
-                // that fixes even one mismatch - which, on an install where local-import keeps discovering
-                // legacy cards with this drift, is not the rare case this was written assuming. A handful of
-                // orphaned cache entries sitting unreclaimed is a trivial, bounded amount of wasted disk space;
-                // an unconditional 24-minute full-corpus scan added to every boot's critical background work is
-                // not a proportionate price for reclaiming it synchronously.
+                // request never serves the pre-fix in-memory copy.
                 for (const key of memoryCache.keys()) {
                     if (key.startsWith(filePath)) {
                         memoryCache.delete(key);
@@ -457,9 +447,14 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
                 break;
             }
         }
-        if (useDiskCache && !Buffer.isBuffer(inputFile)) {
-            diskCache.syncQueue.add(request.user.profile.handle);
-        }
+        // Captured BEFORE this function's own write below touches the file - getCacheKey()'s mtime-embedding
+        // key formula means this is exactly the key any in-flight/future read of `inputFile`'s PRE-write bytes
+        // would have used, so removing it immediately once the write below actually lands is what makes it
+        // stale-safe with no watcher or timer involved (see DiskCache.invalidateKey()'s own doc comment) - a
+        // NEW file (Buffer input, or a path nothing has ever cached) simply has no matching entry to remove,
+        // which is a harmless no-op either way. `null` for a Buffer input, same posture as the memoryCache
+        // reset loop just above.
+        const oldDiskCacheKey = (useDiskCache && !Buffer.isBuffer(inputFile)) ? getCacheKey(inputFile) : null;
         /**
          * Read the image, resize, and save it as a PNG into the buffer.
          * @returns {Promise<Buffer>} Image buffer
@@ -537,6 +532,7 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
                 const crossReflinkCandidatePath = await findCrossCharacterReflinkCandidate(request.user.directories, `${outputFile}.png`, data);
                 const { avatarIdentityHash } = await writeCardToFile(inputFile, outputImagePath, data, crossReflinkCandidatePath);
                 await fireMetadataUpsertHook(request.user.directories, `${outputFile}.png`, data, contentHash, avatarIdentityHash);
+                if (oldDiskCacheKey) await diskCache.invalidateKey(oldDiskCacheKey);
                 return true;
             } catch (error) {
                 console.warn(`writeCardToFile failed for ${inputFile}, falling back to the full read/re-encode path.`, error);
@@ -562,6 +558,7 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
         // must carry over rather than reset, and its chat-stats need recomputing once the chats folder has
         // actually been moved) - see that route for how it corrects this generic row afterward.
         await fireMetadataUpsertHook(request.user.directories, `${outputFile}.png`, data, contentHash, avatarIdentityHash);
+        if (oldDiskCacheKey) await diskCache.invalidateKey(oldDiskCacheKey);
 
         return true;
     } catch (err) {
