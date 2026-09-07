@@ -206,6 +206,83 @@ describe('scanDirectory (unit: direct directories fixture, no boot wiring)', () 
         expect(fs.readdirSync(charactersDir).length).toBe(2);
     });
 
+    describe('lastSeenMtimeMs cache-miss fallback (2026-09 unbounded-memory fix: bounded LRU cache, DB fallback on a miss)', () => {
+        test('an evicted (or never-warmed) entry is still correctly skipped without re-reading the file, via the persisted local_import_mtimes fallback', async () => {
+            const filePath = writeJsonCharacterFile(sourceDir, 'ghost.json');
+
+            const state = buildState();
+            await localImportScan.scanDirectory(state, directories);
+            expect(fs.readdirSync(charactersDir).length).toBe(1);
+            expect(state.lastSeenMtimeMs.has('ghost.json')).toBe(true);
+
+            // Simulate what MAX_LAST_SEEN_MTIME_ENTRIES eviction does in production: the entry falls out of the
+            // bounded in-memory Map. Only the persisted local_import_mtimes row (setLocalImportMtime(), written
+            // through by markProcessed() during the pass above) is left to answer the skip-check with.
+            state.lastSeenMtimeMs.delete('ghost.json');
+
+            const readFileSpy = jest.spyOn(fs.promises, 'readFile');
+            try {
+                await localImportScan.scanDirectory(state, directories);
+            } finally {
+                readFileSpy.mockRestore();
+            }
+
+            const sourceReads = readFileSpy.mock.calls.filter(call => call[0] === filePath);
+            expect(sourceReads.length).toBe(0);
+            // Still exactly one character - correctly recognized as unchanged via the DB fallback, not re-imported.
+            expect(fs.readdirSync(charactersDir).length).toBe(1);
+            // The fallback re-populates the cache with the answer it found.
+            expect(state.lastSeenMtimeMs.get('ghost.json')).toBe(fs.statSync(filePath).mtimeMs);
+        });
+
+        test('an evicted entry for a file that changed in the meantime is still correctly re-processed, not incorrectly skipped', async () => {
+            const filePath = writeJsonCharacterFile(sourceDir, 'ghost.json', { name: 'Ghost' });
+
+            const state = buildState();
+            await localImportScan.scanDirectory(state, directories);
+            expect(fs.readdirSync(charactersDir).length).toBe(1);
+
+            state.lastSeenMtimeMs.delete('ghost.json'); // Simulate eviction, same as the sibling test above.
+
+            // Force a distinct mtime so the fallback's persisted mtime genuinely no longer matches.
+            await new Promise(resolve => setTimeout(resolve, 10));
+            fs.writeFileSync(filePath, JSON.stringify({ name: 'Ghost the Second' }));
+
+            await localImportScan.scanDirectory(state, directories);
+
+            // Second, different-content character gets imported - the eviction never caused a stale skip.
+            expect(fs.readdirSync(charactersDir).length).toBe(2);
+        });
+
+        test('touchLastSeenMtime() enforces a hard, fixed ceiling on state.lastSeenMtimeMs regardless of how many distinct files are touched, evicting least-recently-touched first (LRU)', () => {
+            const state = buildState();
+
+            // One more than the cap - MAX_LAST_SEEN_MTIME_ENTRIES's own doc comment is explicit that this is
+            // impractical to prove by actually scanning that many real files, so this exercises the exported LRU
+            // helper local-import-scan.js's hot path itself goes through (markProcessed(), the cache-miss
+            // fallback) directly, the same way character-metadata-db.js's own randomSortCache eviction is an
+            // untested-but-analogous pattern this one deliberately mirrors.
+            for (let i = 0; i < localImportScan.MAX_LAST_SEEN_MTIME_ENTRIES + 1; i++) {
+                localImportScan.touchLastSeenMtime(state, `file-${i}.json`, i);
+            }
+
+            // Never exceeds the ceiling - this is the actual fix: no code path can grow this Map past a fixed
+            // size, unlike the old unbounded warm-from-DB Map it replaced.
+            expect(state.lastSeenMtimeMs.size).toBe(localImportScan.MAX_LAST_SEEN_MTIME_ENTRIES);
+            // The least-recently-touched entry (file-0, touched first and never touched again) was evicted...
+            expect(state.lastSeenMtimeMs.has('file-0.json')).toBe(false);
+            // ...while the most-recently-touched one is still present.
+            expect(state.lastSeenMtimeMs.get(`file-${localImportScan.MAX_LAST_SEEN_MTIME_ENTRIES}.json`)).toBe(localImportScan.MAX_LAST_SEEN_MTIME_ENTRIES);
+
+            // Re-touching an already-present entry moves it to the "most recent" end instead of duplicating it or
+            // growing the Map past the ceiling.
+            const sizeBeforeRetouch = state.lastSeenMtimeMs.size;
+            localImportScan.touchLastSeenMtime(state, `file-${localImportScan.MAX_LAST_SEEN_MTIME_ENTRIES}.json`, 999);
+            expect(state.lastSeenMtimeMs.size).toBe(sizeBeforeRetouch);
+            expect(state.lastSeenMtimeMs.get(`file-${localImportScan.MAX_LAST_SEEN_MTIME_ENTRIES}.json`)).toBe(999);
+        });
+    });
+
     test('watcher-triggered processFile() and the periodic scan agree on dedup (no double-import across the two trigger paths)', async () => {
         writeJsonCharacterFile(sourceDir, 'ghost.json');
 

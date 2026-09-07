@@ -10,7 +10,7 @@ import { getUserDirectories } from './users.js';
 import { copyCharacterFile } from './local-import-copy.js';
 import { reclaimReflinkPrefix } from './character-card-parser.js';
 import { importCharacterFileHeadless, buildPngImportData, buildJsonImportData, mintCharacterId, fireMetadataUpsertHook } from './endpoints/characters.js';
-import { beginBatchImport, endBatchImport, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, getLocalImportSkip, setLocalImportSkip, clearLocalImportSkip, getAllLocalImportMtimes, setLocalImportMtime, clearLocalImportMtime, seedCardTagsForSingleCharacter } from './character-metadata-db.js';
+import { beginBatchImport, endBatchImport, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, getLocalImportSkip, setLocalImportSkip, clearLocalImportSkip, getLocalImportMtime, getLocalImportMtimeSourcePathsAfter, setLocalImportMtime, clearLocalImportMtime, seedCardTagsForSingleCharacter } from './character-metadata-db.js';
 import { attachLinuxDirectoryWatch, isWindowsOverflowSignal } from './watch-overflow.js';
 import { detectFormat } from './local-import-classify.js';
 import { LocalImportWorkerPool, resolveWorkerPoolSize } from './local-import-worker-pool.js';
@@ -99,6 +99,40 @@ import { LocalImportWorkerPool, resolveWorkerPoolSize } from './local-import-wor
  * different purpose and have no reason to be forced to share a literal. */
 const WATCH_DEBOUNCE_MS = 300;
 
+/** Hard ceiling on DirectoryScanState.lastSeenMtimeMs's size, independent of how large the corpus behind
+ * state.sourceDir grows to - see that field's own doc comment for the full "why a ceiling at all" reasoning
+ * (2026-09 unbounded-memory fix). Same LRU eviction shape as character-metadata-db.js's
+ * randomSortCache/MAX_RANDOM_CACHE_ENTRIES (delete+re-set to mark recency, evict the Map's own first-inserted -
+ * i.e. least-recently-touched - entry once at capacity): a plain Map's insertion-order iteration IS the LRU
+ * order here, no separate bookkeeping needed. Picked well above the owner's real corpus's measured working set
+ * (~340k files at time of writing) so an ordinary pass over a corpus at or below this size never evicts anything
+ * mid-pass; a corpus that outgrows it just starts paying the getLocalImportMtime() fallback (a cheap indexed
+ * SELECT, not a full re-read/re-hash) for its least-recently-touched files instead of a pure Map hit - never
+ * incorrect, only ever a little more per-file latency for the coldest fraction of an oversized corpus.
+ * Exported (not just module-private) for tests/diagnostics - proving the ceiling actually holds means driving
+ * touchLastSeenMtime() past capacity, which is impractical to do by scanning real files at this size. */
+export const MAX_LAST_SEEN_MTIME_ENTRIES = 200_000;
+
+/**
+ * Marks `filename` as the most-recently-touched entry in `state.lastSeenMtimeMs` (LRU touch), inserting it if
+ * absent, and evicts the single least-recently-touched entry once the Map is already at
+ * MAX_LAST_SEEN_MTIME_ENTRIES capacity - see that constant's own doc comment for the eviction shape. Every call
+ * site that used to just do `state.lastSeenMtimeMs.set(...)` goes through here instead, so the ceiling is
+ * actually enforced everywhere the Map is written, not just at some call sites. Exported for tests/diagnostics,
+ * same reasoning as MAX_LAST_SEEN_MTIME_ENTRIES's own export.
+ * @param {DirectoryScanState} state
+ * @param {string} filename
+ * @param {number} mtimeMs
+ */
+export function touchLastSeenMtime(state, filename, mtimeMs) {
+    state.lastSeenMtimeMs.delete(filename);
+    if (state.lastSeenMtimeMs.size >= MAX_LAST_SEEN_MTIME_ENTRIES) {
+        const oldest = state.lastSeenMtimeMs.keys().next().value;
+        state.lastSeenMtimeMs.delete(oldest);
+    }
+    state.lastSeenMtimeMs.set(filename, mtimeMs);
+}
+
 /**
  * @typedef {object} DirectoryScanState
  * @property {string} sourceDir Absolute path to the configured directory being watched/scanned
@@ -106,13 +140,17 @@ const WATCH_DEBOUNCE_MS = 300;
  * an efficiency-only skip cache (mirrors reconcile()'s stored file_mtime comparison in character-metadata-db.js):
  * skipping a file whose mtime hasn't changed since last processed avoids re-hashing/re-checking it on every
  * pass, but is never relied on for correctness - content-hash dedup makes reprocessing a file always safe, just
- * wasteful. This Map itself is in-memory-only and starts empty every process start, but initializeLocalImportScan()
- * warms it from character-metadata-db.js's persisted `local_import_mtimes` table (getAllLocalImportMtimes())
- * before the first pass runs, and processFile() writes through to that table (setLocalImportMtime()) whenever it
- * updates this Map - so the skip DOES survive a restart in practice, it just isn't this Map's own job to persist
- * it. A directory scanned via scanDirectory() directly with a hand-built, never-warmed state (e.g. a test, or a
- * config/directories change this process hasn't restarted for) simply starts that one state cold, same as
- * before - never incorrect, only ever a first-pass cost.
+ * wasteful. In-memory-only, and bounded to MAX_LAST_SEEN_MTIME_ENTRIES (LRU eviction via touchLastSeenMtime()) -
+ * NOT bulk-warmed from character-metadata-db.js's persisted `local_import_mtimes` table at boot any more (that
+ * was this Map's original design, removed in the 2026-09 unbounded-memory fix: warming meant holding one entry
+ * per file the configured directories had EVER seen, for the life of the process, with no ceiling other than
+ * however large an ever-growing external corpus grew to). Instead, processFileImpl() falls back to a per-file
+ * getLocalImportMtime() lookup against that same persisted table on a cache miss (empty at boot, or an eviction),
+ * and re-populates this Map with the answer - so the skip still survives a restart, and still survives running
+ * this Map dry, just via one indexed SELECT on a miss instead of always being a pure in-memory hit. Every write
+ * here (touchLastSeenMtime()) has a corresponding setLocalImportMtime() write-through to that table, so the two
+ * never drift apart. A directory scanned via scanDirectory() directly with a hand-built, empty state (e.g. a
+ * test) simply starts that one state cold, same as before - never incorrect, only ever a first-pass cost.
  * @property {fs.FSWatcher | { close: () => void } | null} watcher The live per-directory watch, whichever
  * mechanism is actually delivering events - Node's own fs.watch() everywhere except a Linux install with the
  * native addon attached, where it's the `{ close }` handle attachLinuxDirectoryWatch() (watch-overflow.js)
@@ -368,7 +406,7 @@ async function maybeReflinkDuplicateTarget(sourcePath, characterId, directories)
  * @param {number} mtimeMs
  */
 async function markProcessed(state, directories, sourcePath, filename, mtimeMs, duplicateOf = null) {
-    state.lastSeenMtimeMs.set(filename, mtimeMs);
+    touchLastSeenMtime(state, filename, mtimeMs);
     // Awaited, not fire-and-forget: the underlying write is a single synchronous better-sqlite3 call under an
     // async wrapper (see setLocalImportMtime()), so awaiting it costs nothing real, and NOT awaiting it left a
     // dangling promise per file with no guaranteed completion order relative to whatever runs next (a scan pass
@@ -412,6 +450,48 @@ async function cleanupRemovedFile(state, directories, filename) {
         await clearLocalImportSkip(directories, sourcePath);
     } catch (clearErr) {
         console.debug(`[local-import] Failed to clear stale local_import_skips record for ${sourcePath}:`, clearErr.message);
+    }
+}
+
+/** Page size for sweepRemovedFiles()'s walk of the persisted local_import_mtimes table - bounds that walk's own
+ * memory cost to this many source_path strings at a time, regardless of how large the table (and therefore the
+ * external corpus it tracks) has grown to. Large enough that a corpus the owner's real size (~340k files at time
+ * of writing) only takes a couple pages per swept directory per pass, small enough that no single page is itself
+ * a meaningful memory cost. */
+const REMOVED_FILE_SWEEP_PAGE_SIZE = 5000;
+
+/**
+ * Finds and cleans up (cleanupRemovedFile()) every source file `state.sourceDir`'s persisted local_import_mtimes
+ * records know about that ISN'T in `entrySet` (this pass's fresh readdir() listing) - see scanDirectory()'s own
+ * doc comment for why this sweep exists at all. Walks the WHOLE local_import_mtimes table (it isn't partitioned
+ * per directory - see its own SCHEMA_SQL comment in character-metadata-db.js) REMOVED_FILE_SWEEP_PAGE_SIZE rows
+ * at a time via getLocalImportMtimeSourcePathsAfter()'s keyset pagination, filtering each page down to this
+ * directory's own source_path prefix in JS (same filter warmMtimeCache() used to apply to one bulk-loaded Map,
+ * before the 2026-09 unbounded-memory fix removed that Map) - rather than loading the whole table into one JS
+ * array/Map at once, so this sweep's own peak memory cost is bounded by the page size, never by how large the
+ * table (and therefore the configured directory, an ever-growing external corpus) has grown to.
+ * @param {DirectoryScanState} state
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {Set<string>} entrySet This pass's fresh readdir() listing of state.sourceDir, as filenames.
+ * @returns {Promise<void>}
+ */
+async function sweepRemovedFiles(state, directories, entrySet) {
+    const prefix = state.sourceDir.endsWith(path.sep) ? state.sourceDir : state.sourceDir + path.sep;
+    let cursor = '';
+    for (;;) {
+        const page = await getLocalImportMtimeSourcePathsAfter(directories, cursor, REMOVED_FILE_SWEEP_PAGE_SIZE);
+        if (page.length === 0) break;
+        cursor = page[page.length - 1];
+
+        for (const sourcePath of page) {
+            if (!sourcePath.startsWith(prefix)) continue;
+            const filename = path.basename(sourcePath);
+            if (!entrySet.has(filename)) {
+                await cleanupRemovedFile(state, directories, filename);
+            }
+        }
+
+        if (page.length < REMOVED_FILE_SWEEP_PAGE_SIZE) break; // Last page.
     }
 }
 
@@ -534,7 +614,19 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
 
     if (!stat.isFile()) return;
 
-    if (state.lastSeenMtimeMs.get(filename) === stat.mtimeMs) {
+    let lastMtimeMs = state.lastSeenMtimeMs.get(filename);
+    if (lastMtimeMs === undefined) {
+        // Cache miss - either genuinely never processed, or evicted by MAX_LAST_SEEN_MTIME_ENTRIES (see that
+        // constant's and lastSeenMtimeMs's own doc comments). Falls back to the persisted record so a bounded
+        // in-memory cache never costs the wasteful full re-read/re-hash it exists purely to avoid -
+        // getLocalImportMtime() is a single indexed point lookup, nowhere near that cost.
+        const persisted = await getLocalImportMtime(directories, sourcePath);
+        if (persisted) {
+            lastMtimeMs = persisted.mtimeMs;
+            touchLastSeenMtime(state, filename, lastMtimeMs); // Repopulate the hot-path cache with the answer.
+        }
+    }
+    if (lastMtimeMs === stat.mtimeMs) {
         return; // Unchanged since the last pass that processed it - see lastSeenMtimeMs's own doc comment.
     }
 
@@ -770,9 +862,9 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
  * stat()'ing it - readdir() below simply never lists a file that was already gone before it ran, so
  * processFile() is never even called for it, and a durable local_import_skips/local_import_mtimes row for it
  * would otherwise survive forever - a real, ordinary occurrence for a corpus directory's normal churn, not an
- * edge case). Computed as "every filename lastSeenMtimeMs knows about that ISN'T in this pass's fresh readdir()
- * listing" - lastSeenMtimeMs already IS this state's "files we've seen and are tracking" set, so no separate
- * bookkeeping is needed to know what to check for absence.
+ * edge case). This sweep is driven from the PERSISTED `local_import_mtimes` table (sweepRemovedFiles()), not
+ * from lastSeenMtimeMs, since that Map is now a bounded, evictable cache (2026-09 unbounded-memory fix) and can
+ * no longer be relied on to know every file this state has ever tracked - the persisted table still can.
  * @param {DirectoryScanState} state
  * @param {import('./users.js').UserDirectoryList} directories
  * @returns {Promise<void>}
@@ -794,15 +886,9 @@ export async function scanDirectory(state, directories) {
     await beginBatchImport(directories);
     try {
         const entrySet = new Set(entries);
-        // Snapshotted before the main loop below, which mutates lastSeenMtimeMs as it goes - this sweep is only
-        // ever about files this pass's own readdir() never saw at all, not ones the main loop below discovers
-        // are newly-added.
-        const previouslyTracked = [...state.lastSeenMtimeMs.keys()];
-        for (const filename of previouslyTracked) {
-            if (!entrySet.has(filename)) {
-                await cleanupRemovedFile(state, directories, filename);
-            }
-        }
+        // Snapshotted before the main loop below, which discovers newly-added files - this sweep is only ever
+        // about files this pass's own readdir() never saw at all, never ones the main loop below is about to add.
+        await sweepRemovedFiles(state, directories, entrySet);
 
         // Bounded-concurrency dispatch, not a plain sequential loop: processFile()'s own CPU-bound work now
         // runs inside the worker pool (see ensureWorkerPool()), so driving it one file at a time here would
@@ -934,24 +1020,6 @@ function stopWatcherFor(state) {
     }
     for (const timer of state.watchTimers.values()) clearTimeout(timer);
     state.watchTimers.clear();
-}
-
-/**
- * Warms one directory's DirectoryScanState.lastSeenMtimeMs from character-metadata-db.js's persisted
- * `local_import_mtimes` table (see that table's SCHEMA_SQL comment and lastSeenMtimeMs's own doc comment) -
- * called once per state, before its first pass, so a server restart doesn't force a full read+hash+dedup-check
- * of every unchanged file in the corpus. `allMtimes` is one bulk-loaded Map covering every configured directory
- * for this user (not just this one) - filtered here to this state's own sourceDir - so initializeLocalImportScan()
- * only pays for one SELECT total across however many directories are configured, not one per directory.
- * @param {DirectoryScanState} state
- * @param {Map<string, number>} allMtimes source_path -> mtimeMs, as returned by getAllLocalImportMtimes()
- */
-function warmMtimeCache(state, allMtimes) {
-    const prefix = state.sourceDir.endsWith(path.sep) ? state.sourceDir : state.sourceDir + path.sep;
-    for (const [sourcePath, mtimeMs] of allMtimes) {
-        if (!sourcePath.startsWith(prefix)) continue;
-        state.lastSeenMtimeMs.set(path.basename(sourcePath), mtimeMs);
-    }
 }
 
 /**
@@ -1104,9 +1172,11 @@ function triggerImmediateRescan() {
 /**
  * Server-boot entry point, meant to be called once alongside character-metadata-db.js's
  * initializeMetadataStores() (see server-main.js). Reads `localImport.directories`/`enabled`/`scanIntervalMs`/
- * `watchEnabled` from config.yaml, warms each configured directory's mtime-skip cache from the persisted
- * `local_import_mtimes` table (warmMtimeCache()), starts (if enabled) one fs.watch per directory, and kicks off
- * the self-pacing scan cycle (runScanCycle()) covering every configured directory.
+ * `watchEnabled` from config.yaml, builds each configured directory's scan state with an empty, bounded
+ * lastSeenMtimeMs (no bulk warm-from-DB step any more - see that field's own doc comment: the first pass's
+ * per-file getLocalImportMtime() fallback reaches the same persisted `local_import_mtimes` table lazily instead,
+ * 2026-09 unbounded-memory fix), starts (if enabled) one fs.watch per directory, and kicks off the self-pacing
+ * scan cycle (runScanCycle()) covering every configured directory.
  *
  * Deliberately does NOT await that scan cycle's first pass before returning: the OLD synchronous-initial-scan
  * behavior meant server-main.js's `preSetupTasks()` - which this is awaited from, and which itself gates the
@@ -1146,9 +1216,7 @@ export async function initializeLocalImportScan() {
         pendingHeartbeats: new Map(),
     }));
 
-    const allMtimes = await getAllLocalImportMtimes(userDirectories);
     for (const state of scanStates) {
-        warmMtimeCache(state, allMtimes);
         if (watchEnabled) {
             // Not awaited - same "boot must never block on watcher setup" posture as everything else here (see
             // this function's own doc comment on why the scan cycle itself isn't awaited either). startWatcherFor()
