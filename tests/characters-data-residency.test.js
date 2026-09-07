@@ -219,6 +219,79 @@ describe('a real image write retires the parked copy', () => {
     });
 });
 
+describe('greeting operations read and write the same place', () => {
+    // These ops carry a precondition hash over the text the caller believes is at a position, and refuse with
+    // 409 on a mismatch. That makes them the sharpest possible detector of a read/write residency split: if
+    // applyGreetingOperation() read through the db seam but its write landed somewhere the next read didn't
+    // look, the SECOND op in a chain would fail its precondition every time.
+    test('add -> edit -> delete chains through returned hashes without a 409', async () => {
+        await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
+
+        const add = await post('greetings/add', { avatar_url: 'Alice.png', position: 1, text: 'second' });
+        expect(add.status).toBe(200);
+        const addBody = await add.json();
+        expect(addBody.hashes).toHaveLength(2);
+
+        // The hash this op asserts came from the PREVIOUS op's response, so it only matches if the write
+        // actually landed where the next read looks.
+        const edited = await post('greetings/edit', { avatar_url: 'Alice.png', position: 1, expected_hash: addBody.hashes[1], text: 'second-edited' });
+        expect(edited.status).toBe(200);
+        const editedBody = await edited.json();
+
+        const deleted = await post('greetings/delete', { avatar_url: 'Alice.png', position: 1, expected_hash: editedBody.hashes[1] });
+        expect(deleted.status).toBe(200);
+        expect((await deleted.json()).hashes).toHaveLength(1);
+    });
+
+    test('a greeting op parks its result and leaves the PNG alone', async () => {
+        await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
+        const before = fileStamp('Alice.png');
+
+        expect((await post('greetings/add', { avatar_url: 'Alice.png', position: 1, text: 'second' })).status).toBe(200);
+
+        expect(fileStamp('Alice.png')).toEqual(before);
+        expect((await chunkOnDisk('Alice.png')).data.alternate_greetings).toEqual([]);
+        expect(JSON.parse(await metadataDb.getCharacterCardJson(directories, 'Alice.png')).data.alternate_greetings).toEqual(['second']);
+    });
+
+    test('a greeting added through the op shows up in /get and in an export', async () => {
+        await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
+        await post('greetings/add', { avatar_url: 'Alice.png', position: 1, text: 'second' });
+
+        const got = await (await post('get', { avatar_url: 'Alice.png' })).json();
+        expect(got.data.alternate_greetings).toEqual(['second']);
+
+        const exported = await post('export', { avatar_url: 'Alice.png', format: 'png' });
+        const embedded = JSON.parse(cardParser.read(Buffer.from(await exported.arrayBuffer())));
+        expect(embedded.data.alternate_greetings).toEqual(['second']);
+    });
+});
+
+describe('/edit\'s content-hash conflict check survives the residency split', () => {
+    // The other 409 in this area: /edit compares client-supplied hashes against freshly computed ones. The
+    // client's come from /get (which reads the parked copy and stamps db-authoritative fields); the server's
+    // come from its own read. If those two ever resolved content differently, every save after the first
+    // would 409.
+    test('repeated load-then-save cycles keep matching, including after content is parked', async () => {
+        await post('create', { ch_name: 'Alice', description: 'v1', file_name: 'Alice' });
+
+        for (const description of ['v2', 'v3', 'v4']) {
+            const got = await (await post('get', { avatar_url: 'Alice.png' })).json();
+            const response = await fetch(`${baseUrl}/api/characters/edit`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-content-hashes': JSON.stringify({ fields: got._fieldsHash, body: got._bodyHash }),
+                },
+                body: JSON.stringify({ avatar_url: 'Alice.png', ch_name: 'Alice', description }),
+            });
+            expect(response.status).toBe(200);
+        }
+
+        expect(JSON.parse(await metadataDb.getCharacterCardJson(directories, 'Alice.png')).data.description).toBe('v4');
+    });
+});
+
 describe('getStaleCardJsonMap', () => {
     test('holds only the cards whose file is actually stale', async () => {
         await post('create', { ch_name: 'Alice', description: 'a', file_name: 'Alice' });
