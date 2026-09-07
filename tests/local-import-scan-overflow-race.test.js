@@ -19,11 +19,13 @@ import process from 'node:process';
 /** @type {(() => void) | null} */
 let capturedOnOverflow = null;
 jest.unstable_mockModule('../src/watch-overflow.js', () => ({
-    attachOverflowWatch: jest.fn((_dir, onOverflow) => {
+    attachLinuxDirectoryWatch: jest.fn((_dir, { onOverflow }) => {
         capturedOnOverflow = onOverflow;
-        // Resolve null (as if the overflow watch never confirmed attached) so allOverflowConfirmed() stays
+        // Resolve null (as if the native watch never confirmed attached) so allOverflowConfirmed() stays
         // false and local-import-scan.js keeps scheduling ordinary periodic passes (scanIntervalMs) instead of
         // switching into heartbeat mode - this test is specifically about the periodic-pass reentrancy guard.
+        // startWatcherFor() falls back to plain fs.watch() for event delivery when this resolves null, same as
+        // it always has for a failed/unavailable native attach.
         return Promise.resolve(null);
     }),
     isWindowsOverflowSignal: () => false,
