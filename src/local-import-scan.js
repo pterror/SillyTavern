@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import fsPromises from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import process from 'node:process';
 
 import { getConfigValue, color, mapWithConcurrency } from './util.js';
 import { DEFAULT_USER, UPLOADS_DIRECTORY } from './constants.js';
@@ -10,7 +11,7 @@ import { copyCharacterFile } from './local-import-copy.js';
 import { reclaimReflinkPrefix } from './character-card-parser.js';
 import { importCharacterFileHeadless, buildPngImportData, buildJsonImportData, mintCharacterId, fireMetadataUpsertHook } from './endpoints/characters.js';
 import { beginBatchImport, endBatchImport, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, getLocalImportSkip, setLocalImportSkip, clearLocalImportSkip, getAllLocalImportMtimes, setLocalImportMtime, clearLocalImportMtime, seedCardTagsForSingleCharacter } from './character-metadata-db.js';
-import { attachOverflowWatch, isWindowsOverflowSignal } from './watch-overflow.js';
+import { attachLinuxDirectoryWatch, isWindowsOverflowSignal } from './watch-overflow.js';
 import { detectFormat } from './local-import-classify.js';
 import { LocalImportWorkerPool, resolveWorkerPoolSize } from './local-import-worker-pool.js';
 
@@ -30,20 +31,26 @@ import { LocalImportWorkerPool, resolveWorkerPoolSize } from './local-import-wor
  *      directory (wrong platform, watchEnabled off, the native addon missing/unpatched, or a watch failing to
  *      attach). In that unconfirmed state it behaves exactly as it always has: unconditional, watcher-state-
  *      independent, always runs.
- *   2. An optional non-recursive fs.watch() per configured directory (startWatcherFor() below, gated by
- *      `localImport.watchEnabled`) - purely a "notice new files sooner than the next scan interval" latency
- *      optimization layered on top. Its debounced handler runs the exact same per-file logic the periodic scan
- *      uses, so there is only ever one discovery/import code path, just two different triggers for it. On
- *      Linux, a separate dedicated watch (attachOverflowWatch(), watch-overflow.js) additionally catches the
- *      kernel's own IN_Q_OVERFLOW signal and triggers an immediate pass via triggerImmediateRescan() - a dropped
- *      ordinary fs.watch event stops being undetectable-from-JS once that watch is confirmed attached
- *      (allOverflowConfirmed(), state.overflowWatch non-null for every configured directory). ONCE that's true,
- *      point 1's periodic full-corpus pass is replaced entirely by a much cheaper watcher-pipeline heartbeat
- *      (checkWatcherHeartbeat(), HEARTBEAT_INTERVAL_MS) - a throwaway sentinel file whose own fs.watch event
- *      this process must observe within HEARTBEAT_GRACE_MS - for as long as heartbeats keep succeeding and
- *      confirmation holds; a missed heartbeat or lost confirmation immediately falls back to a real full pass
- *      (runHeartbeatCheck()), which self-heals back into heartbeat mode the moment it reconfirms health. See
- *      scheduleNext()'s own doc comment for exactly how the two modes hand off to each other.
+ *   2. An optional per-configured-directory watch (startWatcherFor() below, gated by `localImport.watchEnabled`)
+ *      - purely a "notice new files sooner than the next scan interval" latency optimization layered on top.
+ *      Its debounced handler (handleWatchEvent()) runs the exact same per-file logic the periodic scan uses, so
+ *      there is only ever one discovery/import code path, just two different triggers for it. 2026-09: on
+ *      Linux, this watch is inotify-remastered-plus itself (attachLinuxDirectoryWatch(), watch-overflow.js),
+ *      used directly as the PRIMARY event source - NOT plain fs.watch() with a second, bolt-on native watch
+ *      running alongside it purely for overflow detection (the old shape, which watched every configured
+ *      directory twice on Linux and still left the real per-file events coming from the less reliable of the
+ *      two mechanisms). Plain fs.watch() is only ever used on Linux as the fallback for when the native addon
+ *      is unavailable/fails to attach, and remains the only mechanism on every other platform. Either way, that
+ *      same native watch's overflow callback catches the kernel's own IN_Q_OVERFLOW signal and triggers an
+ *      immediate pass via triggerImmediateRescan() - a dropped watch event stops being undetectable-from-JS once
+ *      that watch is confirmed attached (allOverflowConfirmed(), state.overflowWatch non-null for every
+ *      configured directory). ONCE that's true, point 1's periodic full-corpus pass is replaced entirely by a
+ *      much cheaper watcher-pipeline heartbeat (checkWatcherHeartbeat(), HEARTBEAT_INTERVAL_MS) - a throwaway
+ *      sentinel file whose own watch event this process must observe within HEARTBEAT_GRACE_MS - for as long as
+ *      heartbeats keep succeeding and confirmation holds; a missed heartbeat or lost confirmation immediately
+ *      falls back to a real full pass (runHeartbeatCheck()), which self-heals back into heartbeat mode the
+ *      moment it reconfirms health. See scheduleNext()'s own doc comment for exactly how the two modes hand off
+ *      to each other.
  *
  * DISCOVERED-FILE IMPORT reuses the exact same hash-dedup machinery, and (for charx/byaf/yaml only - see below)
  * the exact same batched staging `/import` and its `/metadata/batch-import/begin|end` counterparts already use
@@ -106,29 +113,43 @@ const WATCH_DEBOUNCE_MS = 300;
  * it. A directory scanned via scanDirectory() directly with a hand-built, never-warmed state (e.g. a test, or a
  * config/directories change this process hasn't restarted for) simply starts that one state cold, same as
  * before - never incorrect, only ever a first-pass cost.
- * @property {fs.FSWatcher | null} watcher
+ * @property {fs.FSWatcher | { close: () => void } | null} watcher The live per-directory watch, whichever
+ * mechanism is actually delivering events - Node's own fs.watch() everywhere except a Linux install with the
+ * native addon attached, where it's the `{ close }` handle attachLinuxDirectoryWatch() (watch-overflow.js)
+ * returns instead. Callers that only ever call `.close()` on this (stopWatcherFor()) don't need to care which.
+ * @property {boolean} [watcherStarting] Set for the duration of an in-flight startWatcherFor() call (which now
+ * has a real `await` in it, for the Linux native-watch attach attempt) so a second startWatcherFor() call for
+ * the same state before the first resolves can't attach two watches - mirrors the "only one thing may ever
+ * hold `state.watcher`" invariant `if (state.watcher || ...) return` at that function's own top already
+ * expressed, just covering the async gap that invariant alone can't.
  * @property {Map<string, NodeJS.Timeout>} watchTimers Per-filename debounce timers, mirrors
  * character-metadata-db.js's watchTimers.
- * @property {{ close: () => void } | null} overflowWatch Linux-only dedicated overflow watch (see
- * watch-overflow.js's attachOverflowWatch()) - `null` on every other platform, or if attaching one failed for
- * any reason (never fatal - see that module's own doc comment). Entirely separate from `watcher` above; closed
- * independently in stopWatcherFor().
+ * @property {{ close: () => void } | null} overflowWatch Confirms overflow detection is live for this
+ * directory - `state.overflowWatch !== null` IS the confirmation (see allOverflowConfirmed()). `null` on every
+ * platform/configuration without a working native watch. On a Linux install where attachLinuxDirectoryWatch()
+ * succeeded, `watcher` above already IS the one real underlying resource that delivers BOTH ordinary events and
+ * the overflow signal - this field is then a distinct no-op-close marker object (not a second reference to the
+ * same native handle), so stopWatcherFor()'s existing "two independently-closeable resources" shape never
+ * double-closes the one real inotify instance.
  * @property {Map<string, () => void>} pendingHeartbeats Filename -> resolver for an in-flight
- * checkWatcherHeartbeat() call against this directory - see that function and startWatcherFor()'s watcher
- * callback (which intercepts a pending heartbeat's own sentinel filename before it ever reaches the normal
- * debounce/processFile() import path).
+ * checkWatcherHeartbeat() call against this directory - see that function and handleWatchEvent() (which
+ * intercepts a pending heartbeat's own sentinel filename before it ever reaches the normal debounce/
+ * processFile() import path).
  * @property {Map<string, Promise<void>>} [hashLocks] Per-content-hash serialization for the worker-pool era
  * (see withPerHashLock()'s own doc comment) - optional/lazily-created (withPerHashLock() populates it on
  * first use if absent) so a hand-built state literal (e.g. a test's buildState() helper, predating this
  * property) never needs updating just to keep constructing a valid DirectoryScanState.
+ * @property {Map<string, Promise<void>>} [inFlightFiles] Per-filename in-flight processFile() guard (see that
+ * function's own doc comment on the race it closes) - optional/lazily-created the same way `hashLocks` is,
+ * for the same reason.
  */
 
 /**
- * True only once every configured directory's dedicated overflow watch is confirmed attached. A non-null
- * `state.overflowWatch` handle IS the confirmation - there is no separate probe step here: attachOverflowWatch()
- * (watch-overflow.js) already resolves `null` for every failure mode (wrong platform, native addon
- * missing/unpatched, the watch itself failing to attach) per its own doc comment, so "attached" and "confirmed
- * healthy" are the same question. Empty `scanStates` (nothing configured, or watchEnabled off so
+ * True only once every configured directory has confirmed overflow detection. A non-null `state.overflowWatch`
+ * handle IS the confirmation - there is no separate probe step here: attachLinuxDirectoryWatch() (watch-overflow.js)
+ * already resolves `null` for every failure mode (wrong platform, native addon missing/unpatched, the watch
+ * itself failing to attach) per its own doc comment, so "attached" and "confirmed healthy" are the same
+ * question. Empty `scanStates` (nothing configured, or watchEnabled off so
  * startWatcherFor() was never called) is never "confirmed" - there is nothing to have confirmed anything about,
  * and the regular scanIntervalMs-paced full pass is what actually runs in that case.
  * @returns {boolean}
@@ -225,7 +246,7 @@ let disposed = false;
  * clears `scanTimeout` when it actually FIRES, only triggerImmediateRescan() (and disposeLocalImportScan()) ever
  * null it out. So for the entire duration of a NORMALLY-scheduled pass (started because its own timer fired,
  * not via triggerImmediateRescan()), `scanTimeout` still held the old, already-fired Timeout object - truthy,
- * indistinguishable from "still waiting, nothing running yet". A watcher-overflow signal (attachOverflowWatch(),
+ * indistinguishable from "still waiting, nothing running yet". A watcher-overflow signal (attachLinuxDirectoryWatch(),
  * watch-overflow.js) landing during that window - exactly what a sustained burst of writes into a watched
  * directory produces, e.g. an active bulk download - would pass that stale check and launch a SECOND, fully
  * concurrent runScanCycle() on top of the one already running. Each pass that finishes first then calls
@@ -364,15 +385,6 @@ async function markProcessed(state, directories, sourcePath, filename, mtimeMs, 
 
 
 /**
- * Discovers-and-imports one file if it looks new/changed and isn't already in the library (by content hash).
- * Shared by both the periodic scan and the (optional) fs.watch handler - see this module's header on why there
- * is only ever one such code path.
- * @param {DirectoryScanState} state
- * @param {string} filename
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<void>}
- */
-/**
  * Tidies up stale local_import_skips/local_import_mtimes rows (and the in-memory lastSeenMtimeMs entry) once
  * `filename` is known to be genuinely gone from `state.sourceDir` - shared by processFile()'s own ENOENT branch
  * (a file removed WITHIN this pass, between readdir() listing it and stat()'ing it - a narrow race) and
@@ -446,7 +458,62 @@ function readTagImportSetting(directories) {
     return 3;
 }
 
+/**
+ * Discovers-and-imports one file if it looks new/changed and isn't already in the library (by content hash).
+ * Shared by both the periodic scan and the (optional) watcher (fs.watch, or the Linux native watch - see this
+ * module's header) - see that header on why there is only ever one such code path.
+ *
+ * A thin per-filename in-flight guard around processFileImpl() (below) - not the actual logic itself. Nothing
+ * about WHEN either trigger fires prevents the periodic scan and the watcher from both landing on the SAME
+ * filename at once: e.g. a file that arrives mid-pass, while a scan is already partway through its own
+ * readdir()'d list, or - regardless of scan/heartbeat mode - the mandatory very first pass on every server
+ * boot, which always runs concurrently with a watcher that's already live by the time it starts (see
+ * initializeLocalImportScan()). withPerHashLock() does NOT cover this case: it only serializes the
+ * dedup-check-then-import DECISION for a given content hash within a single processFileImpl() call - a file
+ * already recognized as a duplicate of something previously imported takes the exact same short-circuit branch
+ * on every call regardless, hash lock included, so two genuinely concurrent processFileImpl() calls for the
+ * same filename each still ran the full worker pipeline once and each independently reached
+ * maybeReflinkDuplicateTarget() - producing duplicate reflink attempts/log lines and duplicate markProcessed()
+ * writes (2026-09 investigation: harmless to correctness, since content-hash dedup makes reprocessing always
+ * safe, but wasteful and confusing). This guard makes a second concurrent call for the SAME filename simply
+ * join the first call's own in-flight promise instead of running its own redundant pass through the pipeline -
+ * whichever trigger got here first "wins" and does the real work, the other just waits for that outcome.
+ * @param {DirectoryScanState} state
+ * @param {string} filename
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {number} [tagImportSetting]
+ * @returns {Promise<void>}
+ */
 async function processFile(state, filename, directories, tagImportSetting = 3) {
+    if (!state.inFlightFiles) state.inFlightFiles = new Map();
+    const existing = state.inFlightFiles.get(filename);
+    if (existing) {
+        // The FIRST call's own caller is what reports/handles a real failure (scanDirectory()'s per-file
+        // rejection handling, or the watcher's own .catch() in handleWatchEvent()) - a joiner never re-throws
+        // it a second time, it only needed to know the first call is done.
+        await existing.catch(() => {});
+        return;
+    }
+
+    const runPromise = processFileImpl(state, filename, directories, tagImportSetting);
+    state.inFlightFiles.set(filename, runPromise);
+    try {
+        await runPromise;
+    } finally {
+        state.inFlightFiles.delete(filename);
+    }
+}
+
+/**
+ * The actual per-file discovery/import logic - see processFile() (its only caller) for the in-flight guard
+ * wrapped around this.
+ * @param {DirectoryScanState} state
+ * @param {string} filename
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {number} [tagImportSetting]
+ * @returns {Promise<void>}
+ */
+async function processFileImpl(state, filename, directories, tagImportSetting = 3) {
     const format = detectFormat(filename);
     if (!format) return;
 
@@ -761,13 +828,74 @@ export async function scanDirectory(state, directories) {
 }
 
 /**
+ * Per-filename dispatch shared by EVERY watch mechanism this module can end up using (the Linux native watch's
+ * `onEvent`, and the fs.watch() callback on every platform where that's what's actually running) - exactly one
+ * debounce/import-trigger implementation regardless of which mechanism is delivering events, mirroring this
+ * module's existing "one discovery/import code path, multiple triggers" posture for the periodic-scan/watcher
+ * split itself.
+ * @param {DirectoryScanState} state
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} filename
+ */
+function handleWatchEvent(state, directories, filename) {
+    // checkWatcherHeartbeat()'s own sentinel file - resolve the waiting caller and stop here, before this ever
+    // reaches the normal debounce/processFile() path. detectFormat() would no-op on its ".heartbeat" extension
+    // anyway (processFile()'s very first line), but intercepting here means a heartbeat round-trip never even
+    // schedules a debounce timer or touches sqlite.
+    if (state.pendingHeartbeats.has(filename)) {
+        const resolveHeartbeat = state.pendingHeartbeats.get(filename);
+        state.pendingHeartbeats.delete(filename);
+        resolveHeartbeat();
+        return;
+    }
+
+    const existingTimer = state.watchTimers.get(filename);
+    if (existingTimer) clearTimeout(existingTimer);
+    state.watchTimers.set(filename, setTimeout(() => {
+        state.watchTimers.delete(filename);
+        processFile(state, filename, directories, readTagImportSetting(directories)).catch(err => {
+            console.error(`[local-import] Watcher-triggered import failed for ${filename} (the periodic scan will retry it):`, err.message);
+        });
+    }, WATCH_DEBOUNCE_MS));
+}
+
+/**
  * @param {DirectoryScanState} state
  * @param {import('./users.js').UserDirectoryList} directories
  */
-function startWatcherFor(state, directories) {
-    if (state.watcher || !fs.existsSync(state.sourceDir)) return;
+async function startWatcherFor(state, directories) {
+    if (state.watcher || state.watcherStarting || !fs.existsSync(state.sourceDir)) return;
+    state.watcherStarting = true;
 
     try {
+        // Primary event source on Linux: inotify-remastered-plus directly (attachLinuxDirectoryWatch(),
+        // watch-overflow.js) - NOT plain fs.watch() with a second, bolt-on native watch running alongside it
+        // purely for overflow detection (the old shape here - see this module's own header). fs.watch() is
+        // exactly the known-unreliable mechanism (can silently drop/coalesce events under burst load, with no
+        // error signal JS can observe) this exists to get off of wherever a real native alternative is
+        // available - it's only ever the fallback below when the native attach fails or isn't available.
+        if (process.platform === 'linux') {
+            const handle = await attachLinuxDirectoryWatch(state.sourceDir, {
+                onEvent: filename => handleWatchEvent(state, directories, filename),
+                onOverflow: () => triggerImmediateRescan(),
+            });
+            if (handle) {
+                state.watcher = handle;
+                // The confirmation IS this same handle now - one real watch does both jobs. A distinct
+                // no-op-close marker (not a second reference to `handle`) keeps allOverflowConfirmed()'s
+                // existing `state.overflowWatch !== null` check, and stopWatcherFor()'s existing "two
+                // independently-closeable resources" shape, both correct without double-closing the one real
+                // underlying inotify instance.
+                state.overflowWatch = { close: () => {} };
+                return;
+            }
+            // Native attach unavailable/failed (never fatal - see attachLinuxDirectoryWatch()'s own doc
+            // comment) - falls through to the fs.watch() path below, same posture as every other native-watch
+            // failure mode in this module: the periodic/heartbeat backstop remains the source of truth, and
+            // `state.overflowWatch` correctly stays null (no confirmed overflow detection without the native
+            // watch), keeping the periodic full-pass mode active rather than backing off into heartbeat mode.
+        }
+
         state.watcher = fs.watch(state.sourceDir, (_eventType, filename) => {
             if (isWindowsOverflowSignal(filename)) {
                 // See watch-overflow.js's own doc comment: on Windows, `filename === null` is ReadDirectoryChangesW's
@@ -777,26 +905,7 @@ function startWatcherFor(state, directories) {
                 return;
             }
             if (!filename) return;
-
-            // checkWatcherHeartbeat()'s own sentinel file - resolve the waiting caller and stop here, before
-            // this ever reaches the normal debounce/processFile() path. detectFormat() would no-op on its
-            // ".heartbeat" extension anyway (processFile()'s very first line), but intercepting here means a
-            // heartbeat round-trip never even schedules a debounce timer or touches sqlite.
-            if (state.pendingHeartbeats.has(filename)) {
-                const resolveHeartbeat = state.pendingHeartbeats.get(filename);
-                state.pendingHeartbeats.delete(filename);
-                resolveHeartbeat();
-                return;
-            }
-
-            const existingTimer = state.watchTimers.get(filename);
-            if (existingTimer) clearTimeout(existingTimer);
-            state.watchTimers.set(filename, setTimeout(() => {
-                state.watchTimers.delete(filename);
-                processFile(state, filename, directories, readTagImportSetting(directories)).catch(err => {
-                    console.error(`[local-import] Watcher-triggered import failed for ${filename} (the periodic scan will retry it):`, err.message);
-                });
-            }, WATCH_DEBOUNCE_MS));
+            handleWatchEvent(state, directories, filename);
         });
         state.watcher.on('error', (err) => {
             // Same posture as character-metadata-db.js's watcher error handler: this is for an actual
@@ -806,18 +915,9 @@ function startWatcherFor(state, directories) {
         });
     } catch (err) {
         console.error(`[local-import] Failed to start directory watcher for ${state.sourceDir} (the periodic scan remains the source of truth):`, err.message);
+    } finally {
+        state.watcherStarting = false;
     }
-
-    // Linux-only, entirely separate mechanism (see watch-overflow.js's own doc comment on why Windows piggybacks
-    // on the fs.watch() callback above but Linux needs a dedicated watch) - never awaited, so a failure/delay
-    // attaching it can't hold up startWatcherFor() itself; state.overflowWatch starts null and is filled in once
-    // (if ever) this resolves.
-    attachOverflowWatch(state.sourceDir, () => triggerImmediateRescan()).then(handle => {
-        state.overflowWatch = handle;
-    }).catch(() => {
-        // attachOverflowWatch() itself never rejects (see its own doc comment - unavailable/failed always
-        // resolves to null), this catch is only defense-in-depth against a future change to that contract.
-    });
 }
 
 /**
@@ -1050,7 +1150,13 @@ export async function initializeLocalImportScan() {
     for (const state of scanStates) {
         warmMtimeCache(state, allMtimes);
         if (watchEnabled) {
-            startWatcherFor(state, userDirectories);
+            // Not awaited - same "boot must never block on watcher setup" posture as everything else here (see
+            // this function's own doc comment on why the scan cycle itself isn't awaited either). startWatcherFor()
+            // never actually rejects (every failure path inside it is caught and logged, never rethrown) - this
+            // .catch() is only defense-in-depth against a future change to that contract.
+            startWatcherFor(state, userDirectories).catch(err => {
+                console.error(`[local-import] Unexpected error starting the watcher for ${state.sourceDir}:`, err.message);
+            });
         }
     }
 

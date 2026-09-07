@@ -1,28 +1,35 @@
 import process from 'node:process';
 
 /**
- * Cross-platform "the low-latency fs.watch layer may have silently missed something, trigger a full reconcile
- * NOW instead of waiting for the next scheduled backstop pass" detection - see local-import-scan.js's and
- * character-metadata-db.js's own module headers on why fs.watch/inotify can silently drop events under burst
- * load with no error reported, and why a periodic backstop pass is the mandatory correctness mechanism, this
- * module only an early-trigger latency optimization on top of it.
+ * Cross-platform native directory watching, where a real native mechanism actually exists, PLUS the "the
+ * low-latency watch layer may have silently missed something, trigger a full reconcile NOW instead of waiting
+ * for the next scheduled backstop pass" overflow/drop detection that rides alongside it - see
+ * local-import-scan.js's and character-metadata-db.js's own module headers on why fs.watch/inotify can silently
+ * drop events under burst load with no error reported, and why a periodic backstop pass is the mandatory
+ * correctness mechanism regardless of which watch mechanism is delivering events.
  *
- * Genuinely three different platforms, three different signals, two different SHAPES of mechanism entirely:
- *   - Linux: the kernel's own IN_Q_OVERFLOW inotify event is the real, precise signal - queue overflow, not a
- *     heuristic. Reaching it requires a SEPARATE dedicated native watch (the plain fs.watch() Node already uses
- *     elsewhere in both modules has no channel for it at all), via inotify-remastered-plus - see
- *     attachLinuxOverflowWatch() and this repo's patches/inotify-remastered-plus+*.patch (that package's own
- *     overflow-dispatch code crashed the whole process on a real overflow before the patch - reproduced and
- *     fixed directly, see the patch's own comments).
- *   - Windows: no separate mechanism needed - ReadDirectoryChangesW buffer overflow surfaces through the SAME
+ * Genuinely three different platforms, three different shapes of support:
+ *   - Linux: inotify-remastered-plus (this repo's patches/inotify-remastered-plus+*.patch fixes a real crash in
+ *     its overflow-dispatch code - reproduced and fixed directly, see the patch's own comments) is used as the
+ *     ACTUAL PRIMARY event source here (attachLinuxDirectoryWatch() below), not as a bolt-on riding alongside a
+ *     separate plain fs.watch() on the same directory - fs.watch() is exactly the known-unreliable mechanism
+ *     (can silently drop/coalesce events under burst load, with no error signal JS can observe) this exists to
+ *     get off of wherever a real native alternative is available, so callers should prefer it over fs.watch()
+ *     for actual event delivery, not just for the kernel's own IN_Q_OVERFLOW signal (queue overflow, a real
+ *     precise signal - not a heuristic - that has no channel through plain fs.watch() at all).
+ *   - Windows: no native binding here - ReadDirectoryChangesW buffer overflow surfaces through the SAME
  *     fs.watch() callback both modules already use, as an event with `filename === null` (see
  *     isWindowsOverflowSignal()). Node's docs don't guarantee null is EXCLUSIVELY an overflow signal (a rare
  *     UTF16->UTF8 filename-conversion failure can also produce it) - owner-confirmed acceptable: an occasional
  *     spurious extra reconcile pass triggered by that edge case is harmless, so this is treated as unambiguous.
- *   - macOS (fsevents' own kFSEventStreamEventFlagUserDropped/KernelDropped flags): not implemented - blocked on
- *     verification this module's author has no way to run/test on this platform. attachDarwinOverflowWatch()
- *     doesn't exist yet; darwin is simply not dispatched by attachOverflowWatch() below, callers get `null`
- *     back exactly as if support genuinely doesn't exist yet, which is honestly the current state.
+ *     fs.watch() remains the primary (and only) event source on this platform.
+ *   - macOS (fsevents' own kFSEventStreamEventFlagUserDropped/KernelDropped flags, and a real native primary
+ *     watch to go with it): not implemented - blocked on verification this module's author has no way to
+ *     run/test on this platform. Nothing in this module is dispatched for darwin; callers get `null` back
+ *     exactly as if support genuinely doesn't exist yet, which is honestly the current state - fs.watch() plus
+ *     the always-on periodic backstop pass (never able to back off into heartbeat mode, since that requires a
+ *     confirmed overflow/primary watch) is what macOS runs on for now, tracked as a separate, smaller followup
+ *     rather than folded into this file.
  */
 
 /** @type {Promise<null | { Inotify: any }> | null} */
@@ -53,17 +60,24 @@ function loadInotifyModule() {
 }
 
 /**
- * Attaches a dedicated inotify watch on `dir` whose only purpose is catching IN_Q_OVERFLOW and invoking
- * `onOverflow` when it fires - entirely separate from whatever OTHER fs.watch() a caller already has on the
- * same directory for ordinary per-file change events (this module never replaces that, only adds to it).
+ * Attaches inotify-remastered-plus directly on `dir` as the PRIMARY event source (2026-09: replaces the old
+ * shape here, where a SEPARATE dedicated inotify watch existed only for IN_Q_OVERFLOW while a caller's own
+ * plain fs.watch() on the same directory did the real per-file event delivery - meaning Linux watched every
+ * configured directory twice, with the more reliable native mechanism used only for the narrower of the two
+ * jobs). One real inotify watch now does both: `onEvent` fires once per raw event this watch's mask covers
+ * (every raw event, no filtering by this module - same "let the caller's own debounce/mtime-check absorb the
+ * noise" posture plain fs.watch() callers already had to have anyway, since fs.watch() itself never filtered
+ * either), and `onOverflow` fires on the kernel's own IN_Q_OVERFLOW signal (queue overflow - a real precise
+ * signal, not a heuristic, that has no channel through plain fs.watch() at all).
  * @param {string} dir
- * @param {() => void} onOverflow
+ * @param {{ onEvent: (filename: string) => void, onOverflow: () => void }} handlers
  * @returns {Promise<{ close: () => void } | null>} `null` if the native binding isn't available (wrong
  * platform, failed to load) or the watch itself couldn't be created (directory missing, permission error) -
- * callers must treat that as "no early-trigger available, the periodic backstop alone is what's relied on",
- * never as an error to surface, matching this module's own "latency optimization only" posture throughout.
+ * callers must treat that as "no native watch available this run, fall back to fs.watch() for event delivery
+ * and the periodic backstop alone for overflow detection", never as an error to surface, matching this
+ * module's own "optional native mechanism, never the thing solely relied on" posture throughout.
  */
-export async function attachLinuxOverflowWatch(dir, onOverflow) {
+export async function attachLinuxDirectoryWatch(dir, { onEvent, onOverflow }) {
     if (process.platform !== 'linux') return null;
 
     const mod = await loadInotifyModule();
@@ -79,35 +93,38 @@ export async function attachLinuxOverflowWatch(dir, onOverflow) {
                 console.error('watch-overflow: onOverflow callback threw (the periodic backstop pass remains the source of truth):', err.message);
             }
         });
-        // watch_for is deliberately minimal (IN_CREATE only, via the constant the binding exposes) - this watch
-        // exists purely to keep inotify_add_watch() itself alive against `dir` so the kernel has a queue to
-        // overflow in the first place; the actual per-file events it also necessarily generates are never read
-        // by this module's own callback (a no-op below) - the CALLER's own separate fs.watch() on the same
-        // directory is what handles those, same as before this module existed.
-        const wd = inotify.addWatch({ path: dir, watch_for: Inotify.IN_CREATE, callback: () => {} });
+        // Broad, unfiltered mask - deliberately mirroring fs.watch()'s own lack of event-type filtering (it
+        // fires its callback for essentially any change under the directory), so switching a caller from
+        // fs.watch() to this watch changes WHICH mechanism delivers events, never what counts as "something
+        // may have changed, go recheck this filename" from the caller's point of view.
+        const watchFor = Inotify.IN_CREATE | Inotify.IN_CLOSE_WRITE | Inotify.IN_MODIFY | Inotify.IN_DELETE
+            | Inotify.IN_MOVED_FROM | Inotify.IN_MOVED_TO | Inotify.IN_ATTRIB;
+        const wd = inotify.addWatch({
+            path: dir,
+            watch_for: watchFor,
+            callback: (event) => {
+                // No `name` at all is a self-watch event (IN_DELETE_SELF/IN_MOVE_SELF/IN_IGNORED on `dir`
+                // itself, none of which this watch_for mask actually requests, but the binding can still
+                // surface IN_IGNORED on watch teardown) - nothing for a per-FILE onEvent callback to act on,
+                // same as the `if (!filename) return;` guard every fs.watch() caller already has.
+                if (!event || !event.name) return;
+                try {
+                    onEvent(event.name);
+                } catch (err) {
+                    console.error(`watch-overflow: onEvent callback threw for ${dir}/${event.name} (the periodic backstop pass remains the source of truth):`, err.message);
+                }
+            },
+        });
         if (wd < 0) {
-            console.debug(`watch-overflow: inotify_add_watch failed for ${dir} (errno via wd=${wd}) - falling back to the periodic backstop pass alone.`);
+            console.debug(`watch-overflow: inotify_add_watch failed for ${dir} (errno via wd=${wd}) - falling back to fs.watch()/the periodic backstop pass.`);
             inotify.close();
             return null;
         }
         return { close: () => inotify.close() };
     } catch (err) {
-        console.debug(`watch-overflow: failed to attach a Linux overflow watch for ${dir} (the periodic backstop pass remains the source of truth):`, err.message);
+        console.debug(`watch-overflow: failed to attach a Linux primary watch for ${dir} (falling back to fs.watch()/the periodic backstop pass remains the source of truth):`, err.message);
         return null;
     }
-}
-
-/**
- * Dispatches to the right platform-specific overflow watch, or `null` on a platform with no implementation yet
- * (currently: everything except Linux). Callers treat `null` exactly like a failed/unavailable watch - there is
- * no "unsupported platform" error path, only "no early-trigger available this run".
- * @param {string} dir
- * @param {() => void} onOverflow
- * @returns {Promise<{ close: () => void } | null>}
- */
-export async function attachOverflowWatch(dir, onOverflow) {
-    if (process.platform === 'linux') return attachLinuxOverflowWatch(dir, onOverflow);
-    return null;
 }
 
 /**
