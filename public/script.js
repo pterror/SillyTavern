@@ -3982,8 +3982,18 @@ export function messageFormatting(mes, ch_name, isSystem, isUser, messageId, san
         const mesBeforeReplace = mes;
         const chatMessage = chat[messageId];
         mes = substituteParams(mes, undefined, ch_name);
-        if (chatMessage && chatMessage.mes === mesBeforeReplace && chatMessage.extra?.display_text !== mesBeforeReplace) {
-            updateMessage(Number(messageId), { mes });
+        // The greeting's macros react to persona/character name changes on every render, but a card
+        // greeting is never "typed" the way a real message is - the canonical `mes` a save round-trips
+        // has to stay the raw, un-substituted card text, or the very first render of an untouched
+        // greeting (no Generate() involved at all - this runs from addOneMessage()/printMessages() on
+        // ordinary display) makes it read as "the user edited this" to the store's own written-check,
+        // and permanently promotes it into a real row holding the substituted, persona-name-baked-in
+        // copy. `extra.display_text` is exactly the side channel this codebase already uses to let a
+        // message's rendered text differ from what it stores (see updateMessageBlock()/
+        // getMessageTextHTML() above, both of which prefer it over `mes`) - caching the substitution
+        // there instead of overwriting `mes` gets the display update without touching the stored text.
+        if (chatMessage && chatMessage.mes === mesBeforeReplace && chatMessage.extra?.display_text !== mes) {
+            updateMessage(Number(messageId), { extra: { ...chatMessage.extra, display_text: mes } });
         }
     }
 
@@ -6696,28 +6706,10 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         setExtensionPrompt(inject_ids.DEPTH_PROMPT, depthPromptText, extension_prompt_types.IN_CHAT, depthPromptDepth, extension_settings.note.allowWIScan, depthPromptRole);
     }
 
-    // First message in fresh 1-on-1 chat reacts to user/character settings changes.
-    //
-    // A card greeting is never "typed" the way a user message is, so nothing has ever run its macros
-    // through substituteParams() the way sendMessageAsUser() does at creation time for everything
-    // else - this is the one place that gap gets closed for prompt-building. It used to close it by
-    // writing the substituted copy straight onto chat[0] via updateMessage(), the one writer of
-    // node_id 0. That persisted the substitution into the canonical stored message, which is a
-    // problem regardless of whether the opening already has a real row: for a still-provisional one
-    // (see ensureOpeningRow()'s doc comment - a greeting earns a row by being used, not by being
-    // substituted for display), it is exactly the "was something written into this opening" signal
-    // _saveTreeChat() watches for, promoting an untouched greeting into a permanent row on the very
-    // first prompt build - even one from a generation that gets cancelled before anything else
-    // happens. And for an opening that already has a real row (e.g. the chat has since had a reply
-    // appended for real), the next save reads the mutated chat[0] as a genuine edit and pushes the
-    // substituted text out to the server, permanently overwriting the row with a persona/character-
-    // name-baked-in copy - the same corruption, just reached a different way.
-    //
-    // Neither is necessary: only the PROMPT needs the substituted text, and coreChat's own per-message
-    // map below already builds a local, non-persisted copy for everything else in the chat. Threading
-    // the substitution through there for chat[0] specifically gets prompt-building the resolved
-    // macros it needs without writing anything back onto the canonical message.
-    const substitutedFirstMessage = chat.length ? substituteParams(chat[0].mes) : null;
+    // First message in fresh 1-on-1 chat reacts to user/character settings changes
+    if (chat.length) {
+        updateMessage(0, { mes: substituteParams(chat[0].mes) });
+    }
 
     // Collect messages with usable content
     const canUseTools = ToolManager.isToolCallingSupported();
@@ -6728,7 +6720,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     }
 
     coreChat = await Promise.all(coreChat.map(async (/** @type {ChatMessage} */ chatItem, index) => {
-        let message = chatItem === chat[0] ? substitutedFirstMessage : chatItem.mes;
+        let message = chatItem.mes;
         let regexType = chatItem.is_user ? regex_placement.USER_INPUT : regex_placement.AI_OUTPUT;
         let options = { isPrompt: true, depth: (coreChat.length - index - (isContinue ? 2 : 1)) };
 
