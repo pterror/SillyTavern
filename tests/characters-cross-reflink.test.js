@@ -15,6 +15,10 @@ jest.unstable_mockModule('@reflink/reflink', () => ({
 
 /** @type {typeof import('../src/character-card-parser.js')} */
 let cardParser;
+/** @type {typeof import('../src/endpoints/characters.js').readCardContent} */
+let readCardContent;
+/** @type {typeof import('../src/character-metadata-db.js')} */
+let metadataDb;
 /** @type {import('express').Router} */
 let router;
 /** @type {import('node:http').Server} */
@@ -38,7 +42,8 @@ beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
 
-    ({ router } = await import('../src/endpoints/characters.js'));
+    ({ router, readCardContent } = await import('../src/endpoints/characters.js'));
+    metadataDb = await import('../src/character-metadata-db.js');
     cardParser = await import('../src/character-card-parser.js');
 
     process.chdir(path.resolve(originalCwd, '..'));
@@ -188,12 +193,22 @@ describe('cross-character reflink on the live write path', () => {
         const editResponse = await edit('Twin2.png', { ch_name: 'Twin', description: 'Now diverged', avatar_url: 'Twin2.png' });
         expect(editResponse.status).toBe(200);
 
+        // The invariant this test exists for: a reflinked pair must never share a write. Twin1's file is
+        // byte-identical after Twin2 was edited.
         const twin1After = fs.readFileSync(path.join(directories.characters, 'Twin1.png'));
         expect(Buffer.compare(twin1Before, twin1After)).toBe(0);
 
-        const twin2 = JSON.parse(cardParser.read(fs.readFileSync(path.join(directories.characters, 'Twin2.png'))));
+        // Where each character's CONTENT now lives is the residency migration's business, so these read
+        // through the authoritative seam rather than off the PNG: a metadata-only edit like this one
+        // deliberately doesn't rewrite Twin2's file either (see characters-data-residency.test.js). The
+        // divergence being asserted is the same one as before - only the place it is observed moved.
+        const twin2 = JSON.parse(await readCardContent(directories, 'Twin2.png'));
         expect(twin2.data.description).toBe('Now diverged');
-        const twin1 = JSON.parse(cardParser.read(fs.readFileSync(path.join(directories.characters, 'Twin1.png'))));
+        const twin1 = JSON.parse(await readCardContent(directories, 'Twin1.png'));
         expect(twin1.data.description).toBe('Same everything');
+
+        // And Twin1 specifically must not have been dragged into Twin2's edit at the db layer either -
+        // nothing was parked for it, because nothing edited it.
+        expect(await metadataDb.getCharacterCardJson(directories, 'Twin1.png')).toBeNull();
     });
 });

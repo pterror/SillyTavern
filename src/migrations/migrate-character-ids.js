@@ -8,6 +8,7 @@ import { getCharaCardV2 } from '../character-card-normalize.js';
 import { readSettingsAtPaths, writeSettingsKeys } from '../settings-store.js';
 import {
     upsertCharacterFromWrite,
+    getCharacterCardJson,
     renameCharacterRow,
     recordIdMigrationMapping,
     getIdMigrationMapping,
@@ -126,7 +127,12 @@ async function migrateOne(directories, oldId, newId, log) {
     // the remaining steps, which will find themselves already done too and no-op.
 
     try {
-        const rawJson = await parseCharacterCard(newPath, 'png');
+        // Residency migration: the parked copy (if any) is still keyed by the OLD id at this point - the file
+        // has been renamed on disk but renameCharacterRow() below hasn't moved the row yet. Reading the PNG
+        // here without checking would migrate the pre-edit card and then, via the default
+        // "the PNG is now current" upsert, drop the parked copy when the old row is deleted.
+        const parked = await getCharacterCardJson(directories, oldId);
+        const rawJson = parked ?? await parseCharacterCard(newPath, 'png');
         // Mirrors bootstrapIfNeeded()'s own normalization (character-metadata-db.js) - upsertCharacterFromWrite()
         // expects an already Spec-V2-normalized card, the same way every characters.js write route already
         // normalizes before calling it.
@@ -135,7 +141,10 @@ async function migrateOne(directories, oldId, newId, log) {
         // Same two-call shape characters.js's old /rename route used: a generic upsert for the new id first (so
         // renameCharacterRow() has a row to patch), then renameCharacterRow() carries date_added/tags forward
         // and removes the old row. Both are themselves idempotent - see their own doc comments.
-        await upsertCharacterFromWrite(directories, newId, normalized, stat.mtimeMs);
+        // Carries the parked-content flag across the id change: if the old row's content was db-authoritative,
+        // the new row's is too. This migration only renames the file, it never rewrites the card's chunk, so
+        // a card that was stale before the rename is still stale after it.
+        await upsertCharacterFromWrite(directories, newId, normalized, stat.mtimeMs, null, null, parked !== null);
         await renameCharacterRow(directories, oldId, newId);
     } catch (err) {
         log(color.red(`[migrate-character-ids] Failed to update the metadata store for ${oldId} -> ${newId}: ${err.message}`));

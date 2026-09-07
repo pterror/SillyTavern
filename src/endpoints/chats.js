@@ -26,7 +26,7 @@ import {
 } from '../util.js';
 import { bumpCharacterDateLastChat, bumpGroupChatStats } from '../character-metadata-db.js';
 import { resolveGroupOwner } from '../character-shallow.js';
-import { readCharacterData } from './characters.js';
+import { readCardContent } from './characters.js';
 import { cardToGreetingsModel } from '../greeting-list.js';
 import { migrateOwnerOnTouch } from '../message-tree-migration.js';
 import { upsertChatFromSave, upsertChatFromParse, getChatRow, deleteChatRow, renameChatRow } from '../chat-metadata-db.js';
@@ -1195,10 +1195,15 @@ router.post('/message/append', validateAvatarUrlMiddleware, async function (requ
  * ever reaches disk through the confirmed round trip of one of the six `/greetings/*` ops (see
  * characters.js's `applyGreetingOperation` - it writes and only THEN reports success), and the client
  * never mutates its in-memory character object until that op comes back ok. So there is no "the client
- * has an edit the disk doesn't know about yet" case here to accommodate - the on-disk card already IS
+ * has an edit the disk doesn't know about yet" case here to accommodate - the stored card already IS
  * the freshest copy of the truth by the time anything asks for openings, which is what makes reading it
  * server-side strictly better than requiring the caller to ship it: same answer, without the client
  * having to hold, serialize, and transmit potentially hundreds of greetings' full text on every call.
+ *
+ * "Stored", not "on-disk": since the residency migration a greeting edit lands in the metadata db and
+ * deliberately does NOT rewrite the PNG, so the card's freshest copy is whatever readCardContent()
+ * resolves, which is the db's parked copy when there is one and the file otherwise. The guarantee above
+ * is unchanged - the write still completes before the op reports success - only where it completes moved.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {string} avatar avatar filename (e.g. "char.png")
  * @returns {Promise<object[]>} Empty array if the character can't be read.
@@ -1206,7 +1211,11 @@ router.post('/message/append', validateAvatarUrlMiddleware, async function (requ
 async function _cardGreetingsFromDisk(directories, avatar) {
     try {
         const avatarPath = path.join(directories.characters, avatar);
-        const pngStringData = await readCharacterData(avatarPath);
+        // readCardContent(), not readCharacterData(): since the residency migration a greeting edit is
+        // persisted to the metadata db without rewriting the PNG, so the file's embedded chunk may hold a
+        // pre-edit greeting list. Reading the file directly here would show stale openings for exactly the
+        // characters whose greetings were most recently edited.
+        const pngStringData = await readCardContent(directories, avatar, avatarPath);
         if (!pngStringData) return [];
         const character = JSON.parse(pngStringData);
         const { greetings } = cardToGreetingsModel(character);

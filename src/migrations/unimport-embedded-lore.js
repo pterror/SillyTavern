@@ -6,7 +6,7 @@ import { color } from '../util.js';
 import { parse as parseCharacterCard, writeCardToFile } from '../character-card-parser.js';
 import { getCharaCardV2 } from '../character-card-normalize.js';
 import { readWorldInfoFile } from '../endpoints/worldinfo.js';
-import { upsertCharacterFromWrite, getCharactersWithLinkedWorld, isMigrationMarkedComplete, markMigrationComplete, isBootstrapComplete } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, getCharacterCardJson, getCharactersWithLinkedWorld, isMigrationMarkedComplete, markMigrationComplete, isBootstrapComplete } from '../character-metadata-db.js';
 
 /**
  * One-time reversal for characters that got auto-converted into a linked World file by the pre-fix
@@ -194,7 +194,11 @@ export async function findCandidates(directories, log) {
         // candidate, not a corpus walk.
         let card;
         try {
-            const rawJson = await parseCharacterCard(path.join(directories.characters, avatar), 'png');
+            // Residency migration: prefer the metadata db's parked copy when the PNG's chunk is stale,
+            // otherwise read the file. Deciding candidacy off a pre-edit card would classify against
+            // content the user has already changed.
+            const rawJson = await getCharacterCardJson(directories, avatar)
+                ?? await parseCharacterCard(path.join(directories.characters, avatar), 'png');
             card = getCharaCardV2(JSON.parse(rawJson), directories, false);
         } catch (err) {
             log(color.red(`[unimport-embedded-lore] Failed to read candidate ${avatar}, skipping: ${err.message}`));
@@ -234,7 +238,9 @@ async function unimportOne(directories, candidate, log) {
     const avatarPath = path.join(directories.characters, avatar);
 
     try {
-        const rawJson = await parseCharacterCard(avatarPath, 'png');
+        // Same db-first read as the candidate scan above - see that comment.
+        const parked = await getCharacterCardJson(directories, avatar);
+        const rawJson = parked ?? await parseCharacterCard(avatarPath, 'png');
         const card = getCharaCardV2(JSON.parse(rawJson), directories, false);
 
         if (card?.data?.extensions?.world !== worldName) {
@@ -253,9 +259,22 @@ async function unimportOne(directories, candidate, log) {
 
         card.data.extensions.world = undefined;
 
-        const stat = await fsPromises.stat(avatarPath);
-        await writeCardToFile(avatarPath, avatarPath, JSON.stringify(card));
-        await upsertCharacterFromWrite(directories, avatar, JSON.stringify(card), stat.mtimeMs);
+        const updated = JSON.stringify(card);
+        if (parked !== null) {
+            // Card content already lives in the db - keep it there. Rewriting the PNG here would both
+            // undo the residency decision and, via the default "the PNG is now current" upsert, retire the
+            // parked copy. The file is untouched, so the row keeps its CURRENT mtime (a stale/new one would
+            // read as external drift to the watcher and roll the card back to the stale chunk).
+            const stat = await fsPromises.stat(avatarPath);
+            await upsertCharacterFromWrite(directories, avatar, updated, stat.mtimeMs, null, null, true);
+        } else {
+            await writeCardToFile(avatarPath, avatarPath, updated);
+            // Stat AFTER the write, not before: the row has to record the mtime the file actually ends up
+            // with. Stat'ing first recorded the pre-write value, which permanently disagreed with disk and
+            // made every subsequent watcher/reconciler pass treat this row as externally modified.
+            const stat = await fsPromises.stat(avatarPath);
+            await upsertCharacterFromWrite(directories, avatar, updated, stat.mtimeMs);
+        }
 
         log(color.green(`[unimport-embedded-lore] ${avatar}: unlinked from "${worldName}"${action === 'restore-and-unlink' ? ' and restored its embedded lorebook' : ''}.`));
         return true;

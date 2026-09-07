@@ -31,7 +31,7 @@ import cacheBuster from '../middleware/cacheBuster.js';
 import { searchCharacters, searchCharacterIds, searchCharacterIdsSorted, rebuildCharacterSearchIndex, TANTIVY_SORT_FIELDS } from './characters-search-index.js';
 import { searchGroups, searchGroupIds } from './groups-search-index.js';
 import { getGroupsData, getGroupsByIds } from './groups.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, resolveFingerprints, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, seedCardTagsForSingleCharacter } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, resolveFingerprints, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, seedCardTagsForSingleCharacter, getCharacterCardJson, getStaleCardJsonMap } from '../character-metadata-db.js';
 import { DEFAULT_DIGEST_BUCKET_COUNT, characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
 import { hashGreetingText, opAdd, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault } from '../greeting-ops.js';
@@ -240,6 +240,69 @@ export async function readCharacterData(inputFile, inputFormat = 'png', precompu
 }
 
 /**
+ * THE read seam for a character that lives in the library. Every server-side "give me this card's real
+ * content" must come through here rather than calling readCharacterData() on the PNG directly.
+ *
+ * Since the residency migration (2026-09, docs/design/character-data-residency-redesign.md) a metadata-only
+ * edit - description, personality, scenario, greetings, extensions, a rename, anything that isn't image bytes -
+ * is persisted to the metadata db and the PNG is deliberately left untouched, stale chunk and all. So the file
+ * on disk is only the current copy for cards whose content and image last changed together. `card_json` is
+ * non-NULL exactly when it is not (see that column's SCHEMA_SQL comment), and this is the function that
+ * resolves the two into one answer.
+ *
+ * Two things this must NOT be turned into:
+ *   - a wrapper around readCharacterData()'s cache. That cache is keyed `${path}-${mtimeMs}` and a db-only
+ *     write moves neither, so it cannot represent these edits at all. The db lookup goes first, always, and
+ *     the cached PNG parse is reached only on the NULL branch where the file genuinely is current.
+ *   - a reader for arbitrary PNGs. An upload sitting in a temp directory, a file being imported, a byaf/charx
+ *     extraction - none of those have a library row and all of them should keep calling readCharacterData()
+ *     directly. `avatar` here means a real member of `directories.characters`.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {string} avatar Avatar filename, e.g. `Alice.png`
+ * @param {string} [filePath] The card's path, when the caller already built it - saves rebuilding the join.
+ * @param {fs.Stats} [precomputedStat] Passed straight through to readCharacterData() on the file branch only -
+ * see getCacheKey()'s doc comment. Never used on the db branch, which has no stat to save.
+ * @returns {Promise<string|undefined>} The card JSON, or `undefined` if the card cannot be read at all (same
+ * contract as readCharacterData(), so existing `=== undefined` checks keep working unchanged).
+ */
+export async function readCardContent(directories, avatar, filePath = undefined, precomputedStat = undefined) {
+    const parked = await getCharacterCardJson(directories, avatar);
+    if (parked !== null) return parked;
+    return await readCharacterData(filePath ?? path.join(directories.characters, avatar), 'png', precomputedStat);
+}
+
+/**
+ * Builds the bytes of a self-contained, shareable PNG for `avatar`: the card's image, carrying a CURRENT
+ * embedded tEXt chunk, regardless of whether the copy on disk had one.
+ *
+ * This is the export-compat half of the residency migration, and it is why letting the stored PNG go stale is
+ * safe. A card handed to a user - downloaded, exported, duplicated, shared to another tool that only knows how
+ * to read the chunk - has to be correct and current, so every one of those paths materializes through here
+ * instead of streaming the file.
+ *
+ * Materialization is in-memory and does NOT write the character's own file. That is deliberate: export is a
+ * read-shaped action a user can trigger repeatedly (and in bulk), and having it mutate the library would put
+ * writes, mtime churn and reconciler drift on a path that conceptually only looks. The stored file staying
+ * stale costs nothing, because nothing serves it without coming through here first.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {string} avatar Avatar filename, e.g. `Alice.png`
+ * @param {string} [filePath] The card's path, when the caller already built it.
+ * @returns {Promise<{ buffer: Buffer, cardJson: string }|null>} `null` when the card can't be read at all.
+ */
+export async function materializeCardPng(directories, avatar, filePath = undefined) {
+    const imagePath = filePath ?? path.join(directories.characters, avatar);
+    const rawBuffer = await fsPromises.readFile(imagePath);
+    const parked = await getCharacterCardJson(directories, avatar);
+    if (parked === null) {
+        // The file's own chunk is current - hand back the bytes exactly as stored. Not just an optimization:
+        // re-encoding a card that didn't need it would churn every export's output for no reason.
+        const cardJson = read(rawBuffer);
+        return cardJson === undefined || cardJson === null ? null : { buffer: rawBuffer, cardJson };
+    }
+    return { buffer: write(rawBuffer, parked), cardJson: parked };
+}
+
+/**
  * Fires the phase-1 metadata-store write-path hook (character-metadata-db.js's upsertCharacterFromWrite())
  * right after a character PNG write has already landed on disk. Stats the file itself rather than threading a
  * pre-fetched mtime through every writeCharacterData() caller - one extra stat on a write path (an infrequent,
@@ -263,7 +326,19 @@ export async function fireMetadataUpsertHook(directories, avatar, data, contentH
         const stat = await fsPromises.stat(path.join(directories.characters, avatar));
         await upsertCharacterFromWrite(directories, avatar, data, stat.mtimeMs, contentHash, avatarIdentityHash);
     } catch (err) {
-        console.error('[character-metadata] Failed to update metadata store after a character write (the reconciler will catch it):', err);
+        // NOT "the reconciler will catch it". That was false, and it hid a real dropped write for as long as it
+        // stood. reconcile() only ever processes files that have NO row yet: it early-returns unless the
+        // characters DIRECTORY mtime changed (editing a file's contents doesn't change that), and even when it
+        // does run it filters to `newFiles`. A row that exists but is stale is invisible to it, permanently.
+        // The other candidate, the fs.watch watcher, fires on mtime and would sometimes catch this - but it is
+        // plain fs.watch here, whose inotify queue overflows silently at 16384 events with no error event
+        // (measured: 183,616 events dropped during a busy event loop), which is exactly the bulk-import
+        // conditions that produce this failure in the first place.
+        //
+        // So this is a real, unrecovered failure and it says so. The lock-contention case that used to land
+        // here - a concurrent bulk pass holding the write lock - is now handled where it belongs, by
+        // BEGIN IMMEDIATE plus bounded retry in sqlite-engine.js, rather than by hoping.
+        console.error(`[character-metadata] Failed to update the metadata store for "${avatar}" after its character write succeeded. The row is now STALE and nothing will repair it automatically - re-save the character, or run POST /api/characters/metadata/rescan.`, err);
     }
 }
 
@@ -305,12 +380,20 @@ export async function repairFirstMesMismatches(directories) {
     const fixed = [];
     let processed = 0;
 
+    // Residency migration, and this one is load-bearing rather than an optimization. Before it, this pass
+    // read the PNG directly, which for an edited card is the PRE-EDIT copy - it would then "repair" that stale
+    // card and write it back over the file, and its upsert hook (defaulting to "the PNG is now current") would
+    // clear card_json. That is silent, unrecoverable loss of the user's most recent edits, on a pass that runs
+    // at boot. Prefetched once for the whole library, same shape as the search-index build.
+    const staleCards = await getStaleCardJsonMap(directories);
+
     for (let i = 0; i < files.length; i += FIRST_MES_REPAIR_BATCH_SIZE) {
         const chunk = files.slice(i, i + FIRST_MES_REPAIR_BATCH_SIZE);
         const chunkFixed = await mapWithConcurrency(chunk, FIRST_MES_REPAIR_CONCURRENCY, async (file) => {
             const filePath = path.join(directories.characters, file);
             try {
-                const raw = await parse(filePath, 'png');
+                const parked = staleCards.get(file) ?? null;
+                const raw = parked ?? await parse(filePath, 'png');
                 if (raw === undefined) return null;
 
                 let card;
@@ -328,6 +411,16 @@ export async function repairFirstMesMismatches(directories) {
 
                 card.first_mes = v2FirstMes;
                 const data = JSON.stringify(card);
+
+                // A card whose content is already parked in the db stays parked: the repair is a metadata-only
+                // change like any other, so it must not rewrite the PNG (which would also retire the parked
+                // copy). The row keeps the file's CURRENT mtime - the file is untouched, and claiming a new one
+                // would make the watcher read this as external drift and roll the card back to the stale chunk.
+                if (parked !== null) {
+                    const stat = await fsPromises.stat(filePath);
+                    await upsertCharacterFromWrite(directories, file, data, stat.mtimeMs, null, null, true);
+                    return file;
+                }
 
                 // Captured BEFORE the write below changes the file's mtime - see DiskCache.invalidateKey()'s
                 // own doc comment on why this direct, synchronous invalidation replaces any need for a
@@ -505,7 +598,12 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
             const incomingGreetings = incomingCard?.data?.alternate_greetings;
             const greetingsVerifiedFresh = freshFieldPaths instanceof Set && freshFieldPaths.has('data.alternate_greetings');
             if (!greetingsVerifiedFresh && Array.isArray(incomingGreetings) && incomingGreetings.length === 0 && fs.existsSync(outputImagePath)) {
-                const existingRaw = await parse(outputImagePath, 'png');
+                // readCardContent(), not a raw parse() of the file: since the residency migration a card's
+                // greetings may live only in the metadata db, with the PNG's chunk holding a stale copy. A
+                // raw parse here would compare the incoming write against pre-edit content and "restore"
+                // greetings the user already deleted - the exact class of silent data corruption this guard
+                // exists to prevent, just pointed the wrong way.
+                const existingRaw = await readCardContent(request.user.directories, `${outputFile}.png`, outputImagePath);
                 const existingCard = JSON.parse(existingRaw);
                 const existingGreetings = existingCard?.data?.alternate_greetings;
                 if (Array.isArray(existingGreetings) && existingGreetings.length > 0) {
@@ -516,6 +614,45 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
             }
         } catch (guardError) {
             // Can't compare - don't block the write on the guard itself.
+        }
+
+        // Residency migration (2026-09, docs/design/character-data-residency-redesign.md): a metadata-only
+        // edit must not touch the PNG at all.
+        //
+        // The discriminator is mechanical, not a guess about caller intent: this write changes image bytes if
+        // and only if the source is an in-memory upload (Buffer), a crop was requested, or the source file is
+        // a DIFFERENT file from the target (create-from-default-avatar, /edit with a new upload, /import,
+        // /edit-avatar). When none of those hold, the source and the target are the same existing file and the
+        // ONLY thing this write would change is the trailing tEXt chunk - so the chunk goes to the metadata db
+        // as the authoritative copy and the file is left completely alone, bytes and mtime both.
+        //
+        // Leaving the mtime alone is load-bearing, not incidental: the watcher and the reconciler both use
+        // "row.file_mtime != the file's mtime" as their definition of external drift, and a drift finding
+        // re-parses the PNG and clears card_json. Not touching the file is what keeps a metadata-only edit from
+        // looking like someone else's edit and getting rolled back to the stale chunk on the next pass.
+        //
+        // The PNG is regenerated from card_json on demand, in memory, by the paths that hand a user a
+        // self-contained file (materializeCardPng() - /export, /duplicate). Export compatibility with other
+        // tools is unaffected: what leaves the server always carries a current chunk.
+        const isMetadataOnlyWrite = !Buffer.isBuffer(inputFile)
+            && crop === undefined
+            && path.resolve(inputFile) === path.resolve(outputImagePath)
+            && fs.existsSync(outputImagePath);
+
+        if (isMetadataOnlyWrite) {
+            // The row keeps the file's CURRENT mtime, since the file is not being written. Stat'ing here rather
+            // than letting fireMetadataUpsertHook() do it after the fact is the same one stat either way; doing
+            // it inline just makes it obvious that the value recorded is the unchanged file's, not a new one's.
+            const stat = await fsPromises.stat(outputImagePath);
+            await upsertCharacterFromWrite(request.user.directories, `${outputFile}.png`, data, stat.mtimeMs, contentHash, null, true)
+                .catch(err => console.error('[character-metadata] Failed to persist a metadata-only character write:', err));
+            // The file did not change, so its mtime-keyed cache entries are still faithful to the file - but
+            // they are no longer faithful to the CARD, and any direct readCharacterData() caller that hasn't
+            // been moved onto readCardContent() would serve pre-edit content from them. Dropping them costs one
+            // reparse at worst and removes a whole class of stale-read bug.
+            memoryCache.delete(getCacheKey(outputImagePath, stat));
+            if (oldDiskCacheKey) await diskCache.invalidateKey(oldDiskCacheKey);
+            return true;
         }
 
         // Fast path: when the source is already a file on disk and no crop is requested, its image data
@@ -676,7 +813,7 @@ async function tryReadImage(imgPath, crop) {
  * @param  {boolean} options.shallow If true, only return the core character's metadata
  * @return {Promise<object>}     A Promise that resolves when the character processing is done.
  */
-export const processCharacter = async (item, directories, { shallow }) => {
+export const processCharacter = async (item, directories, { shallow, cardJson = undefined }) => {
     try {
         const imgFile = path.join(directories.characters, item);
         // One stat, reused for both the cache key (readCharacterData -> getCacheKey) and date_added below -
@@ -689,7 +826,15 @@ export const processCharacter = async (item, directories, { shallow }) => {
         } catch (err) {
             if (err.code !== 'ENOENT') throw err;
         }
-        const imgData = await readCharacterData(imgFile, 'png', charStat);
+        // `cardJson` is the residency-migration override: the authoritative content for this card when its PNG
+        // chunk is stale. A whole-library caller (`/all`) prefetches the entire stale set in one query and
+        // passes the hit through here, so this stays one db round trip for the whole pass rather than one per
+        // character; a single-card caller (`/get`) resolves it through readCardContent() instead. `undefined`
+        // means "nothing prefetched, resolve it yourself"; a caller that prefetched and found nothing for this
+        // id passes `null`, which says "already resolved, the file is current" and skips the lookup entirely.
+        const imgData = cardJson === undefined
+            ? await readCardContent(directories, item, imgFile, charStat)
+            : (cardJson ?? await readCharacterData(imgFile, 'png', charStat));
         if (imgData === undefined) throw new Error('Failed to read character file');
 
         let jsonObject = getCharaCardV2(JSON.parse(imgData), directories, false);
@@ -1136,7 +1281,7 @@ router.post('/rename', validateAvatarUrlMiddleware, async function (request, res
     const avatarPath = path.join(request.user.directories.characters, avatarName);
 
     try {
-        const rawData = await readCharacterData(avatarPath);
+        const rawData = await readCardContent(request.user.directories, avatarName, avatarPath);
         if (rawData === undefined) throw new Error('Failed to read character file');
 
         const data = getCharaCardV2(JSON.parse(rawData), request.user.directories);
@@ -1185,7 +1330,7 @@ router.post('/edit', validateAvatarUrlMiddleware, async function (request, respo
         try {
             const clientHashes = JSON.parse(contentHashesHeader);
             const avatarPath = path.join(request.user.directories.characters, request.body.avatar_url);
-            const currentCardJson = await readCharacterData(avatarPath);
+            const currentCardJson = await readCardContent(request.user.directories, request.body.avatar_url, avatarPath);
             if (currentCardJson) {
                 const currentCard = getCharaCardV2(JSON.parse(currentCardJson), request.user.directories, false);
                 const conflicts = [];
@@ -1280,7 +1425,7 @@ router.post('/edit-avatar', validateAvatarUrlMiddleware, async function (request
         if (!fs.existsSync(characterPath)) {
             return response.status(400).send('Error: character file does not exist');
         }
-        const data = await readCharacterData(characterPath);
+        const data = await readCardContent(request.user.directories, request.body.avatar_url, characterPath);
         if (!data) {
             return response.status(400).send('Error: failed to read character data');
         }
@@ -1333,7 +1478,7 @@ router.post('/edit-attribute', validateAvatarUrlMiddleware, async function (requ
 
     try {
         const avatarPath = path.join(request.user.directories.characters, request.body.avatar_url);
-        const charJSON = await readCharacterData(avatarPath);
+        const charJSON = await readCardContent(request.user.directories, request.body.avatar_url, avatarPath);
         if (typeof charJSON !== 'string') throw new Error('Failed to read character file');
 
         const char = JSON.parse(charJSON);
@@ -1398,7 +1543,7 @@ function processUnsetSentinels(target, source) {
  * @returns {Promise<{ok: boolean, error?: string, skipped?: boolean}>} Result of the merge operation, including any validation error
  */
 async function mergeCharacterUpdate(avatarPath, avatar, updateData, request, shouldSkip = null) {
-    const pngStringData = await readCharacterData(avatarPath);
+    const pngStringData = await readCardContent(request.user.directories, avatar, avatarPath);
     if (!pngStringData) {
         return { ok: false, error: 'Invalid character file' };
     }
@@ -1644,7 +1789,7 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
  */
 async function applyGreetingOperation(request, avatar, op) {
     const avatarPath = path.join(request.user.directories.characters, avatar);
-    const pngStringData = await readCharacterData(avatarPath);
+    const pngStringData = await readCardContent(request.user.directories, avatar, avatarPath);
     if (!pngStringData) {
         return { ok: false, reason: 'character not found', status: 404 };
     }
@@ -2228,7 +2373,10 @@ router.post('/all', async function (request, response) {
         if (sortField === undefined && offset === undefined && limit === undefined && !search && !includeGroups) {
             const files = fs.readdirSync(request.user.directories.characters);
             const pngFiles = files.filter(file => file.endsWith('.png'));
-            const processingPromises = pngFiles.map(file => processCharacter(file, request.user.directories, { shallow: useShallowCharacters }));
+            // One query for the whole pass instead of a point lookup per character - see
+            // getStaleCardJsonMap()'s doc comment. `null` on a miss means "already resolved, file is current".
+            const staleCards = await getStaleCardJsonMap(request.user.directories);
+            const processingPromises = pngFiles.map(file => processCharacter(file, request.user.directories, { shallow: useShallowCharacters, cardJson: staleCards.get(file) ?? null }));
             const data = (await Promise.all(processingPromises)).filter(c => 'name' in c);
             await stampDbFav(request.user.directories, data);
             await stampDbActiveChat(request.user.directories, data);
@@ -2301,7 +2449,9 @@ router.post('/all', async function (request, response) {
 
         const files = fs.readdirSync(request.user.directories.characters);
         const pngFiles = files.filter(file => file.endsWith('.png'));
-        const processingPromises = pngFiles.map(file => processCharacter(file, request.user.directories, { shallow: useShallowCharacters }));
+        // Same whole-pass prefetch as the fast path above - see that comment.
+        const staleCards = await getStaleCardJsonMap(request.user.directories);
+        const processingPromises = pngFiles.map(file => processCharacter(file, request.user.directories, { shallow: useShallowCharacters, cardJson: staleCards.get(file) ?? null }));
         const data = (await Promise.all(processingPromises)).filter(c => c.name);
         await stampDbFav(request.user.directories, data);
         await stampDbActiveChat(request.user.directories, data);
@@ -3729,6 +3879,20 @@ router.post('/duplicate', validateAvatarUrlMiddleware, async function (request, 
         fs.copyFileSync(filename, newFilename);
         console.info(`${filename} was copied to ${newFilename}`);
 
+        // A raw byte copy also copies the source's tEXt chunk, which since the residency migration may be
+        // stale - so the duplicate would silently be a copy of the card as it was BEFORE its most recent
+        // edits. Re-stamp the copy with the source's authoritative content when that's the case.
+        //
+        // Done as a real file write rather than by parking the content on the new row, because a duplicate is
+        // a brand-new self-contained card and there is no reason to start its life already diverged from its
+        // own file. The common case (source not stale) still pays nothing but the lookup: writeCardToFile()
+        // only runs when there is genuinely something to correct, and it reflinks the unchanged image bytes
+        // rather than rewriting the whole file.
+        const sourceParked = await getCharacterCardJson(request.user.directories, path.basename(filename));
+        if (sourceParked !== null) {
+            await writeCardToFile(filename, newFilename, sourceParked, null);
+        }
+
         // /duplicate doesn't go through writeCharacterData() (it's a raw file copy, not a re-encode), so it
         // needs its own metadata-store hook rather than getting one for free - see writeCharacterData()'s own
         // hook for why every other write route doesn't need this. The duplicate is a genuinely new character
@@ -3761,9 +3925,15 @@ router.post('/export', validateAvatarUrlMiddleware, async function (request, res
 
         switch (request.body.format) {
             case 'png': {
-                const rawBuffer = await fsPromises.readFile(filename);
-                const rawData = read(rawBuffer);
-                const mutatedData = mutateJsonString(rawData, unsetPrivateFields);
+                // Materialized, not streamed: since the residency migration the stored PNG's chunk may be
+                // stale, and an export is precisely the case where it must not be (the file leaves this
+                // server as a standalone card other tools read by that chunk alone). materializeCardPng()
+                // rebuilds it in memory from the db when needed and hands back the stored bytes untouched
+                // when it isn't. See its own doc comment.
+                const materialized = await materializeCardPng(request.user.directories, path.basename(filename), filename);
+                if (!materialized) return response.sendStatus(400);
+                const rawBuffer = materialized.buffer;
+                const mutatedData = mutateJsonString(materialized.cardJson, unsetPrivateFields);
                 const mutatedBuffer = write(rawBuffer, mutatedData);
                 const contentType = mime.lookup(filename) || 'image/png';
                 response.setHeader('Content-Type', contentType);
@@ -3772,7 +3942,7 @@ router.post('/export', validateAvatarUrlMiddleware, async function (request, res
             }
             case 'json': {
                 try {
-                    const json = await readCharacterData(filename);
+                    const json = await readCardContent(request.user.directories, path.basename(filename), filename);
                     if (json === undefined) return response.sendStatus(400);
                     const jsonObject = getCharaCardV2(JSON.parse(json), request.user.directories);
                     unsetPrivateFields(jsonObject);
