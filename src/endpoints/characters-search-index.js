@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import {
     getTagDefinitions, getEntityTagIdsForMany, getTagsHash,
     getChangesSince, getCurrentSeq, getAllTaggedCharacterIds, getMetaValue, setMetaValue,
-    getCharacterFavsByIds,
+    getCharacterFavsByIds, getStaleCardJsonMap,
 } from '../character-metadata-db.js';
 import { processCharacter } from './characters.js';
 import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD, FAV_FIELD, buildTagFilterQuery, buildExcludeIdsQuery } from './tantivy-search.js';
@@ -295,9 +295,16 @@ const INDEX_BUILD_READ_CONCURRENCY = getConfigValue('performance.characterIndexB
 async function* readCharacterBatches(directories) {
     const files = fs.readdirSync(directories.characters);
     const pngFiles = files.filter(file => file.endsWith('.png'));
+    // Residency migration: a card edited without its image changing has its authoritative content in the
+    // metadata db, not in the PNG - indexing the file would index pre-edit text and the index would be
+    // silently, permanently stale for exactly the cards the user has been working on. Prefetched as one query
+    // for the whole pass rather than a point lookup per character (this is a full pass over the entire
+    // library); the stale set is small by construction, so the map is cheap to hold. `null` for a miss tells
+    // processCharacter() the file is current and skips the lookup it would otherwise do.
+    const staleCards = await getStaleCardJsonMap(directories);
     for (let i = 0; i < pngFiles.length; i += INDEX_BUILD_BATCH_SIZE) {
         const batchFiles = pngFiles.slice(i, i + INDEX_BUILD_BATCH_SIZE);
-        const processed = await mapWithConcurrency(batchFiles, INDEX_BUILD_READ_CONCURRENCY, file => processCharacter(file, directories, { shallow: false }));
+        const processed = await mapWithConcurrency(batchFiles, INDEX_BUILD_READ_CONCURRENCY, file => processCharacter(file, directories, { shallow: false, cardJson: staleCards.get(file) ?? null }));
         const batch = processed.filter(c => c.name);
         // `json_data` (set by processCharacter(), characters.js) is the *raw* original card JSON verbatim - kept
         // around so the character-editor's "raw data" view and a couple of extensions (GroupGreetings) can
@@ -807,11 +814,15 @@ async function applyIncrementalTantivyChanges(directories, tantivy, index, schem
         // Concurrency within each batch still uses INDEX_BUILD_READ_CONCURRENCY (see its own doc comment - disk-
         // bound throughput plateaus well above serial speed past ~4 concurrent reads), so this doesn't sacrifice
         // read throughput, only how many results are held in memory before being flushed to the writer.
+        // Same residency prefetch as readCharacterBatches() above, for the same reason - see that comment.
+        // This pass is exactly the one that catches up on edited cards, so it is the one that would most
+        // reliably index stale text without it.
+        const staleCards = await getStaleCardJsonMap(directories);
         for (let i = 0; i < idsNeedingData.length; i += INDEX_BUILD_BATCH_SIZE) {
             const batchIds = idsNeedingData.slice(i, i + INDEX_BUILD_BATCH_SIZE);
             const batchCharacters = await mapWithConcurrency(batchIds, INDEX_BUILD_READ_CONCURRENCY, async (id) => {
                 try {
-                    return await processCharacter(id, directories, { shallow: false });
+                    return await processCharacter(id, directories, { shallow: false, cardJson: staleCards.get(id) ?? null });
                 } catch {
                     // File gone (raced a delete that hasn't reached the metadata store's write hook/reconciler
                     // yet, or a corrupt PNG) - leave it deleted (see the delete-by-term loop above) rather than

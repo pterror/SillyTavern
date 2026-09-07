@@ -253,7 +253,37 @@ const SCHEMA_SQL = `
         -- characterDigestFavHash/characterDigestTagIdsHash/characterDigestFieldsHash.
         digest_fav     INTEGER,
         digest_tag_ids INTEGER,
-        digest_content INTEGER
+        digest_content INTEGER,
+        -- card_json (2026-09, character-data-residency migration): the FULL Spec-V2 card JSON, and the
+        -- authoritative copy of it, for rows whose PNG's own embedded tEXt chunk is out of date.
+        --
+        -- The whole point of this column is that a metadata-only edit (description, personality, scenario,
+        -- greetings, extensions - anything that isn't image pixels) must NOT rewrite the character's PNG. So
+        -- characters.js's writeCharacterData() skips the file write entirely for that class of edit and parks
+        -- the new content here instead, leaving the PNG's bytes - and therefore its mtime - untouched.
+        --
+        -- NULL is not "unknown", it is a real, load-bearing state: "the PNG's embedded chunk IS current, read
+        -- it from there". That is what keeps this column's storage cost proportional to the number of cards
+        -- actually edited rather than to the size of the library (at 366k cards a full copy would be multiple
+        -- GB of duplicated card text for no benefit). Concretely:
+        --   - a write that genuinely (re)wrote the PNG - create, import, avatar crop/replace, an export-time
+        --     materialization - stores NULL here, because the file it just wrote is now the current copy.
+        --   - a metadata-only write stores the new card JSON here and does not touch the file.
+        --   - bootstrap / reconcile / the watcher, which observe a file rather than write one, store NULL:
+        --     they only ever run for a file whose mtime does NOT match the row (see handleWatchEvent() and
+        --     reconcile()), i.e. something outside this server changed the bytes on disk, and an external
+        --     edit to the file legitimately supersedes whatever was parked here.
+        -- So the invariant is: card_json IS NOT NULL  <=>  the PNG chunk is stale, and this is the truth.
+        --
+        -- Read side: characters.js's readCardContent() is the single seam - card_json when present, otherwise
+        -- a normal PNG parse. Note that it deliberately bypasses readCharacterData()'s mtime-keyed memory/disk
+        -- cache for the non-NULL case: that cache is keyed on the file path plus its mtime, and a db-only write moves
+        -- neither, so the cache cannot see these edits at all and must not be consulted for them.
+        --
+        -- Export side: nothing hands a stale PNG out. /export, /duplicate and every other path that gives a
+        -- user a self-contained file materializes the chunk from this column in memory first (design
+        -- requirement: cards shared as standalone .png must be readable by chub/janitorai/etc).
+        card_json      TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_characters_name_fold ON characters(name_fold);
     CREATE INDEX IF NOT EXISTS idx_characters_date_added ON characters(date_added);
@@ -490,12 +520,12 @@ const UPSERT_SQL = `
         id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size,
         file_mtime, world, creator, version, creator_notes, shallow_json, content_hash,
         content_identity_hash, avatar_identity_hash, import_poisoned, active_chat, active_chat_checked, change_seq,
-        digest_fav, digest_tag_ids, digest_content
+        digest_fav, digest_tag_ids, digest_content, card_json
     ) VALUES (
         @id, @name, @name_fold, @fav, @date_added, @create_date, @date_last_chat, @chat_size, @data_size,
         @file_mtime, @world, @creator, @version, @creator_notes, @shallow_json, @content_hash,
         @content_identity_hash, @avatar_identity_hash, @import_poisoned, @active_chat, @active_chat_checked, @changeSeq,
-        @digest_fav, @digest_tag_ids, @digest_content
+        @digest_fav, @digest_tag_ids, @digest_content, @card_json
     )
     ON CONFLICT(id) DO UPDATE SET
         name = excluded.name,
@@ -555,6 +585,18 @@ const UPSERT_SQL = `
         digest_fav = excluded.digest_fav,
         digest_tag_ids = excluded.digest_tag_ids,
         digest_content = excluded.digest_content,
+        -- Plain overwrite, NOT a COALESCE, and that is the whole contract: every writer that reaches this
+        -- statement carries a real signal about whether the PNG on disk is now current, and NULL is that
+        -- signal ("the file I just wrote/observed is the current copy - stop preferring the parked one"),
+        -- not an absence of one. See this column's own SCHEMA_SQL comment.
+        --
+        -- The two directions this has to get right:
+        --   - a metadata-only edit lands a non-NULL value here, superseding whatever the PNG says;
+        --   - a real PNG write (avatar replace, crop, re-import over the same id) or an externally-modified
+        --     file picked up by reconcile/watch lands NULL, which RETIRES a previously parked copy. A
+        --     COALESCE here would be a silent, permanent data bug: the card would keep serving edits made
+        --     before the avatar was replaced, forever, with no way to ever clear them.
+        card_json = excluded.card_json,
         change_seq = excluded.change_seq
     -- date_added is deliberately absent from this SET list - see this module's header ("date_added IS RECORDED
     -- ONCE"). On a genuine insert the VALUES clause's candidate is used; on conflict SQLite leaves the existing
@@ -1003,6 +1045,29 @@ function migrateAllowGlobalStylesColumn(db) {
  * index, 1ms with it, at 327k rows). The existing `idx_characters_fav_name_fold (fav, name_fold)`
  * has default ASC direction on both columns, which SQLite can't use for mixed-direction ORDER BY.
  */
+/**
+ * Adds `card_json` to an existing `characters` table that predates it (2026-09, character-data-residency
+ * migration). Same ALTER-if-missing shape as migrateContentHashColumn() above.
+ *
+ * Deliberately NO backfill, and that is a correctness point rather than a shortcut: this column's NULL means
+ * "the PNG's embedded chunk is current, read it from there" (see its own SCHEMA_SQL comment), which is exactly
+ * true of every row on a pre-migration install - nothing had yet written a card without also rewriting its
+ * file. Backfilling it from disk would be a multi-GB copy of content that is already correct where it sits,
+ * and would additionally have to re-read the entire library to do it.
+ *
+ * The partial index matters more than it looks: the non-NULL set is small by construction (only edited cards),
+ * and `/all`'s prefetch (getStaleCardJsonMap()) is a `WHERE card_json IS NOT NULL` scan. A partial index makes
+ * that proportional to the number of edited cards instead of to the size of the library.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ */
+function migrateCardJsonColumn(db) {
+    const columns = db.all('PRAGMA table_info(characters)');
+    if (!columns.some(c => c.name === 'card_json')) {
+        db.exec('ALTER TABLE characters ADD COLUMN card_json TEXT');
+    }
+    db.exec('CREATE INDEX IF NOT EXISTS idx_characters_card_json_present ON characters(id) WHERE card_json IS NOT NULL');
+}
+
 function migrateFavSortIndex(db) {
     db.exec('CREATE INDEX IF NOT EXISTS idx_characters_fav_desc_name_fold_asc ON characters(fav DESC, name_fold ASC)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_groups_fav_desc_name_fold_asc ON groups(fav DESC, name_fold ASC)');
@@ -1048,6 +1113,7 @@ async function getEntry(directories) {
     migrateRevToSeqColumns(db);
     migrateDigestColumns(db);
     migrateAllowGlobalStylesColumn(db);
+    migrateCardJsonColumn(db);
     migrateGroupsColumns(db, directories);
     migrateGroupDigestColumns(db, directories);
     migrateFavSortIndex(db);
@@ -1083,7 +1149,7 @@ async function getEntry(directories) {
  * an extra per-row query during the 326k-row bootstrap pass.
  * @returns {object} Row fields (minus `changeSeq`)
  */
-function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, dateLastChat, contentHash, contentIdentityHash, avatarIdentityHash, tagIds = [] }) {
+function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, dateLastChat, contentHash, contentIdentityHash, avatarIdentityHash, tagIds = [], cardJson = null }) {
     const includeCreatorNotes = !!getConfigValue('performance.shallowCharactersIncludeCreatorNotes', false, 'boolean');
     const dataSize = calculateDataSize(character?.data);
     const shallowSource = {
@@ -1150,6 +1216,12 @@ function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, date
         digest_fav: characterDigestFavHash(shallow) % 4294967296,
         digest_tag_ids: characterDigestTagIdsHash(shallow) % 4294967296,
         digest_content: characterDigestFieldsHash(shallow) % 4294967296,
+        // NULL from every caller except a metadata-only write (characters.js's writeCharacterData() taking its
+        // no-PNG-write path, threaded here via upsertCharacterFromWrite()'s `pngCardStale`). NULL is a real
+        // signal here, not a missing one - "the PNG on disk is the current copy" - so unlike content_hash and
+        // friends it is a plain overwrite in UPSERT_SQL rather than a COALESCE. See the column's own SCHEMA_SQL
+        // comment and UPSERT_SQL's clause for why retiring a stale parked copy has to be possible.
+        card_json: cardJson ?? null,
     };
 }
 
@@ -1224,6 +1296,14 @@ function writeRowSync(db, row, tagIds) {
         if (forceActiveChat) {
             shallow.chat = existingRow.active_chat;
         }
+        // card_json is deliberately NOT given the same fav/active_chat forcing that shallow_json just got,
+        // and the difference is not an oversight. shallow_json is a PROJECTION the client reads, where
+        // carrying the db's authoritative fav/chat is exactly right. card_json is the CARD itself - the bytes
+        // that get materialized into an exported PNG - and `fav` and `chat` are precisely the two fields the
+        // write routes strip out of a card on purpose (characters.js's omitFavField()/omitChatField(): both
+        // are db-authoritative and must not live in the card at all). Patching them back in here would undo
+        // that on every write and ship them to other tools in every export. It is stored exactly as the
+        // writer supplied it.
         row = {
             ...row,
             fav: favChanged ? currentFav : row.fav,
@@ -1288,9 +1368,15 @@ function getTagIdsFor(directories, avatar) {
  * written - passed through from characters.js's writeCharacterData() via fireMetadataUpsertHook() for every
  * caller that just performed a real image write. `null` (the default) from a caller with no new image bytes to
  * report (e.g. /rename), same "don't touch whatever's already there" COALESCE treatment as `contentHash`.
+ * @param {boolean} [pngCardStale] `true` when the caller wrote this card WITHOUT (re)writing the PNG's own
+ * embedded chunk - i.e. a metadata-only edit, the whole point of the residency migration. `cardJson` is then
+ * stored in the `card_json` column as the authoritative copy and the file on disk keeps its old chunk (and its
+ * old mtime, which is what keeps the watcher and reconciler from treating this as external drift). `false` (the
+ * default, and what every image-touching writer passes) means the PNG that was just written IS the current copy,
+ * which stores NULL and retires any previously parked copy. See the column's SCHEMA_SQL comment.
  * @returns {Promise<void>}
  */
-export async function upsertCharacterFromWrite(directories, avatar, cardJson, fileMtimeMs, contentHash = null, avatarIdentityHash = null) {
+export async function upsertCharacterFromWrite(directories, avatar, cardJson, fileMtimeMs, contentHash = null, avatarIdentityHash = null, pngCardStale = false) {
     const entry = await getEntry(directories);
     if (!entry) return;
 
@@ -1309,7 +1395,7 @@ export async function upsertCharacterFromWrite(directories, avatar, cardJson, fi
     const contentIdentityHash = computeContentIdentityHash(character);
     const { chatSize, dateLastChat } = calculateChatSize(path.join(directories.chats, avatar.replace(/\.png$/, '')));
     const tagIds = getTagIdsFor(directories, avatar);
-    const row = buildRow(avatar, character, { dateAddedCandidate: Date.now(), fileMtime: fileMtimeMs, chatSize, dateLastChat, contentHash, contentIdentityHash, avatarIdentityHash, tagIds });
+    const row = buildRow(avatar, character, { dateAddedCandidate: Date.now(), fileMtime: fileMtimeMs, chatSize, dateLastChat, contentHash, contentIdentityHash, avatarIdentityHash, tagIds, cardJson: pngCardStale ? cardJson : null });
 
     applyOrBuffer(entry, row, tagIds);
 }
@@ -1628,6 +1714,50 @@ export async function getShallowByIds(directories, ids) {
         }
     }
     return result;
+}
+
+/**
+ * The read half of the residency migration: returns the authoritative card JSON for `avatar` when - and only
+ * when - the PNG's own embedded chunk is out of date, and `null` otherwise ("go read the file, it's current").
+ *
+ * Callers are expected to fall back to a normal PNG parse on `null` rather than treating it as an error; that
+ * is what characters.js's readCardContent() does, and it is the single seam every full-card read in the server
+ * goes through. See the `card_json` column's own SCHEMA_SQL comment for the invariant.
+ *
+ * Note there is deliberately no caching here. readCharacterData()'s memory/disk cache is keyed on
+ * `${path}-${mtimeMs}`, and a metadata-only write moves neither the path nor the mtime, so that cache is
+ * structurally incapable of representing these edits and must not be layered over this. A SQLite point-lookup
+ * on the primary key is cheap enough that this is a non-issue.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} avatar Avatar filename (e.g. `Alice.png`)
+ * @returns {Promise<string|null>} The parked card JSON, or `null` when the file on disk is current (which
+ * includes the no-such-row and no-usable-SQLite-engine cases - both correctly mean "read the PNG").
+ */
+export async function getCharacterCardJson(directories, avatar) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    const row = entry.db.get('SELECT card_json FROM characters WHERE id = @id', { id: avatar });
+    return row?.card_json ?? null;
+}
+
+/**
+ * Bulk sibling of getCharacterCardJson() for whole-library passes (`/all`, the first-mes repair sweep): one
+ * query for the entire set of rows whose PNG chunk is stale, rather than a point lookup per character.
+ *
+ * This reads the complete non-NULL set rather than taking an id list on purpose. That set is small *by
+ * construction* - a row only joins it by being edited without its image changing, and it leaves again the
+ * moment anything rewrites the file - so it is proportional to editing activity, not to library size, and
+ * `idx_characters_card_json_present` (a partial index, see migrateCardJsonColumn()) makes finding it
+ * proportional to the same thing. A 366k-card library that nobody has edited yields an empty map for the cost
+ * of an empty index scan, which is exactly the shape `/all` needs.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<Map<string, string>>} avatar filename -> parked card JSON. Empty when nothing is stale.
+ */
+export async function getStaleCardJsonMap(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return new Map();
+    const rows = entry.db.all('SELECT id, card_json FROM characters WHERE card_json IS NOT NULL');
+    return new Map(rows.map(row => [row.id, row.card_json]));
 }
 
 /**

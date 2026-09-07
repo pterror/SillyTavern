@@ -9,6 +9,8 @@ let cardParser;
 let metadataDb;
 /** @type {import('express').Router} */
 let router;
+/** @type {typeof import('../src/endpoints/characters.js').readCardContent} */
+let readCardContent;
 /** @type {import('node:http').Server} */
 let server;
 let baseUrl;
@@ -24,7 +26,7 @@ beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
 
-    ({ router } = await import('../src/endpoints/characters.js'));
+    ({ router, readCardContent } = await import('../src/endpoints/characters.js'));
     cardParser = await import('../src/character-card-parser.js');
     metadataDb = await import('../src/character-metadata-db.js');
 
@@ -139,16 +141,34 @@ describe('POST /api/characters/chat (dedicated active-chat write path)', () => {
 });
 
 describe('/edit no longer writes chat into the card file, but still updates the db row', () => {
-    test('the actual PNG on disk never carries a chat field after /edit', async () => {
+    test('the card content never carries a chat field after /edit', async () => {
         const createResponse = await create({ ch_name: 'Alice', description: 'desc', file_name: 'Alice' });
         expect(createResponse.status).toBe(200);
 
         const editResponse = await edit('Alice.png', { ch_name: 'Alice', description: 'desc', avatar_url: 'Alice.png', chat: 'Alice - Edited Chat' });
         expect(editResponse.status).toBe(200);
 
-        const cardJson = cardParser.read(fs.readFileSync(path.join(directories.characters, 'Alice.png')));
-        const card = JSON.parse(cardJson);
+        // Read through the authoritative seam, not off the PNG. Since the residency migration an /edit that
+        // changes no pixels does not rewrite the file at all, so the file still holds whatever /create wrote
+        // (which does include a `chat`); what must not carry a chat is the card CONTENT, which is what every
+        // reader - and every export - actually sees.
+        const card = JSON.parse(await readCardContent(directories, 'Alice.png'));
         expect(card.chat).toBeUndefined();
+    });
+
+    test('an exported card never carries a chat field either - the property a user can actually observe', async () => {
+        expect((await create({ ch_name: 'Alice', description: 'desc', file_name: 'Alice' })).status).toBe(200);
+        expect((await edit('Alice.png', { ch_name: 'Alice', description: 'desc', avatar_url: 'Alice.png', chat: 'Alice - Edited Chat' })).status).toBe(200);
+
+        const response = await fetch(`${baseUrl}/api/characters/export`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ avatar_url: 'Alice.png', format: 'png' }),
+        });
+        expect(response.status).toBe(200);
+
+        const exported = JSON.parse(cardParser.read(Buffer.from(await response.arrayBuffer())));
+        expect(exported.chat).toBeUndefined();
     });
 
     test('the db row is updated via the seed-after-write path', async () => {
@@ -176,15 +196,15 @@ describe('/edit no longer writes chat into the card file, but still updates the 
 });
 
 describe('/merge-attributes carves chat out the same way, and never writes it into the card', () => {
-    test('a chat-carrying merge payload updates the db row, not the card file', async () => {
+    test('a chat-carrying merge payload updates the db row, not the card content', async () => {
         const createResponse = await create({ ch_name: 'Alice', description: 'desc', file_name: 'Alice' });
         expect(createResponse.status).toBe(200);
 
         const mergeResponse = await mergeAttributes({ avatar: 'Alice.png', chat: 'Alice - Merged Chat' });
         expect(mergeResponse.status).toBe(200);
 
-        const cardJson = cardParser.read(fs.readFileSync(path.join(directories.characters, 'Alice.png')));
-        const card = JSON.parse(cardJson);
+        // Authoritative content, not the PNG - see the /edit sibling test above for why.
+        const card = JSON.parse(await readCardContent(directories, 'Alice.png'));
         expect(card.chat).toBeUndefined();
 
         const row = await metadataDb.getCharacterMetadataRow(directories, 'Alice.png');
