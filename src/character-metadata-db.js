@@ -177,6 +177,9 @@ const WATCH_DEBOUNCE_MS = 300;
  * @property {Map<string, NodeJS.Timeout>} watchTimers Per-filename debounce timers for the watcher
  * @property {{ pending: Map<string, PendingRow> } | null} batch Non-null while batch-import mode is active
  * @property {Promise<void> | null} bootstrapPromise
+ * @property {{ tagNameToId: Map<string, string>, tagIdToDefinition: Map<string, object> } | null} [tagCache]
+ * Lazily built by getTagCache() below, `null` until first use and whenever a bulk tag-definition rewrite
+ * (saveTagDefinitions()) invalidates it. See getTagCache()'s own doc comment for why this exists.
  */
 
 /**
@@ -3727,6 +3730,10 @@ export async function saveTagDefinitions(directories, tagsArray) {
         }
         updateTagsHashSync(entry.db);
     });
+    // A whole-table replace, not an incremental change insertTag() can patch getTagCache()'s Maps for in place -
+    // invalidate so the next seedCardTagsForSingleCharacter() call rebuilds fresh from what's actually in the
+    // table now, rather than keeping stale name->id/id->definition entries for tags this just deleted.
+    entry.tagCache = null;
     return 'ok';
 }
 
@@ -4109,6 +4116,47 @@ export async function backfillCardTagsIfNeeded(directories) {
 }
 
 /**
+ * Returns `entry`'s live tag-name/tag-definition lookup, building it from a single full `tags` table scan on
+ * first use and reusing the SAME two Maps for the rest of this process's life (mutated in place by every
+ * subsequent insertTag() call, exactly like the pass-scoped `tagNameToId` other callers in this file already
+ * build once and thread through a whole bulk loop - see resolveCardTagIds()'s own doc comment on that
+ * convention) - rather than seedCardTagsForSingleCharacter() re-running that full scan+JSON.parse on EVERY
+ * SINGLE call, which is what it used to do.
+ *
+ * THIS WAS A REAL, MEASURED PROBLEM, not a theoretical one: seedCardTagsForSingleCharacter() runs once per
+ * imported character (local-import-scan.js's processFile(), for every png/json import unless tag import is
+ * off), and used to re-query+re-parse the ENTIRE `tags` table (65k+ rows on the owner's real library) from
+ * scratch every single time - O(characters × tags) row-parses over a full corpus run, and a heap snapshot taken
+ * near an actual OOM crash showed exactly this shape: hundreds of thousands of separate, freshly-allocated
+ * string objects all holding the same handful of hot tag ids/names (the most commonly-assigned tags, e.g. one
+ * tagged on a large fraction of a scraped library, re-parsed fresh on every single one of those characters'
+ * imports instead of being read once and reused).
+ * @param {MetadataDbEntry} entry
+ * @returns {{ tagNameToId: Map<string, string>, tagIdToDefinition: Map<string, object> }}
+ */
+function getTagCache(entry) {
+    if (entry.tagCache) return entry.tagCache;
+
+    /** @type {Map<string, string>} */
+    const tagNameToId = new Map();
+    /** @type {Map<string, object>} */
+    const tagIdToDefinition = new Map();
+    for (const tagRow of entry.db.all('SELECT id, data FROM tags')) {
+        try {
+            const tag = JSON.parse(tagRow.data);
+            if (tag && typeof tag.name === 'string' && tag.name) {
+                tagNameToId.set(tag.name.toLowerCase(), tagRow.id);
+                tagIdToDefinition.set(tagRow.id, tag);
+            }
+        } catch {
+            // Malformed tag definition row - skip it.
+        }
+    }
+    entry.tagCache = { tagNameToId, tagIdToDefinition };
+    return entry.tagCache;
+}
+
+/**
  * Forward-looking counterpart to backfillCardTagsIfNeeded() - called from the interactive `/api/characters/import`
  * route (ALL/ONLY_EXISTING tag-import modes - ASK stays client-driven, it genuinely needs the interactive popup)
  * and from the local-import-scan headless path, so a card's embedded `data.tags` get turned into real
@@ -4145,22 +4193,13 @@ export async function seedCardTagsForSingleCharacter(directories, avatar, { only
     const cardTags = extractCardTags(shallowJson);
     if (cardTags.length === 0) return { tagIds: [], tagDefinitions: [] };
 
-    /** @type {Map<string, string>} */
-    const tagNameToId = new Map();
-    /** @type {Map<string, object>} id -> parsed tag definition, for every row in `tags` - reused below to build
-     * the `tagDefinitions` return value without a second table scan. */
-    const tagIdToDefinition = new Map();
-    for (const tagRow of entry.db.all('SELECT id, data FROM tags')) {
-        try {
-            const tag = JSON.parse(tagRow.data);
-            if (tag && typeof tag.name === 'string' && tag.name) {
-                tagNameToId.set(tag.name.toLowerCase(), tagRow.id);
-                tagIdToDefinition.set(tagRow.id, tag);
-            }
-        } catch {
-            // Malformed tag definition row - skip it.
-        }
-    }
+    // getTagCache() builds this from a single full `tags` table scan the FIRST time this process ever needs it,
+    // then returns the SAME two Maps on every later call - see its own doc comment for why this replaced a
+    // fresh full-table re-scan+re-parse on every single character (a real, measured problem, not a
+    // precaution). insertTag() below mutates these Maps in place, exactly the "pass-scoped cache" shape every
+    // OTHER tag-seeding caller in this file already uses - here the "pass" is just this entire process's
+    // lifetime rather than one bulk-import loop.
+    const { tagNameToId, tagIdToDefinition } = getTagCache(entry);
 
     // Tag *definitions* always go straight to the `tags` table, batch mode or not - only `characters`/
     // `character_tags` rows for a not-yet-flushed import are what batch mode buffers (see pending branch below).

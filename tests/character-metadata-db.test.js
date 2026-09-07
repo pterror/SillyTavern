@@ -1196,6 +1196,39 @@ describe('phase 3 extension: tag definitions (owner decision - tags.json removal
         const afterUnassign = await metadataDb.getTagsHash(directories);
         expect(afterUnassign).toBe(afterSave);
     });
+
+    test('seedCardTagsForSingleCharacter reuses one process-lifetime tag cache instead of re-scanning `tags` per call', async () => {
+        // Regression coverage for the perf/memory fix: this used to re-query+re-parse the WHOLE `tags` table
+        // from scratch on every single call (a real, measured problem on a large library - see getTagCache()'s
+        // own doc comment). Proven here via object identity, not a call-count spy: with the cache in place, the
+        // second call's tagDefinitions entry for the shared tag is the SAME object getTagCache() built (and the
+        // first call already returned) - without caching, each call would JSON.parse() its own fresh copy, and
+        // object identity would differ even though the VALUES are equal.
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ data: { name: 'Bob', tags: ['Shared'], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } }), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', cardJson({ name: 'Alice', data: { name: 'Alice', tags: ['Shared'], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } }), 1000);
+
+        const first = await metadataDb.seedCardTagsForSingleCharacter(directories, 'Bob.png');
+        const second = await metadataDb.seedCardTagsForSingleCharacter(directories, 'Alice.png');
+
+        expect(first.tagIds).toEqual(second.tagIds);
+        expect(first.tagDefinitions).toHaveLength(1);
+        expect(second.tagDefinitions[0]).toBe(first.tagDefinitions[0]);
+    });
+
+    test('saveTagDefinitions invalidates the tag cache so a later seed sees the rename, not a stale name->id mapping', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ data: { name: 'Bob', tags: ['Shared'], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } }), 1000);
+        const first = await metadataDb.seedCardTagsForSingleCharacter(directories, 'Bob.png');
+        const mintedId = first.tagIds[0];
+
+        // Full-replace, same id, new name - a stale cache would still map 'shared' -> mintedId and never even
+        // look up 'renamed'; this proves the cache was rebuilt from the post-rename table instead.
+        await metadataDb.saveTagDefinitions(directories, [{ id: mintedId, name: 'Renamed' }]);
+
+        await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', cardJson({ name: 'Alice', data: { name: 'Alice', tags: ['Renamed'], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } }), 1000);
+        const second = await metadataDb.seedCardTagsForSingleCharacter(directories, 'Alice.png');
+
+        expect(second.tagIds).toEqual([mintedId]);
+    });
 });
 
 describe('phase 3 extension: tags.json removal (migration + settings-snapshot round trip)', () => {
