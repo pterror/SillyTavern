@@ -6,7 +6,6 @@ import { Buffer } from 'node:buffer';
 import express from 'express';
 import fetch from 'node-fetch';
 import sanitize from 'sanitize-filename';
-import { sync as writeFileAtomicSync } from 'write-file-atomic';
 
 import { getConfigValue, color, setPermissionsSync, isValidUrl } from '../util.js';
 import { write } from '../character-card-parser.js';
@@ -135,6 +134,9 @@ export function getDefaultPresetFile(filename) {
 function seedContent(contentIndex, contentLogPath, resolveTarget, forceCategories) {
     let anyContentAdded = false;
     const contentLog = getContentLog(contentLogPath);
+    // Filenames newly recorded during this pass. The log is append-only on disk (see appendToContentLog):
+    // a single import must not rewrite every filename ever logged, just add the new ones.
+    const newLogEntries = [];
 
     for (const contentItem of contentIndex) {
         if (contentLog.includes(contentItem.filename) && !forceCategories?.includes(contentItem.type)) {
@@ -163,6 +165,7 @@ function seedContent(contentIndex, contentLogPath, resolveTarget, forceCategorie
         const basePath = path.parse(contentItem.filename).base;
         const targetPath = path.join(contentTarget, basePath);
         contentLog.push(contentItem.filename);
+        newLogEntries.push(contentItem.filename);
 
         if (fs.existsSync(targetPath)) {
             console.warn(`Content file ${contentItem.filename} already exists in ${contentTarget}`);
@@ -176,8 +179,32 @@ function seedContent(contentIndex, contentLogPath, resolveTarget, forceCategorie
         anyContentAdded = true;
     }
 
-    writeFileAtomicSync(contentLogPath, contentLog.join('\n'));
+    appendToContentLog(contentLogPath, newLogEntries);
     return anyContentAdded;
+}
+
+/**
+ * Appends newly-seeded filenames to the content log without rewriting the entries already there.
+ * The log is a plain newline-separated list (see getContentLog), so growing it is a pure append -
+ * the previous implementation reread and rewrote the *entire* log on every seed pass, which is wasted
+ * I/O proportional to the log's full history instead of just the (usually empty, sometimes tiny) delta.
+ * @param {string} contentLogPath Path to the content log file
+ * @param {string[]} newEntries Filenames to append, in order
+ */
+function appendToContentLog(contentLogPath, newEntries) {
+    if (newEntries.length === 0) {
+        return;
+    }
+
+    let needsLeadingNewline = false;
+    try {
+        needsLeadingNewline = fs.statSync(contentLogPath).size > 0;
+    } catch {
+        // Log file doesn't exist yet - first entries, no leading newline needed.
+    }
+
+    const chunk = (needsLeadingNewline ? '\n' : '') + newEntries.join('\n');
+    fs.appendFileSync(contentLogPath, chunk);
 }
 
 /**

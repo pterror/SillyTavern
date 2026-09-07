@@ -1,6 +1,18 @@
 /**
  * Generic image metadata service.
  * Provides on-demand metadata generation with file mtime-based caching.
+ *
+ * Storage layout: rather than one big per-user JSON index (the old `image-metadata.json`), metadata is
+ * sharded so a single image's mutation only ever touches that image's own file:
+ *   - `image-metadata/images/<relativePath>.json` - one file per image, mirroring the image's own
+ *     relative path (e.g. `image-metadata/images/backgrounds/beach.png.json`), so a folder assign,
+ *     rename, or regenerate only ever reads/writes the file(s) actually involved instead of rewriting
+ *     every other image's entry too.
+ *   - `image-metadata/folders.json` - virtual folder definitions. Kept as a single small file since its
+ *     size scales with folder *count* (typically tiny), not image count - the thing that made the old
+ *     single-file index expensive to rewrite on every mutation.
+ * A legacy `image-metadata.json` (if present from before this layout) is migrated in-place on first
+ * access - see ensureMigrated().
  */
 
 import * as fs from 'node:fs/promises';
@@ -12,7 +24,12 @@ import express from 'express';
 import { Jimp } from '../jimp.js';
 import { getConfigValue, isPathUnderParent, uuidv4 } from '../util.js';
 
-export const METADATA_FILE = 'image-metadata.json';
+/** Legacy single-file index name, kept only so ensureMigrated() can find and migrate old data. */
+const LEGACY_METADATA_FILE = 'image-metadata.json';
+/** Directory (under the user data root) holding the sharded metadata files described in the module header. */
+export const METADATA_DIR = 'image-metadata';
+const FOLDERS_FILENAME = 'folders.json';
+const INDEX_VERSION = 1;
 
 /**
  * @typedef {Object} ImageMetadata
@@ -156,45 +173,222 @@ export async function generateImageMetadata(filePath, type) {
     };
 }
 
+// ---------------------------------------------------------------------------------------------
+// Sharded storage primitives
+// ---------------------------------------------------------------------------------------------
+
 /**
- * Reads the centralized metadata index from the user data root.
- * @param {string} userDataRoot - Path to the user data directory root
- * @returns {Promise<MetadataIndex>} The metadata index
+ * @param {string} userDataRoot
+ * @returns {string}
  */
-export async function readMetadataIndex(userDataRoot) {
-    const indexPath = path.join(userDataRoot, METADATA_FILE);
+function getFoldersPath(userDataRoot) {
+    return path.join(userDataRoot, METADATA_DIR, FOLDERS_FILENAME);
+}
+
+/**
+ * @param {string} userDataRoot
+ * @param {string} posixRelativePath Relative image path, using '/' separators
+ * @returns {string} Full path to that image's own metadata file
+ */
+function getImageMetaPath(userDataRoot, posixRelativePath) {
+    return path.join(userDataRoot, METADATA_DIR, 'images', posixRelativePath) + '.json';
+}
+
+/**
+ * @param {string} userDataRoot
+ * @param {string} posixRelativePath
+ * @returns {Promise<ImageMetadata|null>}
+ */
+async function readImageMeta(userDataRoot, posixRelativePath) {
     try {
-        const rawData = await fs.readFile(indexPath, 'utf8');
-        return JSON.parse(rawData);
+        const raw = await fs.readFile(getImageMetaPath(userDataRoot, posixRelativePath), 'utf8');
+        return JSON.parse(raw);
     } catch {
-        return { version: 1, images: {}, folders: [] };
+        return null;
     }
 }
 
 /**
- * Writes the centralized metadata index to the user data root.
- * @param {string} userDataRoot - Path to the user data directory root
- * @param {MetadataIndex} metadata - The metadata to write
+ * @param {string} userDataRoot
+ * @param {string} posixRelativePath
+ * @param {ImageMetadata} metadata
+ * @returns {Promise<void>}
  */
-export async function writeMetadataIndex(userDataRoot, metadata) {
-    const indexPath = path.join(userDataRoot, METADATA_FILE);
-    const jsonString = JSON.stringify(metadata, null, 4);
-    await writeFileAtomic(indexPath, jsonString, 'utf8');
+async function writeImageMeta(userDataRoot, posixRelativePath, metadata) {
+    const filePath = getImageMetaPath(userDataRoot, posixRelativePath);
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await writeFileAtomic(filePath, JSON.stringify(metadata, null, 4), 'utf8');
+}
+
+/**
+ * @param {string} userDataRoot
+ * @param {string} posixRelativePath
+ * @returns {Promise<void>}
+ */
+async function deleteImageMeta(userDataRoot, posixRelativePath) {
+    try {
+        await fs.unlink(getImageMetaPath(userDataRoot, posixRelativePath));
+    } catch {
+        // Already gone - nothing to do.
+    }
+}
+
+/**
+ * @param {string} userDataRoot
+ * @returns {Promise<Array<{id: string, name: string, thumbnailFile: string}>>}
+ */
+async function readFolders(userDataRoot) {
+    try {
+        const raw = await fs.readFile(getFoldersPath(userDataRoot), 'utf8');
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+    } catch {
+        return [];
+    }
+}
+
+/**
+ * @param {string} userDataRoot
+ * @param {Array<{id: string, name: string, thumbnailFile: string}>} folders
+ * @returns {Promise<void>}
+ */
+async function writeFolders(userDataRoot, folders) {
+    const foldersPath = getFoldersPath(userDataRoot);
+    await fs.mkdir(path.dirname(foldersPath), { recursive: true });
+    await writeFileAtomic(foldersPath, JSON.stringify(folders, null, 4), 'utf8');
+}
+
+/**
+ * Lists the relative-path keys of every image that currently has a metadata file, optionally scoped to
+ * a prefix. When the prefix is directory-shaped (ends with '/', e.g. 'backgrounds/'), this descends
+ * straight into that subdirectory instead of walking the whole tree, so a backgrounds-only query never
+ * touches persona/avatar metadata files at all.
+ * @param {string} userDataRoot
+ * @param {string} [prefix]
+ * @returns {Promise<string[]>}
+ */
+async function walkImageMetaFiles(userDataRoot, prefix = '') {
+    const imagesRoot = path.join(userDataRoot, METADATA_DIR, 'images');
+    const startDir = prefix && prefix.endsWith('/')
+        ? path.join(imagesRoot, ...prefix.split('/').filter(Boolean))
+        : imagesRoot;
+
+    const results = [];
+    async function walk(dir) {
+        let entries;
+        try {
+            entries = await fs.readdir(dir, { withFileTypes: true });
+        } catch {
+            return;
+        }
+        await Promise.all(entries.map(async (entry) => {
+            const full = path.join(dir, entry.name);
+            if (entry.isDirectory()) {
+                await walk(full);
+            } else if (entry.isFile() && entry.name.endsWith('.json')) {
+                const rel = path.relative(imagesRoot, full).slice(0, -'.json'.length).replaceAll(path.sep, path.posix.sep);
+                if (!prefix || rel.startsWith(prefix)) {
+                    results.push(rel);
+                }
+            }
+        }));
+    }
+    await walk(startDir);
+    return results;
+}
+
+/** @type {Set<string>} User data roots already checked (and migrated, if needed) this process. */
+const migratedRoots = new Set();
+
+/**
+ * One-time, idempotent migration of a legacy single-file `image-metadata.json` index (if one exists)
+ * into the sharded per-image layout. Checked (cheaply - an in-memory Set after the first miss) at the
+ * top of every public entry point below, so upgrading users don't silently lose folder assignments or
+ * cached image metadata.
+ * @param {string} userDataRoot
+ * @returns {Promise<void>}
+ */
+async function ensureMigrated(userDataRoot) {
+    if (migratedRoots.has(userDataRoot)) {
+        return;
+    }
+    migratedRoots.add(userDataRoot);
+
+    const legacyPath = path.join(userDataRoot, LEGACY_METADATA_FILE);
+    let legacyRaw;
+    try {
+        legacyRaw = await fs.readFile(legacyPath, 'utf8');
+    } catch {
+        return; // No legacy file for this user - nothing to migrate.
+    }
+
+    try {
+        const legacy = JSON.parse(legacyRaw);
+
+        if (Array.isArray(legacy.folders) && legacy.folders.length > 0) {
+            await writeFolders(userDataRoot, legacy.folders);
+        }
+
+        if (legacy.images && typeof legacy.images === 'object') {
+            await Promise.all(Object.entries(legacy.images).map(
+                ([posixPath, meta]) => writeImageMeta(userDataRoot, posixPath, meta),
+            ));
+        }
+
+        // Move the legacy file out of the way rather than deleting it, so a partial/failed migration
+        // (caught below) leaves the original data recoverable instead of silently destroyed.
+        await fs.rename(legacyPath, `${legacyPath}.migrated`);
+        console.info(`[ImageMetadata] Migrated legacy ${LEGACY_METADATA_FILE} to per-image metadata files.`);
+    } catch (error) {
+        console.warn(`[ImageMetadata] Failed to migrate legacy ${LEGACY_METADATA_FILE}:`, error.message);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Public API (signatures unchanged from the old single-file-index implementation, so callers in
+// backgrounds.js and this module's own router don't need to change)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Reads the full metadata index for a user: every image's metadata plus all folders. Used by the
+ * "list everything" endpoints - most mutations below only ever touch the specific image(s)/folder(s)
+ * involved instead of going through this.
+ * @param {string} userDataRoot - Path to the user data directory root
+ * @param {string} [prefix] - Optional relative-path prefix to scope the scan to (e.g. 'backgrounds/')
+ * @returns {Promise<MetadataIndex>} The metadata index
+ */
+export async function readMetadataIndex(userDataRoot, prefix = '') {
+    await ensureMigrated(userDataRoot);
+    const [folders, relPaths] = await Promise.all([
+        readFolders(userDataRoot),
+        walkImageMetaFiles(userDataRoot, prefix),
+    ]);
+
+    const images = {};
+    await Promise.all(relPaths.map(async (relPath) => {
+        const meta = await readImageMeta(userDataRoot, relPath);
+        if (meta) {
+            images[relPath] = meta;
+        }
+    }));
+
+    return { version: INDEX_VERSION, images, folders };
 }
 
 /**
  * Gets metadata for multiple images, generating on-demand as needed.
- * Uses relative paths from the user data root as keys in the centralized index.
+ * Uses relative paths from the user data root as keys. Only the metadata file(s) for the images
+ * actually passed in are read or written - unrelated images' files are never touched.
  * @param {string} userDataRoot - Path to the user data directory root
  * @param {string[]} relativePaths - Array of relative paths from userDataRoot
  * @param {ThumbnailType} type - The thumbnail type for resolution calculation.
  * @returns {Promise<{results: Object.<string, ImageMetadata>, generatedCount: number}>} Results map and count of newly generated
  */
 export async function getOrGenerateMetadataBatch(userDataRoot, relativePaths, type) {
+    await ensureMigrated(userDataRoot);
+
     /** @type {Object.<string, ImageMetadata>} */
     const results = {};
-    const index = await readMetadataIndex(userDataRoot);
-    let indexModified = false;
     let generatedCount = 0;
 
     for (const relativePath of relativePaths) {
@@ -210,7 +404,7 @@ export async function getOrGenerateMetadataBatch(userDataRoot, relativePaths, ty
         }
 
         const currentMtime = stats.mtimeMs;
-        const cached = index.images[posixPath];
+        const cached = await readImageMeta(userDataRoot, posixPath);
 
         // If cached and not modified, use cached
         if (cached && cached.mtime === currentMtime) {
@@ -228,45 +422,45 @@ export async function getOrGenerateMetadataBatch(userDataRoot, relativePaths, ty
                 metadata.folderIds = cached.folderIds;
             }
 
-            index.images[posixPath] = metadata;
+            await writeImageMeta(userDataRoot, posixPath, metadata);
             results[relativePath] = metadata;
-            indexModified = true;
             generatedCount++;
         } catch (error) {
             console.warn(`[ImageMetadata] Failed to generate metadata for ${relativePath}:`, error.message);
         }
     }
 
-    // Write index if modified
-    if (indexModified) {
-        await writeMetadataIndex(userDataRoot, index);
-    }
-
     return { results, generatedCount };
 }
 
 /**
- * Removes metadata for an image from the centralized index.
+ * Removes metadata for an image.
  * @param {string} userDataRoot - Path to the user data directory root
  * @param {string} relativePath - The relative path to remove
  */
 export async function removeMetadata(userDataRoot, relativePath) {
+    await ensureMigrated(userDataRoot);
     const posixPath = relativePath.replaceAll(path.sep, path.posix.sep);
-    const index = await readMetadataIndex(userDataRoot);
-    if (index.images[posixPath]) {
-        delete index.images[posixPath];
 
-        // Clear any folder thumbnailFile references that point to the deleted file
-        const deletedFileName = path.posix.basename(posixPath);
-        if (Array.isArray(index.folders)) {
-            for (const folder of index.folders) {
-                if (folder.thumbnailFile === deletedFileName) {
-                    folder.thumbnailFile = '';
-                }
-            }
+    const existing = await readImageMeta(userDataRoot, posixPath);
+    if (!existing) {
+        return;
+    }
+
+    await deleteImageMeta(userDataRoot, posixPath);
+
+    // Clear any folder thumbnailFile references that point to the deleted file
+    const deletedFileName = path.posix.basename(posixPath);
+    const folders = await readFolders(userDataRoot);
+    let foldersChanged = false;
+    for (const folder of folders) {
+        if (folder.thumbnailFile === deletedFileName) {
+            folder.thumbnailFile = '';
+            foldersChanged = true;
         }
-
-        await writeMetadataIndex(userDataRoot, index);
+    }
+    if (foldersChanged) {
+        await writeFolders(userDataRoot, folders);
     }
 }
 
@@ -278,64 +472,72 @@ export async function removeMetadata(userDataRoot, relativePath) {
  * @returns {Promise<ImageMetadata|null>} The updated metadata
  */
 export async function renameMetadata(userDataRoot, oldRelativePath, newRelativePath) {
+    await ensureMigrated(userDataRoot);
     const posixOldPath = oldRelativePath.replaceAll(path.sep, path.posix.sep);
     const posixNewPath = newRelativePath.replaceAll(path.sep, path.posix.sep);
-    const index = await readMetadataIndex(userDataRoot);
-    const data = index.images[posixOldPath];
+
+    const data = await readImageMeta(userDataRoot, posixOldPath);
 
     if (!data) {
         throw new Error(`Image '${oldRelativePath}' not found in metadata.`);
     }
 
-    delete index.images[posixOldPath];
-    index.images[posixNewPath] = data;
+    await writeImageMeta(userDataRoot, posixNewPath, data);
+    await deleteImageMeta(userDataRoot, posixOldPath);
 
     // Update any folder thumbnailFile references that point to the old filename
     const oldFileName = path.posix.basename(posixOldPath);
     const newFileName = path.posix.basename(posixNewPath);
-    if (oldFileName !== newFileName && Array.isArray(index.folders)) {
-        for (const folder of index.folders) {
+    if (oldFileName !== newFileName) {
+        const folders = await readFolders(userDataRoot);
+        let foldersChanged = false;
+        for (const folder of folders) {
             if (folder.thumbnailFile === oldFileName) {
                 folder.thumbnailFile = newFileName;
+                foldersChanged = true;
             }
         }
+        if (foldersChanged) {
+            await writeFolders(userDataRoot, folders);
+        }
     }
-
-    await writeMetadataIndex(userDataRoot, index);
 
     return data;
 }
 
 /**
  * Cleans up orphaned entries from the metadata index.
- * Iterates over all entries and removes those whose files no longer exist.
+ * Reads every entry to check whether its file still exists (unavoidable - each one needs checking),
+ * but only writes (deletes) the ones that are actually orphaned, instead of rewriting a shared index.
  * @param {string} userDataRoot - Path to the user data directory root
  * @returns {Promise<string[]>} Array of removed paths
  */
 export async function cleanupOrphanedMetadata(userDataRoot) {
-    const index = await readMetadataIndex(userDataRoot);
+    await ensureMigrated(userDataRoot);
+    const relPaths = await walkImageMetaFiles(userDataRoot);
     const orphanedPaths = [];
 
-    for (const relativePath of Object.keys(index.images)) {
+    await Promise.all(relPaths.map(async (relativePath) => {
         const fullPath = path.resolve(userDataRoot, relativePath);
+        let orphaned = false;
 
         if (!isPathUnderParent(userDataRoot, fullPath)) {
-            orphanedPaths.push(relativePath);
-            delete index.images[relativePath];
-            continue;
+            orphaned = true;
+        } else {
+            try {
+                await fs.access(fullPath);
+            } catch {
+                orphaned = true;
+            }
         }
 
-        try {
-            await fs.access(fullPath);
-        } catch {
-            // File doesn't exist, mark for removal
+        if (orphaned) {
             orphanedPaths.push(relativePath);
-            delete index.images[relativePath];
+            await deleteImageMeta(userDataRoot, relativePath);
         }
-    }
+    }));
 
     if (orphanedPaths.length > 0) {
-        await writeMetadataIndex(userDataRoot, index);
         console.log(`[ImageMetadata] Cleaned up ${orphanedPaths.length} orphaned metadata entries`);
     }
 
@@ -349,11 +551,12 @@ export async function cleanupOrphanedMetadata(userDataRoot) {
  * @returns {Promise<{id: string, name: string, thumbnailFile: string}>}
  */
 export async function createFolder(userDataRoot, name) {
-    const index = await readMetadataIndex(userDataRoot);
+    await ensureMigrated(userDataRoot);
+    const folders = await readFolders(userDataRoot);
     const id = uuidv4();
     const folder = { id, name, thumbnailFile: '' };
-    index.folders.push(folder);
-    await writeMetadataIndex(userDataRoot, index);
+    folders.push(folder);
+    await writeFolders(userDataRoot, folders);
     return folder;
 }
 
@@ -365,14 +568,15 @@ export async function createFolder(userDataRoot, name) {
  * @returns {Promise<void>}
  */
 export async function setFolderThumbnailsBatch(userDataRoot, updates) {
-    const index = await readMetadataIndex(userDataRoot);
+    await ensureMigrated(userDataRoot);
+    const folders = await readFolders(userDataRoot);
     for (const { id, thumbnailFile } of updates) {
-        const folder = index.folders.find(f => f.id === id);
+        const folder = folders.find(f => f.id === id);
         if (folder) {
             folder.thumbnailFile = thumbnailFile;
         }
     }
-    await writeMetadataIndex(userDataRoot, index);
+    await writeFolders(userDataRoot, folders);
 }
 
 /**
@@ -383,12 +587,13 @@ export async function setFolderThumbnailsBatch(userDataRoot, updates) {
  * @returns {Promise<{id: string, name: string, thumbnailFile: string}>}
  */
 export async function updateFolder(userDataRoot, folderId, updates) {
-    const index = await readMetadataIndex(userDataRoot);
-    const folder = index.folders.find(f => f.id === folderId);
+    await ensureMigrated(userDataRoot);
+    const folders = await readFolders(userDataRoot);
+    const folder = folders.find(f => f.id === folderId);
     if (!folder) throw new Error(`Folder '${folderId}' not found.`);
     if (updates.name !== undefined) folder.name = updates.name;
     if (updates.thumbnailFile !== undefined) folder.thumbnailFile = updates.thumbnailFile;
-    await writeMetadataIndex(userDataRoot, index);
+    await writeFolders(userDataRoot, folders);
     return folder;
 }
 
@@ -399,18 +604,24 @@ export async function updateFolder(userDataRoot, folderId, updates) {
  * @returns {Promise<void>}
  */
 export async function deleteFolder(userDataRoot, folderId) {
-    const index = await readMetadataIndex(userDataRoot);
-    const idx = index.folders.findIndex(f => f.id === folderId);
+    await ensureMigrated(userDataRoot);
+    const folders = await readFolders(userDataRoot);
+    const idx = folders.findIndex(f => f.id === folderId);
     if (idx === -1) throw new Error(`Folder '${folderId}' not found.`);
-    index.folders.splice(idx, 1);
-    // Remove folderId from all images
-    for (const meta of Object.values(index.images)) {
-        if (Array.isArray(meta.folderIds)) {
-            const fi = meta.folderIds.indexOf(folderId);
-            if (fi !== -1) meta.folderIds.splice(fi, 1);
+    folders.splice(idx, 1);
+    await writeFolders(userDataRoot, folders);
+
+    // Every image needs checking for whether it references this folder (unavoidable without a
+    // secondary folder->images index), but only the images that actually had this folderId get
+    // rewritten - unlike the old single-index version, which rewrote every image's entry regardless.
+    const relPaths = await walkImageMetaFiles(userDataRoot);
+    await Promise.all(relPaths.map(async (relativePath) => {
+        const meta = await readImageMeta(userDataRoot, relativePath);
+        if (meta && Array.isArray(meta.folderIds) && meta.folderIds.includes(folderId)) {
+            meta.folderIds = meta.folderIds.filter(fid => fid !== folderId);
+            await writeImageMeta(userDataRoot, relativePath, meta);
         }
-    }
-    await writeMetadataIndex(userDataRoot, index);
+    }));
 }
 
 /**
@@ -421,10 +632,12 @@ export async function deleteFolder(userDataRoot, folderId) {
  * @returns {Promise<void>}
  */
 export async function assignImagesToFolder(userDataRoot, folderId, relativePaths) {
-    const index = await readMetadataIndex(userDataRoot);
-    if (!index.folders.some(f => f.id === folderId)) {
+    await ensureMigrated(userDataRoot);
+    const folders = await readFolders(userDataRoot);
+    if (!folders.some(f => f.id === folderId)) {
         throw new Error(`Folder '${folderId}' not found.`);
     }
+
     for (const rp of relativePaths) {
         const posixPath = rp.replaceAll(path.sep, path.posix.sep);
 
@@ -443,18 +656,17 @@ export async function assignImagesToFolder(userDataRoot, folderId, relativePaths
             continue;
         }
 
-        let meta = index.images[normalized];
+        let meta = await readImageMeta(userDataRoot, normalized);
         if (!meta) {
             // Create a stub entry so folderIds can be stored even before full metadata generation
             meta = { folderIds: [] };
-            index.images[normalized] = meta;
         }
         if (!Array.isArray(meta.folderIds)) meta.folderIds = [];
         if (!meta.folderIds.includes(folderId)) {
             meta.folderIds.push(folderId);
         }
+        await writeImageMeta(userDataRoot, normalized, meta);
     }
-    await writeMetadataIndex(userDataRoot, index);
 }
 
 /**
@@ -465,15 +677,16 @@ export async function assignImagesToFolder(userDataRoot, folderId, relativePaths
  * @returns {Promise<void>}
  */
 export async function unassignImagesFromFolder(userDataRoot, folderId, relativePaths) {
-    const index = await readMetadataIndex(userDataRoot);
+    await ensureMigrated(userDataRoot);
     for (const rp of relativePaths) {
         const posixPath = rp.replaceAll(path.sep, path.posix.sep);
-        const meta = index.images[posixPath];
+        const meta = await readImageMeta(userDataRoot, posixPath);
         if (!meta || !Array.isArray(meta.folderIds)) continue;
         const fi = meta.folderIds.indexOf(folderId);
-        if (fi !== -1) meta.folderIds.splice(fi, 1);
+        if (fi === -1) continue;
+        meta.folderIds.splice(fi, 1);
+        await writeImageMeta(userDataRoot, posixPath, meta);
     }
-    await writeMetadataIndex(userDataRoot, index);
 }
 
 export const router = express.Router();
@@ -705,17 +918,10 @@ router.post('/all', async function (request, response) {
     try {
         const userDataRoot = request.user.directories.root;
         const prefix = String(request.body.prefix || '');
-        const index = await readMetadataIndex(userDataRoot);
+        const index = await readMetadataIndex(userDataRoot, prefix);
 
-        // If prefix specified, filter to only matching paths
         if (prefix) {
-            const filteredImages = {};
-            for (const [key, value] of Object.entries(index.images)) {
-                if (key.startsWith(prefix)) {
-                    filteredImages[key] = value;
-                }
-            }
-            return response.json({ version: index.version, images: filteredImages });
+            return response.json({ version: index.version, images: index.images });
         }
 
         return response.json(index);
