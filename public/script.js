@@ -15381,14 +15381,21 @@ export async function swipe(event, direction, { source, repeated, message = chat
     }
 
     function getMessageBottomHeight(thisMesDiv) {
+        // thisMesRect.top/bottom are viewport-relative, so they can only be combined with
+        // chatElement.scrollTop() (content-relative) after anchoring to chatElement's own
+        // viewport position. Mixing them directly used to add scrollTop() to a viewport
+        // coordinate instead of chatElement's own rect, which threw the target off by
+        // chatElement's offset from the top of the viewport - the more that offset varied
+        // (layout shifts, mobile keyboards, etc.), the more arbitrary the resulting jump,
+        // even when starting pinned to the bottom with nothing to restore.
+        const containerRect = chatElement[0].getBoundingClientRect();
         const thisMesRect = thisMesDiv[0].getBoundingClientRect();
-        //Scroll position + Chat height = Bottom of chat height.
-        const chatBottom = chatElement.scrollTop() - chatElement.height();
-        //Message offset from viewport top + height = Bottom of message offset.
-        const messageBottom = thisMesRect.top + thisMesDiv.height();
-        // Bottom of chat + Bottom of message offset = target scroll position.
-        const scrollHeight = (chatBottom + messageBottom);
-        return scrollHeight;
+        // How far the message's bottom edge currently sits past the bottom of the visible
+        // chat area. Adding this delta to the current scroll position pins the message's
+        // bottom to the container's bottom, regardless of where the container itself sits
+        // on the page.
+        const overflow = thisMesRect.bottom - containerRect.bottom;
+        return chatElement.scrollTop() + overflow;
     }
 
     function expandNewMessage(thisMesDiv) {
