@@ -215,6 +215,28 @@ let capturedScanIntervalMs = null;
  * mid-flight (not yet at its own reschedule point) when dispose is called, and without this flag it would still
  * queue one more scanTimeout right after a disposed instance's teardown. */
 let disposed = false;
+/** True for the entire duration of an actual runScanCycle() pass - the real "is a pass currently running" state,
+ * checked by runScanCycle() itself (so every call path that can start one - the normal scheduled timer, a
+ * heartbeat-triggered fallback, and triggerImmediateRescan() - is guarded the same way) and by
+ * triggerImmediateRescan() before it decides whether skipping ahead of the current wait is even safe.
+ *
+ * THIS REPLACES A REAL BUG: triggerImmediateRescan() used to gate on `scanTimeout` being non-null as its own
+ * "nothing is running, safe to trigger now" signal. That's wrong - scheduleNext()'s `setTimeout` callback never
+ * clears `scanTimeout` when it actually FIRES, only triggerImmediateRescan() (and disposeLocalImportScan()) ever
+ * null it out. So for the entire duration of a NORMALLY-scheduled pass (started because its own timer fired,
+ * not via triggerImmediateRescan()), `scanTimeout` still held the old, already-fired Timeout object - truthy,
+ * indistinguishable from "still waiting, nothing running yet". A watcher-overflow signal (attachOverflowWatch(),
+ * watch-overflow.js) landing during that window - exactly what a sustained burst of writes into a watched
+ * directory produces, e.g. an active bulk download - would pass that stale check and launch a SECOND, fully
+ * concurrent runScanCycle() on top of the one already running. Each pass that finishes first then calls
+ * scheduleNext() again, re-arming `scanTimeout` while the other pass is still going - so a following overflow
+ * event could stack a THIRD pass on top, and so on, under continued burst pressure. Multiple genuinely
+ * concurrent scanDirectory() passes is exactly the "structural correctness bug, not just wasted CPU" that
+ * function's own doc comment already warned about (shared beginBatchImport()/endBatchImport() batch state,
+ * hashLocks, lastSeenMtimeMs all mutated by more than one pass at once) - this flag is what actually keeps the
+ * module's long-standing "only one pass ever in flight, true by construction" claim true, rather than merely
+ * asserting it. */
+let passInFlight = false;
 /** @type {Promise<void> | null} The in-flight (or most recently completed) full pass over every configured
  * directory - see runScanCycle(). Exported via waitForCurrentScanPass() below purely for tests/observability
  * (e.g. "has the initial post-restart pass finished yet") - production code (server-main.js) never awaits this,
@@ -828,11 +850,11 @@ function warmMtimeCache(state, allMtimes) {
  * already-active batch) - so the FIRST pass's endBatchImport() would flush/reconcile/resume the watcher while
  * the SECOND pass is still mid-flight actively writing through the same batch state, and that second pass's own
  * endBatchImport() would then itself be a no-op (batch already cleared), silently skipping its own
- * flush/reconcile. A structural correctness bug on top of the wasted CPU, not just extra wasted CPU. Because
- * scanStates is only ever driven by this one recursive call chain, and the next pass is only ever scheduled
- * from a `.finally` that runs after the previous pass's promise has already settled, there is no code path
- * through which two passes can be in flight at once - no separate "is a scan running" flag is needed to prevent
- * it, it's true by construction.
+ * flush/reconcile. A structural correctness bug on top of the wasted CPU, not just extra wasted CPU. This function
+ * is therefore explicitly guarded by `passInFlight` (see its own doc comment, and the real overlapping-passes bug
+ * this used to be vulnerable to via triggerImmediateRescan() before that flag existed) rather than relying on
+ * "only one call chain ever drives this" as a structural guarantee - a watcher-overflow signal is a second,
+ * independent entry point into this same function, so the invariant has to be actively enforced, not assumed.
  *
  * `scanIntervalMs` therefore means "wait this long after the PREVIOUS pass completes", not "fire every N ms
  * regardless" - same config key, same default, adapted semantics. For a fast-changing small corpus this is
@@ -844,6 +866,12 @@ function warmMtimeCache(state, allMtimes) {
  * currentPassPromise/waitForCurrentScanPass() for why that's still exposed despite production never awaiting it.
  */
 async function runScanCycle(userDirectories, scanIntervalMs) {
+    // Self-guarding, not just guarded by callers: every path that can reach this function (the normal scheduled
+    // timer, a heartbeat-triggered fallback, triggerImmediateRescan()) shares this one check, so no caller-side
+    // mistake can reintroduce the overlapping-passes bug passInFlight exists to prevent - see its own doc comment.
+    if (passInFlight) return;
+    passInFlight = true;
+
     capturedUserDirectories = userDirectories;
     capturedScanIntervalMs = scanIntervalMs;
 
@@ -855,7 +883,11 @@ async function runScanCycle(userDirectories, scanIntervalMs) {
         }
     })();
     currentPassPromise = pass;
-    await pass;
+    try {
+        await pass;
+    } finally {
+        passInFlight = false;
+    }
 
     if (disposed) return;
     scheduleNext(userDirectories, scanIntervalMs);
@@ -931,17 +963,21 @@ export async function waitForCurrentScanPass() {
 /**
  * Called from a watcher-overflow signal (see watch-overflow.js) to run the NEXT pass now instead of waiting out
  * the rest of `scanIntervalMs` - a pure latency optimization, same posture as everything else in that module.
- * Deliberately does NOT start a second pass on top of one already running: if `scanTimeout` isn't currently set,
- * a pass is either already in flight or this module was never initialized (disposed/never-started) - either
- * way there is nothing safe or useful to do here, since runScanCycle() itself is the only thing ever allowed to
- * schedule the next pass (see that function's own doc comment on why overlap is impossible by construction) and
- * starting a second, independent call chain here would reintroduce exactly that hazard for the sake of shaving
- * time off an already-imminent pass.
+ * Deliberately does NOT start a second pass on top of one already running: gated on passInFlight (see its own
+ * doc comment for why this used to be, incorrectly, a `scanTimeout` truthiness check instead) rather than
+ * `scanTimeout` - if a pass is genuinely in flight there is nothing safe or useful to do here, since
+ * runScanCycle() itself is the only thing ever allowed to schedule the next pass and starting a second,
+ * independent call chain here would reintroduce exactly the overlapping-passes hazard passInFlight exists to
+ * prevent, for the sake of shaving time off an already-imminent pass. Also a no-op if this module was never
+ * initialized (disposed/never-started) - `capturedUserDirectories`/`capturedScanIntervalMs` stay `null` in that
+ * state, same as before.
  */
 function triggerImmediateRescan() {
-    if (!scanTimeout || !capturedUserDirectories || capturedScanIntervalMs === null) return;
-    clearTimeout(scanTimeout);
-    scanTimeout = null;
+    if (passInFlight || !capturedUserDirectories || capturedScanIntervalMs === null) return;
+    if (scanTimeout) {
+        clearTimeout(scanTimeout);
+        scanTimeout = null;
+    }
     runScanCycle(capturedUserDirectories, capturedScanIntervalMs).catch(err => {
         console.error('[local-import] Overflow-triggered scan cycle crashed unexpectedly:', err);
     });
@@ -1029,6 +1065,15 @@ export function disposeLocalImportScan() {
     currentPassPromise = null;
     capturedUserDirectories = null;
     capturedScanIntervalMs = null;
+    // A pass genuinely still in flight at dispose time isn't guaranteed to ever settle on its own (its worker
+    // pool is torn down right below, which rejects any outstanding task, but a stuck read/mock/hung filesystem
+    // could still leave that pass's own promise permanently unresolved) - if runScanCycle()'s own `finally`
+    // never gets to reset passInFlight, a stale `true` here would permanently block every future pass this
+    // process ever tries to run again (including the very next initializeLocalImportScan() re-init, which calls
+    // this function first). Resetting unconditionally here means the worst case is a narrow window where an
+    // old, already-abandoned pass's `finally` fires AFTER a fresh one has started and stomps passInFlight back
+    // to false mid-pass - far cheaper than a permanent deadlock.
+    passInFlight = false;
     if (scanTimeout) {
         clearTimeout(scanTimeout);
         scanTimeout = null;
