@@ -5,6 +5,7 @@ import path from 'node:path';
 import { color, uuidv7, isUuidLike } from '../util.js';
 import { parse as parseCharacterCard } from '../character-card-parser.js';
 import { getCharaCardV2 } from '../character-card-normalize.js';
+import { readSettingsAtPaths, writeSettingsKeys } from '../settings-store.js';
 import {
     upsertCharacterFromWrite,
     renameCharacterRow,
@@ -199,46 +200,48 @@ async function sweepCrossCuttingReferences(directories, log) {
         }
     }
 
-    const settingsPath = path.join(directories.root, 'settings.json');
-    if (fs.existsSync(settingsPath)) {
-        let settings;
-        try {
-            settings = JSON.parse(await fsPromises.readFile(settingsPath, 'utf8'));
-        } catch (err) {
-            log(color.red(`[migrate-character-ids] Failed to read settings.json, skipping the cross-cutting rewrite: ${err.message}`));
-            return;
-        }
+    // Reads (and, if anything changes, rewrites) only the specific top-level settings keys this cross-cutting
+    // sweep can touch - world_info_settings, extension_settings, active_character - never the whole settings
+    // store, via settings-store.js. Malformed/missing per-key settings read as absent rather than aborting the
+    // whole sweep (settings-store.js logs the parse error itself).
+    const current = readSettingsAtPaths(directories, ['world_info_settings', 'extension_settings', 'active_character']);
+    /** @type {Record<string, unknown>} */
+    const updates = {};
 
-        let changed = false;
-
-        const charLore = settings?.world_info_settings?.world_info?.charLore;
-        if (Array.isArray(charLore)) {
-            for (const entry of charLore) {
-                if (entry && byStem.has(entry.name)) {
-                    entry.name = byStem.get(entry.name);
-                    changed = true;
-                }
+    const charLore = current.world_info_settings?.world_info?.charLore;
+    if (Array.isArray(charLore)) {
+        let worldInfoChanged = false;
+        for (const entry of charLore) {
+            if (entry && byStem.has(entry.name)) {
+                entry.name = byStem.get(entry.name);
+                worldInfoChanged = true;
             }
         }
+        if (worldInfoChanged) {
+            updates.world_info_settings = current.world_info_settings;
+        }
+    }
 
-        const noteChara = settings?.extension_settings?.note?.chara;
-        if (Array.isArray(noteChara)) {
-            for (const entry of noteChara) {
-                if (entry && byAvatar.has(entry.name)) {
-                    entry.name = byAvatar.get(entry.name);
-                    changed = true;
-                }
+    const noteChara = current.extension_settings?.note?.chara;
+    if (Array.isArray(noteChara)) {
+        let extensionSettingsChanged = false;
+        for (const entry of noteChara) {
+            if (entry && byAvatar.has(entry.name)) {
+                entry.name = byAvatar.get(entry.name);
+                extensionSettingsChanged = true;
             }
         }
-
-        if (typeof settings?.active_character === 'string' && byAvatar.has(settings.active_character)) {
-            settings.active_character = byAvatar.get(settings.active_character);
-            changed = true;
+        if (extensionSettingsChanged) {
+            updates.extension_settings = current.extension_settings;
         }
+    }
 
-        if (changed) {
-            await fsPromises.writeFile(settingsPath, JSON.stringify(settings, null, 4), 'utf8');
-        }
+    if (typeof current.active_character === 'string' && byAvatar.has(current.active_character)) {
+        updates.active_character = byAvatar.get(current.active_character);
+    }
+
+    if (Object.keys(updates).length > 0) {
+        writeSettingsKeys(directories, updates);
     }
 }
 

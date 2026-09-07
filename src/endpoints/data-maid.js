@@ -6,7 +6,7 @@ import mime from 'mime-types';
 import { getSettingsBackupFilePrefix } from './settings.js';
 import { CHAT_BACKUPS_PREFIX } from './chats.js';
 import { isPathUnderParent, tryParse } from '../util.js';
-import { SETTINGS_FILE } from '../constants.js';
+import { readAllSettings, settingsExist } from '../settings-store.js';
 
 const sha256 = str => crypto.createHash('sha256').update(str).digest('hex');
 
@@ -270,11 +270,9 @@ export class DataMaidService {
                     }
                 }
             }
-            const pathToSettings = path.join(this.directories.root, SETTINGS_FILE);
-            if (fs.existsSync(pathToSettings)) {
+            if (settingsExist(this.directories)) {
                 try {
-                    const settingsContent = await fs.promises.readFile(pathToSettings, 'utf-8');
-                    const settings = tryParse(settingsContent);
+                    const settings = readAllSettings(this.directories);
                     if (Array.isArray(settings?.extension_settings?.attachments)) {
                         for (const file of settings.extension_settings.attachments) {
                             if (file?.url) {

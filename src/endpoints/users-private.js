@@ -1,4 +1,3 @@
-import path from 'node:path';
 import { promises as fsPromises } from 'node:fs';
 import crypto from 'node:crypto';
 
@@ -7,7 +6,7 @@ import express from 'express';
 import { RateLimiterMemory, RateLimiterRes } from 'rate-limiter-flexible';
 
 import { getUserAvatar, toKey, getPasswordHash, getPasswordSalt, createBackupArchive, ensurePublicDirectoriesExist, toAvatarKey, getAccountVersion } from '../users.js';
-import { SETTINGS_FILE } from '../constants.js';
+import { deleteAllSettings } from '../settings-store.js';
 import { checkForNewContent, CONTENT_TYPES } from './content-manager.js';
 import { color, Cache, getConfigValue } from '../util.js';
 import { getIpAddress, retryAfter } from '../express-common.js';
@@ -190,8 +189,11 @@ router.post('/reset-settings', async (request, response) => {
             return response.status(403).json({ error: 'Incorrect password' });
         }
 
-        const pathToFile = path.join(request.user.directories.root, SETTINGS_FILE);
-        await fsPromises.rm(pathToFile, { force: true });
+        // Deletes both the sharded settings/ store and any not-yet-migrated legacy settings.json - deleting
+        // only the legacy file would leave the sharded directory in place, which ensureMigrated() (settings-
+        // store.js) would then treat as "already migrated" and never re-seed from the freshly reset default
+        // settings.json checkForNewContent() below writes, silently defeating the reset.
+        deleteAllSettings(request.user.directories);
         await checkForNewContent([request.user.directories], [CONTENT_TYPES.SETTINGS]);
 
         return response.sendStatus(204);
