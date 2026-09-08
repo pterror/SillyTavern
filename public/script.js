@@ -16152,7 +16152,13 @@ jQuery(async function () {
             selected_button = 'character_edit';
             select_selected_character(getCurrentCharacter()?.avatar);
         }
-        $('#character_search_bar').val('').trigger('input');
+        // Note: this used to also clear #character_search_bar here, but that just discarded whatever
+        // search/pills the user had typed into the (currently hidden, since we're switching away to the
+        // character/group-chats view) character-list search box every time this button - which does
+        // nothing to that list - was clicked. Reproduced by: search for something, open a character's
+        // chat, then click this header (the currently-open character's name) to jump back to its info
+        // panel - the list's search was gone on the next visit even though nothing about the list itself
+        // changed.
     });
 
     $(document).on('click', '.character_select', async function () {
