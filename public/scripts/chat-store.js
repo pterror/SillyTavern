@@ -30,7 +30,7 @@ import { getMessageTimeStamp } from './RossAscends-mods.js';
  * @param {*} obj
  * @returns {*} The same object, now frozen
  */
-function deepFreeze(obj) {
+export function deepFreeze(obj) {
     if (obj === null || typeof obj !== 'object') return obj;
     if (Object.isFrozen(obj)) return obj;
     Object.freeze(obj);
@@ -443,7 +443,7 @@ async function _chatOpPost(path, body) {
  *
  * Reads the live object rather than a caller's copy, since updateMessage() may have replaced it.
  */
-function _markMessageSaved(mesId, nodeId) {
+export function _markMessageSaved(mesId, nodeId) {
     const live = mesId < chat.length ? chat[mesId] : null;
     if (live?.node_id && live.node_id === nodeId) {
         _messageSnapshots.set(live.node_id, live);
