@@ -1860,9 +1860,16 @@ export {
     ensureAnchorSync, descendDefaultSync, setDefaultChildSync, alternativesFromMessage, branchViewSync,
 };
 
-/** Closes all open DB handles — test cleanup. */
+/**
+ * Closes all open DB handles. Checkpoints each in TRUNCATE mode first: an ordinary close only folds WAL
+ * frames back into the main file (or not even that, if the process is killed rather than exited cleanly),
+ * it never shrinks the WAL file itself back down - only a TRUNCATE-mode checkpoint does. Without this,
+ * message-tree.sqlite-wal's on-disk size only ever grows to its historical peak and never shrinks, for
+ * the life of the data directory.
+ */
 export function disposeMessageTreeStores() {
     for (const entry of entries.values()) {
+        try { entry.db.checkpoint(); } catch { /* best-effort */ }
         try { entry.db.close(); } catch { /* best-effort */ }
     }
     entries.clear();

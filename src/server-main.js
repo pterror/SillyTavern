@@ -74,6 +74,7 @@ import { redirectDeprecatedEndpoints, ServerStartup, setupPrivateEndpoints } fro
 import { diskCache, repairFirstMesMismatches } from './endpoints/characters.js';
 import { initializeMetadataStores, disposeMetadataStores } from './character-metadata-db.js';
 import { initializeLocalImportScan, disposeLocalImportScan } from './local-import-scan.js';
+import { disposeMessageTreeStores } from './message-tree-db.js';
 import { migrateFlatSecrets } from './endpoints/secrets.js';
 import { migrateGroupChatsMetadataFormat } from './endpoints/groups.js';
 import { runOnceAtBoot as runUnimportEmbeddedLoreAtBoot } from './migrations/unimport-embedded-lore.js';
@@ -403,6 +404,7 @@ async function preSetupTasks() {
         diskCache.dispose();
         disposeMetadataStores();
         disposeLocalImportScan();
+        disposeMessageTreeStores();
         setWindowTitle(consoleTitle);
         process.exit();
     };
