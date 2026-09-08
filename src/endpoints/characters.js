@@ -2559,13 +2559,11 @@ const MAX_QUERY_PAGE_SIZE = 2000;
  * temporary table and let SQLite do the filtering and ordering" composition plan) - still zero PNG parses,
  * regardless of search.
  *
- * WIRED: phase 5 landed. `getEntitiesList()`/`printCharacters()` (public/script.js, via
- * `characterRepository.query()`/`queryAll()` in character-repository.js) call this for the plain browse/sort
- * list and for every bulk "every matching row" caller (favorites, group-member pickers, world-info backlinks,
- * hash/existence checks) - falling back to the old fully-resident-array render (`renderLocalPaginated()`) only
- * when the requested sort field isn't one this route supports (`isInvalidSortFieldError()`). Stale note for
- * history: this comment used to say "not yet wired" and "browse UI still goes through `/all`" - neither is true
- * any more; found and corrected 2026-09 while investigating an unrelated `/batch` perf bug.
+ * WIRED: `getEntitiesList()`/`printCharacters()` (public/script.js, via `characterRepository.query()`/
+ * `queryAll()` in character-repository.js) call this for the plain browse/sort list and for every bulk "every
+ * matching row" caller (favorites, group-member pickers, world-info backlinks, hash/existence checks) - falling
+ * back to the old fully-resident-array render (`renderLocalPaginated()`) only when the requested sort field
+ * isn't one this route supports (`isInvalidSortFieldError()`).
  *
  * `sort.field: 'random'` (design doc §5.3, decisions 8/10/13) requires `sort.seed` - a finite number the client
  * generated and persisted (public/scripts/random-sort.js's mintRandomSortSeed()/getRandomSortSeed(), phase 5b,
@@ -3112,8 +3110,7 @@ router.post('/exists', async function (request, response) {
  * HTTP POST endpoint for the "/api/characters/changes" route (design doc §5.2): a change feed over the phase-1
  * metadata store's change log, replacing `/api/characters/manifest`'s readdir+stat-everything boot scan. WIRED:
  * `fetchCharactersDelta()` (public/script.js) is the sole caller behind `getCharacters()` today - `/manifest`
- * is dead from the client's side (kept routed server-side only; see its own doc comment). Stale note for
- * history: this used to say "not wired yet"; corrected 2026-09 alongside the `/query` doc comment above.
+ * is dead from the client's side (kept routed server-side only; see its own doc comment).
  * @param  {import("express").Request} request The HTTP request object.
  * @param  {import("express").Response} response The HTTP response object.
  * @return {void}
