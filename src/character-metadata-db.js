@@ -448,6 +448,15 @@ const SCHEMA_SQL = `
         data TEXT NOT NULL
     );
 
+    -- One row per tag *name* edit (saveTagDefinitions() below), never per tag creation/deletion/non-name field -
+    -- a change log a caller can page through with seq > sinceSeq, the same shape as 'changes' above, so reading
+    -- "which tag ids had their name changed since I last looked" costs work proportional to how many name edits
+    -- happened in that window, never to how many tags exist in total.
+    CREATE TABLE IF NOT EXISTS tag_name_changes (
+        seq    INTEGER PRIMARY KEY AUTOINCREMENT,
+        tag_id TEXT NOT NULL
+    );
+
     -- PHASE 4D (design doc §2.2/§9): durable bookkeeping for the one-time filename-migration script that moves
     -- every existing character off a name-derived filename onto a minted UUIDv7 id. Deliberately its own indexed
     -- SQL table rather than a single JSON blob in the meta table - a growing "map of every migrated id so far"
@@ -3169,21 +3178,62 @@ export async function setMetaValue(directories, key, value) {
 }
 
 /**
- * Every character id that currently carries at least one tag - `character_tags`' own id set, not a
- * `SELECT * FROM characters` scan. Used by characters-search-index.js's incremental tantivy maintenance: a tag
- * *rename* (a definition edit, not an assignment change) bumps `tags_hash` without producing any `changes` log
- * row for the characters that display that tag's name in their indexed `resolved_tags` field, so those
- * characters need re-indexing even though nothing in the `changes` table names them. This is a cheap
- * index-only query against `character_tags` regardless of library size - it never touches `characters` or the
- * filesystem - so re-indexing the ids it returns is still per-change-event work, not a library-wide scan.
+ * Every tag id whose *name* changed since `sinceSeq` (mirrors getChangesSince()'s shape/truncation handling
+ * against `tag_name_changes` instead of `changes`) - characters-search-index.js's incremental tantivy maintenance
+ * reindexes exactly these ids' assignees (getCharacterIdsForTagIds() below), so a search-index catch-up's tag
+ * handling costs work proportional to how many tag names actually changed in the window, never to how many tags
+ * or tagged characters exist in total - the only thing kept between catch-ups is this single integer watermark,
+ * not a snapshot of every tag.
  * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<string[] | null>} `null` if the metadata store is unavailable.
+ * @param {number} sinceSeq
+ * @returns {Promise<{ seq: number, tagIds: string[], truncated: boolean } | null>} `null` if the metadata store
+ * is unavailable. `truncated: true` means `sinceSeq` predates the oldest row this table still has - nothing
+ * prunes it yet (matching `changes`' own current state), so this can only trigger for a `sinceSeq` that was never
+ * valid for this table to begin with; still computed for real rather than hardcoded `false`, for the same reason
+ * getChangesSince() does.
  */
-export async function getAllTaggedCharacterIds(directories) {
+export async function getTagNameChangesSince(directories, sinceSeq) {
     const entry = await getEntry(directories);
     if (!entry) return null;
-    const rows = entry.db.all('SELECT DISTINCT character_id FROM character_tags');
-    return rows.map(row => row.character_id);
+
+    const numericSince = Number.isFinite(sinceSeq) && sinceSeq >= 0 ? Math.trunc(sinceSeq) : 0;
+    const bounds = entry.db.get('SELECT MIN(seq) as minSeq, MAX(seq) as maxSeq FROM tag_name_changes');
+    const minSeq = bounds?.minSeq != null ? Number(bounds.minSeq) : undefined;
+    const maxSeq = bounds?.maxSeq != null ? Number(bounds.maxSeq) : 0;
+
+    const truncated = minSeq !== undefined && numericSince < minSeq - 1;
+    if (truncated) {
+        return { seq: maxSeq, tagIds: [], truncated: true };
+    }
+
+    const rows = entry.db.all('SELECT DISTINCT tag_id FROM tag_name_changes WHERE seq > ?', [numericSince]);
+    return { seq: maxSeq, tagIds: rows.map(row => row.tag_id), truncated: false };
+}
+
+/**
+ * Character ids carrying at least one of the given tag ids - `character_tags(tag_id, character_id)`'s index
+ * makes this cheap regardless of library size, an index-only query scoped to a specific tag set. Used by
+ * characters-search-index.js's incremental tantivy maintenance to reindex exactly the assignees of whichever
+ * tag ids getTagNameChangesSince() above reports as renamed, instead of every tagged character.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string[]} tagIds
+ * @returns {Promise<string[] | null>} `null` if the metadata store is unavailable.
+ */
+export async function getCharacterIdsForTagIds(directories, tagIds) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    const ids = [...new Set(tagIds)];
+    if (!ids.length) return [];
+    const out = new Set();
+    const CHUNK = 500;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+        const slice = ids.slice(i, i + CHUNK);
+        const placeholders = slice.map(() => '?').join(',');
+        for (const row of entry.db.all(`SELECT DISTINCT character_id FROM character_tags WHERE tag_id IN (${placeholders})`, slice)) {
+            out.add(row.character_id);
+        }
+    }
+    return [...out];
 }
 
 /**
@@ -3879,6 +3929,14 @@ export async function getAllEntityTagAssignments(directories) {
  * what the old `POST /api/tags/save` did to tags.json's `tags` array (a whole-array rewrite), just against a
  * table that costs nothing to rewrite wholesale instead of a multi-megabyte file. Bumps `tags_hash` (see
  * updateTagsHashSync()) so search-index freshness and the client's tags-cache.js both see the change.
+ *
+ * Also appends one `tag_name_changes` row per tag id whose `name` is different from what it was before this
+ * call - the one definition field that reaches an indexed character's `resolved_tags` text (see
+ * characters-search-index.js's makeTagNamesResolver()), so that log is exactly the set of tag ids a search-index
+ * catch-up needs to reindex the assignees of. This full-table replace already reads and rewrites every row
+ * regardless, so diffing old-vs-new name here doesn't change this function's own cost - it's what lets the much
+ * more frequent search-index catch-up read a handful of log rows instead of a full tag-table (or tagged-library)
+ * scan every time.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {object[]} tagsArray
  * @returns {Promise<'ok' | null>} `null` if the metadata store is unavailable.
@@ -3888,10 +3946,19 @@ export async function saveTagDefinitions(directories, tagsArray) {
     if (!entry) return null;
 
     entry.db.transaction(() => {
+        const oldNames = new Map(entry.db.all('SELECT id, data FROM tags').map(row => {
+            let parsed = null;
+            try { parsed = JSON.parse(row.data); } catch { /* an unparseable old row has no name to compare against */ }
+            return [row.id, parsed?.name ?? ''];
+        }));
+
         entry.db.run('DELETE FROM tags');
         for (const tag of tagsArray) {
             if (!tag || typeof tag.id !== 'string' || !tag.id) continue;
             entry.db.run('INSERT INTO tags (id, data) VALUES (@id, @data)', { id: tag.id, data: JSON.stringify(tag) });
+            if (oldNames.has(tag.id) && oldNames.get(tag.id) !== (tag.name ?? '')) {
+                entry.db.run('INSERT INTO tag_name_changes (tag_id) VALUES (@tagId)', { tagId: tag.id });
+            }
         }
         updateTagsHashSync(entry.db);
     });

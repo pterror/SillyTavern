@@ -4,8 +4,8 @@ import crypto from 'node:crypto';
 
 import {
     getTagDefinitions, getEntityTagIdsForMany, getTagsHash,
-    getChangesSince, getCurrentSeq, getAllTaggedCharacterIds, getMetaValue, setMetaValue,
-    getCharacterFavsByIds, getStaleCardJsonMap,
+    getChangesSince, getCurrentSeq, getTagNameChangesSince, getCharacterIdsForTagIds,
+    getMetaValue, setMetaValue, getCharacterFavsByIds, getStaleCardJsonMap,
 } from '../character-metadata-db.js';
 import { processCharacter } from './characters.js';
 import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD, FAV_FIELD, buildTagFilterQuery, buildExcludeIdsQuery } from './tantivy-search.js';
@@ -92,8 +92,13 @@ import { getConfigValue, mapWithConcurrency, color } from '../util.js';
  *   loadOrUpdateTantivyIndex() for the "reopen the persisted index (`Index.open`) and catch it up" path that
  *   replaces "rmSync the whole directory and reparse every PNG" as the *default* response to staleness. A tag
  *   *rename* (not an assignment change - see decision log) bumps `tags_rev` without producing any `changes` row,
- *   so applyIncrementalTantivyChanges() also re-indexes every currently-tagged character
- *   (getAllTaggedCharacterIds()) whenever `tags_rev` moved, an index-only SQL query independent of library size.
+ *   so applyIncrementalTantivyChanges() also re-indexes the characters carrying whichever tag id(s) actually
+ *   renamed - read off character-metadata-db.js's own `tag_name_changes` log (getTagNameChangesSince()) the same
+ *   way character changes are read off `changes`, rather than a full tag-table/tagged-library scan: a bulk
+ *   import mints brand-new tag ids constantly, and a new id never appears in that log (nothing indexed
+ *   references it yet), so it costs nothing here at all. The only state a catch-up keeps between calls is that
+ *   log's single integer watermark - not a snapshot of every tag - so this scales the same way regardless of how
+ *   many tags exist, in-process or freshly reopened after a restart alike.
  * - "FULL REBUILD" IS NOT A SEPARATE CODE PATH ANYMORE: a first-ever index build is just incremental maintenance
  *   starting from an empty index at rev 0/tagsRev 0 - getChangesSince(directories, 0) already returns the entire
  *   library as `op: 'upsert'` entries per its own documented contract, so running
@@ -257,7 +262,7 @@ const DEFAULT_TANTIVY_MAX_ROWS = 500;
 // why that table, not a second file, holds this. Namespaced with a `tantivy_char_` prefix since `meta` is a flat
 // key/value table shared with the metadata store's own bootstrap_completed/tags_rev keys.
 const TANTIVY_INDEX_SEQ_META_KEY = 'tantivy_char_index_seq';
-const TANTIVY_INDEX_TAGS_HASH_META_KEY = 'tantivy_char_index_tags_hash';
+const TANTIVY_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY = 'tantivy_char_index_tag_name_change_seq';
 // The TANTIVY_SCHEMA_VERSION a persisted index was built under - see that constant's own doc comment for why this
 // exists and how openPersistedTantivyIndexStale() uses it.
 const TANTIVY_INDEX_SCHEMA_VERSION_META_KEY = 'tantivy_char_index_schema_version';
@@ -614,7 +619,7 @@ async function rebuildTantivyIndexFromScratch(directories, tantivy) {
     // went away in between the getCurrentSeq() check above and this call (a narrow race, not the common case) -
     // in that event there's nothing indexed yet in `tempDir`, so falling back to the filesystem-scan path (which
     // starts its own fresh build from scratch) is correct rather than swapping in an empty index.
-    const updated = await applyIncrementalTantivyChanges(directories, tantivy, index, schema, 0, null);
+    const updated = await applyIncrementalTantivyChanges(directories, tantivy, index, schema, 0, 0);
     if (!updated) {
         return buildTantivyIndexFromFilesystemScan(directories, tantivy);
     }
@@ -625,10 +630,10 @@ async function rebuildTantivyIndexFromScratch(directories, tantivy) {
     const reopened = reopenTantivyIndexAt(tantivy, indexDir);
 
     await setMetaValue(directories, TANTIVY_INDEX_SEQ_META_KEY, String(updated.lastSeq));
-    await setMetaValue(directories, TANTIVY_INDEX_TAGS_HASH_META_KEY, String(updated.lastTagsHash));
+    await setMetaValue(directories, TANTIVY_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY, String(updated.lastTagNameChangeSeq));
     await setMetaValue(directories, TANTIVY_INDEX_SCHEMA_VERSION_META_KEY, String(TANTIVY_SCHEMA_VERSION));
 
-    return { ...reopened, close: NOOP_CLOSE, lastSeq: updated.lastSeq, lastTagsHash: updated.lastTagsHash };
+    return { ...reopened, close: NOOP_CLOSE, lastSeq: updated.lastSeq, lastTagNameChangeSeq: updated.lastTagNameChangeSeq };
 }
 
 /**
@@ -706,40 +711,18 @@ async function buildTantivyIndexFromFilesystemScan(directories, tantivy) {
     // above can't just keep being used after the rename.
     const reopened = reopenTantivyIndexAt(tantivy, indexDir);
 
-    return { ...reopened, close: NOOP_CLOSE, lastSeq: null, lastTagsHash: null };
-}
-
-/**
- * A narrower sibling of getTagsHash() (character-metadata-db.js), scoped to just what
- * applyIncrementalTantivyChanges() below actually needs to know about a tag definition change: whether any tag's
- * *name* is different, since `name` is the only definition field that ever reaches the indexed `resolved_tags`
- * text (see makeTagNamesResolver()). getTagsHash() itself has to cover a tag definition's *entire* JSON (color,
- * etc.) because it's shared with tags-cache.js's client-side freshness check, which does care about those other
- * fields - reusing it here would mean a color-only edit (or any other non-name definition change) pays the same
- * "reindex every tagged character" cost as a genuine rename, for text that never actually changed in the index.
- * This fingerprint is private bookkeeping to this module (stored under TANTIVY_INDEX_TAGS_HASH_META_KEY, never
- * read by anything else), so narrowing what it hashes can't affect any other consumer.
- * @param {import('../users.js').UserDirectoryList} directories
- * @returns {Promise<string>} A SHA-256 hex digest over every tag's `id`+`name`, order-independent.
- */
-async function getTagNamesFingerprint(directories) {
-    const definitions = await getTagDefinitions(directories);
-    const content = (definitions ?? [])
-        .map(tag => `${tag.id}\0${tag.name ?? ''}`)
-        .sort()
-        .join('\0');
-    return crypto.createHash('sha256').update(content).digest('hex');
+    return { ...reopened, close: NOOP_CLOSE, lastSeq: null, lastTagNameChangeSeq: null };
 }
 
 /**
  * Applies every character change since `sinceRev` (design doc §3.3 item 3's "a changed card is one
  * delete-plus-add, not a rebuild") to an already-open tantivy index/writer, in place - both the incremental
  * catch-up alternative to a full rescan for an already-populated index, AND (called with `sinceRev`/
- * `sinceTagsRev` of 0 against a brand-new empty index - see rebuildTantivyIndexFromScratch()) the mechanism a
- * genuinely fresh build now goes through too, since getChangesSince(directories, 0) already returns the whole
- * library as `op: 'upsert'` entries. Delete-then-add for every touched id, including updates (not just genuine
- * deletes): tantivy has no update-in-place (design doc §3's probe finding), so a changed row costs exactly the
- * same as a new one either way - including, for a from-rev-0 call, every row in the library.
+ * `sinceTagNameChangeSeq` of 0 against a brand-new empty index - see rebuildTantivyIndexFromScratch()) the
+ * mechanism a genuinely fresh build now goes through too, since getChangesSince(directories, 0) already returns
+ * the whole library as `op: 'upsert'` entries. Delete-then-add for every touched id, including updates (not just
+ * genuine deletes): tantivy has no update-in-place (design doc §3's probe finding), so a changed row costs
+ * exactly the same as a new one either way - including, for a from-rev-0 call, every row in the library.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy
  * @param {import('@oxdev03/node-tantivy-binding').Index} index An already-open index (freshly built this
@@ -748,14 +731,14 @@ async function getTagNamesFingerprint(directories) {
  * @param {number | null} sinceRev The rev this index was last caught up to, or `null`/non-finite to mean "assume
  * nothing" (the first incremental pass after a fresh full build already covers everything up to its own
  * `lastRev`, so this is normally a real number, not `null`, in practice).
- * @param {string | null} sinceTagsRev The tag-names fingerprint (getTagNamesFingerprint()) this index was last
- * caught up to.
- * @returns {Promise<{ lastRev: number, lastTagsRev: string | null } | null>} The new watermark, or `null` if incremental
- * maintenance isn't possible right now (metadata store unavailable, or the change log was pruned past `sinceRev`
- * - `truncated: true`, not implemented as of phase 1, but this function is already correct against it) - the
- * caller (loadOrUpdateTantivyIndex()) must fall back to a full rebuild in that case.
+ * @param {number | null} sinceTagNameChangeSeq The `tag_name_changes` watermark (character-metadata-db.js) this
+ * index was last caught up to - `null`/non-finite means "assume nothing".
+ * @returns {Promise<{ lastRev: number, lastTagNameChangeSeq: number | null } | null>} The new watermark, or `null`
+ * if incremental maintenance isn't possible right now (metadata store unavailable, either change log pruned
+ * past its watermark - `truncated: true`, not implemented as of phase 1, but this function is already correct
+ * against it) - the caller (loadOrUpdateTantivyIndex()) must fall back to a full rebuild in that case.
  */
-async function applyIncrementalTantivyChanges(directories, tantivy, index, schema, sinceSeq, prevTagsHash) {
+async function applyIncrementalTantivyChanges(directories, tantivy, index, schema, sinceSeq, sinceTagNameChangeSeq) {
     const currentSeq = await getCurrentSeq(directories);
     if (currentSeq === null) {
         return null;
@@ -769,14 +752,17 @@ async function applyIncrementalTantivyChanges(directories, tantivy, index, schem
     /** @type {Map<string, 'upsert'|'delete'>} */
     const idsToReindex = new Map(changesResult.changes.map(({ id, op }) => [id, op]));
 
-    // A tag *rename* (a tags.js definition edit, not an assignment change) bumps the fingerprint below without
-    // producing any `changes` row naming the characters whose indexed resolved_tags text it affects - see this
-    // module's header, and getTagNamesFingerprint()'s own doc comment for why this checks names specifically
-    // rather than the general (broader) tags_hash.
-    const currentTagNamesHash = await getTagNamesFingerprint(directories);
-    if (currentTagNamesHash !== prevTagsHash) {
-        const taggedIds = await getAllTaggedCharacterIds(directories);
-        for (const id of taggedIds ?? []) {
+    // A tag *rename* (a tags.js definition edit, not an assignment change) never produces a `changes` row naming
+    // the characters whose indexed resolved_tags text it affects - see this module's header, and
+    // getTagNameChangesSince()'s own doc comment for why reading that log costs work proportional to how many
+    // tag names actually changed, never to how many tags or tagged characters exist in total.
+    const tagNameChangesResult = await getTagNameChangesSince(directories, Number.isFinite(sinceTagNameChangeSeq) ? sinceTagNameChangeSeq : 0);
+    if (!tagNameChangesResult || tagNameChangesResult.truncated) {
+        return null;
+    }
+    if (tagNameChangesResult.tagIds.length > 0) {
+        const affectedIds = await getCharacterIdsForTagIds(directories, tagNameChangesResult.tagIds);
+        for (const id of affectedIds ?? []) {
             if (!idsToReindex.has(id)) {
                 idsToReindex.set(id, 'upsert');
             }
@@ -846,7 +832,7 @@ async function applyIncrementalTantivyChanges(directories, tantivy, index, schem
         writer.waitMergingThreads();
     }
 
-    return { lastSeq: currentSeq, lastTagsHash: currentTagNamesHash ?? null };
+    return { lastSeq: currentSeq, lastTagNameChangeSeq: tagNameChangesResult.seq };
 }
 
 /**
@@ -898,8 +884,10 @@ async function openPersistedTantivyIndexStale(directories, tantivy) {
             return null;
         }
 
-        const persistedTagsHash = (await getMetaValue(directories, TANTIVY_INDEX_TAGS_HASH_META_KEY)) ?? null;
-        return { index, schema, close: NOOP_CLOSE, lastSeq: Number(persistedSeq), lastTagsHash: persistedTagsHash };
+        const persistedTagNameChangeSeq = await getMetaValue(directories, TANTIVY_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY);
+        // A plain integer watermark survives a process restart exactly like `lastSeq` above - unlike the old
+        // in-memory tag-name-snapshot design, a cold-start reopen needs no separate fallback here at all.
+        return { index, schema, close: NOOP_CLOSE, lastSeq: Number(persistedSeq), lastTagNameChangeSeq: persistedTagNameChangeSeq !== null ? Number(persistedTagNameChangeSeq) : null };
     } catch (err) {
         console.error(color.red('[search] failed to reopen the persisted character tantivy index, falling back to a full rebuild:'));
         console.error(color.red(`[search]   ${err.message}`));
@@ -936,11 +924,11 @@ async function loadOrUpdateTantivyIndex(directories, tantivy, previous) {
     }
 
     if (previous?.index) {
-        const updated = await applyIncrementalTantivyChanges(directories, tantivy, previous.index, previous.schema, previous.lastSeq, previous.lastTagsHash ?? null);
+        const updated = await applyIncrementalTantivyChanges(directories, tantivy, previous.index, previous.schema, previous.lastSeq, previous.lastTagNameChangeSeq ?? null);
         if (updated) {
             if (updated.lastSeq !== null) {
                 await setMetaValue(directories, TANTIVY_INDEX_SEQ_META_KEY, String(updated.lastSeq));
-                await setMetaValue(directories, TANTIVY_INDEX_TAGS_HASH_META_KEY, String(updated.lastTagsHash));
+                await setMetaValue(directories, TANTIVY_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY, String(updated.lastTagNameChangeSeq));
                 await setMetaValue(directories, TANTIVY_INDEX_SCHEMA_VERSION_META_KEY, String(TANTIVY_SCHEMA_VERSION));
             }
             return { ...previous, ...updated };
