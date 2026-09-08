@@ -71,7 +71,7 @@ import { init as statsInit, onExit as statsOnExit } from './endpoints/stats.js';
 import { checkForNewContent } from './endpoints/content-manager.js';
 import { init as settingsInit } from './endpoints/settings.js';
 import { redirectDeprecatedEndpoints, ServerStartup, setupPrivateEndpoints } from './server-startup.js';
-import { diskCache, repairFirstMesMismatches } from './endpoints/characters.js';
+import { diskCache } from './endpoints/characters.js';
 import { initializeMetadataStores, disposeMetadataStores } from './character-metadata-db.js';
 import { initializeLocalImportScan, disposeLocalImportScan } from './local-import-scan.js';
 import { disposeMessageTreeStores } from './message-tree-db.js';
@@ -356,16 +356,6 @@ async function preSetupTasks() {
             .catch(err => console.error(color.red(`[unimport-embedded-lore] Boot run failed for ${userDirectories.root}:`), err));
     }
 
-    // Config-gated (`performance.autofixFirstMesMismatch`, default off) one-shot-per-boot repair for the Spec
-    // v1/v2 `first_mes` drift character-card-normalize.js's readFromV2() warns about - see
-    // repairFirstMesMismatches()'s own header. No-ops immediately (before touching the corpus) unless the flag
-    // is on. Fire-and-forget, same "must not delay the server actually starting to listen, does real file
-    // writes" reasoning as runUnimportEmbeddedLoreAtBoot() above.
-    for (const userDirectories of directories) {
-        repairFirstMesMismatches(userDirectories)
-            .catch(err => console.error(color.red(`[first-mes-repair] Boot run failed for ${userDirectories.root}:`), err));
-    }
-
     // Config/admin-set-only "import characters from a local directory on disk" feature - inert unless
     // localImport.directories is non-empty (see that module's header). Started after initializeMetadataStores()
     // since it drives the same metadata store's batch-import/write path for whatever it discovers.
@@ -378,7 +368,7 @@ async function preSetupTasks() {
     // already live durably in the metadata store itself). Still fire-and-forget rather than sitting in the
     // awaited boot chain though - it's still real file IO (read settings.json, maybe write a backup file, prune
     // old backups) across every user handle, same "maintenance work that must not gate the server actually
-    // starting to listen" shape as repairFirstMesMismatches() above.
+    // starting to listen" shape as runUnimportEmbeddedLoreAtBoot() above.
     {
         const __settingsStart = process.hrtime.bigint();
         settingsInit()
