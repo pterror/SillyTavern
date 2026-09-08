@@ -122,6 +122,21 @@ describe('metadata-only edits do not touch the PNG', () => {
         expect(JSON.parse(row.shallow_json).name).toBe('Alice');
     });
 
+    test('/batch resolves parked content for multiple characters in one request', async () => {
+        // /batch is the route fetchCharactersDelta() (script.js) calls to catch up on changed characters - it
+        // has its own getStaleCardJsonMap() prefetch (mirroring /all's), so this exercises that it still
+        // resolves each avatar's parked content correctly when several ids in the same request are stale.
+        await post('create', { ch_name: 'Alice', description: 'original', file_name: 'Alice' });
+        await post('create', { ch_name: 'Bob', description: 'original', file_name: 'Bob' });
+        await post('edit', { avatar_url: 'Alice.png', ch_name: 'Alice', description: 'EDITED-ALICE' });
+        await post('edit', { avatar_url: 'Bob.png', ch_name: 'Bob', description: 'EDITED-BOB' });
+
+        const batch = await (await post('batch', { avatars: ['Alice.png', 'Bob.png'] })).json();
+        const byAvatar = Object.fromEntries(batch.map(c => [c.avatar, c]));
+        expect(byAvatar['Alice.png'].data.description).toBe('EDITED-ALICE');
+        expect(byAvatar['Bob.png'].data.description).toBe('EDITED-BOB');
+    });
+
     test('successive edits keep replacing the parked copy', async () => {
         await post('create', { ch_name: 'Alice', description: 'v1', file_name: 'Alice' });
         const before = fileStamp('Alice.png');
