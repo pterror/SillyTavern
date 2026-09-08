@@ -3485,8 +3485,15 @@ router.post('/batch', async function (request, response) {
             return response.send(data);
         }
 
-        // Full mode (no fields filter): existing behavior unchanged.
-        const processingPromises = avatars.map(avatar => processCharacter(avatar, request.user.directories, { shallow: useShallowCharacters }));
+        // Full mode (no fields filter). One batched stale-card_json query for the whole request instead of a
+        // point lookup per character (see getStaleCardJsonMap()'s doc comment) - the same optimization `/all`
+        // already applies. Without this, every avatar here falls through processCharacter()'s `cardJson ===
+        // undefined` branch into readCardContent()'s own per-avatar `getCharacterCardJson()` point query - fine
+        // for a handful of ids, but this is exactly the route fetchCharactersDelta() calls (in up-to-500-id
+        // chunks) to catch up after a mass metadata write (a residency-migration backfill, a dedup pass, any
+        // bulk edit), i.e. precisely when a request here can carry hundreds of ids at once.
+        const staleCards = await getStaleCardJsonMap(request.user.directories);
+        const processingPromises = avatars.map(avatar => processCharacter(avatar, request.user.directories, { shallow: useShallowCharacters, cardJson: staleCards.get(avatar) ?? null }));
         const data = (await Promise.all(processingPromises)).filter(c => 'name' in c);
         // Same db-authoritative stamp every OTHER character-listing route already applies (/all, /get, the
         // query path) - fav/active_chat are db-authoritative once a row exists (setCharacterFav()/
