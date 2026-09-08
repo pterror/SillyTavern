@@ -14720,10 +14720,15 @@ export async function swipe(event, direction, { source, repeated, message = chat
             //console.log('showing previously generated swipe candidate, or "..."');
             //console.log('onclick right swipe calling addOneMessage');
 
-            //Only scroll when swiping the last message.
-            const scroll = (mesId == chat.length - 1);
+            // Scrolling here raced with expandNewMessage()'s own scroll pin below: both read/write
+            // chatElement's scrollTop from independent rAF callbacks for the same swipe, and whichever
+            // ran last won - a visible double-jump, and (since this fired for any swipe of the last
+            // message, not only one where the view was already at the bottom) a forced jump to the
+            // bottom even when the user had deliberately scrolled away first. expandNewMessage() is the
+            // single source of truth for scroll position during a swipe: it only adjusts when the view
+            // was already pinned to the bottom, and it tracks the swiped message's actual growing height.
             //The swipe buttons will be refreshed in endSwipe(), refreshing them now will cause flickering.
-            addOneMessage(chat[mesId], { type: 'swipe', forceId: mesId, scroll: scroll, showSwipes: false });
+            addOneMessage(chat[mesId], { type: 'swipe', forceId: mesId, scroll: false, showSwipes: false });
 
             if (power_user.message_token_count_enabled) {
                 const tokenCountText = (chat[mesId]?.extra?.reasoning || '') + chat[mesId].mes;
