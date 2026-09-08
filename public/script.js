@@ -14384,8 +14384,10 @@ export async function swipe(event, direction, { source, repeated, message = chat
     swipeState = SWIPE_STATE.SWIPING;
     let generation;
 
-    const thisMesDiv = chatElement.children('.mes').filter(`[mesid="${mesId}"]`);
-    const thisMesText = thisMesDiv.find('.mes_block .mes_text');
+    // Reassigned after loadFromSwipeId() below - it can redraw the DOM out from under mesId, and
+    // everything from here on needs to keep targeting the live element rather than a detached one.
+    let thisMesDiv = chatElement.children('.mes').filter(`[mesid="${mesId}"]`);
+    let thisMesText = thisMesDiv.find('.mes_block .mes_text');
     const thisMesDivHeight = thisMesDiv[0]?.scrollHeight;
     const thisMesTextHeight = thisMesText[0]?.scrollHeight;
     if (![thisMesDiv.length, thisMesText.length].every(num => num > 0)) {
@@ -14505,6 +14507,11 @@ export async function swipe(event, direction, { source, repeated, message = chat
         if (newSwipeId !== originalSwipeId || source == SWIPE_SOURCE.DELETE || source == SWIPE_SOURCE.BACK) {
             //Update the chat.
             await loadFromSwipeId(mesId, newSwipeId);
+            // A tree-backed chat's switchToAlternativePath() (called from loadFromSwipeId() above) may
+            // have just replaced mesId's element via redisplayChat() - reacquire the live one so the
+            // rest of this swipe animates and measures the node actually on screen, not a detached one.
+            thisMesDiv = chatElement.children('.mes').filter(`[mesid="${mesId}"]`);
+            thisMesText = thisMesDiv.find('.mes_block .mes_text');
             //Transition to the new chat.
             await animateSwipe();
         }
@@ -14654,7 +14661,26 @@ export async function swipe(event, direction, { source, repeated, message = chat
         return false;
     }
 
+    /**
+     * @param {JQuery} thisMesDiv
+     * @returns {number|null} The scrollTop that pins thisMesDiv's bottom to the chat's visible
+     * bottom, or null if thisMesDiv (even the live element at mesId, as a fallback) isn't an
+     * on-screen box to measure against.
+     */
     function getMessageBottomHeight(thisMesDiv) {
+        // A tree-backed chat's redisplayChat() (via loadFromSwipeId()'s switchToAlternativePath(),
+        // or endSwipe()'s revert path) can replace mesId's element out from under a still-running
+        // swipe at any point - including after this specific thisMesDiv reference was captured, so
+        // callers reacquiring their own reference earlier does not fully cover it. A detached element
+        // reports an all-zero getBoundingClientRect(), which would otherwise silently compute a
+        // scrollTop nowhere near correct. Fall back to whatever is actually live at mesId, and give
+        // up cleanly (no scroll adjustment) rather than measure a box that was never rendered.
+        if (!thisMesDiv[0]?.isConnected) {
+            thisMesDiv = chatElement.children('.mes').filter(`[mesid="${mesId}"]`);
+        }
+        if (!thisMesDiv[0]?.isConnected) {
+            return null;
+        }
         // thisMesRect.top/bottom are viewport-relative, so they can only be combined with
         // chatElement.scrollTop() (content-relative) after anchoring to chatElement's own
         // viewport position. Mixing them directly used to add scrollTop() to a viewport
@@ -14681,17 +14707,22 @@ export async function swipe(event, direction, { source, repeated, message = chat
 
         //Keep the swipe buttons at the same height when scrolling is finished.
 
+        /** @param {number|null} target */
+        const applyScrollPin = target => {
+            if (is_animation_scroll && target !== null) chatElement.scrollTop(target);
+        };
+
         //Expand new message.
         thisMesDiv.animate({ height: new_height + 'px' }, {
             duration: 0, //used to be 100 //Disabled on Cohee's request. https://github.com/SillyTavern/SillyTavern/pull/4610/files#r2408731744
             queue: false,
             progress: function (animation, progress, remainingMs) {
-                if (is_animation_scroll) chatElement.scrollTop(getMessageBottomHeight(thisMesDiv));
+                applyScrollPin(getMessageBottomHeight(thisMesDiv));
             },
             complete: function () {
                 thisMesDiv.css('height', 'auto');
                 //Correct height auto offset.
-                if (is_animation_scroll) chatElement.scrollTop(getMessageBottomHeight(thisMesDiv));
+                applyScrollPin(getMessageBottomHeight(thisMesDiv));
             },
         });
     }
