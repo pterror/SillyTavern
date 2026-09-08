@@ -2,6 +2,7 @@ import {
     addOneMessage,
     charactersStore,
     chat,
+    closeCurrentChat,
     deleteCharacterChatByName,
     displayVersion,
     doNewChat,
@@ -378,6 +379,11 @@ async function sendWelcomePanel(chats, expand = false) {
         });
         fragment.querySelectorAll('button.openTemporaryChat').forEach((button) => {
             button.addEventListener('click', async () => {
+                // Whatever character or group was selected before this button was reachable has to be
+                // cleared first - newAssistantChat() itself never touches that selection, and leaving
+                // it in place makes the chat that follows save for real under the leftover character
+                // instead of staying temporary.
+                await closeCurrentChat();
                 await newAssistantChat({ temporary: true });
                 if (sendTextArea instanceof HTMLTextAreaElement) {
                     sendTextArea.focus();
