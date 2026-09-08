@@ -10230,8 +10230,11 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
     const metadata = { ...chat_metadata, ...(withMetadata || {}) };
     const fileName = chatName ?? getCurrentCharacter()?.chat;
 
-    if (!fileName && name2 === neutralCharacterName) {
-        // TODO: Do something for a temporary chat with no character.
+    if (getSelectionState().type === 'none' && name2 === neutralCharacterName) {
+        // A temporary chat has no character or group selected at all - checking `fileName` here
+        // instead would key off getCurrentCharacter(), which can still resolve to a character left
+        // selected from before the temporary chat opened, letting this fall through to a real save
+        // under that character's name instead of being skipped.
         return;
     }
 
