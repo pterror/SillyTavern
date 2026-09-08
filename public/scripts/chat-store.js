@@ -229,7 +229,7 @@ export async function ensureOpeningRow(mesId = 0) {
  * Nothing is written. An appended slot carries a provisional id, which is what marks it as text that
  * lives on the card and nowhere else; it gains a row if someone uses it.
  */
-async function _mergeCardGreetingsIntoOpening() {
+export async function _mergeCardGreetingsIntoOpening() {
     if (!chat_metadata?._tree_stored) return;
 
     const opening = chat[0];
@@ -374,7 +374,7 @@ async function _mergeCardGreetingsIntoOpening() {
  *
  * @param {number} mesId
  */
-async function _restoreContinuation(mesId) {
+export async function _restoreContinuation(mesId) {
     const message = chat[mesId];
     if (!chat_metadata?._tree_stored) return;
     // An opening with only a provisional id has no row, so nothing can follow it and there is nothing
@@ -405,7 +405,7 @@ async function _restoreContinuation(mesId) {
 }
 
 /** Whether a given slot on a message is a blank nobody has typed into yet. */
-function _isBlankSlot(message, at) {
+export function _isBlankSlot(message, at) {
     if (!Array.isArray(message?.swipes)) return false;
     if (typeof message.swipes[at] !== 'string' || message.swipes[at].length > 0) return false;
     return !message.swipe_info?.[at]?.node_id;
