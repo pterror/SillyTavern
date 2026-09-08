@@ -2559,12 +2559,6 @@ const MAX_QUERY_PAGE_SIZE = 2000;
  * temporary table and let SQLite do the filtering and ordering" composition plan) - still zero PNG parses,
  * regardless of search.
  *
- * `getEntitiesList()`/`printCharacters()` (public/script.js, via `characterRepository.query()`/`queryAll()` in
- * character-repository.js) call this for the plain browse/sort list and for every bulk "every matching row"
- * caller (favorites, group-member pickers, world-info backlinks, hash/existence checks), falling back to the
- * old fully-resident-array render (`renderLocalPaginated()`) only when the requested sort field isn't one this
- * route supports (`isInvalidSortFieldError()`).
- *
  * `sort.field: 'random'` (design doc §5.3, decisions 8/10/13) requires `sort.seed` - a finite number the client
  * generated and persisted (public/scripts/random-sort.js's mintRandomSortSeed()/getRandomSortSeed(), phase 5b,
  * already shipped client-side). Omitting it 400s rather than silently defaulting to *some* seed: decision 10 is
@@ -3109,8 +3103,6 @@ router.post('/exists', async function (request, response) {
 /**
  * HTTP POST endpoint for the "/api/characters/changes" route (design doc §5.2): a change feed over the phase-1
  * metadata store's change log, replacing `/api/characters/manifest`'s readdir+stat-everything boot scan.
- * `fetchCharactersDelta()` (public/script.js) is the sole caller behind `getCharacters()` today; `/manifest`
- * has no remaining client caller (kept routed server-side only; see its own doc comment).
  * @param  {import("express").Request} request The HTTP request object.
  * @param  {import("express").Response} response The HTTP response object.
  * @return {void}
