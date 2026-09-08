@@ -2964,6 +2964,41 @@ export async function getLocalImportMtime(directories, sourcePath) {
 }
 
 /**
+ * Batched counterpart to getLocalImportMtime(): one query per (bounded-size) chunk of paths instead of one
+ * query per path. Exists for local-import-scan.js's own periodic/boot full-directory pass, which now walks
+ * its source directory in bounded-size batches (see that module's scanDirectory()) rather than materializing
+ * the whole listing at once - each batch calls this once for its own paths, so a pass over a corpus of any
+ * size never holds more mtime data in memory at once than one batch's worth, and never costs more than one
+ * query per batch instead of one query per file.
+ *
+ * NOT the removed getAllLocalImportMtimes() this module's history mentions elsewhere: that one populated a
+ * module-level, unbounded, never-evicted, cross-restart in-memory Map sized to the WHOLE table, for the life
+ * of the process. This takes an explicit, caller-bounded list of paths and returns a plain Map scoped to
+ * just those - the caller is expected to use it for one batch and drop it; nothing here retains a reference.
+ * DirectoryScanState.lastSeenMtimeMs (the actual bounded, cross-pass, cross-restart cache) is untouched by
+ * this function existing - this only changes how many round trips a batch's worth of cache misses costs, not
+ * what gets cached afterward or for how long.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string[]} sourcePaths Absolute paths to look up - the caller controls how many at once.
+ * @returns {Promise<Map<string, number>>} source_path -> mtime_ms, present only for paths with a persisted
+ * record. Empty (not thrown) if the metadata store itself is unavailable - same fail-open contract as
+ * getLocalImportMtime(), so a caller that falls back to that per-path on a miss here loses nothing.
+ */
+export async function getLocalImportMtimesForPaths(directories, sourcePaths) {
+    const result = new Map();
+    if (!sourcePaths.length) return result;
+
+    const entry = await getEntry(directories);
+    if (!entry) return result;
+
+    const placeholders = sourcePaths.map(() => '?').join(',');
+    for (const row of entry.db.all(`SELECT source_path, mtime_ms FROM local_import_mtimes WHERE source_path IN (${placeholders})`, sourcePaths)) {
+        result.set(row.source_path, Number(row.mtime_ms));
+    }
+    return result;
+}
+
+/**
  * One page of persisted `local_import_mtimes` source_paths, ordered ascending and keyset-paginated (`source_path
  * > afterSourcePath`, not `LIMIT/OFFSET`) so local-import-scan.js's removed-file sweep can walk the whole table
  * `limit` rows at a time without ever holding more than one page in memory - see that function for why (the same

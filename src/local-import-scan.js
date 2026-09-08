@@ -11,7 +11,7 @@ import { readSettingsAtPaths } from './settings-store.js';
 import { copyCharacterFile } from './local-import-copy.js';
 import { reclaimReflinkPrefix } from './character-card-parser.js';
 import { importCharacterFileHeadless, buildPngImportData, buildJsonImportData, mintCharacterId, fireMetadataUpsertHook } from './endpoints/characters.js';
-import { beginBatchImport, endBatchImport, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, getLocalImportSkip, setLocalImportSkip, clearLocalImportSkip, getLocalImportMtime, getLocalImportMtimeSourcePathsAfter, setLocalImportMtime, clearLocalImportMtime, seedCardTagsForSingleCharacter } from './character-metadata-db.js';
+import { beginBatchImport, endBatchImport, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, getLocalImportSkip, setLocalImportSkip, clearLocalImportSkip, getLocalImportMtime, getLocalImportMtimesForPaths, getLocalImportMtimeSourcePathsAfter, setLocalImportMtime, clearLocalImportMtime, seedCardTagsForSingleCharacter } from './character-metadata-db.js';
 import { attachLinuxDirectoryWatch, isWindowsOverflowSignal } from './watch-overflow.js';
 import { detectFormat } from './local-import-classify.js';
 import { LocalImportWorkerPool, resolveWorkerPoolSize } from './local-import-worker-pool.js';
@@ -463,20 +463,25 @@ const REMOVED_FILE_SWEEP_PAGE_SIZE = 5000;
 
 /**
  * Finds and cleans up (cleanupRemovedFile()) every source file `state.sourceDir`'s persisted local_import_mtimes
- * records know about that ISN'T in `entrySet` (this pass's fresh readdir() listing) - see scanDirectory()'s own
- * doc comment for why this sweep exists at all. Walks the WHOLE local_import_mtimes table (it isn't partitioned
- * per directory - see its own SCHEMA_SQL comment in character-metadata-db.js) REMOVED_FILE_SWEEP_PAGE_SIZE rows
- * at a time via getLocalImportMtimeSourcePathsAfter()'s keyset pagination, filtering each page down to this
- * directory's own source_path prefix in JS (same filter warmMtimeCache() used to apply to one bulk-loaded Map,
- * before the 2026-09 unbounded-memory fix removed that Map) - rather than loading the whole table into one JS
- * array/Map at once, so this sweep's own peak memory cost is bounded by the page size, never by how large the
- * table (and therefore the configured directory, an ever-growing external corpus) has grown to.
+ * records know about that no longer actually exists on disk - see scanDirectory()'s own doc comment for why
+ * this sweep exists at all. Walks the WHOLE local_import_mtimes table (it isn't partitioned per directory - see
+ * its own SCHEMA_SQL comment in character-metadata-db.js) REMOVED_FILE_SWEEP_PAGE_SIZE rows at a time via
+ * getLocalImportMtimeSourcePathsAfter()'s keyset pagination, filtering each page down to this directory's own
+ * source_path prefix in JS - so this sweep's own peak memory cost is bounded by the page size, never by how
+ * large the table (and therefore the configured directory, an ever-growing external corpus) has grown to.
+ *
+ * Checks each candidate directly against the filesystem (one stat per row this pass hasn't already resolved)
+ * rather than against a pre-built listing of the directory: there is no bounded-memory way to hold "every
+ * filename currently in this directory" for a directory of unbounded size, and no ordering guarantee between a
+ * filesystem enumeration and this table's own sort that a merge-style comparison could rely on instead (SQLite's
+ * source_path ordering is a byte-wise collation; a directory listing carries no ordering contract at all) - so
+ * asking the filesystem about one specific path at a time is both the only bounded-memory option and the only
+ * one that doesn't depend on two different systems agreeing on how to sort text.
  * @param {DirectoryScanState} state
  * @param {import('./users.js').UserDirectoryList} directories
- * @param {Set<string>} entrySet This pass's fresh readdir() listing of state.sourceDir, as filenames.
  * @returns {Promise<void>}
  */
-async function sweepRemovedFiles(state, directories, entrySet) {
+async function sweepRemovedFiles(state, directories) {
     const prefix = state.sourceDir.endsWith(path.sep) ? state.sourceDir : state.sourceDir + path.sep;
     let cursor = '';
     for (;;) {
@@ -487,7 +492,8 @@ async function sweepRemovedFiles(state, directories, entrySet) {
         for (const sourcePath of page) {
             if (!sourcePath.startsWith(prefix)) continue;
             const filename = path.basename(sourcePath);
-            if (!entrySet.has(filename)) {
+            const stillExists = await fsPromises.access(sourcePath, fs.constants.F_OK).then(() => true, () => false);
+            if (!stillExists) {
                 await cleanupRemovedFile(state, directories, filename);
             }
         }
@@ -561,7 +567,7 @@ function readTagImportSetting(directories) {
  * @param {number} [tagImportSetting]
  * @returns {Promise<void>}
  */
-async function processFile(state, filename, directories, tagImportSetting = 3) {
+async function processFile(state, filename, directories, tagImportSetting = 3, bulkMtimeHints = null) {
     if (!state.inFlightFiles) state.inFlightFiles = new Map();
     const existing = state.inFlightFiles.get(filename);
     if (existing) {
@@ -572,7 +578,7 @@ async function processFile(state, filename, directories, tagImportSetting = 3) {
         return;
     }
 
-    const runPromise = processFileImpl(state, filename, directories, tagImportSetting);
+    const runPromise = processFileImpl(state, filename, directories, tagImportSetting, bulkMtimeHints);
     state.inFlightFiles.set(filename, runPromise);
     try {
         await runPromise;
@@ -588,9 +594,14 @@ async function processFile(state, filename, directories, tagImportSetting = 3) {
  * @param {string} filename
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {number} [tagImportSetting]
+ * @param {Map<string, number> | null} [bulkMtimeHints] scanDirectory()'s own one-query-per-chunk prefetch for
+ * THIS pass's file list (see getLocalImportMtimesForPaths()) - checked ahead of the persisted-record fallback
+ * below so a whole pass's worth of cache misses costs a handful of batched queries instead of one per file.
+ * `null` from any other caller (the watcher path, a single retriggered file) - those never had a pass-wide
+ * prefetch to consult, so this always falls through to the ordinary per-file lookup for them.
  * @returns {Promise<void>}
  */
-async function processFileImpl(state, filename, directories, tagImportSetting = 3) {
+async function processFileImpl(state, filename, directories, tagImportSetting = 3, bulkMtimeHints = null) {
     const format = detectFormat(filename);
     if (!format) return;
 
@@ -614,13 +625,20 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
     let lastMtimeMs = state.lastSeenMtimeMs.get(filename);
     if (lastMtimeMs === undefined) {
         // Cache miss - either genuinely never processed, or evicted by MAX_LAST_SEEN_MTIME_ENTRIES (see that
-        // constant's and lastSeenMtimeMs's own doc comments). Falls back to the persisted record so a bounded
-        // in-memory cache never costs the wasteful full re-read/re-hash it exists purely to avoid -
-        // getLocalImportMtime() is a single indexed point lookup, nowhere near that cost.
-        const persisted = await getLocalImportMtime(directories, sourcePath);
-        if (persisted) {
-            lastMtimeMs = persisted.mtimeMs;
-            touchLastSeenMtime(state, filename, lastMtimeMs); // Repopulate the hot-path cache with the answer.
+        // constant's and lastSeenMtimeMs's own doc comments). bulkMtimeHints (present only on scanDirectory()'s
+        // own pass, which already prefetched every file this pass will ask about) answers it with zero further
+        // I/O; otherwise falls back to the persisted record so a bounded in-memory cache never costs the
+        // wasteful full re-read/re-hash it exists purely to avoid - getLocalImportMtime() is a single indexed
+        // point lookup, nowhere near that cost either, just N of them where bulkMtimeHints is one.
+        if (bulkMtimeHints?.has(sourcePath)) {
+            lastMtimeMs = bulkMtimeHints.get(sourcePath);
+            touchLastSeenMtime(state, filename, lastMtimeMs);
+        } else {
+            const persisted = await getLocalImportMtime(directories, sourcePath);
+            if (persisted) {
+                lastMtimeMs = persisted.mtimeMs;
+                touchLastSeenMtime(state, filename, lastMtimeMs); // Repopulate the hot-path cache with the answer.
+            }
         }
     }
     if (lastMtimeMs === stat.mtimeMs) {
@@ -874,20 +892,27 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
     }
 }
 
+/** How many directory entries scanDirectory() holds in memory at once - both for the batch itself and for the
+ * bulk mtime prefetch that batch triggers (getLocalImportMtimesForPaths()). Bounds this pass's own peak memory
+ * to this many filenames/mtimes regardless of how large the configured directory has grown to; a directory
+ * with a million entries pays the same per-batch memory cost as one with a thousand, just more batches. */
+const SCAN_BATCH_SIZE = 2000;
+
 /**
- * One full pass over one configured directory: lists it, then processFile()s every entry. Wrapped in
- * beginBatchImport()/endBatchImport() (same machinery a bulk drag-drop import already uses - see this module's
- * header) so a directory holding many files pays one SQLite transaction/watcher-suspension window for the whole
- * pass rather than one per file.
+ * One full pass over one configured directory: streams it (fs.opendir(), not fs.readdir() - see SCAN_BATCH_SIZE)
+ * in fixed-size batches, bulk-prefetching each batch's persisted mtimes in one query before dispatching that
+ * batch's files through processFile(). Wrapped in beginBatchImport()/endBatchImport() (same machinery a bulk
+ * drag-drop import already uses - see this module's header) so a directory holding many files pays one SQLite
+ * transaction/watcher-suspension window for the whole pass rather than one per file.
  *
  * Also sweeps for files removed since the LAST pass that saw them (as opposed to processFile()'s own ENOENT
- * branch, which only ever catches a file removed WITHIN this same pass, between readdir() listing it and
- * stat()'ing it - readdir() below simply never lists a file that was already gone before it ran, so
- * processFile() is never even called for it, and a durable local_import_skips/local_import_mtimes row for it
- * would otherwise survive forever - a real, ordinary occurrence for a corpus directory's normal churn, not an
- * edge case). This sweep is driven from the PERSISTED `local_import_mtimes` table (sweepRemovedFiles()), not
- * from lastSeenMtimeMs, since that Map is now a bounded, evictable cache (2026-09 unbounded-memory fix) and can
- * no longer be relied on to know every file this state has ever tracked - the persisted table still can.
+ * branch, which only ever catches a file removed WITHIN this same pass, between this pass's own listing of it
+ * and stat()'ing it - a file already gone before this pass reaches it is never listed at all, so processFile()
+ * is never even called for it, and a durable local_import_skips/local_import_mtimes row for it would otherwise
+ * survive forever - a real, ordinary occurrence for a corpus directory's normal churn, not an edge case). This
+ * sweep is driven from the PERSISTED `local_import_mtimes` table (sweepRemovedFiles()), not from
+ * lastSeenMtimeMs, since that Map is a bounded, evictable cache and can't be relied on to know every file this
+ * state has ever tracked - the persisted table still can.
  * @param {DirectoryScanState} state
  * @param {import('./users.js').UserDirectoryList} directories
  * @returns {Promise<void>}
@@ -898,33 +923,61 @@ export async function scanDirectory(state, directories) {
         return;
     }
 
-    let entries;
-    try {
-        entries = await fsPromises.readdir(state.sourceDir);
-    } catch (err) {
-        console.error(`[local-import] Failed to list ${state.sourceDir}, will retry next pass:`, err.message);
-        return;
-    }
-
     await beginBatchImport(directories);
     try {
-        const entrySet = new Set(entries);
-        // Snapshotted before the main loop below, which discovers newly-added files - this sweep is only ever
-        // about files this pass's own readdir() never saw at all, never ones the main loop below is about to add.
-        await sweepRemovedFiles(state, directories, entrySet);
+        // No listing-vs-removed-file ordering dependency here the way the old entrySet-based sweep had: that
+        // sweep now checks the filesystem directly per candidate (see sweepRemovedFiles()'s own doc comment), so
+        // it no longer needs anything from this pass's own directory read to run correctly before or after it.
+        await sweepRemovedFiles(state, directories);
 
-        // Bounded-concurrency dispatch, not a plain sequential loop: processFile()'s own CPU-bound work now
-        // runs inside the worker pool (see ensureWorkerPool()), so driving it one file at a time here would
-        // leave every worker but one idle. Concurrency is capped at the same resolveWorkerPoolSize() the pool
-        // itself was created with - dispatching more files at once than there are workers to service them just
-        // queues up inside the pool with no throughput benefit, while still growing the number of files whose
-        // main-thread pre/post-worker DB work (stat, skip-check, dedup lookups, staging, import) is interleaved
-        // at once for no reason. mapWithConcurrency() (util.js) is the same bounded-concurrency driver
-        // characters-search-index.js's own I/O-bound file-read pass already uses - reused here rather than a
-        // second implementation of "N in flight at once, preserve nothing about ordering that matters" (file
-        // processing order was never significant - each file's outcome is independent of every other's).
+        let dir;
+        try {
+            dir = await fsPromises.opendir(state.sourceDir);
+        } catch (err) {
+            console.error(`[local-import] Failed to list ${state.sourceDir}, will retry next pass:`, err.message);
+            return;
+        }
+
         const tagImportSetting = readTagImportSetting(directories);
-        await mapWithConcurrency(entries, resolveWorkerPoolSize(), filename => processFile(state, filename, directories, tagImportSetting));
+        const concurrency = resolveWorkerPoolSize();
+        let batch = [];
+
+        const runBatch = async () => {
+            if (!batch.length) return;
+            const sourcePaths = batch.map(filename => path.join(state.sourceDir, filename));
+            const bulkMtimeHints = await getLocalImportMtimesForPaths(directories, sourcePaths);
+            // Bounded-concurrency dispatch, not a plain sequential loop: processFile()'s own CPU-bound work now
+            // runs inside the worker pool (see ensureWorkerPool()), so driving it one file at a time here would
+            // leave every worker but one idle. Concurrency is capped at the same resolveWorkerPoolSize() the
+            // pool itself was created with - dispatching more files at once than there are workers to service
+            // them just queues up inside the pool with no throughput benefit, while still growing the number of
+            // files whose main-thread pre/post-worker DB work (stat, skip-check, dedup lookups, staging,
+            // import) is interleaved at once for no reason. mapWithConcurrency() (util.js) is the same
+            // bounded-concurrency driver characters-search-index.js's own I/O-bound file-read pass already
+            // uses - reused here rather than a second implementation of "N in flight at once, preserve nothing
+            // about ordering that matters" (file processing order was never significant - each file's outcome
+            // is independent of every other's).
+            await mapWithConcurrency(batch, concurrency, filename => processFile(state, filename, directories, tagImportSetting, bulkMtimeHints));
+            batch = [];
+        };
+
+        try {
+            // Not filtered by dirent.isFile() here - some filesystems (network mounts, overlayfs, and other
+            // setups a real deployment or a test sandbox can land on) don't populate directory-entry file-type
+            // info at all, and Node's Dirent.isFile() has no stat-fallback for opendir()'s streaming iteration
+            // the way some other APIs do - it just reports false for everything on those filesystems, which
+            // would silently skip every entry rather than degrade to "check them all". processFileImpl()
+            // already does a real fs.stat() per file and correctly skips non-files there (line ~623) - that
+            // check is filesystem-agnostic and was already relied on before this streaming rewrite, so nothing
+            // needs duplicating here.
+            for await (const dirent of dir) {
+                batch.push(dirent.name);
+                if (batch.length >= SCAN_BATCH_SIZE) await runBatch();
+            }
+            await runBatch();
+        } finally {
+            await dir.close().catch(() => { /* already closed by the for-await loop exhausting it - best-effort */ });
+        }
     } finally {
         await endBatchImport(directories);
         // withPerHashLock()'s coordination is only ever needed to arbitrate races WITHIN one pass's concurrent

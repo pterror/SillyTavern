@@ -100,44 +100,44 @@ describe('local-import-scan: watcher-overflow signal during an in-flight periodi
 
     test('an overflow signal arriving while a normally-scheduled pass is still running does not start a second, overlapping pass', async () => {
         jest.useFakeTimers();
-        const realReaddir = fs.promises.readdir.bind(fs.promises);
-        let readdirCallCount = 0;
+        const realOpendir = fs.promises.opendir.bind(fs.promises);
+        let opendirCallCount = 0;
         /** @type {() => void} */
         let releaseSecondCall = () => {};
-        const readdirSpy = jest.spyOn(fs.promises, 'readdir').mockImplementation(async (...args) => {
-            readdirCallCount++;
-            if (readdirCallCount === 2) {
+        const opendirSpy = jest.spyOn(fs.promises, 'opendir').mockImplementation(async (...args) => {
+            opendirCallCount++;
+            if (opendirCallCount === 2) {
                 // Stall the SECOND pass - the one started by a real, already-fired scheduled timer, i.e. exactly
                 // the condition under which `scanTimeout` used to still look truthy despite this pass being
                 // genuinely in flight - until this test explicitly releases it below.
                 await new Promise(resolve => { releaseSecondCall = resolve; });
             }
-            return realReaddir(...args);
+            return realOpendir(...args);
         });
 
         try {
             await localImportScan.initializeLocalImportScan();
-            await localImportScan.waitForCurrentScanPass(); // first pass (readdir call #1) - fast, empty dir
+            await localImportScan.waitForCurrentScanPass(); // first pass (opendir call #1) - fast, empty dir
             expect(typeof capturedOnOverflow).toBe('function');
 
-            // Fire the real scheduled timer for the SECOND pass (readdir call #2, stalled by the mock above).
+            // Fire the real scheduled timer for the SECOND pass (opendir call #2, stalled by the mock above).
             await jest.advanceTimersByTimeAsync(1000);
             await Promise.resolve();
             await Promise.resolve();
-            expect(readdirCallCount).toBe(2);
+            expect(opendirCallCount).toBe(2);
 
             // Simulate a watcher-overflow signal arriving WHILE that second pass is still stalled inside its own
-            // readdir() call - the exact window the historical bug launched an overlapping third pass in.
+            // opendir() call - the exact window the historical bug launched an overlapping third pass in.
             capturedOnOverflow();
             await Promise.resolve();
             await Promise.resolve();
             await Promise.resolve();
 
-            // Fixed behavior: passInFlight blocks the overflow-triggered rescan outright - no third readdir call.
-            expect(readdirCallCount).toBe(2);
+            // Fixed behavior: passInFlight blocks the overflow-triggered rescan outright - no third opendir call.
+            expect(opendirCallCount).toBe(2);
         } finally {
             releaseSecondCall();
-            readdirSpy.mockRestore();
+            opendirSpy.mockRestore();
             jest.useRealTimers();
         }
 
