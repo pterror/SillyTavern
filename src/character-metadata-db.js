@@ -5357,9 +5357,9 @@ export async function getCurrentSeq(directories) {
 
 /**
  * `POST /api/characters/changes` (design doc §5.2): the change-feed replacement for a whole-library manifest scan.
- * Not yet wired to replace `/api/characters/manifest` in characters.js - the doc scopes that client-side switch to
- * a later phase (§5.2's own framing: "once browse is server-paginated" client-side, which is phase 5, not this
- * one) - this only adds the server-side capability.
+ * WIRED: `fetchCharactersDelta()` (public/script.js) is `getCharacters()`'s sole sync path today - `/manifest`
+ * has no remaining client caller. Stale note for history: this comment used to say "not yet wired"; corrected
+ * 2026-09 (see characters.js's matching `/changes` route doc comment).
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {number} sinceSeq
  * @returns {Promise<{ seq: number, changes: { id: string, op: 'upsert'|'delete', fields?: string[]|null }[], truncated: boolean } | null>}
