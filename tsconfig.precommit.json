@@ -14,7 +14,7 @@
         }
     },
     "include": [
-        "public/scripts/**/*.js",
+        "public/**/*.js",
         "src/**/*.js",
         "public/global.d.ts",
         "src/types/*.d.ts"

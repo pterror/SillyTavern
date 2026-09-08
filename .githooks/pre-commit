@@ -1,12 +1,28 @@
 #!/usr/bin/env bash
-# Blocks commits that introduce TS2304 ("Cannot find name") errors.
+# Blocks commits that introduce dangling import/export references (Cannot find name / no exported
+# member / declared but not exported) or new circular-import growth.
 #
-# This is deliberately narrow: a full type-check of this codebase produces
-# hundreds of errors (loose `{object}` JSDoc typing, etc.) that aren't worth
-# gating commits on. TS2304 specifically has caught real ReferenceError bugs
-# (dangling references from incomplete re-exports, calls to functions that
-# were never defined) with clean signal and no noise, so that's the one
-# class this hook enforces. See tsconfig.precommit.json for the check scope.
+# This is deliberately narrow on the type-check side: a full type-check of this codebase produces
+# hundreds of errors (loose `{object}` JSDoc typing, etc.) that aren't worth gating commits on.
+# TS2304/TS2305/TS2459/TS2614 specifically catch real ReferenceError/SyntaxError bugs (a name used
+# but never defined or imported; an import naming something the target module doesn't export at all;
+# an import naming something the target module defines locally but doesn't export; a default-import
+# mismatch) with clean signal and no noise, so those are the codes this hook enforces. See
+# tsconfig.precommit.json for the check scope.
+#
+# Confirmed empirically (2026-09-08, three live breaks in one session) that these four codes are not
+# interchangeable: a bare undefined identifier is TS2304, importing a name a module never declares at
+# all is TS2305, and importing a name a module declares but doesn't `export` is TS2459 - gating on
+# TS2304 alone (the original version of this hook) missed the TS2459 shape entirely and let a broken
+# commit through to a live server.
+#
+# Also confirmed empirically, same session: `npx tsc` silently falls through to npm's "you don't have
+# this installed" placeholder when the `typescript` package is missing from node_modules, prints that
+# as normal-looking output, and exits in a way `|| true` swallows - so a hook that just greps the
+# output for error codes sees zero matches and reports success even though no type-checking happened
+# at all. Both tool invocations below verify the tool is real (a version string in the expected shape)
+# before trusting its output, and hard-fail with a loud, specific message if it isn't - never a silent
+# pass.
 #
 # Wiring (one-time, per clone):
 #   git config core.hooksPath .githooks
@@ -19,15 +35,32 @@ if ! command -v npx >/dev/null 2>&1; then
     exit 1
 fi
 
+# --- verify tsc is the real compiler, not npm's install-prompt placeholder ---
+tsc_version="$(npx tsc --version 2>&1 || true)"
+if ! printf '%s\n' "$tsc_version" | grep -qE '^Version [0-9]+\.[0-9]+\.[0-9]+'; then
+    echo "pre-commit: blocked -- 'npx tsc --version' did not return a real TypeScript version:" >&2
+    echo "" >&2
+    printf '%s\n' "$tsc_version" >&2
+    echo "" >&2
+    echo "This usually means the 'typescript' devDependency isn't actually installed (run 'npm install' /" >&2
+    echo "'npm install typescript' in this repo) - npx silently falls through to a placeholder package in" >&2
+    echo "that case, which looks like harmless output but means NO type-checking happened. Refusing to" >&2
+    echo "treat that as a pass." >&2
+    exit 1
+fi
+
 output="$(npx tsc -p tsconfig.precommit.json --noEmit 2>&1 || true)"
-dangling="$(printf '%s\n' "$output" | grep -E 'error TS2304:' || true)"
+dangling="$(printf '%s\n' "$output" | grep -E 'error TS(2304|2305|2459|2614):' || true)"
 
 if [ -n "$dangling" ]; then
-    echo "pre-commit: blocked -- TS2304 (Cannot find name) errors found:" >&2
+    echo "pre-commit: blocked -- dangling import/export reference errors found:" >&2
     echo "" >&2
     printf '%s\n' "$dangling" >&2
     echo "" >&2
-    echo "These are dangling references (missing import, missing typedef, or a function/name that doesn't exist). Fix them or, if this is a false positive, adjust tsconfig.precommit.json." >&2
+    echo "TS2304 (cannot find name), TS2305 (module has no exported member), TS2459 (declared locally but" >&2
+    echo "not exported), or TS2614 (no default export) - a missing import, a missing/incomplete export, or" >&2
+    echo "a call to something that doesn't exist. Fix them or, if this is a false positive, adjust" >&2
+    echo "tsconfig.precommit.json." >&2
     exit 1
 fi
 
@@ -44,6 +77,19 @@ fi
 # cycles, lower the number in .oxlint-cycle-baseline to lock in the win.
 if ! command -v npx >/dev/null 2>&1; then
     echo "pre-commit: npx not found on PATH -- enter the project dev shell (direnv/nix develop) first" >&2
+    exit 1
+fi
+
+# --- verify oxlint is the real linter, same reasoning as the tsc check above ---
+oxlint_version="$(npx oxlint --version 2>&1 || true)"
+if ! printf '%s\n' "$oxlint_version" | grep -qE 'Version:? [0-9]+\.[0-9]+\.[0-9]+'; then
+    echo "pre-commit: blocked -- 'npx oxlint --version' did not return a real oxlint version:" >&2
+    echo "" >&2
+    printf '%s\n' "$oxlint_version" >&2
+    echo "" >&2
+    echo "Same failure mode as the tsc check above: if oxlint isn't actually installed, npx can silently" >&2
+    echo "fall through to a placeholder instead of running the real linter. Refusing to treat that as a" >&2
+    echo "pass. Run 'npm install' and try again." >&2
     exit 1
 fi
 
