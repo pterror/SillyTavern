@@ -316,9 +316,9 @@ export { messageFormatting };
 // st-context.js) already import one or more of these `from '../script.js'`. Re-exporting keeps every
 // existing import statement working unchanged.
 import {
-    updateMessage, updateIn,
+    updateMessage, updateIn, deepFreeze,
     ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath, chatOpSelect,
-    _mergeCardGreetingsIntoOpening, _restoreContinuation, _isBlankSlot,
+    _mergeCardGreetingsIntoOpening, _restoreContinuation, _isBlankSlot, _markMessageSaved,
 } from './scripts/chat-store.js';
 export {
     updateMessage, updateIn,
