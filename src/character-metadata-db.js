@@ -5357,8 +5357,8 @@ export async function getCurrentSeq(directories) {
 
 /**
  * `POST /api/characters/changes` (design doc §5.2): the change-feed replacement for a whole-library manifest scan.
- * WIRED: `fetchCharactersDelta()` (public/script.js) is `getCharacters()`'s sole sync path today - `/manifest`
- * has no remaining client caller.
+ * `fetchCharactersDelta()` (public/script.js) is `getCharacters()`'s sole sync path today; `/manifest` has no
+ * remaining client caller.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {number} sinceSeq
  * @returns {Promise<{ seq: number, changes: { id: string, op: 'upsert'|'delete', fields?: string[]|null }[], truncated: boolean } | null>}
