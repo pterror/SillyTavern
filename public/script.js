@@ -14662,23 +14662,21 @@ export async function swipe(event, direction, { source, repeated, message = chat
     }
 
     /**
-     * @param {JQuery} thisMesDiv
-     * @returns {number|null} The scrollTop that pins thisMesDiv's bottom to the chat's visible
-     * bottom, or null if thisMesDiv (even the live element at mesId, as a fallback) isn't an
-     * on-screen box to measure against.
+     * @returns {number|null} The scrollTop that pins mesId's live element's bottom to the chat's
+     * visible bottom, or null if mesId has no live on-screen element to measure against.
      */
-    function getMessageBottomHeight(thisMesDiv) {
-        // A tree-backed chat's redisplayChat() (via loadFromSwipeId()'s switchToAlternativePath(),
-        // or endSwipe()'s revert path) can replace mesId's element out from under a still-running
-        // swipe at any point - including after this specific thisMesDiv reference was captured, so
-        // callers reacquiring their own reference earlier does not fully cover it. A detached element
-        // reports an all-zero getBoundingClientRect(), which would otherwise silently compute a
-        // scrollTop nowhere near correct. Fall back to whatever is actually live at mesId, and give
-        // up cleanly (no scroll adjustment) rather than measure a box that was never rendered.
-        if (!thisMesDiv[0]?.isConnected) {
-            thisMesDiv = chatElement.children('.mes').filter(`[mesid="${mesId}"]`);
-        }
-        if (!thisMesDiv[0]?.isConnected) {
+    function getMessageBottomHeight() {
+        // Resolved fresh against mesId on every call, never against a reference a caller might be
+        // holding onto: a tree-backed chat's redisplayChat() (via loadFromSwipeId()'s
+        // switchToAlternativePath(), or endSwipe()'s revert path) can replace mesId's element with a
+        // new one at any point while a swipe's animation is still in flight, including between this
+        // function's own progress and complete calls. A detached element reports an all-zero
+        // getBoundingClientRect(), which would otherwise silently compute a scrollTop nowhere near
+        // correct - so there is nothing here a caller could pass that would be safe to trust across
+        // that gap. Give up cleanly (no scroll adjustment) when mesId is not currently on screen at
+        // all, rather than measure a box that was never rendered.
+        const liveMesDiv = chatElement.children('.mes').filter(`[mesid="${mesId}"]`);
+        if (!liveMesDiv[0]?.isConnected) {
             return null;
         }
         // thisMesRect.top/bottom are viewport-relative, so they can only be combined with
@@ -14689,7 +14687,7 @@ export async function swipe(event, direction, { source, repeated, message = chat
         // (layout shifts, mobile keyboards, etc.), the more arbitrary the resulting jump,
         // even when starting pinned to the bottom with nothing to restore.
         const containerRect = chatElement[0].getBoundingClientRect();
-        const thisMesRect = thisMesDiv[0].getBoundingClientRect();
+        const thisMesRect = liveMesDiv[0].getBoundingClientRect();
         // How far the message's bottom edge currently sits past the bottom of the visible
         // chat area. Adding this delta to the current scroll position pins the message's
         // bottom to the container's bottom, regardless of where the container itself sits
@@ -14712,17 +14710,20 @@ export async function swipe(event, direction, { source, repeated, message = chat
             if (is_animation_scroll && target !== null) chatElement.scrollTop(target);
         };
 
+        // thisMesDiv only drives the height tween below - if mesId's element gets replaced mid-swipe,
+        // this animation simply keeps running on the orphaned node, with no visual effect either way.
+        // The scroll pin is a separate, always-live concern: see getMessageBottomHeight().
         //Expand new message.
         thisMesDiv.animate({ height: new_height + 'px' }, {
             duration: 0, //used to be 100 //Disabled on Cohee's request. https://github.com/SillyTavern/SillyTavern/pull/4610/files#r2408731744
             queue: false,
             progress: function (animation, progress, remainingMs) {
-                applyScrollPin(getMessageBottomHeight(thisMesDiv));
+                applyScrollPin(getMessageBottomHeight());
             },
             complete: function () {
                 thisMesDiv.css('height', 'auto');
                 //Correct height auto offset.
-                applyScrollPin(getMessageBottomHeight(thisMesDiv));
+                applyScrollPin(getMessageBottomHeight());
             },
         });
     }
