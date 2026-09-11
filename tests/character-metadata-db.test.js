@@ -183,6 +183,35 @@ describe('renameCharacterRow', () => {
     });
 });
 
+describe('setCharacterDateAdded', () => {
+    test('overwrites date_added on an existing row, both the column and shallow_json\'s embedded copy', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+
+        await metadataDb.setCharacterDateAdded(directories, 'Bob.png', 5000);
+
+        const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+        expect(row.date_added).toBe(5000);
+        expect(JSON.parse(row.shallow_json).date_added).toBe(5000);
+    });
+
+    test('is a no-op for an id with no row', async () => {
+        await expect(metadataDb.setCharacterDateAdded(directories, 'Nobody.png', 5000)).resolves.toBeUndefined();
+        expect(await metadataDb.getCharacterMetadataRow(directories, 'Nobody.png')).toBeUndefined();
+    });
+
+    test('patches a row still sitting in the batch-import pending buffer, not yet flushed to the table', async () => {
+        await metadataDb.beginBatchImport(directories);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Carol.png', cardJson({ name: 'Carol', data: { name: 'Carol', tags: [], creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } }), 1000);
+
+        await metadataDb.setCharacterDateAdded(directories, 'Carol.png', 7000);
+        await metadataDb.endBatchImport(directories);
+
+        const row = await metadataDb.getCharacterMetadataRow(directories, 'Carol.png');
+        expect(row.date_added).toBe(7000);
+        expect(JSON.parse(row.shallow_json).date_added).toBe(7000);
+    });
+});
+
 describe('bootstrapIfNeeded', () => {
     test('seeds date_added from ctimeMs and only runs once', async () => {
         const filePath = await writeCardFile('Alice.png');

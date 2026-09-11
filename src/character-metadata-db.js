@@ -1884,6 +1884,32 @@ function withPatchedDateAdded(shallowJson, dateAdded) {
 }
 
 /**
+ * Overwrites `id`'s date_added (and shallow_json's embedded copy) unconditionally - the one sanctioned
+ * exception to date_added being write-once elsewhere in this module. Defers to the batch-import pending
+ * buffer if the row hasn't flushed to the table yet. No-op if the row exists in neither place.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} id
+ * @param {number} dateAddedMs
+ * @returns {Promise<void>}
+ */
+export async function setCharacterDateAdded(directories, id, dateAddedMs) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+
+    const pending = entry.batch?.pending.get(id);
+    if (pending) {
+        pending.row.date_added = dateAddedMs;
+        pending.row.shallow_json = withPatchedDateAdded(pending.row.shallow_json, dateAddedMs);
+        return;
+    }
+
+    const row = entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id });
+    if (!row) return;
+    const shallowJson = withPatchedDateAdded(row.shallow_json, dateAddedMs);
+    entry.db.run('UPDATE characters SET date_added = @dateAddedMs, shallow_json = @shallowJson WHERE id = @id', { dateAddedMs, shallowJson, id });
+}
+
+/**
  * Either writes `row` immediately (one small transaction) or, while batch-import mode is active for this
  * user, buffers it and flushes in BATCH_FLUSH_SIZE-sized chunks instead - see beginBatchImport()'s header.
  * @param {MetadataDbEntry} entry
