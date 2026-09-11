@@ -11,7 +11,7 @@ import { readSettingsAtPaths } from './settings-store.js';
 import { copyCharacterFile } from './local-import-copy.js';
 import { reclaimReflinkPrefix } from './character-card-parser.js';
 import { importCharacterFileHeadless, buildPngImportData, buildJsonImportData, mintCharacterId, fireMetadataUpsertHook } from './endpoints/characters.js';
-import { beginBatchImport, endBatchImport, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, getLocalImportSkip, setLocalImportSkip, clearLocalImportSkip, getLocalImportMtime, getLocalImportMtimesForPaths, getLocalImportMtimeSourcePathsAfter, setLocalImportMtime, clearLocalImportMtime, seedCardTagsForSingleCharacter } from './character-metadata-db.js';
+import { beginBatchImport, endBatchImport, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, getLocalImportSkip, setLocalImportSkip, clearLocalImportSkip, getLocalImportMtime, getLocalImportMtimesForPaths, getLocalImportMtimeSourcePathsAfter, setLocalImportMtime, clearLocalImportMtime, setCharacterDateAdded, seedCardTagsForSingleCharacter } from './character-metadata-db.js';
 import { attachLinuxDirectoryWatch, isWindowsOverflowSignal } from './watch-overflow.js';
 import { detectFormat } from './local-import-classify.js';
 import { LocalImportWorkerPool, resolveWorkerPoolSize } from './local-import-worker-pool.js';
@@ -367,6 +367,11 @@ async function stageFile(sourcePath) {
  * Unlike the removed maybeHardlinkDuplicateSource (which replaced SOURCE files with hardlinks to the
  * canonical copy, destroying the archive's independence), this only ever modifies the app-managed
  * canonical copy inside this install's own data directory, so it needs no config opt-in.
+ *
+ * A successful reflink also corrects `characterId`'s date_added to `sourcePath`'s own mtime
+ * (setCharacterDateAdded()) - a duplicate match means this source file is real evidence of when the
+ * character actually originated, a better estimate than whatever date_added the row already carries.
+ * Best-effort: a failure here never undoes or blocks the reflink itself.
  * @param {string} sourcePath Absolute path to the duplicate source file in the scanned directory.
  * @param {string} characterId The already-imported character's avatar filename (e.g. '01a0....png').
  * @param {import('./users.js').UserDirectoryList} directories
@@ -388,6 +393,12 @@ async function maybeReflinkDuplicateTarget(sourcePath, characterId, directories)
         const result = await reclaimReflinkPrefix(targetPath, sourcePath);
         if (result.reflinked) {
             console.log(color.cyan(`[local-import] Deduplicated on disk: ${targetPath} reflinked to share extents with source ${sourcePath} (source left untouched).`));
+            try {
+                const sourceStat = await fsPromises.stat(sourcePath);
+                await setCharacterDateAdded(directories, characterId, sourceStat.mtimeMs);
+            } catch (err) {
+                console.debug(`[local-import] Failed to update date_added for ${characterId} from source mtime ${sourcePath}:`, /** @type {any} */ (err)?.message ?? err);
+            }
         }
     } catch (err) {
         console.debug(`[local-import] Reflink dedup failed for ${targetPath} <- ${sourcePath}:`, /** @type {any} */ (err)?.message ?? err);
