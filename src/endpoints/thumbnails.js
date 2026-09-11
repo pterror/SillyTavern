@@ -75,18 +75,9 @@ function getOriginalFolder(directories, type) {
 }
 
 /**
- * Gets the `?v=` version value the GET /thumbnail route below hands out for a file, derived from the *cached
- * thumbnail's* own mtime (not the original image's) - the exact same value that route computes at
- * `stat.mtimeMs` further down, so a caller who already has this can request the versioned URL directly and
- * skip the no-cache redirect hop. Meant for the various list endpoints (character manifest, background list,
- * persona list) to hand the client a ready `?v=` up front.
- *
- * Returns null when no cached thumbnail exists yet - nothing to version; the client should omit `v` and let
- * the route's own lazy-generate-then-redirect path mint one on first request, same as before this existed.
- * @param {import('../users.js').UserDirectoryList} directories User directories
- * @param {ThumbnailType} type Type of the thumbnail
- * @param {string} file Name of the file
- * @returns {string|null} Version string matching what the GET /thumbnail route expects in `?v=`, or null
+ * Version for the `?v=` param, derived from the cached thumbnail's own mtime - lets a caller build the
+ * versioned URL directly and skip the redirect hop below. Null if no cached thumbnail exists yet.
+ * @returns {string|null}
  */
 export function getThumbnailVersion(directories, type, file) {
     const folder = getThumbnailFolder(directories, type);
@@ -327,21 +318,13 @@ publicRouter.get('/', async function (request, response) {
             const stat = fs.statSync(pathToCachedFile);
             const version = String(Math.round(stat.mtimeMs));
 
-            // The cache key is otherwise just type+file, with no hash or mtime, so a bare `immutable` would
-            // pin a stale avatar forever the moment a character's image is edited. So: long-lived immutable
-            // caching is only handed out to a request that already names the current version; anything else
-            // gets redirected to the versioned URL. invalidateThumbnail() deletes this file (and its mtime
-            // with it) whenever the source image changes, so the version is self-correcting - a request for
-            // a missing, stale, or forged version always lands on the freshest one.
+            // immutable caching only for a request that already names the current version, since the cache
+            // key is otherwise just type+file with no hash/mtime and would pin a stale image forever.
             if (request.query.v === version) {
                 response.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
                 return response.sendFile(file, { root: thumbnailFolder, dotfiles: 'allow' });
             }
 
-            // The redirect itself must never be cached long-term, so it deliberately skips
-            // invalidateFirefoxCache()'s `no-store` header in favor of a plain `no-cache`: that header exists
-            // to work around Firefox not picking up a changed image at a fixed URL, which is exactly the
-            // problem the versioned URL above already solves for the response that actually matters.
             response.setHeader('Cache-Control', 'no-cache');
             const query = new URLSearchParams({ type, file, v: version });
             if (typeof animated === 'string') query.set('animated', animated);

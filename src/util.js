@@ -175,37 +175,16 @@ export function delay(ms) {
 }
 
 /**
- * Runs `fn` over `items` with at most `concurrency` calls in flight at once. A plain `Promise.all(items.map(fn))`
- * would start every call at once regardless of how large `items` is - fine for small lists, not for whole-
- * library-sized ones where per-call overhead (open file descriptors, etc.) matters. Originally written for
- * characters-search-index.js's index build (see that file's history for the concurrency-plateau measurements
- * this default is based on); factored out here so any other whole-library file-read pass (e.g.
- * character-metadata-db.js's bootstrap) can reuse the exact same bounded-concurrency behavior instead of
- * reimplementing it, sequentially, from scratch.
+ * Runs `fn` over `items` with at most `concurrency` calls in flight at once.
  *
- * `items` can be a plain array OR an async-iterable (e.g. what `fs.opendir()` yields) - added so
- * local-import-scan.js's scanDirectory() can stream directory entries through this instead of having to
- * `fsPromises.readdir()` the whole directory into one array first just to hand it to this function (see that
- * call site). Deliberately two DIFFERENT internal strategies, not one unified "shared iterator" implementation
- * for both, because they have genuinely different correctness requirements:
- *   - Array input: unchanged from before this async-iterable support existed - each worker claims the next
- *     index and writes `results[index]`, so **input order is always preserved** in the returned array. This is
- *     load-bearing for the one caller that needs it (characters-search-index.js's searchCharacters(), whose
- *     `hits` array is rank-ordered and must come back resolved in that same order) - a shared-iterator/
- *     push-results-in-completion-order scheme would silently scramble that ranking under concurrency, so array
- *     input never goes through that path.
- *   - Async-iterable input: workers pull from one shared iterator (`await iterator.next()` - safe under
- *     concurrent pulls: each call is a distinct await, and the runtime queues/serializes the underlying reads),
- *     appending each result as it completes. Order is NOT preserved relative to iteration order here. Safe only
- *     because every current async-iterable caller (scanDirectory()) discards the return value entirely - if a
- *     future caller needs both streaming input and preserved output order, this function will need to grow a
- *     way to say so explicitly rather than assuming one or the other from the input shape.
+ * `items` can be a plain array or an async-iterable (e.g. what `fs.opendir()` yields). Array input preserves
+ * result order (workers claim indices, write `results[index]`). Async-iterable input does NOT preserve order
+ * relative to iteration (workers pull from one shared iterator and append as they complete).
  * @template T, R
  * @param {T[] | AsyncIterable<T>} items
  * @param {number} concurrency
- * @param {(item: T, index: number) => Promise<R>} fn `index` is the input's array index for array input; for
- * async-iterable input it's just a monotonic per-result counter (no relationship to iteration position is
- * guaranteed), since no current async-iterable caller reads it.
+ * @param {(item: T, index: number) => Promise<R>} fn `index` is the array index for array input, or a monotonic
+ * counter unrelated to iteration position for async-iterable input.
  * @returns {Promise<R[]>}
  */
 export async function mapWithConcurrency(items, concurrency, fn) {
@@ -611,10 +590,8 @@ export function uuidv4() {
 const UUID_LIKE_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * Mints a time-ordered UUIDv7 (RFC 9562): a 48-bit big-endian Unix-ms timestamp in the first 6 bytes, the 4-bit
- * version and 2-bit variant fields set per spec, and the rest filled with cryptographically random bytes. Used as
- * the immutable character id minted at create/import time (design doc `character-data-residency-redesign.md`
- * §2.2/§9 phase 4d) - the id's own time-ordering makes it a stable tiebreaker for rows sharing a `date_added`.
+ * Mints a time-ordered UUIDv7 (RFC 9562): a 48-bit big-endian Unix-ms timestamp in the first 6 bytes, version/
+ * variant fields set per spec, rest cryptographically random.
  * @returns {string} A UUIDv7 string
  */
 export function uuidv7() {
@@ -631,9 +608,7 @@ export function uuidv7() {
 
 /**
  * @param {string} value A candidate character id / filename stem
- * @returns {boolean} True if `value` is shaped like a UUID (any version, case-insensitive) - the discriminator the
- * phase 4d filename migration uses to tell an already-minted id apart from a legacy human-readable filename stem:
- * "is it a valid uuid, not just does it look like a plausible name" (design doc §9, phase 4d).
+ * @returns {boolean} True if `value` is shaped like a UUID (any version, case-insensitive).
  */
 export function isUuidLike(value) {
     return typeof value === 'string' && UUID_LIKE_REGEX.test(value);
@@ -662,12 +637,8 @@ export function humanizedDateTime(timestamp = Date.now()) {
     return `${dt.year}-${dt.month}-${dt.day}@${dt.hour}h${dt.minute}m${dt.second}s${dt.millisecond}ms`;
 }
 
-// The three "ST humanized" patterns humanizedDateTime() above has ever produced across this fork's history -
-// mirrors public/scripts/utils.js's own (unexported) parseTimestamp() regex list, which the client already needs
-// to make old create_date values sortable/displayable (moment.js can't parse this shape on its own). Duplicated
-// here (rather than imported) because that module is browser-only (pulls in moment + getCurrentLocale(), a
-// client-side settings read) and this server-side parser only needs the three regexes, not the rest of its file.
-// Keep both lists in sync if a fourth humanized shape is ever found in the wild.
+// Mirrors public/scripts/utils.js's parseTimestamp() regex list; duplicated here since that module is
+// browser-only. Keep both lists in sync.
 const HUMANIZED_DATE_PATTERNS = [
     // 2024-07-12@01h31m37s123ms
     /^(\d{4})-(\d{1,2})-(\d{1,2})@(\d{1,2})h(\d{1,2})m(\d{1,2})s(\d{1,3})ms$/,
@@ -678,20 +649,10 @@ const HUMANIZED_DATE_PATTERNS = [
 ];
 
 /**
- * Parses a character card's own self-reported `create_date` field (an arbitrary, card-authored string - see
- * character-metadata-db.js's SCHEMA_SQL comment on why the `characters.create_date` column stores this as epoch
- * ms rather than the raw string) into epoch milliseconds.
- *
- * Confirmed against this fork's real ~327k-row production character-metadata.sqlite (2026-08 create_date
- * migration): every non-empty value in that corpus was either directly `Date.parse()`-able (the overwhelming
- * majority - real ISO 8601 strings) or matched one of the three HUMANIZED_DATE_PATTERNS above (~6% of rows,
- * produced by humanizedDateTime() at some point in this fork's history before ISO became the default). Zero
- * genuinely unparseable values were found in that corpus, so this function's `null` return is expected to be rare
- * in practice - but it is NOT a "should never happen" path: a card authored by unrelated tooling, or hand-edited,
- * can carry any string at all here, and this function must fail closed (null, not a thrown exception or a bogus
- * NaN timestamp) rather than assume the corpus this was validated against is exhaustive.
+ * Parses a character card's own self-reported `create_date` field (an arbitrary, card-authored string) into
+ * epoch milliseconds. Must fail closed (`null`, never throw or return NaN) since the value can be anything.
  * @param {string | number | null | undefined} value
- * @returns {number | null} Epoch ms, or `null` if `value` is empty/missing or genuinely unparseable.
+ * @returns {number | null} Epoch ms, or `null` if `value` is empty/missing or unparseable.
  */
 export function parseCreateDateToEpochMs(value) {
     if (value === null || value === undefined || value === '') return null;

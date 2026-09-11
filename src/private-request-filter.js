@@ -196,24 +196,15 @@ class PrivateRequestAgent extends Agent {
     }
 }
 
-/**
- * Whether requests to untrusted URLs should follow the global agent chain instead of the strict agent:
- * either the private request filter is enabled (the global agents filter with the user's configured
- * whitelist), or a request proxy owns outbound routing and a direct connection would bypass it.
- * @type {boolean}
- */
 let untrustedFilteringDelegated = false;
 
 /** @type {PrivateRequestAgent|null} */
 let strictAgent = null;
 
 /**
- * Get the agent to use for outbound requests to untrusted, user-supplied URLs (e.g. /api/search/visit).
- * Returns a strict agent that blocks all private addresses at connection time, including on redirect hops,
- * regardless of whether the private request filter is enabled. Returns undefined when the global agent
- * chain already handles these requests (private request filter enabled, or request proxy owns routing),
- * so the default agent selection applies.
- * @returns {PrivateRequestAgent|undefined} The agent to pass to the outbound request, or undefined.
+ * Agent for outbound requests to untrusted, user-supplied URLs (e.g. /api/search/visit).
+ * Undefined when the global agent chain already covers these requests.
+ * @returns {PrivateRequestAgent|undefined}
  */
 export function getUntrustedRequestAgent() {
     if (untrustedFilteringDelegated) {
@@ -235,7 +226,7 @@ export function getUntrustedRequestAgent() {
  * @param {boolean} options.logAllowed Whether to log allowed requests to the console.
  * @param {boolean} options.allowUnresolvedHosts Whether to allow requests to hosts that cannot be resolved.
  * @param {boolean} options.enableKeepAlive Whether to enable HTTP/HTTPS keep-alive.
- * @param {boolean} [options.requestProxyEnabled] Whether a request proxy is enabled and owns outbound routing.
+ * @param {boolean} [options.requestProxyEnabled] Whether a request proxy owns outbound routing.
  */
 export default function initPrivateRequestFilter({ listen, enabled, privateAddressWhitelist, logBlocked, logAllowed, allowUnresolvedHosts, enableKeepAlive, requestProxyEnabled }) {
     untrustedFilteringDelegated = !!enabled || !!requestProxyEnabled;

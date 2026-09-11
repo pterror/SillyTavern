@@ -1,39 +1,19 @@
 #!/usr/bin/env node
 /**
- * One-off corpus-wide correction: for every character row whose content_hash still matches a file
- * currently present in one of `localImport.directories`, sets characters.date_added (and shallow_json's
- * own embedded date_added field) to that source file's mtime, replacing whatever date_added the row
- * already carries (import-time "now", or a stale ctimeMs from an old bootstrap).
+ * Corrects characters.date_added (and shallow_json's embedded date_added) to the source file's mtime,
+ * for any row whose content_hash still matches a file under `localImport.directories`.
  *
- * Matching: content_hash (sha256 of the raw source bytes, populated for local-import's format importers)
- * against a hash index built by walking the configured directories once - the same shape
- * reclaim-character-reflinks.mjs already uses for the identical "match a live row back to its original
- * external source file" problem. There is no cheaper join available: nothing in this database records
- * which source path an ORIGINAL (non-duplicate) import came from, only the byte content does, so hashing
- * every configured-directory file is the only correct way to recover that link - matching by name or mtime
- * proximity would just be guessing which character a file belongs to. A source file's mtime is only ever
- * read, never written.
+ * Matches rows to source files by content_hash against a hash index built by walking the configured
+ * directories, since nothing else records which source path an import came from.
  *
- * Per-file hashes are cached to disk (HASH_CACHE_PATH, keyed by path + the mtimeMs they were computed
- * against) and reused on a later run for any file whose mtime hasn't changed - so a dry run followed by
- * --apply, or a re-run after an interruption, never re-hashes a file it already has a good answer for.
+ * Writes (under --apply) are compare-and-swap on the date_added this script read, so a concurrent live
+ * write to the same row wins and is never clobbered. Safe to interrupt and re-run at any point.
  *
- * SAFE TO INTERRUPT: this script writes nothing until --apply, and even then every row's UPDATE is a
- * compare-and-swap on the exact date_added value this script itself just read for that row -
- * `WHERE id = @id AND date_added = @expectedOldDateAdded` - so a concurrent write to the same row (a
- * live rename, a fresh reimport) simply wins and this script's own now-stale value is discarded, never
- * forced over it. Killing the process at any point leaves the database in a state no different from
- * having processed however many rows it got through; every following invocation only ever touches rows
- * whose stored date_added still differs from the source file's mtime, so re-running after an interruption
- * (or just to pick up newly-added source files) is always correct and just skips whatever already matches.
- *
- * Usage (run from the repo root, inside the project's dev shell so dependencies resolve):
- *   node scripts/backfill-date-added-from-source-mtime.mjs              (dry run - reports what WOULD change, touches nothing)
- *   node scripts/backfill-date-added-from-source-mtime.mjs --apply       (performs the correction for real)
- *   node scripts/backfill-date-added-from-source-mtime.mjs --apply --limit 500   (cap how many source files
- *       get hashed while building the index - for a quick smoke test, not a real run)
- *   node scripts/backfill-date-added-from-source-mtime.mjs --sample 20   (dry run, print this many example
- *       rows that WOULD change instead of the default 10 - for manual verification before --apply)
+ * Usage (from repo root):
+ *   node scripts/backfill-date-added-from-source-mtime.mjs              (dry run)
+ *   node scripts/backfill-date-added-from-source-mtime.mjs --apply
+ *   node scripts/backfill-date-added-from-source-mtime.mjs --apply --limit 500   (smoke test)
+ *   node scripts/backfill-date-added-from-source-mtime.mjs --sample 20   (print more example rows)
  */
 
 import fs from 'node:fs';
@@ -48,11 +28,7 @@ const REPO_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const USER_HANDLE = 'default-user';
 const DB_PATH = path.join(REPO_ROOT, 'data', USER_HANDLE, 'character-metadata.sqlite');
 const CONFIG_PATH = path.join(REPO_ROOT, 'config.yaml');
-// Per-file (path, mtimeMs) -> hash cache, persisted across invocations - hashing the full configured
-// corpus is the expensive part of this script (a full read of every source file), and a dry run followed
-// by the real --apply run would otherwise pay that cost twice for identical, unchanged files. Keyed by
-// path with the mtimeMs it was computed against, so a file that changed on disk since the last run is
-// transparently re-hashed rather than served a stale answer.
+// Keyed by path + mtimeMs, so a dry run followed by --apply doesn't re-hash unchanged files.
 const HASH_CACHE_PATH = path.join(REPO_ROOT, 'data', USER_HANDLE, '.backfill-date-added-source-hash-cache.json');
 const HASH_CACHE_SAVE_INTERVAL = 20000;
 
@@ -64,9 +40,7 @@ const sampleArgIndex = args.indexOf('--sample');
 const SAMPLE_SIZE = sampleArgIndex !== -1 ? Number(args[sampleArgIndex + 1]) : 10;
 
 /**
- * @param {string} filePath
- * @returns {Promise<string>} sha256 hex digest, streamed so this scales to a multi-hundred-GB corpus
- * without holding any file in memory whole.
+ * @returns {Promise<string>} sha256 hex digest
  */
 function sha256File(filePath) {
     return new Promise((resolve, reject) => {
@@ -79,9 +53,7 @@ function sha256File(filePath) {
 }
 
 /**
- * @param {string} shallowJson
- * @param {number} dateAddedMs
- * @returns {string} `shallowJson` with its date_added field overwritten - unmodified if it doesn't parse.
+ * @returns {string} `shallowJson` with date_added overwritten; unmodified if it doesn't parse.
  */
 function withPatchedDateAdded(shallowJson, dateAddedMs) {
     try {
@@ -94,9 +66,7 @@ function withPatchedDateAdded(shallowJson, dateAddedMs) {
 }
 
 /**
- * @returns {Map<string, {mtimeMs: number, hash: string}>} path -> the (mtimeMs, hash) it was last seen with -
- * empty if the cache file doesn't exist yet or fails to parse (a corrupt/foreign cache is just discarded, never
- * fatal - worst case is re-hashing everything, same as no cache at all).
+ * @returns {Map<string, {mtimeMs: number, hash: string}>} empty if the cache file is missing or corrupt.
  */
 function loadHashCache() {
     try {
@@ -145,8 +115,7 @@ async function buildSourceIndex(directories) {
                     hash = await sha256File(filePath);
                     hashCache.set(filePath, { mtimeMs: stat.mtimeMs, hash });
                 }
-                // First path wins on a hash collision across configured directories - a real collision here
-                // means byte-identical source files anyway, so either one's mtime is an equally valid answer.
+                // First path wins on a hash collision - byte-identical files anyway.
                 if (!index.has(hash)) index.set(hash, { mtimeMs: stat.mtimeMs, sourcePath: filePath });
             } catch (error) {
                 console.warn(`  skip (unreadable): ${filePath} - ${/** @type {any} */ (error)?.message ?? error}`);
@@ -187,10 +156,6 @@ async function main() {
 
     const sourceIndex = await buildSourceIndex(directories);
 
-    // WAL (already the live server's own journal mode) + a real busy_timeout so a momentary lock held by
-    // the live server's own writer is waited out rather than surfaced as a hard error - opened read-write
-    // even in dry-run mode (nothing is actually written unless APPLY), so pragma-setting itself never fails
-    // against a readonly handle.
     const db = new Database(DB_PATH);
     db.pragma('journal_mode = WAL');
     db.pragma('busy_timeout = 10000');
@@ -241,10 +206,7 @@ async function main() {
         if (result.changes > 0) {
             written++;
         } else {
-            // The CAS guard matched zero rows - a concurrent write to this exact id landed between this
-            // script's SELECT and this UPDATE and already changed date_added out from under it. That live
-            // value wins; this script's own (necessarily stale) computation is correctly discarded, not
-            // forced over it. A following run will re-evaluate this row fresh.
+            // CAS guard matched zero rows: a concurrent write already changed this row; that wins.
             staleSkipped++;
         }
 

@@ -15,33 +15,20 @@ import { calculateChatSize, calculateDataSize, calculateGroupChatStats, resolveG
 import { readTagsData } from './endpoints/tags-data.js';
 import { getSqliteEngine } from './endpoints/sqlite-engine.js';
 import { TAGS_FILE } from './constants.js';
-// cyrb53 - pure, dependency-free (no DOM/browser globals), already factored out of power-user.js specifically so
-// it stays importable in a plain Node environment (see that module's own header) - reused here rather than
-// duplicated so the server's seeded random-sort ordering (design doc §5.3, decision 8/13) can never drift from
-// the client comparator (public/scripts/random-sort.js's compareByRandomSeed()) that decides the *same* ordering
-// for whatever page hasn't round-tripped to the server yet.
+// getStringHash must match public/scripts/random-sort.js's compareByRandomSeed() exactly, or server/client random-sort ordering diverges.
 import { getStringHash, DEFAULT_DIGEST_BUCKET_COUNT, bucketOf, contentHashOf, emptyDigest, combineDigest, characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash, groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash } from '../public/scripts/hash-utils.js';
 import { runDigestWorkerTask } from './character-metadata-digest-dispatch.js';
 
-/** Fires a 'change' event whenever a row is written to the `changes` table, so callers (e.g. the SSE route in
- * endpoints/characters.js) can push near-real-time notifications without polling. */
 export const characterChangeEmitter = new EventEmitter();
 
-// In-memory cache of hash-sorted ID arrays for random ordering. Keyed by `handle:seed`, each entry
-// holds the full sorted-ID array plus the seq it was built against. Populated on first random-sort
-// request for a (handle, seed) pair (one-time ~270ms), then every subsequent page is a sub-ms array
-// slice. Invalidated when seq changes (character add/remove/edit). Bounded to
-// MAX_RANDOM_CACHE_ENTRIES to prevent unbounded memory growth from seed churn.
+// Bounds memory growth from seed churn.
 const MAX_RANDOM_CACHE_ENTRIES = 10;
 /** @type {Map<string, { seq: number, sortedIds: string[], db: import('./endpoints/sqlite-engine.js').SqliteEngineHandle }>} */
 const randomSortCache = new Map();
 
-/** Timer for debouncing proactive random-cache warming after character changes. */
 let randomCacheWarmTimer = null;
 
-// Proactively recompute stale random-sort cache entries when characters change (e.g. hourly
-// imports), so the next random-sort request finds a warm cache instead of paying ~287ms. Debounced
-// at 500ms so a batch of rapid changes (bulk import) triggers only one recomputation.
+// Debounced so a batch of rapid changes triggers only one recomputation.
 characterChangeEmitter.on('change', () => {
     clearTimeout(randomCacheWarmTimer);
     randomCacheWarmTimer = setTimeout(() => {
@@ -49,7 +36,6 @@ characterChangeEmitter.on('change', () => {
             const seqRow = entry.db.get('SELECT COALESCE(MAX(seq), 0) as seq FROM changes');
             const currentSeq = Number(seqRow?.seq ?? 0);
             if (entry.seq !== currentSeq) {
-                // Stale: recompute in place
                 const colonIdx = key.lastIndexOf(':');
                 const seed = Number(key.slice(colonIdx + 1));
                 const charIds = entry.db.all('SELECT id FROM characters').map(r => r.id);
@@ -64,109 +50,27 @@ characterChangeEmitter.on('change', () => {
     }, 500);
 });
 
-/**
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- * @param {string} id
- * @param {string} op
- * @param {string?} fields
- * @returns {number}
- */
 function insertChange(db, id, op, fields) {
     const { lastInsertRowid } = db.run('INSERT INTO changes (id, op, fields) VALUES (@id, @op, @fields)', { id, op, fields });
     characterChangeEmitter.emit('change');
     return Number(lastInsertRowid);
 }
 
-/**
- * Phase 1 of the character-data-residency redesign (see docs/design/character-data-residency-redesign.md, §3):
- * a per-user SQLite database that becomes the server-side index of record for everything about a character that
- * ISN'T full text - sort keys, tag relations, a change log, and aggregates like tag-usage counts. Full-text
- * search stays exactly where it already was (characters-search-index.js's tantivy/FTS5 index) - this module
- * never touches it.
- *
- * WHY THIS MODULE IMPORTS NEITHER characters.js NOR tags.js: both of those need to call INTO this module (the
- * former to fire the write-path hooks below, the latter eventually in phase 3), so if this module imported
- * either of them back, that would be the same two-way import cycle this codebase has already been bitten by
- * once (see tags-data.js's header for the TDZ crash that motivated pulling readTagsData() out of tags.js).
- * The arrow only ever points one way: characters.js and (later) tags.js import this module, this module imports
- * only leaf modules (character-card-normalize.js, character-shallow.js, tags-data.js, sqlite-engine.js) that
- * import neither characters.js nor tags.js nor this module. Anything this module needs that would otherwise
- * mean importing characters.js (normalizing an arbitrary on-disk card to Spec V2, computing the shallow
- * projection, computing chat stats) was factored out to one of those leaf modules instead - see their headers.
- *
- * THREE FRESHNESS MECHANISMS, exactly matching the doc's §3.2, in order of latency:
- *   1. Write-path hooks (upsertCharacterFromWrite/deleteCharacterRow/renameCharacterRow below), called directly
- *      from characters.js's route handlers right after a write succeeds. This is the fast, precise path - no
- *      polling delay, no dependency on the filesystem to notice anything.
- *   2. A single non-recursive fs.watch() on the characters directory (startWatcher below), explicitly a latency
- *      optimization only, per the doc's own measurement: a burst of writes landing while the event loop is busy
- *      (a real bulk import, not a hypothetical) silently drops events past inotify's 16384-entry queue, with no
- *      `error` event and no way to tell from JS that it happened. So the watcher exists to catch mutations that
- *      *don't* go through this app's own write path (a file dropped in by hand, or a crash between a write-path
- *      hook and its completion) faster than the reconciler's interval would - it is never trusted as the sole
- *      source of truth for anything.
- *   3. A background reconciler (reconcile() below) as the mandatory backstop - not a "watch this later" item.
- *      It walks the characters directory and diffs it against the metadata table, so a dropped inotify event, a
- *      missed write-path hook, or an edit made while the server was down all get caught on the next pass.
- *
- * date_added IS RECORDED ONCE, AT FIRST INSERT, AND NEVER RECOMPUTED (doc §3.1, decision log #5) - it stops
- * being the PNG's ctimeMs, which moves on a chmod/chown/any metadata write and was never a real "added"
- * timestamp. This falls out of the UPSERT's own SQL rather than being application logic sprinkled through every
- * call site: every upsert statement's ON CONFLICT clause deliberately omits date_added from its SET list (see
- * upsertRowSync() below), so a row that already exists keeps whatever date_added it was first given, no matter
- * how many times it gets re-upserted afterward. What differs per call site is only the *candidate* value passed
- * for a genuinely new row: the one-time bootstrap backfill (bootstrapIfNeeded()) seeds it from the file's
- * ctimeMs, matching the doc's "best available approximation for cards that predate the column"; every other
- * discovery path (a write-path hook, the watcher, or the reconciler finding a file it's never seen) uses
- * Date.now() at the moment it's first seen, matching the doc's "a file dropped into the directory by hand gets
- * date_added = when the reconciler first saw it, not the file's mtime". Threading a caller-supplied date_added
- * through bulk import to preserve source-corpus ordering is flagged in the doc's decision log as still an open
- * question, not a settled one - so it is deliberately NOT implemented here; every new row's date_added comes
- * from one of the two rules above, never from caller input.
- */
+// Per-user SQLite index for character metadata. FTS lives in characters-search-index.js, not here.
+// Import direction is one-way: characters.js/tags.js import this module, never the reverse.
+// date_added is write-once: every upsert's ON CONFLICT omits it from the SET list.
 
-// How many pending rows accumulate before a batch-import flush (beginBatchImport/endBatchImport below) or a
-// bootstrap backfill pass writes them in one transaction. Mirrors characters-search-index.js's
-// INDEX_BUILD_BATCH_SIZE reasoning: bounds peak memory (how many computed rows are held before being flushed)
-// without needing a transaction per file, which is the whole point of batch mode - see this module's header and
-// the doc's §3.3 item 7.
 const BATCH_FLUSH_SIZE = 500;
 
-// How many character files get read+parsed concurrently while bootstrapIfNeeded() backfills a library that
-// predates this store. Deliberately the SAME config knob characters-search-index.js's index build already uses
-// (performance.characterIndexBuildConcurrency), not a second one - both are the identical shape of work (stat +
-// read a PNG file off disk + parse its tEXt chunk) against the same characters directory, and that build's own
-// measurement (see that file's INDEX_BUILD_READ_CONCURRENCY comment) already established this install's disk,
-// not Node's threadpool, is the limiting factor at any concurrency above ~4 - there is no reason bootstrap's
-// version of the same work would plateau anywhere different, so there is nothing for a separate knob to tune.
+// Shares characterIndexBuildConcurrency with characters-search-index.js's build - same disk-bound workload.
 const BOOTSTRAP_READ_CONCURRENCY = getConfigValue('performance.characterIndexBuildConcurrency', 64, 'number');
 
-// How often bootstrapIfNeeded() emits a progress line while backfilling a large library, in wall-clock ms
-// rather than a row/chunk count - a fixed row interval would either spam the log on a fast install or go quiet
-// for too long on a slow one, so this ties log frequency to actual elapsed time instead.
 const BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS = 5000;
 
-
-// Gates two consumers, both added alongside backfillContentIdentityHashes()/findCharacterIdByContentIdentityHash()
-// below: this module's own one-time backfill pass (which pays the cost described below ONCE per poisoned row,
-// not per comparison - see backfillContentIdentityHashes()'s own header) and local-import-scan.js's processFile()
-// duplicate check (which, once a row is backfilled, is an O(1) indexed lookup, not the expensive path itself).
-// The "expensive" part this flag is actually about is the backfill: reading every poisoned row's PNG off disk
-// and computing a hash from its pristine 'chara' chunk (character-card-parser.js's readCharaChunkPristine()) - at
-// 24k+ poisoned rows on an install that predates the import-mutation fix, that's real I/O + parse work this lets
-// an install opt out of (poisoned characters then simply never participate in the identity-hash dedup fallback,
-// same as before this flag had any consumer).
-//
-// Deliberately read fresh via getConfigValue() at each call site below (backfillContentIdentityHashes(),
-// local-import-scan.js's processFile()) rather than through this cached module-load-time export - this export
-// itself is left in place as the original groundwork/documentation anchor, but a cached boolean can't be toggled
-// mid-process the way tests (and, in principle, a config reload) need to.
+// Backfilling identity hashes requires reading every poisoned row's PNG off disk; this lets an install opt out.
 export const allowExpensiveDuplicateFallback = !!getConfigValue('performance.allowExpensiveDuplicateFallback', true, 'boolean');
 
-// Debounce window for the fs.watch handler (see startWatcher() below) - editors and this app's own
-// write-file-atomic writes can produce more than one raw fs event per logical change (e.g. a rename-over-target
-// shows up as both a 'rename' for the temp name and a 'change'/'rename' for the target), so a short debounce per
-// filename coalesces those into one stat-and-upsert instead of doing it twice.
+// Coalesces duplicate raw fs events (e.g. a rename-over-target firing both 'rename' and 'change') per filename.
 const WATCH_DEBOUNCE_MS = 300;
 
 /**
@@ -174,25 +78,22 @@ const WATCH_DEBOUNCE_MS = 300;
  * @property {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @property {import('./users.js').UserDirectoryList} directories
  * @property {import('node:fs').FSWatcher | null} watcher
- * @property {Map<string, NodeJS.Timeout>} watchTimers Per-filename debounce timers for the watcher
+ * @property {Map<string, NodeJS.Timeout>} watchTimers
  * @property {{ pending: Map<string, PendingRow> } | null} batch Non-null while batch-import mode is active
  * @property {Promise<void> | null} bootstrapPromise
  * @property {{ tagNameToId: Map<string, string>, tagIdToDefinition: Map<string, object> } | null} [tagCache]
- * Lazily built by getTagCache() below, `null` until first use and whenever a bulk tag-definition rewrite
- * (saveTagDefinitions()) invalidates it. See getTagCache()'s own doc comment for why this exists.
  */
 
 /**
  * @typedef {object} PendingRow
- * @property {object} row The fully-computed row (see buildRow()), minus changeSeq (assigned at flush time)
- * @property {boolean} forceDateAdded True if `row.date_added` must be used verbatim even on conflict (rename)
+ * @property {object} row
+ * @property {boolean} forceDateAdded True if row.date_added must be used verbatim even on conflict (rename)
  * @property {string[]} tagIds
  */
 
-/** @type {Map<string, MetadataDbEntry>} Keyed by directories.root - one entry per user. */
+/** @type {Map<string, MetadataDbEntry>} Keyed by directories.root. */
 const entries = new Map();
 
-/** True once a "no usable SQLite backend" warning has been printed, so it only happens once per process. */
 let warnedNoEngine = false;
 
 const SCHEMA_SQL = `
@@ -202,19 +103,8 @@ const SCHEMA_SQL = `
         name_fold      TEXT NOT NULL,
         fav            INTEGER NOT NULL,
         date_added     INTEGER NOT NULL,
-        -- Epoch ms, same convention as every other timestamp-shaped column in this schema (date_added,
-        -- date_last_chat, file_mtime, mtime_ms on the two mtime-tracking tables below) - NOT the raw string a
-        -- character card's own create_date field carries (that stays whatever the card provided, unparsed and
-        -- unvalidated, in the card's own JSON/PNG chunk and in shallow_json's embedded copy below; this column
-        -- is purely this table's own internal sort/index representation of it). Parsed via
-        -- parseCreateDateToEpochMs() (util.js) at every write (buildRow() below) - NULL if the card's value is
-        -- missing or genuinely unparseable. Before 2026-08 this column was TEXT, storing the card's raw string
-        -- and relying on SQLite's default TEXT collation to sort it (good enough only because the overwhelming
-        -- majority of real cards happen to use ISO 8601 strings, which sort correctly as plain text too) - see
-        -- migrateCreateDateColumn() below for the one-time backfill that converted an existing install's rows,
-        -- and queryEntities()'s own doc comment for the interleaved characters+groups sort bug this TEXT/INTEGER
-        -- mismatch caused (a group's real creation time, date_added, was already INTEGER, so a mixed-type UNION
-        -- ORDER BY silently misordered every group to one end regardless of its actual creation time).
+        -- Epoch ms, parsed via parseCreateDateToEpochMs(); NULL if the card's create_date is missing/unparseable.
+        -- Must stay INTEGER (not TEXT) or a mixed-type UNION ORDER BY with groups.date_added misorders rows.
         create_date    INTEGER,
         date_last_chat INTEGER NOT NULL,
         chat_size      INTEGER NOT NULL,
@@ -226,63 +116,21 @@ const SCHEMA_SQL = `
         creator_notes  TEXT,
         shallow_json   TEXT NOT NULL,
         change_seq     INTEGER NOT NULL,
-        -- active_chat (2026-08, chat-pointer db migration - docs/design/character-chat-pointer-db-migration.md):
-        -- which chat file is "currently open" for this character, mirroring \`fav\`'s own db-authoritative shape
-        -- exactly (see writeRowSync()'s doc comment on both). NULL is a genuinely ambiguous value for this
-        -- column on its own - it means either "confirmed, this character has no chat" (backfillActiveChatFromCards()
-        -- read the card and found none) or "not examined yet" (row predates the column, or the backfill hasn't
-        -- reached it), and those two states must NOT be conflated: a resumability query that can't tell them
-        -- apart re-reads every confirmed-no-chat card off disk on every single boot, forever, since "confirmed
-        -- no chat" always looks NULL and therefore always matches "not examined yet"'s own query shape. See
-        -- active_chat_checked directly below - the fix, same sentinel-column shape import_poisoned already uses
-        -- to keep its own two states apart (see that column's own comment).
+        -- NULL is ambiguous: "confirmed no chat" vs "not examined yet" look identical, which would make a
+        -- resumability query re-read every no-chat card off disk on every boot. active_chat_checked disambiguates.
         active_chat    TEXT,
-        -- Resolves the ambiguity active_chat's own NULL can't: 1 once this row's active_chat has been resolved
-        -- ONE WAY OR THE OTHER (a real chat name found, or confirmed none) by any writer that actually looked -
-        -- buildRow() (a genuine write always resolves it, from the freshly-parsed card's own \`chat\` field),
-        -- setCharacterActiveChat() (the live chat-switch write path), or backfillActiveChatFromCards() (the
-        -- one-time catch-up sweep). 0 (the DEFAULT, correct for a brand-new column on a preexisting row nobody
-        -- has resolved through this connection yet) means "not examined" - the ONLY state backfillActiveChatFromCards()'s
-        -- resumability query should still match. Never regresses 1 -> 0 once set. See
-        -- migrateActiveChatColumn() below for how a preexisting install's already-resolved rows get this
-        -- retroactively set to 1 without a fresh corpus-wide sweep.
+        -- 0 = not examined, 1 = resolved one way or the other (real chat name or confirmed none). Never regresses 1->0.
         active_chat_checked INTEGER NOT NULL DEFAULT 0,
-        -- Pre-computed per-field digest hashes for the tree-descend anti-entropy worker, stored
-        -- at every write so the worker can read just these integers (no shallow_json parse, no
-        -- hash computation) when building aggregate digests. See hash-utils.js's
-        -- characterDigestFavHash/characterDigestTagIdsHash/characterDigestFieldsHash.
+        -- Pre-computed per-field digest hashes for the anti-entropy worker (hash-utils.js's characterDigest* fns).
         digest_fav     INTEGER,
         digest_tag_ids INTEGER,
         digest_content INTEGER,
-        -- card_json (2026-09, character-data-residency migration): the FULL Spec-V2 card JSON, and the
-        -- authoritative copy of it, for rows whose PNG's own embedded tEXt chunk is out of date.
-        --
-        -- The whole point of this column is that a metadata-only edit (description, personality, scenario,
-        -- greetings, extensions - anything that isn't image pixels) must NOT rewrite the character's PNG. So
-        -- characters.js's writeCharacterData() skips the file write entirely for that class of edit and parks
-        -- the new content here instead, leaving the PNG's bytes - and therefore its mtime - untouched.
-        --
-        -- NULL is not "unknown", it is a real, load-bearing state: "the PNG's embedded chunk IS current, read
-        -- it from there". That is what keeps this column's storage cost proportional to the number of cards
-        -- actually edited rather than to the size of the library (at 366k cards a full copy would be multiple
-        -- GB of duplicated card text for no benefit). Concretely:
-        --   - a write that genuinely (re)wrote the PNG - create, import, avatar crop/replace, an export-time
-        --     materialization - stores NULL here, because the file it just wrote is now the current copy.
-        --   - a metadata-only write stores the new card JSON here and does not touch the file.
-        --   - bootstrap / reconcile / the watcher, which observe a file rather than write one, store NULL:
-        --     they only ever run for a file whose mtime does NOT match the row (see handleWatchEvent() and
-        --     reconcile()), i.e. something outside this server changed the bytes on disk, and an external
-        --     edit to the file legitimately supersedes whatever was parked here.
-        -- So the invariant is: card_json IS NOT NULL  <=>  the PNG chunk is stale, and this is the truth.
-        --
-        -- Read side: characters.js's readCardContent() is the single seam - card_json when present, otherwise
-        -- a normal PNG parse. Note that it deliberately bypasses readCharacterData()'s mtime-keyed memory/disk
-        -- cache for the non-NULL case: that cache is keyed on the file path plus its mtime, and a db-only write moves
-        -- neither, so the cache cannot see these edits at all and must not be consulted for them.
-        --
-        -- Export side: nothing hands a stale PNG out. /export, /duplicate and every other path that gives a
-        -- user a self-contained file materializes the chunk from this column in memory first (design
-        -- requirement: cards shared as standalone .png must be readable by chub/janitorai/etc).
+        -- Full Spec-V2 card JSON, authoritative when the PNG's embedded tEXt chunk is stale. NULL means "PNG chunk
+        -- is current, read from there" - a metadata-only edit stores JSON here without rewriting the PNG (keeps
+        -- storage proportional to cards actually edited, not library size); any write that rewrites the PNG
+        -- clears this to NULL. readCardContent() (characters.js) is the read seam; it bypasses the mtime-keyed
+        -- PNG cache for the non-NULL case since a db-only write doesn't move the file's mtime. Export paths
+        -- materialize this column into the PNG chunk so exported files stay self-contained.
         card_json      TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_characters_name_fold ON characters(name_fold);
@@ -293,70 +141,25 @@ const SCHEMA_SQL = `
     CREATE INDEX IF NOT EXISTS idx_characters_chat_size ON characters(chat_size);
     CREATE INDEX IF NOT EXISTS idx_characters_fav_name_fold ON characters(fav, name_fold);
     CREATE INDEX IF NOT EXISTS idx_characters_world ON characters(world);
-    -- Populated only via the import write path (bulk-dedup feature, see findCharacterIdByContentHash() below) -
-    -- a sha256 hex digest of the raw bytes of the uploaded source file an import came from. NULL for every
-    -- character that was never brought in through that path (created/edited in-app, or imported before this
-    -- column existed) - deliberately not backfilled for a preexisting library (see this column's own migration
-    -- note below), so a NULL/NULL pair never counts as a match: the lookup only ever compares real hash values.
+    -- content_hash: sha256 of the raw uploaded import source bytes. NULL for anything not imported through that
+    -- path or predating the column; never backfilled, so NULL/NULL is never treated as a match.
     --
-    -- content_identity_hash / import_poisoned (see migrateContentIdentityColumns() below): a DIFFERENT hash
-    -- from content_hash above - content_hash fingerprints the raw bytes of whatever file an import was fed
-    -- (only ever set on import, only ever matches a byte-identical re-upload); content_identity_hash
-    -- fingerprints the character's own semantic content (install-local fields like fav/chat/create_date
-    -- stripped first - see stripInstallLocalFields()), computed fresh on EVERY successful write (create, edit,
-    -- import, rename - anything that reaches upsertCharacterFromWrite()), so two independently-imported copies
-    -- of the same original card can be recognized as the same character even though their raw bytes differ.
-    -- That equivalence only holds if the stored file actually went through the minimal-mutation write path
-    -- (character-card-parser.js's write(), characters.js's writeCharacterData()) - a card written by the OLD,
-    -- more-mutating import logic may have been reformatted/reencoded/spec-upgraded in ways that would make its
-    -- hash disagree with a fresh import of the identical original card, even though they're the same character.
-    -- import_poisoned=1 flags exactly that "can't trust the hash" state. Every row that predates this column
-    -- starts poisoned (its bytes are whatever the old logic produced, unknown/untrustworthy) - see the column's
-    -- own DEFAULT below. Any successful write clears it (poisoned=0) and records a hash computed from what was
-    -- JUST written, because that write necessarily went through the current (fixed) write path regardless of
-    -- how poisoned the row was before. Only upsertCharacterFromWrite() ever clears it - the reconciler/watcher/
-    -- bootstrap paths (which discover files, they don't write them) leave both columns exactly as they found
-    -- them, same as they already leave date_added alone (see this module's header).
+    -- content_identity_hash: a different hash - fingerprints semantic content with install-local fields stripped
+    -- (stripInstallLocalFields()), recomputed on every successful write, so two independently-imported copies of
+    -- the same card can be recognized as the same character. Only valid if the file went through the current
+    -- minimal-mutation write path; import_poisoned=1 flags rows where it might not have (old, more-mutating
+    -- import logic). Every pre-existing row starts poisoned; only upsertCharacterFromWrite() clears it, since
+    -- only an actual write through the current path proves the file is current.
     --
-    -- backfillContentIdentityHashes() (below) is a THIRD way content_identity_hash gets populated, and it
-    -- deliberately does NOT clear import_poisoned when it does. It recovers a poisoned row's pristine
-    -- pre-mutation content straight from the PNG's 'chara' tEXt chunk (character-card-parser.js's
-    -- readCharaChunkPristine()/parsePristine() - see write()'s own header for why that chunk is trustworthy even
-    -- on a poisoned row) and hashes THAT, so the resulting hash is genuinely comparable to one computed via
-    -- today's write path - but import_poisoned's broader meaning is "this row's FILE may still carry other
-    -- old-write-path artifacts" (the forced ccv3 upgrade, the old unconditional Jimp re-encode of the avatar
-    -- image, fav/chat written into the card instead of omitted), which stays true regardless of whether its hash
-    -- is now trustworthy. Only an actual write through the current path (upsertCharacterFromWrite()) proves the
-    -- file itself has been brought current, which is the only thing that legitimately clears the flag.
+    -- backfillContentIdentityHashes() populates content_identity_hash a third way, from the PNG's pristine
+    -- 'chara' chunk, but deliberately does NOT clear import_poisoned - the flag also means "file may carry other
+    -- old-write-path artifacts" (forced ccv3 upgrade, old avatar re-encode), which stays true regardless.
     --
-    -- avatar_identity_hash (2026-08, alongside cross-character reflink writes - see findCrossCharacterReflinkCandidate()'s
-    -- own doc comment for the gap this closes): computeAvatarIdentityHashFromChunks() (character-card-parser.js)
-    -- of the character's own PNG - sha256 over the concatenated raw IDAT chunk payload bytes, NOT a full
-    -- decoded-pixel hash (see that function's own doc comment for the cost tradeoff - this fork already tried
-    -- and retired "decode/re-encode the avatar on every write" once). content_identity_hash alone can never tell
-    -- "these are the same character" apart from "these have the same text but a different portrait" - two rows
-    -- can share a content_identity_hash with completely different avatar_identity_hash values, and that's
-    -- expected, not a bug: a real identity match requires BOTH to agree (see findCharacterIdByIdentityHashes()
-    -- below, local-import-scan.js's import-time dedup-skip consumer). findCharacterIdByContentIdentityHash()
-    -- itself deliberately stays JSON-only and untouched by this column - its one caller
-    -- (findCrossCharacterReflinkCandidate(), the live-write reflink-candidate lookup) only ever proposes a
-    -- CANDIDATE that gets independently byte-verified before ever being trusted (see that function's own doc
-    -- comment), so narrowing its query to an avatar-hash match too would only ever throw away legitimate reflink
-    -- opportunities for no safety benefit - the real safety property downstream is the byte verification, not
-    -- the hash.
-    --
-    -- Populated the same three ways content_identity_hash is (see above): upsertCharacterFromWrite() on every
-    -- real write (computed from the just-written image's own chunks - see writeCardFromChunks()'s own doc
-    -- comment on why that's always correct regardless of which write branch actually ran), NULL/COALESCE'd-away
-    -- when a caller has nothing new to report (e.g. /rename, which never touches pixels), and
-    -- backfillAvatarIdentityHashes() (scripts/backfill-avatar-identity-hashes.mjs) - a one-time, read-then-
-    -- conditional-write corpus-wide backfill for every row that predates this column, modeled on
-    -- scripts/reclaim-character-reflinks.mjs's own live-server-safe posture (see that script's header): each
-    -- row is read and written independently (WHERE avatar_identity_hash IS NULL), never a single bulk
-    -- transaction, so a live import racing this backfill for some OTHER row is unaffected, and a live write that
-    -- lands for the SAME row between this backfill's read and write simply wins (its own upsertCharacterFromWrite()
-    -- call already set a real value, so the IS NULL guard on the backfill's UPDATE naturally no-ops instead of
-    -- clobbering it).
+    -- avatar_identity_hash: computeAvatarIdentityHashFromChunks() - sha256 over raw IDAT payload bytes, not a
+    -- decoded-pixel hash. Independent from content_identity_hash (same text, different portrait can share one but
+    -- not the other); a real identity match requires both (findCharacterIdByIdentityHashes()). Populated on every
+    -- write, and via a one-time backfill (scripts/backfill-avatar-identity-hashes.mjs) that reads/writes rows
+    -- independently (WHERE avatar_identity_hash IS NULL) so a concurrent live write for the same row just wins.
 
     CREATE TABLE IF NOT EXISTS character_tags (
         character_id TEXT NOT NULL,
@@ -392,17 +195,9 @@ const SCHEMA_SQL = `
         value TEXT
     );
 
-    -- PHASE 3 EXTENSION (owner decision, see this module's header on tags.json's removal), FURTHER EXTENDED
-    -- (owner decision) to give groups the same fav/date_added/date_last_chat/chat_size/name_fold columns
-    -- characters already have, so a merged characters+groups browse/sort/paginate query (queryEntities() below)
-    -- can ORDER BY one shared column shape across both tables via a single UNION ALL. Unlike characters, a
-    -- group's id is stable for its whole lifetime (see groups.js's /create - it's minted once and never changes
-    -- on rename), so there is no group equivalent of renameCharacterRow()/date_added carry-forward - date_added
-    -- write-once still applies (see GROUP_UPSERT_SQL below), it just never needs a rename-time correction.
-    -- Groups have no 'world' column (no lorebook binding concept), so it's simply absent here. They DO have a
-    -- separate full-text index (groups-search-index.js, its own tantivy/SQLite FTS5 index, mirroring
-    -- characters-search-index.js) - that index lives outside this table entirely (same as the characters search
-    -- index lives outside the characters table above), which is why searching it isn't a column here either.
+    -- Mirrors characters' fav/date_added/date_last_chat/chat_size/name_fold so queryEntities() can UNION ALL
+    -- both tables under one ORDER BY. No 'world' column (groups have no lorebook binding). Group ids are stable
+    -- for their whole lifetime, so date_added needs no rename-time carry-forward like characters get.
     CREATE TABLE IF NOT EXISTS groups (
         id             TEXT PRIMARY KEY,
         name           TEXT NOT NULL,
@@ -412,12 +207,8 @@ const SCHEMA_SQL = `
         date_last_chat INTEGER NOT NULL DEFAULT 0,
         chat_size      INTEGER NOT NULL DEFAULT 0
     );
-    -- Indexes for the groups table are deliberately NOT here (unlike every other CREATE INDEX in this schema) -
-    -- see migrateGroupsColumns() below, which creates them AFTER guaranteeing the columns they reference exist.
-    -- An unconditional CREATE INDEX here would run as part of this same db.exec() call, before
-    -- migrateGroupsColumns() ever gets a chance to ALTER a pre-existing (old id/name-only shape) groups table -
-    -- and SQLite has no lazy/deferred index creation, so CREATE INDEX ... ON groups(name_fold) against a table
-    -- that doesn't have that column yet fails outright, taking the whole schema-init call down with it.
+    -- Indexes for groups are created by migrateGroupsColumns() instead, after it ALTERs a pre-existing
+    -- id/name-only groups table - an unconditional CREATE INDEX here would fail against those missing columns.
 
     CREATE TABLE IF NOT EXISTS group_tags (
         group_id TEXT NOT NULL,
@@ -426,10 +217,7 @@ const SCHEMA_SQL = `
     );
     CREATE INDEX IF NOT EXISTS idx_group_tags_tag ON group_tags(tag_id, group_id);
 
-    -- Shared tag_usage table (same one character_tags' triggers feed) - a tag's usage count is meant to answer
-    -- "how many things use this tag" regardless of whether those things are characters or groups, matching what
-    -- the client's RelationStore.usageCounts already counted in one combined Map before this migration (tag_map
-    -- always held both character avatars and group ids as keys).
+    -- Shares tag_usage with character_tags' triggers - one combined usage count across characters and groups.
     CREATE TRIGGER IF NOT EXISTS trg_group_tags_ai AFTER INSERT ON group_tags BEGIN
         INSERT INTO tag_usage (tag_id, count) VALUES (NEW.tag_id, 1)
         ON CONFLICT(tag_id) DO UPDATE SET count = count + 1;
@@ -457,19 +245,9 @@ const SCHEMA_SQL = `
         tag_id TEXT NOT NULL
     );
 
-    -- PHASE 4D (design doc §2.2/§9): durable bookkeeping for the one-time filename-migration script that moves
-    -- every existing character off a name-derived filename onto a minted UUIDv7 id. Deliberately its own indexed
-    -- SQL table rather than a single JSON blob in the meta table - a growing "map of every migrated id so far"
-    -- stuffed into one meta row would mean re-parsing and re-serializing the WHOLE map on every single character
-    -- (O(n) per row, O(n^2) over a 300k-character run), which is exactly the "rewrite the whole blob on every
-    -- mutation" antipattern the rest of this redesign exists to retire (see tags.json in this module's own
-    -- header). Each row is its own cheap indexed write instead.
-    -- completed = 0 means "this old_id/new_id pair has been minted (so a resumed run must reuse the same
-    -- new_id rather than minting a second one) but the per-character move (PNG rename, metadata row, chats
-    -- directory) may not have finished" - the discriminator the migration script's resume logic queries on.
-    -- completed = 1 is also the gate the script's cross-cutting sweep (groups/world_info/note.chara/
-    -- active_character rewrites) uses: those rewrites only apply once the underlying identity move for a row is
-    -- durably done, never while it's still in flight.
+    -- Bookkeeping for the one-time filename-migration script (name-derived filenames -> minted UUIDv7 ids).
+    -- completed = 0: new_id is minted (a resumed run must reuse it) but the per-character move may not be finished.
+    -- completed = 1 also gates the script's cross-cutting rewrites (groups/world_info/note.chara/active_character).
     CREATE TABLE IF NOT EXISTS id_migration (
         old_id    TEXT PRIMARY KEY,
         new_id    TEXT NOT NULL,
@@ -478,24 +256,10 @@ const SCHEMA_SQL = `
     CREATE INDEX IF NOT EXISTS idx_id_migration_new ON id_migration(new_id);
     CREATE INDEX IF NOT EXISTS idx_id_migration_completed ON id_migration(completed);
 
-    -- local-import-scan.js's durable "this source file has been positively determined to never be importable"
-    -- record - source_path is the discovered file's full absolute path (not just its basename: multiple
-    -- configured localImport.directories can share a filename, and this table is keyed per-DEFAULT_USER, not
-    -- per-directory, so the full path is the only thing that's actually unique). Exists so a genuinely
-    -- non-character file (invalid JSON entirely, e.g. a misnamed PNG; or valid JSON that isn't any recognized
-    -- character-card shape, e.g. a lorebook/world-info export sharing a corpus directory with real cards) gets
-    -- classified and logged ONCE, rather than re-attempting and re-logging a failed import every single scan
-    -- pass forever, including across server restarts (unlike DirectoryScanState.lastSeenMtimeMs, which is
-    -- in-memory-only and exists purely as a same-process efficiency cache - this table is the actual mechanism
-    -- that stops the retry loop from resuming on every boot).
-    -- mtime_ms records the file's mtimeMs AT THE TIME it was classified - a lookup only treats the skip as
-    -- still valid when the file's CURRENT mtime still matches, so an owner editing/replacing a skipped file
-    -- (e.g. turning a stray lorebook export into an actual character card) naturally invalidates the skip and
-    -- gets a fresh classification attempt on the very next pass, no explicit cache-busting needed. This is also
-    -- what tells a permanent non-importability apart from a transient one: this row is only ever written from a
-    -- pure, non-destructive, in-memory content classification (JSON.parse + shape check) run BEFORE any staging
-    -- or import machinery is touched - a real bug in the import code itself, or a file mid-write, never reaches
-    -- this table at all and keeps the pre-existing "retry every pass" behavior untouched.
+    -- Durable "this source file will never be importable" record, keyed by full absolute path (multiple
+    -- localImport.directories can share a filename). Classifies a non-character file once instead of
+    -- re-attempting every scan pass forever. A lookup only honors the skip while mtime_ms still matches the
+    -- file's current mtime, so replacing a skipped file invalidates it automatically.
     CREATE TABLE IF NOT EXISTS local_import_skips (
         source_path TEXT PRIMARY KEY,
         mtime_ms    INTEGER NOT NULL,
@@ -503,21 +267,9 @@ const SCHEMA_SQL = `
         checked_at  INTEGER NOT NULL
     );
 
-    -- local-import-scan.js's durable per-file "already processed at this mtime" record - the persisted
-    -- counterpart to DirectoryScanState.lastSeenMtimeMs (in-memory-only, bounded to MAX_LAST_SEEN_MTIME_ENTRIES,
-    -- cold on every restart - see that field's own doc comment). Without this, a server restart (or an
-    -- in-memory cache miss - see below) forces a full read+hash+dedup-check of every unchanged file, because the
-    -- in-memory skip cache always starts empty (measured ~23 minutes for a real ~301k-file corpus - 2026-08
-    -- local-import perf investigation). This table lets that skip survive both a restart AND a bounded cache's
-    -- own evictions: getLocalImportMtime() is a single indexed point lookup local-import-scan.js falls back to
-    -- whenever lastSeenMtimeMs doesn't have an answer in memory, so a file whose on-disk mtime still matches its
-    -- recorded row is still skipped without a read/hash/import, just via one extra indexed SELECT instead of a
-    -- pure in-memory hit - this only extends that same existing, efficiency-only, never-relied-on-for-correctness
-    -- semantics across a restart or an eviction, it does not change what "unchanged" means. (This table used to
-    -- also be bulk-loaded whole into memory at boot via a since-removed getAllLocalImportMtimes() - see the
-    -- 2026-09 unbounded-memory investigation for why that was replaced with the lazy per-file lookup above.)
-    -- Same source_path-is-the-key shape as local_import_skips, for the same reason (multiple configured
-    -- directories can share a filename; this table is keyed per-DEFAULT_USER, not per-directory).
+    -- Durable per-file "already processed at this mtime" record, backing DirectoryScanState.lastSeenMtimeMs
+    -- (in-memory, bounded, cold on restart) so a restart doesn't force a full read+hash+dedup pass over an
+    -- unchanged ~300k-file corpus. getLocalImportMtime() is the fallback lookup when the in-memory cache misses.
     CREATE TABLE IF NOT EXISTS local_import_mtimes (
         source_path TEXT PRIMARY KEY,
         mtime_ms    INTEGER NOT NULL
@@ -541,14 +293,9 @@ const UPSERT_SQL = `
         name_fold = excluded.name_fold,
         fav = excluded.fav,
         create_date = excluded.create_date,
-        -- date_last_chat is deliberately absent, for the same reason it is absent from the groups
-        -- upsert below: it is owned by bumpCharacterDateLastChat() (the /message/append write hook),
-        -- not by this function's callers. The candidate every caller supplies comes from
-        -- calculateChatSize(), which takes the newest mtime in the character's chats directory - and
-        -- messages live in the tree now, so that directory only holds retired .pre-migration files
-        -- whose mtimes never move again. Leaving it here meant every rescan reset a freshly bumped
-        -- row back to a pre-migration timestamp, so recency looked frozen. A genuine first INSERT
-        -- still seeds it from VALUES, which is the right historical starting point.
+        -- date_last_chat absent deliberately: owned by bumpCharacterDateLastChat(), not this function's callers.
+        -- Their candidate comes from the chats directory's mtime, which no longer moves once messages live in
+        -- the tree, so including it here would reset a freshly bumped row back to a stale timestamp on rescan.
         chat_size = excluded.chat_size,
         data_size = excluded.data_size,
         file_mtime = excluded.file_mtime,
@@ -557,67 +304,30 @@ const UPSERT_SQL = `
         version = excluded.version,
         creator_notes = excluded.creator_notes,
         shallow_json = excluded.shallow_json,
-        -- COALESCE, not a plain overwrite: most writers of an already-existing row (ordinary edits, the
-        -- reconciler re-parsing an unchanged file, the watcher) have no content hash to offer at all (their
-        -- buildRow() call passes contentHash: undefined, see below), and a plain '= excluded.content_hash'
-        -- would clobber a hash recorded at import time back to NULL on the very next unrelated edit. Only a
-        -- write that actually carries a fresh hash (a re-import that reuses this same id, i.e. a preserved-name
-        -- replace) overwrites it; every other writer's NULL candidate falls through to keep whatever was there.
+        -- COALESCE: most writers pass no content hash (undefined), and a plain overwrite would clobber an
+        -- import-time hash to NULL on the next unrelated edit. Only a fresh hash (re-import, same id) overwrites.
         content_hash = COALESCE(excluded.content_hash, characters.content_hash),
-        -- Same COALESCE shape as content_hash just above, for the same reason: buildRow() binds a real hash
-        -- string only from upsertCharacterFromWrite() (a genuine write just happened), NULL from every other
-        -- caller (reconcile/watch/bootstrap, which are re-observing a file, not writing one) - see this
-        -- column's own SCHEMA_SQL comment.
         content_identity_hash = COALESCE(excluded.content_identity_hash, characters.content_identity_hash),
-        -- Same COALESCE shape again, same reasoning, for avatar_identity_hash - see that column's own
-        -- SCHEMA_SQL comment.
         avatar_identity_hash = COALESCE(excluded.avatar_identity_hash, characters.avatar_identity_hash),
-        -- Not a COALESCE (import_poisoned is NOT NULL, so there's no NULL sentinel available for "no signal" -
-        -- buildRow() binds a real 0/1 always). Instead: a genuine write (excluded.import_poisoned = 0) always
-        -- wins and clears poison, because that write just proved this row's bytes now come from the current
-        -- write path regardless of whether it was poisoned before. Anything else (reconcile/watch/bootstrap,
-        -- which bind import_poisoned = 1 as their "no signal" value - see buildRow()) leaves whatever was
-        -- already there untouched, so a previously-cleared row never gets silently re-poisoned just because
-        -- something re-observed its unchanged file.
+        -- import_poisoned is NOT NULL so there's no NULL "no signal" value: a genuine write (0) always clears
+        -- poison; reconcile/watch/bootstrap bind 1 as their no-signal value and leave the existing state alone.
         import_poisoned = CASE WHEN excluded.import_poisoned = 0 THEN 0 ELSE characters.import_poisoned END,
-        -- Plain overwrite, same as fav just above (NOT a COALESCE) - writeRowSync() below already pre-resolves
-        -- the correct value (the row's own current active_chat when it's non-NULL, or this write's freshly
-        -- computed candidate when the row's current value is NULL - see that function's own doc comment) before
-        -- this SQL ever runs, so there is no "no signal" NULL candidate left to guard against here the way
-        -- content_hash/content_identity_hash/avatar_identity_hash need to.
+        -- Plain overwrite: writeRowSync() already pre-resolves the correct value before this SQL runs.
         active_chat = excluded.active_chat,
-        -- Never regresses 1 -> 0 (same CASE shape as import_poisoned's own "only a real write can flip it"
-        -- clause above, mirrored the opposite direction) - buildRow() always binds 1 (a genuine write always
-        -- resolves active_chat one way or the other), so in practice this is always a no-op overwrite of 1 with
-        -- 1; the CASE is defensive against any future caller of writeRowSync()/flushBatch() that might not.
+        -- Never regresses 1 -> 0.
         active_chat_checked = CASE WHEN excluded.active_chat_checked = 1 THEN 1 ELSE characters.active_chat_checked END,
         digest_fav = excluded.digest_fav,
         digest_tag_ids = excluded.digest_tag_ids,
         digest_content = excluded.digest_content,
-        -- Plain overwrite, NOT a COALESCE, and that is the whole contract: every writer that reaches this
-        -- statement carries a real signal about whether the PNG on disk is now current, and NULL is that
-        -- signal ("the file I just wrote/observed is the current copy - stop preferring the parked one"),
-        -- not an absence of one. See this column's own SCHEMA_SQL comment.
-        --
-        -- The two directions this has to get right:
-        --   - a metadata-only edit lands a non-NULL value here, superseding whatever the PNG says;
-        --   - a real PNG write (avatar replace, crop, re-import over the same id) or an externally-modified
-        --     file picked up by reconcile/watch lands NULL, which RETIRES a previously parked copy. A
-        --     COALESCE here would be a silent, permanent data bug: the card would keep serving edits made
-        --     before the avatar was replaced, forever, with no way to ever clear them.
+        -- Plain overwrite, not COALESCE: NULL here is a real signal ("file now current, stop preferring the
+        -- parked copy"), not an absence of one - a COALESCE would keep serving stale edits after an avatar
+        -- replace with no way to ever clear them.
         card_json = excluded.card_json,
         change_seq = excluded.change_seq
-    -- date_added is deliberately absent from this SET list - see this module's header ("date_added IS RECORDED
-    -- ONCE"). On a genuine insert the VALUES clause's candidate is used; on conflict SQLite leaves the existing
-    -- column untouched.
+    -- date_added intentionally absent: write-once, see this module's header.
 `;
 
-/**
- * Case/accent-folded form of a character's name, for prefix lookup and A-Z sort (doc §3.1's name_fold column) -
- * NFKD-normalizing and stripping combining marks so "É" and "e" sort/prefix-match the same way "é" and "e" do.
- * @param {string} name
- * @returns {string}
- */
+// NFKD-normalizes and strips combining marks so "É"/"e" sort/prefix-match the same as "é"/"e".
 function foldName(name) {
     return String(name ?? '')
         .toLowerCase()
@@ -625,28 +335,12 @@ function foldName(name) {
         .replace(/[\u0300-\u036f]/g, '');
 }
 
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {string}
- */
 function getDbPath(directories) {
     return path.join(directories.root, 'character-metadata.sqlite');
 }
 
-/**
- * Adds the `content_hash` column (bulk-import exact-duplicate dedup, see findCharacterIdByContentHash() below)
- * to an existing `characters` table that predates it. Not part of SCHEMA_SQL's `CREATE TABLE IF NOT EXISTS`
- * because that statement is a no-op against a table that already exists with an older column set - SQLite (like
- * most SQL engines) has no `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, so this checks `PRAGMA table_info` itself
- * and only runs the ALTER once, on whichever call to getEntry() is the first to see the old shape. A brand-new
- * install's very first CREATE TABLE never has the column either (it isn't in SCHEMA_SQL's column list), so this
- * runs there too, unconditionally the first time - one code path handles both "always ran on a fresh table" and
- * "needs to catch up an existing one", instead of duplicating the column in two places that could drift.
- * Deliberately never backfills existing rows' hashes (they stay NULL) - see this module's header on why
- * `content_hash` is populate-going-forward only, matching the "don't re-hash the whole library" instruction it
- * exists to satisfy.
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- */
+// SQLite has no ALTER TABLE ADD COLUMN IF NOT EXISTS, so this checks PRAGMA table_info and runs the ALTER once.
+// Never backfills existing rows' hashes - they stay NULL.
 function migrateContentHashColumn(db) {
     const columns = db.all('PRAGMA table_info(characters)');
     const hasColumn = columns.some(c => c.name === 'content_hash');
@@ -656,23 +350,7 @@ function migrateContentHashColumn(db) {
     db.exec('CREATE INDEX IF NOT EXISTS idx_characters_content_hash ON characters(content_hash)');
 }
 
-/**
- * Adds `content_identity_hash`/`import_poisoned` (see this module's SCHEMA_SQL comment on both) to an existing
- * `characters` table that predates them. Same ALTER-if-missing shape as migrateContentHashColumn() just above,
- * for the identical reason (no `ADD COLUMN IF NOT EXISTS` in SQLite).
- *
- * `import_poisoned`'s ALTER deliberately gives it `DEFAULT 1` (not 0): every row that already exists the first
- * time this runs was written by whatever import logic was in place before this column existed - which, as of
- * this fix, is unconditionally the OLD, more-mutating logic - so treating every preexisting row as poisoned by
- * default is simply correct, not a conservative placeholder. A brand-new install's very first CREATE TABLE
- * never has this column either (matching migrateContentHashColumn()'s reasoning), so a genuinely-new row
- * inserted via this same connection before any real write happens would also land poisoned=1 by that DEFAULT -
- * which is also correct: SCHEMA_SQL's CREATE TABLE has no way to know this row is about to be immediately
- * overwritten by an INSERT that explicitly supplies its own import_poisoned value (buildRow() always supplies
- * one, so in practice the DEFAULT only matters for a row this module has never upserted through buildRow() at
- * all, e.g. hand-authored test fixtures).
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- */
+// import_poisoned defaults to 1: rows that predate this column came from the old, more-mutating import logic.
 function migrateContentIdentityColumns(db) {
     const columns = db.all('PRAGMA table_info(characters)');
     if (!columns.some(c => c.name === 'content_identity_hash')) {
@@ -685,14 +363,6 @@ function migrateContentIdentityColumns(db) {
     db.exec('CREATE INDEX IF NOT EXISTS idx_characters_import_poisoned ON characters(import_poisoned)');
 }
 
-/**
- * Adds `avatar_identity_hash` (see this module's SCHEMA_SQL comment on it) to an existing `characters` table
- * that predates it. Same ALTER-if-missing shape as migrateContentIdentityColumns() just above. Unlike
- * import_poisoned, there is no DEFAULT-driven "every preexisting row starts in a known state" story here - a
- * preexisting row's avatar_identity_hash simply starts NULL (unknown, not "known to disagree") until either a
- * real write touches it or scripts/backfill-avatar-identity-hashes.mjs's one-time corpus sweep does.
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- */
 function migrateAvatarIdentityColumn(db) {
     const columns = db.all('PRAGMA table_info(characters)');
     if (!columns.some(c => c.name === 'avatar_identity_hash')) {
@@ -701,37 +371,8 @@ function migrateAvatarIdentityColumn(db) {
     db.exec('CREATE INDEX IF NOT EXISTS idx_characters_avatar_identity_hash ON characters(avatar_identity_hash)');
 }
 
-/**
- * Adds `active_chat`/`active_chat_checked` (see this module's SCHEMA_SQL comments on both) to an existing
- * `characters` table that predates them. Same ALTER-if-missing shape as migrateAvatarIdentityColumn() just
- * above, for the identical reason (SQLite has no `ADD COLUMN IF NOT EXISTS`).
- *
- * `active_chat_checked` needs a retroactive backfill this SAME call, unlike a plain "leave it at its column
- * DEFAULT" ALTER: an install that already had `active_chat` (added before this column existed) has already
- * had backfillActiveChatFromCards() resolve every one of its rows one way or the other, over however many
- * boots this install has been through since - real chat names for the ~12% that had one, confirmed-NULL for
- * the rest. `ALTER ... DEFAULT 0` alone would forget that history and mark all of them "not examined" again,
- * which is exactly the bug this column exists to fix: every already-resolved row would immediately re-match
- * backfillActiveChatFromCards()'s resumability query and get re-read off disk once more, a full corpus-wide
- * sweep for information this install already has. So: right after the ALTER adds the column, every row that
- * exists in the table AT THAT MOMENT gets marked checked = 1 unconditionally - both `active_chat IS NOT NULL`
- * (had a real chat) and `active_chat IS NULL` (this install's own already-completed backfill passes already
- * confirmed these have none) rows alike.
- *
- * That retroactive marking is gated on `hadActiveChatAlready`, NOT merely on `active_chat_checked` being new -
- * an install where `active_chat` ITSELF is also being added for the very first time in this same call (a
- * table that predates the whole 2026-08 chat-pointer migration, not just this one column) has genuinely never
- * had backfillActiveChatFromCards() run against it at all, so there is no prior-boots history to preserve;
- * marking those rows checked=1 here would be the exact same bug this column exists to fix, just introduced
- * fresh - it would make backfillActiveChatFromCards() skip every one of them forever, having never actually
- * read a single one off disk. Only a table that ALREADY had `active_chat` before this call gets the retroactive
- * mark; SCHEMA_SQL's own DEFAULT 0 already correctly means "not examined" for everything else, including a
- * row still awaiting its first buildRow() INSERT on either a fresh CREATE TABLE or this fresher-than-that ALTER.
- * A row inserted after this UPDATE runs (i.e. after this function returns, during ordinary operation) never
- * goes through this path at all - it gets its `active_chat_checked` from buildRow() instead, same as
- * `active_chat` itself already does.
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- */
+// A pre-existing active_chat column means those rows were already resolved in prior boots, so active_chat_checked
+// is retroactively set to 1 for them instead of DEFAULT 0, which would force a full corpus re-read.
 function migrateActiveChatColumn(db) {
     const columns = db.all('PRAGMA table_info(characters)');
     const hadActiveChatAlready = columns.some(c => c.name === 'active_chat');
@@ -747,47 +388,16 @@ function migrateActiveChatColumn(db) {
     db.exec('CREATE INDEX IF NOT EXISTS idx_characters_active_chat_checked ON characters(active_chat_checked)');
 }
 
-/**
- * Converts an existing `characters` table's `create_date` column from TEXT (its shape before 2026-08) to
- * INTEGER epoch ms, matching every other timestamp-shaped column in this schema - see that column's own
- * SCHEMA_SQL comment for why. Unlike every other `migrate*Column()` function above, this isn't adding a missing
- * column (SCHEMA_SQL's `CREATE TABLE IF NOT EXISTS` already declares `create_date` on every install, old or
- * new) - it's changing an EXISTING column's declared type, which SQLite has no direct `ALTER COLUMN` for. The
- * approach: add a new INTEGER column, backfill it from the old TEXT column in JS (SQL alone can't reproduce
- * parseCreateDateToEpochMs()'s "ST humanized" regex fallback - see that function's own doc comment), then
- * `DROP COLUMN` the old one and `RENAME COLUMN` the new one into its place (both supported since SQLite
- * 3.35.0/3.25.0 respectively - confirmed against the 3.49.2 this fork's better-sqlite3 bundles; the wasm
- * fallback engine, sqlite-engine.js, bundles a comparably modern SQLite too).
- *
- * Detection uses `PRAGMA table_info(characters)`'s own `type` field (SQLite reports back exactly the declared
- * type string from whichever CREATE/ALTER last set it) rather than a meta-table flag - a plain 'INTEGER' means
- * either a brand-new install (SCHEMA_SQL already declares it that way) or an already-migrated one; either way
- * there is nothing left to do, so this function no-ops on every call after its first.
- *
- * Confirmed against this fork's real ~327k-row production database (2026-08 investigation): every single
- * non-NULL, non-empty existing value parsed cleanly, either as a direct ISO 8601 string (~94%) or via one of
- * parseCreateDateToEpochMs()'s "ST humanized" patterns (~6%, humanizedDateTime()'s own historical output format
- * for this field) - zero rows were genuinely unparseable garbage. This function still has to handle that case
- * for any OTHER install (create_date is a card-authored field, not schema-validated), so a row whose value
- * doesn't parse gets `NULL` (matching how a genuinely-missing create_date already behaves), and every such row
- * (not just a truncated sample) is logged loudly rather than silently swallowed, so an owner can see the real
- * scope if their own install turns out to differ from this one.
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- */
+// Converts create_date from TEXT to INTEGER epoch ms. SQLite has no ALTER COLUMN, so: add a new INTEGER column,
+// backfill it in JS (parseCreateDateToEpochMs handles the "ST humanized" formats SQL alone can't), then DROP the
+// old column and RENAME the new one into place. Unparseable values become NULL and are logged.
 function migrateCreateDateColumn(db) {
     const columns = db.all('PRAGMA table_info(characters)');
     const createDateColumn = columns.find(c => c.name === 'create_date');
     const createDateMsColumn = columns.find(c => c.name === 'create_date_ms');
 
-    // Recovery for a half-migrated state: if a previous run was interrupted between any of the
-    // multi-step column swap (ADD create_date_ms / backfill / DROP create_date / RENAME), the
-    // table might be in one of these states:
-    //   (a) create_date_ms exists, create_date doesn't → interrupted after DROP, before RENAME
-    //   (b) both exist → interrupted after ADD/backfill, before DROP
-    // In either case, whatever backfill data exists in create_date_ms is kept as-is (NULL for
-    // rows that didn't get backfilled is acceptable - same as a genuinely-missing create_date).
+    // create_date_ms exists but create_date doesn't: a previous run was interrupted after DROP, before RENAME.
     if (!createDateColumn && createDateMsColumn) {
-        // State (a): just RENAME the surviving column and recreate the index.
         db.exec('ALTER TABLE characters RENAME COLUMN create_date_ms TO create_date');
         db.exec('CREATE INDEX IF NOT EXISTS idx_characters_create_date ON characters(create_date)');
         return;
@@ -795,14 +405,11 @@ function migrateCreateDateColumn(db) {
 
     if (!createDateColumn || createDateColumn.type === 'INTEGER') return;
 
-    // State (b) recovery: if create_date_ms already exists from a previous interrupted run,
-    // skip ADD + backfill (data may be partial but NULL is acceptable) and go straight to
-    // DROP + RENAME. Otherwise, do the full migration.
+    // If create_date_ms already exists (interrupted run), skip ADD + backfill and go straight to DROP + RENAME.
     if (!createDateMsColumn) {
         const rows = db.all('SELECT id, create_date FROM characters WHERE create_date IS NOT NULL');
 
-        // Dropped and recreated after the column swap below (SQLite refuses to DROP COLUMN while an index still
-        // references it - confirmed by direct testing).
+        // SQLite refuses to DROP COLUMN while an index still references it.
         db.exec('DROP INDEX IF EXISTS idx_characters_create_date');
         db.exec('ALTER TABLE characters ADD COLUMN create_date_ms INTEGER');
 
@@ -812,7 +419,7 @@ function migrateCreateDateColumn(db) {
                 const ms = parseCreateDateToEpochMs(row.create_date);
                 if (ms === null) {
                     unparseable.push({ id: row.id, value: row.create_date });
-                    continue; // create_date_ms stays NULL for this row, same as a genuinely-missing create_date.
+                    continue;
                 }
                 db.run('UPDATE characters SET create_date_ms = @createDateMs WHERE id = @id', { id: row.id, createDateMs: ms });
             }
@@ -827,7 +434,6 @@ function migrateCreateDateColumn(db) {
             ));
         }
     } else {
-        // create_date_ms already exists from a previous interrupted run - skip ADD + backfill.
         db.exec('DROP INDEX IF EXISTS idx_characters_create_date');
     }
 
@@ -836,28 +442,8 @@ function migrateCreateDateColumn(db) {
     db.exec('CREATE INDEX IF NOT EXISTS idx_characters_create_date ON characters(create_date)');
 }
 
-/**
- * Adds `duplicate_of` to an existing `local_import_mtimes` table that predates it. Same ALTER-if-missing shape
- * as migrateContentHashColumn() above, for the same reason (SQLite has no `ADD COLUMN IF NOT EXISTS`, and this
- * table's own `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL deliberately still only declares the original
- * `source_path`/`mtime_ms` shape - matching every other migrate*Column() function's pattern here rather than
- * duplicating the new column in two places that could drift).
- *
- * `duplicate_of` records which character id a source file was recognized as a duplicate OF, for the two
- * local-import-scan.js call sites that persist a row for a file that was never itself imported (an exact
- * content_hash match, or the expensive content-identity fallback match) - see setLocalImportMtime()'s own doc
- * comment for why this now happens at all (2026-08 real-corpus investigation: previously these two call sites
- * used a deliberately in-memory-only record specifically so a stale skip could never survive the matched
- * character disappearing - persisting the mtime without also tracking what it depends on would have silently
- * reintroduced that exact bug). deleteRowSync() below cascades a character deletion into deleting every
- * local_import_mtimes row that named it as duplicate_of, which is what makes persisting these safe: the row
- * that made the skip valid is gone, so the skip goes with it, and the source file falls back to a fresh
- * dedup-check on its very next scan pass - restoring the original safety property, not weakening it, while
- * still letting every source file that already IS a genuine, still-valid duplicate skip its full read+hash on
- * every restart instead of paying that cost forever (a real, measured cost - see reconcile()'s own doc comment
- * on the ~301k-file corpus this design targets, where duplicates are a large fraction of the total).
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- */
+// deleteRowSync() cascades a character deletion into deleting rows that named it as duplicate_of, so a stale
+// skip can never outlive the character it depends on.
 function migrateLocalImportMtimesDuplicateOfColumn(db) {
     const columns = db.all('PRAGMA table_info(local_import_mtimes)');
     if (!columns.some(c => c.name === 'duplicate_of')) {
@@ -866,37 +452,10 @@ function migrateLocalImportMtimesDuplicateOfColumn(db) {
     db.exec('CREATE INDEX IF NOT EXISTS idx_local_import_mtimes_duplicate_of ON local_import_mtimes(duplicate_of)');
 }
 
-// computeContentIdentityHash() itself now lives in character-card-normalize.js (imported above, 2026-08
-// local-import worker-pool work moved it there so a worker_threads worker can import it without dragging
-// this module's own top-level getConfigValue() calls - which require CONFIG_PATH, per-thread state a worker
-// never inherits - along with it; see that module's own doc comment on computeContentIdentityHash() for the
-// full story) and is re-exported here unchanged so every existing external caller of THIS module (e.g.
-// local-import-scan.js's original import, before it moved to local-import-classify.js) keeps working.
 export { computeContentIdentityHash };
 
-/**
- * Adds `fav`/`date_added`/`date_last_chat`/`chat_size`/`name_fold` to an existing `groups` table that predates
- * them (an install that only ever had the phase-3 minimal `id, name` shape) - same guarded-ALTER pattern as
- * migrateContentHashColumn() above, for the same reason (SQLite has no `ADD COLUMN IF NOT EXISTS`, and
- * SCHEMA_SQL's `CREATE TABLE IF NOT EXISTS` is a no-op against an existing table with an older column set). A
- * brand-new install's first CREATE TABLE already has every column (they're in SCHEMA_SQL's groups definition
- * now), so every ALTER below is a no-op there - one code path handles both "always ran on a fresh table" and
- * "needs to catch up an existing one".
- *
- * UNLIKE migrateContentHashColumn(), this ALSO backfills real values into any row that already existed under the
- * old 2-column shape - and it has to be done here, as a plain UPDATE, rather than by re-running
- * bootstrapGroupsIfNeeded()'s normal upsert path. The reason is the write-once contract: GROUP_UPSERT_SQL's ON
- * CONFLICT clause deliberately never overwrites an existing row's `date_added` (see that SQL's own comment), so
- * a row that already exists (inserted back when the table only had `id`/`name`) would have its ALTER-added
- * `date_added` default of 0 frozen forever - bootstrapGroupsIfNeeded() is separately gated by
- * `groups_bootstrap_completed`, which is already set on such an install, so it would never even run again to
- * try. This function's own ALTER-presence check is therefore the only gate this backfill needs: it only touches
- * rows for a genuinely pre-existing table, and it only runs once (the next call finds every column already
- * present and does nothing).
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- * @param {import('./users.js').UserDirectoryList} directories Needed to re-read each existing group's JSON file
- * for the values ALTER's column defaults can't supply (name, fav, chat ids for stat'ing).
- */
+// Backfills real values into rows from the old id/name-only shape via a plain UPDATE, since
+// bootstrapGroupsIfNeeded()'s upsert path never overwrites an existing date_added.
 function migrateGroupsColumns(db, directories) {
     const columns = db.all('PRAGMA table_info(groups)');
     const columnNames = new Set(columns.map(c => c.name));
@@ -937,23 +496,8 @@ function migrateGroupsColumns(db, directories) {
     });
 }
 
-/**
- * Adds `digest_fav`/`digest_tag_ids`/`digest_content` to an existing `groups` table that predates them (2026-09,
- * extending /query's hash-only mode to `includeGroups: true` requests - see groupFavFingerprint()/
- * groupTagIdsFingerprint()/groupContentFingerprint(), hash-utils.js, for what each covers).
- *
- * Deliberately NOT the same "ALTER then leave NULL, populate lazily on next write" shape
- * migrateDigestColumns() (characters' own version, just above migrateGroupsColumns()) uses - that shape is
- * exactly what produced the finding this comment is reacting to: spot-checking the live characters table found
- * ~99.6% of rows still NULL (a long-lived library whose rows were never individually rewritten since those
- * columns were added) and, worse, some non-NULL rows actually disagreeing with a fresh recompute. Groups are
- * "far fewer than characters" (design doc's own words) - cheap enough to backfill for real, right here, rather
- * than accept the same lazy-and-drifting shape for a second table. A backfill failure for one group (unreadable/
- * corrupt JSON file, e.g.) leaves that row's digests NULL, which hash-mode's own read path already treats as "no
- * trustworthy stored digest" (recomputes live) - see the /query route's group hash-row builder.
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- * @param {import('./users.js').UserDirectoryList} directories
- */
+// Backfills digests immediately, unlike migrateDigestColumns()'s lazy NULL-until-next-write shape - groups are
+// few enough that eager backfill is cheap.
 function migrateGroupDigestColumns(db, directories) {
     const columns = db.all('PRAGMA table_info(groups)');
     const columnNames = new Set(columns.map(c => c.name));
@@ -962,7 +506,6 @@ function migrateGroupDigestColumns(db, directories) {
     if (!columnNames.has('digest_tag_ids')) db.exec('ALTER TABLE groups ADD COLUMN digest_tag_ids INTEGER');
     if (!columnNames.has('digest_content')) db.exec('ALTER TABLE groups ADD COLUMN digest_content INTEGER');
 
-    // Already backfilled by a previous run of this function (columns existed already) - nothing left to do.
     if (!isNewColumn) return;
 
     const existingIds = db.all('SELECT id FROM groups').map(r => r.id);
@@ -992,13 +535,7 @@ function migrateGroupDigestColumns(db, directories) {
     });
 }
 
-/**
- * Adds `fields` to an existing `changes` table that predates it - same ALTER-if-missing shape as
- * migrateContentHashColumn() above. Nullable TEXT column storing a JSON array of field names (e.g.
- * '["fav"]', '["tag_ids"]') when only specific fields changed, or NULL when the whole record changed
- * (full card edit, delete, import, rename). Existing rows (which predate field-level tracking) stay
- * NULL, correctly meaning "whole record changed" - no backfill needed.
- */
+// fields: JSON array of changed field names (e.g. '["fav"]'), or NULL meaning the whole record changed.
 function migrateChangesFieldsColumn(db) {
     const columns = db.all('PRAGMA table_info(changes)');
     if (!columns.some(c => c.name === 'fields')) {
@@ -1020,13 +557,7 @@ function migrateRevToSeqColumns(db) {
     db.run('UPDATE meta SET key = \'tantivy_char_index_tags_hash\' WHERE key = \'tantivy_char_index_tags_rev\'');
 }
 
-/**
- * Adds `digest_fav`/`digest_tag_ids`/`digest_content` to an existing `characters` table that
- * predates them. Same ALTER-if-missing shape as migrateContentHashColumn(). No backfill needed:
- * NULL columns are populated lazily by the next write (reconcile/bootstrap/upsert) for each row,
- * and the tree-descend worker treats NULL as "compute from shallow_json on demand" rather than
- * skipping the row.
- */
+// NULL is populated lazily by the next write per row; the tree-descend worker computes from shallow_json on demand.
 function migrateDigestColumns(db) {
     const columns = db.all('PRAGMA table_info(characters)');
     const columnNames = new Set(columns.map(c => c.name));
@@ -1035,12 +566,7 @@ function migrateDigestColumns(db) {
     if (!columnNames.has('digest_content')) db.exec('ALTER TABLE characters ADD COLUMN digest_content INTEGER');
 }
 
-/**
- * Adds `allow_global_styles` to an existing `characters` table. Same ALTER-if-missing shape as
- * migrateContentHashColumn() above. No backfill needed: NULL means "no preference recorded yet",
- * and existing values are migrated from the client's accountStorage on first load.
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- */
+// NULL means "no preference recorded yet"; existing values migrate from client accountStorage on first load.
 function migrateAllowGlobalStylesColumn(db) {
     const columns = db.all('PRAGMA table_info(characters)');
     if (!columns.some(c => c.name === 'allow_global_styles')) {
@@ -1048,27 +574,8 @@ function migrateAllowGlobalStylesColumn(db) {
     }
 }
 
-/**
- * Adds a direction-matched index for fav sort: `ORDER BY fav DESC, name_fold ASC` needs an index
- * with those exact directions to avoid a full-table-scan + temp-sort (measured: 63ms without this
- * index, 1ms with it, at 327k rows). The existing `idx_characters_fav_name_fold (fav, name_fold)`
- * has default ASC direction on both columns, which SQLite can't use for mixed-direction ORDER BY.
- */
-/**
- * Adds `card_json` to an existing `characters` table that predates it (2026-09, character-data-residency
- * migration). Same ALTER-if-missing shape as migrateContentHashColumn() above.
- *
- * Deliberately NO backfill, and that is a correctness point rather than a shortcut: this column's NULL means
- * "the PNG's embedded chunk is current, read it from there" (see its own SCHEMA_SQL comment), which is exactly
- * true of every row on a pre-migration install - nothing had yet written a card without also rewriting its
- * file. Backfilling it from disk would be a multi-GB copy of content that is already correct where it sits,
- * and would additionally have to re-read the entire library to do it.
- *
- * The partial index matters more than it looks: the non-NULL set is small by construction (only edited cards),
- * and `/all`'s prefetch (getStaleCardJsonMap()) is a `WHERE card_json IS NOT NULL` scan. A partial index makes
- * that proportional to the number of edited cards instead of to the size of the library.
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- */
+// NULL correctly means "PNG chunk is current" for every pre-migration row. The partial index keeps
+// getStaleCardJsonMap()'s scan proportional to edited cards, not library size.
 function migrateCardJsonColumn(db) {
     const columns = db.all('PRAGMA table_info(characters)');
     if (!columns.some(c => c.name === 'card_json')) {
@@ -1077,20 +584,13 @@ function migrateCardJsonColumn(db) {
     db.exec('CREATE INDEX IF NOT EXISTS idx_characters_card_json_present ON characters(id) WHERE card_json IS NOT NULL');
 }
 
+// idx_characters_fav_name_fold has default ASC on both columns, which SQLite can't use for a DESC/ASC ORDER BY.
 function migrateFavSortIndex(db) {
     db.exec('CREATE INDEX IF NOT EXISTS idx_characters_fav_desc_name_fold_asc ON characters(fav DESC, name_fold ASC)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_groups_fav_desc_name_fold_asc ON groups(fav DESC, name_fold ASC)');
 }
 
-/**
- * Resolves (creating on first use) the metadata DB entry for a user, including opening the SQLite file and
- * applying SCHEMA_SQL (idempotent - every statement is CREATE ... IF NOT EXISTS). Returns `null` if no SQLite
- * engine is usable on this install at all (see sqlite-engine.js) - callers must treat that as "the metadata
- * store is unavailable this run" and no-op rather than throwing, the same way this codebase already treats a
- * missing search backend as non-fatal (native-sqlite.js).
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<MetadataDbEntry | null>}
- */
+// Returns null if no SQLite engine is usable on this install - callers must no-op rather than throw.
 async function getEntry(directories) {
     const key = directories.root;
     const existing = entries.get(key);
@@ -1126,11 +626,8 @@ async function getEntry(directories) {
     migrateGroupsColumns(db, directories);
     migrateGroupDigestColumns(db, directories);
     migrateFavSortIndex(db);
-    // Design doc §5.3, decisions 8/13: random-sort order is a per-query `ORDER BY <hash>(id, seed)`, never a
-    // materialized column (a materialized seeded column is O(users × rerolls) to maintain - see the decision's
-    // rationale). Registering the client's own cyrb53 as a real SQL function is what makes that expressible at
-    // the SQL layer at all, so it composes with LIMIT/OFFSET pagination instead of requiring a JS-side sort over
-    // every candidate row first.
+    // Registers cyrb53 as a SQL function so random-sort order can be a per-query ORDER BY RANDHASH(id, seed),
+    // composing with LIMIT/OFFSET pagination instead of a JS-side sort over every row.
     db.defineFunction('RANDHASH', (id, seed) => getStringHash(String(id ?? ''), Number(seed ?? 0)));
     /** @type {MetadataDbEntry} */
     const entry = { db, directories, watcher: null, watchTimers: new Map(), batch: null, bootstrapPromise: null };
@@ -1138,26 +635,7 @@ async function getEntry(directories) {
     return entry;
 }
 
-/**
- * Builds the full row (everything UPSERT_SQL needs except `changeSeq`, which is only known once the change-log entry
- * is inserted - see writeRowSync()) from an already Spec-V2-normalized character object.
- * @param {string} id Avatar filename (today's primary key - see the design doc §2.2 on why this is pre-Option-A)
- * @param {object} character Spec V2 character object
- * @param {object} extra
- * @param {number} extra.dateAddedCandidate Used only if this is a genuine insert - see this module's header
- * @param {number} extra.fileMtime
- * @param {number} extra.chatSize
- * @param {number} extra.dateLastChat
- * @param {string|null} [extra.contentHash]
- * @param {string|null} [extra.contentIdentityHash] sha256 hex digest from computeContentIdentityHash(), or
- * undefined/null from every caller except upsertCharacterFromWrite() - see this column's SCHEMA_SQL comment.
- * @param {string|null} [extra.avatarIdentityHash] computeAvatarIdentityHashFromChunks() of the character's own
- * PNG, or undefined/null from every caller except upsertCharacterFromWrite() - see this column's own SCHEMA_SQL
- * comment.
- * @param {string[]} [extra.tagIds] Tag ids for the shallow projection - passed by the caller to avoid
- * an extra per-row query during the 326k-row bootstrap pass.
- * @returns {object} Row fields (minus `changeSeq`)
- */
+// dateAddedCandidate is only used on a genuine insert.
 function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, dateLastChat, contentHash, contentIdentityHash, avatarIdentityHash, tagIds = [], cardJson = null }) {
     const includeCreatorNotes = !!getConfigValue('performance.shallowCharactersIncludeCreatorNotes', false, 'boolean');
     const dataSize = calculateDataSize(character?.data);
@@ -1177,13 +655,6 @@ function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, date
         name_fold: foldName(character.name),
         fav: character.fav ? 1 : 0,
         date_added: dateAddedCandidate,
-        // Parsed from the card's own raw string (or number/undefined) into epoch ms - see this column's own
-        // SCHEMA_SQL comment. Every caller of buildRow() passes `character.create_date` straight from a
-        // just-parsed card, so this is the ONE place (besides migrateCreateDateColumn()'s one-time backfill)
-        // that ever needs to run this parse - shallow_json below keeps the card's original raw string via
-        // `shallowSource`'s `...character` spread, untouched by this conversion (see toShallow()'s own doc
-        // comment on why the shallow projection must still show the client the card's own value, not this
-        // column's internal representation).
         create_date: parseCreateDateToEpochMs(character.create_date),
         date_last_chat: dateLastChat,
         chat_size: chatSize,
@@ -1194,92 +665,22 @@ function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, date
         version: _.get(character, 'data.character_version', '') || null,
         creator_notes: includeCreatorNotes ? (_.get(character, 'data.creator_notes', '') || null) : null,
         shallow_json: JSON.stringify(shallow),
-        // Undefined/omitted from every call site except the import write path (see upsertCharacterFromWrite()'s
-        // own contentHash param) - normalized to `null` here so UPSERT_SQL's bound parameter is always a real
-        // SQL value, never `undefined` (which better-sqlite3 rejects as a bind parameter). See UPSERT_SQL's
-        // ON CONFLICT clause for why a `null` candidate here never clobbers an existing hash on update.
         content_hash: contentHash ?? null,
-        // See UPSERT_SQL's ON CONFLICT clause and this column's SCHEMA_SQL comment: a real hash string only
-        // ever comes from upsertCharacterFromWrite() (a write just happened); every other caller's `undefined`
-        // normalizes to `null` here, which the COALESCE in UPSERT_SQL then treats as "no signal, don't touch".
         content_identity_hash: contentIdentityHash ?? null,
-        // Same normalize-undefined-to-null shape as content_identity_hash just above, same reasoning - see
-        // avatar_identity_hash's own SCHEMA_SQL comment.
         avatar_identity_hash: avatarIdentityHash ?? null,
-        // Not COALESCE-able the way content_identity_hash is (this column is NOT NULL, so there's no spare
-        // NULL to use as a "no signal" sentinel) - 0 only when a real write just proved this row unpoisoned
-        // (contentIdentityHash was supplied), 1 (the "no signal, and also the correct default for a row nobody
-        // has ever confirmed clean" value) otherwise. See UPSERT_SQL's own CASE-based ON CONFLICT clause for
-        // how a genuine INSERT and a "no signal" conflict update end up with the right value from this same
-        // bound parameter despite it only ever being a plain 0/1.
         import_poisoned: contentIdentityHash ? 0 : 1,
-        // active_chat: same one-time "carry forward once at first INSERT" role `fav` plays above (see this
-        // column's own SCHEMA_SQL comment and writeRowSync()'s null-vs-non-null handling) - seeds a genuinely
-        // new row from whatever the just-parsed card's own `chat` field says, `null` if it had none.
         active_chat: character.chat ?? null,
-        // Always 1: buildRow() only ever runs against a `character` object just parsed from its own card (see
-        // this function's own @param doc), so `active_chat` above is always genuinely resolved - either a real
-        // chat name or a confirmed-none `null` - never "haven't looked yet". See active_chat_checked's own
-        // SCHEMA_SQL comment for the state it distinguishes active_chat's NULL from.
         active_chat_checked: 1,
         digest_fav: characterDigestFavHash(shallow) % 4294967296,
         digest_tag_ids: characterDigestTagIdsHash(shallow) % 4294967296,
         digest_content: characterDigestFieldsHash(shallow) % 4294967296,
-        // NULL from every caller except a metadata-only write (characters.js's writeCharacterData() taking its
-        // no-PNG-write path, threaded here via upsertCharacterFromWrite()'s `pngCardStale`). NULL is a real
-        // signal here, not a missing one - "the PNG on disk is the current copy" - so unlike content_hash and
-        // friends it is a plain overwrite in UPSERT_SQL rather than a COALESCE. See the column's own SCHEMA_SQL
-        // comment and UPSERT_SQL's clause for why retiring a stale parked copy has to be possible.
         card_json: cardJson ?? null,
     };
 }
 
-/**
- * Writes one row plus its change-log entry, synchronously, meant to run inside `db.transaction(...)`. Not
- * exported - all the exported upsert/delete/rename functions below route through this (or its batch-flush
- * sibling, flushBatch()).
- *
- * PHASE 3 (design doc §3.4/Phase 3): `character_tags` is now the source of truth for character<->tag
- * assignments, mutated directly by `POST /api/tags/assign`/`/unassign` (see assignCharacterTag()/
- * unassignCharacterTag() below) - NOT re-derived from tags.json on every ordinary metadata write anymore. This
- * function used to unconditionally `DELETE FROM character_tags WHERE character_id = @id` and reinsert from
- * `tagIds` on every call, which was correct back when character_tags was a read-only mirror kept in sync by
- * resyncTags() (still true through phase 1/2), but became actively destructive once direct-assignment writes
- * existed: an ordinary character edit (rename, fav toggle, whatever) firing this same write path would silently
- * revert any tag assigned/unassigned since tags.json was last read, because tags.json's tag_map is no longer
- * kept current for characters.
- *
- * So `tagIds` is now used ONLY to seed a genuinely brand-new row's tags - once, at the row's first INSERT
- * (`existed` below is false) - which is what carries an existing library's tags.json content forward into this
- * table the first time a character is discovered (bootstrapIfNeeded()'s one-time backfill, or a file dropped
- * into the directory by hand that happens to have a legacy tag_map entry). An UPDATE of an already-existing row
- * never touches character_tags at all here; existing assignments in that table stand as-is regardless of what
- * `tagIds`/tags.json says.
- *
- * The exact same reasoning applies to `fav`, one owner-decision layer further: once a row exists, its `fav`
- * column is the ONLY source of truth for favorite status - a card file's embedded `fav` (or `data.extensions.
- * fav`) only ever seeds the row's *first* INSERT (see buildRow()'s own `fav` field, computed from whatever
- * `character.fav` this call was given), the same one-time role tagIds plays above. An ordinary re-upsert of an
- * existing row (an edit, a reconcile pass picking up an externally-touched file, a re-import of the same avatar
- * id) must not let a stale or attacker/tool-authored embedded value silently override a toggle made through the
- * dedicated fav write path (setCharacterFav() below, the only other writer of this column post-insert) - so
- * `row.fav`/its `shallow_json`'s own embedded `fav` copy are both forced back to the row's current value here
- * before the UPSERT ever runs, regardless of what buildRow() computed them as.
- *
- * `active_chat` (2026-08, chat-pointer db migration) gets the SAME forced-back-to-current treatment ONE
- * important difference from `fav`: `fav` is NOT NULL, so its column always holds a real "current" value to
- * force back to. `active_chat` is nullable, and its own NULL is ambiguous on its own (see active_chat_checked's
- * SCHEMA_SQL comment) - but that ambiguity doesn't matter here: only a NON-NULL existing value is forced back
- * unconditionally (db wins, matching fav exactly); a NULL existing value (whether "not examined yet" or
- * "confirmed no chat" - either way, no real value sitting in the db to protect) instead lets THIS write's own
- * freshly-computed `row.active_chat` (buildRow()'s `character.chat ?? null`, itself always a fresh resolution -
- * see buildRow()'s own active_chat_checked comment) seed it, exactly like a first INSERT would.
- * `active_chat_checked` needs no equivalent forcing: buildRow() always supplies 1, and UPSERT_SQL's own CASE
- * already makes 1 -> 1 a no-op and never lets it regress - see that SQL's own comment.
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- * @param {object} row From buildRow()
- * @param {string[]} tagIds Seed tag ids - applied only if this is a genuine insert, see above.
- */
+// Meant to run inside db.transaction(...). tagIds only seeds a genuinely new row's tags on first INSERT -
+// character_tags is the source of truth thereafter, so an UPDATE never touches it. fav and active_chat get the
+// same one-time-seed treatment: once a row exists, a stale/foreign value from the card can't override them.
 function writeRowSync(db, row, tagIds) {
     const existingRow = db.get('SELECT fav, active_chat, shallow_json FROM characters WHERE id = @id', { id: row.id });
     const existed = !!existingRow;
@@ -1287,16 +688,11 @@ function writeRowSync(db, row, tagIds) {
     if (existed) {
         const currentFav = existingRow.fav ? 1 : 0;
         const favChanged = row.fav !== currentFav;
-        // NULL existing active_chat (whether not-yet-examined or confirmed-no-chat - no real value in the db
-        // either way) - let row.active_chat (this write's own, freshly-resolved candidate) seed it, i.e. leave
-        // row.active_chat exactly as buildRow() computed it. Only a NON-NULL existing value gets forced back,
-        // and only when it actually differs from this write's candidate.
+        // Only a non-NULL existing active_chat gets forced back; NULL means not-yet-examined or confirmed-no-chat,
+        // so this write's freshly-resolved candidate is allowed to seed it.
         const forceActiveChat = existingRow.active_chat !== null && row.active_chat !== existingRow.active_chat;
-        // tag_ids from character_tags is the source of truth for existing rows, not whatever
-        // buildRow was given (which may have come from tags.json instead of character_tags).
         const currentTagIds = db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id: row.id }).map(r => r.tag_id);
 
-        // Always patch tag_ids for existing rows; also patch fav/active_chat when they need forcing.
         const shallow = JSON.parse(row.shallow_json);
         shallow.tag_ids = currentTagIds;
         if (favChanged) {
@@ -1305,14 +701,9 @@ function writeRowSync(db, row, tagIds) {
         if (forceActiveChat) {
             shallow.chat = existingRow.active_chat;
         }
-        // card_json is deliberately NOT given the same fav/active_chat forcing that shallow_json just got,
-        // and the difference is not an oversight. shallow_json is a PROJECTION the client reads, where
-        // carrying the db's authoritative fav/chat is exactly right. card_json is the CARD itself - the bytes
-        // that get materialized into an exported PNG - and `fav` and `chat` are precisely the two fields the
-        // write routes strip out of a card on purpose (characters.js's omitFavField()/omitChatField(): both
-        // are db-authoritative and must not live in the card at all). Patching them back in here would undo
-        // that on every write and ship them to other tools in every export. It is stored exactly as the
-        // writer supplied it.
+        // card_json deliberately skips the fav/active_chat forcing shallow_json just got: it's the exported
+        // card's own bytes, and fav/chat are stripped from cards on write (characters.js's omitFavField()/
+        // omitChatField()) since both are db-authoritative and must not round-trip into exports.
         row = {
             ...row,
             fav: favChanged ? currentFav : row.fav,
@@ -1331,61 +722,25 @@ function writeRowSync(db, row, tagIds) {
     }
 }
 
-/**
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- * @param {string} id
- */
 function deleteRowSync(db, id) {
     db.run('DELETE FROM characters WHERE id = @id', { id });
     db.run('DELETE FROM character_tags WHERE character_id = @id', { id });
-    // Cascades into local_import_mtimes: any source file persisted as a duplicate-of THIS character (see
-    // setLocalImportMtime()'s own doc comment and migrateLocalImportMtimesDuplicateOfColumn()'s) had its skip
-    // record's validity depend on this row still existing - deleting it here, in the same place every OTHER
-    // consequence of a character disappearing is already handled, is what keeps that skip from silently
-    // outliving the row it was conditioned on.
+    // Cascades: a local_import_mtimes row recorded as duplicate_of this character must not outlive it.
     db.run('DELETE FROM local_import_mtimes WHERE duplicate_of = @id', { id });
     insertChange(db, id, 'delete', null);
 }
 
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} avatar
- * @returns {string[]} Tag ids currently assigned to this character in tags.json (read-only - phase 1 keeps
- * tags.json as the write source of truth; this table is a query-ready mirror of it, kept in sync by
- * resyncTags() below. Migrating the write path itself onto character_tags is phase 3's job.)
- */
+// tags.json remains the write source of truth for tag assignment; this reads its mirror.
 function getTagIdsFor(directories, avatar) {
     const { tag_map } = readTagsData(directories);
     return tag_map[avatar] ?? [];
 }
 
 /**
- * Write-path hook for characters.js's writeCharacterData() - the single low-level function every character
- * create/edit/edit-avatar/edit-attribute/merge-attributes/import route funnels a PNG write through. Called
- * right after a write succeeds, with the exact same JSON string that was just written, so this never re-reads
- * the file it was just given.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} avatar Avatar filename (e.g. `Alice.png`)
- * @param {string} cardJson The Spec-V2-normalized character JSON that was just written to disk
- * @param {number} fileMtimeMs mtime of the file that was just written (caller already has this from the write)
- * @param {string|null} [contentHash] sha256 hex digest of the raw uploaded source-file bytes this write came
- * from (bulk-import dedup, see findCharacterIdByContentHash() below) - only the import route has one of these to
- * offer; every other writer (create/edit/rename/etc.) omits it, which buildRow() normalizes to `null` and
- * UPSERT_SQL's ON CONFLICT clause then treats as "don't touch whatever hash is already there" rather than a
- * real candidate value - see that clause's own comment.
- * @param {string|null} [avatarIdentityHash] computeAvatarIdentityHashFromChunks() of the image bytes actually
- * written - passed through from characters.js's writeCharacterData() via fireMetadataUpsertHook() for every
- * caller that just performed a real image write. `null` (the default) from a caller with no new image bytes to
- * report (e.g. /rename), same "don't touch whatever's already there" COALESCE treatment as `contentHash`.
- * @param {boolean} [pngCardStale] `true` when the caller wrote this card WITHOUT (re)writing the PNG's own
- * embedded chunk - i.e. a metadata-only edit, the whole point of the residency migration. `cardJson` is then
- * stored in the `card_json` column as the authoritative copy and the file on disk keeps its old chunk (and its
- * old mtime, which is what keeps the watcher and reconciler from treating this as external drift). `false` (the
- * default, and what every image-touching writer passes) means the PNG that was just written IS the current copy,
- * which stores NULL and retires any previously parked copy. See the column's SCHEMA_SQL comment.
- * @returns {Promise<void>}
+ * @param {string|null} [contentHash] sha256 of the raw uploaded source-file bytes; only the import route has one.
+ * @param {string|null} [avatarIdentityHash] Hash of the image bytes actually written; null if no new image bytes.
  */
-export async function upsertCharacterFromWrite(directories, avatar, cardJson, fileMtimeMs, contentHash = null, avatarIdentityHash = null, pngCardStale = false) {
+export async function upsertCharacterFromWrite(directories, avatar, cardJson, fileMtimeMs, contentHash = null, avatarIdentityHash = null) {
     const entry = await getEntry(directories);
     if (!entry) return;
 
@@ -1397,39 +752,16 @@ export async function upsertCharacterFromWrite(directories, avatar, cardJson, fi
         return;
     }
 
-    // Every call here follows a real writeCharacterData() success (see this function's own header), so the file
-    // just written necessarily went through the current, minimal-mutation write path regardless of whether this
-    // row was poisoned before - buildRow() uses contentIdentityHash's mere presence (not its value) to clear
-    // import_poisoned, see that column's SCHEMA_SQL comment.
     const contentIdentityHash = computeContentIdentityHash(character);
     const { chatSize, dateLastChat } = calculateChatSize(path.join(directories.chats, avatar.replace(/\.png$/, '')));
     const tagIds = getTagIdsFor(directories, avatar);
-    const row = buildRow(avatar, character, { dateAddedCandidate: Date.now(), fileMtime: fileMtimeMs, chatSize, dateLastChat, contentHash, contentIdentityHash, avatarIdentityHash, tagIds, cardJson: pngCardStale ? cardJson : null });
+    const row = buildRow(avatar, character, { dateAddedCandidate: Date.now(), fileMtime: fileMtimeMs, chatSize, dateLastChat, contentHash, contentIdentityHash, avatarIdentityHash, tagIds, cardJson });
 
     applyOrBuffer(entry, row, tagIds);
 }
 
-/**
- * Write-path hook for the fav-toggle UI action (owner decision - see this module's header on `fav` being
- * db-authoritative once a row exists) - the ONE writer, other than a row's first INSERT, ever allowed to change
- * the `fav` column. Deliberately does NOT touch the character's PNG card file at all: no read, no write, no
- * fireMetadataUpsertHook() - a favorite toggle is now a pure metadata-store mutation, matching upsertGroupRow()'s
- * existing `{ fav }` shape for groups.
- *
- * Patches `shallow_json`'s own embedded `fav` field to match, so a `/query` read (queryCharacters(), which
- * returns `JSON.parse(shallow_json)` verbatim - see that function) stays consistent with the `fav` column
- * without needing a separate per-row stamp step the way the live `/all` route's processCharacter() results do
- * (see getCharacterFavsByIds() below, used for exactly that).
- *
- * No-op (returns false) if this avatar isn't tracked yet - a row has to exist for its `fav` column to mean
- * anything; a character encountered for the first time gets its embedded `fav` picked up once by whatever write
- * path (bootstrapIfNeeded()/reconcile()/upsertCharacterFromWrite()) first INSERTs its row, per writeRowSync()'s
- * own doc comment.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} avatar Avatar filename (e.g. `Alice.png`)
- * @param {boolean} fav
- * @returns {Promise<boolean>} True if a row existed and was updated.
- */
+// The one writer (besides a row's first INSERT) allowed to change fav. Pure metadata-store mutation - no PNG
+// touch. Patches shallow_json's embedded fav too, so /query stays consistent with the column.
 export async function setCharacterFav(directories, avatar, fav) {
     const entry = await getEntry(directories);
     if (!entry) return false;
@@ -1448,14 +780,7 @@ export async function setCharacterFav(directories, avatar, fav) {
     return true;
 }
 
-/**
- * Sets the `allow_global_styles` preference for a character, mirroring setCharacterFav() exactly:
- * updates the DB column + shallow_json mirror, no card file write.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} avatar Avatar filename (e.g. `Alice.png`)
- * @param {boolean} allowed
- * @returns {Promise<boolean>} True if a row existed and was updated.
- */
+// Mirrors setCharacterFav(): DB column + shallow_json mirror, no card file write.
 export async function setCharacterAllowGlobalStyles(directories, avatar, allowed) {
     const entry = await getEntry(directories);
     if (!entry) return false;
@@ -1473,27 +798,9 @@ export async function setCharacterAllowGlobalStyles(directories, avatar, allowed
     return true;
 }
 
-/**
- * Write-path hook for the chat-switch UI action (2026-08 chat-pointer db migration, owner decision - see this
- * module's header on `active_chat` being db-authoritative once a row exists) - the ONE writer, other than a
- * row's first INSERT, ever allowed to change the `active_chat` column. Mirrors setCharacterFav() exactly:
- * deliberately does NOT touch the character's PNG card file at all - no read, no write, no
- * fireMetadataUpsertHook() - a chat switch is now a pure metadata-store mutation.
- *
- * Patches `shallow_json`'s own embedded `chat` field to match, so a `/query` read (queryCharacters(), which
- * returns `JSON.parse(shallow_json)` verbatim) stays consistent with the `active_chat` column without needing a
- * separate per-row stamp step the way the live `/all` route's processCharacter() results do (see
- * getCharacterActiveChatsByIds() below, used for exactly that).
- *
- * No-op (returns false) if this avatar isn't tracked yet - a row has to exist for its `active_chat` column to
- * mean anything; a character encountered for the first time gets its embedded `chat` picked up once by
- * whatever write path (bootstrapIfNeeded()/backfillActiveChatFromCards()/reconcile()/upsertCharacterFromWrite())
- * first INSERTs its row, per writeRowSync()'s own doc comment.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} avatar Avatar filename (e.g. `Alice.png`)
- * @param {string} chat Chat file name (no extension), the same shape `character.chat` already carries
- * @returns {Promise<boolean>} True if a row existed and was updated.
- */
+// The one writer, other than a row's first INSERT, allowed to change active_chat. Mirrors setCharacterFav():
+// never touches the PNG card file, pure metadata-store mutation. Patches shallow_json's embedded chat to match.
+// No-op if this avatar isn't tracked yet - a row must exist for active_chat to mean anything.
 export async function setCharacterActiveChat(directories, avatar, chat) {
     const entry = await getEntry(directories);
     if (!entry) return false;
@@ -1506,45 +813,17 @@ export async function setCharacterActiveChat(directories, avatar, chat) {
 
     const lastInsertRowid = insertChange(entry.db, avatar, 'upsert', JSON.stringify(['active_chat']));
     entry.db.run(
-        // active_chat_checked = 1 here too, not just active_chat itself - a row can reach this write before
-        // backfillActiveChatFromCards() ever gets to it (e.g. inserted between an upgrade landing and the next
-        // boot's backfill pass), and this write is just as authoritative a resolution of the column as that
-        // backfill or a fresh buildRow() INSERT would be.
+        // active_chat_checked = 1: this write is as authoritative a resolution as backfillActiveChatFromCards().
         'UPDATE characters SET active_chat = @activeChat, active_chat_checked = 1, shallow_json = @shallowJson, change_seq = @changeSeq WHERE id = @id',
         { id: avatar, activeChat: chat, shallowJson: JSON.stringify(shallow), changeSeq: Number(lastInsertRowid) },
     );
     return true;
 }
 
-/**
- * One `IN (...)` query binds every id in the batch as its own `?` placeholder (see below) - SQLite caps how many
- * bound parameters a single prepared statement may have (SQLITE_MAX_VARIABLE_NUMBER: 999 on an old/default
- * build, up to 32766 on others), and this codebase runs against both a native and a wasm SQLite build (see
- * sqlite-engine.js) with no guarantee both share the same compiled-in limit. Kept well under either so a single
- * batch never trips it regardless of which engine resolved - this is what makeFavResolver() (
- * characters-search-index.js) needs for a whole-library id list at full-index-build time, not just the small
- * per-page list the live `/all` route passes most of the time.
- */
+// Kept well under SQLite's SQLITE_MAX_VARIABLE_NUMBER (999-32766 depending on build) so a chunked IN (...) query
+// never exceeds it regardless of which sqlite-engine.js backend resolved.
 const FAV_LOOKUP_BATCH_SIZE = 500;
 
-/**
- * Bulk `fav` lookup for a known set of ids - the batched counterpart to reading `fav` off each row individually,
- * used by the live `/all` route (characters.js) to stamp its already-disk-read `processCharacter()` results with
- * the db's authoritative `fav` value in one query rather than one-per-character. Ids with no tracked row are
- * simply absent from the result (caller's job to decide a fallback - see that route for why "not tracked yet"
- * means "the file is still the source", not "false").
- *
- * `ids` is chunked into FAV_LOOKUP_BATCH_SIZE-sized `IN (...)` queries (see that constant's doc comment) rather
- * than one query binding the whole list - makeFavResolver()'s full-index-build caller (characters-search-index.js)
- * passes every avatar in the library at once, and an unchunked query there throws `SqliteError: too many SQL
- * variables` once the library is large enough to exceed SQLite's bound-parameter limit (confirmed against this
- * install's real 326k-character library: `POST /api/characters/all` with a `search` term crashed with exactly
- * that error, uncaught past this function, whenever the search-index build needed a full rebuild - not a
- * RangeError, so the route's own catch block's `overflow` flag stayed `false`).
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string[]} ids Avatar filenames
- * @returns {Promise<{[id: string]: boolean}>}
- */
 export async function getCharacterFavsByIds(directories, ids) {
     const entry = await getEntry(directories);
     if (!entry || !Array.isArray(ids) || ids.length === 0) return {};
@@ -1562,15 +841,6 @@ export async function getCharacterFavsByIds(directories, ids) {
     return result;
 }
 
-/**
- * Group equivalent of getCharacterFavsByIds() above - db-authoritative `fav` for a known set of group ids, one
- * batched query. Used by `/api/groups/batch`'s field-filtered mode (2026-09, /query hash-mode for groups) to
- * stamp `fav` onto the file-read group object, same "db wins, file is stale for this one field" rule
- * upsertGroupRow()'s own header already establishes.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string[]} ids
- * @returns {Promise<{[id: string]: boolean}>}
- */
 export async function getGroupFavsByIds(directories, ids) {
     const entry = await getEntry(directories);
     if (!entry || !Array.isArray(ids) || ids.length === 0) return {};
@@ -1588,13 +858,6 @@ export async function getGroupFavsByIds(directories, ids) {
     return result;
 }
 
-/**
- * Bulk `allow_global_styles` lookup - same batched shape as getCharacterFavsByIds().
- * Ids with no tracked row are absent from the result.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string[]} ids Avatar filenames
- * @returns {Promise<{[id: string]: boolean}>}
- */
 export async function getCharacterAllowGlobalStylesByIds(directories, ids) {
     const entry = await getEntry(directories);
     if (!entry || !Array.isArray(ids) || ids.length === 0) return {};
@@ -1614,21 +877,11 @@ export async function getCharacterAllowGlobalStylesByIds(directories, ids) {
     return result;
 }
 
-/**
- * Bulk `tag_ids` lookup for a known set of character ids - same batched shape as getCharacterFavsByIds().
- * Returns `{[avatar: string]: string[]}` with an entry for every tracked character; untracked ids are omitted
- * (same contract as getCharacterFavsByIds - "not present" means the metadata store has no signal, so the caller
- * should leave whatever's already on the character untouched).
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string[]} ids Avatar filenames
- * @returns {Promise<{[id: string]: string[]}>}
- */
 export async function getCharacterTagIdsByIds(directories, ids) {
     const entry = await getEntry(directories);
     if (!entry || !Array.isArray(ids) || ids.length === 0) return {};
 
-    // First, find which of the requested ids are actually tracked (have a row in `characters`),
-    // so we can distinguish "tracked but no tags" (-> []) from "not tracked" (-> omitted).
+    // Distinguish "tracked but no tags" (-> []) from "not tracked" (-> omitted).
     /** @type {Set<string>} */
     const trackedIds = new Set();
     for (let i = 0; i < ids.length; i += FAV_LOOKUP_BATCH_SIZE) {
@@ -1659,24 +912,8 @@ export async function getCharacterTagIdsByIds(directories, ids) {
     return result;
 }
 
-/**
- * Bulk `active_chat` lookup for a known set of ids - same batched shape as getCharacterFavsByIds() just above
- * (FAV_LOOKUP_BATCH_SIZE-sized `IN (...)` chunks, for the identical SQLITE_MAX_VARIABLE_NUMBER reason), used by
- * the live `/all`/`/query`-adjacent routes (characters.js) to stamp their already-disk-read results with the
- * db's authoritative `active_chat` value.
- *
- * UNLIKE getCharacterFavsByIds() (which reports every tracked id's real boolean, including `false`), this
- * OMITS a tracked-but-NULL row from the result, not just an untracked one - a NULL active_chat never carries a
- * chat name to stamp regardless of WHY it's NULL (not examined yet, or examined and confirmed none - see
- * active_chat_checked's own SCHEMA_SQL comment for that distinction; it doesn't matter to this lookup, which
- * only ever wants a real value to stamp or nothing at all). So to a caller, "not present in the result map"
- * uniformly means "no chat to stamp, don't touch whatever's already there" for "not tracked", "tracked but not
- * yet examined", AND "tracked and confirmed no chat" alike - a caller must not treat a present-but-empty-string
- * value and an absent key differently from that, but must never treat absence as "confirmed empty" either.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string[]} ids Avatar filenames
- * @returns {Promise<{[id: string]: string}>}
- */
+// Unlike getCharacterFavsByIds() (which reports every tracked id's real boolean), this omits a tracked-but-NULL
+// row from the result, not just an untracked one: "absent" uniformly means "no chat to stamp, leave it alone".
 export async function getCharacterActiveChatsByIds(directories, ids) {
     const entry = await getEntry(directories);
     if (!entry || !Array.isArray(ids) || ids.length === 0) return {};
@@ -1694,16 +931,6 @@ export async function getCharacterActiveChatsByIds(directories, ids) {
     return result;
 }
 
-/**
- * Bulk `shallow_json` lookup for a known set of ids - returns parsed shallow character objects keyed by id.
- * Used by the field-filtered `/api/characters/batch` path (which only needs specific fields from shallow_json,
- * not a full processCharacter()/PNG read). Same batched `IN (...)` chunking as getCharacterFavsByIds() above,
- * for the identical SQLITE_MAX_VARIABLE_NUMBER reason.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string[]} ids Avatar filenames
- * @returns {Promise<{[id: string]: object}>} Parsed shallow_json objects keyed by id; ids with no tracked row
- * are simply absent.
- */
 export async function getShallowByIds(directories, ids) {
     const entry = await getEntry(directories);
     if (!entry || !Array.isArray(ids) || ids.length === 0) return {};
@@ -1725,23 +952,8 @@ export async function getShallowByIds(directories, ids) {
     return result;
 }
 
-/**
- * The read half of the residency migration: returns the authoritative card JSON for `avatar` when - and only
- * when - the PNG's own embedded chunk is out of date, and `null` otherwise ("go read the file, it's current").
- *
- * Callers are expected to fall back to a normal PNG parse on `null` rather than treating it as an error; that
- * is what characters.js's readCardContent() does, and it is the single seam every full-card read in the server
- * goes through. See the `card_json` column's own SCHEMA_SQL comment for the invariant.
- *
- * Note there is deliberately no caching here. readCharacterData()'s memory/disk cache is keyed on
- * `${path}-${mtimeMs}`, and a metadata-only write moves neither the path nor the mtime, so that cache is
- * structurally incapable of representing these edits and must not be layered over this. A SQLite point-lookup
- * on the primary key is cheap enough that this is a non-issue.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} avatar Avatar filename (e.g. `Alice.png`)
- * @returns {Promise<string|null>} The parked card JSON, or `null` when the file on disk is current (which
- * includes the no-such-row and no-usable-SQLite-engine cases - both correctly mean "read the PNG").
- */
+// null means "PNG chunk is current, read the file". Deliberately uncached: readCharacterData()'s mtime-keyed
+// cache can't represent a db-only edit since neither path nor mtime moves.
 export async function getCharacterCardJson(directories, avatar) {
     const entry = await getEntry(directories);
     if (!entry) return null;
@@ -1749,19 +961,6 @@ export async function getCharacterCardJson(directories, avatar) {
     return row?.card_json ?? null;
 }
 
-/**
- * Bulk sibling of getCharacterCardJson() for whole-library passes (`/all`, the first-mes repair sweep): one
- * query for the entire set of rows whose PNG chunk is stale, rather than a point lookup per character.
- *
- * This reads the complete non-NULL set rather than taking an id list on purpose. That set is small *by
- * construction* - a row only joins it by being edited without its image changing, and it leaves again the
- * moment anything rewrites the file - so it is proportional to editing activity, not to library size, and
- * `idx_characters_card_json_present` (a partial index, see migrateCardJsonColumn()) makes finding it
- * proportional to the same thing. A 366k-card library that nobody has edited yields an empty map for the cost
- * of an empty index scan, which is exactly the shape `/all` needs.
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<Map<string, string>>} avatar filename -> parked card JSON. Empty when nothing is stale.
- */
 export async function getStaleCardJsonMap(directories) {
     const entry = await getEntry(directories);
     if (!entry) return new Map();
@@ -1769,58 +968,18 @@ export async function getStaleCardJsonMap(directories) {
     return new Map(rows.map(row => [row.id, row.card_json]));
 }
 
-/**
- * Write-path hook for characters.js's /delete route.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} avatar
- * @returns {Promise<void>}
- */
 export async function deleteCharacterRow(directories, avatar) {
     const entry = await getEntry(directories);
     if (!entry) return;
 
     if (entry.batch) {
         entry.batch.pending.delete(avatar);
-        // Deletes are rare during a batch import (which is about bringing characters IN), so they're applied
-        // immediately rather than buffered - simpler, and correctness matters more than the modest transaction
-        // savings here.
     }
     entry.db.transaction(() => deleteRowSync(entry.db, avatar));
 }
 
-/**
- * Write-path hook for characters.js's /rename route - called AFTER writeCharacterData() has already run for the
- * new filename (which fires upsertCharacterFromWrite() generically via its own embedded hook, per that
- * function's own doc comment - so a row for `newAvatar` already exists in the table, or is sitting in this
- * user's batch buffer, by the time this runs).
- *
- * Under today's pre-Option-A identity (design doc §2.2), a rename changes the primary key itself
- * (avatar == filename == id), so the generic hook necessarily saw `newAvatar` as a brand-new row and gave it
- * date_added = now. That's wrong here: this is conceptually the same character continuing to exist, not a new
- * one being added (see this module's header on date_added), so this function's only job is to correct that -
- * copy date_added over from the old row, then remove the old row entirely. It does not rebuild or re-derive
- * anything else about the row; that's already correct from the generic hook.
- *
- * BOTH the `date_added` column AND `shallow_json`'s own embedded `date_added` field get corrected here, not just
- * the column - found by phase 2's own tests (tests/characters-query.test.js), which read rows back through
- * `shallow_json` (that's what `/query` actually ships - see queryCharacters()) rather than the raw columns.
- * `shallow_json` is a point-in-time snapshot taken at upsert time (buildRow()); patching only the column and
- * leaving the blob's own copy stale would mean every *reader* of this table's shallow projection - not just this
- * phase's endpoint - sees the wrong date_added after any rename, which is exactly the kind of silently-wrong
- * result this design keeps calling out as worse than an explicit failure.
- *
- * PHASE 3 addition: tag assignments get the exact same forward-carry treatment as date_added, for the exact same
- * reason. `character_tags` is now source of truth (see writeRowSync()'s header), so the generic upsert hook that
- * already ran for `newAvatar` seeded it with only whatever tags.json happened to say for that (brand-new, never
- * before seen) id - typically nothing. Without this, the trailing `deleteRowSync(oldAvatar)` below would delete
- * `oldAvatar`'s real tag rows with nothing ever having carried them to `newAvatar`, i.e. every rename would
- * silently drop that character's tags. Tag ids are unioned into `newAvatar`, not overwritten - if the generic
- * hook's seed already gave it something (a legacy tags.json entry already keyed by the new name), both survive.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} oldAvatar
- * @param {string} newAvatar
- * @returns {Promise<void>}
- */
+// Corrects date_added on a rename (the generic write hook treats newAvatar as brand-new) and unions
+// oldAvatar's tags into newAvatar.
 export async function renameCharacterRow(directories, oldAvatar, newAvatar) {
     const entry = await getEntry(directories);
     if (!entry) return;
@@ -1828,9 +987,7 @@ export async function renameCharacterRow(directories, oldAvatar, newAvatar) {
     const oldRow = entry.db.get('SELECT date_added FROM characters WHERE id = @id', { id: oldAvatar });
     if (oldRow) {
         const dateAdded = Number(oldRow.date_added);
-        // The new row may still be sitting in the batch-import buffer rather than the table (a rename landing
-        // mid-batch-import is an edge case, but a real one) - patch it in place there rather than via SQL, which
-        // wouldn't see it yet.
+        // A rename landing mid-batch-import means newAvatar may still be in the buffer, not the table.
         const pending = entry.batch?.pending.get(newAvatar);
         if (pending) {
             pending.row.date_added = dateAdded;
@@ -1846,9 +1003,7 @@ export async function renameCharacterRow(directories, oldAvatar, newAvatar) {
         }
     }
 
-    // Carry oldAvatar's tag assignments forward to newAvatar - see this function's doc comment above. Read
-    // BEFORE the transaction that deletes oldAvatar's rows, same ordering the date_added carry-forward above
-    // already uses.
+    // Must read before the transaction below deletes oldAvatar's rows.
     const oldTagIds = entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id: oldAvatar }).map(r => r.tag_id);
     if (oldTagIds.length > 0) {
         const pending = entry.batch?.pending.get(newAvatar);
@@ -1866,13 +1021,7 @@ export async function renameCharacterRow(directories, oldAvatar, newAvatar) {
     entry.db.transaction(() => deleteRowSync(entry.db, oldAvatar));
 }
 
-/**
- * @param {string} shallowJson
- * @param {number} dateAdded
- * @returns {string} `shallowJson` with its `date_added` field overwritten - unmodified if it doesn't parse (this
- * module always writes valid JSON into this column itself, so a parse failure here would mean something else
- * corrupted the row; falling back to the unmodified string rather than throwing keeps this a non-fatal repair).
- */
+/** Returns `shallowJson` with its `date_added` field overwritten; unmodified if it doesn't parse. */
 function withPatchedDateAdded(shallowJson, dateAdded) {
     try {
         const parsed = JSON.parse(shallowJson);
@@ -1883,15 +1032,7 @@ function withPatchedDateAdded(shallowJson, dateAdded) {
     }
 }
 
-/**
- * Overwrites `id`'s date_added (and shallow_json's embedded copy) unconditionally - the one sanctioned
- * exception to date_added being write-once elsewhere in this module. Defers to the batch-import pending
- * buffer if the row hasn't flushed to the table yet. No-op if the row exists in neither place.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} id
- * @param {number} dateAddedMs
- * @returns {Promise<void>}
- */
+/** Overwrites date_added unconditionally - the one exception to it being write-once elsewhere in this module. */
 export async function setCharacterDateAdded(directories, id, dateAddedMs) {
     const entry = await getEntry(directories);
     if (!entry) return;
@@ -1909,13 +1050,6 @@ export async function setCharacterDateAdded(directories, id, dateAddedMs) {
     entry.db.run('UPDATE characters SET date_added = @dateAddedMs, shallow_json = @shallowJson WHERE id = @id', { dateAddedMs, shallowJson, id });
 }
 
-/**
- * Either writes `row` immediately (one small transaction) or, while batch-import mode is active for this
- * user, buffers it and flushes in BATCH_FLUSH_SIZE-sized chunks instead - see beginBatchImport()'s header.
- * @param {MetadataDbEntry} entry
- * @param {object} row
- * @param {string[]} tagIds
- */
 function applyOrBuffer(entry, row, tagIds) {
     if (entry.batch) {
         entry.batch.pending.set(row.id, { row, tagIds });
@@ -1928,9 +1062,6 @@ function applyOrBuffer(entry, row, tagIds) {
     entry.db.transaction(() => writeRowSync(entry.db, row, tagIds));
 }
 
-/**
- * @param {MetadataDbEntry} entry
- */
 function flushBatch(entry) {
     if (!entry.batch || entry.batch.pending.size === 0) return;
     const rows = [...entry.batch.pending.values()];
@@ -1942,21 +1073,7 @@ function flushBatch(entry) {
     });
 }
 
-/**
- * Explicit batch-import mode (doc §3.3 item 7): required, not optional, for bringing a large corpus (the
- * owner's stated near-term target is ~300k cards) in without paying one SQLite transaction and one watcher
- * event per file. While active for a user:
- *   - the directory watcher is suspended (a burst of hundreds of thousands of creates is exactly the scenario
- *     the design doc measured inotify's queue silently overflowing at 16384 events under - see this module's
- *     header - so there is nothing useful for the watcher to do here anyway; the periodic reconcile interval
- *     catches anything the suspended watcher would have)
- *   - write-path hook calls buffer into a pending map instead of writing immediately, flushed in
- *     BATCH_FLUSH_SIZE-row transactions (applyOrBuffer()/flushBatch() above)
- * Idempotent: calling this again while already active is a no-op (returns the existing batch state rather than
- * losing whatever's already pending).
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<void>}
- */
+// Suspends the directory watcher (a burst import can overflow inotify's queue) and buffers writes. Idempotent.
 export async function beginBatchImport(directories) {
     const entry = await getEntry(directories);
     if (!entry || entry.batch) return;
@@ -1965,39 +1082,16 @@ export async function beginBatchImport(directories) {
     stopWatcher(entry);
 }
 
-/**
- * Ends batch-import mode: flushes whatever's still buffered and resumes the file watcher. Does NOT force an
- * immediate reconcile - every file that went through write-path hooks during the batch already has its metadata
- * row, and the fs.watch watcher (resumed here) serves as the safety net for anything that appeared/changed
- * outside the write-path hooks while the watcher was suspended.
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<void>}
- */
 export async function endBatchImport(directories) {
     const entry = await getEntry(directories);
     if (!entry || !entry.batch) return;
 
     flushBatch(entry);
     entry.batch = null;
-    // Watcher resumes immediately so new events going forward are caught. No immediate reconcile -
-    // every file that went through the write-path hooks during batch mode already has its metadata
-    // row. Files that appeared/changed/disappeared WITHOUT going through write-path hooks (e.g.
-    // hand-dropped during the batch window) will be caught by the watcher going forward, or by the
-    // next boot's reconcile pass.
     startWatcher(entry);
 }
 
-/**
- * One-time backfill for a library that predates this metadata store (or a brand-new user with an existing
- * `characters` directory - e.g. restored from a backup). Seeds date_added from each file's ctimeMs, per the
- * design doc's explicit call: "the best available approximation for cards that predate the column" - this is
- * the ONE place ctimeMs is still used as date_added; every other discovery path uses "now" (see this module's
- * header). Recorded in `meta` so it only ever runs once per user, ever - a later reconcile() finding "new" files
- * after this has run is a genuinely different situation (see reconcile()'s own doc comment) and must not reuse
- * this ctimeMs-seeding behavior.
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<void>}
- */
+// One-time backfill for a library predating this metadata store. Seeds date_added from ctimeMs, recorded in meta so it runs once.
 export async function bootstrapIfNeeded(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
@@ -2012,31 +1106,13 @@ export async function bootstrapIfNeeded(directories) {
 
     const files = (await fsPromises.readdir(directories.characters)).filter(f => f.endsWith('.png'));
 
-    // Read tags.json ONCE, up front, rather than via the per-call getTagIdsFor() (which re-reads and re-parses
-    // tags.json off disk, synchronously, on every invocation) - the same fix characters-search-index.js's
-    // makeTagNamesResolver() already applies to this exact file for this exact reason. Calling getTagIdsFor()
-    // once per character here (as this loop used to) meant a full sync readFileSync+JSON.parse of tags.json for
-    // every single card in the library, not just once - both the redundant I/O and the fact that readFileSync
-    // blocks the event loop for the length of the whole bootstrap pass.
     const { tag_map } = readTagsData(directories);
 
-    // Progress visibility for a cold-start bootstrap against a large library (24k+ cards has been measured
-    // taking a couple of minutes end to end): a completely silent multi-minute pass with no output on the way
-    // is indistinguishable from a hang. Neither this loop nor characters-search-index.js's equivalent
-    // index-build pass had any existing progress-log format to match, so this is a new (deliberately minimal)
-    // one: throttled to BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS of wall-clock time, never per-row or per-chunk, so it
-    // can't meaningfully add overhead regardless of library size.
     const bootstrapStart = Date.now();
     let lastProgressLog = bootstrapStart;
     let processedFiles = 0;
 
-    // Streamed in BATCH_FLUSH_SIZE-sized chunks, each chunk's file reads run with bounded concurrency (see
-    // BOOTSTRAP_READ_CONCURRENCY above) instead of one file at a time - this loop used to `await` each file's
-    // stat+parse sequentially, which is what made this pass I/O-bound on per-file round-trip latency rather than
-    // on actual disk throughput (exactly the mistake characters-search-index.js's readCharacterBatches() already
-    // fixed for the equivalent search-index-build pass - see that function's header). Chunking (rather than one
-    // mapWithConcurrency call over the whole library) keeps this consistent with BATCH_FLUSH_SIZE's own job of
-    // bounding peak memory: at most one chunk's worth of computed rows is ever held before being flushed.
+    // Chunked with bounded concurrency per chunk to bound peak memory to one chunk's worth of computed rows.
     for (let i = 0; i < files.length; i += BATCH_FLUSH_SIZE) {
         const chunkFiles = files.slice(i, i + BATCH_FLUSH_SIZE);
         const chunkResults = await mapWithConcurrency(chunkFiles, BOOTSTRAP_READ_CONCURRENCY, async (file) => {
@@ -2048,7 +1124,7 @@ export async function bootstrapIfNeeded(directories) {
                 const character = getCharaCardV2(JSON.parse(imgData), directories, false);
                 const { chatSize, dateLastChat } = calculateChatSize(path.join(directories.chats, file.replace(/\.png$/, '')));
                 const tagIds = tag_map[file] ?? [];
-                const row = buildRow(file, character, { dateAddedCandidate: Math.round(stat.ctimeMs), fileMtime: stat.mtimeMs, chatSize, dateLastChat, tagIds });
+                const row = buildRow(file, character, { dateAddedCandidate: Math.round(stat.ctimeMs), fileMtime: stat.mtimeMs, chatSize, dateLastChat, tagIds, cardJson: imgData });
                 return { row, tagIds };
             } catch (err) {
                 console.error(`[character-metadata] Bootstrap failed to process ${file}, skipping it this pass (the reconciler will retry it):`, err.message);
@@ -2077,9 +1153,6 @@ export async function bootstrapIfNeeded(directories) {
             lastProgressLog = now;
         }
 
-        // Yield the event loop between chunks, matching reconcile()'s own per-batch yield (see that function) -
-        // a 24k+-card bootstrap pass must not hog the event loop for its entire duration any more than a
-        // reconcile pass is allowed to.
         await new Promise(resolve => setImmediate(resolve));
     }
 
@@ -2092,44 +1165,9 @@ export async function bootstrapIfNeeded(directories) {
     await resyncTags(directories);
 }
 
-/**
- * One-time-per-boot backfill (NOT one-time-ever - see below) that makes a poisoned row's content_identity_hash
- * trustworthy, turning findCharacterIdByContentIdentityHash() into a real O(1) indexed duplicate check against
- * this install's entire poisoned library, not just the (empty, on a preexisting install) set of rows that have
- * already been re-touched by the fixed write path.
- *
- * THE TRICK: a poisoned row's PNG 'chara' tEXt chunk is pristine (see character-card-parser.js's write() header
- * and readCharaChunkPristine()'s own doc comment for the full mechanism) - the old write() unconditionally wrote
- * 'chara' holding the source `data` verbatim, and only SEPARATELY wrote a 'ccv3' chunk with a locally spec-bumped
- * copy, so the object serialized into 'chara' was never touched by that bump. Reading 'chara' specifically
- * (readCharaChunkPristine()/parsePristine(), not the standard ccv3-preferring read()/parse()) recovers exactly
- * what write() would have received had it gone through today's fixed logic - so hashing that, the same way
- * computeContentIdentityHash() always has, produces a hash that is genuinely comparable to one computed from a
- * fresh import of the same original card.
- *
- * Deliberately does NOT clear `import_poisoned` - see that column's own SCHEMA_SQL comment for why the flag's
- * broader meaning ("this row's file may still carry other old-write-path artifacts") stays true regardless of
- * whether its hash is now trustworthy.
- *
- * IDEMPOTENT/RESUMABLE WITHOUT A `meta` COMPLETION FLAG, unlike bootstrapIfNeeded(): every call re-queries
- * `WHERE import_poisoned = 1 AND content_identity_hash IS NULL` fresh, so a row this pass successfully hashed
- * simply stops matching that WHERE clause and is never re-visited; a row that failed (a missing/corrupt file,
- * logged and skipped) naturally gets retried on the NEXT call (the next server boot) since it's still poisoned
- * with a NULL hash. No separate "backfill complete" bookkeeping needed or wanted - see this function's own
- * caller in initializeMetadataStores() for why running it every boot (not gated on a one-time flag) is exactly
- * the resumability this needs.
- *
- * Same batching/concurrency/progress-logging shape as bootstrapIfNeeded() (BATCH_FLUSH_SIZE-sized chunks,
- * BOOTSTRAP_READ_CONCURRENCY-bounded concurrent reads, a throttled progress log, an event-loop yield between
- * chunks) - this is the same shape of work (stat/read/parse a PNG off disk) at the same potential scale (24k+
- * rows on the owner's real library), so there's no reason for it to behave differently.
- *
- * Gated behind `performance.allowExpensiveDuplicateFallback`, read FRESH via getConfigValue() (not the cached
- * `allowExpensiveDuplicateFallback` export above) so a config/env change takes effect on the very next call
- * without requiring a process restart to be observed - see that export's own updated header comment.
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<void>}
- */
+// Backfills content_identity_hash for poisoned rows without clearing import_poisoned (see SCHEMA_SQL). Reads
+// the PNG's pristine 'chara' chunk, which stays valid even when 'ccv3' doesn't.
+// Resumable without a meta flag: re-queries import_poisoned=1 AND content_identity_hash IS NULL every call.
 export async function backfillContentIdentityHashes(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
@@ -2138,11 +1176,6 @@ export async function backfillContentIdentityHashes(directories) {
 
     if (!fs.existsSync(directories.characters)) return;
 
-    // A static snapshot of ids to process THIS call, not a live re-query inside the loop below - re-querying the
-    // same WHERE clause without an OFFSET would return the exact same rows again for any that failed to hash
-    // this pass (they're still poisoned with a NULL hash), looping forever on a persistently-broken row instead
-    // of moving on. Taking the list once up front bounds this call's work to "however many rows were poisoned
-    // and hashless when it started", matching bootstrapIfNeeded()'s own fixed-file-list shape.
     const poisonedIds = entry.db.all('SELECT id FROM characters WHERE import_poisoned = 1 AND content_identity_hash IS NULL').map(r => r.id);
     if (poisonedIds.length === 0) return;
 
@@ -2155,13 +1188,6 @@ export async function backfillContentIdentityHashes(directories) {
         const chunkResults = await mapWithConcurrency(chunkIds, BOOTSTRAP_READ_CONCURRENCY, async (id) => {
             try {
                 const filePath = path.join(directories.characters, id);
-                // Extracted ONCE and reused for both the pristine content-identity hash AND the avatar-identity
-                // hash - this loop already had to pay this exact extract() for the pristine text (previously via
-                // parsePristine()'s own internal one), so backfilling avatar_identity_hash here is free: this
-                // poisoned row would otherwise NEVER get an avatar_identity_hash from anywhere else until
-                // scripts/backfill-avatar-identity-hashes.mjs's separate one-time pass runs, which would leave
-                // findCharacterIdByIdentityHashes()'s dual-hash dedup check unable to recognize it as a genuine
-                // duplicate in the meantime (a real, avatar_identity_hash IS NULL never matches anything).
                 const buffer = await fs.promises.readFile(filePath);
                 const chunks = extract(new Uint8Array(buffer));
                 const pristine = readCharaChunkPristineFromChunks(chunks);
@@ -2177,12 +1203,6 @@ export async function backfillContentIdentityHashes(directories) {
         if (updates.length > 0) {
             entry.db.transaction(() => {
                 for (const { id, hash, avatarHash } of updates) {
-                    // avatar_identity_hash: same COALESCE-flavored "don't clobber a real value" guard
-                    // UPSERT_SQL's own ON CONFLICT clause uses, expressed here as a WHERE-guarded UPDATE instead
-                    // (this statement is a plain UPDATE, not an upsert) - a live write for this exact row landing
-                    // between this backfill's read and this transaction (upsertCharacterFromWrite(), which
-                    // clears import_poisoned too - see that function) already set a real, more-current value;
-                    // this backfill's own (necessarily older) read must not overwrite it.
                     entry.db.run('UPDATE characters SET content_identity_hash = @hash, avatar_identity_hash = COALESCE(avatar_identity_hash, @avatarHash) WHERE id = @id', { hash, avatarHash, id });
                 }
             });
@@ -2200,8 +1220,6 @@ export async function backfillContentIdentityHashes(directories) {
             lastProgressLog = now;
         }
 
-        // Same reasoning as bootstrapIfNeeded()'s own per-chunk yield: a 24k+-row backfill pass must not hog the
-        // event loop for its entire duration.
         await new Promise(resolve => setImmediate(resolve));
     }
 
@@ -2209,53 +1227,14 @@ export async function backfillContentIdentityHashes(directories) {
     console.log(color.cyan(`[character-metadata] Content-identity backfill complete: processed ${poisonedIds.length} poisoned row(s) in ${totalSec.toFixed(1)}s (${(poisonedIds.length / totalSec).toFixed(1)} cards/sec).`));
 }
 
-/**
- * One-time-per-boot backfill of `active_chat` for rows that predate the column (2026-08 chat-pointer db
- * migration - docs/design/character-chat-pointer-db-migration.md §3) - the `active_chat` counterpart to
- * backfillContentIdentityHashes() just above, same shape for the same reason (a resumable, corpus-wide catch-up
- * pass for a column added after rows already existed).
- *
- * IDEMPOTENT/RESUMABLE WITHOUT A `meta` COMPLETION FLAG, same as backfillContentIdentityHashes(): every call
- * re-queries `WHERE active_chat_checked = 0` fresh, so a row this pass resolves (real chat name OR confirmed
- * none - see active_chat_checked's own SCHEMA_SQL comment) simply stops matching that WHERE clause and is never
- * re-visited; a row this pass genuinely FAILS to resolve (missing/corrupt file, logged and skipped) stays
- * unchecked and naturally gets retried on the next call (the next server boot). No separate "backfill complete"
- * bookkeeping needed. This is deliberately `active_chat_checked = 0`, NOT `active_chat IS NULL` - the latter is
- * what this backfill originally used, and it was a real bug: a card confirmed to have no chat also leaves
- * active_chat NULL (there's nothing to write), which made "confirmed no chat" and "not examined yet"
- * indistinguishable and meant every genuinely-chatless character in the library got re-read off disk on EVERY
- * boot, forever, never converging - active_chat_checked exists specifically to give this query a state that
- * only ever means "not examined".
- *
- * Reads each row's card straight off disk via parseCharacterCard() (the ordinary, cheap read - unlike
- * backfillContentIdentityHashes()'s pristine-chunk trick, which exists only because THAT backfill needs a hash
- * comparable to one computed via today's write path; `chat` isn't identity-sensitive, so there's nothing to
- * protect against an old-write-path mutation here).
- *
- * `UPDATE ... SET active_chat = @chat, active_chat_checked = 1 WHERE id = @id AND active_chat_checked = 0` -
- * the `AND active_chat_checked = 0` guard matters: a live write for this exact row (setCharacterActiveChat(),
- * or an ordinary card write that already resolved active_chat via buildRow()/writeRowSync()) landing between
- * this backfill's read and this UPDATE already set a real, more-current value (and already marked itself
- * checked); this backfill's own (necessarily older) read must not clobber it - same "concurrent live write
- * wins" property backfillContentIdentityHashes()'s own UPDATE already has for avatar_identity_hash (COALESCE
- * there; a WHERE guard here, mirroring the original active_chat-IS-NULL guard's own reasoning, just keyed off
- * the column that's actually unambiguous).
- *
- * Same batching/concurrency/progress-logging shape as backfillContentIdentityHashes() (BATCH_FLUSH_SIZE-sized
- * chunks, BOOTSTRAP_READ_CONCURRENCY-bounded concurrent reads, per-row try/catch that logs+skips rather than
- * aborting the whole pass).
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<void>}
- */
+// Keyed on active_chat_checked, not active_chat IS NULL, since the latter can't distinguish "confirmed no
+// chat" from "not examined". Resumable without a flag: re-queries active_chat_checked = 0 every call.
 export async function backfillActiveChatFromCards(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
 
     if (!fs.existsSync(directories.characters)) return;
 
-    // Static snapshot, same reasoning as backfillContentIdentityHashes()'s own poisonedIds snapshot - bounds
-    // this call's work to "however many rows were unchecked when it started", rather than looping forever on a
-    // persistently-failing row.
     const uncheckedIds = entry.db.all('SELECT id FROM characters WHERE active_chat_checked = 0').map(r => r.id);
     if (uncheckedIds.length === 0) return;
 
@@ -2269,16 +1248,9 @@ export async function backfillActiveChatFromCards(directories) {
             try {
                 const filePath = path.join(directories.characters, id);
                 const imgData = await parseCharacterCard(filePath, 'png');
-                // Genuinely couldn't read this card this pass - leave it unchecked so the next boot retries it,
-                // same as the catch block below. Deliberately NOT resolved=true: unlike a card that parses
-                // cleanly and simply has no `chat` field (a real, confirmed answer), this means the read itself
-                // didn't produce anything to look at.
                 if (imgData === undefined) return { id, resolved: false };
                 const character = JSON.parse(imgData);
                 const chat = character.chat ?? null;
-                // Resolved either way - a real chat name, or a confirmed-none `null` - both are a real answer
-                // this row's `active_chat_checked` should record so this backfill never has to re-read this
-                // card again.
                 return { id, chat, resolved: true };
             } catch (err) {
                 console.error(`[character-metadata] Active-chat backfill failed to process ${id}, leaving it unchecked (will retry next boot):`, err.message);
@@ -2317,37 +1289,7 @@ export async function backfillActiveChatFromCards(directories) {
     console.log(color.cyan(`[character-metadata] Active-chat backfill complete: processed ${uncheckedIds.length} row(s) in ${totalSec.toFixed(1)}s (${(uncheckedIds.length / totalSec).toFixed(1)} cards/sec).`));
 }
 
-/**
- * One-time backfill of `tag_ids` into `shallow_json` for characters that predate the field's addition.
- * Every new write naturally includes tag_ids (buildRow/toShallow/writeRowSync handle it), but characters
- * whose shallow_json was built before that code landed have no tag_ids field. This reads each such
- * character's current tag assignments from character_tags (the source of truth since phase 3), patches
- * tag_ids into shallow_json, and emits a field-level change entry so the client's delta sync picks it
- * up as a targeted tag_ids fetch (~11.5MB for 314k records) instead of a whole-record refetch (~314MB).
- *
- * Batched and yielding, same shape as backfillContentIdentityHashes(): BATCH_FLUSH_SIZE rows per
- * transaction, setImmediate() between batches so other requests aren't starved.
- *
- * Gated by its own `tag_ids_shallow_json_backfill_completed` meta flag (same one-time-ever shape as
- * backfillCardTagsIfNeeded()'s `card_tags_backfill_completed`) - measured why this needed adding rather than
- * just trusting "a row patched by this function is never patched again": that's true for any *individual* row,
- * but with no flag the discovery step itself (the NOT LIKE full-table scan below, which SQLite can't index -
- * a leading `%` wildcard forces a full `characters` scan every time, confirmed via EXPLAIN QUERY PLAN) still
- * ran on every single boot forever, regardless of whether anything was actually left to do. On a 327k-row
- * library that scan alone costs low hundreds of ms once nothing's left to backfill - cheap next to what this
- * function looked like while genuine backfill work was still happening (one production boot logged 16.8s here,
- * ~94% of the whole metadata bootstrap chain, while a few hundred thousand legacy rows were still being
- * patched) but still O(rows) paid forever for a question a flag answers in O(1). The flag is only set once a
- * fresh re-check of the same discovery query (at the end of the function) finds nothing left - not derived from
- * how many rows this pass itself patched, since a row can legitimately need no work from this exact call (a
- * concurrent writer patched it between the initial scan and its batch, or it was deleted in the meantime)
- * without ever being counted as "processed", which would otherwise make a genuinely-complete pass look
- * incomplete forever. A row that actually failed to patch (per-row try/catch, logged and skipped) still shows
- * up in that final re-check, so the flag correctly stays unset and the next boot retries it - same "will retry
- * next boot" semantics backfillContentIdentityHashes() already has.
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<void>}
- */
+// Gated by a meta flag, set only once the NOT LIKE discovery scan (unindexable) finds nothing left to backfill.
 export async function backfillTagIdsInShallowJson(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
@@ -2355,7 +1297,6 @@ export async function backfillTagIdsInShallowJson(directories) {
     const already = entry.db.get('SELECT value FROM meta WHERE key = \'tag_ids_shallow_json_backfill_completed\'');
     if (already) return;
 
-    // One scan to find all rows needing backfill (avoids repeated NOT LIKE full-table scans per batch).
     const idsToBackfill = entry.db.all(
         'SELECT id FROM characters WHERE shallow_json NOT LIKE \'%"tag_ids":%\'',
     ).map(r => r.id);
@@ -2374,16 +1315,11 @@ export async function backfillTagIdsInShallowJson(directories) {
     for (let i = 0; i < idsToBackfill.length; i += BACKFILL_BATCH) {
         const batchIds = idsToBackfill.slice(i, i + BACKFILL_BATCH);
 
-        // Prepare phase (outside transaction): read shallow_json + tag_ids for each row.
-        // Keeping reads outside the transaction means the write lock is held only for the
-        // actual writes, not the per-row tag_id lookups.
         const prepared = [];
         for (const id of batchIds) {
             try {
                 const row = entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id });
                 if (!row) continue;
-                // Re-check: another writer (reconcile, a live import) may have already patched
-                // this row since the initial scan.
                 if (row.shallow_json.includes('"tag_ids":')) continue;
                 const tagIds = entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id }).map(r => r.tag_id);
                 const shallow = JSON.parse(row.shallow_json);
@@ -2406,40 +1342,26 @@ export async function backfillTagIdsInShallowJson(directories) {
 
         processed += prepared.length;
 
-        // Throttled progress logging (same BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS shape other backfills use)
         const now = Date.now();
         if (now - lastProgressLog >= BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS) {
             console.log(color.cyan(`[character-metadata] tag_ids backfill progress: ${i + batchIds.length}/${idsToBackfill.length} scanned, ${processed} patched`));
             lastProgressLog = now;
         }
 
-        // Yield between batches so the event loop stays responsive
         await new Promise(resolve => setImmediate(resolve));
     }
 
     console.log(color.cyan(`[character-metadata] tag_ids shallow_json backfill complete (${processed} character(s) in ${((Date.now() - progressStart) / 1000).toFixed(1)}s).`));
 
-    // Re-run the same discovery query once more to decide whether the flag can be set - NOT `processed ===
-    // idsToBackfill.length`, because a row skipped during the loop (already patched by a concurrent writer
-    // between the initial scan and its batch, or deleted in the meantime) legitimately needs no work but also
-    // never increments `processed`, which would otherwise make a genuinely-complete pass look incomplete
-    // forever. Paying this scan once more here is fine - it's the tail of a pass that was already doing real
-    // work this boot, not the repeated per-boot cost the flag exists to avoid.
+    // Not `processed === idsToBackfill.length`: a row a concurrent writer already patched needs no work here
+    // but never increments processed, so re-check the discovery query directly to decide the flag.
     const remaining = entry.db.get('SELECT 1 FROM characters WHERE shallow_json NOT LIKE \'%"tag_ids":%\' LIMIT 1');
     if (!remaining) {
         entry.db.run('INSERT INTO meta (key, value) VALUES (\'tag_ids_shallow_json_backfill_completed\', \'1\') ON CONFLICT(key) DO UPDATE SET value = excluded.value');
     }
 }
 
-/**
- * Diffs tags.json's tag_map against the character_tags table and applies only the delta, rather than a full
- * delete-everything-reinsert-everything pass - at 300k+ characters with an already-populated table, most rows
- * agree between passes, so this keeps a routine reconcile cheap. tags.json stays the write source of truth in
- * phase 1 (phase 3 moves tag mutations onto character_tags directly, per the design doc's phase table); this is
- * a read-only mirror, refreshed on every reconcile pass since there's no per-mutation hook into tags.json yet.
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<void>}
- */
+// Diffs tags.json's tag_map against character_tags and applies only the delta, since most rows already agree.
 export async function resyncTags(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
@@ -2447,7 +1369,7 @@ export async function resyncTags(directories) {
     const { tag_map } = readTagsData(directories);
     const knownIds = new Set(entry.db.all('SELECT id FROM characters').map(r => r.id));
 
-    /** @type {Set<string>} `${characterId} ${tagId}` pairs that should exist */
+    /** @type {Set<string>} */
     const desired = new Set();
     for (const [characterId, tagIds] of Object.entries(tag_map)) {
         if (!knownIds.has(characterId)) continue; // no dangling rows for characters this store doesn't have
@@ -2473,41 +1395,22 @@ export async function resyncTags(directories) {
     });
 }
 
-/**
- * Boot-time reconciler: detects files added to or removed from the characters directory since the last
- * successful reconcile (persisted via the `last_reconcile_dir_mtime_ms` meta key). NOT periodic - this runs
- * exactly once per boot (from the bootstrap chain in initializeMetadataStores()), and only does real work
- * when the directory's own mtime has changed since the last run (i.e. files were actually added/removed
- * while the server was down). Content-only changes to existing files are handled by the fs.watch watcher
- * (freshness mechanism 2) during runtime, not by this function.
- *
- * When the directory mtime HAS changed:
- *   - a file on disk with no row -> inserted, with date_added = now (same "reconciler first saw it" rule
- *     as before - by the time this runs, bootstrapIfNeeded() has necessarily already completed or is running
- *     concurrently and will win the same idempotent upsert either way)
- *   - a row with no file on disk -> deleted
- *   - a file already in the DB -> left untouched (no re-stat, no mtime comparison - the watcher handles
- *     content changes during runtime, and bootstrapIfNeeded() already processed the initial population)
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<void>}
- */
+// Content-only changes to existing files are the watcher's job, not this function's.
 export async function reconcile(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
 
-    // Stat the directory itself. On Linux (and most POSIX filesystems), a directory's mtime only changes
-    // when entries are added, removed, or renamed within it. Comparing this against the persisted value
-    // from the last successful reconcile detects whether any files appeared or disappeared while the server
-    // was down - without stat'ing every individual file in the directory.
+    // A directory's mtime changes only when entries are added/removed/renamed within it (POSIX), so this
+    // detects churn without stat'ing every individual file.
     let currentDirMtimeMs;
     try {
         currentDirMtimeMs = (await fsPromises.stat(directories.characters)).mtimeMs;
     } catch {
-        return; // Directory doesn't exist or is inaccessible.
+        return;
     }
     const storedRow = entry.db.get('SELECT value FROM meta WHERE key = \'last_reconcile_dir_mtime_ms\'');
     if (storedRow !== undefined && Number(storedRow.value) === currentDirMtimeMs) {
-        return; // Nothing added/removed/renamed since last reconcile.
+        return;
     }
 
     const files = (await fsPromises.readdir(directories.characters)).filter(f => f.endsWith('.png'));
@@ -2521,10 +1424,6 @@ export async function reconcile(directories) {
         }
     }
 
-    // Only process files NOT already in the DB - genuinely new files that appeared while the server was
-    // down (or during a concurrent bootstrap that hasn't reached them yet). Files already in the DB are
-    // left untouched: their content was already processed by bootstrapIfNeeded() or a previous reconcile,
-    // and any runtime content changes are caught by the fs.watch watcher, not by this function.
     const newFiles = files.filter(f => !existingIds.has(f));
 
     if (newFiles.length > 0) {
@@ -2544,7 +1443,7 @@ export async function reconcile(directories) {
                     const character = getCharaCardV2(JSON.parse(imgData), directories, false);
                     const { chatSize, dateLastChat } = calculateChatSize(path.join(directories.chats, file.replace(/\.png$/, '')));
                     const tagIds = getTagIdsFor(directories, file);
-                    const row = buildRow(file, character, { dateAddedCandidate: Date.now(), fileMtime: stat.mtimeMs, chatSize, dateLastChat, tagIds });
+                    const row = buildRow(file, character, { dateAddedCandidate: Date.now(), fileMtime: stat.mtimeMs, chatSize, dateLastChat, tagIds, cardJson: imgData });
                     return { row, tagIds };
                 } catch (err) {
                     console.error(`[character-metadata] Reconcile failed to process ${file}, will retry next boot:`, err.message);
@@ -2581,25 +1480,17 @@ export async function reconcile(directories) {
             console.log(color.cyan(`[character-metadata] Reconcile complete: ${newFiles.length} new file(s) processed in ${totalSec.toFixed(1)}s.`));
         }
 
-        // If batch mode is active, applyOrBuffer() above buffered rather than wrote - flush now so this
-        // reconcile pass's own changes are actually durable before returning.
         if (entry.batch) {
             flushBatch(entry);
         }
     }
 
-    // Persist the directory mtime so the next boot can skip the walk if nothing changed.
     entry.db.run(
         'INSERT INTO meta (key, value) VALUES (\'last_reconcile_dir_mtime_ms\', @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
         { value: String(currentDirMtimeMs) },
     );
 }
 
-/**
- * Starts the non-recursive fs.watch on a user's characters directory - see this module's header for why this is
- * a latency optimization only. No-op if a watcher is already running for this entry.
- * @param {MetadataDbEntry} entry
- */
 function startWatcher(entry) {
     if (entry.watcher || !fs.existsSync(entry.directories.characters)) return;
 
@@ -2617,9 +1508,6 @@ function startWatcher(entry) {
             }, WATCH_DEBOUNCE_MS));
         });
         entry.watcher.on('error', (err) => {
-            // Per the design doc's own measurement, a dropped/overflowed watch is silent and unreported - this
-            // handler is for the rarer case of an actual watcher-level error (e.g. the directory itself being
-            // removed). Either way the reconciler remains the source of truth, so this is a log, not a crash.
             console.error('[character-metadata] Directory watcher error (the reconciler remains the source of truth):', err.message);
         });
     } catch (err) {
@@ -2627,9 +1515,6 @@ function startWatcher(entry) {
     }
 }
 
-/**
- * @param {MetadataDbEntry} entry
- */
 function stopWatcher(entry) {
     if (entry.watcher) {
         entry.watcher.close();
@@ -2639,10 +1524,6 @@ function stopWatcher(entry) {
     entry.watchTimers.clear();
 }
 
-/**
- * @param {MetadataDbEntry} entry
- * @param {string} filename
- */
 async function handleWatchEvent(entry, filename) {
     const filePath = path.join(entry.directories.characters, filename);
     let stat;
@@ -2666,30 +1547,19 @@ async function handleWatchEvent(entry, filename) {
     const character = getCharaCardV2(JSON.parse(imgData), entry.directories, false);
     const { chatSize, dateLastChat } = calculateChatSize(path.join(entry.directories.chats, filename.replace(/\.png$/, '')));
     const tagIds = getTagIdsFor(entry.directories, filename);
-    const row = buildRow(filename, character, { dateAddedCandidate: Date.now(), fileMtime: stat.mtimeMs, chatSize, dateLastChat, tagIds });
+    const row = buildRow(filename, character, { dateAddedCandidate: Date.now(), fileMtime: stat.mtimeMs, chatSize, dateLastChat, tagIds, cardJson: imgData });
     applyOrBuffer(entry, row, tagIds);
 }
 
-/**
- * Server-boot entry point: for every user directory, opens/creates its metadata DB, starts the watcher,
- * and kicks off the one-time bootstrap backfill in the background (deliberately NOT awaited beyond schema
- * creation - a 300k-card bootstrap must not delay the server actually starting to listen, per the design
- * doc's "Runs at boot (non-blocking)"). Safe to call multiple times; already-initialized users are skipped.
- * @param {import('./users.js').UserDirectoryList[]} directoriesList
- * @returns {Promise<void>}
- */
+// Bootstrap runs in the background so a large corpus doesn't delay the server listening.
 export async function initializeMetadataStores(directoriesList) {
     for (const directories of directoriesList) {
         const entry = await getEntry(directories);
-        if (!entry) continue; // No usable SQLite engine - already warned once in getEntry().
-        if (entry.bootstrapPromise) continue; // Already initialized this process.
+        if (!entry) continue;
+        if (entry.bootstrapPromise) continue;
 
         startWatcher(entry);
 
-        // Boot-perf instrumentation (kept permanently, same spirit as server-main.js's own `[boot-timing]` marks
-        // around preSetupTasks()'s top-level steps) - times each stage of this background bootstrap chain so a
-        // slow stage shows up by name in the log instead of someone having to re-instrument from scratch the
-        // next time boot gets slow again.
         const __chainStart = process.hrtime.bigint();
         const __stage = async (label, fn) => {
             const s = process.hrtime.bigint();
@@ -2698,29 +1568,21 @@ export async function initializeMetadataStores(directoriesList) {
             return result;
         };
 
-        // Ordering matters: migrateTagsJsonIfNeeded() classifies tag_map's keys against the characters/groups
-        // tables, so both bootstraps have to have already populated them (bootstrapIfNeeded() for characters,
-        // bootstrapGroupsIfNeeded() for groups) before it runs, or every key would look unresolvable on a
-        // brand-new install's very first boot.
+        // migrateTagsJsonIfNeeded() classifies tag_map's keys against characters/groups, so both bootstraps
+        // must populate them first.
         entry.bootstrapPromise = __stage('bootstrapIfNeeded', () => bootstrapIfNeeded(directories))
             .then(() => __stage('bootstrapGroupsIfNeeded', () => bootstrapGroupsIfNeeded(directories)))
             .then(() => __stage('migrateTagsJsonIfNeeded', () => migrateTagsJsonIfNeeded(directories)))
             .then(() => __stage('backfillCardTagsIfNeeded', () => backfillCardTagsIfNeeded(directories)))
             .then(() => __stage('backfillTagIdsInShallowJson', () => backfillTagIdsInShallowJson(directories)))
             .then(() => __stage('reconcile', () => reconcile(directories)))
-            // Runs LAST in the chain, after reconcile() - so this pass sees the maximal set of poisoned rows a
-            // single boot can discover (reconcile() may itself have just inserted rows for files dropped in
-            // while the server was down).
+            // After reconcile() so this pass sees any rows reconcile() itself just inserted.
             .then(() => __stage('backfillContentIdentityHashes', () => backfillContentIdentityHashes(directories)))
             .then(() => __stage('backfillActiveChatFromCards', () => backfillActiveChatFromCards(directories)))
             .catch(err => console.error(`[character-metadata] Bootstrap failed for ${directories.root}:`, err));
     }
 }
 
-/**
- * Graceful-shutdown counterpart to initializeMetadataStores() - closes every watcher and closes every open
- * database handle. Mirrors diskCache.dispose()'s role in server-main.js's exitProcess().
- */
 export function disposeMetadataStores() {
     for (const entry of entries.values()) {
         stopWatcher(entry);
@@ -2734,9 +1596,6 @@ export function disposeMetadataStores() {
 }
 
 /**
- * Test/diagnostic accessor: the raw stored row for one character, or undefined. Not used by any route yet -
- * phase 2's query endpoint is what actually serves reads from this table (see design doc §5); phase 1 only
- * needs to guarantee the table's contents are correct and fresh.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} avatar
  * @returns {Promise<object | undefined>}
@@ -2747,28 +1606,8 @@ export async function getCharacterMetadataRow(directories, avatar) {
     return entry.db.get('SELECT * FROM characters WHERE id = @id', { id: avatar });
 }
 
-/**
- * Exact-duplicate lookup for the bulk-import dedup feature (characters.js's `/import` route): does any character
- * already have this exact content hash, and if so which one. `hash` is the caller's sha256 hex digest of the raw
- * bytes of an uploaded source file - this function does no hashing of its own, it's a pure indexed lookup.
- *
- * Checks TWO places, not just the SQL table, and this is deliberate rather than an oversight: while batch-import
- * mode is active for this user (beginBatchImport()), writes sit buffered in `entry.batch.pending` (see
- * applyOrBuffer()) for up to BATCH_FLUSH_SIZE rows before they ever reach a real SQL transaction. A bulk drop
- * that hashes-and-checks-then-writes strictly sequentially (one `/import` request fully completing before the
- * next one starts - true of the client's actual import loop) still needs in-batch duplicates (two identical
- * files dropped in the same drop) to be caught the moment the first one lands, not only after the next flush -
- * so the pending buffer has to be checked too, or a same-batch duplicate would silently slip through undetected
- * until (if ever) a flush happened to fall between the two files. The pending buffer is small (at most
- * BATCH_FLUSH_SIZE rows) and keyed by id, not hash, so this is a short linear scan, not an index lookup - fine
- * at that bound.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} hash sha256 hex digest to look up
- * @returns {Promise<string | null>} The existing character's id if a match was found, else `null`. Also `null`
- * (fail-open, matching this module's "no usable SQLite backend" convention elsewhere) if the metadata store
- * itself is unavailable - callers must treat that as "dedup can't be determined right now", not as "no
- * duplicate exists".
- */
+// Also checks the pending batch buffer: a bulk import can drop two identical files in the same
+// still-unflushed batch. Fails open to null, which callers must treat as "can't determine", not "no duplicate".
 export async function findCharacterIdByContentHash(directories, hash) {
     if (!hash) return null;
     const entry = await getEntry(directories);
@@ -2786,26 +1625,7 @@ export async function findCharacterIdByContentHash(directories, hash) {
     return row ? row.id : null;
 }
 
-/**
- * Semantic-duplicate lookup, mirroring findCharacterIdByContentHash()'s exact shape (same two places checked, same
- * fail-open-to-null posture, same reasoning for checking the batch-import pending buffer too) but against
- * `content_identity_hash` instead of `content_hash`. Where content_hash only ever matches a byte-identical
- * re-upload, content_identity_hash matches a character whose semantic content (fav/chat/create_date stripped) is
- * the same, even if its stored bytes differ - which is what makes this the O(1)-indexed replacement for an
- * O(m)-over-poisoned-rows expensive fallback (see this module's header on allowExpensiveDuplicateFallback and
- * backfillContentIdentityHashes() below, which is what makes a poisoned row's hash trustworthy enough to be in
- * this index at all).
- *
- * No `import_poisoned` filter here, and deliberately so: a row's content_identity_hash column, whenever it is
- * non-NULL, was always computed the identical way regardless of which of the three producers set it
- * (upsertCharacterFromWrite(), which also clears poison; or backfillContentIdentityHashes(), which doesn't) - see
- * that column's own SCHEMA_SQL comment. Both are equally comparable, so a plain indexed lookup on the column is
- * already correct without needing to know or care which producer set it.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} hash sha256 hex digest to look up (computeContentIdentityHash()'s output)
- * @returns {Promise<string | null>} The existing character's id if a match was found, else `null`. Also `null`
- * (fail-open) if the metadata store itself is unavailable.
- */
+// Matches semantic content even if bytes differ.
 export async function findCharacterIdByContentIdentityHash(directories, hash) {
     if (!hash) return null;
     const entry = await getEntry(directories);
@@ -2824,38 +1644,8 @@ export async function findCharacterIdByContentIdentityHash(directories, hash) {
 }
 
 /**
- * local-import-scan.js's import-time dedup-skip consumer: unlike findCharacterIdByContentIdentityHash() above
- * (deliberately JSON-only - see this column's own SCHEMA_SQL comment on why its one caller,
- * findCrossCharacterReflinkCandidate(), must stay that way), a candidate here gets silently discarded as
- * "already imported" the moment a match is found - there is no downstream byte verification the way the
- * live-write reflink path has (writeCardFromChunks()'s own prefix check). Matching on `content_identity_hash`
- * alone here would therefore treat two characters with identical text but different portraits as duplicates
- * and drop the new one on the floor - the exact gap that motivated adding `avatar_identity_hash` at all. A real
- * duplicate for THIS purpose requires both hashes to agree.
- *
- * `avatarIdentityHash === null` (candidate's own avatar hash unknown - a charx/byaf source) fails open to "not a
- * match", same posture as every other identity-hash consumer in this module: a missed dedup optimization, never
- * a false "these are the same" that could silently drop a genuinely new character.
- *
- * The OTHER null case - the candidate's avatarIdentityHash is known, but the matching row's own
- * avatar_identity_hash column is still NULL because this install's one-time
- * scripts/backfill-avatar-identity-hashes.mjs was never run (or hasn't reached this row yet) - is NOT the same
- * situation and must not be treated the same way. A plain `column = @value` SQL comparison silently excludes
- * any row whose column is NULL (SQL's NULL-never-equals-anything semantics), so on an unbackfilled install this
- * would fail EVERY genuine duplicate open, all the way down to "no match", which is exactly backwards: for THIS
- * function's caller, "no match" means "import this as a brand-new character", so at scale on an 88%-unbackfilled
- * library this created real duplicate rows for content already in the library (2026-08 incident). The fix below
- * resolves that case with a real, bounded byte-level check - same rigor as reclaimReflinkPrefix()'s own
- * byte-verify - rather than either blindly trusting the missing value (false-positive merge risk: two different
- * portraits sharing content_identity_hash would get wrongly treated as the same character) or leaving it
- * fail-open (the false negative that caused the incident). It also opportunistically writes the real value back
- * once computed, so any given row only ever needs this slow path once, converging the corpus incrementally
- * without depending on the standalone backfill script running at all.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} contentIdentityHash computeContentIdentityHash()'s output for the candidate
- * @param {string|null} avatarIdentityHash computeAvatarIdentityHashFromChunks()'s output for the candidate, or
- * `null` if the candidate's avatar bytes aren't known at this point (see this function's own doc comment)
- * @returns {Promise<string | null>} The existing character's id if BOTH hashes match the same row, else `null`.
+ * Requires both hashes to match the same row - content_identity_hash alone would wrongly treat
+ * same-text-different-portrait characters as duplicates.
  */
 export async function findCharacterIdByIdentityHashes(directories, contentIdentityHash, avatarIdentityHash) {
     if (!contentIdentityHash || !avatarIdentityHash) return null;
@@ -2876,10 +1666,8 @@ export async function findCharacterIdByIdentityHashes(directories, contentIdenti
     );
     if (exactRow) return exactRow.id;
 
-    // Real fallback, reached only for rows the index comparison above could never resolve either way: same
-    // content_identity_hash, but avatar_identity_hash IS NULL on the row (not yet backfilled). Bounded to
-    // however many rows genuinely share this content_identity_hash - rare, see this column's own SCHEMA_SQL
-    // comment on why more than one is even possible - never a corpus-wide scan.
+    // Fallback for rows sharing content_identity_hash but with avatar_identity_hash still NULL: a plain SQL
+    // `=` comparison silently excludes NULL, which would miss real duplicates on an unbackfilled library.
     if (!fs.existsSync(directories.characters)) return null;
     const unbackfilledCandidates = entry.db.all(
         'SELECT id FROM characters WHERE content_identity_hash = @contentIdentityHash AND avatar_identity_hash IS NULL',
@@ -2892,18 +1680,11 @@ export async function findCharacterIdByIdentityHashes(directories, contentIdenti
             const buffer = await fsPromises.readFile(filePath);
             rowAvatarHash = computeAvatarIdentityHashFromChunks(extract(new Uint8Array(buffer)));
         } catch (err) {
-            // Missing/unreadable file for this row - can't confirm or deny a match against it. Fail open to "not
-            // this row" and keep checking any other same-content-hash candidates, the same posture as everywhere
-            // else in this module: a missed dedup, never a false merge.
             console.debug(`[character-metadata] Identity-hash fallback verification failed reading ${id}, treating as no match:`, /** @type {any} */ (err)?.message ?? err);
             continue;
         }
 
-        // Opportunistic self-heal: this read+hash is exactly what the standalone backfill script would have
-        // computed for this row, so persist it now - this row never needs this slow path again. COALESCE-guarded
-        // the same way backfillContentIdentityHashes() and the standalone script both already are, so a
-        // concurrent live write for this exact row (which would have set a real, more-current value) always
-        // wins over this comparatively stale read.
+        // COALESCE-guarded so a concurrent live write for this row always wins over this stale read.
         entry.db.run(
             'UPDATE characters SET avatar_identity_hash = COALESCE(avatar_identity_hash, @hash) WHERE id = @id',
             { hash: rowAvatarHash, id },
@@ -2915,15 +1696,7 @@ export async function findCharacterIdByIdentityHashes(directories, contentIdenti
     return null;
 }
 
-/**
- * Looks up local-import-scan.js's durable "never importable" record for one source file (see this module's
- * SCHEMA_SQL comment on `local_import_skips`).
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} sourcePath Absolute path to the discovered source file
- * @returns {Promise<{ mtimeMs: number, reason: string } | null>} `null` if no skip is recorded, OR if the
- * metadata store itself is unavailable (fail-open, matching this module's convention elsewhere - callers must
- * treat that as "can't determine, don't skip", not as "confirmed not skipped").
- */
+// Fails open to null (unavailable store) - callers must treat that as "can't determine", not "not skipped".
 export async function getLocalImportSkip(directories, sourcePath) {
     const entry = await getEntry(directories);
     if (!entry) return null;
@@ -2932,17 +1705,6 @@ export async function getLocalImportSkip(directories, sourcePath) {
     return row ? { mtimeMs: Number(row.mtime_ms), reason: row.reason } : null;
 }
 
-/**
- * Records (or refreshes) local-import-scan.js's durable "never importable" classification for one source file.
- * A no-op (fail-open) if the metadata store is unavailable - the caller's already-emitted one-time log line is
- * the only record that exists in that case, and the file falls back to the pre-existing "retry every pass"
- * behavior, which is wasteful but never incorrect.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} sourcePath Absolute path to the discovered source file
- * @param {number} mtimeMs The file's mtimeMs at the moment it was classified (see this column's SCHEMA_SQL comment)
- * @param {string} reason Short machine-readable classification tag (e.g. 'not-json', 'unrecognized-shape')
- * @returns {Promise<void>}
- */
 export async function setLocalImportSkip(directories, sourcePath, mtimeMs, reason) {
     const entry = await getEntry(directories);
     if (!entry) return;
@@ -2958,14 +1720,6 @@ export async function setLocalImportSkip(directories, sourcePath, mtimeMs, reaso
     );
 }
 
-/**
- * Clears a source file's local-import-skip record, if any - called once local-import-scan.js observes the file
- * itself is gone (ENOENT), so this table doesn't accumulate rows for files that no longer exist on disk. A
- * no-op (fail-open) if the metadata store is unavailable.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} sourcePath Absolute path to the discovered source file
- * @returns {Promise<void>}
- */
 export async function clearLocalImportSkip(directories, sourcePath) {
     const entry = await getEntry(directories);
     if (!entry) return;
@@ -2973,23 +1727,8 @@ export async function clearLocalImportSkip(directories, sourcePath) {
     entry.db.run('DELETE FROM local_import_skips WHERE source_path = @sourcePath', { sourcePath });
 }
 
-/**
- * Looks up local-import-scan.js's persisted "already processed at this mtime" record for one source file - the
- * per-file read counterpart to setLocalImportMtime()'s write, and DirectoryScanState.lastSeenMtimeMs's own
- * fallback on a cache miss (see that field's and local-import-scan.js's MAX_LAST_SEEN_MTIME_ENTRIES doc comments
- * for the full story). Replaces the old bulk-load-the-whole-table-into-memory-at-boot getAllLocalImportMtimes(),
- * which held one entry per file this user's local-import directories had EVER seen, for the entire life of the
- * process, with no ceiling other than however large those directories (an ever-growing external corpus, per the
- * 2026-09 unbounded-memory investigation) happened to have grown to. A single indexed point lookup here (
- * source_path is this table's PRIMARY KEY) is nowhere near the cost this skip cache exists to avoid - a full
- * read+hash of the file - so paying it lazily, per cache-miss, in exchange for a genuinely bounded in-memory
- * footprint is the honest tradeoff.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} sourcePath Absolute path to the discovered source file
- * @returns {Promise<{ mtimeMs: number } | null>} `null` if no record is persisted, OR if the metadata store
- * itself is unavailable (fail-open, matching this module's convention elsewhere - callers must treat that as
- * "can't determine, don't skip", not as "confirmed not yet processed").
- */
+// Lazy per-cache-miss point lookup, replacing the old bulk-load-whole-table-at-boot getAllLocalImportMtimes()
+// (unbounded memory growth against an ever-growing external corpus).
 export async function getLocalImportMtime(directories, sourcePath) {
     const entry = await getEntry(directories);
     if (!entry) return null;
@@ -2998,27 +1737,8 @@ export async function getLocalImportMtime(directories, sourcePath) {
     return row ? { mtimeMs: Number(row.mtime_ms) } : null;
 }
 
-/**
- * Batched counterpart to getLocalImportMtime(): one query per (bounded-size) chunk of paths instead of one
- * query per path. Exists for local-import-scan.js's own periodic/boot full-directory pass, which now walks
- * its source directory in bounded-size batches (see that module's scanDirectory()) rather than materializing
- * the whole listing at once - each batch calls this once for its own paths, so a pass over a corpus of any
- * size never holds more mtime data in memory at once than one batch's worth, and never costs more than one
- * query per batch instead of one query per file.
- *
- * NOT the removed getAllLocalImportMtimes() this module's history mentions elsewhere: that one populated a
- * module-level, unbounded, never-evicted, cross-restart in-memory Map sized to the WHOLE table, for the life
- * of the process. This takes an explicit, caller-bounded list of paths and returns a plain Map scoped to
- * just those - the caller is expected to use it for one batch and drop it; nothing here retains a reference.
- * DirectoryScanState.lastSeenMtimeMs (the actual bounded, cross-pass, cross-restart cache) is untouched by
- * this function existing - this only changes how many round trips a batch's worth of cache misses costs, not
- * what gets cached afterward or for how long.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string[]} sourcePaths Absolute paths to look up - the caller controls how many at once.
- * @returns {Promise<Map<string, number>>} source_path -> mtime_ms, present only for paths with a persisted
- * record. Empty (not thrown) if the metadata store itself is unavailable - same fail-open contract as
- * getLocalImportMtime(), so a caller that falls back to that per-path on a miss here loses nothing.
- */
+// Batched counterpart to getLocalImportMtime(): one query per chunk of paths. Returns a plain Map scoped to
+// just the given paths, not a whole-table cache.
 export async function getLocalImportMtimesForPaths(directories, sourcePaths) {
     const result = new Map();
     if (!sourcePaths.length) return result;
@@ -3033,23 +1753,8 @@ export async function getLocalImportMtimesForPaths(directories, sourcePaths) {
     return result;
 }
 
-/**
- * One page of persisted `local_import_mtimes` source_paths, ordered ascending and keyset-paginated (`source_path
- * > afterSourcePath`, not `LIMIT/OFFSET`) so local-import-scan.js's removed-file sweep can walk the whole table
- * `limit` rows at a time without ever holding more than one page in memory - see that function for why (the same
- * unbounded-memory concern getLocalImportMtime() replaces getAllLocalImportMtimes() for). Keyset (not OFFSET)
- * pagination specifically because the sweep DELETEs rows (via clearLocalImportMtime()) as it goes - OFFSET
- * pagination over a table being deleted from mid-walk silently skips rows as later offsets shift underneath it;
- * a `source_path >` cursor is immune to that, since a deleted row's key never reappears and never shifts a
- * still-to-be-seen row's key.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} afterSourcePath Exclusive cursor - pass '' for the first page, then the last row's own
- * source_path from the previous page to continue.
- * @param {number} limit Page size.
- * @returns {Promise<string[]>} Empty when there are no more rows, OR if the metadata store is unavailable
- * (fail-open - an empty page just ends the sweep early, at worst leaving a removed file's stale record to be
- * caught on a later pass, never incorrect).
- */
+// Keyset-paginated (source_path > afterSourcePath), not LIMIT/OFFSET: the sweep DELETEs rows as it walks, and
+// OFFSET pagination would silently skip rows as offsets shift underneath it.
 export async function getLocalImportMtimeSourcePathsAfter(directories, afterSourcePath, limit) {
     const entry = await getEntry(directories);
     if (!entry) return [];
@@ -3061,22 +1766,8 @@ export async function getLocalImportMtimeSourcePathsAfter(directories, afterSour
     return rows.map(row => row.source_path);
 }
 
-/**
- * Records (or refreshes) local-import-scan.js's durable "already processed at this mtime" record for one source
- * file - the write-through counterpart to getLocalImportMtime()'s per-file read. A no-op (fail-open) if the
- * metadata store is unavailable, same posture as setLocalImportSkip(): losing this write only means the file
- * gets re-read/re-hashed (wastefully, never incorrectly) on the next restart, not a correctness problem.
- *
- * `duplicateOf`, when given, records that this row's validity depends on character id `duplicateOf` still
- * existing - see migrateLocalImportMtimesDuplicateOfColumn()'s doc comment for the full story and
- * deleteRowSync() for the cascade that keeps this safe. Omitted (or null) for an ordinary "this file WAS itself
- * imported" record, which has no such dependency.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} sourcePath Absolute path to the discovered source file
- * @param {number} mtimeMs The file's mtimeMs as of the pass that just processed it
- * @param {string|null} [duplicateOf] Character id this source file was recognized as a duplicate of, if any
- * @returns {Promise<void>}
- */
+// duplicateOf, when given, records that this row's validity depends on that character id still existing -
+// deleteRowSync() cascades the deletion.
 export async function setLocalImportMtime(directories, sourcePath, mtimeMs, duplicateOf = null) {
     const entry = await getEntry(directories);
     if (!entry) return;
@@ -3089,14 +1780,6 @@ export async function setLocalImportMtime(directories, sourcePath, mtimeMs, dupl
     );
 }
 
-/**
- * Clears a source file's persisted mtime record, if any - called once local-import-scan.js observes the file
- * itself is gone (ENOENT), so this table doesn't accumulate rows for files that no longer exist on disk, same
- * hygiene reasoning as clearLocalImportSkip(). A no-op (fail-open) if the metadata store is unavailable.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} sourcePath Absolute path to the discovered source file
- * @returns {Promise<void>}
- */
 export async function clearLocalImportMtime(directories, sourcePath) {
     const entry = await getEntry(directories);
     if (!entry) return;
@@ -3104,28 +1787,12 @@ export async function clearLocalImportMtime(directories, sourcePath) {
     entry.db.run('DELETE FROM local_import_mtimes WHERE source_path = @sourcePath', { sourcePath });
 }
 
-/**
- * Tag ids currently mirrored into character_tags for one character (see resyncTags()'s header on this being a
- * read-only mirror of tags.json in phase 1). Exposed for tests/diagnostics and for phase 2's query endpoint,
- * which needs this table populated to serve `filter.tags`.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} avatar
- * @returns {Promise<string[]>}
- */
 export async function getCharacterTagIds(directories, avatar) {
     const entry = await getEntry(directories);
     if (!entry) return [];
     return entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id: avatar }).map(r => r.tag_id);
 }
 
-/**
- * The trigger-maintained usage count for one tag (character_tags(tag_id, character_id) index makes this an
- * index-only lookup at query time; the count itself lives in tag_usage precisely so this doesn't need to scan
- * character_tags at all - see trg_character_tags_ai/ad in SCHEMA_SQL).
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} tagId
- * @returns {Promise<number>}
- */
 export async function getTagUsageCount(directories, tagId) {
     const entry = await getEntry(directories);
     if (!entry) return 0;
@@ -3133,17 +1800,7 @@ export async function getTagUsageCount(directories, tagId) {
     return row ? Number(row.count) : 0;
 }
 
-/**
- * Computes a content hash (SHA-256) of all tag definitions and stores it as the `tags_hash` meta value - the
- * freshness signature for anything derived from tag *content* (definitions or assignments), replacing tags.json's
- * own mtime now that tags.json is gone (see this module's header on its removal). Called by every write below
- * that changes what a `#tags` search field or a cached tag definition would resolve to: saveTagDefinitions(),
- * assignEntityTag(), unassignEntityTag(), and migrateTagsJsonIfNeeded()'s one-time seed. Readers:
- * getTagsHash() below (consumed by characters-search-index.js/groups-search-index.js in place of the old
- * tags.json-mtime half of their freshness signature, and by tags-cache.js's client-side freshness check in place
- * of `/api/tags/manifest`'s old whole-file mtime).
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- */
+// Content hash of all tag definitions, the freshness signature replacing tags.json's mtime.
 function updateTagsHashSync(db) {
     const rows = db.all('SELECT id, data FROM tags ORDER BY id');
     const content = rows.map(r => r.id + '\0' + r.data).join('\0');
@@ -3154,11 +1811,6 @@ function updateTagsHashSync(db) {
     );
 }
 
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<string | null>} The current `tags_hash` content hash, or `null` if nothing has ever been
- * stored or the metadata store is unavailable.
- */
 export async function getTagsHash(directories) {
     const entry = await getEntry(directories);
     if (!entry) return null;
@@ -3166,21 +1818,7 @@ export async function getTagsHash(directories) {
     return row ? row.value : null;
 }
 
-/**
- * Generic reader over the `meta` key/value table (see SCHEMA_SQL) - the phase-1 header flags this table as
- * under-used ("only ever holds bootstrap_completed... worth fixing before the table has data worth migrating"),
- * so this is the one general-purpose accessor pair (this + setMetaValue() below) rather than a bespoke
- * get/set function per new key. characters-search-index.js's incremental tantivy maintenance uses this to persist
- * "which change-log seq / tags_hash this user's on-disk tantivy index was last caught up to" - state that belongs
- * to the search-index subsystem, not this module's own freshness bookkeeping, but is stored here rather than in
- * a second small file/lock because this table (and this module's write path) already is the single point every
- * character/tag mutation funnels through, so there is no second source of truth to keep in sync.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} key
- * @returns {Promise<string | null>} The stored value, or `null` if unset *or* if the metadata store itself is
- * unavailable - callers that need to tell those two apart should call getEntry()-backed functions directly, none
- * currently need to.
- */
+// General-purpose key/value accessor pair over the meta table.
 export async function getMetaValue(directories, key) {
     const entry = await getEntry(directories);
     if (!entry) return null;
@@ -3188,12 +1826,6 @@ export async function getMetaValue(directories, key) {
     return row ? String(row.value) : null;
 }
 
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} key
- * @param {string | number} value Stringified before storage - `meta.value` is TEXT (see SCHEMA_SQL).
- * @returns {Promise<void>} No-ops if the metadata store is unavailable.
- */
 export async function setMetaValue(directories, key, value) {
     const entry = await getEntry(directories);
     if (!entry) return;
@@ -3203,21 +1835,7 @@ export async function setMetaValue(directories, key, value) {
     );
 }
 
-/**
- * Every tag id whose *name* changed since `sinceSeq` (mirrors getChangesSince()'s shape/truncation handling
- * against `tag_name_changes` instead of `changes`) - characters-search-index.js's incremental tantivy maintenance
- * reindexes exactly these ids' assignees (getCharacterIdsForTagIds() below), so a search-index catch-up's tag
- * handling costs work proportional to how many tag names actually changed in the window, never to how many tags
- * or tagged characters exist in total - the only thing kept between catch-ups is this single integer watermark,
- * not a snapshot of every tag.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {number} sinceSeq
- * @returns {Promise<{ seq: number, tagIds: string[], truncated: boolean } | null>} `null` if the metadata store
- * is unavailable. `truncated: true` means `sinceSeq` predates the oldest row this table still has - nothing
- * prunes it yet (matching `changes`' own current state), so this can only trigger for a `sinceSeq` that was never
- * valid for this table to begin with; still computed for real rather than hardcoded `false`, for the same reason
- * getChangesSince() does.
- */
+// Tag ids whose *name* changed since sinceSeq - mirrors getChangesSince()'s truncation handling.
 export async function getTagNameChangesSince(directories, sinceSeq) {
     const entry = await getEntry(directories);
     if (!entry) return null;
@@ -3236,15 +1854,6 @@ export async function getTagNameChangesSince(directories, sinceSeq) {
     return { seq: maxSeq, tagIds: rows.map(row => row.tag_id), truncated: false };
 }
 
-/**
- * Character ids carrying at least one of the given tag ids - `character_tags(tag_id, character_id)`'s index
- * makes this cheap regardless of library size, an index-only query scoped to a specific tag set. Used by
- * characters-search-index.js's incremental tantivy maintenance to reindex exactly the assignees of whichever
- * tag ids getTagNameChangesSince() above reports as renamed, instead of every tagged character.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string[]} tagIds
- * @returns {Promise<string[] | null>} `null` if the metadata store is unavailable.
- */
 export async function getCharacterIdsForTagIds(directories, tagIds) {
     const entry = await getEntry(directories);
     if (!entry) return null;
@@ -3262,27 +1871,13 @@ export async function getCharacterIdsForTagIds(directories, tagIds) {
     return [...out];
 }
 
-/**
- * Records that `oldId` is to become `newId` under the phase 4d filename migration (design doc §9) - `INSERT OR
- * IGNORE`, so calling this twice for the same `oldId` is a no-op that keeps whichever `newId` was minted first,
- * which is exactly what makes a resumed run reuse the same id rather than minting a fresh one every restart.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} oldId
- * @param {string} newId
- * @returns {Promise<void>} No-ops if the metadata store is unavailable.
- */
+// INSERT OR IGNORE: a resumed migration run reuses the id minted first rather than minting a fresh one.
 export async function recordIdMigrationMapping(directories, oldId, newId) {
     const entry = await getEntry(directories);
     if (!entry) return;
     entry.db.run('INSERT OR IGNORE INTO id_migration (old_id, new_id, completed) VALUES (@oldId, @newId, 0)', { oldId, newId });
 }
 
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} oldId
- * @returns {Promise<string | null>} The `newId` already recorded for `oldId`, or `null` if none exists yet /
- * the metadata store is unavailable.
- */
 export async function getIdMigrationMapping(directories, oldId) {
     const entry = await getEntry(directories);
     if (!entry) return null;
@@ -3290,68 +1885,32 @@ export async function getIdMigrationMapping(directories, oldId) {
     return row ? String(row.new_id) : null;
 }
 
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} newId A candidate id about to be minted
- * @returns {Promise<boolean>} True if `newId` is already claimed by an in-flight or completed migration row -
- * checked alongside the filesystem so the migration script's collision check covers both "already on disk" and
- * "already promised to a different old_id but not yet renamed onto disk".
- */
 export async function isIdMigrationTargetTaken(directories, newId) {
     const entry = await getEntry(directories);
     if (!entry) return false;
     return !!entry.db.get('SELECT 1 FROM id_migration WHERE new_id = @newId', { newId });
 }
 
-/**
- * Marks an `id_migration` row's underlying identity move (PNG rename, metadata row, chats directory) as done.
- * This is the gate the migration script's cross-cutting sweep (groups/world_info/note.chara/active_character
- * rewrites) checks before touching a given old_id/new_id pair - see this table's own schema comment.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} oldId
- * @returns {Promise<void>} No-ops if the metadata store is unavailable.
- */
 export async function markIdMigrationComplete(directories, oldId) {
     const entry = await getEntry(directories);
     if (!entry) return;
     entry.db.run('UPDATE id_migration SET completed = 1 WHERE old_id = @oldId', { oldId });
 }
 
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<Array<{old_id: string, new_id: string}>>} Every row not yet marked complete - what a
- * (re)started migration run resumes from, in addition to newly discovered non-uuid filenames.
- */
 export async function getPendingIdMigrations(directories) {
     const entry = await getEntry(directories);
     if (!entry) return [];
     return entry.db.all('SELECT old_id, new_id FROM id_migration WHERE completed = 0');
 }
 
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<Array<{old_id: string, new_id: string}>>} Every completed row - the full old-id-to-new-id
- * table the migration script's cross-cutting sweep (groups/world_info/note.chara/active_character) rewrites
- * against. Safe to call repeatedly; the sweep itself is idempotent (see this module's header comment on the
- * `id_migration` table).
- */
 export async function getCompletedIdMigrations(directories) {
     const entry = await getEntry(directories);
     if (!entry) return [];
     return entry.db.all('SELECT old_id, new_id FROM id_migration WHERE completed = 1');
 }
 
-/**
- * Phase 3 (design doc §3.4, extended by owner decision to groups): `POST /api/tags/for`'s backing query - the
- * tag ids assigned to each of `ids`, in one batched read rather than one `getCharacterTagIds()`/
- * `getGroupTagIds()` call per entity. `ids` can freely mix character avatars and group ids - each one is looked
- * up against whichever of `character_tags`/`group_tags` actually has rows for it. Every requested id is a key in
- * the result, `[]` if it has no tags (or doesn't exist) - so a caller never has to distinguish "no tags" from
- * "id absent".
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string[]} ids
- * @returns {Promise<Record<string, string[]> | null>} `null` if the metadata store is unavailable.
- */
+// ids can mix character avatars and group ids. Every requested id is a key in the result ([] if no tags), so
+// a caller never has to distinguish "no tags" from "id absent".
 export async function getEntityTagIdsForMany(directories, ids) {
     const entry = await getEntry(directories);
     if (!entry) return null;
@@ -3373,8 +1932,6 @@ export async function getEntityTagIdsForMany(directories, ids) {
             result[row.entity_id]?.push(row.tag_id);
         }
 
-        // Yield to the event loop between batches (not after the last one) so a large `ids` list can't starve
-        // other requests behind this function's otherwise fully-synchronous sqlite work.
         if (i + BATCH_FLUSH_SIZE < ids.length) {
             await new Promise(resolve => setImmediate(resolve));
         }
@@ -3383,14 +1940,8 @@ export async function getEntityTagIdsForMany(directories, ids) {
     return result;
 }
 
-/**
- * Patches a still-buffered batch-import row's tag ids in place (both `pending.tagIds` - what `writeRowSync()`
- * inserts into `character_tags` at flush, see `applyOrBuffer()`/`flushBatch()` - and the embedded
- * `pending.row.shallow_json`/`digest_tag_ids`, so a `/query` or digest read that happens to land before this
- * row flushes still sees the assignment). Mirrors the SQL-table branch of `assignEntityTag()`/`unassignEntityTag()`
- * below exactly, just against the pending object instead of a row already in `characters`.
- * @param {{row: object, tagIds: string[]}} pending
- */
+// Patches a still-buffered batch-import row's tag ids so a read landing before flush still sees the assignment.
+
 function patchPendingRowTagIds(pending) {
     const shallow = JSON.parse(pending.row.shallow_json);
     shallow.tag_ids = pending.tagIds;
@@ -3398,29 +1949,9 @@ function patchPendingRowTagIds(pending) {
     pending.row.digest_tag_ids = characterDigestTagIdsHash(shallow) % 4294967296;
 }
 
-/**
- * Phase 3 (extended by owner decision to groups): `POST /api/tags/assign`'s backing write - a single-row insert
- * into `character_tags` or `group_tags`, whichever table `id` actually exists in, replacing the old
- * whole-tags.json rewrite. Requires the entity to actually exist (checked against `characters` then `groups`,
- * not just attempted blind) so a typo'd id can't create a permanently dangling tag row nothing will ever clean
- * up - neither table has a foreign key enforcing that itself (SQLite FKs are opt-in and this schema doesn't turn
- * them on).
- *
- * Also checks the batch-import pending buffer (see `findCharacterIdByContentHash()`'s doc comment for why that's
- * deliberate, not an oversight) - a character imported during a multi-file drop can still be sitting in
- * `entry.batch.pending` rather than the `characters` table (buffered until `BATCH_FLUSH_SIZE` rows accumulate or
- * batch mode ends) at the exact moment its own just-imported tags get auto-assigned, since the client fires that
- * assign immediately after the import response, with no wait for a flush. Before this check existed, that raced
- * against the flush: whichever side of it a given character's row happened to land on decided whether its tags
- * survived, which is why a bulk-imported library shows tags on some cards and not others with no other
- * explanable difference between them (the actual reported symptom this was fixing - confirmed against this
- * install's real data: a spot check across the most recently imported 20 characters found roughly half missing
- * every one of their tags despite having them embedded in the card itself).
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} id Character avatar or group id
- * @param {string} tagId
- * @returns {Promise<'ok' | 'not_found' | null>} `null` if the metadata store is unavailable.
- */
+// Requires the entity to exist (checked against characters then groups) since neither table has an FK to
+// enforce it. Checks the batch-import pending buffer too: a just-imported, still-buffered row's auto-assign
+// would otherwise race the flush and silently lose the tag.
 export async function assignEntityTag(directories, id, tagId) {
     const entry = await getEntry(directories);
     if (!entry) return null;
@@ -3436,15 +1967,8 @@ export async function assignEntityTag(directories, id, tagId) {
 
     if (entry.db.get('SELECT 1 FROM characters WHERE id = @id', { id })) {
         entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@id, @tagId)', { id, tagId });
-        // Update shallow_json.tag_ids and record a field-level change so the delta sync
-        // path knows only tag_ids changed, not the whole record.
-        //
-        // Deliberately NOT followed by updateTagsHashSync() (see its own doc comment): this only ever touches
-        // character_tags, never the tags table updateTagsHashSync() hashes, so it can never change what that
-        // call would compute - it was pure wasted work (a full SELECT+hash over every tag definition, i.e.
-        // O(library-wide tag count) on a single-row write) that also never told anyone anything true. The
-        // insertChange() call just above already bumps the change-seq counter this assignment's actual
-        // freshness consumer (characters-search-index.js's getFreshnessSignature()) reads.
+        // No updateTagsHashSync() here: this only touches character_tags, never the tags table that hashes, so
+        // it would be a full O(library-wide tag count) scan for zero signal.
         const charRow = entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id });
         if (charRow) {
             const currentTagIds = entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id }).map(r => r.tag_id);
@@ -3456,17 +1980,7 @@ export async function assignEntityTag(directories, id, tagId) {
         return 'ok';
     }
     if (entry.db.get('SELECT 1 FROM groups WHERE id = @id', { id })) {
-        // Same reasoning as the characters branch above: group_tags isn't the tags table either, so
-        // updateTagsHashSync() here was equally dead weight - and, unlike the characters branch, it was never
-        // even a redundant stand-in for a real freshness signal: groups have no change-log entry to bump
-        // instead (see unassignEntityTag()'s own comment - "groups don't have shallow_json/change entries"), so
-        // groups-search-index.js's getFreshnessSignature() (groupsDirMtime + getTagsHash()) has no way to detect
-        // a pure group-tag reassignment today, before or after this change. That's a real, separate gap - fixing
-        // it means giving groups their own change-tracking the way characters already have, not something this
-        // single-row write can paper over by calling a hash function that can't see group_tags either way.
         entry.db.run('INSERT OR IGNORE INTO group_tags (group_id, tag_id) VALUES (@id, @tagId)', { id, tagId });
-        // digest_tag_ids hook (2026-09, /query hash-mode for groups) - mirrors the characters branch's own
-        // digest_tag_ids update just above, minus the shallow_json/change-log bookkeeping groups don't have.
         const currentTagIds = entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id', { id }).map(r => r.tag_id);
         entry.db.run('UPDATE groups SET digest_tag_ids = @digestTagIds WHERE id = @id', { id, digestTagIds: groupDigestTagIdsHash({ tag_ids: currentTagIds }) });
         return 'ok';
@@ -3474,22 +1988,9 @@ export async function assignEntityTag(directories, id, tagId) {
     return 'not_found';
 }
 
-/**
- * Phase 3 (extended by owner decision to groups): `POST /api/tags/unassign`'s backing write - a single-row
- * delete from `character_tags`/`group_tags`. Deliberately NOT a 404 on a nonexistent entity (unlike
- * assignEntityTag()) - "make sure this assignment doesn't exist" is trivially satisfied when the entity itself
- * doesn't exist either, so there's nothing to reject. Runs the delete against both tables unconditionally rather
- * than resolving which one first - cheaper than a lookup, and harmless since an id is only ever a row in one of
- * them (a character avatar and a group id can't collide in practice - see this module's header on identity).
- *
- * Also checks the batch-import pending buffer first, same reasoning as `assignEntityTag()` above - an unassign
- * fired at a still-buffered row would otherwise be a silent no-op (nothing in `character_tags` yet to delete),
- * and the tag would reappear once the row finally flushes with its buffered `pending.tagIds` intact.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} id Character avatar or group id
- * @param {string} tagId
- * @returns {Promise<'ok' | null>} `null` if the metadata store is unavailable.
- */
+// Not a 404 on a nonexistent entity: nothing to reject. Runs the delete against both tables unconditionally,
+// cheaper than resolving which one first. Checks the batch-import pending buffer too, same reasoning as
+// assignEntityTag().
 export async function unassignEntityTag(directories, id, tagId) {
     const entry = await getEntry(directories);
     if (!entry) return null;
@@ -3503,20 +2004,10 @@ export async function unassignEntityTag(directories, id, tagId) {
 
     entry.db.run('DELETE FROM character_tags WHERE character_id = @id AND tag_id = @tagId', { id, tagId });
     entry.db.run('DELETE FROM group_tags WHERE group_id = @id AND tag_id = @tagId', { id, tagId });
-    // digest_tag_ids hook for groups (2026-09, /query hash-mode) - unconditional like the deletes just above
-    // (an UPDATE against a nonexistent group id is simply a no-op, same "cheaper than resolving which table
-    // first" reasoning this function's own header already gives for running both deletes unconditionally).
     entry.db.run(
         'UPDATE groups SET digest_tag_ids = @digestTagIds WHERE id = @id',
         { id, digestTagIds: groupDigestTagIdsHash({ tag_ids: entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id', { id }).map(r => r.tag_id) }) },
     );
-    // Update shallow_json.tag_ids for characters (groups don't have shallow_json/change entries).
-    //
-    // No updateTagsHashSync() here either, same reasoning as assignEntityTag()'s own comment above: an
-    // unassign only ever touches character_tags/group_tags, never the tags table that call hashes, so it was
-    // guaranteed to recompute the exact same value every time - a full O(library-wide tag count) SELECT+hash
-    // for zero signal. insertChange() just below is what characters-search-index.js's freshness check actually
-    // reads for this; groups still have no equivalent (pre-existing, separate gap - see assignEntityTag()).
     const charRow = entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id });
     if (charRow) {
         const currentTagIds = entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id }).map(r => r.tag_id);
@@ -3528,26 +2019,12 @@ export async function unassignEntityTag(directories, id, tagId) {
     return 'ok';
 }
 
-/**
- * Tag ids currently assigned to one group - the group-side equivalent of getCharacterTagIds(). Exposed mainly
- * for tests/diagnostics; getEntityTagIdsForMany() is what the `/for` endpoint actually uses.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} groupId
- * @returns {Promise<string[]>}
- */
 export async function getGroupTagIds(directories, groupId) {
     const entry = await getEntry(directories);
     if (!entry) return [];
     return entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id', { id: groupId }).map(r => r.tag_id);
 }
 
-/**
- * Phase 3: `GET /api/tags/usage`'s backing read - the entire trigger-maintained `tag_usage` table as one object.
- * This is the aggregate the design doc says "subsumes three separate full scans" (§3.4) - a caller no longer
- * needs to walk every character/group to count how many carry a given tag.
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<Record<string, number> | null>} `null` if the metadata store is unavailable.
- */
 export async function getAllTagUsage(directories) {
     const entry = await getEntry(directories);
     if (!entry) return null;
@@ -3570,37 +2047,12 @@ const GROUP_UPSERT_SQL = `
         fav = excluded.fav,
         digest_fav = excluded.digest_fav,
         digest_content = excluded.digest_content
-    -- digest_tag_ids is deliberately absent here too, same reasoning characters' own UPSERT_SQL already has for
-    -- the exact same column: it's owned by assignEntityTag()/unassignEntityTag()'s own group branch, not by this
-    -- upsert, so a /create or /edit request (which never carries tag_ids in its body) can't clobber it back to
-    -- whatever this call's candidate happens to be.
-    -- date_added/date_last_chat/chat_size are deliberately absent from this SET list, for two different reasons:
-    --   - date_added is write-once, exactly mirroring characters' UPSERT_SQL (see this module's header on
-    --     "date_added IS RECORDED ONCE") - only a genuine first INSERT's VALUES candidate is ever used.
-    --   - date_last_chat/chat_size are owned by bumpGroupChatStats() (the /group/save write hook, below) and by
-    --     the backfill passes (bootstrapGroupsIfNeeded()/migrateGroupsColumns()), not by this function's own
-    --     callers (upsertGroupRow(), called from groups.js's /create and /edit) - an /edit request (renaming a
-    --     group, toggling fav) has no reason to know the group's current chat stats, and must not reset them to
-    --     whatever placeholder candidate it happens to be called with.
+    -- digest_tag_ids absent: owned by assignEntityTag()/unassignEntityTag()'s group branch, not this upsert.
+    -- date_added absent: write-once. date_last_chat/chat_size absent: owned by bumpGroupChatStats() and the
+    -- backfill passes, not by /create or /edit requests.
 `;
 
-/**
- * Shared sync core for every place that writes a full groups row (upsertGroupRow() below,
- * bootstrapGroupsIfNeeded()'s backfill loop) - computes name_fold from `name` and normalizes `fav` to 0/1, same
- * shape buildRow()/writeRowSync() play for characters, just without a change-log entry (see upsertGroupRow()'s
- * own doc comment on why groups don't get one).
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- * @param {object} row
- * @param {string} row.id
- * @param {string} row.name
- * @param {boolean|undefined} row.fav
- * @param {object|undefined} [row.group] The full group object, feeding digest_content only
- * (groupContentFingerprint(), hash-utils.js) - none of its fields besides `name`/`fav` are stored in their own
- * `groups` row column; they live in the group's own JSON file, same as they always have.
- * @param {number} row.dateAdded Only used if this is a genuine insert - see GROUP_UPSERT_SQL's own comment.
- * @param {number} row.dateLastChat Likewise.
- * @param {number} row.chatSize Likewise.
- */
+// row.group feeds digest_content only; its other fields live in the group's own JSON file, not a groups row column.
 function upsertGroupRowSync(db, { id, name, fav, group, dateAdded, dateLastChat, chatSize }) {
     db.run(GROUP_UPSERT_SQL, {
         id,
@@ -3611,52 +2063,16 @@ function upsertGroupRowSync(db, { id, name, fav, group, dateAdded, dateLastChat,
         dateLastChat,
         chatSize,
         digestFav: groupDigestFavHash({ fav: !!fav }),
-        // groupContentFingerprint() (hash-utils.js) strips id/fav/tag_ids itself - passing the whole `group`
-        // object through (not a hand-picked field subset) is what makes this cover every field a group object
-        // carries, current or future, without this call site needing to know their names. See that function's
-        // own doc comment for why a narrower, list-display-only fingerprint (the first version of this) was
-        // wrong for groups specifically.
         digestContent: groupDigestContentHash(group ?? {}),
     });
 }
 
-/**
- * Write-path hook for groups.js's /create and /edit routes - upserts a group's id/name/fav into the `groups`
- * table (see this module's header on why this table exists and what it now carries). Unlike
- * upsertCharacterFromWrite(), there's still no seq/change-log bookkeeping here - nothing reads change history for
- * groups (queryEntities() below reads `changes.MAX(seq)` for its own `seq` field, but that's the shared
- * high-water mark already advanced by character writes; a groups-only change produces no new `changes` row and
- * so does not advance it - acceptable since nothing depends on group mutations being visible through that
- * specific signal today).
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} id
- * @param {string} name
- * @param {object} [extra]
- * @param {boolean} [extra.fav]
- * @param {object} [extra.group] The full group object just written (2026-09, /query hash-mode for groups) - feeds
- * digest_content (groupContentFingerprint() strips id/fav/tag_ids itself, so the whole object is safe to pass
- * through unfiltered). groups.js's /create and /edit both already have this in hand (`groupMetadata`/
- * `request.body`), so it's threaded through rather than re-read from the just-written file.
- * @returns {Promise<void>}
- */
 export async function upsertGroupRow(directories, id, name, { fav, group } = {}) {
     const entry = await getEntry(directories);
     if (!entry) return;
-    // dateAdded/dateLastChat/dateLastChat/chatSize candidates only matter on a genuine first insert (see
-    // GROUP_UPSERT_SQL) - Date.now()/0/0 are the right "just discovered this id" defaults, matching how
-    // upsertCharacterFromWrite() treats any non-bootstrap discovery.
     upsertGroupRowSync(entry.db, { id, name, fav, group, dateAdded: Date.now(), dateLastChat: 0, chatSize: 0 });
 }
 
-/**
- * Write-path hook for chats.js's /save route - bumps date_last_chat on every individual-character
- * chat save, the same way bumpGroupChatStats() does for groups. Without this, date_last_chat is
- * only refreshed when the character card itself is re-saved (via calculateChatSize() inside
- * upsertCharacterFromWrite()), leaving the "recent" sort stale after every chat interaction.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} avatar Avatar filename (e.g. `Alice.png`)
- * @returns {Promise<void>}
- */
 export async function bumpCharacterDateLastChat(directories, avatar) {
     const entry = await getEntry(directories);
     if (!entry) return;
@@ -3665,37 +2081,7 @@ export async function bumpCharacterDateLastChat(directories, avatar) {
     entry.db.run('UPDATE characters SET date_last_chat = @now WHERE id = @id', { now, id: avatar });
 }
 
-/**
- * Write-path hook for chats.js's `/group/save` route, called with the just-saved chat's own id after the write
- * succeeds - keeps `date_last_chat`/`chat_size` fresh the same way character writes keep those columns fresh for
- * characters (upsertCharacterFromWrite()'s own calculateChatSize() call). Resolves the owning group via
- * resolveGroupOwner() (see that function's own doc comment for why a chat id, not a group id, is what this
- * hook has historically received), then stats only that group's own chat files (calculateGroupChatStats(),
- * character-shallow.js) - never the whole `groupChats` directory.
- *
- * Statting files stops being able to answer the question once a group's chats live in the tree: the files are
- * renamed away, every stat misses, and both columns collapse to 0 - which reads as "never chatted with", sorting
- * a group's whole history to the bottom of every recency list. So a caller that already knows the answer says
- * so via `stats`, and this uses it verbatim instead of re-deriving it from files that are not the source of
- * truth anymore. That is a fact the caller holds, not a question about storage: a save just happened, so
- * date_last_chat is now, and the chat's size is the size of the payload it was just handed. Nothing here asks
- * whether the group is migrated, and nothing branches on it.
- *
- * A plain UPDATE, not an upsert - by the time a chat is ever saved for a group, /create's upsertGroupRow() call
- * has necessarily already inserted the row (a group chat can't exist before its group does), so there is nothing
- * here that needs insert-or-update semantics, and no candidate name/fav to supply. If the row is somehow missing
- * (a pre-existing install's group whose bootstrapGroupsIfNeeded() pass hasn't completed yet), this silently
- * affects zero rows rather than erroring - the next bootstrap/edit pass will populate it correctly instead.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} chatId The id of the chat that was just saved (NOT the group's own id - see
- * resolveGroupOwner()'s doc comment).
- * @param {object} [options]
- * @param {string} [options.groupId] The owning group's id, when the caller already knows it - turns the
- * resolution into one direct descriptor read instead of a directory scan.
- * @param {{ chatSize: number, dateLastChat: number }} [options.stats] Values the caller already knows, used
- * verbatim in place of statting the group's chat files.
- * @returns {Promise<void>}
- */
+/** `stats`, when supplied, is used verbatim instead of statting the group's chat files, which get renamed away. */
 export async function bumpGroupChatStats(directories, chatId, { groupId, stats } = {}) {
     const entry = await getEntry(directories);
     if (!entry) return;
@@ -3707,14 +2093,7 @@ export async function bumpGroupChatStats(directories, chatId, { groupId, stats }
     entry.db.run('UPDATE groups SET date_last_chat = @dateLastChat, chat_size = @chatSize WHERE id = @id', { dateLastChat, chatSize, id: group.id });
 }
 
-/**
- * Write-path hook for groups.js's /delete route - removes the group's row and cascades to its tag assignments
- * (group_tags has no real foreign key, so this cascade is application code, same as deleteRowSync() does for
- * characters).
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} id
- * @returns {Promise<void>}
- */
+// group_tags has no real foreign key; cascade is application code, same as deleteRowSync() for characters.
 export async function deleteGroupRow(directories, id) {
     const entry = await getEntry(directories);
     if (!entry) return;
@@ -3724,27 +2103,7 @@ export async function deleteGroupRow(directories, id) {
     });
 }
 
-/**
- * One-time backfill of the `groups` table for a library that predates it - the group equivalent of
- * bootstrapIfNeeded(), needed for the same reason: groups.js's write-path hooks (upsertGroupRow()) only fire on
- * a *future* create/edit, so a group that already exists on disk needs an explicit one-time scan or
- * migrateTagsJsonIfNeeded() below could never resolve its tag_map entries as "a real group" and would silently
- * drop them. Gated by its own meta flag so it only ever runs once per user, same pattern as
- * bootstrap_completed.
- *
- * Computes the full row (fav/date_added/date_last_chat/chat_size/name_fold), not just id/name - date_added is
- * seeded from the group file's `birthtimeMs`, the same "best available approximation for cards that predate the
- * column" rule bootstrapIfNeeded() applies to characters; date_last_chat/chat_size come from
- * calculateGroupChatStats() (character-shallow.js), the same shared computation bumpGroupChatStats() and
- * getGroupsData() (groups.js) use, scoped to just this group's own `chats` ids.
- *
- * NOTE: this only covers a groups table that has never been bootstrapped at all. An install that already
- * completed this pass under the old 2-column shape (this meta flag already set) gets its backfill from
- * migrateGroupsColumns() instead - see that function's own doc comment for why the write-once date_added rule
- * makes a second pass through this function's normal upsert path unsuitable for that case.
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<void>}
- */
+// One-time backfill of `groups` for a library that predates the table; gated by its own meta flag.
 export async function bootstrapGroupsIfNeeded(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
@@ -3786,35 +2145,15 @@ export async function bootstrapGroupsIfNeeded(directories) {
     );
 }
 
-/**
- * Tag *definitions* (name/color/folder_type/... - see the `tags` table's own schema comment). Returns them in no
- * particular order - sorting is a client concern (compareTagsForSort(), tags.js), same as before this migration.
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<object[] | null>} `null` if the metadata store is unavailable.
- */
+// Returns tag definitions in no particular order - sorting is a client concern (compareTagsForSort(), tags.js).
 export async function getTagDefinitions(directories) {
     const entry = await getEntry(directories);
     if (!entry) return null;
     return entry.db.all('SELECT data FROM tags').map(r => JSON.parse(r.data));
 }
 
-/**
- * Bucketed digest over every tag definition, computed on demand and stored nowhere.
- *
- * There is deliberately no hash column, trigger or generated column here. Any of those is derived state
- * somebody has to keep correct, and the write site added next year is the one that forgets - at which point
- * the digest lies, which is worse than having none at all. A tag row is ~110 bytes, so hashing the whole
- * table costs about 130ms at 62k rows: cheap enough that the derived state can simply not exist. Characters
- * precompute theirs (digest_fav/digest_content/...) only because a character row carries shallow_json and
- * there are an order of magnitude more of them.
- *
- * Built from the same bucketOf()/contentHashOf()/combineDigest() the character digest uses, out of the module
- * both the client and the server import. "Both sides hash identically" is therefore a property of there being
- * one implementation, not of two of them being kept in step by hand.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {number} [bucketCount]
- * @returns {Promise<{ bucketCount: number, buckets: {hi: number, lo: number}[] } | null>}
- */
+// Bucketed digest over every tag definition, computed on demand and stored nowhere - a tag row is small
+// enough (~110 bytes, ~130ms at 62k rows) that there's no need for derived state that could drift.
 export async function getTagsDigest(directories, bucketCount = DEFAULT_DIGEST_BUCKET_COUNT) {
     const entry = await getEntry(directories);
     if (!entry) return null;
@@ -3829,15 +2168,8 @@ export async function getTagsDigest(directories, bucketCount = DEFAULT_DIGEST_BU
     return { bucketCount, buckets };
 }
 
-/**
- * The repair half: every {id, hash} in one bucket. A client whose bucket digest disagrees asks for that
- * bucket alone and diffs locally to see which ids changed, appeared, or are gone - deletions need no
- * tombstone, because a tag that is no longer here is simply absent from its bucket's membership.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {number} bucket
- * @param {number} [bucketCount]
- * @returns {Promise<{ bucket: number, bucketCount: number, members: {id: string, hash: number}[] } | null>}
- */
+// Every {id, hash} in one bucket, for a client to diff locally against a stale digest. Deletions need no
+// tombstone: a tag no longer present is simply absent from its bucket's membership.
 export async function getTagsBucketMembers(directories, bucket, bucketCount = DEFAULT_DIGEST_BUCKET_COUNT) {
     const entry = await getEntry(directories);
     if (!entry) return null;
@@ -3852,13 +2184,6 @@ export async function getTagsBucketMembers(directories, bucket, bucketCount = DE
     return { bucket, bucketCount, members };
 }
 
-/**
- * The definitions for a named set of ids - what a client fetches once the bucket diff above has told it
- * exactly which ones it is missing or holding a stale copy of.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string[]} ids
- * @returns {Promise<object[] | null>}
- */
 export async function getTagDefinitionsByIds(directories, ids) {
     const entry = await getEntry(directories);
     if (!entry) return null;
@@ -3878,13 +2203,7 @@ export async function getTagDefinitionsByIds(directories, ids) {
     return out;
 }
 
-/**
- * Every tag id currently assigned to at least one entity - read straight off the trigger-maintained `tag_usage`
- * table (see its schema comment) rather than scanning `character_tags`/`group_tags`, since `tag_usage` already
- * tracks a live count per tag id as assignments come and go.
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<string[] | null>} `null` if the metadata store is unavailable.
- */
+// Every tag id currently assigned to at least one entity, read off the trigger-maintained `tag_usage` table.
 export async function getAssignedTagIds(directories) {
     const entry = await getEntry(directories);
     if (!entry) return null;
@@ -3893,14 +2212,9 @@ export async function getAssignedTagIds(directories) {
 }
 
 /**
- * `POST /api/tags/for-all`'s backing query - every entity-to-tag assignment across both `character_tags` and
- * `group_tags`, in one full-table-scan read rather than a per-entity lookup (unlike getEntityTagIdsForMany(),
- * which is keyed to a caller-supplied id list). Returned compactly: `avatars`/`tagIds` intern each unique
- * avatar-or-group-id and tag-id string to an integer index, and `map[i]` lists the tag-id indices assigned to
- * `avatars[i]` - so a client with N assignments gets N small integers back instead of N repeated id strings.
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<{avatars: string[], tagIds: string[], map: number[][]} | null>} `null` if the metadata store
- * is unavailable.
+ * Every entity-to-tag assignment across both tables. Returned compactly: `avatars`/`tagIds` intern each unique
+ * id/tag string to an integer index, and `map[i]` lists the tag-id indices assigned to `avatars[i]`.
+ * @returns {Promise<{avatars: string[], tagIds: string[], map: number[][]} | null>}
  */
 export async function getAllEntityTagAssignments(directories) {
     const entry = await getEntry(directories);
@@ -3951,21 +2265,9 @@ export async function getAllEntityTagAssignments(directories) {
 }
 
 /**
- * Replaces the entire `tags` table's contents with `tagsArray` - a full replace, not a diff, mirroring exactly
- * what the old `POST /api/tags/save` did to tags.json's `tags` array (a whole-array rewrite), just against a
- * table that costs nothing to rewrite wholesale instead of a multi-megabyte file. Bumps `tags_hash` (see
- * updateTagsHashSync()) so search-index freshness and the client's tags-cache.js both see the change.
- *
- * Also appends one `tag_name_changes` row per tag id whose `name` is different from what it was before this
- * call - the one definition field that reaches an indexed character's `resolved_tags` text (see
- * characters-search-index.js's makeTagNamesResolver()), so that log is exactly the set of tag ids a search-index
- * catch-up needs to reindex the assignees of. This full-table replace already reads and rewrites every row
- * regardless, so diffing old-vs-new name here doesn't change this function's own cost - it's what lets the much
- * more frequent search-index catch-up read a handful of log rows instead of a full tag-table (or tagged-library)
- * scan every time.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {object[]} tagsArray
- * @returns {Promise<'ok' | null>} `null` if the metadata store is unavailable.
+ * Replaces the entire `tags` table's contents with `tagsArray` (full replace, not a diff). Appends one
+ * `tag_name_changes` row per tag id whose `name` changed, so search-index catch-up can reindex just those
+ * assignees instead of scanning the whole table.
  */
 export async function saveTagDefinitions(directories, tagsArray) {
     const entry = await getEntry(directories);
@@ -3988,30 +2290,15 @@ export async function saveTagDefinitions(directories, tagsArray) {
         }
         updateTagsHashSync(entry.db);
     });
-    // A whole-table replace, not an incremental change insertTag() can patch getTagCache()'s Maps for in place -
-    // invalidate so the next seedCardTagsForSingleCharacter() call rebuilds fresh from what's actually in the
-    // table now, rather than keeping stale name->id/id->definition entries for tags this just deleted.
+    // Invalidate: a whole-table replace can't be patched into getTagCache()'s Maps incrementally.
     entry.tagCache = null;
     return 'ok';
 }
 
-/**
- * One-time migration off tags.json (owner decision: tags.json is removed entirely, not just drained of
- * character assignments - see this module's header). Seeds the `tags` table from tags.json's `tags` array
- * (saveTagDefinitions()) and `character_tags`/`group_tags` from its `tag_map`, classifying each tag_map key
- * against the now-populated `characters`/`groups` tables (this is why this function must run AFTER
- * bootstrapIfNeeded() AND bootstrapGroupsIfNeeded() - see initializeMetadataStores()'s ordering) - a key that
- * matches neither is dropped with a warning rather than guessed at, matching this module's existing "no
- * dangling rows" stance (resyncTags() applies the identical rule for characters today).
- *
- * On success, tags.json is renamed to `tags.json.migrated` rather than deleted - the migration only needs to
- * stop being *read*, and renaming keeps the original bytes recoverable if anything about this pass turns out to
- * be wrong, at zero ongoing cost (nothing ever looks at `.migrated` files). Gated by its own meta flag so it
- * only ever runs once per user; a JSON parse failure does NOT set that flag, so a corrupt tags.json gets retried
- * next boot rather than silently treated as "migrated, nothing to do".
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<void>}
- */
+// One-time migration off tags.json (removed entirely, not just drained). Must run after bootstrapIfNeeded()
+// AND bootstrapGroupsIfNeeded() since it classifies tag_map keys against those tables; an unmatched key is
+// dropped with a warning. On success tags.json is renamed to `tags.json.migrated`, not deleted. Gated by a meta
+// flag; a parse failure does not set it, so a corrupt tags.json is retried next boot.
 export async function migrateTagsJsonIfNeeded(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
@@ -4058,17 +2345,8 @@ export async function migrateTagsJsonIfNeeded(directories) {
     }
 }
 
-/**
- * Shared classify-and-insert core for importing a `{[id]: tagId[]}` map into `character_tags`/`group_tags` -
- * used by both migrateTagsJsonIfNeeded() (the one-time tags.json migration) and restoreTagMap() (a settings
- * snapshot restore, see this module's header). Runs inside its own transaction; bumps tags_hash once at the end
- * rather than per-key. Each key is classified against the CURRENT contents of `characters`/`groups` - a key
- * matching neither is dropped (reported via the returned list) rather than guessed at, the same "no dangling
- * rows" stance resyncTags() already took for characters.
- * @param {MetadataDbEntry} entry
- * @param {Record<string, string[]>} tagMap
- * @returns {string[]} Keys that were dropped because they matched neither a known character nor a known group
- */
+// Imports a `{[id]: tagId[]}` map into character_tags/group_tags, classifying each key against the current
+// characters/groups tables. Returns keys that matched neither.
 function importTagMapSync(entry, tagMap) {
     const knownCharacterIds = new Set(entry.db.all('SELECT id FROM characters').map(r => r.id));
     const knownGroupIds = new Set(entry.db.all('SELECT id FROM groups').map(r => r.id));
@@ -4101,22 +2379,10 @@ function importTagMapSync(entry, tagMap) {
 const CARD_TAGS_EXCLUDED = new Set(['ROOT', 'TAVERN']);
 const CARD_TAGS_MAX_PER_CARD = 50;
 
+// Resolves a card's data.tags array to tag ids, minting new tag definitions as needed (case-insensitive).
+// `tagNameToId` is mutated in place so a name introduced earlier in a batch is reused, not re-created.
 /**
- * Classifies one character's card-embedded `data.tags` array against the tag-definition namespace, resolving
- * each name to an existing tag id (case-insensitively) or minting a new one - the shared decision core behind
- * `seedCardTagsForCharacter()` below, split out so `onlyExisting` (ALL vs ONLY_EXISTING tag-import mode) has one
- * place to change the rule, not two copies of the filter/dedup/cap logic to keep in sync.
- *
- * `tagNameToId` is a case-insensitive `name.toLowerCase() -> id` map the caller owns across an entire pass (or a
- * single call) - this function looks up AND populates it, so a tag name introduced by one card in a batch is
- * immediately reused (not re-created) by the next card in the same batch that carries the same name.
- * @param {string[]} cardTags Raw `data.tags` array as embedded in the card.
- * @param {Map<string, string>} tagNameToId Case-insensitive name -> tag id map, looked up and mutated in place.
- * @param {(params: { id: string, data: string }) => void} insertTag `INSERT OR IGNORE INTO tags` runner - never
- * called when `onlyExisting` is true, since that mode must not mint new tag definitions.
- * @param {{ onlyExisting?: boolean }} [options]
- * @returns {string[]} Resolved tag ids this card should end up assigned to (order-preserving, not deduped against
- * what the character already has - callers `INSERT OR IGNORE` so a re-assignment of an existing one is harmless).
+ * @param {(params: { id: string, data: string }) => void} insertTag Never called when `onlyExisting` is true.
  */
 function resolveCardTagIds(cardTags, tagNameToId, insertTag, { onlyExisting = false } = {}) {
     const filtered = cardTags
@@ -4140,30 +2406,9 @@ function resolveCardTagIds(cardTags, tagNameToId, insertTag, { onlyExisting = fa
     return tagIds;
 }
 
-/**
- * Shared classify-and-insert core for seeding `character_tags` from one character's card-embedded `data.tags`
- * array - used by both backfillCardTagsIfNeeded() (the one-time backfill below) and
- * seedCardTagsForSingleCharacter() (the forward-looking per-import path), so a card's embedded tags are always
- * turned into real tag definitions + assignments the same way regardless of when that card is seen.
- *
- * Deliberately does NOT touch `shallow_json.tag_ids`/`digest_tag_ids` itself - unlike `assignEntityTag()`, which
- * owns exactly one row and can afford to patch it inline, this can be called across a whole backfill pass where
- * the caller controls batching/transaction boundaries and (for the batch-import forward path) whether the row is
- * still a buffered pending write rather than a committed one - see `seedCardTagsForSingleCharacter()`'s own doc
- * comment for why that split matters. Every caller of this function is responsible for reconciling
- * `shallow_json.tag_ids` itself once it knows the row's real final tag id set (found live, 2026-09: this gap -
- * `character_tags` correct, `shallow_json.tag_ids` stale - was the actual cause of tags showing correctly
- * nowhere except the raw tag-assignment table, on 145 characters on this install whose card tags were seeded via
- * this function before it grew this doc comment).
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- * @param {string} avatar Character id (the `characters.id` / `character_tags.character_id` value).
- * @param {string[]} cardTags Raw `data.tags` array as embedded in the card.
- * @param {Map<string, string>} tagNameToId Case-insensitive name -> tag id map, looked up and mutated in place.
- * @param {(params: { id: string, data: string }) => void} insertTag `INSERT OR IGNORE INTO tags` runner.
- * @param {(params: { characterId: string, tagId: string }) => void} insertAssignment `INSERT OR IGNORE INTO character_tags` runner.
- * @param {{ onlyExisting?: boolean }} [options]
- * @returns {string[]} The tag ids this call resolved and assigned (see resolveCardTagIds()'s own return doc).
- */
+// Seeds character_tags from one character's card-embedded data.tags. Deliberately does not touch
+// shallow_json.tag_ids/digest_tag_ids - callers are responsible for reconciling those once they know the
+// row's final tag id set (see syncShallowTagIdsFromTable()).
 function seedCardTagsForCharacter(db, avatar, cardTags, tagNameToId, insertTag, insertAssignment, options) {
     const tagIds = resolveCardTagIds(cardTags, tagNameToId, insertTag, options);
     for (const tagId of tagIds) {
@@ -4172,17 +2417,9 @@ function seedCardTagsForCharacter(db, avatar, cardTags, tagNameToId, insertTag, 
     return tagIds;
 }
 
+// Patches one character row's shallow_json.tag_ids/digest_tag_ids to match character_tags. Re-reads
+// character_tags rather than trusting a caller's resolved list, so other pre-existing assignments survive.
 /**
- * Patches one already-committed character row's `shallow_json.tag_ids`/`digest_tag_ids` (plus a change-log entry
- * and `change_seq` bump) to match whatever `character_tags` currently holds for it - the same write
- * `assignEntityTag()`'s own characters-table branch does after a single-tag insert, generalized so a caller that
- * just seeded a whole batch of tags at once (seedCardTagsForCharacter()) only pays for one shallow_json rewrite
- * per character, not one per tag. Re-reads `character_tags` rather than trusting the caller's own resolved list,
- * so it's correct even when the character already carried other tag assignments the card-tags pass never touched.
- * No-op (returns false) if the row doesn't exist - never expected in practice since every caller only reaches
- * this after its own insert into `character_tags` already succeeded against that same id.
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- * @param {string} avatar
  * @returns {boolean} Whether the row was found and patched.
  */
 function syncShallowTagIdsFromTable(db, avatar) {
@@ -4199,22 +2436,10 @@ function syncShallowTagIdsFromTable(db, avatar) {
     return true;
 }
 
+// Repairs rows where shallow_json.tag_ids is stale but character_tags is correct (can happen when
+// seedCardTagsForCharacter() seeds tags without a matching syncShallowTagIdsFromTable() call). Safe to call
+// more than once; only touches rows a full-table comparison finds mismatched.
 /**
- * One-time repair for the specific `shallow_json.tag_ids`-stale-but-`character_tags`-correct gap
- * `seedCardTagsForCharacter()` used to leave behind before it grew its `syncShallowTagIdsFromTable()` call (see
- * that function's own doc comment) - `backfillCardTagsIfNeeded()`'s historical pass and `seedCardTagsForSingleCharacter()`'s
- * forward-import path both wrote real `character_tags` rows this way without ever patching the matching
- * `shallow_json.tag_ids`, and `backfillTagIdsInShallowJson()`'s own one-time pass only ever targets rows missing
- * a `tag_ids` key outright - a row that already had *some* `tag_ids` value (even `[]`) before either of those
- * card-tags writes landed was silently skipped by it, and (being flag-gated, one-time-ever) never gets a second
- * chance. Confirmed live (2026-09) against this install's full 328,883-row library: 145 characters in exactly
- * that state - `character_tags` fully correct, `shallow_json.tag_ids` stale - which is what `/query` and every
- * list-view render actually reads, so those 145 characters showed no tags in the list despite being tagged.
- *
- * Safe to call more than once (every write here is idempotent - a row already in sync is simply left alone,
- * `syncShallowTagIdsFromTable()` re-derives from `character_tags` rather than applying a delta), and touches only
- * rows a full-table comparison actually finds mismatched - never a blind re-sync of the whole library.
- * @param {import('./users.js').UserDirectoryList} directories
  * @param {{ dryRun?: boolean }} [options] `dryRun: true` reports what would be touched without writing anything.
  * @returns {Promise<{ scanned: number, mismatched: string[] }>} `mismatched` are the affected character ids
  * (found regardless of `dryRun`; only actually repaired when `dryRun` is false).
@@ -4254,13 +2479,8 @@ export async function repairStaleShallowTagIds(directories, { dryRun = false } =
     return { scanned: rows.length, mismatched };
 }
 
-/**
- * Extracts a card's embedded tags array from one `characters.shallow_json` row, accepting either shape a card
- * may carry it in: the normal `{ data: { tags: [...] } }` (a parsed character card) or a bare top-level
- * `{ tags: [...] }`. Returns `[]` (never null/undefined) so callers can iterate unconditionally.
- * @param {string} shallowJson
- * @returns {string[]}
- */
+// Accepts either shape a card may carry tags in: { data: { tags: [...] } } or a bare { tags: [...] }.
+// Returns [] (never null/undefined) so callers can iterate unconditionally.
 function extractCardTags(shallowJson) {
     let parsed;
     try {
@@ -4278,22 +2498,8 @@ function extractCardTags(shallowJson) {
     return [];
 }
 
-/**
- * One-time backfill for characters imported before the local-import path extracted a card's embedded `data.tags`
- * into `character_tags` (that extraction gap is why, on the owner's real library, 96% of characters carry
- * embedded tags but only 5% have any `character_tags` row). Walks every row in `characters`, pulls each card's
- * embedded tags out of its already-parsed `shallow_json` (no PNG re-read needed - unlike bootstrapIfNeeded(),
- * this never touches disk), and seeds tag definitions + assignments via seedCardTagsForCharacter() - the same
- * core forward-imports now use via seedCardTagsForSingleCharacter(), so a backfilled row and a freshly-imported
- * row end up with identical tag rows.
- *
- * Gated by its own `card_tags_backfill_completed` meta flag (same one-time-ever shape as
- * migrateTagsJsonIfNeeded()'s `tags_json_migrated` flag) so it only ever runs once per user. INSERT OR IGNORE on
- * both `tags` and `character_tags` makes every write idempotent, so an interrupted-and-retried pass (this flag
- * not being set yet) can never double-insert.
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<void>}
- */
+// One-time backfill of character_tags from each card's already-parsed shallow_json.data.tags (no disk read
+// needed). Gated by its own meta flag; INSERT OR IGNORE makes an interrupted-and-retried pass safe.
 export async function backfillCardTagsIfNeeded(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
@@ -4321,9 +2527,7 @@ export async function backfillCardTagsIfNeeded(directories) {
     const insertTag = (params) => entry.db.run('INSERT OR IGNORE INTO tags (id, data) VALUES (@id, @data)', params);
     const insertAssignment = (params) => entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@characterId, @tagId)', params);
 
-    // Both counts logged at the end are computed as before/after deltas over the whole pass (tag definitions via
-    // tagNameToId.size, assignments via a COUNT(*) over character_tags) rather than accumulated per-row, since
-    // INSERT OR IGNORE gives no cheap per-call signal of whether a given insert actually added a row.
+    // Computed as before/after deltas since INSERT OR IGNORE gives no per-call signal of whether a row was added.
     const tagDefinitionsBefore = tagNameToId.size;
     const assignmentsBefore = entry.db.get('SELECT COUNT(*) AS n FROM character_tags')?.n ?? 0;
 
@@ -4339,13 +2543,8 @@ export async function backfillCardTagsIfNeeded(directories) {
                 const cardTags = extractCardTags(row.shallow_json);
                 if (cardTags.length === 0) continue;
                 const tagIds = seedCardTagsForCharacter(entry.db, row.id, cardTags, tagNameToId, insertTag, insertAssignment);
-                // Keep shallow_json.tag_ids (what /query and every list-view render actually read - see
-                // syncShallowTagIdsFromTable()'s own doc comment) in sync with character_tags right here, in the
-                // same transaction as the insert above - not left for backfillTagIdsInShallowJson()'s separate
-                // one-time pass, which only ever targets rows *missing* a tag_ids key outright and would silently
-                // skip a row that already had one (even an empty `[]`) before this pass added real assignments to
-                // it. That mismatch - character_tags correct, shallow_json stale - was confirmed live as the
-                // actual cause of 145 characters showing no tags in the list view despite being tagged.
+                // Sync shallow_json.tag_ids here rather than relying on backfillTagIdsInShallowJson()'s separate
+                // pass, which only targets rows missing a tag_ids key and would skip a row that already had one.
                 if (tagIds.length > 0) {
                     syncShallowTagIdsFromTable(entry.db, row.id);
                 }
@@ -4373,22 +2572,9 @@ export async function backfillCardTagsIfNeeded(directories) {
     console.log(color.cyan(`[character-metadata] Card-tags backfill complete: ${newTagDefinitions} new tag definitions, ${newAssignments} new assignments.`));
 }
 
+// Builds entry's tag cache from a full table scan once, then reuses/mutates the same Maps for the process's life
+// (previously re-scanned+re-parsed the whole tags table per character, causing OOM on large libraries).
 /**
- * Returns `entry`'s live tag-name/tag-definition lookup, building it from a single full `tags` table scan on
- * first use and reusing the SAME two Maps for the rest of this process's life (mutated in place by every
- * subsequent insertTag() call, exactly like the pass-scoped `tagNameToId` other callers in this file already
- * build once and thread through a whole bulk loop - see resolveCardTagIds()'s own doc comment on that
- * convention) - rather than seedCardTagsForSingleCharacter() re-running that full scan+JSON.parse on EVERY
- * SINGLE call, which is what it used to do.
- *
- * THIS WAS A REAL, MEASURED PROBLEM, not a theoretical one: seedCardTagsForSingleCharacter() runs once per
- * imported character (local-import-scan.js's processFile(), for every png/json import unless tag import is
- * off), and used to re-query+re-parse the ENTIRE `tags` table (65k+ rows on the owner's real library) from
- * scratch every single time - O(characters × tags) row-parses over a full corpus run, and a heap snapshot taken
- * near an actual OOM crash showed exactly this shape: hundreds of thousands of separate, freshly-allocated
- * string objects all holding the same handful of hot tag ids/names (the most commonly-assigned tags, e.g. one
- * tagged on a large fraction of a scraped library, re-parsed fresh on every single one of those characters'
- * imports instead of being read once and reused).
  * @param {MetadataDbEntry} entry
  * @returns {{ tagNameToId: Map<string, string>, tagIdToDefinition: Map<string, object> }}
  */
@@ -4414,31 +2600,13 @@ function getTagCache(entry) {
     return entry.tagCache;
 }
 
+// Must check entry.batch.pending: a character imported inside a multi-file drop can still be buffered there
+// rather than committed to the characters table when this runs.
 /**
- * Forward-looking counterpart to backfillCardTagsIfNeeded() - called from the interactive `/api/characters/import`
- * route (ALL/ONLY_EXISTING tag-import modes - ASK stays client-driven, it genuinely needs the interactive popup)
- * and from the local-import-scan headless path, so a card's embedded `data.tags` get turned into real
- * `character_tags` rows (and a correctly-synced `shallow_json.tag_ids`) atomically at import time, the same way
- * the backfill retroactively does for the existing library.
- *
- * Batch-import-mode aware, unlike the plain SQL reads/writes this used before: a character imported inside a
- * multi-file drop can still be sitting in `entry.batch.pending` rather than committed to the `characters` table
- * (buffered until `BATCH_FLUSH_SIZE` rows accumulate or batch mode ends) at the exact moment its own import
- * response comes back and this runs - same race `assignEntityTag()`'s own pending-buffer check exists for (see
- * that function's doc comment), just reached from the import path instead of a client-fired `/api/tags/assign`.
- * Before this check, a card's embedded tags would silently vanish for every character imported while batch mode
- * was active, exactly the failure class the two earlier tag-loading fixes tonight were chasing.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} avatar
- * @param {{ onlyExisting?: boolean }} [options] `onlyExisting: true` (ONLY_EXISTING mode) resolves only tag names
- * that already match an existing tag definition, never minting a new one; default (ALL mode) mints as needed.
- * @returns {Promise<{ tagIds: string[], tagDefinitions: object[] }>} `tagIds` actually resolved/assigned (empty
- * if the card had no tags, or none matched under `onlyExisting`). `tagDefinitions` is the full tag-definition
- * object for every one of those ids (not just newly-minted ones) - a caller building an atomic import response
- * needs these too, not just the ids: a client that has never seen a server-minted-this-request tag definition
- * before has nothing to resolve that id to (`tagIdsToTagList()`, tags.js, silently drops an id it can't find a
- * definition for), so shipping ids alone here would leave a real, correctly-assigned tag invisible in the same
- * session's own UI until an unrelated future tag-definitions refetch happened to pull it in.
+ * @param {{ onlyExisting?: boolean }} [options] onlyExisting resolves only tags matching an existing definition,
+ * never minting a new one.
+ * @returns {Promise<{ tagIds: string[], tagDefinitions: object[] }>} tagDefinitions is returned alongside tagIds
+ * because the client can't resolve an id to a tag it has never seen a definition for.
  */
 export async function seedCardTagsForSingleCharacter(directories, avatar, { onlyExisting = false } = {}) {
     const entry = await getEntry(directories);
@@ -4451,12 +2619,6 @@ export async function seedCardTagsForSingleCharacter(directories, avatar, { only
     const cardTags = extractCardTags(shallowJson);
     if (cardTags.length === 0) return { tagIds: [], tagDefinitions: [] };
 
-    // getTagCache() builds this from a single full `tags` table scan the FIRST time this process ever needs it,
-    // then returns the SAME two Maps on every later call - see its own doc comment for why this replaced a
-    // fresh full-table re-scan+re-parse on every single character (a real, measured problem, not a
-    // precaution). insertTag() below mutates these Maps in place, exactly the "pass-scoped cache" shape every
-    // OTHER tag-seeding caller in this file already uses - here the "pass" is just this entire process's
-    // lifetime rather than one bulk-import loop.
     const { tagNameToId, tagIdToDefinition } = getTagCache(entry);
 
     // Tag *definitions* always go straight to the `tags` table, batch mode or not - only `characters`/
@@ -4471,18 +2633,13 @@ export async function seedCardTagsForSingleCharacter(directories, avatar, { only
 
     const tagDefinitions = tagIds.map(id => tagIdToDefinition.get(id)).filter(Boolean);
 
-    // Only when this call actually minted a new tag definition (ALL mode, a name with no existing match) -
-    // ONLY_EXISTING and a pure re-assignment of already-known tags never change what tags_hash covers, so
-    // there's nothing for this O(all tag definitions) rehash to actually refresh in that case.
+    // Only rehash when a new tag definition was actually minted; a pure re-assignment doesn't change tags_hash.
     if (tagNameToId.size > tagDefinitionsBefore) {
         updateTagsHashSync(entry.db);
     }
 
     if (pending) {
-        // Mirrors assignEntityTag()'s own pending branch: patch the buffered row in place (both `pending.tagIds`,
-        // what writeRowSync() inserts into character_tags at flush, and the embedded shallow_json/digest_tag_ids
-        // - see patchPendingRowTagIds()'s own doc comment) rather than inserting into character_tags directly,
-        // since the character row itself doesn't exist in `characters` yet for a not-yet-flushed pending write.
+        // Row doesn't exist in `characters` yet for a not-yet-flushed pending write, so patch the buffer instead.
         for (const tagId of tagIds) {
             if (!pending.tagIds.includes(tagId)) pending.tagIds.push(tagId);
         }
@@ -4500,36 +2657,18 @@ export async function seedCardTagsForSingleCharacter(directories, avatar, { only
     return { tagIds, tagDefinitions };
 }
 
+// Full {[id]: tagId[]} export of every character's/group's tag assignments. Not called anywhere in the live
+// app currently; kept as a general export primitive symmetric with restoreTagMap() below.
 /**
- * The full `{[id]: tagId[]}` export of every character's and group's tag assignments, reconstructed from
- * `character_tags`/`group_tags`.
- *
- * Not called anywhere in the live application right now - it used to be, from the settings-snapshot backup path
- * (settings.js's backupUserSettings(), via a now-deleted mergeTagsIntoSnapshot() in tags.js), to re-embed a full
- * tag_map into every settings backup the way tags.json-era backups used to carry it verbatim. That call site is
- * gone: character_tags/group_tags in the metadata store already ARE the durable record of tag assignments, so
- * re-deriving a whole JS-side copy of that projection on every boot and every autosave (a full scan of
- * potentially millions of character_tags rows) was pure duplicated work with no reader that actually needed a
- * second copy - see backupUserSettings()'s own doc comment. Kept as a general export primitive (symmetric with
- * restoreTagMap() below, exercised by its own round-trip test) for whatever future need for a full tag-
- * assignment export/import actually shows up, rather than deleted outright.
- * @param {import('./users.js').UserDirectoryList} directories
  * @returns {Promise<Record<string, string[]> | null>} `null` if the metadata store is unavailable.
  */
 export async function getFullTagMapExport(directories) {
     const entry = await getEntry(directories);
     if (!entry) return null;
 
-    // GROUP_CONCAT'd in SQL (one row per id) rather than one row per (id, tag_id) pair pushed onto a JS array
-    // one at a time - on a 327k-character library with ~3.77M character_tags rows, the old row-per-assignment
-    // shape meant ~3.77M individual JS property-array-push operations on a synchronous, event-loop-blocking
-    // better-sqlite3 call. Measured in isolation (EXPLAIN QUERY PLAN confirms this already scans the
-    // character_tags primary-key covering index, no missing index, no extra sort): ~690ms for the SQL query +
-    // group_concat string building, ~294ms for the JS split-and-assign step - call this rarely (see doc comment
-    // above) rather than needing it to be instant. \x1f (ASCII unit separator) rather than the default comma -
-    // tag_id is normally a crypto.randomUUID() (see the id-minting site above) so a comma collision is unlikely
-    // in practice, but there's no schema constraint actually forbidding one, and \x1f costs nothing extra to use
-    // defensively.
+    // GROUP_CONCAT'd in SQL rather than pushed onto a JS array per (id, tag_id) pair - avoids millions of
+    // individual array pushes on a large library. \x1f (unit separator) instead of comma to avoid any collision
+    // with a tag_id, even though tag ids are UUIDs in practice.
     const SEP = '\x1f';
     /** @type {Record<string, string[]>} */
     const result = {};
@@ -4542,18 +2681,9 @@ export async function getFullTagMapExport(directories) {
     return result;
 }
 
+// Inverse of getFullTagMapExport(); additive (OR IGNORE), not a replace-everything. Not called anywhere in
+// the live app currently; kept as a general import primitive.
 /**
- * The inverse of getFullTagMapExport() - imports a `{[id]: tagId[]}` map into `character_tags`/`group_tags`.
- * Additive (uses the same OR IGNORE insert importTagMapSync() always has), not a replace-everything.
- *
- * Not called anywhere in the live application right now - it used to be, from settings.js's /restore-snapshot
- * (via a now-deleted splitTagsFromSnapshot() in tags.js), to import tags/tag_map back out of a restored
- * settings snapshot. That call site is gone along with the write side that used to embed them (see
- * getFullTagMapExport()'s own doc comment) - the settings path doesn't know about tags in either direction any
- * more. Kept as a general import primitive (symmetric with getFullTagMapExport(), exercised by its own
- * round-trip test) for whatever future need for a full tag-assignment export/import actually shows up.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {Record<string, string[]>} tagMap
  * @returns {Promise<string[] | null>} Dropped keys (matched neither a known character nor group), or `null` if
  * the metadata store is unavailable.
  */
@@ -4563,63 +2693,21 @@ export async function restoreTagMap(directories, tagMap) {
     return importTagMapSync(entry, tagMap && typeof tagMap === 'object' ? tagMap : {});
 }
 
-/**
- * Phase 2 (design doc §5): the columns queryCharacters() below is allowed to sort by via a plain `ORDER BY
- * <column>`, mapped to the actual SQLite column each one sorts on. Deliberately NOT including 'random' or
- * 'search' - both are real values in the doc's `sort.field` union, but neither is a plain column sort:
- *   - 'random' (design doc §5.3, decisions 8/13) sorts by `RANDHASH(id, seed)` (a registered SQL function - see
- *     getEntry() above), not a table column, so it's handled as its own branch in queryCharacters() below rather
- *     than living in this lookup table.
- *   - 'search' means "preserve the relevance order the caller's own full-text search already computed"
- *     (characters-search-index.js's tantivy/FTS5 tier) - there is no SQL column for text relevance, so
- *     queryCharacters() takes that order as a caller-supplied `idOrder` array (see its `sortField === 'search'`
- *     branch) instead of computing anything here.
- */
+// Columns queryCharacters() may sort by via a plain `ORDER BY <column>`. Deliberately excludes 'random'
+// (sorts by RANDHASH(id, seed), not a column) and 'search' (relevance order supplied by the caller as idOrder).
 const QUERYABLE_SORT_COLUMNS = {
     name: 'name_fold',
     date_added: 'date_added',
     date_last_chat: 'date_last_chat',
     chat_size: 'chat_size',
     fav: 'fav',
-    // `create_date` is a real, indexed column (the card's own self-reported creation date, parsed to epoch ms -
-    // see buildRow()/SCHEMA_SQL/parseCreateDateToEpochMs()) that was simply left off this lookup table and
-    // characters.js's QUERY_SORT_FIELDS allowlist - not a naming mismatch (processCharacter() already exposes
-    // this exact field name as `character.create_date`, and the client already sends `sort.field: "create_date"`
-    // expecting it to work), just a genuine gap. Sorts numerically as ordinary epoch ms, same as every other
-    // timestamp column here (date_added, date_last_chat) - it was TEXT-collated until the 2026-08
-    // migrateCreateDateColumn() fix (see that function's own doc comment and this column's SCHEMA_SQL comment),
-    // which is also what let queryEntities() below drop its strftime() workaround for interleaving groups.
+    // Sorts numerically as epoch ms - TEXT-collated until migrateCreateDateColumn() fixed the column type.
     create_date: 'create_date',
-    // Same gap, same shape: `data_size` ("Most/Least tokens" in the client's sort dropdown) is a real, stored
-    // column (see buildRow()/SCHEMA_SQL - `calculateDataSize()`'s byte count of the card's own `data` object,
-    // characters.js) that was simply never wired into this table or characters.js's QUERY_SORT_FIELDS allowlist.
-    // character-repository.js used to keep its own client-side mirror of "which fields the server supports"
-    // (QUERYABLE_CLIENT_SORT_FIELDS), which had documented this as "no server column at all" and twice drifted
-    // out of sync with reality (this gap, and the matching `data_size` one below). That mirror is gone now (see
-    // `isServerQueryableSort()`'s doc comment, character-repository.js) - the client attempts `/query`
-    // unconditionally and treats this table (via the route's own `400 invalid-sort-field` response) as the sole
-    // source of truth for which `sort.field` values actually work, so a future gap like this one can no longer
-    // cause silent client-side drift, only a real (if temporary) rejection until this table is updated.
     data_size: 'data_size',
 };
 
-/**
- * Builds a `WHERE ...` clause (or '' if no filter applies) plus its positional-`?` bind values, from the same
- * filter shape the design doc's §5 query contract defines (minus `search`, handled by the caller - see this
- * module's header comment on QUERYABLE_SORT_COLUMNS for why full-text search doesn't route through this table).
- *
- * `ids: []` (an explicit, present-but-empty array) is handled specially by the caller (queryCharacters()) rather
- * than here: "resolve exactly these ids" over zero ids is trivially "match nothing", which is a different
- * question from "no id filter was requested at all" (an absent `ids` key). This function only ever sees a
- * non-empty `ids` array, or none.
- * @param {object} filter
- * @param {{ include?: string[], exclude?: string[], mode?: 'and'|'or' }} [filter.tags]
- * @param {boolean} [filter.fav]
- * @param {string} [filter.world]
- * @param {string[]} [filter.excludeIds]
- * @param {string[]} [filter.ids]
- * @returns {{ where: string, args: any[] }}
- */
+// `ids: []` is handled specially by the caller (queryCharacters()): "match zero ids" is different from "no id
+// filter requested". This function only ever sees a non-empty `ids` array, or none.
 function buildWhereClause({ tags, fav, world, excludeIds, ids } = {}) {
     const clauses = [];
     const args = [];
@@ -4643,11 +2731,9 @@ function buildWhereClause({ tags, fav, world, excludeIds, ids } = {}) {
     if (tags) {
         const include = Array.isArray(tags.include) ? tags.include.filter(Boolean) : [];
         const exclude = Array.isArray(tags.exclude) ? tags.exclude.filter(Boolean) : [];
-        const mode = tags.mode === 'or' ? 'or' : 'and'; // doc §5: 'and'|'or', defaulting to 'and'
+        const mode = tags.mode === 'or' ? 'or' : 'and';
         if (include.length > 0) {
             if (mode === 'and') {
-                // A character must carry every included tag - COUNT(DISTINCT tag_id) over the IN-filtered rows
-                // equalling include.length is the standard "all of these" pattern for a many-to-many table.
                 clauses.push(`id IN (SELECT character_id FROM character_tags WHERE tag_id IN (${include.map(() => '?').join(', ')}) GROUP BY character_id HAVING COUNT(DISTINCT tag_id) = ?)`);
                 args.push(...include, include.length);
             } else {
@@ -4665,20 +2751,8 @@ function buildWhereClause({ tags, fav, world, excludeIds, ids } = {}) {
 }
 
 /**
- * Returns `{id, world}` for every character whose metadata row currently has a non-empty `world` column
- * (mirrors `data.extensions.world` - see buildRow()'s own `world:` assignment) - an indexed lookup against
- * `idx_characters_world` that reads only those rows' `id`/`world` columns, never `shallow_json`, never a row
- * for a character with no linked world, and never touches the character files on disk at all.
- *
- * Exists for callers (currently: the unimport-embedded-lore migration) that need to find a - presumably tiny
- * - candidate set among a corpus that may be huge, and must not pay an O(all characters) cost (walking every
- * character file, or even every metadata row) just to find the ones that matter. Start from this, then only
- * read/touch the matched subset.
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<Array<{id: string, world: string}>|null>} `null` means the metadata store itself is
- * unavailable on this install (no usable SQLite backend) - same contract as `queryCharacters()`: callers must
- * treat that as a hard "can't do this right now", never silently fall back to a full filesystem scan (that
- * fallback is exactly the O(corpus) cost this function exists to let callers avoid).
+ * Indexed lookup, not a filesystem scan.
+ * @returns {Promise<Array<{id: string, world: string}>|null>} `null` if the metadata store is unavailable.
  */
 export async function getCharactersWithLinkedWorld(directories) {
     const entry = await getEntry(directories);
@@ -4687,44 +2761,21 @@ export async function getCharactersWithLinkedWorld(directories) {
     return entry.db.all("SELECT id, world FROM characters WHERE world IS NOT NULL AND world != ''");
 }
 
-/**
- * Whether this user's one-time character-metadata bootstrap backfill (bootstrapIfNeeded()) has finished.
- * A boot-time one-time migration that reads this store via an indexed query (getCharactersWithLinkedWorld()
- * and friends) MUST check this first - initializeMetadataStores() kicks bootstrapIfNeeded() off in the
- * background and does not wait for it, so a query run too early on a library that predates this store would
- * silently see only a partially-backfilled `characters` table and undercount real candidates. `false` also
- * covers "no usable SQLite backend at all" - either way, the honest answer is "cannot trust this store yet."
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<boolean>}
- */
+// A boot-time migration reading this store must check this first - bootstrapIfNeeded() runs in the
+// background and isn't awaited, so an early query could see a partially-backfilled table.
 export async function isBootstrapComplete(directories) {
     const entry = await getEntry(directories);
     if (!entry) return false;
     return !!entry.db.get('SELECT value FROM meta WHERE key = @key', { key: 'bootstrap_completed' });
 }
 
-/**
- * Generic one-time-per-user completion marker, built on the same `meta` key/value table
- * bootstrap_completed/groups_bootstrap_completed already use internally - exposed generically here so any
- * one-time migration (not just this module's own bootstrap passes) can record "already ran for this user,
- * don't do it again on a later boot" without inventing its own marker file or table. `key` is the caller's
- * own namespaced key (e.g. `'unimport_embedded_lore_completed'`) - never reused for anything else.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} key
- * @returns {Promise<boolean>}
- */
+/** Generic one-time-per-user completion marker, keyed by the caller's own namespaced `key`. */
 export async function isMigrationMarkedComplete(directories, key) {
     const entry = await getEntry(directories);
     if (!entry) return false;
     return !!entry.db.get('SELECT value FROM meta WHERE key = @key', { key });
 }
 
-/**
- * Companion write to isMigrationMarkedComplete() - see that function's doc comment.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} key
- * @returns {Promise<void>}
- */
 export async function markMigrationComplete(directories, key) {
     const entry = await getEntry(directories);
     if (!entry) return;
@@ -4732,76 +2783,18 @@ export async function markMigrationComplete(directories, key) {
 }
 
 /**
- * Phase 2's query endpoint (design doc §5), minus full-text search - the browse/sort/filter half of
- * `POST /api/characters/query`, backed entirely by SQLite reads against this table: zero PNG parses, zero
- * `statSync` calls, regardless of library size. This is what makes plain browse pagination "real" rather than
- * fs.readdirSync()+PNG-parse-everything+slice-in-JS the way the pre-phase-2 `/all` endpoint's non-search path
- * still works (see design doc §1.2/§3.3).
- *
- * `total` is always an EXACT `COUNT(*)` over the same WHERE clause as the row query - never capped, matching the
- * doc's explicit "approximate is fine, capped is not" rule (§5's `total` notes) by construction, since an exact
- * count can't ever be a truncated one. The doc also permits (and, at genuinely broad filters and 10M+ rows,
- * eventually prefers) a maintained counter or a SQLite-estimate for the unfiltered/broad case - deliberately not
- * implemented here: the doc's own guidance throughout is "start with the simple correct thing, measure before
- * optimizing", and an index-backed exact COUNT(*) is that simple correct thing, not a placeholder that silently
- * lies. Revisit only if profiling this against a real large library shows it's the bottleneck.
- *
- * Pagination is offset/limit here (page/pageSize -> offset/limit translation is the /query route's job in
- * characters.js, matching how paginateCharacters()/paginateEntities() already take offset/limit) - kept internal
- * to this module rather than exposed at the SQL layer as anything fancier (keyset pagination, say), since the
- * doc's own contract is page-number-based, not cursor-based.
- * @param {import('./users.js').UserDirectoryList} directories
+ * Browse/sort/filter query backing `POST /api/characters/query`, entirely SQLite-backed.
  * @param {object} params
- * @param {{ include?: string[], exclude?: string[], mode?: 'and'|'or' }} [params.tags]
- * @param {boolean} [params.fav]
- * @param {string} [params.world]
- * @param {string[]} [params.excludeIds]
- * @param {string[]} [params.ids] Present-but-empty means "resolve nothing" (short-circuits to an empty result,
- * no query run) - see buildWhereClause()'s doc comment. When `filter.search` is also active (see the /query
- * route in characters.js), the caller is expected to have already intersected any explicit `filter.ids` with the
- * search engine's own matched-id set before calling, so this one `ids` restriction is all this function needs to
- * honor both at once.
- * @param {string} [params.sortField] One of QUERYABLE_SORT_COLUMNS' keys, or 'random' (needs `params.seed`), or
- * 'search' (needs `params.idOrder` - see that param's doc). Anything else is the caller's responsibility to have
- * already rejected - this function just no-ops an unrecognized field into "no primary sort", which would
- * silently misbehave as a *pagination* endpoint (same items could reappear or vanish across pages), so the
- * caller must not let that happen. Omitted -> id order only (still fully deterministic, just not meaningful).
- * @param {string} [params.sortOrder] 'asc' (default) or 'desc'. Not meaningful for 'search' (relevance order is
- * whatever `idOrder` already is - see decision 23, random and search compose but neither one has an inherent
- * "reverse" the way a column sort does).
- * @param {number} [params.seed] Required (and validated finite) when `sortField === 'random'` - design doc §5.3
- * decision 10: the seed is client-owned and must travel on every page request, or page 2 silently comes from a
- * different permutation than page 1.
- * @param {string[]} [params.idOrder] Required when `sortField === 'search'`: the caller's own full-text search
- * engine's already-relevance-ordered id list (characters-search-index.js). Rows are re-ordered to match this
- * array's order rather than any SQL `ORDER BY`, since there is no SQL column for text relevance - offset/limit
- * are applied in JS against the reordered set, not pushed into the SQL query, for the same reason. Every id in
- * this array should already be a member of the `ids`/other-filter-restricted candidate set (the /query route
- * arranges this); an id present here but absent from that set (a stale search-index hit for a since-deleted
- * character, or one excluded by another filter) is silently dropped rather than erroring, exactly like a normal
- * SQL join would.
- * @param {number} [params.offset]
- * @param {number} [params.limit]
- * @param {boolean} [params.wantRows] Default true.
- * @param {boolean} [params.wantTotal] Default true.
- * @param {boolean} [params.wantHashes] Default false. Hash-only mode (2026-09 /query bandwidth pass): returns
- * `hashRows` instead of `rows` - `{id, chat, date_added, create_date, date_last_chat, chat_size, data_size,
- * favHash, tagIdsHash, contentHash}` per row, computed live from shallow_json on every call (NOT read from the
- * digest_fav/digest_tag_ids/digest_content columns - those were found to disagree with a fresh recompute for a
- * meaningful share of real rows on this install, not just be NULL for untouched ones; see this function's own
- * inline comment where hashRows is built for the specifics) plus the small set of fields that stay outside those
- * hashes' coverage on purpose (characterDigestFingerprint()'s own header, hash-utils.js, explains why: `chat`/
- * `chat_size`/`date_last_chat`/`date_added`/`create_date` are recomputed live on other read paths and would
- * false-positive a hash mismatch if included). A caller resolves the hash-covered fields (name/fav/tags/tag_ids/
- * data.*) itself - from its own per-id cache when `{favHash, tagIdsHash, contentHash}` matches what it already has, otherwise via
- * a targeted fetch (`/api/characters/batch`) for just the ids that don't match or aren't cached yet.
+ * @param {string[]} [params.ids] Present-but-empty short-circuits to an empty result.
+ * @param {string} [params.sortField] A QUERYABLE_SORT_COLUMNS key, or 'random' (needs `seed`), or 'search'
+ * (needs `idOrder`).
+ * @param {number} [params.seed] Must stay stable across pages of the same query or pages return inconsistent
+ * permutations.
+ * @param {string[]} [params.idOrder] Relevance-ordered id list from the search engine when sortField === 'search'.
+ * @param {boolean} [params.wantHashes] Returns `hashRows` (per-row content hashes) instead of `rows`, computed
+ * live from shallow_json rather than the stored digest_* columns, which can drift from a fresh recompute.
  * @returns {Promise<{ rows: object[] | undefined, hashRows: object[] | undefined, total: number | undefined, seq: number } | null>}
- * `rows` are already-parsed `toShallow()` projections, ready to ship as-is. `seq` is the change log's current
- * high-water mark (doc §5's "`seq` lets the client detect that its cache is stale relative to what it just
- * rendered"), always present regardless of `want`. `null` means the metadata store itself is unavailable on this
- * install (no usable SQLite backend) - callers must treat that as a hard "can't serve this endpoint right now",
- * not silently fall back to a live filesystem scan (see this module's `getEntry()` for the one place that's
- * already logged).
+ * `null` means the metadata store is unavailable - callers must not fall back to a live filesystem scan.
  */
 export async function queryCharacters(directories, params = {}) {
     const entry = await getEntry(directories);
@@ -4812,12 +2805,6 @@ export async function queryCharacters(directories, params = {}) {
         sortField, sortOrder, seed, idOrder,
         offset, limit,
         wantRows = true, wantTotal = true,
-        // Hash-only mode (2026-09 /query bandwidth pass): selects the pre-computed digest_fav/digest_tag_ids/
-        // digest_content columns plus the small set of live-recomputed-elsewhere fields (active_chat, the four
-        // date/size columns) instead of parsing shallow_json - see `hashRows`' shape below and the /query route's
-        // own doc comment for why these specific fields stay outside the hash's coverage (characterDigestFingerprint()'s
-        // own header, hash-utils.js). Mutually exclusive with wantRows in practice (the /query route picks one or
-        // the other per request) but not enforced here - both can technically be requested together.
         wantHashes = false,
     } = params;
 
@@ -4825,8 +2812,6 @@ export async function queryCharacters(directories, params = {}) {
     const seq = Number(seqRow?.seq ?? 0);
 
     if (Array.isArray(ids) && ids.length === 0) {
-        // "Resolve exactly these ids" over zero ids - trivially empty, and worth short-circuiting rather than
-        // building `id IN ()` (invalid SQL) or `id IN (NULL)` (a footgun that means something else entirely).
         return { rows: wantRows ? [] : undefined, hashRows: wantHashes ? [] : undefined, total: wantTotal ? 0 : undefined, seq };
     }
 
@@ -4838,26 +2823,10 @@ export async function queryCharacters(directories, params = {}) {
         total = Number(countRow?.total ?? 0);
     }
 
-    // Columns for hash-only mode - everything a hash-row needs, none of shallow_json's text-heavy fields
-    // (name/tags/tag_ids/data.*, all covered instead by three live-computed digest hashes - the client resolves
-    // those fields from its own cache or a /batch fetch when a hash doesn't match what it already has).
-    //
-    // The three digest columns (digest_fav/digest_tag_ids/digest_content) deliberately are NOT selected or
-    // trusted here, even where non-NULL - found while verifying this against the live table (2026-09): ~327.5k
-    // of ~328.7k rows (99.6%) have NULL digests (a long-lived bulk-imported library whose rows mostly predate
-    // these columns and haven't been individually touched by a write since), which would already be a problem
-    // (NULL read as a real zero-hash would make every untouched row "equal" regardless of content) - but
-    // spot-checking rows that DO have a stored value turned up real drift too: a stored digest_fav that disagrees
-    // with characterDigestFavHash() recomputed fresh from that exact same row's own shallow_json (one example:
-    // stored 989021974 vs. recomputed 272117939, for shallow.fav=true/shallow.data.extensions.fav=false) - not a
-    // NULL-vs-present question, an actual mismatch between the persisted digest and the content it's supposed to
-    // describe, with no version column on these columns to detect or explain it. Until that's root-caused,
-    // hash-mode always recomputes live from shallow_json instead - correct by construction (the hash always
-    // matches what actually gets hashed), at the cost of the shallow_json-parse-per-row this mode was hoping to
-    // skip. The wire savings (small hash rows instead of full shallow rows) hold regardless of where the hash
-    // computation itself runs.
+    // digest_fav/digest_tag_ids/digest_content are deliberately not read here: spot checks found stored values
+    // that disagree with a fresh recompute from the row's own shallow_json, with no version column to detect
+    // the drift. Always recompute live instead.
     const HASH_COLUMNS = 'id, active_chat, date_added, create_date, date_last_chat, chat_size, data_size, shallow_json';
-    /** @param {object} r raw SQL row selected via HASH_COLUMNS */
     const toHashRow = (r) => {
         const shallow = JSON.parse(r.shallow_json);
         const favHash = characterDigestFavHash(shallow) % 4294967296;
@@ -4879,9 +2848,6 @@ export async function queryCharacters(directories, params = {}) {
 
     let rows, hashRows;
     if ((wantRows || wantHashes) && sortField === 'search') {
-        // Relevance order has no SQL column - fetch every candidate row (already bounded by the `ids` restriction
-        // buildWhereClause() applied above, which the /query route sizes to the search engine's own matched-id
-        // cap, not this table's size) with no SQL ORDER BY/LIMIT, then reorder and slice in JS to match idOrder.
         const orderedIds = Array.isArray(idOrder) ? idOrder : [];
         const numericOffset = Number.isFinite(offset) && offset > 0 ? Math.trunc(offset) : 0;
         const numericLimit = Number.isFinite(limit) && limit >= 0 ? Math.trunc(limit) : DEFAULT_QUERY_LIMIT;
@@ -4903,10 +2869,6 @@ export async function queryCharacters(directories, params = {}) {
     } else if (wantRows || wantHashes) {
         const orderParts = [];
         if (sortField === 'random') {
-            // Design doc §5.3, decisions 8/13: a per-query hash order, computed via the RANDHASH SQL function
-            // registered in getEntry() above - never materialized. `seed` must be finite (the /query route
-            // validates this before calling, same "explicit 400, not a silent wrong result" rule the doc calls
-            // out for the pre-phase-2 `/all` endpoint's sortOrder=random bug).
             const direction = sortOrder === 'desc' ? 'DESC' : 'ASC';
             orderParts.push(`RANDHASH(id, ?) ${direction}`);
         } else {
@@ -4914,19 +2876,13 @@ export async function queryCharacters(directories, params = {}) {
             const direction = sortOrder === 'desc' ? 'DESC' : 'ASC';
             if (column) {
                 orderParts.push(`${column} ${direction}`);
-                // fav is boolean-valued, so a great many rows tie on it - name_fold is the natural secondary key
-                // (this is exactly what the schema's idx_characters_fav_name_fold composite index exists for, per
-                // design doc §3.1).
+                // fav is boolean-valued, so many rows tie on it; name_fold breaks the tie (idx_characters_fav_name_fold).
                 if (sortField === 'fav') {
                     orderParts.push('name_fold ASC');
                 }
             }
         }
-        // Always-present final tie-break: without one, rows tying on the primary key have no guaranteed stable
-        // order across two separate SQL queries (unlike JS's spec-guaranteed-stable Array#sort, which is what
-        // the pre-phase-2 paginateCharacters()/paginateEntities() relied on for this same guarantee) - and an
-        // unstable order across page 1 and page 2's separate queries means a row can silently appear on both or
-        // neither page. `id` is unique, so this always fully disambiguates.
+        // Final tie-break by unique id, or ties get inconsistent order across separate paged queries.
         orderParts.push('id ASC');
         const orderBy = `ORDER BY ${orderParts.join(', ')}`;
 
@@ -4953,19 +2909,10 @@ export async function queryCharacters(directories, params = {}) {
 // route, which always computes one from page/pageSize) still gets a bounded result instead of the entire table.
 const DEFAULT_QUERY_LIMIT = 500;
 
+// Groups-side WHERE clause; unlike buildWhereClause() it has no `world` filter (groups have no lorebook binding,
+// so filter.world never narrows the groups arm of a merged query) and no `search` filter (the /query route
+// already resolves filter.search into a plain ids list before calling queryEntities()).
 /**
- * The groups-side WHERE clause for queryEntities() below - the group equivalent of buildWhereClause(), restricted
- * to what a group row actually has. Two filter keys buildWhereClause() accepts are deliberately absent from this
- * function's own parameter list:
- *   - `world`: groups have no lorebook binding, so a `filter.world` request simply never narrows the groups arm
- *     of a merged query - a `{filter: {world: 'X', includeGroups: true}}` request matches world-X characters
- *     PLUS every group that otherwise passes the rest of the filter, not "nothing, since no group has a world".
- *   - `search`: not because a search request skips this table - groups have their own full-text index
- *     (groups-search-index.js) and a `filter.search` + `filter.includeGroups: true` request on `/query` does
- *     reach queryEntities() below now. It's absent from *this function's* parameter list because the /query
- *     route (characters.js) already resolves `filter.search` into a plain `ids` list (via searchCharacterIds()/
- *     searchGroupIds(), merged) before calling queryEntities() - by the time this function runs, "search" has
- *     already become an ordinary id restriction, same shape as an explicit `filter.ids` request.
  * @param {object} filter
  * @param {{ include?: string[], exclude?: string[], mode?: 'and'|'or' }} [filter.tags]
  * @param {boolean} [filter.fav]
@@ -5012,86 +2959,26 @@ function buildGroupWhereClause({ tags, fav, excludeIds, ids } = {}) {
 }
 
 /**
- * `filter.includeGroups: true` half of `POST /api/characters/query` (owner decision, extending the
- * character-data-residency-redesign to groups - see this module's header and queryCharacters()'s own doc
- * comment, which this function deliberately does NOT modify: every existing caller of queryCharacters() -
- * favsToHotswap, CharacterRepository.queryAll, the whole of characters-query.test.js - keeps calling that
- * function and seeing byte-for-byte the same behavior it always has. This is a genuinely separate function
- * rather than an `includeGroups` branch threaded through queryCharacters() itself, both to keep that guarantee
- * trivially true by construction and because the two queries are a different shape at the SQL level (a single
- * table vs. a `UNION ALL` of two).
- *
- * Implementation: one `UNION ALL` between a characters-shaped subquery and a groups-shaped subquery, projecting
- * the same column names on both sides (id, name_fold, fav, date_added, date_last_chat, chat_size) so a single
- * `ORDER BY`/`LIMIT`/`OFFSET` can run over the combined result - the approach the design doc extension asks to
- * try first. The compound SELECT is wrapped in an outer `SELECT * FROM (...)` rather than ordering the UNION ALL
- * directly: confirmed by direct probe against better-sqlite3 that SQLite rejects `ORDER BY <expr>` on a compound
- * SELECT when `<expr>` is anything other than a bare result-column reference (needed for
- * `ORDER BY RANDHASH(id, ?)` - a plain `ORDER BY date_added` would have worked unwrapped, but `RANDHASH(id, ?)`
- * would not, and this function needs one code path that works for both).
- *
- * DOES get called when `filter.search` is non-empty and `filter.includeGroups: true` (see the /query route in
- * characters.js) - an earlier version of this comment claimed groups have no full-text index and that search
- * therefore never reached this function, attributing that scope boundary to an "owner decision". That was never
- * actually decided by the owner (traced via git history to 3f33c5611's commit message, which introduced the
- * claim with no linked discussion - a prior agent's own unilateral call, written up as a decision someone else
- * made) and it was also factually wrong about the codebase: groups-search-index.js already builds a persistent
- * tantivy/FTS5 index for groups, the same infrastructure characters-search-index.js provides, and the
- * pre-existing `/all` route's own search handling already uses it. The /query route resolves `filter.search`
- * into a merged, relevance-ordered `ids` list from both indexes (searchCharacterIds()/searchGroupIds()) before
- * calling this function - this function itself never needs an `idOrder`/`sortField === 'search'` branch (unlike
- * queryCharacters()) because the caller handles relevance ordering in JS when `sort.field === 'search'`, the
- * same way it already resolves the id list itself.
- *
- * Characters are re-materialized from `shallow_json` exactly as queryCharacters() already does. Groups are NOT
- * hydrated here at all - only `id`/`type` come back for a group row, bounded to this page's rows. The caller
- * (the /query route) hydrates just those ids via groups.js's getGroupsByIds() (a lean few-id JSON read, not
- * getGroupsData()'s whole-directory listing) and stamps this function's own fav/date_added/date_last_chat/
- * chat_size onto each hydrated group object, so what's displayed always agrees with what was just sorted by.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {object} params
- * @param {{ include?: string[], exclude?: string[], mode?: 'and'|'or' }} [params.tags]
- * @param {boolean} [params.fav]
+ * `filter.includeGroups: true` half of `POST /api/characters/query` - queries characters and groups as two
+ * separate per-table queries with a JS merge-sort (see mergeSortedRows()), not a UNION ALL, so each table keeps
+ * its own index-backed ORDER BY.
  * @param {string} [params.world] Applies to the characters arm only - see buildGroupWhereClause()'s doc comment.
- * @param {string[]} [params.excludeIds]
- * @param {string[]} [params.ids] Present-but-empty means "resolve nothing" (short-circuits, no query run) - same
- * rule as queryCharacters().
- * @param {string} [params.sortField] One of QUERYABLE_SORT_COLUMNS' keys, or 'random' (needs `params.seed`).
- * NEVER 'search' - see this function's header.
- * @param {string} [params.sortOrder] 'asc' (default) or 'desc'.
- * @param {number} [params.seed] Required (and validated finite by the route) when `sortField === 'random'`.
- * @param {number} [params.offset]
- * @param {number} [params.limit]
- * @param {boolean} [params.wantRows] Default true.
- * @param {boolean} [params.wantTotal] Default true.
+ * @param {string[]} [params.ids] Present-but-empty means "resolve nothing" - same rule as queryCharacters().
+ * @param {string} [params.sortField] One of QUERYABLE_SORT_COLUMNS' keys, or 'random'. Never 'search'.
  * @returns {Promise<{ rows: {type: 'character'|'group', id: string, fav: boolean, date_added: number, date_last_chat: number, chat_size: number, item: object}[] | undefined, total: number | undefined, seq: number } | null>}
- * `null` if the metadata store is unavailable, matching queryCharacters(). A group row's `item` is `null` here -
- * see this function's own header on why hydration is the caller's job; a character row's `item` is already the
- * full `toShallow()` projection.
+ * A group row's `item` is `null` here - the caller hydrates it; a character row's `item` is the full toShallow().
  */
 
-/**
- * Returns a hash-sorted array of ALL entity IDs (characters + groups) for the given seed,
- * cached per (handle, seed, seq). On a cache miss, fetches all IDs from both tables,
- * hashes each with getStringHash(id, seed), sorts, and caches the result (~270ms for 327k IDs).
- * On a hit, returns the cached array (sub-ms).
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- * @param {string} handle User handle (or '' for single-user installs)
- * @param {number} seed Random sort seed
- * @param {number} seq Current change-log high-water mark for cache invalidation
- * @returns {string[]} All entity IDs sorted by hash(id, seed) ascending
- */
+/** Hash-sorted array of all entity IDs, cached per (handle, seed, seq). */
 function getRandomSortedEntityIds(db, handle, seed, seq) {
     const key = `${handle}:${seed}`;
     const entry = randomSortCache.get(key);
     if (entry && entry.seq === seq) {
-        // Move to end for LRU
         randomSortCache.delete(key);
         randomSortCache.set(key, entry);
         return entry.sortedIds;
     }
 
-    // Compute: read all IDs, hash, sort
     const charIds = db.all('SELECT id FROM characters').map(r => r.id);
     const groupIds = db.all('SELECT id FROM groups').map(r => r.id);
     const allIds = [...charIds, ...groupIds];
@@ -5099,7 +2986,6 @@ function getRandomSortedEntityIds(db, handle, seed, seq) {
     hashed.sort((a, b) => a.h - b.h);
     const sortedIds = hashed.map(r => r.id);
 
-    // Evict oldest (first in Map) if at capacity
     if (randomSortCache.size >= MAX_RANDOM_CACHE_ENTRIES && !randomSortCache.has(key)) {
         const oldest = randomSortCache.keys().next().value;
         randomSortCache.delete(oldest);
@@ -5109,14 +2995,7 @@ function getRandomSortedEntityIds(db, handle, seed, seq) {
     return sortedIds;
 }
 
-/**
- * Comparator for merge-sorting queryEntities()'s two pre-sorted (characters, groups) row arrays into one page,
- * matching the exact ORDER BY each side's own SQL query was run with (see queryEntities()'s `if (wantRows)`
- * block). `id ASC` is always the final tiebreaker, same as the SQL side's trailing `orderParts.push('id ASC')`.
- * @param {string} sortField
- * @param {string} sortOrder
- * @param {number} seed
- */
+/** Must match the ORDER BY each side's own SQL query used, so the merge stays a true sorted merge. */
 function makeEntityMergeComparator(sortField, sortOrder, seed) {
     const dir = sortOrder === 'desc' ? -1 : 1;
     const tiebreak = (a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
@@ -5145,16 +3024,7 @@ function makeEntityMergeComparator(sortField, sortOrder, seed) {
     return (a, b) => dir * (Number(a[column] ?? 0) - Number(b[column] ?? 0)) || tiebreak(a, b);
 }
 
-/**
- * Merges two arrays that are each already sorted per `comparator` into one sorted array. Used by queryEntities()
- * to combine its separate characters/groups row queries (each index-backed on its own table) instead of a
- * UNION ALL, which defeats SQLite's index usage on both sides and forces a full-table-scan + temp-B-tree sort.
- * @template T
- * @param {T[]} a
- * @param {T[]} b
- * @param {(x: T, y: T) => number} comparator
- * @returns {T[]}
- */
+// Avoids UNION ALL across characters/groups, which would defeat each table's own index-backed ORDER BY.
 function mergeSortedRows(a, b, comparator) {
     const result = [];
     let i = 0, j = 0;
@@ -5176,10 +3046,6 @@ export async function queryEntities(directories, params = {}) {
         sortField, sortOrder, seed,
         offset, limit, handle,
         wantRows = true, wantTotal = true,
-        // Hash-only mode for includeGroups requests (2026-09, closing the characters-only gap the /query route's
-        // wantHashes flag started with) - see toHashRowFromMerged() below for the row shape and the group-side
-        // trust decision (unlike characters, group digests ARE trusted when non-NULL here - see that function's
-        // own comment for why that's a verified, not pattern-copied, call).
         wantHashes = false,
     } = params;
 
@@ -5206,27 +3072,8 @@ export async function queryEntities(directories, params = {}) {
         total = Number(countRow?.total ?? 0);
     }
 
-    // Shared row-shaping helper for both branches below (random / non-random ORDER BY) - turns one merged raw SQL
-    // row (character or group) into either a plain `rows` entry or a hash-mode `hashRows` entry.
-    //
-    // Character rows always recompute their three hashes live from `shallow_json`, never trust
-    // digest_fav/digest_tag_ids/digest_content - same distrust, same reasoning, as queryCharacters()'s own
-    // wantHashes branch (see that function's inline comment: spot-checked against the live table and found
-    // stored values disagreeing with a fresh recompute for a meaningful share of non-NULL rows, no version column
-    // to explain it).
-    //
-    // Group rows DO trust their stored digest_fav/digest_tag_ids/digest_content when non-NULL - a deliberately
-    // different call from the characters one above, made only after tracing every write path that touches those
-    // three columns (upsertGroupRowSync(), assignEntityTag()/unassignEntityTag()'s group branch,
-    // migrateGroupDigestColumns()'s backfill): all three compute the digest in the same function call, from the
-    // same data, immediately before the write that persists it - there is no other path that mutates a group's
-    // name/avatar_url/members/fav/tag_ids without also going through one of those three hooks, unlike characters'
-    // longer-accumulated write surface where the actual drift's root cause was never pinned down. A NULL digest
-    // (an install that predates the migration and whose one-time backfill failed for that specific group, e.g. an
-    // unreadable file) still falls back to a live recompute here - cheap for groups ("far fewer than characters"),
-    // unlike the same fallback would be at character-library scale.
+    // Group rows trust their stored digest_* columns when non-NULL; a NULL digest falls back to a live recompute.
     const groupIdsNeedingFileFallback = new Set();
-    /** @param {object} r merged raw row (character or group; group rows carry `type`, `digest_fav`, etc. only when wantHashes and type === 'group') */
     const toHashRow = (r) => {
         let favHash, tagIdsHash, contentHash, chat = null;
         if (r.type === 'character') {
@@ -5240,11 +3087,9 @@ export async function queryEntities(directories, params = {}) {
             tagIdsHash = r.digest_tag_ids;
             contentHash = r.digest_content;
         } else {
-            // Rare NULL fallback - re-read the group's own file + group_tags directly (character-metadata-db.js
-            // can't import groups.js's getGroupsByIds() - see this module's own header on the leaf-module import
-            // rule groups.js itself depends on).
+            // Can't import groups.js's getGroupsByIds() here (import-direction rule), so re-read the file directly.
             groupIdsNeedingFileFallback.add(r.id);
-            favHash = tagIdsHash = contentHash = 0; // placeholder, corrected in the fallback pass below
+            favHash = tagIdsHash = contentHash = 0; // corrected in the fallback pass below
         }
         return {
             id: r.id, isGroup: r.type === 'group', chat,
@@ -5277,8 +3122,6 @@ export async function queryEntities(directories, params = {}) {
     if (wantRows || wantHashes) {
         const orderParts = [];
         if (sortField === 'random') {
-            // See queryCharacters()'s identical branch - RANDHASH is the same registered SQL function, and
-            // works unmodified against this UNION (confirmed by the probe this function's header describes).
             const direction = sortOrder === 'desc' ? 'DESC' : 'ASC';
             orderParts.push(`RANDHASH(id, ?) ${direction}`);
         } else {
@@ -5298,31 +3141,19 @@ export async function queryEntities(directories, params = {}) {
         const numericLimit = Number.isFinite(limit) && limit >= 0 ? Math.trunc(limit) : DEFAULT_QUERY_LIMIT;
         const orderArgs = sortField === 'random' ? [Number(seed) || 0] : [];
 
-        // Two separate per-table queries + a JS merge-sort, instead of a UNION ALL: measured against 327k
-        // characters + 20 groups, the UNION ALL prevented SQLite from using either table's index at all (a full
-        // table scan + temp B-tree sort - 710ms), while the same ORDER BY against characters alone runs in 1.5ms
-        // (index used). Each query below runs against its own table with its own WHERE + ORDER BY, so each one
-        // gets its own index; `fetchLimit` (offset+limit rows from each side) is enough for the merge below to
-        // produce a correct page regardless of how the two tables' rows interleave.
+        // Two separate per-table queries + a JS merge-sort instead of UNION ALL: a UNION ALL prevented SQLite
+        // from using either table's index (full scan + temp B-tree sort).
         const fetchLimit = numericOffset + numericLimit;
 
         if (sortField === 'random') {
-            // Random sort: use the in-memory cache of hash-sorted IDs rather than computing
-            // RANDHASH per row per query. The cache is populated once per (handle, seed) pair
-            // (~270ms), then every page is a sub-ms scan+slice.
             const sortedAllIds = getRandomSortedEntityIds(entry.db, handle ?? '', Number(seed) || 0, seq);
 
-            // When there are no filters, the cached sorted array already contains exactly the right
-            // IDs in the right order - skip the expensive SELECT id queries (132ms for 327k rows)
-            // and just slice directly. When filters ARE active, fetch the filtered ID set and
-            // intersect with the cached order.
             const hasFilters = charWhere.where !== '' || groupWhere.where !== '';
             const filterSet = hasFilters ? new Set([
                 ...entry.db.all(`SELECT id FROM characters ${charWhere.where}`, charWhere.args).map(r => r.id),
                 ...entry.db.all(`SELECT id FROM groups ${groupWhere.where}`, groupWhere.args).map(r => r.id),
             ]) : null;
 
-            // Walk the sorted array, keeping only IDs that pass filters, collect offset+limit
             const descending = sortOrder === 'desc';
             const len = sortedAllIds.length;
             const pageIds = [];
@@ -5335,7 +3166,6 @@ export async function queryEntities(directories, params = {}) {
                 if (pageIds.length >= numericLimit) break;
             }
 
-            // Hydrate the page IDs
             if (pageIds.length === 0) {
                 rows = wantRows ? [] : undefined;
                 hashRows = wantHashes ? [] : undefined;
@@ -5369,24 +3199,11 @@ export async function queryEntities(directories, params = {}) {
                 }
             }
         } else {
-            // create_date: a group DOES have a real creation timestamp - its own date_added column (populated at
-            // creation, migrateGroupsColumns() below) - projected (and, in the ORDER BY, substituted for the
-            // characters-only `create_date` column) as create_date on the group side so it interleaves correctly
-            // with characters instead of parking every group at one end of the sort permanently (NULL would be
-            // silently wrong here, not a neutral default: a group's creation time is a genuine fact this table
-            // already stores, just under a differently-named column). Both sides are plain INTEGER epoch ms
-            // (characters.create_date was TEXT-collated ISO-ish strings before the 2026-08 migrateCreateDateColumn()
-            // fix - see that function's own doc comment; now that both sides genuinely share a type, a plain
-            // projection of date_added sorts correctly with no conversion needed).
+            // create_date: a group's own date_added stands in, projected as create_date, so it interleaves
+            // correctly with characters instead of parking every group at one end of the sort (NULL would).
             //
-            // data_size: characters-only, no equivalent for real. This table has no stored byte-size concept for
-            // groups at all - the closest thing (a group's own JSON file's on-disk size) isn't a column anywhere
-            // here, it would need an fs.statSync() per group row at query time, which is exactly the per-request
-            // filesystem cost this whole metadata store exists to avoid (same reason chat_size/date_last_chat are
-            // precomputed and cached rather than read live off disk on every query). So this one genuinely stays
-            // NULL on the group side - not a shortcut, there is no stored value to project instead - and the
-            // group SELECT's `NULL as data_size` alias is what the group-side ORDER BY resolves data_size to,
-            // so every group sorts as equal on that key and falls through to the tiebreaker together.
+            // data_size: no equivalent for groups, stays NULL on the group side - every group sorts equal on
+            // that key and falls through to the tiebreaker.
             const groupOrderBy = orderBy
                 .replace(/\bcreate_date\b/g, 'date_added');
 
@@ -5433,15 +3250,9 @@ export async function queryEntities(directories, params = {}) {
 }
 
 /**
- * `POST /api/characters/exists` (design doc §4.2): chunked existence-by-primary-key, answered straight from this
- * table's index rather than the filesystem. Every requested id is a key in the returned object - `true` if a row
- * exists for it, `false` otherwise - so a caller never has to distinguish "false" from "key absent".
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string[]} ids
- * @returns {Promise<Record<string, boolean> | null>} `null` if the metadata store is unavailable - see
- * queryCharacters()'s doc comment on why callers must treat that as a hard failure, not a silent "assume it
- * exists" (doc §4.2: "a failed or partial existence check must abort the mutation, never fall through to
- * 'delete it'").
+ * Every requested id is a key in the returned object - `true`/`false`, never absent - so callers never have to
+ * distinguish "false" from "key missing".
+ * @returns {Promise<Record<string, boolean> | null>} `null` if the metadata store is unavailable.
  */
 export async function checkCharactersExist(directories, ids) {
     const entry = await getEntry(directories);
@@ -5453,10 +3264,7 @@ export async function checkCharactersExist(directories, ids) {
         result[id] = false;
     }
 
-    // Chunked to stay well clear of SQLite's bound-parameter ceiling (SQLITE_MAX_VARIABLE_NUMBER, historically as
-    // low as 999 on some builds) at the input sizes §4.2's callers actually use (chunked by the caller's input,
-    // not the library size, per the doc) - BATCH_FLUSH_SIZE is reused here purely because it's already a
-    // known-reasonable chunk size in this module, not because the two operations are otherwise related.
+    // Chunked to stay clear of SQLite's bound-parameter ceiling (SQLITE_MAX_VARIABLE_NUMBER).
     for (let i = 0; i < ids.length; i += BATCH_FLUSH_SIZE) {
         const chunk = ids.slice(i, i + BATCH_FLUSH_SIZE).filter(id => typeof id === 'string' && id.length > 0);
         if (chunk.length === 0) continue;
@@ -5469,13 +3277,7 @@ export async function checkCharactersExist(directories, ids) {
     return result;
 }
 
-/**
- * The change log's current high-water mark - the same value queryCharacters()/getChangesSince() already compute
- * inline, factored out as its own lightweight call for a caller (characters-search-index.js's incremental
- * tantivy maintenance) that only needs "what revision are we at right now", not a full changes page.
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<number | null>} `null` if the metadata store is unavailable.
- */
+/** @returns {Promise<number | null>} The change log's current high-water mark, or `null` if unavailable. */
 export async function getCurrentSeq(directories) {
     const entry = await getEntry(directories);
     if (!entry) return null;
@@ -5484,15 +3286,9 @@ export async function getCurrentSeq(directories) {
 }
 
 /**
- * `POST /api/characters/changes` (design doc §5.2): the change-feed replacement for a whole-library manifest scan.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {number} sinceSeq
  * @returns {Promise<{ seq: number, changes: { id: string, op: 'upsert'|'delete', fields?: string[]|null }[], truncated: boolean } | null>}
- * `truncated: true` means `sinceSeq` predates the oldest change-log row this table still has (nothing prunes the
- * log yet - see this module's header on phase 1's freshness mechanisms - so today this can only trigger for a
- * `sinceSeq` that was never valid for this table to begin with, e.g. a cache built against a different user's
- * store; it's still computed for real rather than hardcoded `false`, since a pruning job is explicitly a future
- * addition this response shape already has to be correct against). `null` if the metadata store is unavailable.
+ * `truncated: true` means `sinceSeq` predates the oldest change-log row still kept (the log is never pruned
+ * today, so this can currently only trigger for a `sinceSeq` from a different store).
  */
 export async function getChangesSince(directories, sinceSeq) {
     const entry = await getEntry(directories);
@@ -5509,10 +3305,8 @@ export async function getChangesSince(directories, sinceSeq) {
     }
 
     const rawChanges = entry.db.all('SELECT seq, id, op, fields FROM changes WHERE seq > ? ORDER BY seq ASC', [numericSince]);
-    // Collapse to one entry per id. For the op: latest wins (seq-ascending, so later set() overwrites).
-    // For fields: any delete in the window forces a full refetch if the id is later re-created (the
-    // client's cached copy predates the delete, so every field is potentially stale); any null-fields
-    // entry means the whole record changed; otherwise union all field sets across upsert entries.
+    // Collapse to one entry per id: a delete anywhere in the window forces a full refetch even if the id
+    // is later re-created, since the client's cached copy predates the delete.
     /** @type {Map<string, { op: string, hasDelete: boolean, hasNullFields: boolean, fieldSet: Set<string> }>} */
     const collapsedById = new Map();
     for (const row of rawChanges) {
@@ -5541,8 +3335,6 @@ export async function getChangesSince(directories, sinceSeq) {
     }
     const changes = [...collapsedById.entries()].map(([id, { op, hasDelete, hasNullFields, fieldSet }]) => {
         if (op === 'delete') return { id, op };
-        // A delete anywhere in this window means the client's cached copy predates a delete+recreate,
-        // so every field is potentially stale - treat as whole-record.
         const fields = (hasDelete || hasNullFields) ? null : [...fieldSet];
         return { id, op, fields };
     });
@@ -5551,45 +3343,11 @@ export async function getChangesSince(directories, sinceSeq) {
 }
 
 /**
- * SUPERSEDED by treeDescend() below (recursive hash-tree descent) - kept for now, not yet deleted, but no
- * longer wired into any endpoint or client. See treeDescend()'s own doc comment for why the flat-bucket shape
- * this implements was replaced.
- *
- * `POST /api/characters/state-digest`: the anti-entropy check on the character cache itself (see
- * public/scripts/hash-utils.js's own header on the bucketed-digest approach this follows, and on WHY it's built
- * from content hashes rather than the change-log `seq` counter - a client cache that's silently gone wrong is
- * exactly the failure a stored-and-trusted-per-record counter can't be relied on to catch, since the counter
- * can be just as wrong as the data it's supposed to describe). `/changes` only ever tells a client what
- * mutated SINCE its last-known seq; it has no way to notice a client whose cursor looks valid (not `truncated`)
- * but whose actual cached content has quietly drifted - a dropped IndexedDB write, partial browser storage
- * eviction, or (rarer) this database having been replaced/restored from an earlier backup. This endpoint is
- * what lets a client CHEAPLY prove (or disprove) "my cache still matches the server", independent of trusting
- * its own cursor OR any other locally-remembered per-record value.
- *
- * Computed on demand from the `characters` table's own `shallow_json` column (already the exact representation
- * `/api/characters/batch` returns for each id - see that route's own doc comment on why it stamps db-
- * authoritative fav/active_chat before responding, which is what keeps this equivalence true) rather than
- * incrementally maintained: a full `characters` table scan, hashing one already-stored TEXT column per row, is
- * cheap here because it never leaves the server process - nothing like the cost `/all`'s full-library response
- * pays serializing every character's full JSON body over the network. No new schema, no new write-path
- * bookkeeping to keep correct - `shallow_json` is already kept current by every write path.
- *
- * Runs on character-metadata-digest-worker.js, a dedicated worker_threads worker, not inline on this (the main
- * Express) thread - see that worker's own header. A real 326k-row table measured ~2.2s of synchronous JS for
- * this scan alone (2026-08 state-digest perf investigation); run inline, that would stall every other request
- * this Node process is serving for the same span. `getEntry()` is still called here first (cheap once already
- * warm) purely to make sure SCHEMA_SQL/the column migrations have actually run against this file at least once
- * and to resolve `directories.root` - the worker opens its own separate connection for the scan itself, it never
- * touches `entry.db`.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {number} [bucketCount]
+ * Superseded by treeDescend() below; kept but no longer wired into any endpoint or client.
+ * Runs on character-metadata-digest-worker.js, not inline, since a full-table scan measured ~2.2s of
+ * synchronous JS that would otherwise stall every other request this process is serving.
  * @returns {Promise<{ favBuckets: { hi: number, lo: number }[], contentBuckets: { hi: number, lo: number }[] } | null>}
- * TWO parallel bucket-digest tables, not one - `favBuckets[i]`/`contentBuckets[i]` are the order-independent
- * XOR-fold digests (combineDigest()) of every `{id, characterDigestFavHash(shallow_json)}` /
- * `{id, characterDigestFieldsHash(shallow_json)}` pair currently in `characters` whose id hashes to bucket `i`
- * (bucketOf()) - split so a client can tell a fav-only mismatch (repairable with zero extra fetch) apart from a
- * real content-field mismatch. A client folds the same table over its own cache with the same functions and
- * compares position-by-position, per stream. `null` if the metadata store is unavailable.
+ * Two parallel bucket-digest streams so a client can tell a fav-only mismatch from a content mismatch.
  */
 export async function getStateDigest(directories, bucketCount = DEFAULT_DIGEST_BUCKET_COUNT) {
     const entry = await getEntry(directories);
@@ -5599,25 +3357,10 @@ export async function getStateDigest(directories, bucketCount = DEFAULT_DIGEST_B
 }
 
 /**
- * SUPERSEDED by treeDescend() below (recursive hash-tree descent) - kept for now, not yet deleted, but no
- * longer wired into any endpoint or client.
- *
- * `POST /api/characters/bucket-members`: the repair half of the state-digest check above - once a client has
- * found (via getStateDigest()) that ITS locally-computed digest for bucket `bucket` disagrees with the
- * server's, this is what lets it find out exactly which ids in that one bucket actually diverged (by comparing
- * `contentHash`, not by re-fetching each one to find out), without re-fetching (or even re-listing) anything
- * outside it. Bounded by construction: a bucket holds roughly `library size / bucketCount` ids (~1300 for a
- * 326k-character library at the default 256 buckets), not the whole library.
- * Runs on character-metadata-digest-worker.js (same rationale as getStateDigest() above - see that function's
- * own doc comment and the worker's own header) rather than inline on this thread.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {number} bucket
- * @param {number} [bucketCount]
+ * Superseded by treeDescend() below; kept but no longer wired into any endpoint or client.
+ * Repair half of getStateDigest(): returns the members of one diverged bucket so a client can find exactly
+ * which ids differ without re-fetching the whole library.
  * @returns {Promise<{ members: { id: string, favHash: number, fieldsHash: number, fav: boolean }[] } | null>}
- * `favHash`/`fieldsHash` let the client tell which of the two digest streams actually diverged for this id
- * without a second round trip; `fav` is the row's actual current fav value (straight from `shallow_json`), so a
- * fav-only mismatch can be repaired directly from this response with no further fetch at all. `null` if the
- * metadata store is unavailable.
  */
 export async function getBucketMembers(directories, bucket, bucketCount = DEFAULT_DIGEST_BUCKET_COUNT) {
     const entry = await getEntry(directories);
@@ -5639,11 +3382,9 @@ export async function treeDescend(directories, nodes, branching = DEFAULT_DIGEST
 }
 
 /**
- * Computes the global 128-bit root digest of the characters table - the XOR-fold of every record's
- * per-field hash contribution. Same value as XOR-folding all level-0 children from a root tree-descend
- * call, but computed in a single pass without bucketing.
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<{a: number, b: number, c: number, d: number} | null>} `null` if the metadata store is unavailable.
+ * Global 128-bit XOR-fold digest of the characters table - same value as folding all level-0 children from a
+ * root tree-descend call, computed in one pass without bucketing.
+ * @returns {Promise<{a: number, b: number, c: number, d: number} | null>}
  */
 export async function computeRootDigest(directories) {
     const entry = await getEntry(directories);
@@ -5653,15 +3394,9 @@ export async function computeRootDigest(directories) {
 }
 
 /**
- * POST /api/characters/fingerprint-values: targeted fetch of fingerprint field values for specific record ids -
- * the repair half of tree-descend() above, now that its leaf responses carry only per-record hashes (see that
- * worker's own header). Called after the client has used tree-descend to narrow drift down to an exact set of
- * ids via per-record hash comparison; this resolves just those ids' actual fingerprint field values, reading from
- * `shallow_json` in the DB (no processCharacter()/PNG disk reads).
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string[]} ids
- * @returns {Promise<{ records: { id: string, fingerprint: object }[] } | null>} `null` if the metadata store is
- * unavailable.
+ * Repair half of tree-descend(): resolves fingerprint field values for ids the client has already narrowed
+ * drift down to, reading from `shallow_json` (no PNG disk reads).
+ * @returns {Promise<{ records: { id: string, fingerprint: object }[] } | null>}
  */
 export async function resolveFingerprints(directories, ids) {
     const entry = await getEntry(directories);

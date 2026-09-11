@@ -14,15 +14,7 @@ import cacheBuster from '../middleware/cacheBuster.js';
 
 export const router = express.Router();
 
-/**
- * HTTP POST endpoint for the "/api/avatars/get" route: list of persona avatar filenames plus, for each one
- * that already has a cached thumbnail, the thumbnail's version (see getThumbnailVersion() in thumbnails.js).
- * The `thumbnailVersions` map lets the client's getThumbnailUrl() emit the thumbnail route's `?v=` up front
- * instead of taking its no-cache redirect detour on every persona avatar render.
- * @param  {import("express").Request} request The HTTP request object.
- * @param  {import("express").Response} response The HTTP response object.
- * @return {void}
- */
+// thumbnailVersions lets the client emit the thumbnail route's `?v=` up front instead of hitting its no-cache redirect.
 router.post('/get', function (request, response) {
     const avatars = getImages(request.user.directories.avatars);
 

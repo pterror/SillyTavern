@@ -88,11 +88,6 @@ const keyMigrationMap = [
         migrate: (value) => value,
     },
     {
-        oldKey: 'cardsCacheCapacity',
-        newKey: 'performance.memoryCacheCapacity',
-        migrate: (value) => `${value}mb`,
-    },
-    {
         oldKey: 'cookieSecret',
         newKey: 'cookieSecret',
         migrate: () => void 0,

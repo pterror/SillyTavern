@@ -15,7 +15,7 @@ import storage from 'node-persist';
 
 import { AVATAR_WIDTH, AVATAR_HEIGHT, DEFAULT_AVATAR_PATH } from '../constants.js';
 import { default as validateAvatarUrlMiddleware, getFileNameValidationFunction, forbiddenRegExp } from '../middleware/validateFileName.js';
-import { deepMerge, humanizedDateTime, tryParse, MemoryLimitedMap, getConfigValue, mutateJsonString, clientRelativePath, getUniqueName, sanitizeSafeCharacterReplacements, getArrayBufferSlice, uuidv7, color } from '../util.js';
+import { deepMerge, humanizedDateTime, tryParse, getConfigValue, mutateJsonString, clientRelativePath, getUniqueName, sanitizeSafeCharacterReplacements, getArrayBufferSlice, uuidv7, color } from '../util.js';
 import { TavernCardValidator } from '../validator/TavernCardValidator.js';
 import { parse, read, write, writeCardToFile, computeAvatarIdentityHashFromImageBuffer } from '../character-card-parser.js';
 import { getCharaCardV2, convertToV2, readFromV2, charaFormatData, unsetPrivateFields, omitInstallLocalFields, omitFavField, omitChatField, computeContentIdentityHash } from '../character-card-normalize.js';
@@ -36,11 +36,6 @@ import { DEFAULT_DIGEST_BUCKET_COUNT, characterDigestFieldsHash, characterDigest
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
 import { hashGreetingText, opAdd, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault } from '../greeting-ops.js';
 
-// With 100 MB limit it would take roughly 3000 characters to reach this limit
-const memoryCacheCapacity = getConfigValue('performance.memoryCacheCapacity', '100mb');
-const memoryCache = new MemoryLimitedMap(memoryCacheCapacity);
-// Some Android devices require tighter memory management
-const isAndroid = process.platform === 'android';
 // Use shallow character data for the character list
 const useShallowCharacters = !!getConfigValue('performance.lazyLoadCharacters', false, 'boolean');
 const useDiskCache = !!getConfigValue('performance.useDiskCache', true, 'boolean');
@@ -93,17 +88,8 @@ class DiskCache {
     }
 
     /**
-     * Removes exactly one entry from the disk cache, by its already-computed cache key (see getCacheKey()) - O(1),
-     * no corpus-wide walk. This is the event-driven counterpart to verify()'s full-corpus reconciliation: there is
-     * no fs.watch/inotify hookup anywhere in DiskCache (nor does it need one) - every writer of a character file
-     * already knows, synchronously, exactly when and which file it just changed, since it's the one changing it.
-     * A caller that captured the file's OLD (pre-write) cache key before overwriting it calls this right after
-     * the write succeeds, invalidating precisely that entry immediately - no watcher, no timer, no periodic
-     * sweep required to eventually notice. See writeCharacterData(), the call site that actually rewrites an
-     * EXISTING character file (a local-import write is always a brand-new, never-before-cached filename, so it
-     * has no stale entry to invalidate in the first place).
+     * Removes one entry, by its already-computed cache key (see getCacheKey()).
      * @param {string} cacheKey
-     * @returns {Promise<void>}
      */
     async invalidateKey(cacheKey) {
         if (!useDiskCache) return;
@@ -116,17 +102,8 @@ class DiskCache {
     }
 
     /**
-     * Full-corpus reconciliation: walks every character file AND every cached entry to find and prune whatever
-     * invalidateKey() never got called for - a file changed/removed by something outside this app's own write
-     * path (a manual edit, a restore from backup, etc.), not the ordinary case. Deliberately NOT wired to any
-     * timer or periodic schedule (see invalidateKey()'s own doc comment on why every normal write already
-     * invalidates its own stale entry immediately, with no need for this to ever run automatically) - this is a
-     * rare/manual maintenance operation now, callable on demand, not something that fires on a schedule or as a
-     * side effect of an unrelated pass. Expensive on a large library (a full readdir+stat walk over every
-     * character file, measured ~24 minutes on a 330k+-file/cached-entry install) - callers should treat it
-     * accordingly.
+     * Full-corpus reconciliation, pruning entries invalidateKey() never caught. Expensive (~24 min on 330k+ files) - manual/rare use only.
      * @param {import('../users.js').UserDirectoryList[]} directoriesList List of user directories
-     * @returns {Promise<void>}
      */
     async verify(directoriesList) {
         try {
@@ -141,16 +118,12 @@ class DiskCache {
                 const files = await fs.promises.readdir(dir.characters, { withFileTypes: true });
                 for (const file of files.filter(f => f.isFile() && path.extname(f.name) === '.png')) {
                     const filePath = path.join(dir.characters, file.name);
-                    // Inline async stat instead of getCacheKey()'s statSync - this function runs in the
-                    // background and must not block the event loop with 327k synchronous stat calls.
                     try {
                         const stat = await fs.promises.stat(filePath);
                         const cacheKey = `${filePath}-${stat.mtimeMs}`;
                         validKeys.add(path.parse(cache.getDatumPath(cacheKey)).base);
                     } catch (err) {
                         if (err.code !== 'ENOENT') throw err;
-                        // File gone between readdir and stat - its cache entry is stale by definition,
-                        // so not adding it to validKeys is correct (it'll be pruned below).
                     }
                 }
             }
@@ -166,10 +139,6 @@ class DiskCache {
     }
 
     dispose() {
-        // Nothing to tear down anymore - there is no periodic timer (see invalidateKey()'s own doc comment on
-        // why: every write invalidates its own stale entry synchronously now). Kept as a stable no-op so
-        // server-main.js's exitProcess() call site never needs to know whether there's currently anything to
-        // dispose of.
     }
 }
 
@@ -177,17 +146,8 @@ export const diskCache = new DiskCache();
 
 /**
  * Gets the cache key for the specified image file.
- *
- * One `stat` call, not `existsSync` followed by a separate `statSync` - a non-existent file is just the ENOENT
- * branch of the same syscall, not two syscalls (design doc §3.3 item 6: "getCacheKey()'s existsSync + statSync
- * pair collapses into one stat whose ENOENT is the existence answer"). Same return values as before for both
- * outcomes, so every caller (readCharacterData(), the writeCharacterData() cache-reset loop) sees byte-identical
- * behavior - this only removes the redundant syscall, it doesn't change what gets returned.
  * @param {string} inputFile - Path to the image file
- * @param {fs.Stats} [precomputedStat] Already-fetched stat for `inputFile`, if the caller happens to have one on
- * hand (processCharacter() does, for date_added) - skips this function's own stat call entirely rather than
- * statting the same file twice in one logical operation (design doc §3.3 item 6's "another statSync for
- * date_added" finding: today's code stats every character file once here and again for date_added).
+ * @param {fs.Stats} [precomputedStat] Already-fetched stat for `inputFile`, to avoid statting it twice.
  * @returns {string} - Cache key
  */
 function getCacheKey(inputFile, precomputedStat = undefined) {
@@ -211,9 +171,6 @@ function getCacheKey(inputFile, precomputedStat = undefined) {
  */
 export async function readCharacterData(inputFile, inputFormat = 'png', precomputedStat = undefined) {
     const cacheKey = getCacheKey(inputFile, precomputedStat);
-    if (memoryCache.has(cacheKey)) {
-        return memoryCache.get(cacheKey);
-    }
     if (useDiskCache) {
         try {
             const cache = await diskCache.instance();
@@ -227,7 +184,6 @@ export async function readCharacterData(inputFile, inputFormat = 'png', precompu
     }
 
     const result = await parse(inputFile, inputFormat);
-    !isAndroid && memoryCache.set(cacheKey, result);
     if (useDiskCache) {
         try {
             const cache = await diskCache.instance();
@@ -240,30 +196,12 @@ export async function readCharacterData(inputFile, inputFormat = 'png', precompu
 }
 
 /**
- * THE read seam for a character that lives in the library. Every server-side "give me this card's real
- * content" must come through here rather than calling readCharacterData() on the PNG directly.
- *
- * Since the residency migration (2026-09, docs/design/character-data-residency-redesign.md) a metadata-only
- * edit - description, personality, scenario, greetings, extensions, a rename, anything that isn't image bytes -
- * is persisted to the metadata db and the PNG is deliberately left untouched, stale chunk and all. So the file
- * on disk is only the current copy for cards whose content and image last changed together. `card_json` is
- * non-NULL exactly when it is not (see that column's SCHEMA_SQL comment), and this is the function that
- * resolves the two into one answer.
- *
- * Two things this must NOT be turned into:
- *   - a wrapper around readCharacterData()'s cache. That cache is keyed `${path}-${mtimeMs}` and a db-only
- *     write moves neither, so it cannot represent these edits at all. The db lookup goes first, always, and
- *     the cached PNG parse is reached only on the NULL branch where the file genuinely is current.
- *   - a reader for arbitrary PNGs. An upload sitting in a temp directory, a file being imported, a byaf/charx
- *     extraction - none of those have a library row and all of them should keep calling readCharacterData()
- *     directly. `avatar` here means a real member of `directories.characters`.
+ * Resolves the metadata db vs. the (possibly stale) PNG chunk. Only for characters already in the library - use readCharacterData() directly for arbitrary PNGs.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {string} avatar Avatar filename, e.g. `Alice.png`
- * @param {string} [filePath] The card's path, when the caller already built it - saves rebuilding the join.
- * @param {fs.Stats} [precomputedStat] Passed straight through to readCharacterData() on the file branch only -
- * see getCacheKey()'s doc comment. Never used on the db branch, which has no stat to save.
- * @returns {Promise<string|undefined>} The card JSON, or `undefined` if the card cannot be read at all (same
- * contract as readCharacterData(), so existing `=== undefined` checks keep working unchanged).
+ * @param {string} [filePath] The card's path, when the caller already built it.
+ * @param {fs.Stats} [precomputedStat] Passed through to readCharacterData() on the file branch only.
+ * @returns {Promise<string|undefined>} The card JSON, or `undefined` if unreadable.
  */
 export async function readCardContent(directories, avatar, filePath = undefined, precomputedStat = undefined) {
     const parked = await getCharacterCardJson(directories, avatar);
@@ -272,11 +210,7 @@ export async function readCardContent(directories, avatar, filePath = undefined,
 }
 
 /**
- * Every caller of readCardContent() sees `data.first_mes` (never the top-level v1 mirror) for a card whose two
- * copies disagree - corrected here, in the read seam itself, rather than by a separate scan. A card that
- * disagrees gets its correction parked in the metadata store (never the PNG - the residency migration's own
- * invariant: a metadata-only change never rewrites image bytes) so every later read of the same card returns
- * the corrected value without re-detecting or re-fixing anything.
+ * Corrects `data.first_mes` vs. the top-level v1 mirror when they disagree, persisting the fix to the metadata store (never the PNG).
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {string} avatar
  * @param {string} [filePath]
@@ -290,10 +224,10 @@ async function correctFirstMesDriftOnRead(directories, avatar, filePath, raw) {
     try {
         card = JSON.parse(raw);
     } catch {
-        return raw; // Not this function's job - same "unparseable is a separate pre-existing problem" posture elsewhere in this file.
+        return raw;
     }
 
-    if (card.spec === undefined || _.isUndefined(card.data)) return raw; // Plain V1 card, or a V2 card missing its `data` block - nothing to compare against.
+    if (card.spec === undefined || _.isUndefined(card.data)) return raw;
     const v2FirstMes = card.data.first_mes;
     if (_.isUndefined(v2FirstMes) || (!_.isUndefined(card.first_mes) && String(card.first_mes) === String(v2FirstMes))) return raw;
 
@@ -302,7 +236,7 @@ async function correctFirstMesDriftOnRead(directories, avatar, filePath, raw) {
 
     try {
         const stat = await fsPromises.stat(filePath ?? path.join(directories.characters, avatar));
-        await upsertCharacterFromWrite(directories, avatar, corrected, stat.mtimeMs, null, null, true);
+        await upsertCharacterFromWrite(directories, avatar, corrected, stat.mtimeMs);
     } catch (err) {
         console.debug(`[first-mes-repair] Could not persist the fix for "${avatar}" (will just retry on its next read):`, err.message);
     }
@@ -311,18 +245,7 @@ async function correctFirstMesDriftOnRead(directories, avatar, filePath, raw) {
 }
 
 /**
- * Builds the bytes of a self-contained, shareable PNG for `avatar`: the card's image, carrying a CURRENT
- * embedded tEXt chunk, regardless of whether the copy on disk had one.
- *
- * This is the export-compat half of the residency migration, and it is why letting the stored PNG go stale is
- * safe. A card handed to a user - downloaded, exported, duplicated, shared to another tool that only knows how
- * to read the chunk - has to be correct and current, so every one of those paths materializes through here
- * instead of streaming the file.
- *
- * Materialization is in-memory and does NOT write the character's own file. That is deliberate: export is a
- * read-shaped action a user can trigger repeatedly (and in bulk), and having it mutate the library would put
- * writes, mtime churn and reconciler drift on a path that conceptually only looks. The stored file staying
- * stale costs nothing, because nothing serves it without coming through here first.
+ * Builds a shareable PNG with a CURRENT tEXt chunk, even when the stored file's chunk is stale. In-memory only - never writes the character's own file.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {string} avatar Avatar filename, e.g. `Alice.png`
  * @param {string} [filePath] The card's path, when the caller already built it.
@@ -333,8 +256,6 @@ export async function materializeCardPng(directories, avatar, filePath = undefin
     const rawBuffer = await fsPromises.readFile(imagePath);
     const parked = await getCharacterCardJson(directories, avatar);
     if (parked === null) {
-        // The file's own chunk is current - hand back the bytes exactly as stored. Not just an optimization:
-        // re-encoding a card that didn't need it would churn every export's output for no reason.
         const cardJson = read(rawBuffer);
         return cardJson === undefined || cardJson === null ? null : { buffer: rawBuffer, cardJson };
     }
@@ -342,22 +263,12 @@ export async function materializeCardPng(directories, avatar, filePath = undefin
 }
 
 /**
- * Fires the phase-1 metadata-store write-path hook (character-metadata-db.js's upsertCharacterFromWrite())
- * right after a character PNG write has already landed on disk. Stats the file itself rather than threading a
- * pre-fetched mtime through every writeCharacterData() caller - one extra stat on a write path (an infrequent,
- * user-initiated action) is a non-issue; it's per-request reads that this design's server-IO work is about, not
- * this. Never lets a metadata-store failure fail the character save itself - see this function's callers.
+ * Never lets a metadata-store failure fail the character save itself.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {string} avatar Filename (with .png) that was just written
  * @param {string} data The Spec-V2 JSON string that was just written
- * @param {string|null} [contentHash] sha256 hex digest of the raw uploaded source-file bytes, when this write
- * came from `/import` - see writeCharacterData()'s own param and upsertCharacterFromWrite()'s doc comment.
- * @param {string|null} [avatarIdentityHash] computeAvatarIdentityHashFromChunks() of the image bytes actually
- * written - callers that just performed a real image write (writeCardToFile()/writeCardFromChunks()'s own
- * return value, or computeAvatarIdentityHashFromImageBuffer() for the crop/buffer-upload path) pass it
- * through here; a caller with no new image bytes to report (e.g. /rename, which never touches pixels) omits
- * it - see upsertCharacterFromWrite()'s own doc comment for why `null` there means "don't touch whatever is
- * already stored", not "clear it".
+ * @param {string|null} [contentHash]
+ * @param {string|null} [avatarIdentityHash] `null` means "don't touch whatever is already stored", not "clear it".
  * @returns {Promise<void>}
  */
 export async function fireMetadataUpsertHook(directories, avatar, data, contentHash = null, avatarIdentityHash = null) {
@@ -365,42 +276,15 @@ export async function fireMetadataUpsertHook(directories, avatar, data, contentH
         const stat = await fsPromises.stat(path.join(directories.characters, avatar));
         await upsertCharacterFromWrite(directories, avatar, data, stat.mtimeMs, contentHash, avatarIdentityHash);
     } catch (err) {
-        // NOT "the reconciler will catch it". That was false, and it hid a real dropped write for as long as it
-        // stood. reconcile() only ever processes files that have NO row yet: it early-returns unless the
-        // characters DIRECTORY mtime changed (editing a file's contents doesn't change that), and even when it
-        // does run it filters to `newFiles`. A row that exists but is stale is invisible to it, permanently.
-        // The other candidate, the fs.watch watcher, fires on mtime and would sometimes catch this - but it is
-        // plain fs.watch here, whose inotify queue overflows silently at 16384 events with no error event
-        // (measured: 183,616 events dropped during a busy event loop), which is exactly the bulk-import
-        // conditions that produce this failure in the first place.
-        //
-        // So this is a real, unrecovered failure and it says so. The lock-contention case that used to land
-        // here - a concurrent bulk pass holding the write lock - is now handled where it belongs, by
-        // BEGIN IMMEDIATE plus bounded retry in sqlite-engine.js, rather than by hoping.
+        // The reconciler only picks up files with no row yet, so a stale existing row is invisible to it.
         console.error(`[character-metadata] Failed to update the metadata store for "${avatar}" after its character write succeeded. The row is now STALE and nothing will repair it automatically - re-save the character, or run POST /api/characters/metadata/rescan.`, err);
     }
 }
 
 /**
- * Live-write-path counterpart to scripts/reclaim-character-reflinks.mjs's one-time historical reclaim -
- * finds a DIFFERENT already-on-disk character whose `content_identity_hash` matches the card about to be
- * written, so writeCharacterData()'s fast path can attempt to reflink against that live file's extents
- * instead of (or in addition to, see writeCardFromChunks()'s own doc comment on ordering) `inputFile`'s own
- * history. Owner decision: since every write here already goes through the write-then-atomic-rename pattern
- * (see writeSharedPrefixThenAppend()), a target that's some OTHER live, still-mutable character carries no
- * more risk than reflinking against this same character's own prior version already does - no partial state
- * is ever exposed either way.
- *
- * Only ever proposes a candidate PATH - `findCharacterIdByContentIdentityHash()`'s O(1) indexed lookup on
- * `content_identity_hash` covers just the JSON half of the card (see computeContentIdentityHash()'s own doc
- * comment: fav/chat/create_date stripped, image bytes never enter that hash at all), so a hash match here is
- * never proof the two characters' actual portraits match. writeCardFromChunks() is what does the real,
- * byte-level verification against the candidate's own current file before ever trusting it - this function
- * fails open (`null`) on anything short of "a different row's hash matches and its file is currently
- * readable," same posture as every other content_identity_hash consumer in this codebase.
+ * Finds a DIFFERENT on-disk character with a matching `content_identity_hash`, as a reflink candidate for writeCharacterData(). Only a candidate PATH - byte-level verification still happens in writeCardFromChunks().
  * @param {import('../users.js').UserDirectoryList} directories
- * @param {string} selfAvatar This write's own avatar filename (e.g. `Alice.png`) - excluded from the match so
- * a character can never "match" its own row.
+ * @param {string} selfAvatar This write's own avatar filename - excluded from the match.
  * @param {string} data The Spec-V2 JSON string about to be written.
  * @returns {Promise<string | null>} Absolute path to a different character's current file, or `null`.
  */
@@ -434,38 +318,12 @@ async function findCrossCharacterReflinkCandidate(directories, selfAvatar, data)
  * @param {string} outputFile - Target image file name
  * @param {import('express').Request} request - Express request obejct
  * @param {Crop|undefined} crop - Crop parameters
- * @param {string|null} [contentHash] - sha256 hex digest of the raw uploaded source-file bytes this write came
- * from (bulk-import dedup) - only `/import`'s format importers have one of these to pass; every other caller
- * omits it and the write proceeds exactly as before (see fireMetadataUpsertHook()'s doc comment).
- * @param {Set<string>|null} [freshFieldPaths] - V2 dot-paths (e.g. `'data.alternate_greetings'`) that the
- * caller has already, independently confirmed match current on-disk state via the per-field/body content-hash
- * conflict check it ran before calling this function (see `/edit`'s `x-content-hashes` check and
- * `mergeCharacterUpdate()`'s `_loadedFieldHashes` check). Only a caller that actually ran that check and got a
- * match for a given path may include it here - this is not a caller-asserted "trust me" flag, it's a pass-through
- * of a verification the caller already did. Only `/edit` and `/merge-attributes` currently pass anything;
- * every other caller omits it and the write proceeds exactly as before.
- * @returns {Promise<true>} Always resolves to `true` on success - a failed write rejects instead of resolving
- * to a falsy value, so a caller can't observe failure by forgetting to check a return value.
+ * @param {string|null} [contentHash] - sha256 hex digest of the raw uploaded source-file bytes, when this write came from `/import`.
+ * @param {Set<string>|null} [freshFieldPaths] - V2 dot-paths the caller has already confirmed match current on-disk state.
+ * @returns {Promise<true>} Always resolves to `true` on success - a failed write rejects instead.
  */
 async function writeCharacterData(inputFile, data, outputFile, request, crop = undefined, contentHash = null, freshFieldPaths = null) {
     try {
-        // Reset the cache
-        for (const key of memoryCache.keys()) {
-            if (Buffer.isBuffer(inputFile)) {
-                break;
-            }
-            if (key.startsWith(inputFile)) {
-                memoryCache.delete(key);
-                break;
-            }
-        }
-        // Captured BEFORE this function's own write below touches the file - getCacheKey()'s mtime-embedding
-        // key formula means this is exactly the key any in-flight/future read of `inputFile`'s PRE-write bytes
-        // would have used, so removing it immediately once the write below actually lands is what makes it
-        // stale-safe with no watcher or timer involved (see DiskCache.invalidateKey()'s own doc comment) - a
-        // NEW file (Buffer input, or a path nothing has ever cached) simply has no matching entry to remove,
-        // which is a harmless no-op either way. `null` for a Buffer input, same posture as the memoryCache
-        // reset loop just above.
         const oldDiskCacheKey = (useDiskCache && !Buffer.isBuffer(inputFile)) ? getCacheKey(inputFile) : null;
         /**
          * Read the image, resize, and save it as a PNG into the buffer.
@@ -487,41 +345,12 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
 
         const outputImagePath = path.join(request.user.directories.characters, `${outputFile}.png`);
 
-        // Safety measure against a client-side read bug (2026-08, fixed in afe557551/d8fd090b2 -
-        // getCharacters() was replacing resident characters with shallow projections that lost
-        // alternate_greetings) that could leave a loaded character's alternate_greetings empty in memory
-        // while the file on disk still held the full list. Every create/edit/edit-avatar/edit-attribute/
-        // merge-attributes/import route funnels through this one function (see the write-path-hook comment
-        // below), so this is the single place that can catch an incoming empty array before it clobbers a
-        // non-empty one already on disk.
-        //
-        // The owner has since said a card must support any number of greetings, including a deliberate
-        // delete-to-zero (or delete-to-one, under the first_mes/alternate_greetings split), so "incoming
-        // alternate_greetings is empty, stored one is not" can no longer be blocked unconditionally - that
-        // shape is now also the *legitimate* case. The two are indistinguishable from the payload alone; the
-        // only thing that tells them apart is whether the client's view was actually based on current disk
-        // state, which this function has no way to know on its own. `freshFieldPaths` is how a caller that
-        // *does* know - because it ran the codebase's existing per-field/body content-hash conflict check
-        // (`/edit`'s `x-content-hashes`, `mergeCharacterUpdate()`'s `_loadedFieldHashes`) and got a match for
-        // `data.alternate_greetings` - passes that verification through. When it's present for this path, the
-        // write is a confirmed-deliberate edit and goes through untouched. When it's absent (no caller-side
-        // check ran, or this call site never learned to pass one), this falls back to the original blocking
-        // behavior: refuse the empty-over-non-empty write, keep the existing greetings, and log it. That
-        // fallback still blocks legitimate deletion on any write path that hasn't been wired to prove
-        // freshness (currently: create/edit-avatar/edit-attribute/import) - narrow and conservative on
-        // purpose, same tradeoff the original guard made, now scoped down to just the callers that haven't
-        // caught up rather than all of them. Any failure inside this guard (unparsable data, no existing
-        // file, read error) just skips the guard and lets the write proceed as it would have before.
+        // Guards against a stale in-memory empty alternate_greetings clobbering a non-empty one on disk.
         try {
             const incomingCard = JSON.parse(data);
             const incomingGreetings = incomingCard?.data?.alternate_greetings;
             const greetingsVerifiedFresh = freshFieldPaths instanceof Set && freshFieldPaths.has('data.alternate_greetings');
             if (!greetingsVerifiedFresh && Array.isArray(incomingGreetings) && incomingGreetings.length === 0 && fs.existsSync(outputImagePath)) {
-                // readCardContent(), not a raw parse() of the file: since the residency migration a card's
-                // greetings may live only in the metadata db, with the PNG's chunk holding a stale copy. A
-                // raw parse here would compare the incoming write against pre-edit content and "restore"
-                // greetings the user already deleted - the exact class of silent data corruption this guard
-                // exists to prevent, just pointed the wrong way.
                 const existingRaw = await readCardContent(request.user.directories, `${outputFile}.png`, outputImagePath);
                 const existingCard = JSON.parse(existingRaw);
                 const existingGreetings = existingCard?.data?.alternate_greetings;
@@ -535,54 +364,21 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
             // Can't compare - don't block the write on the guard itself.
         }
 
-        // Residency migration (2026-09, docs/design/character-data-residency-redesign.md): a metadata-only
-        // edit must not touch the PNG at all.
-        //
-        // The discriminator is mechanical, not a guess about caller intent: this write changes image bytes if
-        // and only if the source is an in-memory upload (Buffer), a crop was requested, or the source file is
-        // a DIFFERENT file from the target (create-from-default-avatar, /edit with a new upload, /import,
-        // /edit-avatar). When none of those hold, the source and the target are the same existing file and the
-        // ONLY thing this write would change is the trailing tEXt chunk - so the chunk goes to the metadata db
-        // as the authoritative copy and the file is left completely alone, bytes and mtime both.
-        //
-        // Leaving the mtime alone is load-bearing, not incidental: the watcher and the reconciler both use
-        // "row.file_mtime != the file's mtime" as their definition of external drift, and a drift finding
-        // re-parses the PNG and clears card_json. Not touching the file is what keeps a metadata-only edit from
-        // looking like someone else's edit and getting rolled back to the stale chunk on the next pass.
-        //
-        // The PNG is regenerated from card_json on demand, in memory, by the paths that hand a user a
-        // self-contained file (materializeCardPng() - /export, /duplicate). Export compatibility with other
-        // tools is unaffected: what leaves the server always carries a current chunk.
+        // Must not touch the PNG's mtime, or the watcher/reconciler treats it as external drift and rolls it back to the stale chunk.
         const isMetadataOnlyWrite = !Buffer.isBuffer(inputFile)
             && crop === undefined
             && path.resolve(inputFile) === path.resolve(outputImagePath)
             && fs.existsSync(outputImagePath);
 
         if (isMetadataOnlyWrite) {
-            // The row keeps the file's CURRENT mtime, since the file is not being written. Stat'ing here rather
-            // than letting fireMetadataUpsertHook() do it after the fact is the same one stat either way; doing
-            // it inline just makes it obvious that the value recorded is the unchanged file's, not a new one's.
             const stat = await fsPromises.stat(outputImagePath);
-            await upsertCharacterFromWrite(request.user.directories, `${outputFile}.png`, data, stat.mtimeMs, contentHash, null, true)
+            await upsertCharacterFromWrite(request.user.directories, `${outputFile}.png`, data, stat.mtimeMs, contentHash, null)
                 .catch(err => console.error('[character-metadata] Failed to persist a metadata-only character write:', err));
-            // The file did not change, so its mtime-keyed cache entries are still faithful to the file - but
-            // they are no longer faithful to the CARD, and any direct readCharacterData() caller that hasn't
-            // been moved onto readCardContent() would serve pre-edit content from them. Dropping them costs one
-            // reparse at worst and removes a whole class of stale-read bug.
-            memoryCache.delete(getCacheKey(outputImagePath, stat));
             if (oldDiskCacheKey) await diskCache.invalidateKey(oldDiskCacheKey);
             return true;
         }
 
-        // Fast path: when the source is already a file on disk and no crop is requested, its image data
-        // is going into the output completely unchanged (crop is the only thing that would actually
-        // touch pixels) - writeCardToFile() reflinks that unchanged portion straight from `inputFile`
-        // instead of paying a full-file rewrite for a change that, in the common case, only ever touches
-        // a few KB of trailing metadata. Verifies its own fast-path assumption byte-for-byte before ever
-        // touching disk, and falls back to an ordinary full write on its own if that verification (or the
-        // reflink itself) doesn't pan out - so correctness here never depends on the optimization
-        // succeeding. Buffer input (in-memory upload) and crop both skip straight to the slow path below,
-        // since there's no on-disk source file to reflink from / the image data itself is changing.
+        // Fast path: unchanged image bytes reflink straight from inputFile instead of a full rewrite.
         if (!Buffer.isBuffer(inputFile) && crop === undefined) {
             try {
                 const crossReflinkCandidatePath = await findCrossCharacterReflinkCandidate(request.user.directories, `${outputFile}.png`, data);
@@ -599,20 +395,11 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
 
         // Get the chunks
         const outputImage = write(inputImage, data);
-        // Slow path (buffer upload, or a crop that legitimately changes pixels) - no on-disk chunk list to
-        // reuse the way the fast path's writeCardToFile() does, so this pays its own extract() over the
-        // already-built `outputImage` - see computeAvatarIdentityHashFromImageBuffer()'s own doc comment.
+        // Slow path (buffer upload, or a real crop) - no on-disk chunk list to reuse, so hash the built buffer.
         const avatarIdentityHash = computeAvatarIdentityHashFromImageBuffer(outputImage);
 
         writeFileAtomicSync(outputImagePath, outputImage);
 
-        // Phase-1 metadata-store write-path hook (see character-metadata-db.js's header on why this is the one
-        // choke point every character create/edit/edit-avatar/edit-attribute/merge-attributes/import route
-        // needs, rather than a hook duplicated at each of those call sites): the row this creates/updates for
-        // `outputFile` gets a fresh date_added if it's genuinely new. /rename is the one caller that needs
-        // something different (the *same* character continuing to exist under a new id/filename, so date_added
-        // must carry over rather than reset, and its chat-stats need recomputing once the chats folder has
-        // actually been moved) - see that route for how it corrects this generic row afterward.
         await fireMetadataUpsertHook(request.user.directories, `${outputFile}.png`, data, contentHash, avatarIdentityHash);
         if (oldDiskCacheKey) await diskCache.invalidateKey(oldDiskCacheKey);
 
@@ -664,19 +451,11 @@ export async function applyAvatarCropResize(jimp, crop) {
     return await image.getBuffer(JimpMime.png);
 }
 
-// First 8 bytes every PNG file starts with - used below to recognize "this is already a PNG" without paying
-// for a full Jimp decode just to answer that question.
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 /**
- * Parses an image buffer and applies crop if defined.
- *
- * When no crop is requested and `buffer` is already a PNG, the Jimp decode/cover/re-encode round trip is
- * skipped entirely and the original bytes are returned untouched - `cover()`'ing an image to its own existing
- * dimensions is a no-op transform that still produces different output bytes than the source encoder did
- * (different compressor, stripped ancillary chunks that aren't `chara`/`ccv3`), which is pure churn when
- * nothing was actually asked to change. A crop, or a non-PNG source that genuinely needs format conversion,
- * still goes through Jimp as before - this only removes the reencode when there's nothing for it to do.
+ * Parses an image buffer and applies crop if defined. Skips the Jimp round trip (and its re-encode churn)
+ * when no crop is requested and `buffer` is already a PNG.
  * @param {Buffer} buffer Buffer of the image
  * @param {Crop|undefined} [crop] Crop parameters
  * @returns {Promise<Buffer>} Image buffer
@@ -690,14 +469,7 @@ async function parseImageBuffer(buffer, crop) {
 }
 
 /**
- * Reads an image file and applies crop if defined.
- *
- * Same no-op-reencode avoidance as parseImageBuffer() above, for the file-path input case (the common one for
- * `/import`'s PNG importer and for the YAML/JSON importers' shared DEFAULT_AVATAR_PATH) - see that function's
- * doc comment for why skipping the Jimp round trip when there is genuinely nothing to change is safe. The
- * `catch` below already proved raw-bytes-passthrough is safe for a PNG Jimp can't decode (e.g. an APNG); this
- * generalizes the same passthrough to the far more common case of a plain PNG Jimp *could* decode but doesn't
- * need to, because no crop was requested.
+ * Reads an image file and applies crop if defined. Same no-op-reencode avoidance as parseImageBuffer().
  * @param {string} imgPath Path to the image file
  * @param {Crop|undefined} crop Crop parameters
  * @returns {Promise<Buffer>} Image buffer
@@ -735,22 +507,14 @@ async function tryReadImage(imgPath, crop) {
 export const processCharacter = async (item, directories, { shallow, cardJson = undefined }) => {
     try {
         const imgFile = path.join(directories.characters, item);
-        // One stat, reused for both the cache key (readCharacterData -> getCacheKey) and date_added below -
-        // see getCacheKey()'s doc comment. Left undefined on ENOENT; readCharacterData() will hit the same
-        // ENOENT via its own fallback stat and throw out of parse(), landing in this function's catch block
-        // below without ever reaching the `charStat.ctimeMs` read.
+        // Reused for both the cache key and date_added; left undefined on ENOENT.
         let charStat;
         try {
             charStat = fs.statSync(imgFile);
         } catch (err) {
             if (err.code !== 'ENOENT') throw err;
         }
-        // `cardJson` is the residency-migration override: the authoritative content for this card when its PNG
-        // chunk is stale. A whole-library caller (`/all`) prefetches the entire stale set in one query and
-        // passes the hit through here, so this stays one db round trip for the whole pass rather than one per
-        // character; a single-card caller (`/get`) resolves it through readCardContent() instead. `undefined`
-        // means "nothing prefetched, resolve it yourself"; a caller that prefetched and found nothing for this
-        // id passes `null`, which says "already resolved, the file is current" and skips the lookup entirely.
+        // `cardJson`: `undefined` means resolve it here; `null` means the caller already resolved it (file is current); a value is a prefetched hit.
         const imgData = cardJson === undefined
             ? await readCardContent(directories, item, imgFile, charStat)
             : (cardJson ?? await readCharacterData(imgFile, 'png', charStat));
@@ -968,22 +732,16 @@ async function importFromJson(uploadPath, { request, contentHash }, preservedFil
 }
 
 /**
- * Pure (no file I/O, no sqlite) counterpart to importFromJson()'s per-spec business logic above - factored out
- * so local-import-scan.js's headless pipeline (2026-08 worker-owned-write extension) can drive the identical
- * spec dispatch/sanitize/normalize logic from a raw JSON text it already has in hand (its worker read the
- * source file's bytes once and handed the text straight back - see local-import-worker.js's own header) instead
- * of importFromJson()'s own uploadPath-based flow, which assumes a file on disk to read and delete.
- * @param {string} rawText Raw JSON text (same contract as fs.readFileSync(uploadPath, 'utf8') above).
+ * Pure (no file I/O, no sqlite) counterpart to importFromJson()'s per-spec logic above.
+ * @param {string} rawText Raw JSON text
  * @param {import('../users.js').UserDirectoryList} directories
- * @returns {string | null} The final Spec V2 JSON string ready to embed via write()/writeCardToFile(), or
- * `null` if `rawText` matches none of the recognized shapes (mirrors importFromJson()'s own '' fallthrough).
+ * @returns {string | null} The final Spec V2 JSON string, or `null` if `rawText` matches no recognized shape.
  */
 export function buildJsonImportData(rawText, directories) {
     let jsonData = JSON.parse(rawText);
 
     if (jsonData.spec !== undefined) {
         importRisuSprites(directories, jsonData);
-        // Same pre-mutation snapshot as buildPngImportData() below, and for the same reason - see its comment.
         const rawName = jsonData.data?.name || jsonData.name;
         if (jsonData.data?.name) {
             jsonData.data.name = sanitize(jsonData.data.name);
@@ -991,8 +749,6 @@ export function buildJsonImportData(rawText, directories) {
         jsonData.name = sanitize(String(rawName || ''));
         jsonData = readFromV2(jsonData);
         jsonData.create_date = new Date().toISOString();
-        // Last mutation before stringify - see omitInstallLocalFields()'s own doc comment on why import no
-        // longer writes fav/chat into the card at all (the metadata store is authoritative for that state now).
         omitInstallLocalFields(jsonData);
         return JSON.stringify(jsonData);
     } else if (jsonData.name !== undefined) {
@@ -1062,8 +818,7 @@ async function importFromPng(uploadPath, { request, contentHash }, preservedFile
     if (data === null) return '';
 
     const pngName = preservedFileName || mintCharacterId(request.user.directories);
-    // The temp upload gets cleaned up whether the write below succeeds or throws - a failed write must not
-    // leave the staged upload behind just because it took the throw path out of this function.
+    // Temp upload gets cleaned up whether the write succeeds or throws.
     try {
         await writeCharacterData(uploadPath, data, pngName, request, undefined, contentHash);
     } finally {
@@ -1073,27 +828,16 @@ async function importFromPng(uploadPath, { request, contentHash }, preservedFile
 }
 
 /**
- * Pure (no file I/O, no sqlite) counterpart to importFromPng()'s per-spec business logic above - factored out
- * so local-import-scan.js's headless pipeline (2026-08 worker-owned-write extension) can drive the identical
- * spec dispatch/sanitize/normalize logic from a raw card text its worker already extracted (see
- * local-import-worker.js's own header: the worker reads a discovered PNG's bytes exactly once, extracts its
- * chunks once, and hands the decoded 'chara'/'ccv3' text straight back - the same ccv3-preferring read()
- * readCharacterData() above uses) instead of importFromPng()'s own uploadPath-based flow, which assumes a
- * staged file on disk to read.
- * @param {string} rawText Raw embedded card JSON text (same contract as readCharacterData()'s own return value).
+ * Pure (no file I/O, no sqlite) counterpart to importFromPng()'s per-spec logic above.
+ * @param {string} rawText Raw embedded card JSON text
  * @param {import('../users.js').UserDirectoryList} directories
- * @returns {string | null} The final Spec V2 JSON string ready to embed via writeCardToFile(), or `null` if
- * `rawText` has neither `spec` nor `name` (mirrors importFromPng()'s own '' fallthrough).
+ * @returns {string | null} The final Spec V2 JSON string, or `null` if `rawText` has neither `spec` nor `name`.
  */
 export function buildPngImportData(rawText, directories) {
     let jsonData = JSON.parse(rawText);
 
-    // Read the pre-sanitize name once and reuse it for the fallback below - sanitize() below can turn a
-    // non-empty-but-all-illegal name (e.g. ".") into an empty string, and re-reading jsonData.data.name AFTER
-    // that mutation would then see that empty string as falsy and fall through to jsonData.name, which is
-    // `undefined` on essentially every v2/v3 card (they only ever carry data.name). sanitize(undefined) throws
-    // "Input must be string" - that's the exact crash this guarded against. Coercing through String(... || '')
-    // also makes this tolerant of a card with no name field anywhere, which previously crashed the same way.
+    // Read the pre-sanitize name once: sanitize() can turn an all-illegal name into '', and re-reading it
+    // after that mutation would wrongly fall through to jsonData.name (usually undefined on v2/v3 cards).
     const rawName = jsonData.data?.name || jsonData.name;
     if (jsonData.data?.name) {
         jsonData.data.name = sanitize(jsonData.data.name);
@@ -1142,10 +886,7 @@ router.post('/create', getFileNameValidationFunction('file_name'), async functio
 
         request.body.ch_name = sanitize(request.body.ch_name);
 
-        // Favorite status is db-authoritative from the moment a row exists (see character-metadata-db.js's
-        // setCharacterFav() doc comment) - the card written below never carries `fav` at all, so read the
-        // requested initial state here and seed the row with it (setCharacterFav(), further down) right after
-        // writeCharacterData()'s own metadata-upsert hook has genuinely INSERTed it.
+        // Favorite status is db-authoritative once a row exists; the card written below never carries `fav`.
         const initialFav = request.body.fav === 'true' || request.body.fav === true;
         const charaData = charaFormatData(request.body, request.user.directories);
         omitFavField(charaData);
@@ -1180,12 +921,7 @@ router.post('/create', getFileNameValidationFunction('file_name'), async functio
 });
 
 /**
- * "Rename" a character - under Option A (design doc §2.2, §9 phase 4d) the avatar filename IS the immutable id,
- * so a display-name change is a pure card-data edit: no file move, no chats-directory copy, no
- * tag/charLore/note/active_character fan-out, no "please rename your sprites folder" toast. The route path and
- * request/response shape are unchanged (still `{ avatar_url, new_name }` in, `{ avatar }` out) so existing
- * callers - client and extensions alike - don't need to know identity stopped moving; `avatar` in the response
- * is now always identical to the `avatar_url` that was sent in.
+ * "Rename" a character. The avatar filename is the immutable id, so this is a pure card-data edit - no file move, no chats-directory copy.
  * @param  {import("express").Request} request The HTTP request object.
  * @param  {import("express").Response} response The HTTP response object.
  * @return {Promise<void>}
@@ -1208,10 +944,7 @@ router.post('/rename', validateAvatarUrlMiddleware, async function (request, res
         _.set(data, 'name', newName);
         const newData = JSON.stringify(data);
 
-        // Rewrites the PNG in place at the SAME path/id. writeCharacterData()'s own write-path hook
-        // (upsertCharacterFromWrite) upserts the existing row by id, so `name`/`name_fold`/`shallow_json`
-        // refresh but `date_added` stays frozen (its ON CONFLICT clause never touches that column) - no separate
-        // renameCharacterRow() call is needed anymore, because the id never changes.
+        // Leaves date_added frozen.
         await writeCharacterData(avatarPath, newData, path.parse(avatarName).name, request);
 
         return response.send({ avatar: avatarName });
@@ -1234,16 +967,8 @@ router.post('/edit', validateAvatarUrlMiddleware, async function (request, respo
         return;
     }
 
-    // Per-field content-hash conflict detection: the client sends the hashes it computed at load time;
-    // the server reads the current card, computes fresh hashes, and rejects with 409 if any field group
-    // the client loaded has since changed. Unlike a rev counter, these are derived from the content itself
-    // and cannot drift - any write path that changes the card automatically changes its hashes, by
-    // construction, with no separate bookkeeping any endpoint could forget to maintain.
+    // Per-field content-hash conflict detection: rejects with 409 if a field group the client loaded has since changed.
     const contentHashesHeader = request.headers['x-content-hashes'];
-    // Paths this request has proven (via the content-hash check just below) match current on-disk state -
-    // threaded through to writeCharacterData()'s own alternate_greetings guard so a confirmed-fresh empty
-    // array isn't mistaken for the stale/corrupted-read shape that guard exists to catch. See that function's
-    // doc comment on `freshFieldPaths` for the full reasoning.
     let freshFieldPaths = null;
     if (contentHashesHeader) {
         try {
@@ -1264,9 +989,7 @@ router.post('/edit', validateAvatarUrlMiddleware, async function (request, respo
                 if (conflicts.length > 0) {
                     return response.status(409).json({ error: 'conflict', conflicts });
                 }
-                // The body hash matched current disk, and alternate_greetings is one of the fields that hash
-                // covers (characterCardBodyFingerprint() in hash-utils.js), so this request's view of it is
-                // confirmed current, not just assumed current.
+                // The body hash covers alternate_greetings, so a match confirms this request's view is current.
                 if (clientHashes.body !== undefined) {
                     freshFieldPaths = new Set(['data.alternate_greetings']);
                 }
@@ -1277,21 +1000,10 @@ router.post('/edit', validateAvatarUrlMiddleware, async function (request, respo
     }
 
     let char = charaFormatData(request.body, request.user.directories);
-    // Chat pointer is db-authoritative once a row exists (character-metadata-db.js's setCharacterActiveChat()
-    // doc comment, 2026-08 chat-pointer db migration) - capture the requested value here, BEFORE it's kept out
-    // of the card (omitChatField() below), so it can be seeded into the row after the write succeeds (see
-    // below - same "seed after the row exists" shape /create's initialFav already uses).
+    // fav/chat are db-authoritative once a row exists; kept out of the card.
     const requestedChat = request.body.chat;
     char.create_date = request.body.create_date;
-    // Favorite status is db-authoritative once a row exists (character-metadata-db.js's setCharacterFav() doc
-    // comment) - an ordinary card edit must not carry `fav` back into the file at all, regardless of whatever
-    // the request body's own `fav` field says (the client no longer sends a meaningful one - see script.js's
-    // favorite-button click handler, which now calls the dedicated /fav route directly instead of folding a
-    // toggle into this save).
     omitFavField(char);
-    // Same carve-out as fav just above, now for `chat` (2026-08 chat-pointer db migration) - an ordinary card
-    // edit must not carry `chat` back into the file at all either; requestedChat (captured above) is applied
-    // through setCharacterActiveChat() after the write succeeds instead.
     omitChatField(char);
     char = JSON.stringify(char);
     let targetFile = (request.body.avatar_url).replace('.png', '');
@@ -1419,25 +1131,14 @@ router.post('/edit-attribute', validateAvatarUrlMiddleware, async function (requ
     }
 });
 
-/**
- * Sentinel value that signals a field should be completely removed (unset)
- * from the character card rather than being set to any value. Use this in
- * the merge payload wherever a key should be deleted.
- *
- * Both the server and the frontend share this constant so that callers can
- * explicitly opt into deletion without overloading `null`.
- * @type {string}
- */
+/** Signals a field should be deleted rather than set, without overloading `null`. Shared with the frontend. */
 const UNSET_SENTINEL = '__@@UNSET@@__';
 
 /** Maximum number of characters processed in parallel during bulk merge */
 const BULK_MERGE_CONCURRENCY = 10;
 
 /**
- * Recursively walks `source` and removes any key from `target` whose
- * corresponding value in `source` equals the {@link UNSET_SENTINEL}.
- * Called after {@link deepMerge} so that the sentinel gets replaced by
- * an actual key deletion.
+ * Removes any key from `target` whose value in `source` is {@link UNSET_SENTINEL}. Called after {@link deepMerge}.
  * @param {object} target The merged character object to clean up
  * @param {object} source The original update payload (pre-merge clone)
  */
@@ -1452,14 +1153,12 @@ function processUnsetSentinels(target, source) {
 }
 
 /**
- * Reads a character card, applies a merge update (with sentinel-based
- * unsetting), validates the result, and writes it back.
  * @param {string} avatarPath Full path to the character PNG
  * @param {string} avatar     Avatar filename (e.g. "char.png")
  * @param {object} updateData The merge payload to apply
  * @param {import("express").Request} request Express request object
- * @param {((data: any) => boolean) | null} [shouldSkip] Optional function to determine if a character should be skipped based on its original data (used for bulk merge filtering)
- * @returns {Promise<{ok: boolean, error?: string, skipped?: boolean}>} Result of the merge operation, including any validation error
+ * @param {((data: any) => boolean) | null} [shouldSkip] Used for bulk merge filtering.
+ * @returns {Promise<{ok: boolean, error?: string, skipped?: boolean}>}
  */
 async function mergeCharacterUpdate(avatarPath, avatar, updateData, request, shouldSkip = null) {
     const pngStringData = await readCardContent(request.user.directories, avatar, avatarPath);
@@ -1477,33 +1176,18 @@ async function mergeCharacterUpdate(avatarPath, avatar, updateData, request, sho
     _.unset(update, 'json_data');
     _.unset(character, 'json_data');
 
-    // Greetings no longer land through the generic field-merge path - the six named /greetings/*
-    // operations (added/migrated onto in this same change) are now the only way a client is allowed
-    // to change first_mes/alternate_greetings, since they're the only path that enforces no empty
-    // entries, stable order, a separately-tracked default, and delete-only-when-the-caller's-view-
-    // matched-disk. The field-mapping table above writes both V1 (bare `first_mes`,
-    // `alternate_greetings`) and V2 (`data.first_mes`, `data.alternate_greetings`) spellings, so all
-    // four have to be checked or one spelling would still bypass the operations' guarantees.
-    // /api/characters/edit is a deliberate exception - it takes a whole card and doesn't route through
-    // this function, so greetings stay writable wholesale there for upstream parity and extensions.
+    // Greetings must go through the named /greetings/* operations instead, which enforce no empty entries,
+    // stable order, and a tracked default. /edit is exempt - it takes a whole card, not a merge.
     const forbiddenGreetingPaths = ['data.alternate_greetings', 'data.first_mes', 'alternate_greetings', 'first_mes'];
     const touchedGreetingPaths = forbiddenGreetingPaths.filter(p => _.has(update, p));
     if (touchedGreetingPaths.length > 0) {
         return { ok: false, error: 'greeting-fields-forbidden', touchedGreetingPaths };
     }
 
-    // Per-field conflict detection: if the client sent _loadedFieldHashes (a map of V2 data paths
-    // to cyrb53 hashes of their loaded values), check each against the current card. A mismatch
-    // means another session changed that specific field since the client loaded it. This gives
-    // field-granular conflict reporting (not just "body" or "fields"), and only flags a conflict
-    // on fields the client is actually writing - a change to a field the client didn't touch
-    // isn't a conflict at all.
+    // Per-field conflict detection: compare cyrb53 hashes the client loaded against the current card, and
+    // report a conflict only for fields the client is actually writing.
     const loadedFieldHashes = update._loadedFieldHashes;
     delete update._loadedFieldHashes;
-    // Paths this request has proven match current on-disk state, threaded through to
-    // writeCharacterData()'s own alternate_greetings guard - see that function's doc comment on
-    // `freshFieldPaths`. A path only lands here if the caller actually sent a loaded-hash for it AND that
-    // hash matched (the conflict return above already catches a mismatch on any path, this one included).
     let freshFieldPaths = null;
     if (loadedFieldHashes && typeof loadedFieldHashes === 'object') {
         const conflictingFields = [];
@@ -1522,17 +1206,8 @@ async function mergeCharacterUpdate(avatarPath, avatar, updateData, request, sho
         }
     }
 
-    // Favorite status is db-authoritative once a row exists (character-metadata-db.js's setCharacterFav() doc
-    // comment) - a merge payload's `fav`/`data.extensions.fav` (the shape slash-commands.js's /char-attribute
-    // still advertises and sends) must never land in the card file, but it still has to take effect: pull the
-    // intended value out here (merged the normal way first, so `deepMerge`'s existing precedence/nesting rules
-    // decide the winning value exactly like every other field) and apply it through setCharacterFav() after the
-    // write below, instead of writing it at all.
+    // fav/chat are db-authoritative once a row exists; kept out of the card file and applied after the write below.
     const favRequested = _.has(update, 'fav') || _.has(update, 'data.extensions.fav');
-    // Same carve-out as `fav` above, now for `chat` (2026-08 chat-pointer db migration) - a merge payload's
-    // `chat` (the shape script.js's updateRemoteChatName() sends via /merge-attributes) must never land in the
-    // card file either; pull it out here, merge normally so deepMerge's precedence rules decide the winning
-    // value, then apply it through setCharacterActiveChat() after the write below instead of writing it at all.
     const chatRequested = _.has(update, 'chat');
 
     character = deepMerge(character, update);
@@ -1560,23 +1235,7 @@ async function mergeCharacterUpdate(avatarPath, avatar, updateData, request, sho
 }
 
 /**
- * Handle a POST request to edit character properties.
- *
- * Operates in two modes depending on the request body:
- *
- * **Single mode** (default behavior) — when `avatar` (string) is present:
- *   Merges the request body with the selected character and validates the
- *   result against TavernCard V2 specification.
- *
- * **Bulk mode** — when `avatars` (array) is present:
- *   Applies the same merge to multiple characters in parallel. Supports:
- *   - An explicit list of avatars, or all characters when the array is empty
- *   - An optional server-side `filter` so only characters where a given
- *     JSON path exists and is non-null are updated
- *
- * In both modes, any value equal to the sentinel `__@@UNSET@@__` will cause
- * that key to be **deleted** from the character card instead of being set.
- *
+ * Single mode (`avatar` string) merges one character; bulk mode (`avatars` array) merges many in parallel, optionally filtered.
  * @param {import("express").Request} request - The HTTP request object
  * @param {import("express").Response} response - The HTTP response object
  * @returns {void}
@@ -1591,7 +1250,6 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
                 return response.status(400).send({ message: 'No valid update data provided.' });
             }
 
-            // Determine which avatar files to process
             let targetAvatars;
             if (avatars.length > 0) {
                 for (const avatar of avatars) {
@@ -1601,7 +1259,6 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
                 }
                 targetAvatars = avatars;
             } else {
-                // Empty array → scan all characters in the directory
                 const files = fs.readdirSync(request.user.directories.characters);
                 targetAvatars = files.filter(file => path.extname(file).toLowerCase() === '.png');
             }
@@ -1610,10 +1267,6 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
             const skipped = [];
             const failed = [];
 
-            /**
-             * Process a single character in bulk: read, filter, merge, validate, write.
-             * @param {string} avatar Avatar filename
-             */
             const processOne = async (avatar) => {
                 const avatarPath = path.join(request.user.directories.characters, avatar);
 
@@ -1621,7 +1274,6 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
                     /** @type {(character: object) => boolean} */
                     let shouldSkip = () => false;
 
-                    // Apply optional server-side filter before updating the card
                     if (filter && typeof filter.path === 'string') {
                         shouldSkip = (character) => {
                             const value = _.get(character, filter.path);
@@ -1644,7 +1296,6 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
                 }
             };
 
-            // Process in parallel with a concurrency limit
             for (let i = 0; i < targetAvatars.length; i += BULK_MERGE_CONCURRENCY) {
                 const batch = targetAvatars.slice(i, i + BULK_MERGE_CONCURRENCY);
                 await Promise.allSettled(batch.map(processOne));
@@ -1677,30 +1328,10 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
     }
 });
 
-// ---------------------------------------------------------------------------
-//  Stage 1 (additive only) of the greeting-list migration - named, position-addressed operations on
-//  a character's greeting list, alongside the existing first_mes/alternate_greetings-as-fields write
-//  path (/merge-attributes, /edit). Nothing switches over to these yet; the client keeps saving
-//  greetings exactly as it does today. Mirrors the shape chats.js's message/* routes use for the same
-//  reason: a save that hands over a whole array can't refuse a stale write or an empty entry, a save
-//  that names one operation on one target can.
-//
-//  Every operation addresses a position in the ONE unified greeting list - see greeting-list.js for
-//  the model and the first_mes/alternate_greetings split these operations never mention in their
-//  request or response shape. Ops that target an existing greeting also carry a precondition hash
-//  (hashGreetingText() in greeting-ops.js) over the text the caller believes is there; a mismatch
-//  means the list moved under the caller since it was loaded, and the op refuses rather than
-//  guessing (409, `{ ok: false, reason }`).
-// ---------------------------------------------------------------------------
+// Named, position-addressed operations on a character's greeting list; ops targeting an existing greeting carry a precondition hash and refuse rather than guess on mismatch.
 
 /**
- * Reads a character card fresh from disk, applies a single greeting-list operation to it, and writes
- * the result back through writeCharacterData() - the same read-modify-write shape
- * mergeCharacterUpdate() uses just above. `freshFieldPaths` is always passed as
- * `['data.alternate_greetings']`: this function's own read is what the operation validated its
- * precondition hash against (for ops that carry one), so - unlike a merge payload, which carries a
- * client-supplied view that might be stale relative to disk - there is nothing else that could make
- * an empty result here mistaken for the stale-read shape writeCharacterData()'s guard exists to catch.
+ * Reads a character card fresh from disk, applies a single greeting-list operation, and writes it back.
  * @param {import('express').Request} request
  * @param {string} avatar avatar filename (e.g. "char.png")
  * @param {(model: import('../greeting-list.js').GreetingsModel) => {ok: boolean, reason?: string, model?: import('../greeting-list.js').GreetingsModel}} op
@@ -1738,9 +1369,7 @@ async function applyGreetingOperation(request, avatar, op) {
 }
 
 /**
- * Sends an {@link applyGreetingOperation} result. On success, echoes back the full post-op
- * hash-per-position list and the default's position so a caller can keep issuing further operations
- * without a round trip to re-fetch the card just to learn its own write's new positions/hashes.
+ * On success, echoes back the post-op hash-per-position list and default position so a caller can chain further operations without re-fetching the card.
  * @param {import('express').Response} response
  * @param {Awaited<ReturnType<typeof applyGreetingOperation>>} result
  */
@@ -1752,12 +1381,7 @@ function sendGreetingOpResult(response, result) {
 }
 
 /**
- * Inserts a new greeting at `position` (0..current length, i.e. length appends at the end). Refuses
- * empty text. Carries no precondition hash - it doesn't target existing content, only an insertion
- * point - so a retried add is not deduped or otherwise protected beyond the ordinary position-range
- * check; two identical greetings are legitimate on a card, so content-based dedup (as chats.js's
- * addAlternatives does, for its own different reason - reasserting the same set is normal there)
- * would silently drop a real one here.
+ * Inserts a new greeting at `position` (length appends at the end). No precondition hash and no content dedup - two identical greetings are legitimate on a card.
  */
 router.post('/greetings/add', validateAvatarUrlMiddleware, async function (request, response) {
     try {
@@ -1818,10 +1442,7 @@ router.post('/greetings/delete', validateAvatarUrlMiddleware, async function (re
 });
 
 /**
- * Moves the greeting at `source_position` to `target_position`, order otherwise preserved.
- * `target_position` is pre-removal: an index into the list exactly as it currently stands (0..length,
- * `length` meaning "move to the end"), same as `source_position` is read against - see
- * greeting-ops.js's opMove() doc comment for why the boundary takes it this way round.
+ * Moves the greeting at `source_position` to `target_position` (both read against the list's current, pre-removal state; `length` means "move to the end").
  */
 router.post('/greetings/move', validateAvatarUrlMiddleware, async function (request, response) {
     try {
@@ -1878,16 +1499,7 @@ router.post('/greetings/default/unset', validateAvatarUrlMiddleware, async funct
 });
 
 /**
- * HTTP POST endpoint for the "/api/characters/fav" route - the dedicated fav-toggle write path (owner decision:
- * favorite status is now a pure metadata-store mutation, not a card-file edit - see character-metadata-db.js's
- * setCharacterFav() doc comment). Deliberately does NOT go through writeCharacterData()/mergeCharacterUpdate():
- * no card read, no card write, no thumbnail/cache invalidation, no metadata-upsert-hook re-derivation - the one
- * thing this route touches is the `fav` column (plus its `shallow_json` mirror) of an already-tracked row.
- *
- * 404s (not 400) when the avatar isn't tracked yet, rather than silently doing nothing - a caller has no other
- * way to tell "no-op because unfavorited already" apart from "no-op because this row doesn't exist", and the
- * client only ever calls this for a character it already has in hand (so this should be unreachable in normal
- * use; a stale client cache is the only realistic trigger).
+ * Touches only the `fav` column, no card read/write. 404s (not 400) when the avatar isn't tracked yet.
  * @param  {import("express").Request} request The HTTP request object.
  * @param  {import("express").Response} response The HTTP response object.
  * @return {void}
@@ -1910,15 +1522,7 @@ router.post('/fav', getFileNameValidationFunction('avatar'), async function (req
 });
 
 /**
- * HTTP POST endpoint for the "/api/characters/chat" route - the dedicated chat-pointer write path (2026-08
- * chat-pointer db migration, owner decision: which chat is currently open is now a pure metadata-store
- * mutation, not a card-file edit - see character-metadata-db.js's setCharacterActiveChat() doc comment).
- * Mirrors POST /fav exactly: no card read, no card write, no thumbnail/cache invalidation, no
- * metadata-upsert-hook re-derivation - the one thing this route touches is the `active_chat` column (plus its
- * `shallow_json` mirror) of an already-tracked row.
- *
- * 404s (not 400) when the avatar isn't tracked yet, rather than silently doing nothing - same reasoning as
- * /fav's own doc comment.
+ * Dedicated chat-pointer write path, mirroring POST /fav: touches only the `active_chat` column.
  * @param  {import("express").Request} request The HTTP request object.
  * @param  {import("express").Response} response The HTTP response object.
  * @return {void}
@@ -1943,11 +1547,7 @@ router.post('/chat', getFileNameValidationFunction('avatar'), async function (re
     }
 });
 
-/**
- * Sets the `allow_global_styles` preference for one or more characters. Same shape as `/fav`.
- * Accepts `{ avatar, allowed }` for a single character, or `{ bulk: [{ avatar, allowed }, ...] }`
- * for a batch (used by the one-time migration from accountStorage).
- */
+/** Sets `allow_global_styles`. Accepts `{ avatar, allowed }` for one character or `{ bulk: [{ avatar, allowed }, ...] }` for a batch. */
 router.post('/allow-global-styles', async function (request, response) {
     try {
         const { avatar, allowed, bulk } = request.body ?? {};
@@ -2022,26 +1622,21 @@ const SORT_FIELD_GETTERS = {
 };
 
 /**
- * Applies optional sort/offset/limit to an already-fully-read character array. Every param is optional and
- * defaults to "return everything, in on-disk order" - i.e. calling this with `{}` is a no-op, so existing callers
- * that don't pass any of these params see byte-for-byte the same response shape/order as before this function
- * existed.
+ * Applies optional sort/offset/limit to an already-fully-read character array. `{}` is a no-op.
  * @param {object[]} data Full array of processed characters (already filtered to `c.name` truthy)
  * @param {object} params
  * @param {string} [params.sortField] One of SORT_FIELD_GETTERS' keys. Unknown/omitted -> no sort applied.
  * @param {string} [params.sortOrder] 'asc' (default) or 'desc'.
  * @param {number} [params.offset] Slice start. Omitted/NaN -> 0.
  * @param {number} [params.limit] Slice length. Omitted/NaN -> no limit (rest of the array).
- * @returns {{ items: object[], total: number }} `total` is the count *before* offset/limit is applied, so a
- * paginating caller knows how many pages exist.
+ * @returns {{ items: object[], total: number }} `total` is the count before offset/limit.
  */
 function paginateCharacters(data, { sortField, sortOrder, offset, limit } = {}) {
     const total = data.length;
     const getter = SORT_FIELD_GETTERS[sortField];
     if (getter) {
         const direction = sortOrder === 'desc' ? -1 : 1;
-        // Stable sort (Array#sort is spec-guaranteed stable since ES2019) so same-key entries keep their
-        // on-disk relative order instead of shuffling between identical requests.
+        // Stable sort so same-key entries keep their on-disk relative order across identical requests.
         data = [...data].sort((a, b) => {
             const av = getter(a), bv = getter(b);
             if (av < bv) return -1 * direction;
@@ -2057,14 +1652,8 @@ function paginateCharacters(data, { sortField, sortOrder, offset, limit } = {}) 
 }
 
 /**
- * Like paginateCharacters(), but merges in a groups array before sorting/slicing, so the list-view "one sorted
- * list of characters and groups together" ordering (see sortEntitiesList() in public/scripts/power-user.js) can
- * be produced server-side instead of requiring every character to be resident client-side first.
- *
- * SORT_FIELD_GETTERS' getters work unmodified on group objects: the `name` getter falls through to a group's
- * plain `.name` field (groups have no `.data`), and date_added/date_last_chat/chat_size are the exact field
- * names getGroupsData() (groups.js) already computes for groups, the same way processCharacter() computes them
- * for characters.
+ * Like paginateCharacters(), but merges in a groups array before sorting/slicing, producing one sorted list
+ * of characters and groups together. SORT_FIELD_GETTERS' getters work unmodified on group objects.
  * @param {object[]} characters
  * @param {object[]} groups
  * @param {object} params Same shape as paginateCharacters()'s params
@@ -2099,27 +1688,14 @@ function paginateEntities(characters, groups, { sortField, sortOrder, offset, li
 }
 
 /**
- * Merges pre-scored character/group Fuse search results (best-first, ascending score - the Fuse.js convention)
- * into one paginated, still best-first result. Comparing scores from the two independent Fuse indexes directly
- * isn't a new assumption - the client's own sortEntitiesList() "search" sort mode already does the same thing,
- * merging fuzzySearchCharacters()/fuzzySearchGroups()/fuzzySearchTags() (three separate Fuse instances) purely
- * by comparing their scores.
+ * Merges pre-scored character/group Fuse search results (best-first, ascending score) into one paginated,
+ * still best-first result.
  * @param {import('fuse.js').FuseResult<object>[]} characterResults
  * @param {import('fuse.js').FuseResult<object>[]} groupResults
  * @param {object} params
  * @param {number} [params.offset]
  * @param {number} [params.limit]
- * @param {number} [params.trueTotal] The real total match count (characters-search-index.js/
- * groups-search-index.js's own `total`, summed by the caller) - NOT the same as `combined.length` below.
- * `characterResults`/`groupResults` are each already capped at `offset + limit` rows before this function ever
- * sees them (see the `/all` handler's `searchFetchLimit`, sized only to cover the page being sliced out) - so
- * `combined.length` silently equals `min(realMatchCount, offset + limit)` and previously got reported to the
- * client as `total` outright. That's correct only by coincidence when the true match count is small; on a
- * broad query it just reports back the fetch cap it was given (confirmed against this install's real
- * 24,171-character library: a single-word query legitimately matched more than the default page limit, and the
- * old `total` silently read exactly as that limit, not the real match count) - which is exactly the number a
- * "showing X of Y" UI needs to be honest about. Falls back to `combined.length` if the caller doesn't have a
- * real total handy (keeps this function usable standalone).
+ * @param {number} [params.trueTotal] Real total match count - `combined.length` underreports since the inputs are already capped to the sliced page. Falls back to `combined.length` if omitted.
  * @returns {{ items: {type: 'character'|'group', item: object}[], total: number }}
  */
 function paginateSearchResults(characterResults, groupResults, { offset, limit, trueTotal } = {}) {
@@ -2136,77 +1712,18 @@ function paginateSearchResults(characterResults, groupResults, { offset, limit, 
 }
 
 /**
- * HTTP POST endpoint for the "/api/characters/all" route.
- *
- * This endpoint is responsible for reading character files from the `charactersPath` directory,
- * parsing character data, calculating stats for each character and responding with the data.
- * Stats are calculated only on the first run, on subsequent runs the stats are fetched from
- * the `charStats` variable.
- * The stats are calculated by the `calculateStats` function.
- * The characters are processed by the `processCharacter` function.
- *
- * Accepts optional `sortField`/`sortOrder`/`offset`/`limit`/`search`/`includeGroups`/`fav` in the request body to
- * get a sorted (or fuzzy-searched) page back instead of the full array - see paginateCharacters()/paginateEntities()/
- * paginateSearchResults() above. None of these are required: a request with no body (or an empty one) behaves
- * exactly as before, returning every character in on-disk order. Passing sort/offset/limit alone is deliberately
- * just a slice of the already-fully-processed array, not a way to skip processing files outside the requested
- * page - every character on disk still gets read once per request, same as before this endpoint accepted these
- * params - so it does not reduce server-side I/O by itself, only response size/order and the amount of
- * client-side work (Fuse search, tag filtering, sort, DOM render) done over the result. Full-index consumers
- * (findChar() and friends, which need every character resolvable client-side, not just one page) should keep
- * calling this with no pagination params, exactly as `getCharacters()` does today.
- *
- * `search` runs the query against a persistent server-side Fuse index (see characters-search-index.js) built
- * from full (non-shallow) character data and the user's tags.json, using the exact same keys/weights/options as
- * the client's own fuzzySearchCharacters() - so results rank identically to what the same term would produce
- * client-side, just without needing every character resident first. When `search` is present, `sortField`/
- * `sortOrder` are ignored (mirrors sortEntitiesList()'s isSearch branch, which always sorts by score).
- *
- * `includeGroups: true` merges the user's groups into the same sorted-or-searched, paginated result (see
- * paginateEntities()/paginateSearchResults()). This changes `items` to an array of `{ type, item }` instead of
- * bare character objects, since an item may now be a character *or* a group.
- *
- * `fav: true` (only meaningful together with `search`) restricts matches to favorited characters/groups, applied
- * inside the search index query itself rather than after the `offset+limit`-sized page is fetched - see
- * searchCharacters()'s `favOnly` doc comment (characters-search-index.js) for why a post-fetch filter here would
- * be wrong: a favorited item's text relevance to the search term is unrelated to its favorite status, so it can
- * rank arbitrarily far outside whatever page a plain relevance search returns, silently making a favorites-only
- * search on a large library look like it returns nothing.
- *
+ * Accepts optional `sortField`/`sortOrder`/`offset`/`limit`/`search`/`includeGroups`/`fav` in the body for a paginated/searched page; no body returns every character in on-disk order (sort/offset/limit still reads every file, it only slices the response). `fav` with `search` is applied inside the search query itself, not as a post-fetch filter, so it can't miss a favorite ranked outside the fetched page.
  * @param  {import("express").Request} request The HTTP request object.
  * @param  {import("express").Response} response The HTTP response object.
  * @return {void}
  */
-// Real-world crash (see git history): fetchServerCharacterSearchResults() (script.js) calls this endpoint with
-// `{ search, includeGroups: true }` on every keystroke and never sends `limit` - it only needs enough top
-// matches to usefully re-rank the already-resident character list, not literally every match. Below, once any
-// pagination-shaped param puts a request into one of the paginate*() branches, an omitted `limit` used to mean
-// "unbounded" (Number.isFinite(Number(undefined)) is false, so paginateSearchResults()/paginateEntities()/
-// paginateCharacters() would slice(start, undefined) - i.e. not slice at all). FTS5 prefix-matches each
-// whitespace token against 11 text columns per character, so a short/common search-as-you-type term (or an
-// in-progress `label:query` pill) routinely matches most of a large library - confirmed against this install's
-// real 24,171-character library, a one-letter query matched effectively the entire set. That produced one
-// `response.send()` (JSON.stringify) call over tens of thousands of full result objects at once, which is what
-// took the process's heap to ~4GB and crashed it with a JS heap OOM. A "page" endpoint silently returning the
-// whole unbounded set just because `limit` was omitted - while `search`/`includeGroups` themselves were
-// present, i.e. very much a paginated request - was the actual bug; this default closes it for all three
-// paginate*() branches below, not just the search one that happened to crash first.
+// Requests that omit `limit` still need a bound - unbounded search/includeGroups on a large library can OOM.
 const DEFAULT_PAGE_LIMIT = 500;
 
 /**
- * Overwrites each character's `.fav` with the metadata store's own value, in place - the live `/all` route's
- * counterpart to the `/query` route's group-hydration stamp (`{ ...group, fav: r.fav, ... }` above): `fav` is
- * db-authoritative once a row is tracked (see character-metadata-db.js's writeRowSync()/setCharacterFav() doc
- * comments), so whatever processCharacter() read straight off the card file is a stale/irrelevant value for any
- * already-tracked character, not a fallback to merge with. One batched query for the whole page rather than one
- * per character.
- *
- * A character NOT YET tracked (getCharacterFavsByIds() simply omits it - the bootstrap/watcher/reconciler
- * haven't caught up to a brand-new file yet) is left untouched, keeping whatever processCharacter() read from
- * the card - the file is still the only source for a character the metadata store hasn't seen yet.
+ * Overwrites each character's `.fav` with the metadata store's own value, in place. A character not yet tracked is left untouched.
  * @param {import('../users.js').UserDirectoryList} directories
- * @param {object[]} characters Already-processed character objects (each with `.avatar` set - see
- * processCharacter()) - mutated in place.
+ * @param {object[]} characters Already-processed character objects (each with `.avatar` set) - mutated in place.
  * @returns {Promise<void>}
  */
 async function stampDbFav(directories, characters) {
@@ -2221,16 +1738,7 @@ async function stampDbFav(directories, characters) {
 }
 
 /**
- * Overwrites each character's `.chat` with the metadata store's own value, in place - the `active_chat`
- * counterpart to stampDbFav() just above (2026-08 chat-pointer db migration), same reasoning: `active_chat` is
- * db-authoritative once a row is tracked, so whatever processCharacter() read straight off the card file is a
- * stale/irrelevant value for any already-tracked, already-backfilled character.
- *
- * A character not present in getCharacterActiveChatsByIds()'s result - either because it isn't tracked yet, OR
- * because it's tracked but `active_chat` is still NULL (not yet backfilled/first-touched) - is left untouched,
- * same "not present means no signal, don't touch whatever's already there" contract that function's own doc
- * comment establishes. Kept a separate function from stampDbFav() rather than folded in, matching this file's
- * existing one-concern-per-function granularity.
+ * Overwrites each character's `.chat` with the metadata store's own value, in place. Untracked or NULL `active_chat` is left untouched.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {object[]} characters Already-processed character objects (each with `.avatar` set) - mutated in place.
  * @returns {Promise<void>}
@@ -2247,11 +1755,7 @@ async function stampDbActiveChat(directories, characters) {
 }
 
 /**
- * Overwrites each character's `.tag_ids` with the metadata store's own value, in place - the tag-assignment
- * counterpart to stampDbFav()/stampDbActiveChat() above. `tag_ids` is db-authoritative (character_tags table)
- * once a row is tracked; processCharacter() reads from the PNG file which doesn't carry tag assignments, so
- * without this stamp the client receives characters with tag_ids undefined, and seedTagMapFromRecords() can't
- * build tag_map. Same "not present means no signal, leave untouched" contract as the other stamp functions.
+ * Overwrites each character's `.tag_ids` with the metadata store's own value, in place - the PNG carries no tag assignments.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {object[]} characters Already-processed character objects (each with `.avatar` set) - mutated in place.
  * @returns {Promise<void>}
@@ -2292,8 +1796,6 @@ router.post('/all', async function (request, response) {
         if (sortField === undefined && offset === undefined && limit === undefined && !search && !includeGroups) {
             const files = fs.readdirSync(request.user.directories.characters);
             const pngFiles = files.filter(file => file.endsWith('.png'));
-            // One query for the whole pass instead of a point lookup per character - see
-            // getStaleCardJsonMap()'s doc comment. `null` on a miss means "already resolved, file is current".
             const staleCards = await getStaleCardJsonMap(request.user.directories);
             const processingPromises = pngFiles.map(file => processCharacter(file, request.user.directories, { shallow: useShallowCharacters, cardJson: staleCards.get(file) ?? null }));
             const data = (await Promise.all(processingPromises)).filter(c => 'name' in c);
@@ -2310,38 +1812,20 @@ router.post('/all', async function (request, response) {
 
         if (search) {
             const handle = request.user.profile.handle;
-            // 'tantivy' (not 'native') on purpose: this is a placeholder for "groups weren't searched at all"
-            // (includeGroups: false), and BACKEND_SEVERITY below reports whichever of the two is *worse* - it has
-            // to be the best possible tier so it never wins that comparison and misreports a real tantivy-backed
-            // characterSearch result as running on a lesser tier it never touched.
+            // 'tantivy', not 'native': placeholder for "not searched" that never wins BACKEND_SEVERITY's worse-of comparison.
             const emptySearch = { results: [], total: 0, backend: 'tantivy' };
-            // Each source only needs to fetch its own top (offset + limit) rows to guarantee a correct merged
-            // page - paginateSearchResults() below still does the real character/group interleave-by-score and
-            // final slice, this just stops each individual FTS5 query (and the JSON.parse() of every one of its
-            // rows - see querySqliteIndex()) from doing that work across the *entire* matching set first.
+            // Each source fetches only its own top (offset + limit) rows; paginateSearchResults() below does the real merge.
             const searchFetchLimit = numericOffset + numericLimit;
-            // favOnly restricts both searches to favorited items *inside* the query itself (see
-            // searchCharacters()'s `favOnly` doc comment, characters-search-index.js) - not a post-fetch filter
-            // over `searchFetchLimit` relevance-ranked rows, which would silently drop any favorited match that
-            // doesn't happen to rank in the top `searchFetchLimit` results for the term (real bug: a favorites-only
-            // + search combination on a large library could return zero results for a term that has thousands of
-            // real matches, because none of the relevance-top-N happened to be favorited).
+            // favOnly is applied inside the query itself so it can't drop a match ranked outside searchFetchLimit.
             const [characterSearch, groupSearch] = await Promise.all([
                 searchCharacters(handle, request.user.directories, search, searchFetchLimit, favOnly),
                 includeGroups ? searchGroups(handle, request.user.directories, search, searchFetchLimit, favOnly) : emptySearch,
             ]);
-            // The search index is always built from *full* character data (see characters-search-index.js) -
-            // trim results down to shallow fields here to match this server's normal list-response shape
-            // (`performance.lazyLoadCharacters`), same as the non-search path does via processCharacter()'s own
-            // `shallow` option.
+            // The search index is built from full character data - trim to shallow fields to match this server's normal response shape.
             const finalCharacterResults = useShallowCharacters
                 ? characterSearch.results.map(r => ({ ...r, item: toShallow(r.item) }))
                 : characterSearch.results;
-            // Same db-authoritative stamp stampDbFav() applies to the non-search path above - the search index's
-            // own `fav` copy (characters-search-index.js) can lag behind a db-only fav toggle (setCharacterFav()
-            // never touches the card file, so it can't trigger a reindex the way an ordinary write does), so a
-            // displayed result's `.fav` still needs correcting here even though `favOnly` itself was already
-            // decided against whatever the index had at query time - see this function's own doc comment.
+            // The search index's own `fav` copy can lag a db-only fav toggle (which never touches the card file).
             await stampDbFav(request.user.directories, finalCharacterResults.map(r => r.item));
             await stampDbActiveChat(request.user.directories, finalCharacterResults.map(r => r.item));
             await stampDbTagIds(request.user.directories, finalCharacterResults.map(r => r.item));
@@ -2351,12 +1835,7 @@ router.post('/all', async function (request, response) {
                 offset: numericOffset, limit: numericLimit,
                 trueTotal: characterSearch.total + groupSearch.total,
             });
-            // searchBackend lets the client (fetchServerCharacterSearchResults(), script.js) show a visible
-            // indicator when search is running on anything other than the fastest engine tier (see
-            // search-engine.js) instead of that only ever showing up as a server console warning. Character and
-            // group search resolve the engine independently but always agree in practice (both go through the
-            // same process-wide resolveSearchEngine() cache) - this just reports whichever is worse, in case they
-            // ever don't.
+            // Lets the client show an indicator when search runs on anything other than the fastest engine tier.
             const BACKEND_SEVERITY = { tantivy: 0, unavailable: 1 };
             const searchBackend = BACKEND_SEVERITY[groupSearch.backend] > BACKEND_SEVERITY[characterSearch.backend]
                 ? groupSearch.backend
@@ -2368,7 +1847,6 @@ router.post('/all', async function (request, response) {
 
         const files = fs.readdirSync(request.user.directories.characters);
         const pngFiles = files.filter(file => file.endsWith('.png'));
-        // Same whole-pass prefetch as the fast path above - see that comment.
         const staleCards = await getStaleCardJsonMap(request.user.directories);
         const processingPromises = pngFiles.map(file => processCharacter(file, request.user.directories, { shallow: useShallowCharacters, cardJson: staleCards.get(file) ?? null }));
         const data = (await Promise.all(processingPromises)).filter(c => c.name);
@@ -2400,13 +1878,8 @@ router.post('/all', async function (request, response) {
 });
 
 /**
- * HTTP POST endpoint for the "/api/characters/metadata/rescan" route.
- *
- * Forces an out-of-cycle pass of the phase-1 metadata store's background reconciler (see
- * character-metadata-db.js's header on why the reconciler is a mandatory backstop, not optional) for the
- * calling user, rather than waiting for the next periodic interval. Not called by any client UI yet - this is
- * the "explicit rescan endpoint" the design doc's §3.2 calls for, for an owner (or a future admin UI) to use
- * directly after a change they know the watcher/reconciler haven't caught up to yet.
+ * Forces an out-of-cycle pass of the metadata store's background reconciler for the calling user.
+ * Not called by any client UI yet.
  * @param  {import("express").Request} request The HTTP request object.
  * @param  {import("express").Response} response The HTTP response object.
  * @return {void}
@@ -2422,13 +1895,7 @@ router.post('/metadata/rescan', async function (request, response) {
 });
 
 /**
- * HTTP POST endpoints for "/api/characters/metadata/batch-import/{begin,end}".
- *
- * Explicit batch-import mode for the phase-1 metadata store (design doc §3.3 item 7) - not wired to any client
- * UI yet, since a large corpus import is presently a scripted/manual owner workflow (there is no "import 300k
- * characters at once" endpoint; each /import call is its own request). Wrap such a scripted import in a call to
- * `begin` before and `end` after to avoid one SQLite transaction and one directory-watcher event per file - see
- * beginBatchImport()'s own doc comment for exactly what this suspends/buffers.
+ * Wrap a scripted bulk import in `begin`/`end` to avoid one SQLite transaction and one directory-watcher event per file.
  * @param  {import("express").Request} request The HTTP request object.
  * @param  {import("express").Response} response The HTTP response object.
  * @return {void}
@@ -2453,88 +1920,20 @@ router.post('/metadata/batch-import/end', async function (request, response) {
     }
 });
 
-// Phase 2's sortable fields (design doc §5's `sort.field` union) - kept here (not imported from
-// character-metadata-db.js) because this is specifically the set of values this HTTP layer accepts as *valid
-// input* before ever calling into the metadata module - a distinct concern from that module's own "which SQL
-// column does this map to". 'random' and 'search' are real, handled values (see the route below), not rejected -
-// they just don't map to a QUERYABLE_SORT_COLUMNS entry, since neither is a plain column sort.
+// Sortable fields this HTTP layer accepts. 'random' and 'search' don't map to a plain SQL column sort.
 const QUERY_SORT_FIELDS = new Set(['name', 'date_added', 'date_last_chat', 'chat_size', 'fav', 'create_date', 'data_size', 'random', 'search']);
 
-// page/pageSize bounds for "/query" - page/pageSize is the doc's §5 contract shape (not offset/limit, which is
-// queryCharacters()'s own internal shape - this route is where the translation happens). The upper bound on
-// pageSize is a defensive cap, not something the doc mandates: an unbounded client-supplied page size would let
-// a single request force an unbounded LIMIT, defeating the entire point of paginating in the first place.
 const DEFAULT_QUERY_PAGE_SIZE = 500;
 const MAX_QUERY_PAGE_SIZE = 2000;
 
 /**
- * HTTP POST endpoint for the "/api/characters/query" route (design doc §5): the phase-2 replacement for the
- * fs.readdirSync()+PNG-parse-everything+slice-in-JS shape of a plain (no search term) `/all` browse request -
- * this endpoint never touches the filesystem or parses a PNG for a plain (no `filter.search`) request; every
- * field it can return already lives in the phase-1 SQLite metadata table (character-metadata-db.js), kept fresh
- * by that module's write hooks/watcher/reconciler independent of this request. A `filter.search` request routes
- * through characters-search-index.js's tantivy/FTS5 tier to resolve the matched id set, then intersects that
- * with this table via `queryCharacters()`'s `ids` filter (doc §5's "push the FTS hit-id set into SQLite as a
- * temporary table and let SQLite do the filtering and ordering" composition plan) - still zero PNG parses,
- * regardless of search.
- *
- * `sort.field: 'random'` (design doc §5.3, decisions 8/10/13) requires `sort.seed` - a finite number the client
- * generated and persisted (public/scripts/random-sort.js's mintRandomSortSeed()/getRandomSortSeed(), phase 5b,
- * already shipped client-side). Omitting it 400s rather than silently defaulting to *some* seed: decision 10 is
- * explicit that the seed is client-owned so two tabs/devices can disagree without coordination, and a
- * server-minted fallback would defeat that plus break pagination the moment the client reloads and gets a
- * different seed than whatever the server silently used for page 1.
- *
- * `sort.field: 'search'` requires `filter.search` (same rule as the pre-existing client-side
- * `verifyCharactersSearchSortRule()`), but a `filter.search` term composes with *any* sort field, not just
- * 'search' - decision 23: "random and search compose unconditionally... sort stops being forced by the presence
- * of a query." Search narrows the candidate id set; whatever sort field is chosen orders it (relevance for
- * 'search', the seeded hash for 'random', a plain column otherwise).
- *
- * `filter.includeGroups: true` (owner decision extending the character-data-residency-redesign to groups, not
- * part of the original design doc's §5 contract) merges the user's groups into the same sorted, paginated
- * result, the SQL-backed analogue of what `/all`'s own `includeGroups` already does over a full in-memory scan
- * (see paginateEntities() above). Response shape changes accordingly: `rows` becomes
- * `Array<{ type: 'character', item: Character } | { type: 'group', item: Group }>` instead of a bare
- * `Character[]`, and `total` counts both. **Omitted or `false` is byte-for-byte today's existing behavior** -
- * every existing caller (favsToHotswap, CharacterRepository.queryAll, characters-query.test.js) keeps seeing
- * exactly what it always has; this is the compatibility bar the implementation is built to hold, not a
- * best-effort goal.
- *
- * `filter.search` + `filter.includeGroups: true`: groups DO have a full-text index (groups-search-index.js,
- * already used by the pre-existing `/all` route's own `search`+`includeGroups` handling) - an earlier version of
- * this comment claimed otherwise and called it an "owner decision"; that characterization was never actually
- * made by the owner (traced via git history/commit message on 3f33c5611, which introduced the claim - it
- * reads as a prior agent's own unilateral scope call, written up as if it were a decision someone else made).
- * A non-empty `filter.search` with `includeGroups: true` now searches both indexes (searchCharacterIds()/
- * searchGroupIds()) and merges the two relevance-ordered id sets before resolving rows from queryEntities()'s
- * UNION ALL, the same characters+groups merge-by-score shape the `/all` route's paginateSearchResults() already
- * established - see the route body below.
- *
- * `filter.tags.include` composes with `includeGroups` for free (no separate mechanism): character_tags and
- * group_tags are both indexed by tag_id, so a `{filter: {tags: {include: [folderId]}}, includeGroups: true}`
- * request is exactly "open a folder" - it returns every character and group carrying that tag as one merged,
- * paginated page, since a folder can contain both.
+ * SQLite-backed replacement for `/all`; never touches the filesystem or parses a PNG. `sort.field: 'random'` requires a client-minted `sort.seed` (400s otherwise, since the seed must stay client-owned for stable pagination). `filter.includeGroups: true` merges groups into the same sorted, paginated result.
  * @param  {import("express").Request} request The HTTP request object.
  * @param  {import("express").Response} response The HTTP response object.
  * @return {void}
  */
 /**
- * Turns queryEntities()'s (character-metadata-db.js) raw UNION ALL rows into the `/query` route's wire shape -
- * `{type: 'character', item}` rows already carry their full item from `shallow_json` (tag_ids included - see
- * toShallow()/writeRowSync()), but a group row only carries its own SQL-side columns
- * (`id`/`fav`/`date_added`/`date_last_chat`/`chat_size`) and needs its actual group JSON hydrated separately
- * (getGroupsByIds() - bounded to just this result's group ids, never a whole-directory read) before it can go
- * out. Shared by the plain browse/sort `includeGroups` path and the search+`includeGroups` path below so the
- * hydration/stamping/dropped-group logic can't drift between the two.
- *
- * `tag_ids` (2026-09): a group's own JSON file never carries tag assignments (unlike characters, groups have no
- * shallow_json/tag_ids field at all - tags live only in the `group_tags` table, see character-metadata-db.js's
- * schema comment), so it's stamped here the same way fav/date_added/date_last_chat/chat_size already are -
- * db-authoritative, batched via getEntityTagIdsForMany() (the same source `/api/groups/batch`'s full-mode path
- * already uses). Before this, a group's tags reached the list view only through the client's separate
- * `tag_map[key]` lookup (tags.js's getTagsList()/printTagList()) - this closes that gap so group rows carry
- * `tag_ids` inline, the same shape characters already have.
+ * Turns queryEntities()'s raw UNION ALL rows into the `/query` route's wire shape - a group row only carries its SQL-side columns and needs its JSON hydrated separately.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {{type: 'character'|'group', id: string, fav: boolean, date_added: number, date_last_chat: number, chat_size: number, item: object|null}[]} rows
  * @returns {Promise<{type: 'character'|'group', item: object}[]>}
@@ -2551,47 +1950,27 @@ async function hydrateEntityRows(directories, rows) {
         }
         const group = groupsById[r.id];
         if (!group) {
-            // The metadata row exists but the group's JSON file doesn't (deleted out from under a stale row, or
-            // unreadable) - drop it rather than shipping a null item the client isn't expecting. Rare and
-            // self-correcting: the next /delete or /edit reconciles the metadata row against reality.
+            // Metadata row exists but the group's JSON file doesn't.
             return null;
         }
         return { type: 'group', item: { ...group, fav: r.fav, date_added: r.date_added, date_last_chat: r.date_last_chat, chat_size: r.chat_size, tag_ids: groupTagIdsById?.[r.id] ?? [] } };
     }).filter(Boolean);
 }
 
-/**
- * Search-backend enum codes for the binary hash-mode `/query` response - keeps the wire format numeric instead
- * of carrying the string values ('tantivy'|'native'|'wasm'|'unavailable', see script.js's SEARCH_BACKEND_INDICATOR)
- * as text. 0 means "absent" (not a search request, or search wasn't reached on this response path).
- */
+/** Search-backend enum codes for the binary hash-mode `/query` response. 0 means "absent". */
 const HASH_QUERY_SEARCH_BACKEND_CODES = { tantivy: 1, native: 2, wasm: 3, unavailable: 4 };
 
 /**
- * Serializes `/query`'s hash-only mode (`want: ['hashes']`) into a compact binary response - same general shape
- * as `serializeTreeDescendBinary()` above (fixed-width integers where JSON would use key names, positional where
- * JSON would be self-describing), a sibling encoder rather than a reuse since the fields differ. See
+ * Serializes `/query`'s hash-only mode (`want: ['hashes']`) into a compact binary response. See
  * `deserializeQueryHashesBinary()` client-side (character-repository.js) for the matching decoder.
- *
- * This is the owner's explicit call (2026-09 /query bandwidth pass): hash-mode ships binary, not JSON, because
- * per-row content here is genuinely fixed-width/binary-shaped data (three digest ints, a handful of
- * timestamps/sizes) with only two variable-length pieces (`id`, `chat`) - there's no self-describing JSON
- * structure actually earning its keep at this row count.
  *
  * Header (20 bytes): headerFlags(1) [bit0=hasTotal, bit1=totalApprox] + searchBackendCode(1) + seq(8, float64) +
  * total(8, float64, meaningful only if hasTotal) + rowCount(2, uint16).
  *
- * Per row: flags(1) [bit0=isGroup - reserved, always 0 today, see the /query route's own doc comment on why
- * group rows never reach hash-mode yet; bit1=hasCreateDate, since `create_date` is a genuinely nullable column
- * unlike the other date/size fields] + idLen(2) + id(idLen, utf8) + favHash(4) + tagIdsHash(4) + contentHash(4) +
- * date_added(8, float64) + create_date(8, float64, 0 if !hasCreateDate) + date_last_chat(8, float64) +
- * chat_size(8, float64) + data_size(8, float64) + chatLen(2) + chat(chatLen, utf8, omitted entirely if chatLen
- * is 0 - a character with no active chat has a genuinely absent `chat`, not an empty-string one).
- *
- * Timestamps/sizes are float64 rather than a narrower int width deliberately: epoch-ms values (~1.7-1.8e12 today)
- * already exceed uint32's range, and float64 safely represents every integer this schema actually stores (all
- * well under Number.MAX_SAFE_INTEGER) with no hi/lo-word splitting needed, unlike the 128-bit tree-descend digest
- * above (which genuinely needs more than 53 bits).
+ * Per row: flags(1) [bit0=isGroup, bit1=hasCreateDate] + idLen(2) + id(idLen, utf8) + favHash(4) +
+ * tagIdsHash(4) + contentHash(4) + date_added(8, float64) + create_date(8, float64, 0 if !hasCreateDate) +
+ * date_last_chat(8, float64) + chat_size(8, float64) + data_size(8, float64) + chatLen(2) +
+ * chat(chatLen, utf8, omitted if chatLen is 0).
  * @param {{seq:number, total:number|undefined, approxTotal:boolean, hashRows:object[], searchBackend?:string}} params
  * @returns {Buffer}
  */
@@ -2618,9 +1997,6 @@ function serializeQueryHashesBinary({ seq, total, approxTotal, hashRows, searchB
 
     for (const row of hashRows) {
         const hasCreateDate = row.create_date !== null && row.create_date !== undefined;
-        // bit0 (isGroup): was "reserved, always 0 - characters-only for now" when this format first shipped;
-        // now genuinely set from the row (queryEntities()'s toHashRow() populates `row.isGroup` for real once
-        // includeGroups hash-mode landed) - see deserializeQueryHashesBinary()'s matching read, character-repository.js.
         const flags = (row.isGroup ? 0b01 : 0) | (hasCreateDate ? 0b10 : 0);
         buf.writeUInt8(flags, offset); offset += 1;
 
@@ -2649,8 +2025,7 @@ function serializeQueryHashesBinary({ seq, total, approxTotal, hashRows, searchB
 }
 
 /**
- * Sends a hash-mode `/query` response as `application/octet-stream` - the one call site every hash-mode return
- * point in the route below goes through, so the content-type/serialization pairing can't drift between them.
+ * Sends a hash-mode `/query` response as `application/octet-stream`.
  * @param {import("express").Response} response
  * @param {{seq:number, total:number|undefined, approxTotal:boolean, hashRows:object[], searchBackend?:string}} params
  */
@@ -2693,26 +2068,14 @@ router.post('/query', async function (request, response) {
         const offset = (page - 1) * pageSize;
         const wantRows = want.includes('rows');
         const wantTotal = want.includes('total');
-        // Hash-only mode (2026-09 /query bandwidth pass, see queryCharacters()'s own doc comment for the field
-        // split rationale): mutually exclusive with `rows` (one shape or the other per request, not both - keeps
-        // the response building below unambiguous). Originally characters-only (groups had no digest columns at
-        // all); now also covers `includeGroups: true` requests - see queryEntities()'s own doc comment for the
-        // group-side trust decision (group digests are trusted when non-NULL, unlike characters', because every
-        // write path that touches them was traced and confirmed atomic - see that comment for the full reasoning).
+        // Hash-only mode is mutually exclusive with `rows` - one shape or the other per request.
         const wantHashes = want.includes('hashes');
         if (wantHashes && wantRows) {
             return response.status(400).send({ error: true, reason: 'hashes-and-rows-exclusive', message: 'want cannot include both "rows" and "hashes" in the same request.' });
         }
 
-        // Cheap re-fetch guard (2026-08 repeated-call investigation): a caller that already has a response for
-        // this exact request shape can pass back the `seq` it was given and skip paying for row hydration/search
-        // entirely when nothing has changed since. This is coarser than the tags digest work's per-bucket content
-        // hashing - it invalidates on ANY character/group write anywhere, not just ones that would actually affect
-        // this filter/sort/page - but it reuses the change log's existing high-water mark (the same cursor
-        // fetchCharactersDelta()/getChangesSince() already track) rather than inventing a second, finer-grained
-        // digest over a candidate set whose membership is itself filter/sort-dependent and would need its own
-        // bucket-tree design to do properly. `ifSeq` is optional and additive - a caller that never sends it gets
-        // byte-identical behavior to before this existed.
+        // Cheap re-fetch guard: skip row hydration/search if `ifSeq` matches the current seq. Coarser than
+        // per-bucket digests - invalidates on any character/group write, not just ones affecting this page.
         if (Number.isFinite(Number(body.ifSeq))) {
             const currentSeq = await getCurrentSeq(request.user.directories);
             if (currentSeq !== null && currentSeq === Math.trunc(Number(body.ifSeq))) {
@@ -2736,23 +2099,19 @@ router.post('/query', async function (request, response) {
             wantTotal,
             wantHashes,
         };
-        // Whether a total computed against a search-narrowed candidate set is exact or has to be flagged
-        // approximate (design doc §5 decision 6: "approximate is fine, capped is not" - the wire convention is a
-        // `~` prefix, never a bare-but-silently-truncated number).
+        // Whether a total computed against a search-narrowed candidate set is exact or approximate
+        // (wire convention: a `~` prefix, never a silently-truncated number).
         let approxTotal = false;
 
-        // Populated only in the hasSearch+includeGroups branch below - the merged relevance order both types'
-        // rows get JS-sorted by when sort.field === 'search' (no SQL column for text relevance exists, same
-        // reason queryCharacters()'s own 'search' branch reorders in JS instead of pushing it to SQL).
+        // Populated only in the hasSearch+includeGroups branch below, for JS-sorting merged relevance order
+        // when sort.field === 'search' (no SQL column exists for text relevance).
         let combinedScoresById = null;
 
         if (hasSearch) {
             const handle = request.user.profile.handle;
 
-            // Fast path: when the sort field has a tantivy fast field, tantivy can sort and paginate
-            // natively, returning just the page window (~pageSize ids) + exact count - no match-set
-            // materialization, no SQL sort. Falls back to the SQL path below if the field isn't
-            // tantivy-sortable or the current index was built before fast fields were added.
+            // Fast path: tantivy sorts/paginates natively when the sort field has a fast field, returning
+            // just the page window - no match-set materialization, no SQL sort. Falls back to SQL otherwise.
             if (sort.field && TANTIVY_SORT_FIELDS.has(sort.field) && !includeGroups) {
                 const favOnly = filter.fav === true;
                 const sortedResult = await searchCharacterIdsSorted(
@@ -2782,8 +2141,7 @@ router.post('/query', async function (request, response) {
                         return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
                     }
                     if (wantHashes) {
-                        // queryCharacters returns hashRows in id order; re-order to match tantivy's sort - same
-                        // reasoning as the wantRows branch just below.
+                        // queryCharacters returns hashRows in id order; re-order to match tantivy's sort.
                         const idToHashRow = new Map(result.hashRows.map(r => [r.id, r]));
                         const orderedHashRows = sortedResult.ids.map(id => idToHashRow.get(id)).filter(Boolean);
                         return sendHashQueryResponse(response, { seq: result.seq, total: wantTotal ? sortedResult.total : undefined, approxTotal: false, hashRows: orderedHashRows, searchBackend });
@@ -2791,12 +2149,7 @@ router.post('/query', async function (request, response) {
                     const payload = { seq: result.seq };
                     if (wantTotal) payload.total = sortedResult.total;
                     if (wantRows) {
-                        // queryCharacters returns rows in id order; re-order to match tantivy's sort. Rows here
-                        // are always plain toShallow() projections (this branch only ever calls queryCharacters(),
-                        // never queryEntities()), so the id lives at `.avatar`, not `.id`/`.item.avatar` - those
-                        // two never existed on this shape and previously left every lookup missing, silently
-                        // emptying `rows` out for any search that combined a tantivy-fast-field sort with
-                        // want:['rows'] (2026-09 fix, found while wiring hash-mode into this same branch).
+                        // Rows here are always plain toShallow() projections, so the id lives at `.avatar`.
                         const idToRow = new Map(result.rows.map(r => [r.avatar, r]));
                         payload.rows = sortedResult.ids.map(id => idToRow.get(id)).filter(Boolean);
                     }
@@ -2806,20 +2159,14 @@ router.post('/query', async function (request, response) {
                 // sortedResult === null: fast field not available on this index, fall through to SQL path.
             }
 
-            // 'search' sort only needs a relevance-ordered page-sized window; any other sort needs
-            // the full matched set since ordering comes from SQL, not relevance rank. Passing
-            // undefined tells the search engine to return all matches (capped internally at
-            // searcher.numDocs to avoid over-allocation - see runSearch(), tantivy-search.js).
+            // 'search' sort only needs a relevance-ordered page-sized window; any other sort needs the full
+            // matched set since ordering comes from SQL. Undefined tells the search engine to return all matches.
             const idFetchCap = sort.field === 'search' ? offset + pageSize : undefined;
             const favOnly = filter.fav === true;
             const searchResult = await searchCharacterIds(handle, request.user.directories, searchTerm, idFetchCap, favOnly);
 
-            // filter.ids (an explicit "resolve exactly these ids" request) and filter.search both restrict the
-            // candidate set - when both are present they intersect, not override each other. Order is preserved
-            // from the search engine's relevance ranking either way (queryCharacters()'s 'search' branch uses
-            // this same array as idOrder; other sort fields ignore order here and let SQL ORDER BY decide it).
-            // Applied to both types when includeGroups is active - filter.ids restricts the result to specific
-            // rows regardless of type, so it isn't just a characters-only restriction once groups are in play.
+            // filter.ids and filter.search both restrict the candidate set - when both are present they
+            // intersect, not override each other, for both types when includeGroups is active.
             const explicitIds = Array.isArray(filter.ids) ? new Set(filter.ids) : null;
             const effectiveIds = explicitIds ? searchResult.ids.filter(id => explicitIds.has(id)) : searchResult.ids;
 
@@ -2852,9 +2199,8 @@ router.post('/query', async function (request, response) {
             }
 
             if (includeGroups) {
-                // Groups have their own full-text index (groups-search-index.js) - a search+includeGroups
-                // request resolves both id sets, then answers from queryEntities()'s UNION ALL restricted to
-                // their union, instead of the characters-only queryCharacters() path below.
+                // Groups have their own full-text index - resolve both id sets, then answer from
+                // queryEntities()'s UNION ALL restricted to their union.
                 combinedScoresById = new Map([...searchResult.scoresById, ...groupSearchResult.scoresById]);
                 const combinedIds = [...effectiveIds, ...effectiveGroupIds];
                 const entityParams = {
@@ -2862,16 +2208,11 @@ router.post('/query', async function (request, response) {
                     ids: combinedIds, wantRows, wantTotal, wantHashes,
                 };
                 if (sort.field === 'search') {
-                    // No SQL column for relevance - fetch every matched row unbounded (LIMIT sized to the full
-                    // candidate set, itself already bounded per-source by idFetchCap above) so the JS reorder+
-                    // slice below sees the true top-K, not an arbitrary id-ordered window sliced before relevance
-                    // was ever applied. Mirrors queryCharacters()'s own 'search' branch (character-metadata-db.js).
+                    // No SQL column for relevance - fetch every matched row so the JS reorder+slice below sees the true top-K.
                     entityParams.offset = 0;
                     entityParams.limit = combinedIds.length;
                 } else {
-                    // A non-relevance sort composes with search narrowing (decision 23) - SQL can do the
-                    // ORDER BY/LIMIT/OFFSET directly across the UNION once restricted to the matched id set, no
-                    // JS reorder needed.
+                    // A non-relevance sort composes with search narrowing - SQL does ORDER BY/LIMIT/OFFSET directly.
                     entityParams.sortField = sort.field;
                     entityParams.sortOrder = sort.order;
                     entityParams.seed = seed;
@@ -2886,10 +2227,7 @@ router.post('/query', async function (request, response) {
                 let rows = result.rows;
                 let hashRows = result.hashRows;
                 if (sort.field === 'search' && (wantRows || wantHashes)) {
-                    // No SQL column for relevance - queryEntities() above returned every matched row (id-order
-                    // only), reorder by the merged score map and slice here in JS, mirroring
-                    // queryCharacters()'s own 'search' branch. Same reorder+slice for hashRows as for rows -
-                    // hashRows carry `.id` too, so the score map lookup works unchanged.
+                    // No SQL column for relevance - queryEntities() returned every matched row in id order; reorder by score here.
                     if (wantRows) rows = rows.slice().sort((a, b) => combinedScoresById.get(a.id) - combinedScoresById.get(b.id)).slice(offset, offset + pageSize);
                     if (wantHashes) hashRows = hashRows.slice().sort((a, b) => combinedScoresById.get(a.id) - combinedScoresById.get(b.id)).slice(offset, offset + pageSize);
                 }
@@ -2913,8 +2251,7 @@ router.post('/query', async function (request, response) {
             queryParams = { ...queryParams, ids: effectiveIds, idOrder: searchResult.ids };
         }
 
-        // A non-search request with includeGroups reaches queryEntities()'s UNION ALL path directly (the
-        // hasSearch+includeGroups case above already returned before reaching here).
+        // A non-search request with includeGroups reaches queryEntities()'s UNION ALL path directly.
         if (!hasSearch && includeGroups) {
             const result = await queryEntities(request.user.directories, queryParams);
             if (result === null) {
@@ -2942,10 +2279,7 @@ router.post('/query', async function (request, response) {
             return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
         }
 
-        // includeGroups is always false by the time control reaches here - both the hasSearch+includeGroups
-        // branch (queryEntities()'s UNION ALL, above) and the !hasSearch+includeGroups branch each already
-        // returned their own response before this point, so this is unconditionally the characters-only,
-        // bare-Character[] shape (search or not).
+        // includeGroups is always false here - both includeGroups branches already returned above.
         if (wantHashes) {
             return sendHashQueryResponse(response, {
                 seq: result.seq,
@@ -2967,12 +2301,7 @@ router.post('/query', async function (request, response) {
 });
 
 /**
- * HTTP POST endpoint for the "/api/characters/search-index/rebuild" route (design doc §3.2): the explicit repair
- * path for a user's character search index (tantivy or, on installs without it, the SQLite FTS5 fallback tier -
- * see characters-search-index.js). Forces an immediate full rebuild regardless of the current freshness
- * signature - "the existing full-rebuild path stays, demoted to a repair tool behind an explicit endpoint rather
- * than something a directory mtime change can trigger implicitly." Not wired to any client UI yet, same
- * unwired-but-real status as `/metadata/rescan` and the batch-import endpoints above.
+ * Explicit repair path for a user's character search index. Forces an immediate full rebuild regardless of the current freshness signature.
  * @param  {import("express").Request} request The HTTP request object.
  * @param  {import("express").Response} response The HTTP response object.
  * @return {void}
@@ -2992,11 +2321,7 @@ router.post('/search-index/rebuild', async function (request, response) {
 });
 
 /**
- * HTTP POST endpoint for the "/api/characters/exists" route (design doc §4.2): chunked existence-by-id, answered
- * from the phase-1 metadata table's primary key rather than the filesystem. Not yet wired to any client
- * call site - the destructive-existence sites this backs (group-chats.js's validateGroup, world-info.js's binding
- * cleanup, tags.js's backup-restore/prune) are phase 5 client work; this lands the server capability first, same
- * reasoning as `/query` above.
+ * Chunked existence-by-id, answered from the metadata table's primary key rather than the filesystem.
  * @param  {import("express").Request} request The HTTP request object.
  * @param  {import("express").Response} response The HTTP response object.
  * @return {void}
@@ -3020,8 +2345,7 @@ router.post('/exists', async function (request, response) {
 });
 
 /**
- * HTTP POST endpoint for the "/api/characters/changes" route (design doc §5.2): a change feed over the phase-1
- * metadata store's change log, replacing `/api/characters/manifest`'s readdir+stat-everything boot scan.
+ * Change feed over the metadata store's change log, replacing `/api/characters/manifest`'s readdir+stat-everything boot scan.
  * @param  {import("express").Request} request The HTTP request object.
  * @param  {import("express").Response} response The HTTP response object.
  * @return {void}
@@ -3045,19 +2369,11 @@ router.post('/changes', async function (request, response) {
 });
 
 /**
- * Server-Sent Events endpoint that pushes an empty notification every time the metadata store's `changes` table
- * gets a new row (see character-metadata-db.js's characterChangeEmitter), so a connected client can call
- * `/changes` right away instead of polling on a timer. The event payload carries no data on purpose - clients
- * already track their own `sinceSeq` cursor via `/changes`, so this is just a "something changed, go ask" ping.
- *
- * ALSO carries the former `/api/browser-heartbeat` endpoint's job (merged in - see browser-presence.js's own
- * doc comment on `PRESENCE_PING_INTERVAL_MS` for why): touches the browser-presence file on connect and on
- * every ping tick, so `wasBrowserRecentlyConnected()` still sees a live tab across a server restart. Both were
- * independently-built permanent per-tab SSE connections with no cross-reference to each other; since the
- * browser's per-origin connection pool is shared across every tab/window of that origin (not per-tab), N tabs
- * open meant 2N permanently-occupied connections before any other request could even be sent - only ~3 tabs
- * was enough to exhaust the whole pool and stall every other request (including plain static files) rather
- * than queuing just the overflow. One merged connection halves that permanent per-tab cost.
+ * SSE endpoint that pushes an empty "something changed, go ask" notification whenever the metadata store's
+ * `changes` table gets a new row, so a client can call `/changes` instead of polling. Also carries the former
+ * `/api/browser-heartbeat` job (touches browser-presence on connect/ping) - merged in because the browser's
+ * per-origin connection pool is shared across tabs, and two permanent per-tab SSE connections each was enough
+ * to exhaust it at only ~3 tabs open and stall every other request.
  * @param  {import("express").Request} request The HTTP request object.
  * @param  {import("express").Response} response The HTTP response object.
  * @return {void}
@@ -3077,15 +2393,8 @@ router.get('/changes/stream', function (request, response) {
         touchBrowserPresence();
     }, PRESENCE_PING_INTERVAL_MS);
 
-    // Debounced the same way character-metadata-db.js's own random-cache-warm listener debounces its reaction
-    // to this exact emitter: a bulk write (boot-time reconcile/backfill, or an import) can call
-    // characterChangeEmitter.emit('change') hundreds or thousands of times in a single synchronous burst (see
-    // flushBatch() in character-metadata-db.js, which loops over up to BATCH_FLUSH_SIZE rows per transaction
-    // with no await between emits). Without this debounce, every one of those emissions would trigger a
-    // synchronous response.write() per connected SSE client - a real event-loop stall that can hang every other
-    // in-flight request. clearTimeout/setTimeout are cheap no matter how many times they're called per tick, so
-    // this coalesces an entire burst into a single push once it quiesces, instead of writing to the socket once
-    // per change.
+    // Debounced: a bulk write can emit 'change' hundreds of times in one synchronous burst, and an
+    // un-debounced response.write() per emission per SSE client would stall the event loop.
     let notifyTimer = null;
     const onChange = () => {
         clearTimeout(notifyTimer);
@@ -3104,22 +2413,9 @@ router.get('/changes/stream', function (request, response) {
 });
 
 /**
- * SUPERSEDED by `/tree-descend` below (recursive hash-tree descent that pinpoints diverged records directly,
- * instead of this flat-bucket table needing a full bucket-members fetch just to localize a mismatch). Kept for
- * now, not yet removed from routing.
+ * SUPERSEDED by `/tree-descend` below. Kept for now, not yet removed from routing.
  *
- * HTTP POST endpoint for "/api/characters/state-digest" - the anti-entropy check on the character cache, run
- * alongside (not built on top of) the `/changes` cursor (character-metadata-db.js's getStateDigest() has the
- * full design rationale, including why this is built on content hashes rather than `/changes`' `rev` counter:
- * same bucketed-checksum shape as pt-table-checksum/Cassandra anti-entropy repair/DynamoDB replica checksums,
- * but the digest itself proves nothing was silently lost or corrupted BY re-deriving fresh from actual record
- * content, not by trusting a locally-remembered value). A client that's just caught up via `/changes` calls this
- * to prove its cache genuinely matches the server - cheap regardless of library size (a fixed-size bucket-digest
- * table, not a per-character listing).
- *
- * Responds with `{ favBuckets: {hi,lo}[], contentBuckets: {hi,lo}[] }` - two parallel bucket-digest tables (see
- * getStateDigest()'s own doc comment) so the client can tell a fav-only mismatch apart from a real content-field
- * mismatch without a second round trip.
+ * Anti-entropy check on the character cache: proves a client's cache matches the server by re-deriving a fixed-size bucket-digest table from actual record content, cheap regardless of library size.
  * @param  {import("express").Request} request The HTTP request object.
  * @param  {import("express").Response} response The HTTP response object.
  * @return {void}
@@ -3144,14 +2440,7 @@ router.post('/state-digest', async function (request, response) {
 /**
  * SUPERSEDED by `/tree-descend` below - kept for now, not yet removed from routing.
  *
- * HTTP POST endpoint for "/api/characters/bucket-members" - the repair half of `/state-digest`: once a client
- * has found that its own locally-computed digest for one bucket disagrees with the server's, this returns
- * exactly that bucket's `{id, favHash, fieldsHash, fav}` members (see character-metadata-db.js's
- * getBucketMembers()) so the client can diff against its own locally-recomputed hashes and repair only the ids
- * that actually changed, instead of the whole library. `fav` is the row's actual current value, so a fav-only
- * mismatch can be repaired directly from this response with zero further fetch; a content-fields mismatch
- * previously repaired via a follow-up `POST /api/characters/fingerprint-values` call (now removed - see
- * `/tree-descend` below, which returns fingerprint values inline with the leaf members it resolves).
+ * Repair half of `/state-digest`: returns one bucket's `{id, favHash, fieldsHash, fav}` members so the client can repair only the ids that actually changed.
  * @param  {import("express").Request} request The HTTP request object.
  * @param  {import("express").Response} response The HTTP response object.
  * @return {void}
@@ -3239,15 +2528,8 @@ function serializeTreeDescendBinary(results) {
 }
 
 /**
- * POST /api/characters/tree-descend: recursive hash-tree anti-entropy descent. The client calls this
- * repeatedly, once per descent level, until all mismatched subtrees are resolved.
- *
- * Each call takes a list of tree-node paths to expand and a leafThreshold. For each node, the server scans
- * the characters table and returns either:
- *  - { type: 'children', children: [...] } if the subtree has > leafThreshold records
- *  - { type: 'leaves', members: [...] } if the subtree has ≤ leafThreshold records
- *
- * Stateless - no caching between requests. Each call does its own table scan.
+ * Recursive hash-tree anti-entropy descent. The client calls this repeatedly, once per descent level, until
+ * all mismatched subtrees are resolved. Stateless - each call does its own table scan.
  */
 router.post('/tree-descend', async function (request, response) {
     try {
@@ -3301,25 +2583,10 @@ router.post('/fingerprint-values', async function (request, response) {
 });
 
 /**
- * HTTP POST endpoint for the "/api/characters/manifest" route.
- *
- * Lightweight companion to `/all`: returns just `[{ avatar, mtime, thumbnailVersion }, ...]` for every
- * character PNG in the user's library, one entry per file, with no PNG tEXt-chunk read, no JSON parse, and no
- * chat-size calculation (the expensive parts of processCharacter()). This is meant to be fetched on every boot
- * so the client can diff it against what it already has cached (see character-cache.js) and only request full
- * data for characters that are new or whose mtime changed, instead of always re-fetching the entire library
- * via `/all`.
- *
- * mtimeMs (last content modification), not ctimeMs (metadata/inode change time, which is what processCharacter()
- * uses for date_added) - a real edit to the character's data is what should invalidate a client's cached copy.
- *
- * `thumbnailVersion` is a *different* value from `mtime` above - it's the cached avatar thumbnail's own mtime
- * (via getThumbnailVersion(), see src/endpoints/thumbnails.js), not the source PNG's. The two diverge: a
- * thumbnail is only (re)generated lazily on first request to GET /thumbnail, so its mtime reflects whenever
- * that happened, not when the source character file last changed. Handing the client this value lets
- * getThumbnailUrl() emit the thumbnail route's `?v=` up front and skip its no-cache redirect hop; null when no
- * cached thumbnail exists yet (client just omits `v`, same as before this field existed).
- *
+ * Lightweight companion to `/all`: returns just `[{ avatar, mtime, thumbnailVersion }, ...]` with no PNG chunk
+ * read, JSON parse, or chat-size calc, so the client can diff against its cache and fetch only what changed.
+ * `mtime` is mtimeMs (content change), not ctimeMs. `thumbnailVersion` is the cached thumbnail's own mtime
+ * (null if none cached yet), not the source PNG's - the thumbnail is only regenerated lazily on first request.
  * @param  {import("express").Request} request The HTTP request object.
  * @param  {import("express").Response} response The HTTP response object.
  * @return {void}
@@ -3341,21 +2608,9 @@ router.post('/manifest', function (request, response) {
 });
 
 /**
- * HTTP POST endpoint for the "/api/characters/batch" route.
- *
- * Fetches full (or shallow, per `performance.lazyLoadCharacters`) character data for a specific list of
- * avatars, via the same processCharacter() every other character-reading endpoint uses. This is the other half
- * of the `/manifest` delta-caching flow: after diffing `/manifest` against its cache, the client calls this
- * with only the avatars that are new or changed, instead of re-fetching every character via `/all`.
- *
- * Each requested avatar is validated with the same forbidden-character check `validateAvatarUrlMiddleware`
- * applies to a single `avatar_url` field - done manually here rather than via that middleware since this
- * endpoint takes an array, not a single field.
- *
- * Optionally accepts a `fields` array in the request body; when present, the response is switched to a
- * field-filtered mode that returns only those specific fields (plus `avatar`) read from each character's
- * db-tracked `shallow_json`, instead of the full processCharacter() record.
- *
+ * Other half of the `/manifest` delta-caching flow: fetches full (or shallow) character data for a specific
+ * list of avatars, so the client only re-fetches what `/manifest` showed as new or changed. An optional
+ * `fields` array switches to a field-filtered mode reading only those fields (plus `avatar`) from `shallow_json`.
  * @param  {import("express").Request} request The HTTP request object.
  * @param  {import("express").Response} response The HTTP response object.
  * @return {void}
@@ -3371,12 +2626,8 @@ router.post('/batch', async function (request, response) {
             }
         }
 
-        // Field-filtered mode: read only requested fields from the metadata store's shallow_json,
-        // no processCharacter()/PNG read needed. shallow_json already carries the db-authoritative
-        // fav, active_chat, and tag_ids values (see writeRowSync()/setCharacterFav()/
-        // setCharacterActiveChat()/assignEntityTag()'s own doc comments), so no extra stamping step
-        // is needed here - unlike the full-record path below, which reads from the PNG first and
-        // stamps afterward.
+        // Field-filtered mode: shallow_json already carries db-authoritative fav/active_chat/tag_ids, so no
+        // extra stamping step is needed here, unlike the full-record path below.
         if (fields) {
             const shallowById = await getShallowByIds(request.user.directories, avatars);
             const data = avatars
@@ -3395,27 +2646,12 @@ router.post('/batch', async function (request, response) {
             return response.send(data);
         }
 
-        // Full mode (no fields filter). One batched stale-card_json query for the whole request instead of a
-        // point lookup per character (see getStaleCardJsonMap()'s doc comment) - the same optimization `/all`
-        // already applies. Without this, every avatar here falls through processCharacter()'s `cardJson ===
-        // undefined` branch into readCardContent()'s own per-avatar `getCharacterCardJson()` point query - fine
-        // for a handful of ids, but this is exactly the route fetchCharactersDelta() calls (in up-to-500-id
-        // chunks) to catch up after a mass metadata write (a residency-migration backfill, a dedup pass, any
-        // bulk edit), i.e. precisely when a request here can carry hundreds of ids at once.
+        // Full mode: one batched stale-card_json query for the whole request instead of a point lookup per character.
         const staleCards = await getStaleCardJsonMap(request.user.directories);
         const processingPromises = avatars.map(avatar => processCharacter(avatar, request.user.directories, { shallow: useShallowCharacters, cardJson: staleCards.get(avatar) ?? null }));
         const data = (await Promise.all(processingPromises)).filter(c => 'name' in c);
-        // Same db-authoritative stamp every OTHER character-listing route already applies (/all, /get, the
-        // query path) - fav/active_chat are db-authoritative once a row exists (setCharacterFav()/
-        // setCharacterActiveChat() deliberately never touch the PNG), so without this, a character whose fav
-        // or active chat was toggled purely through those endpoints would come back here still carrying its
-        // stale PNG-embedded value. This route (the one fetchCharactersDelta()'s /changes-driven sync actually
-        // calls for anything new/changed) was the one place this stamp was missing - a gap left by the 2026-08
-        // chat-pointer db migration, which added it everywhere else. Also what makes this endpoint's actual
-        // output match character-metadata-db.js's `shallow_json` column exactly, which the state-digest
-        // integrity check (getStateDigest()/getBucketMembers()) hashes as its ground truth - without this fix,
-        // that check would flag every fav/chat toggle as "cache drift" even though the client's cache was never
-        // wrong, only this endpoint's un-stamped response was.
+        // fav/active_chat are db-authoritative once a row exists; without this stamp, a toggle made purely
+        // through /fav or /chat would come back here still carrying the stale PNG-embedded value.
         await stampDbFav(request.user.directories, data);
         await stampDbActiveChat(request.user.directories, data);
         await stampDbTagIds(request.user.directories, data);
@@ -3443,12 +2679,8 @@ router.post('/get', validateAvatarUrlMiddleware, async function (request, respon
         await stampDbTagIds(request.user.directories, [data]);
         await stampDbAllowGlobalStyles(request.user.directories, [data]);
 
-        // Per-field content hashes for edit conflict detection: the client stores these at load time
-        // and sends them back on save so the server can detect if another session changed the card
-        // in between (same pattern as the settings endpoint's hash check, but per-field instead of
-        // whole-file). characterDigestFieldsHash covers card metadata (name/creator/version/tags/
-        // world); characterDigestCardBodyHash covers the editable body (description/personality/
-        // scenario/first_mes/etc.). Together they cover everything the edit endpoint writes.
+        // Per-field content hashes for edit conflict detection: sent back on save so the server can detect
+        // if another session changed the card in between. Fields hash covers metadata, body hash the editable body.
         data._fieldsHash = characterDigestFieldsHash(data);
         data._bodyHash = characterDigestCardBodyHash(data);
 
@@ -3496,11 +2728,7 @@ router.post('/chats', validateAvatarUrlMiddleware, async function (request, resp
         // JSONL fallback path
         const chatsDirectory = path.join(request.user.directories.chats, characterDirectory);
 
-        // No chats directory yet means no chats yet - the same "nothing to report" case the
-        // `!characterDirectory` and `jsonFiles.length === 0` branches below already answer with `[]`, not an
-        // error. Returning `{ error: true }` here (a caller-crashing non-array shape - see the catch block's own
-        // comment) made this one case indistinguishable from a real failure, even though it's the ordinary state
-        // for a freshly created/renamed character that hasn't been chatted with yet.
+        // No chats directory yet is the ordinary state for a freshly created character, not an error.
         if (!fs.existsSync(chatsDirectory)) {
             return response.send([]);
         }
@@ -3528,24 +2756,13 @@ router.post('/chats', validateAvatarUrlMiddleware, async function (request, resp
         return response.send(validFiles);
     } catch (error) {
         console.error(error);
-        // Every non-error return above is an array; this is the one remaining case where the response isn't
-        // one. Left as `{ error: true }` rather than `[]` on purpose - unlike the "no chats directory yet" case
-        // just above (which really is empty, not broken), an exception here means something actually went
-        // wrong reading the chat files, and silently reporting that as "zero chats" would hide a real failure
-        // instead of surfacing it. Every caller of this route needs to allow for this shape and treat it as
-        // "couldn't get chats" rather than assuming the response is always an array.
+        // Deliberately `{ error: true }`, not `[]` - callers must not treat this as "zero chats".
         return response.send({ error: true });
     }
 });
 
 /**
- * Mints the immutable id a new character is created/imported under (design doc §2.2, SETTLED Option A): a
- * UUIDv7, unrelated to the display name. Naming the PNG after this id rather than a sanitized display name is
- * what makes `/rename` a pure card-data edit (§9 phase 4d) and retires the old `getPngName()`'s 10k-probe
- * uniqueness dance and its overwrite-on-exhaustion fallback - a freshly minted UUIDv7 essentially cannot
- * collide with an existing id, but per the doc's "correctness over cost" input (§0 decision 1) this still
- * checks rather than assumes, and throws (never silently overwrites) if collisions persist past a handful of
- * tries.
+ * Mints the immutable id a new character is created/imported under: a UUIDv7, unrelated to the display name. Naming the PNG after this id (rather than a sanitized display name) is what makes `/rename` a pure card-data edit. Throws rather than silently overwriting if collisions persist.
  * @param {import('../users.js').UserDirectoryList} directories User directories
  * @returns {string} A UUIDv7 string with no existing `<id>.png` in `directories.characters`
  */
@@ -3571,11 +2788,7 @@ function getPreservedName(request) {
 }
 
 /**
- * sha256 hex digest of a file's raw bytes, streamed rather than read fully into memory first - the natural hash
- * point for bulk-import dedup (see `/import` below): this runs on the multer-saved upload BEFORE any
- * format-specific parsing touches it, so it's always hashing the exact bytes the user dropped, regardless of
- * format. Exported for local-import-scan.js, which needs the identical hash-then-dedup ordering against a
- * locally-discovered file instead of a multer upload.
+ * sha256 hex digest of a file's raw bytes, streamed rather than read fully into memory first.
  * @param {string} filePath
  * @returns {Promise<string>} lowercase hex digest
  */
@@ -3589,10 +2802,7 @@ export function hashFileContents(filePath) {
     });
 }
 
-/**
- * Format -> importer dispatch table for `/import` below, hoisted to module scope so importCharacterFileHeadless()
- * (local-import-scan.js's entry point) can reuse the exact same table rather than a second copy that could drift.
- */
+/** Format -> importer dispatch table for `/import` below, shared with importCharacterFileHeadless(). */
 const formatImportFunctions = {
     'yaml': importFromYaml,
     'yml': importFromYaml,
@@ -3603,19 +2813,8 @@ const formatImportFunctions = {
 };
 
 /**
- * Headless counterpart to `POST /import` for the local-directory-scan feature (local-import-scan.js) - there is
- * no real HTTP request for a scan-discovered file, so this builds the minimal fake Express `request` object that
- * writeCharacterData()/the importFromX() functions actually read fields off of (`user.directories`,
- * `user.profile.handle` for the disk-cache sync queue, and `body` for BYAF's optional persona name), and drives
- * them through the exact same `formatImportFunctions` dispatch table, hash-based exact-duplicate dedup
- * (findCharacterIdByContentHash()), and writeCharacterData()/metadata-upsert path `/import` uses - so a
- * scan-discovered file is imported through the identical machinery a browser-uploaded one would be, not a
- * parallel reimplementation of it.
- *
- * `filePath` must already be a file this function is allowed to consume: every formatImportFunctions() entry
- * reads it and then deletes/unlinks it as part of normal processing (matching what they already do to a
- * multer-saved upload) - callers must pass a copy staged for this purpose (see local-import-scan.js, which gets
- * it there via copyCharacterFile()), never the original source file outside the managed tree.
+ * Headless counterpart to `POST /import` for scan-discovered files, driven through the same dispatch table, dedup, and write path as a browser upload, via a minimal fake Express `request`.
+ * `filePath` is consumed (deleted) by the import - callers must pass a staged copy, never the original source file.
  * @param {string} filePath Absolute path to a staged copy of the discovered file - consumed (deleted) by the import.
  * @param {string} format One of formatImportFunctions' keys (yaml/yml/json/png/charx/byaf)
  * @param {import('../users.js').UserDirectoryList} directories
@@ -3654,18 +2853,9 @@ router.post('/import', async function (request, response) {
             throw new Error(`Unsupported format: ${format}`);
         }
 
-        // Exact-byte-identical dedup (owner-scoped: no near-duplicate/fuzzy matching - see
-        // findCharacterIdByContentHash()'s own doc comment for the in-batch case). Deliberately skipped when
-        // `preservedFileName` is set: that request is an explicit "replace THIS specific character" action from
-        // the caller, and silently no-op'ing it because its bytes happen to match some OTHER character would
-        // ignore that explicit target rather than honor it - a worse outcome than just letting the replace
-        // proceed. Dedup only ever BLOCKS a genuine new-character import, which is also the only case where
-        // "this exact content is already in the library" is an unambiguous reason to skip.
-        //
-        // The hash itself is still always computed and recorded (including for a preserved-name replace) -
-        // skipping that too would leave content_hash stale after a replace (still pointing at whatever bytes
-        // this id was FIRST imported with), which would then make a later genuine duplicate of the *new* content
-        // undetectable. Only the "skip the import" branch below is preservedFileName-gated, not the hash.
+        // Exact-byte-identical dedup, skipped only when `preservedFileName` is set (an explicit "replace THIS
+        // character" action must not silently no-op just because its bytes match some other character). The
+        // hash itself is always computed and recorded regardless, so content_hash doesn't go stale on a replace.
         const contentHash = await hashFileContents(uploadPath);
         if (!preservedFileName) {
             const duplicateOf = await findCharacterIdByContentHash(request.user.directories, contentHash);
@@ -3686,44 +2876,23 @@ router.post('/import', async function (request, response) {
             invalidateThumbnail(request.user.directories, 'avatar', `${preservedFileName}.png`);
         }
 
-        // ALL/ONLY_EXISTING tag-import modes (power_user.tag_import_setting, public/scripts/tags.js) done here,
-        // atomically, as part of the same import request - not as a separate client-fired round of
-        // `/api/tags/assign` calls after the fact (the old behavior, still what ASK mode does below this comment
-        // has to stay true for it, since ASK genuinely needs the client's interactive review popup - see
-        // seedCardTagsForSingleCharacter()'s own doc comment). That old split was the actual root cause behind
-        // tonight's "tags not loading after import" reports for the two modes that never needed a client
-        // round-trip at all: no popup, no user decision, nothing that couldn't already happen server-side in the
-        // same request that created the row. `tagImportMode` is optional and additive - a caller that never
-        // sends it (or sends 'ask'/'none') gets byte-identical behavior to before, tag import still entirely
-        // client-driven.
+        // ALL/ONLY_EXISTING tag-import modes done atomically here, in the same request; ASK still needs the
+        // client's interactive review popup, so tag import there stays entirely client-driven.
         const tagImportMode = request.body.tagImportMode;
-        /** @type {object[]} Tag definitions (existing or newly-minted) the ALL/ONLY_EXISTING seed below actually
-         * resolved this card's tags to - shipped back to the client alongside `character` so it can merge them
-         * into its local tag-definitions store without a second `/api/tags/get` round trip (see
-         * seedCardTagsForSingleCharacter()'s own doc comment on why the definitions, not just the ids, have to
-         * travel here). Empty for ASK/NONE, where tag import stays entirely client-driven. */
+        /** @type {object[]} Tag definitions resolved by the ALL/ONLY_EXISTING seed below, shipped back so the client can merge them without a second /api/tags/get round trip. Empty for ASK/NONE. */
         let tagDefinitions = [];
         if (tagImportMode === 'all' || tagImportMode === 'existing') {
             try {
                 ({ tagDefinitions } = await seedCardTagsForSingleCharacter(request.user.directories, `${fileName}.png`, { onlyExisting: tagImportMode === 'existing' }));
             } catch (err) {
-                // Card-tag seeding failing must not fail the import itself - the character row already exists at
-                // this point, and the client's own tag-import fallback (importTags(), tags.js) still runs for
-                // 'ask'/'none' regardless, so a tag-seed error here is a real but non-fatal problem to log.
+                // Card-tag seeding failing must not fail the import itself - the character row already exists.
                 console.error(`Failed to seed card tags for ${fileName}.png:`, err);
             }
         }
 
-        // Hands the client the freshly-imported character's data in the same response, shaped by the identical
-        // processCharacter() /batch and /get already use - this is what lets the client (processDroppedFiles(),
-        // public/script.js) insert the new character straight into charactersStore and run its tag-import logic
-        // immediately, per-card, instead of a second full-library fetch afterward just to learn what it itself
-        // already just uploaded. One extra parse of the single file just written - not a library-wide cost.
+        // Hands the client the freshly-imported character's data in the same response, so it can insert it
+        // directly instead of a second full-library fetch just to learn what it itself just uploaded.
         const character = await processCharacter(`${fileName}.png`, request.user.directories, { shallow: useShallowCharacters });
-        // db-authoritative tag_ids stamp (same as /batch, /get, /query) - needed here specifically so a
-        // server-side ALL/ONLY_EXISTING seed above is actually visible in this same response, not just on the
-        // next fetch. Harmless no-op for ASK/NONE (whatever seedCardTagsForSingleCharacter() didn't touch is
-        // simply whatever tag_ids already existed on the row, i.e. none for a brand new character).
         await stampDbTagIds(request.user.directories, [character]);
 
         response.send({ file_name: fileName, character, tagDefinitions });
@@ -3746,21 +2915,9 @@ router.post('/duplicate', validateAvatarUrlMiddleware, async function (request, 
             return response.sendStatus(404);
         }
 
-        // If filename ends with a _number, increment the number. Parsed with a single strict-integer regex
-        // rather than a `Number()` guard paired with a `parseInt()` use - those two disagree on inputs like
-        // an empty or "Infinity" trailing segment (e.g. `foo_.png`), which used to let a NaN suffix through:
-        // the first dupe silently produced `foo_NaN.png`, and the second dupe span forever in the loop below,
-        // since `foo_NaN.png` always exists and `NaN++` stays `NaN` - a synchronous existsSync spin that
-        // wedged the whole server on one request (docs/design/character-data-residency-redesign.md §1.3).
-        //
-        // That parse fix alone wasn't enough: `/^\d+$/` still accepts arbitrarily long digit strings, and
-        // once the parsed suffix exceeds Number.MAX_SAFE_INTEGER (16 digits), `suffix++` stops advancing in
-        // float precision (e.g. stuck at 1e22) - same synchronous existsSync wedge, just a longer digit-string
-        // trigger instead of the original one-character one. Two independent guards close this for good:
-        // capping the regex to safe-integer-length digit strings keeps `suffix` itself always a real,
-        // strictly-increasing integer, and the attempt counter below bounds the loop by iteration count
-        // (never by the numeric value of `suffix`), so it terminates even if some future change reintroduces
-        // a non-advancing suffix.
+        // If filename ends with a _number, increment the number. The suffix regex is capped to safe-integer
+        // length so `suffix++` always advances (an uncapped/loose parse could produce a non-advancing suffix,
+        // e.g. NaN or a float-precision-stuck value, and wedge the loop below in a synchronous existsSync spin).
         const nameParts = path.basename(filename, path.extname(filename)).split('_');
         const lastPart = nameParts[nameParts.length - 1];
         // 15 digits is comfortably inside Number.MAX_SAFE_INTEGER (16 digits) even after +1.
@@ -3796,25 +2953,16 @@ router.post('/duplicate', validateAvatarUrlMiddleware, async function (request, 
         fs.copyFileSync(filename, newFilename);
         console.info(`${filename} was copied to ${newFilename}`);
 
-        // A raw byte copy also copies the source's tEXt chunk, which since the residency migration may be
-        // stale - so the duplicate would silently be a copy of the card as it was BEFORE its most recent
-        // edits. Re-stamp the copy with the source's authoritative content when that's the case.
-        //
-        // Done as a real file write rather than by parking the content on the new row, because a duplicate is
-        // a brand-new self-contained card and there is no reason to start its life already diverged from its
-        // own file. The common case (source not stale) still pays nothing but the lookup: writeCardToFile()
-        // only runs when there is genuinely something to correct, and it reflinks the unchanged image bytes
-        // rather than rewriting the whole file.
+        // A raw byte copy also copies the source's tEXt chunk, which may be stale - re-stamp the copy with
+        // the source's authoritative content when that's the case, so the duplicate isn't silently a copy of
+        // a pre-edit card. writeCardToFile() only rewrites when there's genuinely something to correct.
         const sourceParked = await getCharacterCardJson(request.user.directories, path.basename(filename));
         if (sourceParked !== null) {
             await writeCardToFile(filename, newFilename, sourceParked, null);
         }
 
-        // /duplicate doesn't go through writeCharacterData() (it's a raw file copy, not a re-encode), so it
-        // needs its own metadata-store hook rather than getting one for free - see writeCharacterData()'s own
-        // hook for why every other write route doesn't need this. The duplicate is a genuinely new character
-        // (a new id under this pre-Option-A identity scheme - design doc §2.2), so this is a plain generic
-        // upsert, not a rename-shaped one: date_added = now is correct here.
+        // /duplicate is a raw file copy, not a re-encode, so it doesn't go through writeCharacterData() and
+        // needs its own metadata-store upsert here.
         const newAvatar = path.parse(newFilename).base;
         const rawData = await readCharacterData(newFilename);
         if (rawData !== undefined) {
@@ -3842,11 +2990,8 @@ router.post('/export', validateAvatarUrlMiddleware, async function (request, res
 
         switch (request.body.format) {
             case 'png': {
-                // Materialized, not streamed: since the residency migration the stored PNG's chunk may be
-                // stale, and an export is precisely the case where it must not be (the file leaves this
-                // server as a standalone card other tools read by that chunk alone). materializeCardPng()
-                // rebuilds it in memory from the db when needed and hands back the stored bytes untouched
-                // when it isn't. See its own doc comment.
+                // Materialized, not streamed: the stored PNG's chunk may be stale, and an exported file must
+                // carry a current one since other tools read it by that chunk alone.
                 const materialized = await materializeCardPng(request.user.directories, path.basename(filename), filename);
                 if (!materialized) return response.sendStatus(400);
                 const rawBuffer = materialized.buffer;

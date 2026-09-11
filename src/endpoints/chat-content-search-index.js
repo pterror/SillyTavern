@@ -12,77 +12,33 @@ import { createIndexCoordinator } from './search-index-coordinator.js';
 import { tryParse, color, formatBytes } from '../util.js';
 
 /**
- * A per-user, per-message tantivy full-text index over chat content - the real content-search half of owner
- * tracker #5 (chat-metadata-db.js's per-chat metadata store is the other half, and the hard prerequisite this
- * module's incremental catch-up reads from). Reuses this fork's existing tantivy infrastructure directly
- * (tantivy-engine.js's engine resolution, tantivy-search.js's query-building/search helpers,
- * search-index-coordinator.js's stale-serve/background-catchup/coalescing behavior) rather than reimplementing
- * any of it - see search-index-coordinator.js's own header for why that matters (the 18+ second concurrent-
- * rebuild-race incident it exists to prevent applies here exactly as much as it does to character search).
+ * A per-user, per-message tantivy full-text index over chat content.
  *
- * GRANULARITY: one tantivy document PER MESSAGE, not per chat - a deliberate, already-settled tradeoff (owner
- * decision), not re-litigated here. The alternative (one doc per chat, matching characters-search-index.js's own
- * shape) has no partial-document update in tantivy (confirmed by that module's own header - "a changed doc costs
- * the same as a new one"), which for a CHAT means re-embedding its entire text into tantivy on every single
- * message sent - an unbounded, ever-growing cost as a chat gets longer, for install with real chats in the
- * thousands of messages. Per-message docs mean an ordinary send only ever needs one small `addDocument` for the
- * new message, never a re-embed of everything before it - see applyIncrementalChanges() below for exactly how.
- * The real cost this trades for: resolving a page of message hits back to their parent chats for display (see
- * resolveHitsToChats() below) and a larger total document count across the whole corpus - both accepted as the
- * better trade given how chats actually grow over time (unboundedly, append-heavy) vs. characters (edited
- * rarely, in full, by a human).
+ * One tantivy document per message, not per chat: tantivy has no partial-document update, so per-chat docs
+ * would mean re-embedding a chat's entire text on every message sent. Per-message docs mean an ordinary send
+ * only needs one small addDocument - see applyIncrementalChanges() below.
  *
- * INCREMENTAL CATCH-UP, APPEND-ONLY FAST PATH: driven by chat-metadata-db.js's `changes` table (getChangesSince())
- * exactly the way applyIncrementalTantivyChanges() (characters-search-index.js) drives its own catch-up off
- * character-metadata-db.js's change log - same shape, different store. For each chat that changed, this compares
- * its current message_count (chat-metadata-db.js's cached row - no file read needed for the count itself) against
- * `indexed_message_count` (this module's own per-chat watermark, chat-metadata-db.js's getIndexedMessageCount()/
- * setIndexedMessageCount()): if the chat only grew, only the NEW tail messages (index >= the watermark) get
- * `addDocument`-ed - the whole point. If the watermark says "never indexed" or the chat's message count went
- * DOWN (an edit that removed messages, a branch swap, anything that isn't a clean append), this falls back to a
- * full per-chat reindex (delete every existing doc for that chat_id, re-add every current message) - the same
- * "when in doubt, do the more expensive but correct thing" posture characters-search-index.js already uses for
- * its own incremental-vs-full-rebuild fork.
+ * Incremental catch-up compares each changed chat's message_count against its indexed_message_count watermark:
+ * grew -> append-only (only new tail messages added); shrank or never indexed -> full per-chat reindex.
  *
- * A REAL, DELIBERATE GAP IN THIS MODEL, FLAGGED RATHER THAN SILENTLY ACCEPTED: a mid-chat edit that does NOT
- * change the message count (a swipe/regenerate that replaces the text of an existing message without adding or
- * removing one) is invisible to the append-only fast path - the watermark comparison sees no count change and
- * skips reindexing entirely, so the OLD text of that message stays searchable and the new text never becomes so,
- * until something else (a later real append, or an explicit rebuild) touches that chat again. This mirrors the
- * same class of tradeoff character-metadata-db.js's own write-path-hooks-plus-backstop design accepts elsewhere,
- * but unlike that module, THIS module has no reconciler backstop (chat-metadata-db.js was deliberately scoped
- * without one - see that module's own header) to eventually self-correct it. Accepted for this build given the
- * task's own framing (message-level granularity was chosen specifically to optimize the append-heavy common
- * case), but a real correctness gap for the swipe/regenerate case specifically, not a hypothetical one - a
- * future pass could close it by also comparing each chat's own `change_seq` (chat-metadata-db.js already has one) against
- * a per-chat "reindexed as of this change_seq" watermark and forcing a full reindex whenever change_seq moved but count didn't,
- * trading the append-only fast path's win back on exactly the chats where a same-count edit actually happened.
+ * Known gap: a same-message-count edit (a swipe/regenerate) is invisible to the append-only path - the old text
+ * stays searchable until something else touches that chat again. No reconciler backstop exists to self-correct
+ * this (unlike character-metadata-db.js). Could be closed by also tracking each chat's change_seq.
  *
- * NO SQLITE FTS5 FALLBACK TIER (unlike the character/group search chain's tantivy-then-native-then-wasm chain) -
- * a deliberate scope narrowing for this build, not an oversight: this module is tantivy-only, and reports itself
- * unavailable if tantivy can't load on this install. chats.js's caller already has a correct, if slower, fallback
- * for that case: the pre-existing full-file readline scan /api/chats/search's query branch used before this
- * module existed - so "tantivy unavailable" degrades to "exactly the old behavior," not "content search broken."
- * Building a second SQLite-FTS5-per-message tier was judged not worth the added surface for this pass; flagging
- * it here as a real, visible scope choice rather than a silent gap.
+ * Tantivy-only, no SQLite FTS5 fallback tier - chats.js's caller falls back to a full-file readline scan when
+ * tantivy is unavailable.
  */
 
-/** The stored field holding the small JSON payload needed to resolve a hit back to its parent chat and message -
- * see resolveHitsToChats() below. Reuses tantivy-search.js's runSearch(), which reads exactly this field name. */
+/** Stored field holding the small JSON payload needed to resolve a hit back to its parent chat and message. */
 const DATA_FIELD = 'data';
 
 const SEARCHABLE_FIELD_NAME = 'text';
 const FIELD_WEIGHTS = { [SEARCHABLE_FIELD_NAME]: 1 };
 const FIELD_LABELS = {};
 
-/** Mirrors characters-search-index.js's own batching constants/rationale exactly (OOM-avoidance via periodic
- * writer.commit() during a full corpus build) - see that module's own doc comments on both. */
 const CHECKPOINT_EVERY_N_CHATS = 100;
 
-/** Caps how many message hits a single search fetches from tantivy before resolution - same "bound the fetch,
- * not just the final page" reasoning DEFAULT_TANTIVY_MAX_ROWS documents in characters-search-index.js. Sized
- * larger than a chat-list page because many hits can resolve to the same handful of chats (resolveHitsToChats()
- * collapses them), so the resolved chat count after collapsing is usually far smaller than this. */
+/** Sized larger than a chat-list page since many hits collapse into the same chat in resolveHitsToChats(). */
 const DEFAULT_MESSAGE_MAX_ROWS = 2000;
 
 const TANTIVY_SEQ_META_KEY = 'chat_content_index_seq';
@@ -92,44 +48,16 @@ const NOOP_CLOSE = () => { /* no explicit close API on this binding's Index */ }
 /** @type {ReturnType<typeof createIndexCoordinator>} */
 const indexCoordinator = createIndexCoordinator();
 
-/**
- * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy
- * @returns {import('@oxdev03/node-tantivy-binding').Schema}
- */
 function buildMessageSchema(tantivy) {
     const builder = new tantivy.SchemaBuilder();
     builder.addTextField(SEARCHABLE_FIELD_NAME, { stored: false, tokenizerName: 'default', indexOption: 'position' });
-    // `data` is `raw`-tokenized + stored, same DATA_FIELD contract tantivy-search.js documents (its own header)
-    // and characters-search-index.js relies on: exact-match indexed (never split into search tokens, so it can
-    // never collide with the real text search above) AND the delete-by-term key for this doc. Holds a small JSON
-    // payload (chatId/messageIndex/date/isUser/characterOrGroupId), not the message text itself.
+    // raw-tokenized + stored: exact-match only, never splits into search tokens, also the delete-by-term key.
     builder.addTextField(DATA_FIELD, { stored: true, tokenizerName: 'raw', indexOption: 'basic' });
-    // A real, separate indexed (not just stored-inside-`data`) field so a future caller can scope a search to one
-    // chat file directly via a term query, without needing to parse every hit's JSON payload first to find out -
-    // deleteDocumentsByTerm() (this module's own delete-by-chat step, see below) also uses this field, not `data`,
-    // specifically so deleting "every doc for this chat" doesn't require re-deriving a value that has to exactly
-    // match what was indexed (a plain, unambiguous field beats matching a substring of a JSON blob for that).
+    // Separate indexed field (not just inside `data`) so deleteDocumentsByTerm() can target one chat directly.
     builder.addTextField('chat_id', { stored: true, tokenizerName: 'raw', indexOption: 'basic' });
     return builder.build();
 }
 
-/**
- * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy
- * @param {import('@oxdev03/node-tantivy-binding').Schema} schema
- * @param {object} fields
- * @param {string} fields.chatId The chat file's own path (chat-metadata-db.js's primary key) - the delete-by-term
- * key for this doc, and how resolveHitsToChats() below groups hits back to their parent chat.
- * @param {string|null} fields.characterOrGroupId Avatar filename for a character chat, group id for a group
- * chat, or null for a root/ownerless chat - see resolveOwnerIds() below for how this gets derived.
- * @param {number} fields.messageIndex 0-based index of this message within its chat (matches chat-metadata-db.js's
- * message_count convention: message_count is the count of these, chatData[0] is the non-message header).
- * @param {string|null} fields.date The message's own `send_date`, stringified as-is (no reparsing - chat message
- * send_date isn't a single guaranteed format across every import path, so this is stored for display/sort
- * purposes exactly as the chat file has it, not normalized).
- * @param {boolean} fields.isUser
- * @param {string} fields.text The message's own `mes` text - the only field actually tokenized for search.
- * @returns {import('@oxdev03/node-tantivy-binding').Document}
- */
 function messageToTantivyDoc(tantivy, schema, fields) {
     return tantivy.Document.fromDict({
         [SEARCHABLE_FIELD_NAME]: fields.text ?? '',
@@ -144,24 +72,14 @@ function messageToTantivyDoc(tantivy, schema, fields) {
     }, schema);
 }
 
-/**
- * @param {import('../users.js').UserDirectoryList} directories
- * @returns {string}
- */
 function tantivyIndexDir(directories) {
     return path.join(directories.root, 'search-index', 'chat-content-tantivy');
 }
 
 /**
- * Parses a `.jsonl` chat file into its raw header + message items - the one place this module actually reads a
- * chat file off disk (both the full-reindex path and the append-only tail-read path below go through this; the
- * append-only path just discards everything before the tail it needs). Deliberately NOT reusing chats.js's
- * getChatInfo() (that function is shaped for "just the last message", this module needs every message) and NOT
- * importing anything from chats.js at all - same one-way-import-arrow reasoning chat-metadata-db.js's own header
- * documents (chats.js already imports THIS module to wire up search, so the arrow can't point back).
- * @param {string} filePath
- * @returns {Promise<object[]>} Every line, JSON-parsed, in file order (index 0 is the header row, same convention
- * trySaveChat()'s in-memory chatData array uses) - a line that fails to parse is skipped, not fatal.
+ * Parses a `.jsonl` chat file into its raw header + message items (index 0 is the header row). Not reusing
+ * chats.js's getChatInfo() (shaped for just the last message) and not importing chats.js at all - it already
+ * imports this module, so the arrow can't point back. A line that fails to parse is skipped, not fatal.
  */
 async function readChatFile(filePath) {
     return new Promise((resolve, reject) => {
@@ -178,13 +96,8 @@ async function readChatFile(filePath) {
     });
 }
 
-/**
- * Builds a chat-id (file path) -> owning group id map for every group in one pass - used to resolve
- * `characterOrGroupId` for group chats without a per-chat lookup (see this module's header). Bounded by group
- * count, not chat count, so it's cheap to build once per index build/catch-up pass regardless of corpus size.
- * @param {import('../users.js').UserDirectoryList} directories
- * @returns {Map<string, string>} chat file path -> group id
- */
+/** chat file path -> owning group id, for every group in one pass. Bounded by group count, not chat count.
+ * @returns {Map<string, string>} */
 function buildGroupChatOwnerMap(directories) {
     /** @type {Map<string, string>} */
     const map = new Map();
@@ -200,28 +113,21 @@ function buildGroupChatOwnerMap(directories) {
                 map.set(path.join(directories.groupChats, `${chatId}.jsonl`), String(group.id));
             }
         } catch {
-            // Skip an unreadable/corrupt group file - same tolerance chats.js's /search route already applies.
+            // Skip an unreadable/corrupt group file.
         }
     }
     return map;
 }
 
-/**
- * Derives `characterOrGroupId` for a chat file purely from its path shape plus (for a group chat only) the
- * owner map buildGroupChatOwnerMap() built - no per-chat metadata-store lookup needed, since chat-metadata-db.js
- * deliberately doesn't track ownership (see that module's own header).
- * @param {import('../users.js').UserDirectoryList} directories
- * @param {string} filePath
- * @param {Map<string, string>} groupOwnerMap
- * @returns {string | null}
- */
+/** Derives characterOrGroupId for a chat file purely from its path shape, plus the group owner map for group
+ * chats - chat-metadata-db.js doesn't track ownership itself.
+ * @returns {string | null} */
 function resolveOwnerId(directories, filePath, groupOwnerMap) {
     const dir = path.dirname(filePath);
     if (dir === directories.groupChats) {
         return groupOwnerMap.get(filePath) ?? null;
     }
-    // A character's own chat subdirectory (directories.chats/<avatarName>/<file>.jsonl) - anything directly in
-    // directories.chats itself (dir === directories.chats) is a root/ownerless chat, handled by the final `null`.
+    // dir === directories.chats itself is a root/ownerless chat, handled by the final null.
     if (dir !== directories.chats && dir.startsWith(directories.chats + path.sep)) {
         return `${path.basename(dir)}.png`;
     }
@@ -230,14 +136,7 @@ function resolveOwnerId(directories, filePath, groupOwnerMap) {
 
 /**
  * Full reindex of one chat: deletes every existing tantivy doc for it, re-reads the whole file, and re-adds one
- * doc per message. Used for a chat that's never been indexed, or whose message count went down since the last
- * catch-up (see this module's header on why a count decrease can't safely use the append-only path).
- * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy
- * @param {import('@oxdev03/node-tantivy-binding').Schema} schema
- * @param {import('@oxdev03/node-tantivy-binding').IndexWriter} writer
- * @param {import('../users.js').UserDirectoryList} directories
- * @param {string} filePath
- * @param {Map<string, string>} groupOwnerMap
+ * doc per message. Used for a never-indexed chat, or one whose message count went down since last catch-up.
  * @returns {Promise<number>} The new indexed_message_count to persist
  */
 async function reindexChatFully(tantivy, schema, writer, directories, filePath, groupOwnerMap) {
@@ -263,18 +162,8 @@ async function reindexChatFully(tantivy, schema, writer, directories, filePath, 
 }
 
 /**
- * Append-only fast path: reads the chat file (unavoidable - the new tail messages' actual text has to come from
- * somewhere, and chat-metadata-db.js deliberately doesn't carry full message text - see that module's header),
- * but only `addDocument`s the messages at index >= `previousCount`, skipping the tantivy-indexing work (not the
- * file read) for everything already indexed. This is the cost this module's whole per-message-granularity design
- * exists to avoid paying on every single message sent - see this module's own header.
- * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy
- * @param {import('@oxdev03/node-tantivy-binding').Schema} schema
- * @param {import('@oxdev03/node-tantivy-binding').IndexWriter} writer
- * @param {import('../users.js').UserDirectoryList} directories
- * @param {string} filePath
- * @param {number} previousCount
- * @param {Map<string, string>} groupOwnerMap
+ * Append-only fast path: reads the chat file (unavoidable - chat-metadata-db.js doesn't carry full message
+ * text), but only addDocuments the messages at index >= previousCount.
  * @returns {Promise<number>} The new indexed_message_count to persist
  */
 async function reindexChatAppendOnly(tantivy, schema, writer, directories, filePath, previousCount, groupOwnerMap) {
@@ -299,14 +188,8 @@ async function reindexChatAppendOnly(tantivy, schema, writer, directories, fileP
     return messages.length;
 }
 
-/**
- * (Re)builds the persistent on-disk tantivy message index for a user's ENTIRE chat corpus from scratch - the
- * initial-build / explicit-repair path, mirroring buildTantivyIndex() (characters-search-index.js) but walking
- * every chat file (character + group + root) instead of every character card.
- * @param {import('../users.js').UserDirectoryList} directories
- * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy
- * @returns {Promise<{ index: import('@oxdev03/node-tantivy-binding').Index, schema: import('@oxdev03/node-tantivy-binding').Schema, close: () => void, lastSeq: number }>}
- */
+/** (Re)builds the persistent on-disk tantivy message index for a user's entire chat corpus from scratch -
+ * the initial-build / explicit-repair path, walking every chat file (character + group + root). */
 async function buildFullIndex(directories, tantivy) {
     const lastSeq = await getLatestSeq(directories);
 

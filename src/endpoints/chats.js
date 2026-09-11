@@ -45,14 +45,7 @@ const checkIntegrity = !!getConfigValue('backups.chat.checkIntegrity', true, 'bo
 
 export const CHAT_BACKUPS_PREFIX = 'chat_';
 
-/**
- * Builds a stable filename key for a chat's backups.
- * Non-ASCII characters are replaced with underscores, so names such as CJK ones
- * would all collapse to the same key and share one backup quota. A short hash of
- * the raw name keeps those keys distinct while ASCII names stay unchanged (#5780).
- * @param {string} name The name of the chat.
- * @returns {string} Sanitized filename key for the backup files.
- */
+/** Non-ASCII names would otherwise all collapse to the same sanitized key; a hash suffix keeps them distinct. */
 export function getBackupKey(name) {
     const sanitized = sanitize(name).replace(/[^a-z0-9]/gi, '_').toLowerCase();
     if (/[^\x20-\x7E]/.test(name)) {
@@ -97,11 +90,7 @@ function backupChat(directory, name, data, backupPrefix = CHAT_BACKUPS_PREFIX) {
 const backupFunctions = new Map();
 
 /**
- * Gets a backup function for a user and chat.
- * Throttling is keyed per user and chat so that rapid saves in one chat cannot
- * swallow the throttled backup of another chat saved in the same window.
- * @param {string} handle User handle
- * @param {string} name The name of the chat, as passed to backupChat
+ * Keyed per user and chat, so rapid saves in one chat can't swallow the throttled backup of another.
  * @returns {typeof backupChat} Backup function
  */
 function getBackupFunction(handle, name) {
@@ -363,8 +352,7 @@ async function checkChatIntegrity(filePath, integritySlug) {
     const firstLine = await readFirstLine(filePath);
     const jsonData = tryParse(String(firstLine ?? '').replace(/^\uFEFF/, ''));
 
-    // If the first line of a non-empty file is not a JSON object, the file may be corrupted or truncated.
-    // Fail the check so the client asks for an explicit overwrite confirmation instead of silently losing data.
+    // A non-parsing first line means the file may be corrupted/truncated - fail so the client confirms the overwrite.
     if (typeof jsonData !== 'object' || jsonData === null || Array.isArray(jsonData)) {
         console.warn(`File "${filePath}" is not empty, but its first line could not be parsed as a chat header. Overwriting it requires an explicit confirmation.`);
         return false;
@@ -381,8 +369,6 @@ async function checkChatIntegrity(filePath, integritySlug) {
     const matches = chatIntegrity === integritySlug;
 
     if (!matches) {
-        // TEMP DEBUG (see docs/design or ask before removing): capturing facts for the
-        // /newchat double-save integrity mismatch repro. Remove once root-caused.
         const stat = fs.statSync(filePath);
         console.error(`[integrity-debug] mismatch for "${filePath}": expected="${integritySlug}" onDisk="${chatIntegrity}" fileMtime=${stat.mtime.toISOString()} fileCtime=${stat.ctime.toISOString()} fileSize=${stat.size} now=${new Date().toISOString()}`);
     }
@@ -521,20 +507,10 @@ export async function getChatInfo(pathToFile, additionalData = {}, withMetadata 
 }
 
 /**
- * Cache-first counterpart to getChatInfo(): serves a chat's info from chat-metadata-db.js's per-file row when
- * that row's stored mtime still matches the file's current mtime (no I/O beyond the DB lookup - no readline, no
- * stat even, since the caller already has `mtimeMs` from its own directory-listing pass), and transparently
- * falls back to a full getChatInfo() parse (caching the result for next time) on a miss or stale row.
- *
- * Never used for a real content-matching search (a `matcher` query) - a cached row only ever holds the LAST
- * message's preview, not the full chat text, so it can't answer "does this chat contain X" correctly. Callers
- * that need to run `matcher` must call getChatInfo() directly, same as before this function existed.
- * @param {import('../users.js').UserDirectoryList} directories
- * @param {string} pathToFile
+ * Cache-first counterpart to getChatInfo(): serves a chat's info from the metadata row when its mtime still
+ * matches, else falls back to a full parse (caching the result). A cached row only holds the last message's
+ * preview, not full text, so callers needing a content `matcher` must call getChatInfo() directly.
  * @param {number} mtimeMs The file's current mtime, already known by the caller
- * @param {object} additionalData
- * @param {boolean} withMetadata
- * @returns {Promise<ChatInfo>}
  */
 export async function getOrComputeChatInfo(directories, pathToFile, mtimeMs, additionalData = {}, withMetadata = false) {
     const row = await getChatRow(directories, pathToFile);
@@ -562,9 +538,7 @@ export async function getOrComputeChatInfo(directories, pathToFile, mtimeMs, add
 
     const chatInfo = await getChatInfo(pathToFile, additionalData, withMetadata);
 
-    // Cache the freshly computed info for the next read - not awaited, so a cache miss doesn't pay for the
-    // write on top of the parse it just did. Skipped for a vanished/corrupted file (getChatInfo() returns
-    // `{ match: false }` or `{}` for those, neither of which carries a file_name) - nothing usable to cache.
+    // Not awaited, so a cache miss doesn't pay for the write on top of the parse it just did.
     if (chatInfo.file_name) {
         fs.promises.stat(pathToFile)
             .then(stats => upsertChatFromParse(directories, pathToFile, stats, chatInfo))
@@ -592,30 +566,15 @@ class IntegrityMismatchError extends Error {
 /**
  * Tries to save the chat data to a file, performing an integrity check if required.
  *
- * Also rotates the integrity slug on every successful write when integrity tracking is enabled (regardless of
- * whether this particular call skipped the check via `skipIntegrityCheck`/force) and returns the new slug to
- * the caller. This is the other half of the fix `checkChatIntegrity` needs: previously the slug a tab first
- * loaded was carried forward unchanged on every subsequent save, including the one written to disk - so the
- * "expected" slug on file never diverged from what any tab that had ever loaded the chat was sending, and the
- * check could never actually catch a stale write. Minting a fresh slug here, writing it into the saved file,
- * and handing it back to the caller (which must feed it into that tab's *next* save, see
- * `saveChat()`/`saveGroupChat()` in the client) means a second tab whose last-known slug predates this write
- * will correctly fail the check on its next save attempt instead of silently clobbering it.
- * @param {Array} chatData The chat array to save.
- * @param {string} filePath Target file path for the data.
+ * Also rotates the integrity slug on every successful write (when tracking is enabled), writes it into the
+ * saved file, and returns it to the caller, which must feed it into that tab's next save. Otherwise the slug
+ * never diverges from what any tab that ever loaded the chat is sending, and the check can never catch a stale
+ * write from another tab.
  * @param {boolean} skipIntegrityCheck If undefined, the chat's integrity will not be checked.
- * @param {string} handle The users handle, passed to getBackupFunction.
- * @param {string} cardName Passed to backupChat.
- * @param {string} backupDirectory Passed to backupChat.
- * @param {import('../users.js').UserDirectoryList} [directories] When given, feeds chat-metadata-db.js's
- * write-path hook (upsertChatFromSave()) right after the write succeeds - the same "hook alongside the slug
- * rotation, don't duplicate/conflict with it" placement the integrity slug above uses. Computed straight from
- * `chatData` (already in memory) plus one post-write stat, so it costs no extra parse of the file this call just
- * wrote. Optional (rather than required) so any caller that genuinely has no directories to offer - none exist
- * today, both /save and /group/save always have `request.user.directories` - degrades to "metadata store not
- * updated for this write" instead of throwing.
+ * @param {import('../users.js').UserDirectoryList} [directories] When given, updates the chat metadata store
+ * right after the write succeeds. Optional since not every caller has directories to offer.
  * @returns {Promise<string|undefined>} The new integrity slug written to the file, or undefined if integrity
- * tracking is disabled (`backups.chat.checkIntegrity` config) or the chat has no header to carry a slug.
+ * tracking is disabled or the chat has no header to carry a slug.
  */
 export async function trySaveChat(chatData, filePath, skipIntegrityCheck = false, handle, cardName, backupDirectory, directories) {
     const doIntegrityCheck = (checkIntegrity && !skipIntegrityCheck);
@@ -658,18 +617,8 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
             return response.status(400).send({ error: 'The request\'s body.chat is not an array.' });
         }
 
-        // Whole-array save. Kept for parity with upstream SillyTavern: extensions and anything written
-        // against the stock API call this, and breaking it isn't on the table.
-        //
-        // Our own frontend never reaches it. It writes through the named operations
-        // (/message/edit, /message/append, /message/alternative, /message/select, /metadata), each of
-        // which names the row it acts on - so our client cannot speak for a row it never received,
-        // which is the shape that let a windowed load's unfilled slots overwrite stored greetings.
-        // Migrate-on-touch, then one path. This does NOT ask whether the character is migrated and pick
-        // a route from the answer - see migrateOwnerOnTouch()'s doc comment on why that shape is banned.
-        // It states that by the time the next line runs, this owner's chats are in the tree, because if
-        // they weren't, they are now. Whether the tree is where chats live is not a per-character
-        // question; isTreeAvailable() is the only thing that answers it, and it answers globally.
+        // Whole-array save, kept for extensions/stock-API callers; our own frontend uses the named
+        // per-row operations instead, so it never sends unfilled slots that would clobber stored data.
         const useTree = await isTreeAvailable(request.user.directories);
         if (useTree) {
             await migrateOwnerOnTouch(request.user.directories, {
@@ -737,25 +686,16 @@ router.post('/get', validateAvatarUrlMiddleware, async function (request, respon
 
         const useTree = await isTreeAvailable(request.user.directories);
         if (useTree && chatName) {
-            // Same migrate-on-touch precondition /save runs, for the same reason: opening a chat is a
-            // touch. A read has to do it too, or the very first thing a never-migrated character does
-            // is render blank and then have an autosave write a fresh branch beside history the tree
-            // has never been shown.
+            // Opening a chat is a touch too, or a never-migrated character renders blank on first read.
             await migrateOwnerOnTouch(request.user.directories, {
                 ownerId: dirName,
                 chatDir: path.join(request.user.directories.chats, dirName),
             });
-            // The pointer may be a node id or a legacy chat name. A node id is what identifies a
-            // position; a name only ever resolved to one by lookup, and not uniquely - `label` is not
-            // unique per owner, so name lookup picks whichever row sorts first.
-            //
-            // Both are accepted so an existing pointer keeps working while the client moves over. A
-            // node id is tried first: it is exact, and a miss falls through to the name path rather
-            // than failing.
+            // The pointer may be a node id (exact) or a legacy chat name (looked up, not unique per owner);
+            // both are accepted so an existing pointer keeps working while the client moves over.
             const result = await loadAtNode(request.user.directories, dirName, chatName)
                 ?? await loadBranch(request.user.directories, dirName, chatName);
             if (result) {
-                // Assemble in the same format as JSONL: [header, ...messages]
                 // _tree_stored flag lets the client use tree-specific APIs (fork, label)
                 /** @type {any} */
                 const header = {
@@ -765,19 +705,8 @@ router.post('/get', validateAvatarUrlMiddleware, async function (request, respon
                 };
                 return response.send([header, ...result.messages]);
             }
-            // Branch not found in tree. The JSONL fallback below only returns {} when no chatName was
-            // given at all (a brand-new character with nothing selected yet) - once a chatName IS given,
-            // a missing file 404s, full stop, whether the chat is "new" or not. The client already
-            // relies on that: doNewChat()/getChat({ isNewChat: true }) passes isNewChat precisely so a
-            // 404 for a freshly-minted, definitely-nonexistent name is treated as an empty chat with no
-            // side effects (see getChat() in script.js), while a 404 for anything else is treated as
-            // "this character's persisted chat pointer names something that's gone" and triggers
-            // replaceCurrentChat() to recover onto a real chat instead of silently rendering blank.
-            // Returning {} here for every miss (as this used to) collapses that distinction: a stale or
-            // wrong chat-name pointer for an EXISTING character looks identical to a legitimately new,
-            // unsaved chat, so the recovery path never fires and the very next autosave can create a
-            // brand-new near-empty branch under the stale name - right beside whatever branch actually
-            // holds the real history - instead of surfacing the mismatch.
+            // A 404 (rather than {}) here lets the client distinguish "stale pointer to a gone chat" from
+            // a legitimately new/unsaved chat and trigger recovery instead of silently rendering blank.
             return response.status(404).send({ error: 'not_found' });
         }
 
@@ -819,9 +748,7 @@ router.post('/rename', validateAvatarUrlMiddleware, async function (request, res
 
         const oldName = String(request.body.original_file).replace(/\.jsonl$/, '');
 
-        // A group's owner is not in this request - `avatar_url` means nothing for one. It is resolved from
-        // the chat being renamed, which the group's descriptor still lists at this point: the client updates
-        // its `chats` array only after this call returns.
+        // `avatar_url` means nothing for a group; its owner is resolved from the chat being renamed instead.
         /** @type {string|null} */
         let ownerId = null;
         if (request.body.is_group) {
@@ -834,10 +761,6 @@ router.post('/rename', validateAvatarUrlMiddleware, async function (request, res
             });
         }
 
-        // hasSavedChats() is not asking whether this owner is migrated (it cannot answer that - see its own
-        // doc comment); it is asking whether there is any named chat here to rename at all. After the
-        // migrate-on-touch above, an owner with history has it in the tree, so a `false` here means there is
-        // genuinely nothing named, and the file path below is the right place to look.
         if (ownerId && await hasSavedChats(request.user.directories, ownerId)) {
             const newName = String(request.body.renamed_file).replace(/\.jsonl$/, '');
             const renamed = await renameBranchInTree(request.user.directories, ownerId, oldName, newName);
@@ -920,15 +843,7 @@ router.post('/delete', validateAvatarUrlMiddleware, async function (request, res
 //  Tree-specific endpoints (fork, label, list-branches)
 // ---------------------------------------------------------------------------
 
-/**
- * DEPRECATED, and unused by this frontend.
- *
- * On the tree path a fork was only ever a label: nothing is copied, because the node already exists
- * and is shared. So this and /api/chats/label were two routes doing one thing, and the client now uses
- * the label one for both branching and bookmarking.
- *
- * Kept for extensions written against the stock API.
- */
+/** Deprecated, unused by this frontend (superseded by /label); kept for extensions using the stock API. */
 router.post('/fork', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const { avatar_url, node_id, branch_name, metadata } = request.body;
@@ -956,10 +871,7 @@ router.post('/fork', validateAvatarUrlMiddleware, async function (request, respo
     }
 });
 
-/**
- * Labels (pins/checkpoints) a message node. Replaces the old checkpoint system where a full
- * chat copy was made; in the tree model a checkpoint is just a label on an existing node.
- */
+/** Labels (pins/checkpoints) a message node - a checkpoint is just a label on an existing node in the tree model. */
 router.post('/label', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const { node_id, label } = request.body;
@@ -975,11 +887,7 @@ router.post('/label', validateAvatarUrlMiddleware, async function (request, resp
     }
 });
 
-/**
- * Renames the character name inside all messages for a character, directly in the DB.
- * Replaces the client-side renamePastChats round-trip-per-chat approach (which fetched and
- * re-saved every chat file individually) with a single DB operation.
- */
+/** Renames the character name inside all messages for a character, directly in the DB. */
 router.post('/tree/rename-in-content', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const { avatar_url, new_name } = request.body;
@@ -989,9 +897,7 @@ router.post('/tree/rename-in-content', validateAvatarUrlMiddleware, async functi
 
         const ownerId = String(avatar_url).replace('.png', '');
 
-        // Nothing to rename the speaker in. This is a no-op, not a failure - respond 200 with an
-        // explicit flag so the client can tell it apart from an actual rename failure without
-        // string-matching an error message against an ambiguous 400.
+        // No-op, not a failure - an explicit flag lets the client tell this apart from a real failure.
         if (!await hasSavedChats(request.user.directories, ownerId)) {
             return response.send({ ok: true, updated: 0, noSavedChats: true });
         }
@@ -1004,20 +910,16 @@ router.post('/tree/rename-in-content', validateAvatarUrlMiddleware, async functi
     }
 });
 
-/**
- * Lists all branches for a character in the tree DB. Supplements the existing chat listing
- * endpoint in characters.js.
- */
+/** Lists all branches for a character in the tree DB. */
 router.post('/tree/branches', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const ownerId = String(request.body.avatar_url).replace('.png', '');
         const branches = await listBranches(request.user.directories, ownerId);
 
-        // Transform to the format the client's chat listing expects
         const result = branches.map(b => ({
             node_id: b.id,
             file_name: b.name,
-            file_size: 0, // Not meaningful for tree-stored chats
+            file_size: 0,
             message_count: b.message_count,
             last_mes: b.last_mes || '',
             chat_metadata: b.metadata ? JSON.parse(b.metadata) : {},
@@ -1031,11 +933,8 @@ router.post('/tree/branches', validateAvatarUrlMiddleware, async function (reque
 });
 
 /**
- * Fills in the alternatives a chat load left as holes.
- *
- * A load ships a window around the selected alternative and holes elsewhere, because a wide fork
- * point can carry over a thousand of them and shipping their text costs hundreds of KB nobody reads.
- * This is how the client gets the rest, at the moment it actually needs them.
+ * Fills in the alternatives a chat load left as holes: a load ships only a window around the selected
+ * alternative, since a wide fork point can carry thousands of them.
  */
 router.post('/alternatives', async function (request, response) {
     try {
@@ -1058,11 +957,7 @@ router.post('/alternatives', async function (request, response) {
     }
 });
 
-/**
- * The path from root down to a node, for when the client already has part of a conversation loaded
- * and a bookmark it just picked sits somewhere off that path - this is what it needs to bridge the
- * gap, without re-fetching whatever prefix is already shared.
- */
+/** The path from root down to a node, for bridging to a bookmark off the client's currently loaded path. */
 router.post('/ancestry', async function (request, response) {
     try {
         const nodeId = String(request.body.node_id || '');
@@ -1080,10 +975,7 @@ router.post('/ancestry', async function (request, response) {
     }
 });
 
-/**
- * The conversation below a node, for when the client switches an earlier message to a different
- * alternative and needs to move onto that alternative's path.
- */
+/** The conversation below a node, for moving onto a different alternative's path. */
 router.post('/continuation', async function (request, response) {
     try {
         const nodeId = String(request.body.node_id || '');
@@ -1103,24 +995,13 @@ router.post('/continuation', async function (request, response) {
 });
 
 // ---------------------------------------------------------------------------
-//  The operations a save is made of.
-//
-//  These replace handing the whole conversation over on every save. The tree already stores the
-//  path, so there is nothing to restate; each route names the single row it acts on, which means a
-//  row the client never received simply cannot be addressed.
+//  Per-row operations a save is made of, replacing handing the whole conversation over each time.
 // ---------------------------------------------------------------------------
 
 /**
- * Which owner an operation is against.
- *
- * An owner is a character for one kind of chat and a group for the other, and the tree does not care
- * which - `owner_id` is just a string it filters on. What differs is how the request names it: a
- * character by its avatar, a group by its own id, because a group has no avatar to be named by. So a
- * request that carries `group_id` is speaking for a group, and nothing downstream needs to know that.
- *
- * No migration precondition here on purpose. These routes act on a row the client is already holding,
- * which it can only be holding because a load put it there, and the load is what runs migrate-on-touch.
- * Re-asking on every keystroke-level operation would be the per-request check this design refuses.
+ * Which owner an operation is against: a character by avatar, or a group by its own id (a group has no
+ * avatar). No migration precondition here - these routes act on a row the client already holds, which it
+ * can only hold because a load (which runs migrate-on-touch) put it there.
  */
 const ownerOf = (request) => (request.body.group_id
     ? String(request.body.group_id)
@@ -1140,13 +1021,7 @@ router.post('/message/edit', validateAvatarUrlMiddleware, async function (reques
     }
 });
 
-/**
- * Applies one change that spans many messages, as one thing.
- *
- * Attributing a run of messages to a persona, or hiding a range, is a single act - it was being sent
- * as one request per message, which is N round trips for one decision and N chances to end up half
- * applied. Refusals are reported per message rather than stopping the rest.
- */
+/** Applies one change that spans many messages as one request; refusals are reported per message. */
 router.post('/message/edit-batch', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const edits = Array.isArray(request.body.edits) ? request.body.edits : null;
@@ -1169,10 +1044,6 @@ router.post('/message/append', validateAvatarUrlMiddleware, async function (requ
         const contents = Array.isArray(request.body.messages) ? request.body.messages : [];
         const result = await appendMessages(request.user.directories, ownerOf(request), after, contents);
 
-        // Appending is what "you used this chat" means, so this is where the character's recency
-        // stamp belongs. It used to ride on the whole-array save, which our client no longer calls -
-        // so the list kept its order in-session (the client updates its own store) and lost it on
-        // reload, because nothing was persisting it.
         if (result.ok && contents.length) {
             await bumpCharacterDateLastChat(request.user.directories, String(request.body.avatar_url)).catch(err =>
                 console.error('Could not bump date_last_chat:', err));
@@ -1187,34 +1058,16 @@ router.post('/message/append', validateAvatarUrlMiddleware, async function (requ
 
 /**
  * Reads a character's card fresh off disk and returns its greetings in the message-object shape
- * {@link getOpeningAlternatives} merges against (see that function's `cardGreetings` param and
- * `nodeIdentityKey()` in message-tree-db.js, which only ever look at `name`/`is_user`/`mes` - `send_date`
- * and `extra` carry no identity weight, so any values here are fine).
- *
- * The server reads its own on-disk copy rather than trusting a caller-supplied array. A greeting only
- * ever reaches disk through the confirmed round trip of one of the six `/greetings/*` ops (see
- * characters.js's `applyGreetingOperation` - it writes and only THEN reports success), and the client
- * never mutates its in-memory character object until that op comes back ok. So there is no "the client
- * has an edit the disk doesn't know about yet" case here to accommodate - the stored card already IS
- * the freshest copy of the truth by the time anything asks for openings, which is what makes reading it
- * server-side strictly better than requiring the caller to ship it: same answer, without the client
- * having to hold, serialize, and transmit potentially hundreds of greetings' full text on every call.
- *
- * "Stored", not "on-disk": since the residency migration a greeting edit lands in the metadata db and
- * deliberately does NOT rewrite the PNG, so the card's freshest copy is whatever readCardContent()
- * resolves, which is the db's parked copy when there is one and the file otherwise. The guarantee above
- * is unchanged - the write still completes before the op reports success - only where it completes moved.
- * @param {import('../users.js').UserDirectoryList} directories
- * @param {string} avatar avatar filename (e.g. "char.png")
+ * {@link getOpeningAlternatives} merges against. Reads server-side rather than trusting a caller-supplied
+ * array: a greeting only ever reaches disk through a confirmed `/greetings/*` op, so the stored card is
+ * always the freshest copy by the time anything asks for openings.
  * @returns {Promise<object[]>} Empty array if the character can't be read.
  */
 async function _cardGreetingsFromDisk(directories, avatar) {
     try {
         const avatarPath = path.join(directories.characters, avatar);
-        // readCardContent(), not readCharacterData(): since the residency migration a greeting edit is
-        // persisted to the metadata db without rewriting the PNG, so the file's embedded chunk may hold a
-        // pre-edit greeting list. Reading the file directly here would show stale openings for exactly the
-        // characters whose greetings were most recently edited.
+        // readCardContent(), not readCharacterData(): a greeting edit is persisted to the metadata db
+        // without rewriting the PNG, so reading the file directly could show stale greetings.
         const pngStringData = await readCardContent(directories, avatar, avatarPath);
         if (!pngStringData) return [];
         const character = JSON.parse(pngStringData);
@@ -1231,25 +1084,16 @@ async function _cardGreetingsFromDisk(directories, avatar) {
 }
 
 /**
- * The openings a character can start on: every greeting any of its chats has ever opened from.
- *
- * Addressed by character rather than by node, because starting a chat has no node to start from yet.
- * A new chat picks one of these and holds its id, instead of copying a greeting off the card into a
- * fresh message the way file-backed chats had to.
- *
- * The card's own greetings are merged in at read time, read fresh off disk here rather than supplied
- * by the caller (see {@link _cardGreetingsFromDisk}'s doc comment for why that's safe). An entry with
- * no node_id is a greeting that exists on the card and has no row yet; it gets one when someone
- * actually opens a conversation on it. That is why nothing needs syncing: edit a greeting on the card
- * and the next read reflects it.
+ * The openings a character can start on: every greeting any of its chats has ever opened from. Addressed by
+ * character rather than node, since starting a chat has no node yet. An entry with no node_id is a card
+ * greeting with no row yet - it gets one when someone opens a conversation on it.
  */
 router.post('/openings', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const offset = Number.isFinite(Number(request.body.offset)) ? Number(request.body.offset) : undefined;
         const limit = Number.isFinite(Number(request.body.limit)) ? Number(request.body.limit) : undefined;
         const avatar = String(request.body.avatar_url || '');
-        // Group chats have no single card to read greetings off of - openings for those are whatever
-        // is already stored, same as before this endpoint stopped taking a caller-supplied array.
+        // Group chats have no single card to read greetings off of.
         const cardGreetings = avatar ? await _cardGreetingsFromDisk(request.user.directories, avatar) : [];
         const result = await getOpeningAlternatives(request.user.directories, ownerOf(request), { offset, limit }, cardGreetings);
         if (!result) return response.status(404).send({ error: 'Tree storage unavailable' });
@@ -1274,13 +1118,7 @@ router.post('/openings/ensure', validateAvatarUrlMiddleware, async function (req
     }
 });
 
-/**
- * Adds alternatives alongside an existing node - more options at the same fork.
- *
- * Idempotent, so a set can be asserted repeatedly. That is how a character's current greetings stay
- * present in every chat, including ones that existed before the greeting was added, without the fork
- * growing on every open.
- */
+/** Adds alternatives alongside an existing node. Idempotent, so a set can be asserted repeatedly. */
 router.post('/message/alternative', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const sibling = String(request.body.sibling_node_id || '');
@@ -1298,17 +1136,7 @@ router.post('/message/alternative', validateAvatarUrlMiddleware, async function 
     }
 });
 
-/**
- * Shows this alternative. The fork it belongs to follows from the node itself, so the caller never
- * names a parent and therefore can never name the wrong one.
- */
-/**
- * Ends the conversation at this node: it stops showing anything after it.
- *
- * The counterpart to select. Deleting the tail of a chat, or cutting it back to a point, is this and
- * not a removal - the messages below keep their rows, their text and their own continuations, and
- * selecting one again restores the whole thing. Nothing in this store is ever destroyed.
- */
+/** Ends the conversation at this node: cuts the tail without deleting it (a later select restores it). */
 router.post('/message/end-path', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const nodeId = String(request.body.node_id || '');
@@ -1336,12 +1164,8 @@ router.post('/message/select', validateAvatarUrlMiddleware, async function (requ
 });
 
 // ---------------------------------------------------------------------------
-//  Node-addressed reads.
-//
-//  There is no chat. There is a tree, and a label is a bookmark someone put on a node they wanted to
-//  get back to. A node id is the only thing that identifies a position: `label` is not unique per
-//  owner (12 duplicate pairs in a real install), so looking one up by name silently picks whichever
-//  row comes first.
+//  Node-addressed reads. A node id is the only thing that identifies a position - `label` is not
+//  unique per owner, so looking one up by name would silently pick whichever row comes first.
 // ---------------------------------------------------------------------------
 
 /** Reads the tree at a node: everything above it, and the continuation below it. */
@@ -1406,7 +1230,7 @@ router.post('/export', validateAvatarUrlMiddleware, async function (request, res
     const chatName = String(request.body.file).replace(/\.jsonl$/, '');
     const exportfilename = request.body.exportfilename;
 
-    // Tree DB path: generate JSONL from tree data on demand
+    // Tree DB path: generates JSONL from tree data on demand.
     if (ownerId && await hasSavedChats(request.user.directories, ownerId)) {
         try {
             const result = await loadBranch(request.user.directories, ownerId, chatName);
@@ -1515,15 +1339,9 @@ router.post('/group/import', async function (request, response) {
         const chatname = humanizedDateTime();
         const pathToUpload = path.join(filedata.destination, filedata.filename);
 
-        // Dropping the file into groupChats/ and walking away is what this used to do, and it is the one
-        // thing that must not happen once a group's chats are in the tree: the owner already has labeled
-        // nodes, so migrate-on-touch correctly skips it forever, and the imported file sits on disk that
-        // nothing will ever read. So an import is ingested the same way a save is - through the store,
-        // under the group's owner id, sharing rows with whatever history it has a prefix in common with.
-        //
-        // touchGroupOwner() runs FIRST and its ordering is load-bearing: if this group is still on files,
-        // its existing chats have to land in the tree before the import labels anything, or that label
-        // flips the idempotency gate and strands the rest of the group's history.
+        // Once a group is in the tree, an import must go through the store too, or the file it drops is
+        // never read again. touchGroupOwner() must run before the import to migrate any file-backed
+        // history first - migrating after would strand it behind the import's own label.
         const useTree = await isTreeAvailable(request.user.directories);
         const group = useTree ? await touchGroupOwner(request.user.directories, { groupId: request.body?.group_id }) : null;
 
@@ -1656,20 +1474,9 @@ router.post('/import', validateAvatarUrlMiddleware, function (request, response)
 });
 
 /**
- * Establishes which group a request is actually about, and guarantees that group's chats are in the tree
- * before the caller touches them.
- *
- * Every group route addresses a chat by the chat's own id and says nothing about the owner, while the tree
- * addresses everything by owner. Bridging that is one lookup, and it is the same lookup that produces the
- * file list migration needs (all groups' chats share one flat directory, so "this group's files" is a
- * statement only the group descriptor can make). Doing both here keeps the two from ever disagreeing about
- * which group a chat belongs to.
- *
- * The migrate-on-touch call is a precondition, not a question - see migrateOwnerOnTouch(). Callers use the
- * returned group to address the tree, never to decide whether to use it.
- *
- * @returns {Promise<{ id: string, chats: string[] } | null>} `null` when no group claims this chat, which is
- * a real answer and not a licence to guess: a chat with no owner has no address in the tree.
+ * Resolves which group owns a chat/group id and migrates its chats into the tree before the caller touches
+ * them.
+ * @returns {Promise<{ id: string, chats: string[] } | null>} `null` when no group claims this chat.
  */
 async function touchGroupOwner(directories, { chatId, groupId }) {
     const group = resolveGroupOwner(directories.groups, { chatId, groupId });
@@ -1695,8 +1502,6 @@ router.post('/group/get', async (request, response) => {
         const group = useTree ? await touchGroupOwner(request.user.directories, { chatId: id, groupId: request.body.group_id }) : null;
 
         if (group) {
-            // Same node-id-or-name resolution /get uses, for the same reason: a node id is exact, a label
-            // is not unique per owner, and both have to keep working while the client moves over.
             const result = await loadAtNode(request.user.directories, group.id, id)
                 ?? await loadBranch(request.user.directories, group.id, id);
             if (result) {
@@ -1708,16 +1513,11 @@ router.post('/group/get', async (request, response) => {
                 };
                 return response.send([header, ...result.messages]);
             }
-            // A miss is an empty array here, NOT the 404 the character /get returns. The two routes have
-            // genuinely different contracts: getGroupChat() reads an empty result as "this is a fresh chat"
-            // and seeds it from the members' greetings, which is exactly right for a chat id the group just
-            // minted and has never saved. Characters have doNewChat()'s isNewChat flag to make that same
-            // distinction explicitly, so their route can afford to treat a miss as an error; groups don't.
+            // Empty array, not the 404 character /get returns: getGroupChat() reads a miss as "fresh chat"
+            // and seeds it from member greetings, which groups have no isNewChat flag to signal otherwise.
             return response.send([]);
         }
 
-        // No resolvable owner (or no tree at all). Reading the file is what this route has always done and
-        // cannot corrupt anything, so an orphaned chat id still renders rather than silently coming back empty.
         const chatFilePath = path.join(request.user.directories.groupChats, sanitize(`${id}.jsonl`));
         return response.send(getChatData(chatFilePath));
     } catch (error) {
@@ -1726,13 +1526,7 @@ router.post('/group/get', async (request, response) => {
     }
 });
 
-/**
- * Every chat a group owns, in one call, the way /tree/branches answers it for a character.
- *
- * The per-chat /group/info below can still answer for a single chat, but a listing built out of it is one
- * request per chat and can only report chats the descriptor happens to name. A branch listing is one query
- * and reports what the store actually holds.
- */
+/** Every chat a group owns, in one call, the way /tree/branches answers it for a character. */
 router.post('/group/branches', async (request, response) => {
     try {
         if (!request.body || !request.body.group_id) {
@@ -1780,15 +1574,12 @@ router.post('/group/info', async (request, response) => {
                     match: true,
                     file_id: branch.name,
                     file_name: `${branch.name}.jsonl`,
-                    // Nothing meaningful to report for a chat that isn't a file. Reported as a formatted
-                    // zero rather than omitted, so a caller rendering this field gets a string either way.
                     file_size: formatBytes(0),
                     chat_items: branch.message_count,
                     mes: branch.last_mes || '[The chat is empty]',
                     last_mes: branch.last_activity ?? branch.created_at,
                 });
             }
-            // Fall through: a chat id the descriptor names but the tree has never seen (never saved).
         }
 
         const chatFilePath = path.join(request.user.directories.groupChats, sanitize(`${id}.jsonl`));
@@ -1808,14 +1599,11 @@ router.post('/group/delete', async (request, response) => {
 
         const id = String(request.body.id);
         const useTree = await isTreeAvailable(request.user.directories);
-        // The client drops the chat from the group's `chats` array before it calls this, so a chat-id scan
-        // can no longer find the owner by the time the request lands - which is why group-chats.js sends
-        // `group_id` explicitly on this route rather than relying on the reverse lookup.
+        // The client already dropped this chat from the group's `chats` array, so a chat-id scan can no
+        // longer find the owner - group_id is sent explicitly instead.
         const group = useTree ? await touchGroupOwner(request.user.directories, { chatId: id, groupId: request.body.group_id }) : null;
 
         if (group && await deleteBranch(request.user.directories, group.id, id)) {
-            // Unlabels the node; the messages and everything below them stay exactly where they are, same
-            // as deleting a character's chat does. What's deleted is the name, not the history.
             return response.send({ ok: true });
         }
 
@@ -1852,22 +1640,13 @@ router.post('/group/save', async function (request, response) {
         if (useTree) {
             const group = await touchGroupOwner(request.user.directories, { chatId: id, groupId: request.body.group_id });
             if (!group) {
-                // Refused, not quietly written to a file. A chat whose owning group can't be established has
-                // no address in the tree, and the JSONL it would land in is one nothing reads any more once
-                // that group is tree-backed - the chat would look saved and be gone. The client surfaces this
-                // as a save failure, which is the honest outcome.
+                // Refused rather than silently written to a file nothing reads once the group is tree-backed.
                 console.error(`Refusing to save group chat "${id}": no group claims it.`);
                 return response.status(400).send({ error: 'unknown_group' });
             }
 
             const result = await saveChatToTree(request.user.directories, group.id, id, chatData, true);
             if (result) {
-                // Groups-schema extension write-path hook (owner decision - see character-metadata-db.js's
-                // bumpGroupChatStats() for the full rationale): keeps date_last_chat/chat_size fresh the
-                // moment a chat is saved rather than only when the group's own JSON is rewritten. The stats
-                // are handed over rather than derived, because the files they used to be derived from don't
-                // exist for a tree-backed group - see that function's doc comment. Awaited but not fatal:
-                // the chat write already succeeded, and a stats failure shouldn't turn that into an error.
                 await bumpGroupChatStats(request.user.directories, id, {
                     groupId: group.id,
                     stats: { dateLastChat: Date.now(), chatSize: Buffer.byteLength(JSON.stringify(chatData), 'utf8') },
@@ -1879,10 +1658,8 @@ router.post('/group/save', async function (request, response) {
                     assigned_node_ids: result.assignedNodeIds,
                 });
             }
-            // saveChatToTree returned null (backend went away between the check and the write) - fall through.
         }
 
-        // JSONL fallback, for a globally unavailable tree backend. Not a per-group question.
         const chatFilePath = path.join(request.user.directories.groupChats, sanitize(`${id}.jsonl`));
         const integrity = await trySaveChat(chatData, chatFilePath, request.body.force, handle, id, request.user.directories.backups, request.user.directories);
         await bumpGroupChatStats(request.user.directories, id, { groupId: request.body.group_id }).catch(err =>
@@ -1916,22 +1693,9 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
             return fragments.every(fragment => textArray.some(text => String(text ?? '').toLowerCase().includes(fragment)));
         };
 
-        // Tree-migrated character path: branches replace JSONL files entirely. This has to run BEFORE the
-        // JSONL directory scan below - a character whose chats live entirely in the tree DB (created after
-        // tree storage became primary, or fully migrated with nothing left behind) never gets a
-        // `directories.chats/<owner>` folder created on disk at all, so the JSONL branch's own
-        // `fs.existsSync(directoryPath)` early-return used to fire unconditionally for every such
-        // character - for every query, not just an empty one - and short-circuit out of this route before
-        // the tree path ever got a chance to run. Confirmed live: 01a03228-a216-7454-b76f-e3e9704f28ef (a
-        // tree-native character with 4 real branches, no chats/ folder on disk) returned `[]` from this
-        // route for both an empty query and a real content query, while calling searchBranchesByContent()
-        // directly against the same owner id returned all 4 branches correctly either way.
-        //
-        // Groups run the same path. They used to be excluded here on the grounds that group chats were
-        // "always file-based", which stopped being true - and once their files are renamed away, the JSONL
-        // scan below finds nothing and every group search silently returns no results. Only the owner id
-        // differs, and for a group that means resolving it first (the request carries the group's id, so
-        // this is one direct descriptor read, not a scan).
+        // Must run before the JSONL directory scan below: a fully tree-migrated character/group has no
+        // `chats/<owner>` folder on disk at all, so that scan's existsSync() would otherwise short-circuit
+        // this route to an empty result before the tree path gets a chance to run.
         if (avatar_url || group_id) {
             const treeMigrated = await isTreeAvailable(request.user.directories);
             const ownerId = group_id
@@ -1939,13 +1703,10 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
                 : String(avatar_url).replace('.png', '');
 
             if (treeMigrated && ownerId) {
-                // Content search (or list-all when no query) via tree DB
                 const branches = await searchBranchesByContent(request.user.directories, ownerId, fragments);
 
                 if (branches !== null) {
                     let results = branches.map(b => ({
-                        // The node this bookmark sits on. A name is not an identifier - `label` is
-                        // not unique per owner - so the id is what opening one should use.
                         node_id: b.id,
                         file_name: b.name,
                         file_size: null,
@@ -2044,19 +1805,13 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
         let results = [];
 
         if (query) {
-            // Real content search: try the tantivy message index first (chat-content-search-index.js) - see
-            // that module's own header for why it's the preferred path (no per-request full-file scan, real
-            // relevance ranking) and why "tantivy unavailable" falls all the way back to the original
-            // getChatInfo()+hasTextMatch scan below rather than returning a degraded/empty result.
+            // Tries the tantivy message index first; falls back to the full-file scan below if unavailable.
             const contentSearch = await searchChatMessages(request.user.profile.handle, request.user.directories, query);
 
             if (contentSearch.backend !== 'unavailable') {
                 const scopedFiles = new Set(chatFiles);
-                // The old scan matched EITHER message content OR the chat's own filename (hasTextMatch() was run
-                // against both) - the tantivy index only covers message content (filenames were never indexed),
-                // so filename matches are computed here separately, same cheap in-memory check as before (no I/O
-                // beyond the stat/cache lookup getOrComputeChatInfo() already does), and unioned with the content
-                // hits below to keep that behavior.
+                // The index only covers message content, not filenames, so filename matches are still
+                // computed separately here and unioned with the content hits.
                 const contentMatches = contentSearch.results.filter(r => scopedFiles.has(r.file_path));
                 const matchedFilePaths = new Set(contentMatches.map(r => r.file_path));
 
@@ -2105,11 +1860,8 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
         for (const chatFile of chatFiles) {
             let chatInfo;
             if (query) {
-                // Tantivy unavailable on this install - the original full-file scan, unchanged.
                 chatInfo = await getChatInfo(chatFile, {}, false, hasTextMatch);
             } else {
-                // No query: this is pure listing, exactly the cost getOrComputeChatInfo() exists to avoid
-                // paying on every request (see that function's own doc comment).
                 const stats = await fs.promises.stat(chatFile).catch(() => null);
                 if (!stats) {
                     continue;
@@ -2159,14 +1911,8 @@ router.post('/recent', async function (request, response) {
         const pinnedChats = Array.isArray(request.body.pinned) ? request.body.pinned : [];
         const max = parseInt(request.body.max ?? Number.MAX_SAFE_INTEGER) + pinnedChats.length;
 
-        // Tree-stored chats have no file to stat. They are branches, and how recent one is means
-        // when it was last spoken in - the file scans below still run, and simply find nothing for
-        // any character whose chats have already moved into the tree.
         const getTreeBranches = async () => {
             for (const branch of await listRecentBranches(request.user.directories, max)) {
-                // An owner id is a character avatar for one kind of owner and a group's id for the other,
-                // and gluing '.png' onto it unconditionally turned every group's chats into entries for a
-                // character that does not exist. The store already records which kind it is.
                 allChatFiles.push({
                     ...(branch.is_group ? { groupId: branch.owner_id } : { pngFile: `${branch.owner_id}.png` }),
                     filePath: `${branch.name}.jsonl`,

@@ -134,8 +134,6 @@ export function getDefaultPresetFile(filename) {
 function seedContent(contentIndex, contentLogPath, resolveTarget, forceCategories) {
     let anyContentAdded = false;
     const contentLog = getContentLog(contentLogPath);
-    // Filenames newly recorded during this pass. The log is append-only on disk (see appendToContentLog):
-    // a single import must not rewrite every filename ever logged, just add the new ones.
     const newLogEntries = [];
 
     for (const contentItem of contentIndex) {
@@ -184,12 +182,9 @@ function seedContent(contentIndex, contentLogPath, resolveTarget, forceCategorie
 }
 
 /**
- * Appends newly-seeded filenames to the content log without rewriting the entries already there.
- * The log is a plain newline-separated list (see getContentLog), so growing it is a pure append -
- * the previous implementation reread and rewrote the *entire* log on every seed pass, which is wasted
- * I/O proportional to the log's full history instead of just the (usually empty, sometimes tiny) delta.
- * @param {string} contentLogPath Path to the content log file
- * @param {string[]} newEntries Filenames to append, in order
+ * Appends new filenames to the content log without rewriting the entries already there.
+ * @param {string} contentLogPath
+ * @param {string[]} newEntries
  */
 function appendToContentLog(contentLogPath, newEntries) {
     if (newEntries.length === 0) {
@@ -200,7 +195,7 @@ function appendToContentLog(contentLogPath, newEntries) {
     try {
         needsLeadingNewline = fs.statSync(contentLogPath).size > 0;
     } catch {
-        // Log file doesn't exist yet - first entries, no leading newline needed.
+        // log file doesn't exist yet
     }
 
     const chunk = (needsLeadingNewline ? '\n' : '') + newEntries.join('\n');

@@ -51,19 +51,9 @@ export default function encode(chunks) {
         output[idx++] = nameChars[2];
         output[idx++] = nameChars[3];
 
-        // Bulk copy via TypedArray.set() (a native memcpy) instead of a byte-at-a-time JS loop - same
-        // output, but for a multi-MB chunk (e.g. IDAT) the per-byte loop was measured as a real,
-        // significant contributor to writeCardToFile()'s per-file cost on a real corpus (2026-08
-        // local-import perf investigation) - copying byte-by-byte in JS pays per-iteration interpreter/JIT
-        // overhead that .set() skips entirely.
         output.set(data, idx);
         idx += size;
 
-        // crc-32 (not the 'crc' package) - same PNG-compatible CRC-32/IEEE polynomial (verified against
-        // the standard 0xcbf43926 test vector), but ~4x faster in real benchmarks against this exact
-        // buffer size (2026-08 local-import perf investigation) and already a transitive dependency via
-        // the patched png-chunks-extract fork's own chunk-CRC verification, so this trades zero new
-        // dependency surface for a real per-file win on the now-CPU-bound encode() path.
         const crc = crc32pkg.buf(data, crc32pkg.buf(new Uint8Array(nameChars), 0));
 
         int32[0] = crc;

@@ -260,9 +260,8 @@ router.post('/props', async function (request, response) {
             props.chat_template = props.chat_template.slice(0, -1) + '\n';
         }
         props.chat_template_hash = createHash('sha256').update(props.chat_template).digest('hex');
-        // Pass the object, not a pre-stringified template - JSON.stringify() here ran unconditionally even
-        // when minLogLevel gates console.debug down to a no-op (see util.js's overwriteConsole()), paying the
-        // full serialize-the-whole-props-blob-including-chat_template cost regardless of whether it's read.
+        // Pass the object, not a pre-stringified template - stringify() ran unconditionally even when
+        // minLogLevel gates console.debug down to a no-op.
         console.debug('Model properties:', props);
         return response.send(props);
     } catch (error) {
@@ -445,12 +444,7 @@ router.post('/generate', async function (request, response) {
     }
 });
 
-/**
- * Retrieves the final-event metadata (prompt, generation_settings, timings, etc.) that the compact
- * llama.cpp stream format stashes instead of sending over the wire, keyed by the `X-Generation-Id`
- * header returned with that stream. Nothing calls this today - it exists so the data stays reachable
- * without costing anything for the (currently universal) case where nobody needs it.
- */
+/** Final-event metadata (prompt, generation_settings, timings, etc.) for a compact llama.cpp stream, keyed by its `X-Generation-Id`. */
 router.get('/generate/meta/:id', function (request, response) {
     const meta = getLlamaCppStreamMeta(request.params.id);
 
