@@ -1079,6 +1079,22 @@ function registerWorldInfoSlashCommands() {
     }
 
     async function getEntriesFromFile(file, { args = {}, unnamed = null, callbackName = 'getEntriesFromFile' } = {}) {
+        // EMBEDDED_WORLD_NAME is a real, activatable "world" a caller can be handed back via an
+        // activated entry's `world` field, but it never appears in world_names - it has no backing
+        // World file to load, only the current character's own embedded character_book.
+        if (file === EMBEDDED_WORLD_NAME) {
+            const characterBook = getCurrentCharacter()?.data?.character_book;
+            const entries = characterBook?.entries?.length ? Object.values(convertCharacterBook(characterBook).entries) : [];
+
+            if (!entries.length) {
+                toastr.warning(t`World Info file has no entries`);
+                logSlashCommandWarn(`${callbackName}: World Info file has no entries`, args, unnamed);
+                return '';
+            }
+
+            return entries;
+        }
+
         if (!file || !world_names.includes(file)) {
             toastr.warning(t`Valid World Info file name is required`);
             logSlashCommandWarn(`${callbackName}: Valid World Info file name is required`, args, unnamed);
