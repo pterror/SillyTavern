@@ -4584,10 +4584,6 @@ async function getCharacterLore() {
         worldsToSearch = new Set([...worldsToSearch, ...extraCharLore.extraBooks]);
     }
 
-    if (!worldsToSearch.size) {
-        return [];
-    }
-
     let entries = [];
     for (const worldName of worldsToSearch) {
         if (selected_world_info.includes(worldName)) {
