@@ -1,17 +1,6 @@
 /**
- * Stamps the persona onto user messages written before the field existed.
- *
- * A user message's speaker is the persona it was said as. Messages written before that was recorded
- * carry only a display name, and an absent persona is not a distinct speaker - it is a row written
- * before the column existed. Left alone, every one of them would stop matching new messages carrying
- * the same text and persona, producing duplicate siblings from the cutover onward.
- *
- * The mapping is name -> persona, taken from the user's own persona list, and only where a name
- * belongs to exactly one persona. A name matching none, or more than one, is left untouched and
- * reported: better a row that keeps its old identity than one assigned the wrong speaker.
- *
- * Only ever adds the field. Never edits text, never changes an existing persona, never touches a
- * character message.
+ * Stamps the persona onto user messages written before the field existed, matching display name to
+ * persona only where the name is unambiguous. Only ever adds the field; never touches character messages.
  *
  * Usage:
  *   node scripts/backfill-message-persona.mjs <db.sqlite> <settings.json> [--apply]

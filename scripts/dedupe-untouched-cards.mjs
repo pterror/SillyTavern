@@ -1,29 +1,18 @@
 #!/usr/bin/env node
 /**
- * Retroactive one-time-ish sweep: reflinks EXISTING, untouched characters against each other whenever
- * they're semantically identical, closing a gap the live write path deliberately leaves open.
+ * Retroactive sweep: reflinks existing, untouched characters against each other whenever they're
+ * semantically identical (matching content_identity_hash). The live write path only reflinks at the
+ * moment of a new write, so two byte-independent copies already on disk that nobody touches again never
+ * get that chance - this script is the backward look over the whole existing corpus. Safely re-runnable.
  *
- * findCrossCharacterReflinkCandidate() (src/endpoints/characters.js) already reflinks a character's file
- * against another character with a matching content_identity_hash - but only at the moment of a NEW write
- * to one of them. Two characters that already sit on disk, byte-for-byte independent copies of each other,
- * and that nobody happens to touch again, never get that chance - the live path only fires forward from a
- * write, it never looks backward over the whole existing corpus. This script is that backward look: a
- * one-time (but safely re-runnable - already-shared rows are simply re-verified and left alone) sweep over
- * every character row that already carries a content_identity_hash.
+ * content_identity_hash groups rows as CANDIDATES only (fav/chat/create_date stripped before hashing);
+ * reclaimReflinkPrefix() independently verifies the actual shared byte prefix, including the portrait,
+ * before touching anything.
  *
- * content_identity_hash (characters table, character-metadata-db.js) is a semantic fingerprint of a card's
- * JSON with fav/chat/create_date stripped BEFORE hashing (stripInstallLocalFields(), computeContentIdentityHash()
- * in src/character-card-normalize.js) - so any two rows sharing the same content_identity_hash are, by
- * construction, identical except for that install-local fav/chat/create_date state. That makes the hash a
- * CANDIDATE grouping only; reclaimReflinkPrefix() (src/character-card-parser.js) independently verifies the
- * actual shared byte prefix - including the portrait, which content_identity_hash never covers - before
- * touching anything, so a wrong/stale grouping is simply declined, never guessed past.
- *
- * Usage (run from the repo root, inside the project's dev shell so dependencies resolve):
- *   node scripts/dedupe-untouched-cards.mjs                  (dry run - reports groups/candidates, touches nothing)
- *   node scripts/dedupe-untouched-cards.mjs --apply           (performs the reflink swap for real candidates)
- *   node scripts/dedupe-untouched-cards.mjs --apply --limit 500   (cap how many candidate pairs get processed -
- *       for a quick smoke test, not a real run)
+ * Usage (from repo root):
+ *   node scripts/dedupe-untouched-cards.mjs                  (dry run)
+ *   node scripts/dedupe-untouched-cards.mjs --apply
+ *   node scripts/dedupe-untouched-cards.mjs --apply --limit 500   (smoke test)
  */
 
 import fs from 'node:fs';
@@ -41,16 +30,14 @@ const DB_PATH = path.join(REPO_ROOT, 'data', USER_HANDLE, 'character-metadata.sq
 
 /**
  * @typedef {object} CharacterRow
- * @property {string} id Avatar filename, e.g. "Alice.png" - also the primary key of the characters table.
+ * @property {string} id Avatar filename, e.g. "Alice.png"
  * @property {string} content_identity_hash
  * @property {string | null} avatar_identity_hash
  */
 
 /**
- * Groups character rows by content_identity_hash, keeping only groups with more than one member, then
- * within each group picks a single stable source (lowest id) and proposes every other member as a
- * candidate to reflink against it.
- * @param {CharacterRow[]} rows
+ * Groups rows by content_identity_hash, picks a stable source (lowest id) per group, and proposes every
+ * other member as a candidate to reflink against it.
  * @returns {{ source: CharacterRow, candidate: CharacterRow }[]}
  */
 export function buildReflinkCandidatePairs(rows) {
@@ -80,13 +67,10 @@ export function buildReflinkCandidatePairs(rows) {
 }
 
 /**
- * Cheap prefilter only, not a safety requirement - reclaimReflinkPrefix() does its own real byte-level
- * verification and will decline safely regardless. This just skips a pair upfront when both rows already
- * carry a non-null avatar_identity_hash and they disagree: that means the portraits are KNOWN to differ,
- * so the byte-prefix check is certain to fail anyway - this saves the file reads for those doomed pairs.
- * @param {CharacterRow} source
- * @param {CharacterRow} candidate
- * @returns {boolean} true if the pair is a known-doomed mismatch and should be skipped without reading files
+ * Cheap prefilter only, not a safety requirement - reclaimReflinkPrefix() still does its own verification.
+ * Skips a pair upfront when both rows have a non-null avatar_identity_hash that disagrees, avoiding file
+ * reads for a doomed pair.
+ * @returns {boolean}
  */
 export function isKnownAvatarMismatch(source, candidate) {
     return Boolean(source.avatar_identity_hash) && Boolean(candidate.avatar_identity_hash)
@@ -98,12 +82,7 @@ export function isKnownAvatarMismatch(source, candidate) {
  * reporting) every candidate pair whose files still exist on disk.
  * @param {CharacterRow[]} rows All rows carrying a content_identity_hash.
  * @param {object} [options]
- * @param {string} [options.charactersDir] Directory character files live in.
- * @param {boolean} [options.apply] Perform the reflink swap for real; dry run (report only) when false.
- * @param {number} [options.limit] Cap on how many candidate pairs get processed - smoke-test mode.
  * @param {(existingPath: string, sourcePath: string) => Promise<{reflinked: boolean, reason?: string}>} [options.reclaim]
- * Injection point for reclaimReflinkPrefix(), overridable in tests.
- * @param {(p: string) => boolean} [options.exists] Injection point for fs.existsSync(), overridable in tests.
  * @returns {Promise<{groups: number, pairs: number, missingFile: number, skippedAvatarMismatch: number,
  * reflinked: number, declined: number, errors: number}>}
  */

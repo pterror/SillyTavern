@@ -9,22 +9,8 @@ import { getAtPath, setAtPath } from '../public/scripts/hash-utils.js';
 /**
  * Sharded on-disk storage for a user's settings, one file per top-level key
  * (`<user root>/settings/<key>.json`) instead of a single monolithic settings.json.
- *
- * Why: settings.json's top-level shape is already a flat dict of independent subsystems (power_user,
- * extension_settings, oai_settings, ...) - see /api/settings/save-partial's own doc comment in
- * src/endpoints/settings.js. Before this module existed, save-partial already accepted a request naming just the
- * touched key(s), but its disk write still read, re-serialized, and rewrote the ENTIRE settings.json (tens to a
- * couple hundred KB) on every call, including for a single toggle flip - the client-side payload was minimal but
- * the actual disk I/O was not. Since a JSON text file can't be patched in place (any edit anywhere changes byte
- * offsets for everything after it), the only way to make a single-key change touch only that key's bytes on disk
- * is to stop keeping all keys in one file. This module is that: writeSettingsKeys() below touches only the
- * on-disk file(s) for the top-level key(s) actually being written, nothing else.
- *
- * Legacy monolithic settings.json is migrated in-place, lazily, the first time this module touches a given
- * user's directory (see ensureMigrated()) - transparent to every caller, no separate migration step to run.
- * readAllSettings()/readAllSettingsAsJson() reconstruct the same flat object/string shape callers (backups,
- * /api/settings/get, the tag-import-setting reader, etc.) already expect, so nothing downstream of a *read* needs
- * to know storage is sharded at all.
+ * A JSON file can't be patched in place, so writing one key at a time requires one file per key.
+ * Legacy monolithic settings.json is migrated in-place lazily on first touch (see ensureMigrated()).
  */
 
 const SETTINGS_SUBDIR = 'settings';
@@ -40,25 +26,17 @@ function legacySettingsPath(directories) {
 }
 
 /**
- * Top-level settings keys become filenames, and the "keys" object in a /save-partial request body is
- * client-controlled - without this check a key like '__proto__' or '../../etc' would let a request write
- * outside the settings directory or clobber an unintended path. Every real top-level settings key (power_user,
- * extension_settings, oai_settings, ...) is a plain identifier, so this is not a functional restriction.
+ * Top-level settings keys become filenames; this guards against a key like '__proto__' or '../../etc'
+ * escaping the settings directory.
  * @param {string} key
- * @returns {boolean}
  */
 export function isValidSettingsKey(key) {
     return typeof key === 'string' && key.length > 0 && /^[A-Za-z0-9_]+$/.test(key);
 }
 
 /**
- * Sets `obj[key] = value` as a genuine own enumerable property, even when `key` is the literal string
- * '__proto__' (isValidSettingsKey() allows it - it's a plain run of letters/underscores like any other settings
- * key). A bare `obj[key] = value` for that exact key does NOT create an own property at all - JS special-cases
- * assignment to a literal '__proto__' key as a prototype swap instead - so a settings key that happened to be
- * named '__proto__' would silently vanish from every consumer that reads it back via ordinary property access
- * or enumeration (Object.keys/entries, JSON.stringify, a spread). Object.defineProperty has no such special
- * case for any key value.
+ * Sets `obj[key] = value` as a genuine own property even when `key === '__proto__'` - a bare
+ * assignment to that literal key triggers a prototype swap instead of creating an own property.
  * @param {Record<string, unknown>} obj
  * @param {string} key
  * @param {unknown} value
@@ -84,8 +62,7 @@ function readKeyFile(filePath) {
 }
 
 /**
- * One-time, idempotent migration from a legacy monolithic settings.json into the sharded settings/ directory.
- * A no-op once the directory exists - safe to call at the top of every read/write in this module.
+ * Idempotent; a no-op once the sharded directory exists.
  * @param {import('./users.js').UserDirectoryList} directories
  */
 function ensureMigrated(directories) {
@@ -119,24 +96,17 @@ function ensureMigrated(directories) {
         }
     }
 
-    // The sharded directory is now authoritative; remove the legacy file so nothing downstream is ever tempted
-    // to read stale bytes from it. A read-only consumer that still points at SETTINGS_FILE directly would
-    // otherwise silently see whatever the file happened to contain at migration time, forever.
     fs.rmSync(legacyPath, { force: true });
 }
 
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {boolean} Whether this user has any settings at all yet (sharded or not-yet-migrated legacy file).
- */
+/** @param {import('./users.js').UserDirectoryList} directories */
 export function settingsExist(directories) {
     return fs.existsSync(settingsDirPath(directories)) || fs.existsSync(legacySettingsPath(directories));
 }
 
 /**
- * Reads and reconstructs the full flat settings object, same shape a legacy settings.json parsed to.
+ * Reconstructs the full flat settings object, same shape a legacy settings.json parsed to.
  * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Record<string, unknown>}
  */
 export function readAllSettings(directories) {
     ensureMigrated(directories);
@@ -154,20 +124,15 @@ export function readAllSettings(directories) {
 }
 
 /**
- * Same content as readAllSettings(), serialized the same way a legacy settings.json was
- * (JSON.stringify(..., null, 4)) - this exact string is what /api/settings/get sends as `settings` and what
- * checkSettingsConflict()/the returned settingsHash are hashed from, so every caller that needs "the current
- * canonical settings text" agrees on one function for it.
+ * Serialized the same way legacy settings.json was; this exact string is what settingsHash is hashed from.
  * @param {import('./users.js').UserDirectoryList} directories
- * @returns {string}
  */
 export function readAllSettingsAsJson(directories) {
     return JSON.stringify(readAllSettings(directories), null, 4);
 }
 
 /**
- * Reads the current value at each of the given top-level-or-dotted paths, reading only the on-disk file(s) for
- * the top-level key(s) those paths belong to (never the whole store) - used for per-key conflict-hash checks.
+ * Reads only the on-disk file(s) for the top-level key(s) the given paths belong to, never the whole store.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string[]} dottedPaths
  * @returns {Record<string, unknown>} Map of path -> current value (undefined if absent)
@@ -192,13 +157,11 @@ export function readSettingsAtPaths(directories, dottedPaths) {
 }
 
 /**
- * The actual "don't rewrite everything" fix: writes only the on-disk file(s) for the top-level key(s) named in
- * `keys` (top-level or dotted-path), leaving every other key's file completely untouched. A dotted path is
- * applied against that key's current on-disk value (read once, patched, rewritten) rather than replacing the
- * whole key.
+ * Writes only the on-disk file(s) for the top-level key(s) named in `keys`, leaving every other key's
+ * file untouched. A dotted path is applied against that key's current on-disk value.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {Record<string, unknown>} keys Top-level keys or dotted paths to their new values.
- * @returns {string[]} The top-level key names that were touched (and so had their file rewritten).
+ * @returns {string[]} The top-level key names touched.
  */
 export function writeSettingsKeys(directories, keys) {
     ensureMigrated(directories);
@@ -239,10 +202,8 @@ export function writeSettingsKeys(directories, keys) {
 }
 
 /**
- * Full replace, for /api/settings/save and restore-snapshot: writes one file per top-level key in `fullObject`
- * (only those files - keys unrelated to the previous state that are also absent from `fullObject` are never
- * touched), and removes any existing per-key file whose key is NOT present in `fullObject`, so the end result is
- * exactly the keys `fullObject` has - the same semantics a whole-file overwrite of settings.json used to have.
+ * Full replace: writes one file per top-level key in `fullObject` and removes any existing per-key
+ * file not present in `fullObject`, matching a whole-file settings.json overwrite.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {Record<string, unknown>} fullObject
  */
@@ -271,10 +232,9 @@ export function writeAllSettings(directories, fullObject) {
 }
 
 /**
- * Deletes all of a user's settings, sharded directory and any not-yet-migrated legacy file alike - used by
- * reset-settings. Deleting only the legacy path (the old behavior) would leave a stale sharded directory
- * around that ensureMigrated() would then treat as "already migrated", silently ignoring a freshly reseeded
- * default settings.json and defeating the reset.
+ * Deletes both the sharded directory and any not-yet-migrated legacy file. Deleting only the legacy
+ * path would leave a stale sharded directory that ensureMigrated() treats as already-migrated,
+ * defeating the reset.
  * @param {import('./users.js').UserDirectoryList} directories
  */
 export function deleteAllSettings(directories) {

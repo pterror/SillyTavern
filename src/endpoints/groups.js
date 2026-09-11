@@ -113,11 +113,9 @@ export async function migrateGroupChatsMetadataFormat(userDirectories) {
 }
 
 /**
- * Reads all of a user's groups from disk, with the same date_added/date_last_chat/chat_size stats attached
- * that the `/all` route has always computed. Factored out so other endpoints (the characters/groups merge used
- * by paginated list requests, the group search index) can get the same data without an HTTP round trip.
- * @param {import('../users.js').UserDirectoryList} directories User directories
- * @returns {object[]} Group objects
+ * Reads all of a user's groups from disk, with date_added/date_last_chat/chat_size stats attached.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @returns {object[]}
  */
 export function getGroupsData(directories) {
     const groups = [];
@@ -137,10 +135,6 @@ export function getGroupsData(directories) {
             group.date_added = groupStat.birthtimeMs;
             group.create_date = new Date(groupStat.birthtimeMs).toISOString();
 
-            // Shared with character-metadata-db.js's bumpGroupChatStats()/bootstrapGroupsIfNeeded() - see that
-            // function's own doc comment (character-shallow.js). Stats only this group's own chat ids by name,
-            // rather than the old inline version's readdir-then-filter-by-membership over the whole groupChats
-            // directory.
             const { chatSize, dateLastChat } = calculateGroupChatStats(directories.groupChats, group.chats);
             group.date_last_chat = dateLastChat;
             group.chat_size = chatSize;
@@ -154,18 +148,12 @@ export function getGroupsData(directories) {
 }
 
 /**
- * Reads just the given group ids' JSON files off disk - the lean, bounded-by-`ids.length` counterpart to
- * getGroupsData()'s full-directory listing, for hydrating one page of a merged characters+groups `/query` result
- * (owner decision, extending the character-data-residency-redesign to groups) without a directory-wide read.
- *
- * Deliberately does NOT attach date_added/date_last_chat/chat_size/fav the way getGroupsData() does - those come
- * from the SQLite metadata row that already decided the page's sort order (see character-metadata-db.js's
- * queryEntities()), and re-deriving them here from a live stat would risk them disagreeing with the value the
- * page was actually sorted by. The `/query` route stamps the metadata row's values onto the object this returns.
- * @param {import('../users.js').UserDirectoryList} directories User directories
- * @param {string[]} ids Group ids to read
- * @returns {Record<string, object>} Keyed by group id - an id with no readable/parseable file is simply absent,
- * not an error (same tolerance getGroupsData()'s per-file try/catch already has).
+ * Reads just the given group ids' JSON files off disk, without a full directory listing.
+ * Does not attach date_added/date_last_chat/chat_size/fav - the caller stamps those from the metadata db
+ * so they agree with whatever the page was sorted by.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {string[]} ids
+ * @returns {Record<string, object>} Keyed by group id; missing/unparseable files are simply absent.
  */
 export function getGroupsByIds(directories, ids) {
     /** @type {Record<string, object>} */
@@ -187,26 +175,8 @@ router.post('/all', (request, response) => {
     return response.send(getGroupsData(request.user.directories));
 });
 
-/**
- * `POST /api/groups/batch` - the group-side counterpart to `/api/characters/batch`'s field-filtered mode
- * (2026-09, extending /query's hash-mode client caching to `includeGroups: true` requests). Given `{ids, fields}`,
- * reads each id's group file via `getGroupsByIds()` (bounded to just these ids, not a whole-directory listing),
- * stamps db-authoritative `fav` (getGroupFavsByIds()) and `tag_ids` (getEntityTagIdsForMany()) onto it - same
- * "db wins over the file's own possibly-stale copy" rule `/api/characters/batch`'s full-mode path already
- * follows for characters - then, when `fields` is present, filters down to just those fields (plus `id`, always
- * included, mirroring `/api/characters/batch`'s always-included `avatar`).
- *
- * `fields` omitted -> full mode: every field the group object + fav/tag_ids stamp carries. This is what
- * `CharacterRepository`'s hash-mode stale-row resolver actually calls with - unlike characters (where `/query`'s
- * hash-covered surface is a narrow `toShallow()` projection with a separate full-card fetch for anything more),
- * groups have no shallow/full split: `groupContentFingerprint()`'s content hash already covers the WHOLE group
- * object (hash-utils.js - deliberately widened after checking that `includeGroups: true`'s existing JSON path
- * already returns every group field, not a list-display subset), so the cache this endpoint feeds has to carry
- * every field too, or a change outside the hand-picked list characters use would go undetected.
- * @param  {import("express").Request} request
- * @param  {import("express").Response} response
- * @return {void}
- */
+// Group-side counterpart to /api/characters/batch. `fields` omitted returns every field, since groups
+// have no shallow/full split - their content hash covers the whole object, so the cache must too.
 router.post('/batch', async (request, response) => {
     try {
         const ids = Array.isArray(request.body?.ids) ? request.body.ids : [];
@@ -279,11 +249,6 @@ router.post('/create', async (request, response) => {
 
     writeFileAtomicSync(pathToFile, fileData);
 
-    // Phase 3 write-path hook (owner decision - see character-metadata-db.js's header): keeps the `groups`
-    // table current so a tag assign/unassign against this id (src/endpoints/tags.js) has something to resolve
-    // existence against. Awaited but not fatal to the request if it fails - same tolerance characters.js's own
-    // hooks use elsewhere (see e.g. its /rename route), since the metadata store is a derived index, not the
-    // group's own source of truth (the JSON file just written is).
     await upsertGroupRow(request.user.directories, groupMetadata.id, groupMetadata.name, { fav: groupMetadata.fav, group: groupMetadata }).catch(err =>
         console.error(`Could not update group metadata store for ${groupMetadata.id}:`, err));
 
@@ -301,7 +266,6 @@ router.post('/edit', getFileNameValidationFunction('id'), async (request, respon
 
     writeFileAtomicSync(pathToFile, fileData);
 
-    // Same phase 3 write-path hook as /create above - a group's name/fav can change here.
     await upsertGroupRow(request.user.directories, id, request.body.name, { fav: request.body.fav, group: request.body }).catch(err =>
         console.error(`Could not update group metadata store for ${id}:`, err));
 
@@ -338,10 +302,6 @@ router.post('/delete', getFileNameValidationFunction('id'), async (request, resp
         fs.unlinkSync(pathToGroup);
     }
 
-    // Phase 3 write-path hook: removes the group's row and cascades to its tag assignments (see
-    // deleteGroupRow()'s own doc comment) - without this, a deleted group's tags would linger in group_tags
-    // forever (and its tag_usage counts would stay inflated), the same class of leak deleteCharacterRow()
-    // already guards against for characters.
     await deleteGroupRow(request.user.directories, id).catch(err =>
         console.error(`Could not remove group metadata store row for ${id}:`, err));
 

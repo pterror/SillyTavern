@@ -3,36 +3,29 @@
  * to the single-table shape: messages(id, parent_id, owner_id, content, label, created_at,
  * default_child_id, metadata), no branches table, every alternative its own sibling row.
  *
- * Writes a brand new database file rather than mutating in place, so the source is never at risk.
+ * Writes a brand new database file rather than mutating in place.
  *
  * Usage:
  *   node scripts/migrate-tree-sibling-swipes.mjs <source.sqlite> <dest.sqlite> [--json-report path]
  *
- * Node identity is `(parent, speaker, mes)`, via the SAME nodeIdentityKey() every other ingest
- * path uses, so they cannot drift apart. The same words from the user and from the character are two
- * different messages. But two alternatives with the same speaker AND the same text under one parent
- * are one node — a differing send_date or token_count does not make them two things, because a token
- * count is a derived measurement of the text rather than part of what the message is. This
- * matters enormously on real data: one card here carries ~928 alternate greetings across 1,085 roots,
- * so the same greeting text recurs about 1,050 times and without text-identity the anchor fans out to
- * half a million children that are 99.9% repeats.
+ * Node identity is `(parent, speaker, mes)` via the shared nodeIdentityKey(), so two alternatives
+ * with the same speaker and text under one parent dedupe to one node regardless of send_date/token_count.
+ * Without text-identity dedup, a card with ~928 alternate greetings across 1,085 roots fans an anchor
+ * out to ~500k children that are 99.9% repeats.
  *
- * Because deduping siblings can merge two source rows into one, a source row's children may need to
- * hang off a row that came from somewhere else entirely. So the tree is walked top-down (breadth-first
- * from each owner's roots) with a source-id -> dest-id map, and parents are always resolved before
- * their children. The selected alternative reuses its source row id wherever that id survives, which
- * keeps the common case free of remapping.
+ * Deduping siblings can merge two source rows into one, so the tree is walked top-down (BFS from each
+ * owner's roots) with a source-id -> dest-id map, parents always resolved before children. The selected
+ * alternative reuses its source row id wherever that id survives.
  *
  * Order of work:
- *  1. One synthetic anchor row per owner (parent_id IS NULL, inert content), uniformly, whatever the
- *     owner's root count is. Every existing root becomes a child of its owner's anchor.
+ *  1. One synthetic anchor row per owner (parent_id IS NULL, inert content); every existing root
+ *     becomes a child of its owner's anchor.
  *  2. Top-down walk expanding every row into its alternatives, deduped on nodeIdentityKey().
- *     `swipe_info[i]`'s send_date/extra ride along onto alternative i — that is the only home a
- *     genuinely distinct alternative's send_date has left. Where `mes` disagreed with
+ *     `swipe_info[i]`'s send_date/extra ride along onto alternative i. Where `mes` disagreed with
  *     `swipes[swipe_id]`, `swipes[swipe_id]` wins.
  *  3. Each branch row becomes a `label` + `metadata` on its (remapped) leaf. Two branches on one leaf:
- *     the winner under (created_at ASC, id ASC) supplies BOTH the name and the metadata blob; losers
- *     are dropped and reported by name.
+ *     the winner under (created_at ASC, id ASC) supplies both name and metadata; losers are dropped
+ *     and reported by name.
  *  4. `default_child_id` chains laid down by walking each labeled leaf back to its anchor, oldest
  *     branch first, so the newest chat through any fork is the one that fork shows.
  */
@@ -120,7 +113,6 @@ function main() {
     // ---- phase 1: anchors -------------------------------------------------
     const owners = src.prepare('SELECT owner_id, min(created_at) mn FROM messages GROUP BY owner_id').all();
     report.owners = owners.length;
-    /** @type {Map<string, string>} owner_id -> anchor row id */
     const anchorOf = new Map();
 
     dst.transaction(() => {
@@ -140,9 +132,7 @@ function main() {
     const rootsOf = src.prepare('SELECT id, parent_id, owner_id, content, label, created_at FROM messages WHERE owner_id = @o AND parent_id IS NULL ORDER BY created_at ASC, id ASC');
     const childrenOf = src.prepare('SELECT id, parent_id, owner_id, content, label, created_at FROM messages WHERE parent_id = @p ORDER BY created_at ASC, id ASC');
 
-    /** source row id -> the dest row its selected alternative resolved to */
     const resolved = new Map();
-    /** identity key -> dest row id */
     const seen = new Map();
 
     let batch = [];
@@ -151,7 +141,6 @@ function main() {
 
     for (const { owner_id } of owners) {
         const anchorId = anchorOf.get(owner_id);
-        /** @type {{ row: object, destParent: string }[]} */
         const queue = rootsOf.all({ o: owner_id }).map(row => ({ row, destParent: anchorId }));
 
         while (queue.length) {
@@ -191,8 +180,6 @@ function main() {
                 if (id) {
                     report.alternativesMergedByText++;
                 } else {
-                    // Reuse the source row id for its own selected alternative; that keeps the
-                    // overwhelmingly common case identity-stable and cheap.
                     id = (k === selected) ? row.id : crypto.randomUUID();
                     push({
                         id,
@@ -200,10 +187,8 @@ function main() {
                         owner_id: row.owner_id,
                         content: contents[k],
                         label: k === selected ? row.label : null,
-                        // Sibling order IS alternative order, and (created_at, id) is the ordering key
-                        // everywhere in this schema, so +k keeps the order from collapsing to
-                        // random-uuid order. created_at here is bookkeeping; the message time lives in
-                        // content.send_date.
+                        // +k preserves sibling order under this schema's (created_at, id) ordering; the
+                        // real message time lives in content.send_date.
                         created_at: row.created_at + k,
                     });
                     report.rowsWritten++;
@@ -229,7 +214,6 @@ function main() {
 
     // ---- phase 3: branches -> labels + metadata ----------------------------
     const branches = src.prepare('SELECT id, owner_id, leaf_id, name, is_group, metadata, created_at FROM branches').all();
-    /** dest leaf id -> branch rows landing on it */
     const byLeaf = new Map();
     for (const b of branches) {
         const destLeaf = resolved.get(b.leaf_id);

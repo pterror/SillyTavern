@@ -1,19 +1,7 @@
 #!/usr/bin/env node
 /**
- * Standalone corpus stats CLI - reads character-metadata.sqlite and message-tree.sqlite directly and prints an
- * overview (counts, top tags, recent activity, storage). No write path, no server bootstrap - just SELECTs
- * against the two per-user databases, so it's safe to run against a live install (see the readonly note below)
- * and cheap even against a very large corpus, since every query here rides an index already declared by
- * character-metadata-db.js / message-tree-db.js's own SCHEMA_SQL (name_fold, date_added, date_last_chat,
- * data_size, chat_size, tag_usage's own PK, branches(owner_id)) rather than scanning a table cold.
- *
- * Opened with `{ readonly: true }` (better-sqlite3), deliberately NOT the `db.pragma('journal_mode = WAL')` +
- * read-write open that sqlite-engine.js's native adapter uses for the live server connection - this script has
- * no business ever writing to either database, and a readonly SQLITE_OPEN_READONLY connection can read a
- * WAL-mode database (including whatever's currently sitting in the -wal file) just fine without taking any lock
- * the live server's own read-write connection would contend with. That's the actual mechanism that makes this
- * safe to run against a server that's already up: readers never block writers and writers never block readers
- * in WAL mode, they just each see a consistent snapshot as of when their own read transaction started.
+ * Read-only corpus stats CLI. Safe to run against a live server: opened with `{ readonly: true }`,
+ * which can read a WAL-mode database without blocking the live read-write connection.
  *
  * Usage:
  *   node scripts/stats.js
@@ -30,10 +18,6 @@ function getArg(args, name, fallback) {
     return index !== -1 && args[index + 1] !== undefined ? args[index + 1] : fallback;
 }
 
-/**
- * @param {number} bytes
- * @returns {string}
- */
 function formatBytes(bytes) {
     if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
     const units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -46,16 +30,11 @@ function formatBytes(bytes) {
     return `${value.toFixed(unitIndex === 0 ? 0 : 2)} ${units[unitIndex]}`;
 }
 
-/**
- * @param {number} epochMs
- * @returns {string}
- */
 function formatDate(epochMs) {
     if (!epochMs) return '(never)';
     return new Date(epochMs).toISOString().replace('T', ' ').replace(/\.\d+Z$/, ' UTC');
 }
 
-/** Right-pads a label and right-aligns a value, for the two-column "key: value" overview lines. */
 function line(label, value, labelWidth = 28) {
     return `  ${label.padEnd(labelWidth)} ${value}`;
 }
@@ -66,12 +45,6 @@ function heading(title) {
     console.log('-'.repeat(title.length));
 }
 
-/**
- * Renders a simple aligned table: an array of column arrays (already stringified), each padded to that column's
- * own max width. No external formatting library - just console.log with padding, per the ask.
- * @param {string[]} headers
- * @param {string[][]} rows
- */
 function table(headers, rows) {
     const widths = headers.map((h, i) => Math.max(h.length, ...rows.map(r => String(r[i] ?? '').length)));
     const renderRow = (cells) => '  ' + cells.map((c, i) => String(c).padEnd(widths[i])).join('  ');
@@ -82,13 +55,6 @@ function table(headers, rows) {
     }
 }
 
-/**
- * Opens a database readonly, or returns null (with a printed warning) if the file doesn't exist / can't be
- * opened - so a missing database degrades to "skip that section" rather than crashing the whole report.
- * @param {string} dbPath
- * @param {string} label
- * @returns {import('better-sqlite3').Database | null}
- */
 function tryOpen(dbPath, label) {
     if (!fs.existsSync(dbPath)) {
         console.warn(`warning: ${label} not found at ${dbPath} - skipping its section(s)`);

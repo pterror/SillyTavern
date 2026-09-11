@@ -485,14 +485,8 @@ router.get('/discover', function (request, response) {
         fs.mkdirSync(PUBLIC_DIRECTORIES.globalExtensions);
     }
 
-    /**
-     * A directory without a manifest.json is not a usable extension: typically a leftover
-     * from a manual deletion (e.g. a locked .git directory on Windows). Listing it would
-     * make the client report a ghost extension and request its manifest in vain on every load.
-     * @param {string} parentDirectory Directory containing extension folders
-     * @param {string} folder Extension folder name
-     * @returns {boolean} Whether the folder contains a manifest
-     */
+    // Skips folders without manifest.json (e.g. leftovers from a manual delete) so the client doesn't
+    // report a ghost extension.
     const hasManifest = (parentDirectory, folder) => {
         const manifestExists = fs.existsSync(path.join(parentDirectory, folder, 'manifest.json'));
         if (!manifestExists) {

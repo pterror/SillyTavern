@@ -1,65 +1,29 @@
 #!/usr/bin/env node
 /**
- * Row-level counterpart to dedupe-untouched-cards.mjs (which only reflinks PNG files on disk and never touches
- * the `characters` table). This script collapses each group of duplicate CHARACTER ROWS - not just files - down
- * to one canonical row, for the ~33k real duplicate rows created by the mtime-reset rescan bug fixed in
- * 63706aef3 (fix(character-metadata-db): stop findCharacterIdByIdentityHashes false-negative on unbackfilled
- * avatar_identity_hash).
+ * Row-level counterpart to dedupe-untouched-cards.mjs (which only reflinks PNG files, never touches the
+ * `characters` table). Collapses each group of duplicate character rows sharing a content_identity_hash
+ * down to one canonical row.
  *
- * Grouping is the same content_identity_hash equality dedupe-untouched-cards.mjs uses - by construction, any two
- * rows sharing that hash are identical except for install-local fav/chat/create_date state (see that script's
- * header). That's exactly the state this script has to reconcile before a row can be safely deleted.
+ * Survivor selection: highest real chat_size (verified on disk, not the db column - found to carry
+ * phantom values on some rows), then most recent real date_last_chat, then fav=1, then earliest
+ * date_added, then lowest id. Not "lowest id wins" - found real cases where that would pick a row with
+ * zero chat activity over one with real history.
  *
- * SURVIVOR SELECTION - audited against the owner's real 359k-row library before being written, not assumed:
- *   1. Highest REAL chat_size, verified against the chat directory on disk (getRealChatStats() below) - NOT
- *      the `chat_size` db column, which was found to carry phantom values on some duplicate rows (a group whose
- *      id was literally ".png" claimed a 1.3MB chat_size with no chats directory on disk at all - a corrupt
- *      edge case flagged for manual review, not trusted).
- *   2. Tie -> most recent real date_last_chat.
- *   3. Tie -> fav = 1 beats fav = 0.
- *   4. Tie -> earliest date_added (closer to the original import).
- *   5. Tie -> lowest id, purely for determinism.
- * Deliberately NOT "lowest id wins" (dedupe-untouched-cards.mjs's policy for picking a reflink source) - audited
- * against the real library and found at least one real case ("Mommy Unohana.png" vs a UUID-named duplicate)
- * where lowest-id would have picked the row with zero chat activity over the one with real chat history.
- *
- * MERGE POLICY for the losing rows' state, once a survivor is picked:
- *   - fav: OR across the whole group - if ANY row is favorited, the survivor ends up favorited. Never lost.
- *   - tags: UNION across the whole group (character_tags), not just the survivor's own set. Same shape
- *     renameCharacterRow() already uses for a same-character-continues-to-exist merge (character-metadata-db.js).
- *   - active_chat: inherited from a loser ONLY if the survivor doesn't already have one AND the pointer is
- *     verified real (the loser's own chat directory actually contains that exact chat file - a phantom/dangling
- *     pointer, confirmed to exist in the real library, is never trusted). If the pointed-to file gets renamed
- *     during the chat-file merge below (collision), the inherited pointer is updated to match.
- *   - chat files: every loser with a REAL (non-empty, on-disk) chats directory gets those chat files MOVED into
- *     the survivor's chat directory before the row is deleted - never silently dropped. A same-named file already
- *     present in the survivor's directory is left alone if byte-identical, or renamed with a
- *     "(merged from <loserId>)" suffix if it's genuinely different content. This was found necessary against a
- *     real case: two duplicate rows ("Lucy Liubot.png" / "Lucy Liubot1.png") each carrying a *different* real
- *     chat file that coincidentally share the same byte size - collapsing them with a naive delete would have
- *     silently destroyed one of the two conversations.
- *   - PNG files: the loser's PNG is verified against the survivor's PNG before anything is deleted, by
- *     RE-DERIVING both content_identity_hash and avatar_identity_hash live from each file's current on-disk
- *     bytes (never trusting the db's cached columns) and requiring both to match. A naive full-file byte
- *     compare was tried first and rejected: it declined literally every real duplicate pair in the owner's
- *     library (verified against "Amber & Tyler.png" / "Amber & Tyler1.png" - byte-identical 5.2MB portrait,
- *     the only difference anywhere in the file was the embedded `chat`/`create_date` JSON fields, which
- *     content_identity_hash deliberately strips before hashing per this script's own grouping rule above; a
- *     full-byte compare was rejecting on exactly the difference the grouping already knows to ignore, making
- *     the whole script a no-op). Re-deriving the two identity hashes fresh is the correct, still-strict check:
- *     avatar_identity_hash covers only the IDAT (pixel) bytes, content_identity_hash covers everything else
- *     minus fav/chat/create_date - between them, any real difference outside that known-stripped state still
- *     declines the group into manual review.
+ * Merge policy for losers, before deletion: fav is OR'd across the group; tags are unioned; active_chat
+ * is inherited from a loser only if the survivor has none and the pointer is verified real; every loser's
+ * real chat files are moved into the survivor's directory (byte-identical name collisions are dropped,
+ * different content gets a "(merged from <loserId>)" suffix - never silently overwritten). A loser's PNG
+ * is verified against the survivor by re-deriving content_identity_hash and avatar_identity_hash from
+ * current on-disk bytes (not the db's cached columns) rather than a full-byte compare, since two rows
+ * sharing content_identity_hash are expected to differ in their embedded chat/create_date JSON.
  *
  * Usage (inside the project's dev shell):
- *   node scripts/dedupe-character-rows.mjs                      (dry run - reports groups/plans, touches nothing)
- *   node scripts/dedupe-character-rows.mjs --apply              (performs the merge for real)
- *   node scripts/dedupe-character-rows.mjs --apply --group-limit 3   (cap how many groups get applied - smoke test)
+ *   node scripts/dedupe-character-rows.mjs                      (dry run)
+ *   node scripts/dedupe-character-rows.mjs --apply
+ *   node scripts/dedupe-character-rows.mjs --apply --group-limit 3   (smoke test)
  *   node scripts/dedupe-character-rows.mjs --only <avatar-id>   (only process the group containing this id)
  *
- * Safely re-runnable: once a group's losers are deleted, a re-run's own DB query no longer sees them, so that
- * group naturally drops out - no separate checkpoint file needed (same reasoning dedupe-untouched-cards.mjs's
- * header gives for its own re-runnability).
+ * Safely re-runnable: once a group's losers are deleted, a re-run's own query no longer sees them.
  */
 
 import fs from 'node:fs';
@@ -72,13 +36,8 @@ import extract from 'png-chunks-extract';
 import { computeContentIdentityHash } from '../src/character-card-normalize.js';
 import { computeAvatarIdentityHashFromChunks, readFromChunks } from '../src/character-card-parser.js';
 
-// character-shallow.js reads this config value at module load (getConfigValue() call at its own top level) -
-// this script runs standalone, never through server.js's normal setConfigFilePath() bootstrap, so it has to
-// supply the value directly. Env vars short-circuit before config.yaml is ever touched (see util.js's
-// getConfigValue()). Static `import` statements are hoisted ahead of any other top-level code in an ES module
-// (they'd run before the env var below regardless of source order), so this has to be a dynamic import,
-// executed after the env var is actually set - same reason tests/dedupe-character-rows.test.js sets it before
-// its own `await import()` of this module.
+// character-shallow.js reads this env var at module load; must be set before the dynamic import below,
+// since static imports would hoist ahead of it.
 process.env.SILLYTAVERN_PERFORMANCE_SHALLOWCHARACTERSINCLUDECREATORNOTES ??= 'false';
 const { calculateChatSize } = await import('../src/character-shallow.js');
 
@@ -116,23 +75,14 @@ export function buildDuplicateGroups(rows) {
     return [...groups.values()].filter(g => g.length > 1);
 }
 
-/**
- * A character's chat directory is named after its OWN id/filename (see src/endpoints/characters.js:
- * `characterDirectory = avatar_url.replace('.png', '')`) - so every duplicate row, even ones sharing
- * content_identity_hash, has its own independent chats directory. Never assume two rows share one.
- * @param {string} chatsDir
- * @param {string} id
- */
+/** Every duplicate row has its own independent chats directory, named after its own id. */
 export function getChatDir(chatsDir, id) {
     return path.join(chatsDir, id.replace(/\.png$/, ''));
 }
 
 /**
- * Ground-truth chat stats read directly off disk, via the exact same helper the live write path uses
- * (src/character-shallow.js) - deliberately NOT the db's chat_size/date_last_chat columns, which were found to
- * carry phantom/stale values on some duplicate rows in the real library (see this script's header).
- * @param {string} chatsDir
- * @param {string} id
+ * Ground-truth chat stats read directly off disk - not the db's chat_size/date_last_chat columns, which
+ * were found to carry phantom/stale values on some duplicate rows.
  * @returns {{chatSize: number, dateLastChat: number}}
  */
 export function getRealChatStats(chatsDir, id) {
@@ -140,10 +90,7 @@ export function getRealChatStats(chatsDir, id) {
 }
 
 /**
- * Picks the surviving row for one duplicate group. See this script's header for the policy and why it isn't
- * "lowest id wins".
- * @param {CharacterRow[]} group
- * @param {Map<string, {chatSize: number, dateLastChat: number}>} realStatsById
+ * Picks the surviving row for one duplicate group. See file header for the selection policy.
  * @returns {{survivor: CharacterRow, losers: CharacterRow[]}}
  */
 export function pickSurvivor(group, realStatsById) {
@@ -161,26 +108,13 @@ export function pickSurvivor(group, realStatsById) {
     return { survivor: sorted[0], losers: sorted.slice(1) };
 }
 
-/**
- * OR across the whole group - real user-meaningful state, never allowed to be lost.
- * @param {CharacterRow} survivor
- * @param {CharacterRow[]} losers
- * @returns {boolean} true if the survivor's fav needs flipping to 1
- */
+/** @returns {boolean} true if the survivor's fav needs flipping to 1 */
 export function planFavUpdate(survivor, losers) {
     if (survivor.fav) return false;
     return losers.some(l => !!l.fav);
 }
 
-/**
- * Tag ids present on any loser but not already on the survivor - the set that needs to be added to the
- * survivor before its losers are deleted, so no tag association is silently lost. Mirrors
- * renameCharacterRow()'s own union-not-overwrite tag-carry shape (character-metadata-db.js).
- * @param {import('better-sqlite3').Database} db
- * @param {string} survivorId
- * @param {string[]} loserIds
- * @returns {string[]}
- */
+/** @returns {string[]} tag ids present on any loser but not already on the survivor */
 export function planTagUnion(db, survivorId, loserIds) {
     const tagsOf = db.prepare('SELECT tag_id FROM character_tags WHERE character_id = ?');
     const existing = new Set(tagsOf.all(survivorId).map(r => r.tag_id));
@@ -194,17 +128,8 @@ export function planTagUnion(db, survivorId, loserIds) {
 }
 
 /**
- * Plans every chat file move needed to fold each loser's REAL chats into the survivor's chat directory before
- * that loser's row (and directory) gets removed. A same-named file already in the survivor's directory is left
- * in place if byte-identical (`skip-duplicate`); if it's genuinely different content it gets a disambiguating
- * suffix rather than ever being silently overwritten - the real "Lucy Liubot" / "Lucy Liubot1" case this script's
- * header describes (two different chats, coincidentally the same byte size).
- * @param {string} chatsDir
- * @param {string} survivorId
- * @param {string[]} loserIds
- * @param {(p: string) => boolean} [exists]
- * @param {(p: string) => string[]} [readdir]
- * @param {(p: string) => Buffer} [readFile]
+ * Plans every chat file move needed to fold each loser's real chats into the survivor's chat directory.
+ * A same-named file already present is skipped if byte-identical, or disambiguated with a suffix if not.
  * @returns {{fromPath: string, toPath: string|null, action: 'move'|'skip-duplicate', loserId: string, fileName: string}[]}
  */
 export function planChatMoves(chatsDir, survivorId, loserIds, exists = fs.existsSync, readdir = fs.readdirSync, readFile = fs.readFileSync) {
@@ -240,15 +165,9 @@ export function planChatMoves(chatsDir, survivorId, loserIds, exists = fs.exists
 }
 
 /**
- * Whether a loser's active_chat pointer should be inherited onto the survivor - only when the survivor has no
- * pointer of its own (never clobber a real one) AND the loser's pointer is verified real (its own chat directory
- * actually contains that exact file - a dangling pointer, confirmed to exist in the real library on a "Barbie"
- * duplicate whose pointed-to chat folder didn't exist at all, is never trusted). Returns the post-move chat name
- * (accounting for a possible collision rename from planChatMoves()), or null if nothing should be inherited.
- * @param {CharacterRow} survivor
- * @param {CharacterRow[]} losers
- * @param {ReturnType<typeof planChatMoves>} chatMoves
- * @returns {string|null}
+ * Whether a loser's active_chat pointer should be inherited onto the survivor - only when the survivor has
+ * none of its own and the loser's pointer is verified real (dangling pointers are never trusted).
+ * @returns {string|null} post-move chat name, or null if nothing should be inherited
  */
 export function planActiveChatInherit(survivor, losers, chatMoves) {
     if (survivor.active_chat) return null;
@@ -264,21 +183,10 @@ export function planActiveChatInherit(survivor, losers, chatMoves) {
 }
 
 /**
- * Verifies a loser's PNG is safe to merge away, by RE-DERIVING both content_identity_hash and
- * avatar_identity_hash live from each file's current on-disk bytes (never trusting the db's cached columns,
- * which is what formed the group in the first place - this is an independent check, not a re-read of the same
- * claim) and requiring both to match the survivor's freshly-computed values.
- *
- * NOT a full-file byte compare - that was tried first and found to decline every real duplicate pair in the
- * owner's library, because two rows sharing content_identity_hash are BY DESIGN expected to differ in exactly
- * the `chat`/`create_date` JSON bytes (content_identity_hash strips those - see this script's header). Between
- * avatar_identity_hash (IDAT/pixel bytes only) and content_identity_hash (everything else minus fav/chat/
- * create_date), any real difference outside that known-stripped state still declines the group.
- * @param {string} charactersDir
- * @param {string} survivorId
- * @param {string} loserId
- * @param {(p: string) => boolean} [exists]
- * @param {(p: string) => Buffer} [readFile]
+ * Verifies a loser's PNG is safe to merge away by re-deriving content_identity_hash and
+ * avatar_identity_hash from current on-disk bytes (not the db's cached columns) and requiring both to
+ * match the survivor. Not a full-file byte compare: two rows sharing content_identity_hash are expected
+ * to differ in their embedded chat/create_date JSON, which a raw compare wouldn't tolerate.
  * @returns {{identical: boolean, reason: string|null}}
  */
 export function verifyContentAndAvatarIdentical(charactersDir, survivorId, loserId, exists = fs.existsSync, readFile = fs.readFileSync) {
@@ -311,16 +219,7 @@ export function verifyContentAndAvatarIdentical(charactersDir, survivorId, loser
     return { identical: true, reason: null };
 }
 
-/**
- * Builds the full merge plan for one duplicate group without touching anything - the same plan dry-run reporting
- * and --apply execution both work from, so what gets printed is exactly what would happen.
- * @param {CharacterRow[]} group
- * @param {object} context
- * @param {import('better-sqlite3').Database} context.db
- * @param {string} context.charactersDir
- * @param {string} context.chatsDir
- * @returns {object} plan
- */
+/** Builds the full merge plan for one duplicate group without touching anything. */
 export function planGroupMerge(group, { db, charactersDir, chatsDir }) {
     const realStatsById = new Map(group.map(r => [r.id, getRealChatStats(chatsDir, r.id)]));
     const { survivor, losers } = pickSurvivor(group, realStatsById);
@@ -340,8 +239,6 @@ export function planGroupMerge(group, { db, charactersDir, chatsDir }) {
     const activeChatInherit = planActiveChatInherit(survivor, losers, chatMoves);
     const survivorRealStats = realStatsById.get(survivor.id);
     const movedIn = chatMoves.filter(m => m.action === 'move');
-    // Post-move chat stats: the survivor's own real stats, plus whatever's landing in its directory from losers
-    // (skip-duplicate entries contribute nothing new - that content is already counted in the survivor's own dir).
     const chatStatsAfterMerge = {
         chatSize: survivorRealStats.chatSize + movedIn.reduce((sum, m) => sum + fs.statSync(m.fromPath).size, 0),
         dateLastChat: Math.max(survivorRealStats.dateLastChat, ...losers.map(l => realStatsById.get(l.id).dateLastChat)),
@@ -385,7 +282,7 @@ function refreshChatStatsSync(db, id, chatSize, dateLastChat) {
         .run(chatSize, dateLastChat, JSON.stringify(shallow), Number(lastInsertRowid), id);
 }
 
-/** Mirrors deleteRowSync() in src/character-metadata-db.js exactly (that function isn't exported). */
+/** Mirrors deleteRowSync() in src/character-metadata-db.js (not exported there). */
 function deleteCharacterRowSync(db, id) {
     db.prepare('DELETE FROM characters WHERE id = ?').run(id);
     db.prepare('DELETE FROM character_tags WHERE character_id = ?').run(id);
@@ -394,15 +291,9 @@ function deleteCharacterRowSync(db, id) {
 }
 
 /**
- * Executes one already-verified (needsReview: false) plan for real: moves chat files, applies fav/tags/
- * active_chat/chat-stats merges onto the survivor, deletes each loser's row, PNG, and (now-empty) chat directory.
- * Wrapped in a single db transaction by the caller so a mid-group failure never leaves partial db state - file
- * moves happen first and are individually safe to re-run (a already-moved file just won't be found a second
- * time), so a failure between the file phase and the db phase is recoverable by re-running the whole script.
- * @param {object} plan
- * @param {import('better-sqlite3').Database} db
- * @param {string} charactersDir
- * @param {string} chatsDir
+ * Executes one already-verified plan: moves chat files, applies fav/tags/active_chat/chat-stats merges
+ * onto the survivor, deletes each loser's row, PNG, and chat directory. File moves happen first and are
+ * individually safe to re-run, so a failure partway through is recoverable by re-running the script.
  */
 function applyGroupMerge(plan, db, charactersDir, chatsDir) {
     const { survivor, losers, favUpdate, tagsToAdd, chatMoves, activeChatInherit, chatStatsAfterMerge } = plan;
@@ -459,13 +350,7 @@ function formatPlan(plan) {
 /**
  * @param {CharacterRow[]} rows All rows carrying a content_identity_hash.
  * @param {object} [options]
- * @param {boolean} [options.apply]
- * @param {number} [options.groupLimit]
  * @param {string} [options.only] Only process the group containing this id.
- * @param {import('better-sqlite3').Database} options.db
- * @param {string} [options.charactersDir]
- * @param {string} [options.chatsDir]
- * @param {(s: string) => void} [options.log]
  */
 export function runMergeSweep(rows, options) {
     const {

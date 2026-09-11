@@ -1,36 +1,13 @@
 #!/usr/bin/env node
 /**
- * One-time corpus-wide backfill for `characters.avatar_identity_hash` (see character-metadata-db.js's
- * SCHEMA_SQL comment on that column) - every row that existed before this column was added has it NULL, and
- * nothing else in this codebase ever goes back and fills in an OLD row's value (upsertCharacterFromWrite()
- * only ever sets it on a fresh write - see that function's own doc comment). Without this script, an install's
- * entire preexisting library stays permanently unable to participate in the avatar-identity half of
- * local-import-scan.js's dedup-skip check or any future avatar-identity consumer.
+ * One-time backfill for `characters.avatar_identity_hash` on rows that predate the column.
+ * Safe to run against a live server: read-then-conditional-write per row (`WHERE avatar_identity_hash IS NULL`),
+ * so a concurrent live write for the same row wins over this script's stale computation.
  *
- * Computes computeAvatarIdentityHashFromChunks() (character-card-parser.js) - sha256 over each character's own
- * PNG's concatenated raw IDAT chunk payload bytes - directly from the file currently on disk. Unlike
- * content_identity_hash's own backfillContentIdentityHashes() (character-metadata-db.js, boot-time, poisoned
- * rows only), there is no "recover the pristine pre-mutation value" concern here: a row's PNG pixel bytes were
- * never touched by the JSON-mutation bug that made content_identity_hash need pristine-chunk recovery in the
- * first place (that bug only ever rewrote the embedded chara/ccv3 TEXT, never the IDAT chunk) - so every row's
- * CURRENT on-disk avatar bytes are exactly what this hash should reflect, poisoned or not.
- *
- * LIVE-SERVER SAFETY (this install's local-import pipeline may be actively running against real data while
- * this script runs - see this repo's own harness notes on always checking for that first): read-then-
- * conditional-write per row, never a blind bulk UPDATE or a single wrapping transaction spanning many rows
- * (same posture as reclaimReflinkPrefix()'s own per-row loop below, and as this module's SCHEMA_SQL comment on
- * avatar_identity_hash describes). Each row's own UPDATE is guarded by `WHERE avatar_identity_hash IS NULL`,
- * so if the live server's own upsertCharacterFromWrite() sets a real value for that SAME row between this
- * script's read and its write (a concurrent edit/reimport/rename), that write simply wins - this script's own
- * stale computation is silently discarded instead of clobbering it. `PRAGMA busy_timeout` is set so a momentary
- * write-lock held by the live server's own writer is waited out rather than surfaced as a hard error. This
- * script never touches the character PNG files themselves - read-only there, always.
- *
- * Usage (run from the repo root, inside the project's dev shell so dependencies resolve):
- *   node scripts/backfill-avatar-identity-hashes.mjs              (dry run - reports what WOULD be written, touches nothing)
- *   node scripts/backfill-avatar-identity-hashes.mjs --apply       (performs the backfill for real)
- *   node scripts/backfill-avatar-identity-hashes.mjs --apply --limit 500   (cap how many rows get processed -
- *       for a quick smoke test, not a real run)
+ * Usage (from repo root):
+ *   node scripts/backfill-avatar-identity-hashes.mjs              (dry run)
+ *   node scripts/backfill-avatar-identity-hashes.mjs --apply
+ *   node scripts/backfill-avatar-identity-hashes.mjs --apply --limit 500   (smoke test)
  */
 
 import fs from 'node:fs';
@@ -63,10 +40,6 @@ async function main() {
     }
     console.log('');
 
-    // Opened read-write (not the readonly mode reclaim-character-reflinks.mjs uses, since this script's whole
-    // job is writing this one column back) - WAL mode (already the live server's own journal mode, see
-    // sqlite-engine.js) plus a real busy_timeout so a momentary lock held by the live server's own writer is
-    // waited out rather than thrown as SQLITE_BUSY.
     const db = new Database(DB_PATH);
     db.pragma('journal_mode = WAL');
     db.pragma('busy_timeout = 10000');
@@ -108,10 +81,7 @@ async function main() {
         if (result.changes > 0) {
             written++;
         } else {
-            // The `WHERE avatar_identity_hash IS NULL` guard matched zero rows - a live write for this exact
-            // id landed between this script's SELECT and this UPDATE and already set a real value. That live
-            // value wins; this script's own (necessarily stale, since it read the file before that write
-            // happened) computation is correctly discarded here, not forced over it.
+            // Zero rows matched: a concurrent live write already set a real value for this id; that wins.
             alreadySetByLiveWrite++;
         }
 

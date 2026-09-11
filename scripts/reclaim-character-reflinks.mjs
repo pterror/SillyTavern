@@ -1,16 +1,12 @@
 #!/usr/bin/env node
 /**
  * One-off repair: for every already-imported character whose original local-import source is still on
- * disk, retroactively converts its stored file from an independent full copy into a reflink sharing
- * extents with that source - reclaiming the disk space local-import's staging reflink
- * (copyCharacterFile()) already avoided consuming, but that the metadata-embed write step (before
- * writeCardToFile() existed - see character-card-parser.js) silently paid anyway, once per import.
+ * disk, converts its stored file from an independent full copy into a reflink sharing extents with
+ * that source.
  *
- * Matching: characters.content_hash (populated for local-import's format importers) is the sha256 of the
- * raw original source bytes - matched here against a hash index built by walking the configured
- * localImport.directories once. A match is a CANDIDATE only; reclaimReflinkPrefix() independently
- * verifies the shared byte prefix before touching anything, so a wrong/stale match is simply declined,
- * never guessed past.
+ * Matching: characters.content_hash is the sha256 of the raw source bytes, matched against a hash index
+ * built by walking localImport.directories. A match is a candidate only; reclaimReflinkPrefix()
+ * independently verifies the shared byte prefix before touching anything.
  *
  * Usage (run from the repo root, inside the project's dev shell so dependencies resolve):
  *   node scripts/reclaim-character-reflinks.mjs             (dry run - reports matches, touches nothing)
@@ -40,11 +36,7 @@ const APPLY = args.includes('--apply');
 const limitArgIndex = args.indexOf('--limit');
 const HASH_LIMIT = limitArgIndex !== -1 ? Number(args[limitArgIndex + 1]) : Infinity;
 
-/**
- * @param {string} filePath
- * @returns {Promise<string>} sha256 hex digest, streamed (not buffered whole) so this scales to a
- * multi-hundred-GB corpus without holding every file in memory at once.
- */
+/** Streamed (not buffered whole), to scale to a multi-hundred-GB corpus. */
 function sha256File(filePath) {
     return new Promise((resolve, reject) => {
         const hash = crypto.createHash('sha256');
@@ -55,12 +47,7 @@ function sha256File(filePath) {
     });
 }
 
-/**
- * @param {string[]} directories
- * @returns {Promise<Map<string, string>>} sha256 hex -> absolute source file path
- */
 async function buildSourceHashIndex(directories) {
-    /** @type {Map<string, string>} */
     const index = new Map();
     let scanned = 0;
     const startedAt = Date.now();
@@ -74,8 +61,6 @@ async function buildSourceHashIndex(directories) {
             const filePath = path.join(dir, entry.name);
             try {
                 const hash = await sha256File(filePath);
-                // First path wins on a hash collision across configured directories - doesn't matter
-                // which, since a real collision here means byte-identical source files anyway.
                 if (!index.has(hash)) index.set(hash, filePath);
             } catch (error) {
                 console.warn(`  skip (unreadable): ${filePath} - ${/** @type {any} */ (error)?.message ?? error}`);

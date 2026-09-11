@@ -17,12 +17,7 @@ import {
 
 export const router = express.Router();
 
-/**
- * Replaces the entire set of tag *definitions* (name/color/folder_type/... - see character-metadata-db.js's
- * `tags` table). Assignments (`tag_map`, pre-phase-3) are no longer accepted here at all - they moved to
- * `/assign`/`/unassign` as single-row writes, replacing what used to be a whole-tags.json rewrite on every
- * mutation (see those routes below).
- */
+/** Replaces tag *definitions* only; assignments go through `/assign`/`/unassign`. */
 router.post('/save', async function (request, response) {
     try {
         if (!Array.isArray(request.body?.tags)) {
@@ -34,10 +29,7 @@ router.post('/save', async function (request, response) {
             return response.status(503).send({ error: 'Character metadata store is unavailable' });
         }
 
-        // A tag rename/delete/reassignment can change what the `#tags` field of any character or group search
-        // index entry resolves to. No explicit invalidation call needed here - the character/group search
-        // indexes (characters-search-index.js/groups-search-index.js) check getTagsHash() as part of their
-        // freshness signature on every search, so this write is picked up automatically.
+        // Search indexes key off getTagsHash(), so no explicit invalidation is needed here.
         response.send({ result: 'ok' });
     } catch (err) {
         console.error('Could not save tag definitions', err);
@@ -60,15 +52,7 @@ router.post('/get', async (request, response) => {
     }
 });
 
-/**
- * Bucketed digest of every tag definition (see getTagsDigest()). ~2.7KB against a 9MB full fetch at 62k
- * definitions, so a client can establish that its cached copy is actually correct for almost nothing.
- *
- * This is the verification half, and it is the half that matters: a revision counter or a change log only
- * reports what something claimed to change, so a write that skipped the log, a partial apply, or a plain bug
- * drifts silently and the log keeps cheerfully serving deltas on top of it. Comparing content answers whether
- * the client is right, which is a different question from what has happened lately.
- */
+/** Bucketed digest of every tag definition, for cheap client-side cache verification. */
 router.post('/digest', async (request, response) => {
     try {
         const bucketCount = Number(request.body?.bucketCount);
@@ -86,11 +70,7 @@ router.post('/digest', async (request, response) => {
     }
 });
 
-/**
- * The {id, hash} membership of one bucket, for a client that found that bucket disagreeing. It diffs locally
- * to name the ids that changed, appeared or vanished, then asks /by-ids for just those. A deleted tag needs no
- * tombstone: it is simply not in the membership any more.
- */
+/** The {id, hash} membership of one bucket, for a client whose digest disagreed. */
 router.post('/bucket', async (request, response) => {
     try {
         const bucket = Number(request.body?.bucket);
@@ -113,7 +93,7 @@ router.post('/bucket', async (request, response) => {
     }
 });
 
-/** The definitions for a named set of ids - the repair fetch, once the bucket diff has named them. */
+/** The definitions for a named set of ids. */
 router.post('/by-ids', async (request, response) => {
     try {
         const ids = Array.isArray(request.body?.ids) ? request.body.ids : [];
@@ -128,16 +108,7 @@ router.post('/by-ids', async (request, response) => {
     }
 });
 
-/**
- * Lightweight freshness check for the client's tags cache (see loadTagsSettings() in tags.js) - `tags_rev`
- * (character-metadata-db.js) replaces tags.json's own mtime as the "has anything changed" signal now that
- * there's no file to stat. It's a sha256 content hash of the definitions table, recomputed on any tag
- * definition save or assign/unassign path (see getTagsHash()'s doc comment for the full list of callers),
- * but only actually changes when definitions change - assignment-only operations leave the hash unchanged, so
- * the client cache stays valid through tag/untag activity that doesn't touch definitions.
- *
- * Returns `{ mtime: null }` if the metadata store is unavailable (matches `/get`'s `{ tags: null }`).
- */
+/** Freshness check for the client's tags cache; only changes when definitions change, not assignments. */
 router.post('/manifest', async (request, response) => {
     try {
         const hash = await getTagsHash(request.user.directories);
@@ -148,13 +119,7 @@ router.post('/manifest', async (request, response) => {
     }
 });
 
-/**
- * Phase 3 (design doc §3.4/Phase 3, extended by owner decision to groups): the tag ids assigned to each of a
- * batch of entities, read straight from `character_tags`/`group_tags` (character-metadata-db.js) rather than
- * from tags.json's `tag_map` - those tables are now the source of truth for tag assignments; tags.json is gone
- * entirely. `ids` can freely mix character avatars and group ids. Every requested id comes back as a key, `[]`
- * if untagged (or unknown) - callers never need to distinguish "no tags" from "id not found".
- */
+/** Tag ids assigned to a batch of entities (character avatars and/or group ids). Unknown ids come back as `[]`. */
 router.post('/for', async (request, response) => {
     try {
         const { ids } = request.body;
@@ -174,11 +139,7 @@ router.post('/for', async (request, response) => {
     }
 });
 
-/**
- * Compact bulk read of every entity-to-tag assignment across `character_tags`/`group_tags`, for callers that
- * want the whole tag map up front rather than one `/for` batch per id list - see getAllEntityTagAssignments()'s
- * doc comment (character-metadata-db.js) for the `avatars`/`tagIds`/`map` index-interned response shape.
- */
+/** Bulk read of every entity-to-tag assignment, for callers that want the whole map up front. */
 router.post('/for-all', async (request, response) => {
     try {
         const result = await getAllEntityTagAssignments(request.user.directories);
@@ -192,10 +153,6 @@ router.post('/for-all', async (request, response) => {
     }
 });
 
-/**
- * Phase 3 (extended by owner decision to groups): single-row write assigning one tag to one character or group,
- * replacing the old whole-tags.json rewrite this mutation used to cost.
- */
 router.post('/assign', async (request, response) => {
     try {
         const { id, tagId } = request.body;
@@ -218,10 +175,7 @@ router.post('/assign', async (request, response) => {
     }
 });
 
-/**
- * Phase 3 (extended by owner decision to groups): single-row write unassigning one tag from one character or
- * group. Not a 404 on an unknown entity - see unassignEntityTag()'s doc comment.
- */
+/** Unlike /assign, an unknown entity is not treated as a 404 here. */
 router.post('/unassign', async (request, response) => {
     try {
         const { id, tagId } = request.body;
@@ -241,11 +195,6 @@ router.post('/unassign', async (request, response) => {
     }
 });
 
-/**
- * Phase 3: the trigger-maintained `tag_usage` aggregate (design doc §3.4 - "this one aggregate subsumes three
- * separate full scans"), now counting assignments from both characters and groups (see character_tags'/
- * group_tags' shared triggers).
- */
 router.get('/usage', async (request, response) => {
     try {
         const result = await getAllTagUsage(request.user.directories);

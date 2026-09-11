@@ -5,25 +5,20 @@ import { randomUUID } from 'node:crypto';
 import { forwardFetchResponse } from '../../util.js';
 
 /**
- * Compact wire protocol for the llama.cpp raw-completions streaming path only.
+ * Compact wire protocol for the llama.cpp raw-completions streaming path.
  *
  * Plain bytes = raw UTF-8 text, appended directly to accumulated content.
- * `0xFF 0xFF`                                    = one literal content byte 0xFF (defensive escape).
- * `0xFF 0x01 <1 byte index>`                     = target/swipe index changed.
- * `0xFF 0x02 <4-byte BE length><length bytes>`    = token-probabilities payload (JSON) for the current token.
+ * `0xFF 0xFF`                                   = literal content byte 0xFF (escape).
+ * `0xFF 0x01 <1 byte index>`                    = target/swipe index changed.
+ * `0xFF 0x02 <4-byte BE length><length bytes>`  = token-probabilities JSON payload.
  *
- * This format is a private contract between this server and its own bundled client. It is not exposed as a
- * public/supported surface, so the shape is free to change without a compat concern.
+ * Private contract with the bundled client; not a public/supported surface.
  */
 export const FRAME_SENTINEL = 0xFF;
 export const FRAME_TYPE_INDEX = 0x01;
 export const FRAME_TYPE_PROBABILITIES = 0x02;
 
-/**
- * Encodes a raw text chunk, escaping any literal 0xFF byte so it can never be mistaken for a control frame.
- * @param {string} text Text to encode
- * @returns {Buffer} Encoded bytes
- */
+/** Escapes any literal 0xFF byte so it can't be mistaken for a control frame. */
 export function encodeContent(text) {
     if (!text) {
         return Buffer.alloc(0);
@@ -46,20 +41,10 @@ export function encodeContent(text) {
     return Buffer.from(out);
 }
 
-/**
- * Encodes an index-change control frame.
- * @param {number} index New index value (0-255)
- * @returns {Buffer} Encoded bytes
- */
 export function encodeIndexFrame(index) {
     return Buffer.from([FRAME_SENTINEL, FRAME_TYPE_INDEX, index & 0xFF]);
 }
 
-/**
- * Encodes a token-probabilities control frame.
- * @param {any} probabilities The `completion_probabilities` value from upstream
- * @returns {Buffer} Encoded bytes
- */
 export function encodeProbabilitiesFrame(probabilities) {
     const json = Buffer.from(JSON.stringify(probabilities), 'utf-8');
     const header = Buffer.alloc(6);
@@ -69,12 +54,7 @@ export function encodeProbabilitiesFrame(probabilities) {
     return Buffer.concat([header, json]);
 }
 
-/**
- * Encodes a single upstream llama.cpp SSE event into compact-stream bytes.
- * @param {any} data Parsed JSON of one upstream `data:` event
- * @param {number} lastIndex The last index value already signaled to the client (0 if none yet)
- * @returns {{bytes: Buffer, index: number}} Bytes to write and the new "last signaled index"
- */
+/** @returns {{bytes: Buffer, index: number}} */
 export function encodeEvent(data, lastIndex) {
     const parts = [];
     const index = typeof data?.index === 'number' ? data.index : 0;
@@ -96,20 +76,14 @@ export function encodeEvent(data, lastIndex) {
     return { bytes: parts.length ? Buffer.concat(parts) : Buffer.alloc(0), index: nextIndex };
 }
 
-// Metadata that used to be re-sent (and echoed the whole prompt) on every final SSE event. It costs nothing
-// when nobody asks for it (which is every generation today), and is kept reachable via /generate/meta/:id.
-const META_KEYS = ['prompt', 'generation_settings', 'timings', 'tokens_cached', 'model', 'truncated', 'stopping_word', 'has_new_line'];
+// Kept reachable via /generate/meta/:id instead of re-sent on every final SSE event.
+const META_KEYS =['prompt', 'generation_settings', 'timings', 'tokens_cached', 'model', 'truncated', 'stopping_word', 'has_new_line'];
 const META_CACHE_MAX = 50;
 const META_TTL_MS = 10 * 60 * 1000;
 
 /** @type {Map<string, {data: any, storedAt: number}>} */
 const metaCache = new Map();
 
-/**
- * Stashes final-event metadata for later retrieval, evicting expired/oldest entries opportunistically.
- * @param {string} id Generation id
- * @param {any} data Metadata to stash
- */
 function stashMeta(id, data) {
     const now = Date.now();
 
@@ -128,11 +102,7 @@ function stashMeta(id, data) {
     metaCache.set(id, { data, storedAt: now });
 }
 
-/**
- * Retrieves previously stashed final-event metadata for a generation id.
- * @param {string} id Generation id
- * @returns {any | null} Metadata, or null if missing/expired
- */
+/** @returns {any | null} */
 export function getLlamaCppStreamMeta(id) {
     const entry = metaCache.get(id);
     if (!entry) return null;
@@ -145,11 +115,7 @@ export function getLlamaCppStreamMeta(id) {
     return entry.data;
 }
 
-/**
- * A tiny backpressure-aware writer. Callers hand it bytes as they're produced; it only calls `res.write()`
- * when the response isn't backpressured, coalescing pending bytes while waiting for `drain` otherwise.
- * @param {import('express').Response} res Express response to write to
- */
+/** Coalesces writes while waiting for `drain` under backpressure. */
 function createBackpressureWriter(res) {
     /** @type {Buffer[]} */
     let pending = [];
@@ -191,13 +157,7 @@ function createBackpressureWriter(res) {
     };
 }
 
-/**
- * Pipes a llama.cpp `/completion` streaming response to the client using the compact wire format above,
- * instead of forwarding the upstream SSE-JSON envelope byte-for-byte. Only used for `TEXTGEN_TYPES.LLAMACPP`.
- * @param {import('node-fetch').Response} upstreamResponse The upstream llama.cpp fetch response
- * @param {import('express').Response} response Express response to stream to
- * @returns {Promise<void>}
- */
+/** Pipes a llama.cpp `/completion` streaming response using the compact wire format above, instead of forwarding the upstream SSE-JSON envelope byte-for-byte. */
 export async function pipeLlamaCppCompactStream(upstreamResponse, response) {
     if (!upstreamResponse.ok || !upstreamResponse.body) {
         return forwardFetchResponse(upstreamResponse, response);

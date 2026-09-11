@@ -302,9 +302,6 @@ async function preSetupTasks() {
     }
     console.log();
 
-    // Boot-perf instrumentation (kept permanently per 887422854's investigation - times each top-level step of
-    // this startup chain so a slow stage shows up by name in the log instead of someone having to
-    // re-instrument from scratch the next time boot gets slow again).
     const __t0 = process.hrtime.bigint();
     const __mark = (label) => {
         const now = process.hrtime.bigint();
@@ -317,16 +314,8 @@ async function preSetupTasks() {
     __mark('migrateGroupChatsMetadataFormat');
     await checkForNewContent(directories);
     __mark('checkForNewContent');
-    // No boot-time diskCache.verify() call anymore (2026-09 event-driven cache invalidation): the disk cache's
-    // key already embeds the file's mtime (getCacheKey(), endpoints/characters.js), so a file changed OUTSIDE
-    // this app entirely - the one case an in-process write-time invalidation (DiskCache.invalidateKey(), the
-    // same module) can't see - simply computes a DIFFERENT key on its next read and misses the stale entry on
-    // its own; there was never a correctness gap here for verify() to close, only orphaned entries wasting disk
-    // space until pruned. Un-pruned entries from a deleted/externally-edited file are a bounded, harmless cost -
-    // not something worth a full readdir+stat walk over the entire characters directory (measured ~24 minutes on
-    // this install's 330k+-file library) added to every single boot. verify() itself still exists as an
-    // on-demand admin/maintenance operation for anyone who wants to reclaim that space; it's just never called
-    // automatically anymore.
+    // No boot-time diskCache.verify(): cache keys embed file mtime, so stale entries just miss on
+    // next read rather than needing a full-library readdir+stat walk on every boot.
     migrateFlatSecrets(directories);
     __mark('migrateFlatSecrets');
     cleanUploads();
@@ -334,41 +323,23 @@ async function preSetupTasks() {
     migrateAccessLog();
     __mark('migrateAccessLog');
 
-    // Phase 1 of the character-data-residency redesign (docs/design/character-data-residency-redesign.md):
-    // opens/creates each user's character-metadata SQLite store, starts its directory watcher and reconcile
-    // interval, and kicks off the one-time bootstrap backfill in the background. Deliberately not awaited
-    // beyond schema creation (fast) - a large library's bootstrap backfill must never delay the server actually
-    // starting to listen, per the design doc's "Runs at boot (non-blocking)".
+    // Only schema creation is awaited; the bootstrap backfill runs in the background so a large
+    // library doesn't delay the server from listening.
     await initializeMetadataStores(directories);
     __mark('initializeMetadataStores');
 
-    // One-time-per-user reversal of characters auto-converted to a linked World file by the pre-fix embedded
-    // lorebook import flow (see unimport-embedded-lore.js's own header for the full design). Started after
-    // initializeMetadataStores() since it queries that same metadata store's indexed `world` column - never a
-    // corpus walk, regardless of library size - and waits internally for that user's one-time bootstrap
-    // backfill before trusting the index. Fire-and-forget, same "must not delay the server actually starting
-    // to listen" reasoning as settingsInit() below: it can legitimately wait tens of minutes on a large,
-    // still-bootstrapping library, and it does real file writes once it runs. Each user's run is independent
-    // and already marks itself complete via the metadata store's `meta` table, so this is a no-op point-lookup
-    // on every boot after the first one that actually finds something to do.
+    // Fire-and-forget: waits internally for that user's bootstrap backfill, so it can block for a
+    // while on a large library. Marks itself complete per-user, so later boots are a no-op lookup.
     for (const userDirectories of directories) {
         runUnimportEmbeddedLoreAtBoot(userDirectories)
             .catch(err => console.error(color.red(`[unimport-embedded-lore] Boot run failed for ${userDirectories.root}:`), err));
     }
 
-    // Config/admin-set-only "import characters from a local directory on disk" feature - inert unless
-    // localImport.directories is non-empty (see that module's header). Started after initializeMetadataStores()
-    // since it drives the same metadata store's batch-import/write path for whatever it discovers.
+    // Inert unless localImport.directories is configured.
     await initializeLocalImportScan();
     __mark('initializeLocalImportScan');
 
-    // settingsInit() (settings.js's init()) is a per-user settings-snapshot backup - routine/automatic, so it no
-    // longer merges in the tag_map export at all (see backupUserSettings()'s own doc comment: that was a full
-    // SQLite scan re-derived on every boot for a value nothing here actually needed, since tag assignments
-    // already live durably in the metadata store itself). Still fire-and-forget rather than sitting in the
-    // awaited boot chain though - it's still real file IO (read settings.json, maybe write a backup file, prune
-    // old backups) across every user handle, same "maintenance work that must not gate the server actually
-    // starting to listen" shape as runUnimportEmbeddedLoreAtBoot() above.
+    // Fire-and-forget: per-user settings backup IO must not gate the server starting to listen.
     {
         const __settingsStart = process.hrtime.bigint();
         settingsInit()

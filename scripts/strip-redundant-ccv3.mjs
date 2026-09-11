@@ -1,40 +1,25 @@
 #!/usr/bin/env node
 /**
- * One-off cleanup: for every character PNG that carries BOTH a 'chara' (v2-or-whatever-the-source-was) and
- * a 'ccv3' tEXt chunk, strips the 'ccv3' chunk ONLY when it adds zero information beyond what 'chara' already
- * holds - the common case for anything written by this app's own writer (character-card-parser.js's
- * spliceCardDataIntoChunks() mirrors 'chara' into 'ccv3' byte-for-byte whenever the source data already
- * declared spec: 'chara_card_v3' - see that function's own doc comment), and also the common case for a
- * foreign-tool-authored v3 card whose v2-downgrade 'chara' payload happens to carry the same field values.
+ * One-off cleanup: for every character PNG that carries both a 'chara' and a 'ccv3' tEXt chunk, strips
+ * the 'ccv3' chunk only when it adds zero information beyond what 'chara' already holds.
  *
- * The bar is "adds no new info", NOT "nothing currently reads it" - a card whose ccv3 JSON carries real
- * v3-only fields with actual values (nickname, source, creator_notes_multilingual, group_only_greetings,
- * creation_date/modification_date, non-empty data.assets, or literally any field/value that isn't also
- * present at the same path in 'chara') is left completely untouched, even though this app's own runtime
- * doesn't currently read most of those fields.
+ * The bar is "adds no new info", not "nothing currently reads it" - a card whose ccv3 JSON carries real
+ * v3-only field values not also present at the same path in 'chara' is left untouched.
  *
- * Comparison is real field-level, not a raw byte-equality shortcut: findExtraCcv3Info() walks the parsed
- * ccv3 JSON recursively, and for every leaf value (primitive, or a whole array treated as one leaf - see its
- * own doc comment for why arrays aren't diffed element-wise) that ISN'T also present at the same path in the
- * parsed 'chara' JSON, AND isn't itself an empty/absent-equivalent value (empty string, null, undefined,
- * empty array, empty object), that leaf counts as "extra info" and the whole card is skipped. A byte-identical
- * chara/ccv3 pair (the ordinary case this app's own writer produces) trivially has zero extra leaves.
+ * Comparison is field-level, not raw byte-equality: findExtraCcv3Info() walks the parsed ccv3 JSON
+ * recursively, and any leaf not also present at the same path in 'chara' (and not itself empty/absent)
+ * counts as extra info, skipping the whole card.
  *
- * Verification before touching anything, mirroring reclaim-character-reflinks.mjs/repair-hardlinked-source-
- * files.mjs's own "never trust a match on its own" shape:
- *   1. Re-extract the file's chunks fresh at apply time (not reused from the earlier scan pass), so nothing
- *      acts on stale in-memory state if a file changed between scan and apply.
- *   2. Re-run findExtraCcv3Info() against that fresh extraction - re-declines if anything changed.
- *   3. Build the new chunk list (every chunk unchanged EXCEPT the 'ccv3' tEXt chunk removed - 'chara' and
- *      every other chunk, including IDAT, pass through byte-for-byte identical).
- *   4. Write via write-file-atomic (temp file + rename - never a partial write visible at the real path).
- *   5. Byte-verify the written file back off disk: re-extract it, confirm there is now no 'ccv3' chunk, the
- *      'chara' chunk's bytes are unchanged, and computeAvatarIdentityHashFromChunks() (the IDAT-payload hash
- *      character-card-parser.js already uses for exactly this "did the pixels change" question) matches the
- *      pre-write hash. Any mismatch is reported as an error, never silently accepted.
+ * Verification before touching anything:
+ *   1. Re-extract the file's chunks fresh at apply time, not reused from the scan pass.
+ *   2. Re-run findExtraCcv3Info() against that fresh extraction.
+ *   3. Build the new chunk list (every chunk unchanged except 'ccv3' removed).
+ *   4. Write via write-file-atomic.
+ *   5. Byte-verify off disk: no 'ccv3' chunk, 'chara' bytes unchanged, and
+ *      computeAvatarIdentityHashFromChunks() matches the pre-write hash.
  *
- * Resumable for free: a file this script already stripped no longer carries a 'ccv3' chunk, so a re-run's
- * scan pass naturally skips it (see the "no ccv3 chunk" counter below) - no separate state file needed.
+ * Resumable for free: an already-stripped file no longer carries a 'ccv3' chunk, so a re-run's scan
+ * pass naturally skips it.
  *
  * Usage (run from the repo root, inside the project's dev shell so dependencies resolve):
  *   node scripts/strip-redundant-ccv3.mjs                       (dry run - reports candidates, touches nothing)
@@ -64,17 +49,13 @@ const APPLY = args.includes('--apply');
 const limitArgIndex = args.indexOf('--limit');
 const LIMIT = limitArgIndex !== -1 ? Number(args[limitArgIndex + 1]) : Infinity;
 
-/** @param {*} v */
 function isEmptyValue(v) {
     return v === undefined || v === null || v === ''
         || (Array.isArray(v) && v.length === 0)
         || (typeof v === 'object' && v !== null && Object.keys(v).length === 0);
 }
 
-/**
- * Canonical (sorted-key) JSON.stringify, so deep-equal doesn't false-positive on key order alone.
- * @param {*} v
- */
+/** Sorted-key JSON.stringify, so deep-equal doesn't false-positive on key order alone. */
 function canonical(v) {
     if (Array.isArray(v)) return v.map(canonical);
     if (v !== null && typeof v === 'object') {
@@ -87,22 +68,12 @@ function deepEqual(a, b) {
     return JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
 }
 
-/**
- * Recursively walks `ccv3Node`, collecting every leaf (primitive, or a whole array - arrays are compared as
- * one leaf value, not diffed element-wise, to keep this a real-but-tractable field-level comparison rather
- * than a full structural diff) that carries information NOT present at the same path in `charaNode`.
- * @param {*} ccv3Node
- * @param {*} charaNode
- * @param {string} pathPrefix
- * @returns {Array<{path: string, ccv3Value: *, charaValue: *}>}
- */
-// Top-level keys that are DEFINITIONALLY expected to differ between 'chara' and 'ccv3' whenever 'chara'
-// is a genuine v2 downgrade of the same underlying character (spec: 'chara_card_v2'/'2.0' vs spec:
-// 'chara_card_v3'/'3.0') - that mismatch isn't independent character CONTENT, it's just the wrapper's own
-// version label restating which of the two chunks it is. Treating it as "extra info" was over-broad: the
-// first real-library run showed every sampled "has-extra-info" card differing ONLY in these two keys,
-// which would have blocked stripping cards whose actual character data carries nothing beyond 'chara'.
+// 'spec'/'spec_version' always differ between a v3 'chara' downgrade and 'ccv3' (2.0 vs 3.0) - that's
+// just the wrapper's version label, not character content, so it isn't "extra info".
 const IGNORED_ROOT_KEYS = new Set(['spec', 'spec_version']);
+
+/** Walks `ccv3Node`, collecting every leaf (arrays compared as one leaf, not diffed element-wise) not
+ * present at the same path in `charaNode`. */
 
 function findExtraCcv3Info(ccv3Node, charaNode, pathPrefix = '') {
     if (ccv3Node !== null && typeof ccv3Node === 'object' && !Array.isArray(ccv3Node)) {
@@ -122,7 +93,6 @@ function findExtraCcv3Info(ccv3Node, charaNode, pathPrefix = '') {
     return [{ path: pathPrefix, ccv3Value: ccv3Node, charaValue: charaNode }];
 }
 
-/** @param {Array<{name: string, data: Uint8Array}>} chunks */
 function findTextChunk(chunks, keyword) {
     for (const chunk of chunks) {
         if (chunk.name !== 'tEXt') continue;
@@ -132,10 +102,6 @@ function findTextChunk(chunks, keyword) {
     return null;
 }
 
-/**
- * Scans one character file. Returns a verdict without touching the file.
- * @param {string} filePath
- */
 function scanCandidate(filePath) {
     const buf = fs.readFileSync(filePath);
     const chunks = extract(new Uint8Array(buf));
@@ -144,7 +110,7 @@ function scanCandidate(filePath) {
     const ccv3Entry = findTextChunk(chunks, 'ccv3');
 
     if (!ccv3Entry) return { status: 'no-ccv3' };
-    if (!charaEntry) return { status: 'ccv3-only-no-chara' }; // shouldn't happen for anything this app wrote - never touched
+    if (!charaEntry) return { status: 'ccv3-only-no-chara' };
 
     let charaJson, ccv3Json;
     try {
@@ -162,13 +128,8 @@ function scanCandidate(filePath) {
     return { status: 'safe-to-strip', chunks, charaEntry, ccv3Entry };
 }
 
-/**
- * Re-scans `filePath` fresh, and if still safe, rewrites it with the 'ccv3' chunk removed - 'chara' and
- * every other chunk pass through byte-for-byte identical. Byte-verifies the result before returning.
- * @param {string} filePath
- */
 function stripCandidate(filePath) {
-    const verdict = scanCandidate(filePath); // fresh re-scan, never trusts the earlier scan pass alone
+    const verdict = scanCandidate(filePath);
     if (verdict.status !== 'safe-to-strip') {
         return { applied: false, reason: `re-scan at apply time came back '${verdict.status}', not 'safe-to-strip' - declined` };
     }
@@ -182,7 +143,6 @@ function stripCandidate(filePath) {
 
     writeFileAtomicSync(filePath, outputBuf);
 
-    // Byte-verify: re-read off disk, confirm ccv3 is gone, chara is byte-identical, IDAT hash unchanged.
     const verifyBuf = fs.readFileSync(filePath);
     const verifyChunks = extract(new Uint8Array(verifyBuf));
     const verifyCcv3 = findTextChunk(verifyChunks, 'ccv3');
@@ -280,14 +240,8 @@ function main() {
             console.log(`  ...${stripped} stripped so far (${scanned}/${entries.length} scanned, ${elapsedSec}s elapsed)`);
         }
 
-        // Once a finite --limit is actually satisfied, stop scanning entirely instead of continuing
-        // through the rest of the library - APPLY mode only ever needs `LIMIT` real candidates, unlike a
-        // plain dry run (which always scans everything so its summary counts stay complete; see the
-        // `if (!APPLY) continue;` above, which this deliberately leaves alone). Missing this `break` is
-        // why the first --apply --limit 20 run against the real 329k-file library read 225+ GB and ran
-        // 17+ minutes before being killed with zero files actually written yet - the fix should exit
-        // after roughly the first ~500 files scanned instead (12,983/329,039 safe-to-strip candidates in
-        // the dry run works out to about 1 in 25 files being a hit).
+        // A dry run always scans everything so its summary counts stay complete; APPLY mode only needs
+        // `LIMIT` real candidates, so stop scanning once satisfied rather than reading the whole library.
         if (APPLY && Number.isFinite(LIMIT) && stripped >= LIMIT) {
             break;
         }

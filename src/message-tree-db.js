@@ -6,39 +6,10 @@ import { color } from './util.js';
 import { getSqliteEngine } from './endpoints/sqlite-engine.js';
 
 /**
- * Tree-structured message storage with parent pointers. A single `messages` table is the whole model:
- * there is no `branches` table, and there are no swipe arrays inside a message. Every alternative
- * continuation — whether it came from swiping or from forking — is its own sibling row sharing a
- * `parent_id`. A "chat" is not an object; it is a `label` on some message plus the `default_child_id`
- * chain hanging below it.
- *
- * Columns:
- *  - `content`          JSON blob shaped like a JSONL chat line, minus `swipes`/`swipe_id`/`swipe_info`
- *                       (those are the sibling rows) and minus `node_id`/`extra.branches`/
- *                       `extra.bookmark_link` (those are tree structure).
- *  - `default_child_id` Which child of this row is the currently-shown continuation. Local to this one
- *                       parent, mutable, no deeper truth claim. Cycling an alternative at message N sets
- *                       N's *parent*'s `default_child_id` and touches nothing else in the tree, so the
- *                       old path keeps its own downstream choices and re-following from the new pick
- *                       lands on a fully-resolved, previously-explored continuation.
- *  - `label`            A deliberate bookmark on any message, leaf or interior. This is what a chat name
- *                       is now. `owner_id = X AND label IS NOT NULL` is the list of chats worth showing.
- *  - `metadata`         JSON chat_metadata (note_*, tainted, persona, integrity, variables, …) for the
- *                       labeled node. Carries no meaning on unlabeled rows.
- *
- * Every owner has exactly one synthetic anchor row (`parent_id IS NULL`), uniformly, regardless of how
- * many real roots it has. Opening an owner's conversation with nothing pre-selected = find the anchor,
- * then follow `default_child_id` down until a row has none. That makes root handling identical to every
- * other fork, so no code anywhere special-cases "the first message".
- *
- * Nothing is ever deleted or reparented. A mid-chat delete/insert forks from the affected node's parent
- * and copies forward fresh rows; an existing row's `parent_id` never changes.
- *
- * Preview text and message counts are computed at read time by walking, never stored.
- *
- * The exported `*Branch*` function names are kept alive as label+anchor-backed adapters purely so
- * src/endpoints/chats.js and characters.js keep working unchanged; they synthesize branch-shaped
- * objects ({ name, leaf_id, message_count, last_mes, metadata, … }) out of labeled nodes.
+ * Tree-structured message storage: one `messages` table, no swipe arrays — every alternative is a
+ * sibling row sharing `parent_id`, and a "chat" is a `label` on a message plus its `default_child_id`
+ * chain. Nothing is ever deleted or reparented; every owner has one synthetic anchor row (`parent_id
+ * IS NULL`) as the uniform root. `*Branch*` exports are label+anchor adapters for chats.js/characters.js.
  */
 
 const SCHEMA_SQL = `
@@ -51,10 +22,7 @@ const SCHEMA_SQL = `
         created_at       INTEGER NOT NULL,
         default_child_id TEXT REFERENCES messages(id),
         metadata         TEXT,
-        -- sha1 of nodeIdentityKey(): parent + speaker + the message text. Stored so the database
-        -- itself can hold the identity rule, instead of it being a convention every insert path has to
-        -- remember. Hashed rather than indexing the text directly - message bodies are 259MB of this
-        -- file, and an index over them costs that again, where the digest costs about 36MB.
+        -- sha1 of nodeIdentityKey(parent, speaker, text); hashed instead of indexed directly to keep the index small.
         identity_hash    TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_messages_parent      ON messages(parent_id);
@@ -80,20 +48,12 @@ const PATH_CTE_SQL = `
     SELECT id, parent_id, owner_id, content, label, created_at, default_child_id, metadata FROM path ORDER BY depth DESC
 `;
 
-/**
- * The synthetic anchor row's content. It must satisfy the NOT NULL content column, must never be
- * rendered as chat, and must be recognizable without a schema column, so it is a one-key JSON object.
- */
+/** Content of the synthetic anchor row; a recognizable one-key object since it has no schema column of its own. */
 export const ANCHOR_CONTENT = '{"__anchor":true}';
 
-/**
- * How many alternatives either side of the selected one are sent inline with a chat load. Wide enough
- * that ordinary messages ship whole and that stepping through alternatives never blocks on a fetch,
- * small enough that a 1,508-alternative greeting costs a few KB instead of 577.
- */
+/** How many alternatives either side of the selected one are sent inline with a chat load. */
 const ALTERNATIVE_WINDOW = 5;
 
-/** @param {{ parent_id: string | null, content?: string }} row */
 function isAnchorRow(row) {
     return !!row && row.parent_id === null;
 }
@@ -106,15 +66,10 @@ function isAnchorRow(row) {
 const entries = new Map();
 let warnedNoEngine = false;
 
-/** @param {import('./users.js').UserDirectoryList} directories */
 function getDbPath(directories) {
     return path.join(directories.root, 'message-tree.sqlite');
 }
 
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<{ db: import('./endpoints/sqlite-engine.js').SqliteEngineHandle } | null>}
- */
 async function getEntry(directories) {
     const key = directories.root;
     const existing = entries.get(key);
@@ -141,16 +96,9 @@ async function getEntry(directories) {
 }
 
 /**
- * Brings an existing store up to holding its own identity rule.
- *
- * Adds identity_hash if it predates this, fills it in for rows that have none, then puts the unique
- * index on. Kept out of SCHEMA_SQL because the index cannot be created before the column exists, and a
- * throw there would stop the store opening at all.
- *
- * If the index will not build, the store still opens: a database carrying duplicates from before this
- * existed is worse off unreadable than it is unconstrained. It says so loudly instead, naming how many
- * collide, and the constraint appears by itself once they are gone.
- * @param {object} db
+ * Backfills identity_hash and adds its unique index. Kept out of SCHEMA_SQL since the index can't be
+ * created before the column exists. If duplicates block the index, the store still opens (unconstrained
+ * beats unreadable) and logs how many groups collide.
  */
 function migrateIdentityHashSync(db) {
     const columns = new Set(db.all('PRAGMA table_info(messages)').map(c => c.name));
@@ -184,13 +132,7 @@ function newId() {
     return crypto.randomUUID();
 }
 
-/**
- * Strips tree-internal and branch-specific fields from a message object before storing it. Swipe
- * fields are stripped too — every alternative is a sibling row, so they have no representation in
- * a single row's content.
- * @param {object} msg
- * @returns {string} JSON string of the sanitized message
- */
+/** Strips tree-internal fields before storing; swipe fields too, since every alternative is its own sibling row. */
 function sanitizeForStorage(msg) {
     const clone = { ...msg };
     delete clone.node_id;
@@ -212,19 +154,9 @@ function sanitizeForStorage(msg) {
 }
 
 /**
- * Expands one incoming message object into the ordered list of sibling rows it represents.
- *
- * A message with a `swipes` array of length N becomes N alternatives: alternative i takes `swipes[i]`
- * as its `mes`, and — where `swipe_info[i]` exists — that entry's `send_date` and `extra` (token counts,
- * model, generation timings) are folded onto the alternative, because once the array is gone there is
- * nowhere else for that per-alternative data to live. `swipe_info` shorter than `swipes` (2,612 rows in
- * the live install) simply leaves the extra alternatives with the parent message's own send_date/extra.
- * A `swipe_id` outside the array is clamped into range (2 rows in the live install).
- *
- * A message with no swipes array is a single alternative.
- *
- * @param {object} msg
- * @returns {{ contents: string[], selected: number, origIndices: number[] }}
+ * Expands one incoming message into its ordered sibling rows. A `swipes` array of length N becomes N
+ * alternatives, each folding in its `swipe_info[i]` (send_date/extra) since there's nowhere else for
+ * that per-alternative data to live once the array is gone. No swipes array means a single alternative.
  */
 function alternativesFromMessage(msg) {
     const rawSwipes = Array.isArray(msg?.swipes) ? msg.swipes : null;
@@ -232,11 +164,8 @@ function alternativesFromMessage(msg) {
         return { contents: [sanitizeForStorage(msg)], selected: 0, origIndices: [0], nodeIds: [msg?.node_id ?? null] };
     }
 
-    // A hole means "this alternative exists but wasn't sent to the client", not "delete it". Nothing is
-    // ever removed from the tree, so dropping unloaded entries here leaves their rows exactly where
-    // they are. `origIndex` remembers each kept entry's position in the original (possibly sparse)
-    // `swipes` array - callers that match siblings by position (rather than by text identity) need
-    // that original slot, not the compacted index it ends up at in `kept`/`contents`.
+    // A hole means "not sent to the client", not "delete it" — skip it, but keep `origIndex` so
+    // position-matching callers still see its original slot in the sparse `swipes` array.
     const rawSel = Number.isInteger(msg.swipe_id) ? msg.swipe_id : 0;
     const rawInfo = Array.isArray(msg.swipe_info) ? msg.swipe_info : [];
     const kept = [];
@@ -247,14 +176,9 @@ function alternativesFromMessage(msg) {
             info: rawInfo[i],
             wasSelected: i === rawSel,
             origIndex: i,
-            // The row this alternative was loaded from. Present only for slots the client genuinely
-            // received; anything it fabricated locally has no id and cannot claim to be an existing
-            // row. This is what lets the save verify rather than trust array positions.
+            // Only slots the client actually received carry a node id; a fabricated slot can't claim an existing row.
             nodeId: (rawInfo[i] && typeof rawInfo[i] === 'object' && rawInfo[i].node_id)
                 ? rawInfo[i].node_id
-                // The selected slot is the message itself, so it can fall back to the message's own
-                // row id. That keeps editing the visible message an in-place update even when
-                // swipe_info predates carrying ids.
                 : (i === rawSel ? (msg?.node_id ?? null) : null),
         });
     }
@@ -266,8 +190,6 @@ function alternativesFromMessage(msg) {
     let selIdx = kept.findIndex(k => k.wasSelected);
     if (selIdx < 0) selIdx = 0;
 
-    // Speaker for an alternative: the set's default (the modal speaker the load sent, or this
-    // message's own when they agree), overridden per entry where swipe_info says so.
     const def = msg.swipe_speaker_default;
     const defName = def && def.name !== undefined ? def.name : msg.name;
     const defIsUser = def ? !!def.is_user : !!msg.is_user;
@@ -298,27 +220,14 @@ function alternativesFromMessage(msg) {
     return { contents, selected, origIndices, nodeIds };
 }
 
-/**
- * Rebuilds the client-facing message object for a node, re-synthesizing the swipe arrays from the
- * node's sibling rows so the unchanged client keeps working. Siblings are ordered by (created_at, id)
- * — the same deterministic ordering used everywhere else in this module.
- *
- * @param {{ id: string, content: string, label: string | null }} row
- * @param {{ id: string, content: string }[]} siblings ordered, includes `row` itself
- * @returns {object}
- */
+/** Rebuilds the client-facing message object for a node, re-synthesizing swipe arrays from sibling rows. */
 function rowToMessage(row, siblings) {
     const msg = JSON.parse(row.content);
     msg.node_id = row.id;
 
     if (siblings && siblings.length > 1) {
-        // The alternative arrays are sent at full length but with holes: only the selected entry
-        // carries text. Length and index are what almost every consumer actually reads, and shipping
-        // the rest costs 683KB of unread greetings on the worst real chat for zero benefit. The text
-        // is filled in by /api/chats/alternatives at the moment something actually cycles.
-        //
-        // Holes rather than a bare count on purpose: `swipes.length`, `swipes[swipe_id]` and the
-        // swipes/swipe_info length pairing keep working untouched everywhere they are read.
+        // Sent at full length but with holes (only a window around selected carries text) so
+        // swipes.length/swipe_id keep working everywhere unchanged; text fills in on demand via /api/chats/alternatives.
         const idx = siblings.findIndex(s => s.id === row.id);
         const selected = idx < 0 ? 0 : idx;
 
@@ -326,18 +235,12 @@ function rowToMessage(row, siblings) {
         msg.swipe_info = new Array(siblings.length).fill(null);
         msg.swipe_id = selected;
 
-        // A window around the selected alternative is sent populated, the rest are holes. The window
-        // means stepping left or right never waits on the network, and any message with
-        // ALTERNATIVE_WINDOW*2+1 or fewer alternatives ships complete - so an ordinary two-or-three
-        // swipe message behaves exactly as it always did, and only genuinely wide sets go sparse.
         const from = Math.max(0, selected - ALTERNATIVE_WINDOW);
         const to = Math.min(siblings.length, selected + ALTERNATIVE_WINDOW + 1);
         for (let i = from; i < to; i++) {
             let o = {};
             try { o = JSON.parse(siblings[i].content); } catch { o = {}; }
             msg.swipes[i] = o?.mes ?? '';
-            // node_id per alternative: switching to one means moving onto that row's path, and the
-            // client cannot ask for what is below it without knowing which row it is.
             msg.swipe_info[i] = {
                 send_date: o?.send_date, extra: o?.extra ?? {},
                 name: o?.name, is_user: !!o?.is_user, node_id: siblings[i].id,
@@ -352,48 +255,19 @@ function rowToMessage(row, siblings) {
     return msg;
 }
 
-/**
- * The identity of a node among its siblings: its parent, its speaker, and its text.
- *
- * Text alone is not enough - the same words said by the user and by the character are two different
- * messages, and so are the same words said as two different personas. Beyond that, two alternatives with the same speaker and the same text under the same
- * parent are ONE node, even if their send_date or extra.token_count differ: a token count is a
- * derived measurement of the text, not part of what the message is.
- *
- * Every ingest path (client save, JSONL migration, the one-off DB transform) keys on this exact
- * function, so the same data arriving two different ways lands on the same rows.
- *
- * @param {string} parentId
- * @param {string} contentJson sanitized content blob
- * @returns {string}
- */
-/**
- * nodeIdentityKey() reduced to a fixed-width digest, for the column the unique index is built on.
- * @param {string} parentId
- * @param {string} contentJson
- * @returns {string}
- */
+/** nodeIdentityKey() reduced to a fixed-width digest, for the identity_hash column/index. */
 export function identityHashOf(parentId, contentJson) {
     return crypto.createHash('sha1').update(nodeIdentityKey(parentId, contentJson)).digest('base64');
 }
 
+// A node's identity among siblings is (parent, speaker, text); a token count or send_date difference
+// doesn't make two otherwise-identical alternatives different messages.
 export function nodeIdentityKey(parentId, contentJson) {
     let speaker = '';
     let mes = '';
     try {
         const o = JSON.parse(contentJson);
-        // A user message's speaker is the PERSONA it was said as. Two identical texts under one
-        // parent, said as different personas, are two different messages and must not merge.
-        //
-        // A persona is a whole visible identity - its own avatar id, name, image and description. It
-        // is who the reader sees as having said something, so two of them are different even when
-        // every part that reaches the model happens to match. "Does it change the prompt" is the
-        // wrong test here; that question belongs to chat metadata, not to who is speaking.
-        //
-        // The avatar id is the key. Names are distinct in practice but they are a display field, and
-        // nothing stops two personas sharing one.
-        //
-        // Character messages keep the name - persona is a user-side concept and they have none.
+        // A user message's speaker is the persona (avatar id) it was said as, not its name — two personas can share a name.
         speaker = o?.is_user
             ? 'u\u0001' + (o?.persona ?? o?.name ?? '')
             : 'c\u0001' + (o?.name ?? '');
@@ -405,11 +279,6 @@ export function nodeIdentityKey(parentId, contentJson) {
     return parentId + '\u0000' + speaker + '\u0000' + crypto.createHash('sha1').update(String(mes)).digest('base64');
 }
 
-/**
- * Extracts the preview text from a message content string.
- * @param {string} contentJson
- * @returns {string | null}
- */
 function extractLastMes(contentJson) {
     try {
         return JSON.parse(contentJson)?.mes || null;
@@ -422,10 +291,6 @@ function extractLastMes(contentJson) {
 //  Core row operations (synchronous)
 // ---------------------------------------------------------------------------
 
-/**
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- * @param {{ id: string, parentId: string | null, ownerId: string, content: string, label?: string | null, createdAt: number, defaultChildId?: string | null, metadata?: string | null }} params
- */
 function insertMessageSync(db, { id, parentId, ownerId, content, label, createdAt, defaultChildId, metadata }) {
     db.run(
         `INSERT INTO messages (id, parent_id, owner_id, content, label, created_at, default_child_id, metadata, identity_hash)
@@ -433,8 +298,6 @@ function insertMessageSync(db, { id, parentId, ownerId, content, label, createdA
         {
             id,
             parentId: parentId ?? null,
-            // Written here, at the one place rows are created, so no caller can leave it out and no
-            // caller has to remember to put it in.
             identityHash: parentId ? identityHashOf(parentId, content) : null,
             ownerId,
             content,
@@ -446,17 +309,7 @@ function insertMessageSync(db, { id, parentId, ownerId, content, label, createdA
     );
 }
 
-/**
- * True when writing `incoming` over `stored` would replace real message text with nothing.
- *
- * Editing a message to be empty is not something the UI does, and a save carrying an empty
- * alternative where the database holds text means the client echoed back a slot it never actually
- * received. Refusing costs nothing in the legitimate case, and is the difference between a display
- * bug and permanent data loss in the other.
- *
- * @param {string} stored sanitized content JSON already in the row
- * @param {string} incoming sanitized content JSON from the client
- */
+/** True when writing `incoming` over `stored` would replace real message text with nothing — a sign the client echoed an unloaded slot rather than a genuine edit. */
 function wouldBlankStoredText(stored, incoming) {
     const mesOf = (json) => {
         try { return JSON.parse(json)?.mes ?? ''; } catch { return ''; }
@@ -465,7 +318,6 @@ function wouldBlankStoredText(stored, incoming) {
 }
 
 function updateMessageContentSync(db, id, content) {
-    // Changing the text changes what the row is, so its identity moves with it.
     const row = db.get('SELECT parent_id FROM messages WHERE id = @id', { id });
     const identityHash = row?.parent_id ? identityHashOf(row.parent_id, content) : null;
     db.run('UPDATE messages SET content = @content, identity_hash = @identityHash WHERE id = @id',
@@ -480,15 +332,10 @@ function setMetadataSync(db, id, metadata) {
     db.run('UPDATE messages SET metadata = @metadata WHERE id = @id', { id, metadata });
 }
 
-/**
- * Points a parent at one of its children as the shown continuation. Touches exactly this one row.
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- */
+/** Points a parent at one of its children as the shown continuation. Touches exactly this one row. */
 function setDefaultChildSync(db, parentId, childId) {
     if (!parentId || !childId) return false;
-    // Only ever point at a genuine child. Switching an earlier message to a different alternative
-    // makes everything after it belong to the OLD alternative's subtree, so a save that walked on
-    // regardless would leave a parent pointing at a node that isn't below it.
+    // Must be a genuine child — refuse rather than leave a parent pointing outside its own subtree.
     const child = db.get('SELECT parent_id FROM messages WHERE id = @childId', { childId });
     if (!child || child.parent_id !== parentId) return false;
     db.run('UPDATE messages SET default_child_id = @childId WHERE id = @parentId', { parentId, childId });
@@ -513,11 +360,7 @@ function getChildrenSync(db, messageId) {
 //  Anchor + default-child navigation
 // ---------------------------------------------------------------------------
 
-/**
- * The owner's single synthetic anchor row, or undefined.
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- * @param {string} ownerId
- */
+/** The owner's single synthetic anchor row, or undefined. */
 function getAnchorSync(db, ownerId) {
     return db.get(
         'SELECT * FROM messages WHERE owner_id = @ownerId AND parent_id IS NULL ORDER BY created_at ASC, id ASC LIMIT 1',
@@ -525,11 +368,7 @@ function getAnchorSync(db, ownerId) {
     );
 }
 
-/**
- * Returns the owner's anchor, creating it if this owner has none yet. Applied uniformly to every
- * owner — a brand new owner gets an anchor with zero children, exactly the same shape as an owner
- * with 1085 of them.
- */
+/** Returns the owner's anchor, creating it if this owner has none yet. */
 function ensureAnchorSync(db, ownerId, now) {
     const existing = getAnchorSync(db, ownerId);
     if (existing) return existing;
@@ -540,11 +379,7 @@ function ensureAnchorSync(db, ownerId, now) {
     return getAnchorSync(db, ownerId);
 }
 
-/**
- * Follows `default_child_id` down from `nodeId` until a row has none set (or points nowhere).
- * Guarded against cycles so a corrupt pointer can't hang a request.
- * @returns {string} the deepest reachable node id
- */
+/** Follows `default_child_id` down until a row has none set (or points nowhere); guarded against cycles. */
 function descendDefaultSync(db, nodeId) {
     let current = nodeId;
     const seen = new Set([current]);
@@ -559,13 +394,7 @@ function descendDefaultSync(db, nodeId) {
     }
 }
 
-/**
- * The first node from `nodeId` downwards (following default_child_id, so: this chat's own path) that
- * carries no label, or null if every one of them is already some chat's entry point.
- *
- * Used when naming a newly saved chat. See saveChatToTree()'s labeling block for why a name cannot
- * simply go on the path's first node.
- */
+/** First node from `nodeId` downwards with no label, or null if every one is already some chat's entry point. */
 function firstUnlabeledOnPathSync(db, nodeId) {
     let current = nodeId;
     const seen = new Set();
@@ -582,7 +411,6 @@ function firstUnlabeledOnPathSync(db, nodeId) {
 /** Ordered siblings of a node (rows sharing its parent), including the node itself. */
 function getSiblingsSync(db, parentId, nodeId) {
     if (!parentId) {
-        // A row with no parent is an anchor; anchors have no siblings within an owner.
         return db.all('SELECT id, content FROM messages WHERE id = @nodeId', { nodeId });
     }
     return db.all(
@@ -595,12 +423,7 @@ function getSiblingsSync(db, parentId, nodeId) {
 //  Labeled nodes ("branches") — adapter layer
 // ---------------------------------------------------------------------------
 
-/**
- * Synthesizes the branch-shaped object src/endpoints/*.js still expects out of a labeled node.
- * `leaf_id`, `message_count` and `last_mes` are computed here, never stored.
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- * @param {object} node a labeled `messages` row
- */
+/** Synthesizes the branch-shaped object src/endpoints/*.js expects out of a labeled node; computed, never stored. */
 function branchViewSync(db, node) {
     const leafId = descendDefaultSync(db, node.id);
     const leaf = leafId === node.id ? node : db.get('SELECT id, content, created_at FROM messages WHERE id = @id', { id: leafId });
@@ -630,16 +453,12 @@ function branchViewSync(db, node) {
         message_count: countRow?.c ?? 0,
         last_mes: leaf ? extractLastMes(leaf.content) : null,
         created_at: node.created_at,
-        // When the branch was last spoken in. `created_at` is when its label was made, which never
-        // moves again - ordering anything "recent" by that freezes the moment a bookmark is created.
+        // Last activity, not label creation time — created_at never moves, so sorting "recent" by it would freeze at bookmark time.
         last_activity: leaf?.created_at ?? node.created_at,
     };
 }
 
-/**
- * Finds the labeled node carrying this chat name. Ties broken by (created_at, id) so repeated calls
- * agree with each other and with the migration's own canonical-pick.
- */
+/** Finds the labeled node carrying this chat name; ties broken by (created_at, id) for deterministic repeated calls. */
 function getLabeledNodeSync(db, ownerId, name) {
     return db.get(
         'SELECT * FROM messages WHERE owner_id = @ownerId AND label = @name ORDER BY created_at ASC, id ASC LIMIT 1',
@@ -665,12 +484,7 @@ function hasBranchesSync(db, ownerId) {
     return !!db.get('SELECT 1 AS ok FROM messages WHERE owner_id = @ownerId AND label IS NOT NULL LIMIT 1', { ownerId });
 }
 
-/**
- * Back-compat name kept for the migration module. There is no branch record to create anymore —
- * this labels the node and parks the chat metadata on it.
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- * @param {{ leafId: string, name: string, isGroup?: boolean, metadata?: string | null }} params
- */
+/** Back-compat name: labels the node and parks chat metadata on it — there's no separate branch record anymore. */
 function createBranchSync(db, { leafId, name, isGroup, metadata }) {
     let metaJson = metadata ?? null;
     if (isGroup) {
@@ -686,14 +500,9 @@ function createBranchSync(db, { leafId, name, isGroup, metadata }) {
 //  Fork-point / sibling detection
 // ---------------------------------------------------------------------------
 
-/**
- * For each immediate child of `messageId`, the labeled nodes reachable in that child's subtree.
- * Same output shape the old branches-table version returned, so callers are unchanged.
- */
+/** For each immediate child of `messageId`, the labeled nodes reachable in that child's subtree. */
 function getForkSiblingsSync(db, messageId) {
-    // One walk of the subtree, carrying which immediate child each row descends through, instead of
-    // one subtree walk per child. On the worst node in a real install (1,508 children, ~76k rows
-    // below it) that is the difference between ~242ms and ~98ms.
+    // One walk of the whole subtree carrying which immediate child each row descends through, rather than one walk per child.
     const rows = db.all(`
         WITH RECURSIVE sub(id, root_child, label) AS (
             SELECT id, id, label FROM messages WHERE parent_id = @messageId
@@ -760,17 +569,8 @@ export async function isAvailable(directories) {
 }
 
 /**
- * Has this owner got any saved chats - anything labelled, and so anything listable?
- *
- * Was called isMigrated(), which is not what it answers and cost a long night's debugging. A label
- * goes on a node when a chat is saved or a point is named, so this says "this character has chat
- * history", nothing more. It is emphatically NOT "this character's data has moved into the tree":
- * a character nobody has chatted with returns false here forever, while its very first chat still
- * goes into the tree like everyone else's. Reading it as a question about STORAGE is what had the
- * client open such a chat as a file.
- *
- * Whether the tree is where a chat lives is not a per-character question at all. isAvailable() is
- * the only thing that can answer it.
+ * Has this owner got any saved chats — anything labelled? Says "this character has chat history",
+ * not "this character's data lives in the tree" (that question is answered by isAvailable() alone).
  */
 export async function hasSavedChats(directories, ownerId) {
     const entry = await getEntry(directories);
@@ -780,14 +580,8 @@ export async function hasSavedChats(directories, ownerId) {
 
 /**
  * Turns a contiguous run of path rows into client-shaped messages: sibling windows, node ids, and
- * extra.branches on the fork points that actually diverge.
- *
- * Shared by a full chat load and by fetching the continuation below a node, so the two can never
- * disagree about what a message looks like.
- *
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- * @param {object[]} rows root-to-leaf order, anchor already removed
- * @param {string|null} branchName current chat name, excluded from its own extra.branches list
+ * extra.branches on fork points that actually diverge. Shared by a full chat load and a continuation
+ * fetch so the two never disagree about message shape.
  */
 function buildPathMessages(db, rows, branchName = null) {
     const siblingsByParent = getSiblingsBatchSync(db, rows.map(r => r.parent_id));
@@ -816,24 +610,13 @@ function buildPathMessages(db, rows, branchName = null) {
     return messages;
 }
 
-/**
- * Resolves a target that may be a node id or a legacy chat name.
- *
- * A node id is exact. A name resolves by label lookup, which is not unique per owner - this install
- * has 12 duplicate (owner, label) pairs - so it picks whichever row sorts first. Node first, name as
- * the fallback, so an old caller keeps working while the wrong-row hazard goes away for new ones.
- */
+/** Resolves a target that may be a node id (exact) or a legacy chat name (label lookup, not unique per owner — first sort wins). */
 function resolveNodeOrName(db, ownerId, target) {
     return db.get('SELECT * FROM messages WHERE id = @id AND owner_id = @ownerId', { id: target, ownerId })
         ?? getLabeledNodeSync(db, ownerId, target);
 }
 
-/**
- * Loads a chat as the flat message array the client expects. Resolution is: labeled node → descend
- * `default_child_id` to the deepest row → walk parents back to the anchor → drop the anchor.
- *
- * @returns {Promise<{ messages: object[], metadata: object, branch: object } | null>}
- */
+/** Loads a chat as the flat message array the client expects: labeled node → descend default_child_id to the leaf → walk back to the anchor → drop the anchor. */
 export async function loadBranch(directories, ownerId, branchName) {
     const entry = await getEntry(directories);
     if (!entry) return null;
@@ -856,23 +639,13 @@ export async function loadBranch(directories, ownerId, branchName) {
 }
 
 /**
- * Saves a whole chat array into the tree.
+ * Saves a whole chat array into the tree. Kept for /api/chats/save parity with upstream and extensions;
+ * our own frontend writes via the named operations instead (editMessage/appendMessages/etc), each of
+ * which states the row it acts on.
  *
- * Kept for parity with upstream SillyTavern: /api/chats/save is what extensions and anything written
- * against the stock API call, so this shape has to keep working.
- *
- * Our own frontend does NOT use it, and shouldn't be routed back through it. It writes via the named
- * operations (editMessage / appendMessages / addAlternatives / selectDefaultChild / setChatMetadata),
- * each of which states the row it acts on. An array handed over wholesale is authority over rows the
- * caller may never have received, which is how a windowed load's unfilled slots came to overwrite
- * stored greetings with empty strings.
- *
- * Existing rows are matched by `node_id` (which survives the client round-trip). Anything without a
- * known node_id becomes new rows chained off the last resolved node. Every message's alternatives are
- * written as sibling rows and the chosen one is pointed at via the parent's `default_child_id`; no
- * other `default_child_id` in the tree is touched, so unrelated explored continuations keep theirs.
- *
- * @returns {Promise<{ integrity?: string, assignedNodeIds?: { index: number, node_id: string }[] } | null>}
+ * Existing rows are matched by `node_id`; anything without one becomes new rows chained off the last
+ * resolved node. Alternatives are written as sibling rows, and the chosen one is pointed at via the
+ * parent's `default_child_id` — no other `default_child_id` in the tree is touched.
  */
 export async function saveChatToTree(directories, ownerId, chatName, chatData, isGroup = false) {
     const entry = await getEntry(directories);
@@ -911,24 +684,9 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
                 if (known) {
                     if (!msg._unchanged && known.parent_id === parentId) {
                         const { contents, selected, nodeIds } = alternativesFromMessage(msg);
-                        // Re-materialize the alternative set around this node, matching each incoming
-                        // alternative to an existing sibling by POSITION (its original slot in the
-                        // swipe array) rather than by text identity. An edit to an alternative's text
-                        // keeps its place in the swipe order - text identity reads that as "this
-                        // alternative vanished, a different one appeared", which for a non-selected
-                        // alternative used to fall straight to the newId() branch below and mint a
-                        // fresh row every time the text changed (autosave-while-typing would then leave
-                        // one permanent orphaned row per debounce tick, for any alternative that wasn't
-                        // the selected one - only the selected slot ever got the in-place update).
-                        // Position is what "the same alternative, edited" means to the caller, so a
-                        // slot that already has a row gets that row's content updated in place, whether
-                        // or not it is the selected one; only a slot with no existing row is new.
-                        // Nothing is ever deleted - a slot the incoming array doesn't cover (a hole, or
-                        // the array simply being shorter) just leaves whatever row already sits there
-                        // untouched, orphaned children and all, same as before.
-                        // Behaviour change worth flagging: two alternatives that happen to share exact
-                        // text used to collapse onto the same row (text identity); by position they now
-                        // stay two distinct rows, one per slot.
+                        // Match incoming alternatives to existing siblings by POSITION (original swipe-array
+                        // slot), not text identity, so an edit to a non-selected alternative updates its row
+                        // in place instead of minting a new orphan each time. A slot with no existing row is new.
                         const sibs = getSiblingsSync(entry.db, known.parent_id, known.id);
                         const sibById = new Map(sibs.map(x => [x.id, x]));
                         let chosenId = known.id;
@@ -940,21 +698,10 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
 
                             let sid;
                             if (existing) {
-                                // The client received this exact row, so it is entitled to edit it.
                                 sid = existing.id;
                                 if (existing.content !== c && !wouldBlankStoredText(existing.content, c)) {
-                                    // Being entitled to edit a row is not the same as the edit being
-                                    // possible. Rewriting it into the text a SIBLING already carries
-                                    // would make the two the same message, and the store holds one row
-                                    // per message - the unique index refuses, and since the whole save
-                                    // runs in one transaction that exception took the entire save down
-                                    // with a 500 rather than resolving one alternative.
-                                    //
-                                    // The answer is the same one the no-claim branch below already
-                                    // reaches for: identity is parent + speaker + text, so the message
-                                    // this slot now holds IS that sibling, and the slot moves onto it.
-                                    // Nothing is lost - the row the slot used to name keeps its own
-                                    // text and its own children, and swiping back reaches it.
+                                    // If the edit's text now matches a sibling exactly, the unique identity
+                                    // index would refuse the update — move the slot onto that sibling instead.
                                     const twin = entry.db.get(
                                         'SELECT id FROM messages WHERE parent_id = @parentId AND identity_hash = @identity AND id != @id',
                                         { parentId, identity: identityHashOf(parentId, c), id: sid });
@@ -965,15 +712,8 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
                                     }
                                 }
                             } else {
-                                // No id, or an id that isn't a sibling of this node: the client cannot
-                                // show it received this row, so it does not get to speak for one and
-                                // must not overwrite something it never held.
-                                //
-                                // It can still land on one, though. A sibling already carrying this
-                                // exact content under this exact parent IS this message - identity is
-                                // parent + speaker + text, and the database enforces that now. Reusing
-                                // it clobbers nothing, because nothing about it would change. Only when
-                                // no such row exists is this genuinely new.
+                                // No claimed id: this slot can't overwrite an existing row, but if a sibling
+                                // already has this exact content it IS this message — reuse it rather than duplicate.
                                 const twin = entry.db.get(
                                     'SELECT id FROM messages WHERE parent_id = @parentId AND identity_hash = @identity',
                                     { parentId, identity: identityHashOf(parentId, c) });
@@ -996,10 +736,8 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
                         parentId = chosenId;
                         continue;
                     }
-                    // Still on the same path? Then reuse the row. If the chain diverged upstream
-                    // (an earlier message was switched to a different alternative), this row belongs
-                    // to the old branch and must not be dragged across - fall through and write a
-                    // fresh row under the new parent instead. Nothing is reparented, nothing is lost.
+                    // Same path: reuse the row. If the chain diverged upstream, this row belongs to the
+                    // old branch — fall through and write a fresh row under the new parent instead.
                     if (known.parent_id === parentId) {
                         setDefaultChildSync(entry.db, parentId, known.id);
                         if (!firstId) firstId = known.id;
@@ -1030,10 +768,6 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
                         // +k keeps sibling order == swipe order under the (created_at, id) sort.
                         createdAt: now + k,
                     });
-                    // Keyed by the identity key, the same thing this map is read with. Filing it
-                    // under the raw content meant a row inserted during this call was recorded
-                    // where nothing would ever look for it, so a second occurrence of the same
-                    // content in the same call missed and inserted again.
                     byContent.set(ck, sid);
                 }
                 if (k === selected) chosenId = sid;
@@ -1044,29 +778,13 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
             parentId = chosenId;
         }
 
-        // Park the chat name + metadata. An existing chat keeps its label where the user put it;
-        // a brand new one gets labeled at its first message so the whole chain hangs below the label.
         if (existingNode) {
-            // The label stays exactly where the user put it; it is only an entry point, and the chain
-            // it resolves through has just been extended below it.
             setMetadataSync(entry.db, existingNode.id, metadataJson);
         } else if (firstId) {
-            // Brand new chat: label its first message so the whole chain hangs below the label.
-            //
-            // Except when that message is already somebody else's entry point. Identity here is
-            // (parent, speaker, text), so a new chat that opens the way an existing one opens does not
-            // get a new row for it - it lands on the existing one. Writing the label straight onto that
-            // row silently renamed the older chat out of existence: its history stayed in the tree with
-            // nothing left pointing at it, no error anywhere. Reachable in ordinary use, not a corner
-            // case - two chats in the same group both seeded from the members' greetings open with
-            // byte-identical messages, and so does any imported chat that shares a prefix with one
-            // already stored.
-            //
-            // A label is only an entry point, and this chat's own path is what default_child_id now
-            // points at, so any unlabeled node along it resolves to exactly the same conversation. Take
-            // the first one. If the entire path is already claimed the chat genuinely has nowhere of its
-            // own to be named, and that is reported rather than resolved by taking someone else's name
-            // away - the same rule the JSONL migration already follows when two files land on one leaf.
+            // Label the first message of the new chain. If that node is already another chat's entry
+            // point (two chats can open on byte-identical messages, e.g. shared group greetings), labeling
+            // it would silently rename the older chat away — instead take the first unlabeled node on this
+            // chat's own path, or report failure if the whole path is already claimed.
             const target = firstUnlabeledOnPathSync(entry.db, firstId);
             if (target) {
                 db_label(entry.db, target, chatName, metadataJson);
@@ -1083,11 +801,7 @@ function db_label(db, id, name, metadataJson) {
     db.run('UPDATE messages SET label = @name, metadata = @metadataJson WHERE id = @id', { id, name, metadataJson });
 }
 
-/**
- * Creates a fork. In this model that is purely a label: the fork point node gets a name, and the
- * chain already hanging below it (via default_child_id) is what that name resolves to. No rows are
- * copied, nothing is reparented.
- */
+/** Creates a fork: purely a label on the fork-point node, resolving to the chain already below it. No rows copied or reparented. */
 export async function forkBranch(directories, ownerId, forkAtNodeId, newBranchName, isGroup = false, metadata = {}) {
     const entry = await getEntry(directories);
     if (!entry) return null;
@@ -1116,23 +830,15 @@ export async function listBranches(directories, ownerId) {
 }
 
 /**
- * The branches spoken in most recently, across every owner.
- *
- * Ordered by each branch's leaf, so a branch you keep talking in rises. Owners are shortlisted by
- * their newest message first, which is one grouped scan, and only that shortlist pays for the
- * per-branch leaf walk - walking every labelled node in the database would not be worth it for a
- * list nobody scrolls.
- *
- * @param {object} directories
- * @param {number} max How many branches to return
+ * The branches spoken in most recently, across every owner. Owners are shortlisted by newest message
+ * first (one grouped scan), and only that shortlist pays for the per-branch leaf walk.
  */
 export async function listRecentBranches(directories, max) {
     const entry = await getEntry(directories);
     if (!entry) return [];
 
     const limit = Math.max(1, Number(max) || 1);
-    // Bounded independently of `limit`: callers may pass MAX_SAFE_INTEGER, and the shortlist is what
-    // decides how many leaf walks happen.
+    // Bounded independently of `limit` since callers may pass MAX_SAFE_INTEGER.
     const shortlist = Math.min(limit, 500);
 
     const owners = entry.db.all(
@@ -1185,16 +891,12 @@ export async function searchBranchesByContent(directories, ownerId, fragments) {
     return matched;
 }
 
-/**
- * "Deletes" a chat. Nothing is ever removed from the tree — the label is cleared, so the chat stops
- * being listable while every message it referenced stays reachable from any other label.
- */
+/** "Deletes" a chat by clearing its label; nothing is removed, so its messages stay reachable from any other label. */
 export async function deleteBranch(directories, ownerId, branchName) {
     const entry = await getEntry(directories);
     if (!entry) return false;
     const node = resolveNodeOrName(entry.db, ownerId, branchName);
     if (!node) return false;
-    // Removing a bookmark. The node and everything below it stays exactly where it is.
     labelMessageSync(entry.db, node.id, null);
     return true;
 }
@@ -1204,7 +906,6 @@ export async function renameBranch(directories, ownerId, oldName, newName) {
     if (!entry) return false;
     const node = resolveNodeOrName(entry.db, ownerId, oldName);
     if (!node) return false;
-    // Editing a bookmark's text. It does not move, and nothing pointing at the node cares.
     labelMessageSync(entry.db, node.id, newName);
     return true;
 }
@@ -1220,22 +921,8 @@ export async function labelNode(directories, nodeId, label) {
 }
 
 /**
- * Sets which child of `parentId` is the shown continuation. This is the whole of "swiping" now.
- * Touches exactly one row.
- */
-/**
- * The conversation ends here: this node stops showing a continuation.
- *
- * Nothing is removed. The children stay exactly where they are, keeping their own text and their own
- * subtrees, and pointing at one again brings the whole thing back - this only says which of them is
- * currently shown, and the answer becomes "none".
- *
- * It has to be said on the NODE rather than by moving the chat's position, because a load descends
- * default_child_id from wherever it points down to a leaf and then reads the path off that leaf's
- * parents. A position part-way up a chain is walked straight past. What ends a conversation is the
- * last message having nothing selected after it.
- *
- * @returns {Promise<boolean>} true when the node exists and now shows nothing after it
+ * Ends the conversation at this node: clears its default_child_id so nothing shows after it. Children
+ * and their subtrees are untouched — pointing default_child_id at one again brings it right back.
  */
 export async function endPathAt(directories, ownerId, nodeId) {
     const entry = await getEntry(directories);
@@ -1253,8 +940,6 @@ export async function selectDefaultChild(directories, childId) {
     const entry = await getEntry(directories);
     if (!entry) return false;
 
-    // A node has exactly one parent, so the caller never names it - which means it can never name the
-    // wrong one. Selecting is "show this alternative", and the fork it belongs to follows from it.
     const child = entry.db.get('SELECT id, parent_id FROM messages WHERE id = @id', { id: childId });
     if (!child || !child.parent_id) return false;
 
@@ -1268,16 +953,7 @@ export async function getForkRing(directories, nodeId) {
     return getForkSiblingsSync(entry.db, nodeId);
 }
 
-/**
- * The alternatives at a node: every row sharing its parent, in sibling order, with the index of the
- * one asked about. This is what a slim load defers - `loadBranch(..., { includeAlternatives: false })`
- * sends only a count and a position, and this fills in the text when someone actually cycles.
- *
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} nodeId
- * @param {{ offset?: number, limit?: number }} [range] optional window for very wide sets
- * @returns {Promise<{ selected: number, total: number, alternatives: { node_id: string, mes: string, send_date: any, extra: object, name: string, is_user: boolean }[] } | null>}
- */
+/** The alternatives at a node: every row sharing its parent, in sibling order, with the index asked about. */
 export async function getAlternatives(directories, nodeId, range = {}) {
     const entry = await getEntry(directories);
     if (!entry) return null;
@@ -1311,17 +987,7 @@ export async function getAlternatives(directories, nodeId, range = {}) {
     return { selected: selected < 0 ? 0 : selected, total: siblings.length, alternatives };
 }
 
-/**
- * The path from the owner's anchor down to `nodeId`, inclusive - by actual parentage, not by
- * whichever child each fork currently has marked default. A bookmark can sit off the default path
- * entirely, so this is how a client that already has part of a conversation loaded finds out what
- * sits between its own position and the bookmark, without paying to re-fetch the shared prefix or the
- * branch's whole leaf-ward continuation past the bookmark.
- *
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} nodeId
- * @returns {Promise<object[] | null>} messages root-to-node, oldest first; null if the node is unknown
- */
+/** Path from the owner's anchor down to `nodeId` by actual parentage (not default_child_id — a bookmark can sit off the default path). Returns messages root-to-node, oldest first; null if unknown. */
 export async function getAncestorPath(directories, nodeId) {
     const entry = await getEntry(directories);
     if (!entry) return null;
@@ -1333,19 +999,7 @@ export async function getAncestorPath(directories, nodeId) {
     return buildPathMessages(entry.db, rows, null);
 }
 
-/**
- * The conversation below a node: follow its default_child_id chain to the deepest leaf and return
- * everything under it, in the same shape a chat load produces.
- *
- * Switching an earlier message to a different alternative moves the client onto that alternative's
- * path, and this is what it is now on. The rows below the OLD alternative are untouched and stay
- * exactly where they are - swiping back reaches them again.
- *
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} nodeId
- * @param {string|null} [branchName] current chat name, excluded from its own extra.branches list
- * @returns {Promise<{ messages: object[] } | null>} null when the node does not exist
- */
+/** The conversation below a node: follows default_child_id to the deepest leaf, in chat-load shape. Returns null when the node doesn't exist. */
 export async function getContinuation(directories, nodeId, branchName = null) {
     const entry = await getEntry(directories);
     if (!entry) return null;
@@ -1363,18 +1017,9 @@ export async function getContinuation(directories, nodeId, branchName = null) {
     return { messages: buildPathMessages(entry.db, rows, branchName) };
 }
 
-/**
- * The operations a save is actually made of.
- *
- * The tree already holds the path, so there is nothing for the client to restate. Each of these names
- * the row it acts on, which is what stops a client speaking for rows it never received - the shape
- * that let a windowed load's unfilled slots overwrite stored greetings with empty strings.
- */
+// Each of the operations below names the row it acts on, rather than the client restating the whole path.
 
-/**
- * Edits one message's content in place.
- * @returns {Promise<{ ok: boolean, reason?: string }>}
- */
+/** Edits one message's content in place. */
 export async function editMessage(directories, ownerId, nodeId, content) {
     const entry = await getEntry(directories);
     if (!entry) return { ok: false, reason: 'unavailable' };
@@ -1382,17 +1027,9 @@ export async function editMessage(directories, ownerId, nodeId, content) {
 }
 
 /**
- * One logical change that happens to span many messages, applied as one thing.
- *
- * Attributing a run of messages to a persona, or hiding a range, is a single act the reader took. It
- * was being sent as one request per message, which is both N round trips for one decision and N
- * chances to end up half-applied. Here they land or they don't, in one transaction.
- *
- * A message the store declines - it would blank stored text, or it would become the twin of a sibling
- * - is reported rather than silently skipped, and does not stop the others.
- *
- * @param {{ node_id: string, content: object }[]} edits
- * @returns {Promise<{ ok: boolean, applied: number, refused: { node_id: string, reason: string }[] }>}
+ * Applies many edits in one transaction rather than one request per message. A message the store
+ * declines (would blank stored text, or collide with a sibling) is reported, not silently skipped,
+ * and doesn't stop the others.
  */
 export async function editMessages(directories, ownerId, edits) {
     const entry = await getEntry(directories);
@@ -1425,13 +1062,9 @@ function editMessageSync(db, ownerId, nodeId, content) {
 
     const next = sanitizeForStorage(content);
     if (row.content === next) return { ok: true };
-    // No legitimate edit empties a message that has text; an incoming blank means the client is
-    // echoing a slot it never loaded.
     if (wouldBlankStoredText(row.content, next)) return { ok: false, reason: 'refused to blank stored text' };
 
-    // Editing a message into one of its own siblings would make them the same message, and the store
-    // holds one row per message - the unique index would throw, which the route turns into a 500
-    // rather than an answer. Say so instead, and name the row that already carries this text.
+    // Would collide with a sibling's identity hash — report it instead of letting the unique index throw.
     const parent = entry.db.get('SELECT parent_id FROM messages WHERE id = @id', { id: nodeId })?.parent_id;
     if (parent) {
         const twin = entry.db.get(
@@ -1444,11 +1077,7 @@ function editMessageSync(db, ownerId, nodeId, content) {
     return { ok: true };
 }
 
-/**
- * Appends messages after a node, chaining each onto the last and pointing the fork at them.
- * @param {object[]} contents ordered
- * @returns {Promise<{ ok: boolean, reason?: string, node_ids?: string[] }>}
- */
+/** Appends messages after a node, chaining each onto the last and pointing the fork at them. */
 export async function appendMessages(directories, ownerId, afterNodeId, contents) {
     const entry = await getEntry(directories);
     if (!entry) return { ok: false, reason: 'unavailable' };
@@ -1464,9 +1093,7 @@ export async function appendMessages(directories, ownerId, afterNodeId, contents
         let cursor = afterNodeId;
         for (const c of contents) {
             const body = sanitizeForStorage(c);
-            // Appending a message the parent already has is that same message, not a second copy of
-            // it - the database will not hold two, and a retry or a double-send should land on the row
-            // that is already there rather than fail.
+            // A retry/double-send that matches an existing sibling lands on that row instead of duplicating.
             const twin = entry.db.get(
                 'SELECT id FROM messages WHERE parent_id = @parentId AND identity_hash = @identity',
                 { parentId: cursor, identity: identityHashOf(cursor, body) });
@@ -1485,19 +1112,9 @@ export async function appendMessages(directories, ownerId, afterNodeId, contents
 }
 
 /**
- * Adds an alternative alongside an existing node - another option at the same fork.
- *
- * Named by SIBLING rather than by parent: every node knows its own parent, so the caller never has
- * to, which also means it can't name the wrong one or need to know about the synthetic anchor to add
- * an alternative to the opening message.
- *
- * Idempotent: one that is already there resolves to the existing row instead of duplicating, so a
- * whole set can be asserted on every chat open without the fork growing each time. That is what lets
- * a character's current greetings always be present in every chat, including ones created before the
- * greeting existed, while greetings a chat has diverged into stay put alongside them.
- *
- * @param {object[]|object} contents one alternative, or many
- * @returns {Promise<{ ok: boolean, reason?: string, node_ids?: string[], added?: number }>}
+ * Adds an alternative alongside an existing node. Named by SIBLING (not parent) so the caller never
+ * needs to know about the synthetic anchor. Idempotent: a matching alternative resolves to the
+ * existing row instead of duplicating, so a set can be asserted on every chat open safely.
  */
 export async function addAlternatives(directories, ownerId, siblingNodeId, contents) {
     const entry = await getEntry(directories);
@@ -1536,22 +1153,15 @@ export async function addAlternatives(directories, ownerId, siblingNodeId, conte
         }
     });
 
-    // The resulting fork width, so a caller that just widened it can keep its own view in step
-    // without pulling every alternative's text back.
     const total = getSiblingsSync(entry.db, parentId, '').length;
     return { ok: true, node_ids: nodeIds, added, total };
 }
 
-/**
- * Replaces a chat's metadata and rotates its integrity slug.
- * @returns {Promise<{ ok: boolean, reason?: string, integrity?: string }>}
- */
+/** Replaces a chat's metadata and rotates its integrity slug. */
 export async function setChatMetadata(directories, ownerId, chatName, metadata) {
     const entry = await getEntry(directories);
     if (!entry) return { ok: false, reason: 'unavailable' };
 
-    // The caller may name a node or a legacy chat name. A node id is exact; a name resolves by label
-    // lookup, which is not unique per owner. Node first, name as the fallback.
     const node = entry.db.get('SELECT id FROM messages WHERE id = @id AND owner_id = @ownerId',
         { id: chatName, ownerId })
         ?? getLabeledNodeSync(entry.db, ownerId, chatName);
@@ -1569,33 +1179,16 @@ export async function setChatMetadata(directories, ownerId, chatName, metadata) 
 }
 
 /**
- * The opening alternatives for a character: the anchor's children, which is every greeting any of its
- * chats has ever opened on.
- *
- * Addressed by OWNER rather than by a node, because starting a chat has no node to start from yet.
- * That is the whole point - a new chat picks one of these and holds its id, instead of copying a
- * greeting off the card into a fresh message the way the JSONL era had to.
- *
- * Windowed around the default, with `total` so the caller can size its arrays and fill the rest in
- * on demand.
- *
- * @returns {Promise<{ has_saved_chats: boolean, total: number, default_index: number, default_node_id: string|null, offset: number, alternatives: object[] } | null>}
+ * The opening alternatives for a character: the anchor's children — every greeting any of its chats
+ * has ever opened on. Addressed by OWNER since starting a chat has no node yet; a new chat picks one
+ * of these and holds its id. Windowed around the default, with `total` for sizing.
  */
 export async function getOpeningAlternatives(directories, ownerId, range = {}, cardGreetings = []) {
     const entry = await getEntry(directories);
     if (!entry) return null;
 
-    // Whether this character has any chat history. Reported because it is worth knowing, and named
-    // for what it is: it used to go out as `migrated`, which reads like a statement about where this
-    // character's data lives, and callers duly took it as one and opened tree chats as files.
-    //
-    // A null return above is the only thing here that says anything about storage, and it says the
-    // store could not be reached at all.
     const hasSavedChats = hasBranchesSync(entry.db, ownerId);
-    // No anchor is not a different kind of answer, it just means nothing is stored yet. The card's
-    // greetings are still this character's greetings, and saying "no openings at all" instead sent the
-    // caller down a path where the chat wasn't tree-backed - over an anchor row, which is a detail of
-    // how storage is laid out and not a fact about the character.
+    // No anchor just means nothing stored yet — the card's greetings are still valid openings.
     const anchor = getAnchorSync(entry.db, ownerId);
 
     const rows = anchor ? entry.db.all(
@@ -1603,16 +1196,8 @@ export async function getOpeningAlternatives(directories, ownerId, range = {}, c
         { p: anchor.id },
     ) : [];
 
-    // The card's current greetings, merged in at READ time rather than copied into the tree.
-    //
-    // Asserting them into the tree on load was a sync: two sources of truth kept in step by hand, so
-    // a greeting edited on the card stayed wrong until something re-ran the assertion. Merging here
-    // makes the staleness impossible instead of shorter-lived - and a greeting nobody has opened a
-    // conversation on does not need a row. It gets one when it is first used.
-    //
-    // A card greeting already present as a node is not repeated: same identity, same entry.
-    // Identity is keyed against the anchor when there is one. With no anchor there are no rows to
-    // collide with, so the card's own text is key enough to keep duplicates out of the list.
+    // The card's current greetings are merged in at read time rather than synced into the tree, so an
+    // edited greeting is never stale; a greeting not yet opened gets no row until first used.
     const identity = body => (anchor ? nodeIdentityKey(anchor.id, body) : body);
     const seen = new Set(rows.map(r => identity(r.content)));
     const virtual = [];
@@ -1627,11 +1212,7 @@ export async function getOpeningAlternatives(directories, ownerId, range = {}, c
     const defaultNodeId = anchor?.default_child_id ?? (rows[0]?.id ?? null);
     const defaultIndex = Math.max(0, rows.findIndex(r => r.id === defaultNodeId));
 
-    // Windowed like a chat load, and for the same reason: one character here has 1,508 openings, and
-    // shipping their text would be most of a megabyte nobody reads. The caller gets the total so it
-    // can size its arrays, and fills the rest in on demand.
-    // Stored openings first, in their own order, then card greetings that have no row yet. An entry
-    // with no node_id is a greeting that exists on the card and nowhere else.
+    // Windowed like a chat load; stored openings first, then card greetings with no row yet (node_id: null).
     const all = [
         ...rows.map(r => {
             let o = {};
@@ -1658,15 +1239,7 @@ export async function getOpeningAlternatives(directories, ownerId, range = {}, c
     };
 }
 
-/**
- * Makes sure these openings exist for a character, creating the anchor if this is its first.
- *
- * Same idempotence as addAlternatives, and addressed by owner for the same reason as above: a
- * character with nothing in the tree yet has no sibling to name, so the card's greetings would
- * otherwise have nowhere to attach.
- *
- * @returns {Promise<{ ok: boolean, node_ids: string[], added: number, total: number }>}
- */
+/** Makes sure these openings exist for a character, creating the anchor if this is its first. Idempotent, like addAlternatives. */
 export async function addOpeningAlternatives(directories, ownerId, contents) {
     const entry = await getEntry(directories);
     if (!entry) return { ok: false, node_ids: [], added: 0, total: 0 };
@@ -1686,11 +1259,8 @@ export async function addOpeningAlternatives(directories, ownerId, contents) {
         }
 
         for (const content of list) {
-            // An opening with no text is not a greeting. Overswiping opens an empty slot to type into,
-            // and giving that a row before anything has been written leaves a blank greeting behind
-            // for good, because nothing is ever deleted from this table. Guarded here rather than at
-            // the one caller that hit it, so no future one can do it either. A null keeps the caller's
-            // node_ids[i] lined up with the content it passed, and reads as "nothing was created".
+            // An empty-text opening (e.g. an overswiped-to blank slot) would leave a permanent blank
+            // greeting since rows are never deleted — skip it, keeping node_ids[i] aligned with contents.
             if (!String(content?.mes ?? '').trim()) { nodeIds.push(null); continue; }
 
             const body = sanitizeForStorage(content);
@@ -1713,18 +1283,7 @@ export async function addOpeningAlternatives(directories, ownerId, contents) {
     return { ok: true, node_ids: nodeIds, added, total };
 }
 
-/**
- * Reads the tree at a node: everything above it, and the continuation below it.
- *
- * Node-addressed, because a node is the only thing that actually identifies a position. A name does
- * not: `label` is not unique per owner (12 duplicate pairs in a real install), so name lookup does
- * `LIMIT 1` and silently picks one of them.
- *
- * There is no chat here. Walk up for what came before, follow default_child_id down for what comes
- * after, and that is the whole of it.
- *
- * @returns {Promise<{ messages: object[], metadata: object, node_id: string, label: string|null } | null>}
- */
+/** Reads the tree at a node: everything above it plus the continuation below it. Node-addressed since `label` isn't unique per owner. */
 export async function loadAtNode(directories, ownerId, nodeId) {
     const entry = await getEntry(directories);
     if (!entry) return null;
@@ -1750,14 +1309,7 @@ export async function loadAtNode(directories, ownerId, nodeId) {
     };
 }
 
-/**
- * The bookmarks an owner has: nodes someone labelled so they could get back to them.
- *
- * Describes the nodes, not a set of objects - node id, the label text, when it was made, and the text
- * of the message it sits on so it can be told apart from the others.
- *
- * @returns {Promise<{ node_id: string, label: string, created_at: number, mes: string }[]>}
- */
+/** The bookmarks an owner has: nodes someone labelled so they could get back to them. */
 export async function listLabels(directories, ownerId) {
     const entry = await getEntry(directories);
     if (!entry) return [];
@@ -1774,10 +1326,7 @@ export async function listLabels(directories, ownerId) {
     });
 }
 
-/**
- * Replaces the metadata stored on a node, node-addressed.
- * @returns {Promise<{ ok: boolean, reason?: string, integrity?: string }>}
- */
+/** Replaces the metadata stored on a node, node-addressed. */
 export async function setNodeMetadata(directories, ownerId, nodeId, metadata) {
     const entry = await getEntry(directories);
     if (!entry) return { ok: false, reason: 'unavailable' };
@@ -1803,11 +1352,7 @@ export async function getDbHandle(directories) {
     return entry ? entry.db : null;
 }
 
-/**
- * Renames the character inside all of an owner's character messages, in SQL rather than a
- * round-trip per chat. Anchors are skipped (they have no name field to begin with).
- * @returns {Promise<number>} rows updated
- */
+/** Renames the character inside all of an owner's character messages, in SQL rather than a round-trip per chat. */
 export async function renameCharacterInMessages(directories, ownerId, newName) {
     const entry = await getEntry(directories);
     if (!entry) return 0;
@@ -1831,14 +1376,8 @@ export async function renameCharacterInMessages(directories, ownerId, newName) {
                 const msg = JSON.parse(row.content);
                 msg.name = newName;
                 const next = JSON.stringify(msg);
-                // The speaker is part of what a message IS, so a rename moves every one of these rows
-                // to a new identity - and two alternatives that differed only by who said them arrive
-                // at the same one. The store holds a single row per message, so the second of those
-                // would throw the unique constraint and take the whole rename down partway through.
-                //
-                // The row that already carries this identity is left alone and this one keeps its old
-                // name, rather than the two being merged: they are distinct rows with distinct
-                // children, and nothing here is in a position to decide whose continuation survives.
+                // Speaker is part of identity, so renaming can collide two rows into the same identity hash.
+                // Leave the colliding row with its old name rather than merge distinct subtrees.
                 const twin = entry.db.get(
                     'SELECT id FROM messages WHERE parent_id = @parentId AND identity_hash = @identity AND id != @id',
                     { parentId: row.parent_id, identity: identityHashOf(row.parent_id, next), id: row.id });
@@ -1860,13 +1399,7 @@ export {
     ensureAnchorSync, descendDefaultSync, setDefaultChildSync, alternativesFromMessage, branchViewSync,
 };
 
-/**
- * Closes all open DB handles. Checkpoints each in TRUNCATE mode first: an ordinary close only folds WAL
- * frames back into the main file (or not even that, if the process is killed rather than exited cleanly),
- * it never shrinks the WAL file itself back down - only a TRUNCATE-mode checkpoint does. Without this,
- * message-tree.sqlite-wal's on-disk size only ever grows to its historical peak and never shrinks, for
- * the life of the data directory.
- */
+/** Closes all open DB handles. Checkpoints each in TRUNCATE mode first — an ordinary close never shrinks the WAL file back down. */
 export function disposeMessageTreeStores() {
     for (const entry of entries.values()) {
         try { entry.db.checkpoint(); } catch { /* best-effort */ }

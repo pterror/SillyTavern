@@ -1,22 +1,15 @@
 /**
- * Restores alternative rows whose text was blanked by the hole-to-empty-string bug.
+ * Restores alternative rows whose text was blanked by the hole-to-empty-string bug: a windowed chat
+ * load sends unloaded alternatives as `null`, `ensureSwipes` on the client "repaired" that to `''`,
+ * and the save wrote that emptiness over the stored text.
  *
- * A windowed chat load sends unloaded alternatives as `null` holes. `ensureSwipes` on the client
- * treated a non-string swipe as corruption and "repaired" it to `''`; the save then wrote that
- * emptiness over the stored text, slot by slot. This puts the text back.
+ * Source of truth is a reference database produced by the same migration from the same source data.
+ * Matching isn't by row id alone: the migration mints fresh uuids for non-selected alternatives, so
+ * parents are matched by id (or by owner for anchors), and children are then matched by ordinal under
+ * the (created_at, id) ordering this schema uses everywhere.
  *
- * Source of truth is a reference database produced by the same migration from the same source data,
- * so every row it holds is a row this database is supposed to have.
- *
- * Matching, and why it isn't just row id: the migration keeps a source row's id for its SELECTED
- * alternative but mints fresh uuids for the others, so two runs agree on ids for most rows but not
- * all, and anchors differ every time. So parents are matched by id where possible and by owner for
- * anchors, and their children are then matched by ORDINAL under the (created_at, id) ordering this
- * schema uses everywhere.
- *
- * Only ever writes text INTO an empty row. Never overwrites text, never inserts, never deletes. If a
- * parent's child count disagrees between the two databases the ordinals can't be trusted, so that
- * parent is skipped and reported rather than guessed at.
+ * Only ever writes text into an empty row; never overwrites, inserts, or deletes. If a parent's child
+ * count disagrees between the two databases the ordinals can't be trusted, so it's skipped.
  *
  * Usage:
  *   node scripts/repair-blanked-alternatives.mjs <target.sqlite> <reference.sqlite> [--apply]

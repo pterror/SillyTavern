@@ -189,10 +189,8 @@ router.post('/reset-settings', async (request, response) => {
             return response.status(403).json({ error: 'Incorrect password' });
         }
 
-        // Deletes both the sharded settings/ store and any not-yet-migrated legacy settings.json - deleting
-        // only the legacy file would leave the sharded directory in place, which ensureMigrated() (settings-
-        // store.js) would then treat as "already migrated" and never re-seed from the freshly reset default
-        // settings.json checkForNewContent() below writes, silently defeating the reset.
+        // Must delete the sharded settings/ store too, not just legacy settings.json, or ensureMigrated()
+        // treats it as already-migrated and the reset silently no-ops.
         deleteAllSettings(request.user.directories);
         await checkForNewContent([request.user.directories], [CONTENT_TYPES.SETTINGS]);
 
