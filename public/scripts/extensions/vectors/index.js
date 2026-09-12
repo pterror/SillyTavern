@@ -37,7 +37,7 @@ import { slashCommandReturnHelper } from '../../slash-commands/SlashCommandRetur
 import { generateWebLlmChatPrompt, isWebLlmSupported } from '../shared.js';
 import { WebLlmVectorProvider } from './webllm.js';
 import { removeReasoningFromString } from '../../reasoning.js';
-import { oai_settings } from '../../openai.js';
+import { oai_settings } from '../../chat-completion-settings.js';
 
 /**
  * @typedef {object} HashedMessage

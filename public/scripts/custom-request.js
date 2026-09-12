@@ -3,7 +3,7 @@ import { extractJsonFromData, extractMessageFromData, getGenerateUrl, getRequest
 import { getTextGenServer, createTextGenGenerationData, setting_names, textgenerationwebui_settings } from './textgen-settings.js';
 import { extractReasoningFromData } from './reasoning.js';
 import { formatInstructModeChat, formatInstructModePrompt, getInstructStoppingSequences } from './instruct-mode.js';
-import { getStreamingReply, tryParseStreamingError, createGenerationParameters, settingsToUpdate, oai_settings } from './openai.js';
+import { getStreamingReply, tryParseStreamingError, createGenerationParameters, settingsToUpdate, oai_settings } from './chat-completion-settings.js';
 import EventSourceStream from './sse-stream.js';
 
 // #region Type Definitions

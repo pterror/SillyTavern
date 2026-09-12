@@ -5,7 +5,7 @@ import { chat, chat_metadata, chatOpEdit, closeMessageEditor, event_types, event
 import { getRegexedString, regex_placement } from './extensions/regex/engine.js';
 import { getCurrentLocale, t, translate } from './i18n.js';
 import { macros, MacroCategory } from './macros/macro-system.js';
-import { chat_completion_sources, getChatCompletionModel, oai_settings } from './openai.js';
+import { chat_completion_sources, getChatCompletionModel, oai_settings } from './chat-completion-settings.js';
 import { Popup } from './popup.js';
 import { performFuzzySearch, power_user } from './power-user.js';
 import { getPresetManager } from './preset-manager.js';

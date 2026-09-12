@@ -4,7 +4,7 @@ import { DOMPurify } from '../lib.js';
 
 import { event_types, eventSource, is_send_press, main_api, substituteParams } from '../script.js';
 import { is_group_generating } from './group-chats.js';
-import { Message, MessageCollection, TokenHandler } from './openai.js';
+import { Message, MessageCollection, TokenHandler } from './chat-completion-settings.js';
 import { power_user } from './power-user.js';
 import { debounce, waitUntilCondition, escapeHtml, uuidv4 } from './utils.js';
 import { debounce_timeout } from './constants.js';
@@ -1592,7 +1592,7 @@ class PromptManager {
     /**
      * Setter for messages property
      *
-     * @param {import('./openai.js').MessageCollection} messages
+     * @param {import('./chat-completion-settings.js').MessageCollection} messages
      */
     setMessages(messages) {
         this.messages = messages;
@@ -1601,7 +1601,7 @@ class PromptManager {
     /**
      * Set and process a finished chat completion object
      *
-     * @param {import('./openai.js').ChatCompletion} chatCompletion
+     * @param {import('./chat-completion-settings.js').ChatCompletion} chatCompletion
      */
     setChatCompletion(chatCompletion) {
         const messages = chatCompletion.getMessages();
@@ -1614,7 +1614,7 @@ class PromptManager {
     /**
      * Populates the token handler
      *
-     * @param {import('./openai.js').MessageCollection} messages
+     * @param {import('./chat-completion-settings.js').MessageCollection} messages
      */
     populateTokenCounts(messages) {
         this.tokenHandler.resetCounts();

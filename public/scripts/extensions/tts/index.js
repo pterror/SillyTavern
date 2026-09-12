@@ -11,7 +11,7 @@ import { CoquiTtsProvider } from './coqui.js';
 import { SystemTtsProvider } from './system.js';
 import { NovelTtsProvider } from './novel.js';
 import { power_user } from '../../power-user.js';
-import { OpenAITtsProvider } from './openai.js';
+import { OpenAITtsProvider } from './openai-tts.js';
 import { OpenAICompatibleTtsProvider } from './openai-compatible.js';
 import { XTTSTtsProvider } from './xtts.js';
 import { VITSTtsProvider } from './vits.js';

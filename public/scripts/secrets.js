@@ -1,7 +1,7 @@
 import { DOMPurify, moment, sha256 } from '../lib.js';
 import { event_types, eventSource, getRequestHeaders, saveSettings } from '../script.js';
 import { t } from './i18n.js';
-import { chat_completion_sources } from './openai.js';
+import { chat_completion_sources } from './chat-completion-settings.js';
 import { callGenericPopup, Popup, POPUP_RESULT, POPUP_TYPE } from './popup.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
 import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from './slash-commands/SlashCommandArgument.js';
