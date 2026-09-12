@@ -60,6 +60,9 @@ const TANTIVY_FIELD_LABELS = {
     greeting: ['first_mes'],
     notes: ['creator_notes'],
     creator: ['creator'],
+    from: ['creator'],
+    by: ['creator'],
+    author: ['creator'],
     alt: ['alternate_greetings'],
     alternate: ['alternate_greetings'],
 };

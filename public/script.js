@@ -14264,8 +14264,16 @@ export async function fetchServerCharacterSearchResults(searchQuery) {
 /** @type {Set<string>} */
 const SEARCH_PILL_LABELS = new Set([
     'name', 'tag', 'tags', 'desc', 'description', 'example', 'scenario', 'personality',
-    'greeting', 'notes', 'creator', 'alt', 'alternate', 'member', 'members', 'id',
+    'greeting', 'notes', 'creator', 'from', 'by', 'author', 'alt', 'alternate', 'member', 'members', 'id',
 ]);
+
+// Alternate spellings that resolve to the same server-side field but should display/store as one canonical label once promoted to a pill.
+/** @type {Record<string, string>} */
+const SEARCH_PILL_LABEL_ALIASES = {
+    from: 'creator',
+    by: 'creator',
+    author: 'creator',
+};
 
 function initCharacterSearch() {
     // Purely a display/editing convenience - pills are reassembled back into `label:value` text before being sent anywhere.
@@ -14325,7 +14333,9 @@ function initCharacterSearch() {
             const trimmed = raw.slice(0, -1);
             const pillMatch = trimmed.match(/(?:^|\s)([A-Za-z][A-Za-z0-9_]*):("[^"]*"|\S+)$/);
             if (pillMatch && SEARCH_PILL_LABELS.has(pillMatch[1].toLowerCase())) {
-                searchPills.push({ label: pillMatch[1].toLowerCase(), value: pillMatch[2] });
+                const rawLabel = pillMatch[1].toLowerCase();
+                const label = SEARCH_PILL_LABEL_ALIASES[rawLabel] ?? rawLabel;
+                searchPills.push({ label, value: pillMatch[2] });
                 renderPills();
                 searchInput.val(trimmed.slice(0, pillMatch.index));
             }
