@@ -311,7 +311,7 @@ function loadNovelSettingsUi(ui_settings) {
 
     $('#streaming_novel').prop('checked', ui_settings.streaming_novel);
     sortItemsByOrder(ui_settings.order);
-    displayLogitBias(ui_settings.logit_bias, BIAS_KEY);
+    displayLogitBias(ui_settings.logit_bias, BIAS_KEY, 'nai_settings');
 }
 
 const sliders = [
@@ -892,5 +892,5 @@ export function initNovelAISettings() {
         saveSamplingOrder();
     });
 
-    $('#novelai_logit_bias_new_entry').on('click', () => createNewLogitBiasEntry(nai_settings.logit_bias, BIAS_KEY));
+    $('#novelai_logit_bias_new_entry').on('click', () => createNewLogitBiasEntry(nai_settings.logit_bias, BIAS_KEY, 'nai_settings'));
 }
