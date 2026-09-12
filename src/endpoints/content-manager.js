@@ -460,44 +460,6 @@ async function downloadChubLorebook(id) {
     return { buffer, fileName, fileType };
 }
 
-/**
- * Downloads a standalone Chub lorebook project by its already-known numeric project id (as
- * opposed to downloadChubLorebook(), which resolves a creator/project-name slug into this id
- * first). Used to resolve entries in a character's related_lorebooks, which Chub's character
- * API only ever gives us as bare ids, no slug. Unauthenticated - fine for public/listed
- * lorebooks; Chub's samwise/CH-API-KEY headers gate NSFL content specifically, not this.
- * @param {number|string} projectId Chub project id
- * @returns {Promise<{buffer: Buffer, fileName: string, fileType: string}|null>} null if unresolvable (private/unlisted/deleted/etc - non-fatal, caller should skip it)
- */
-async function downloadChubLorebookByProjectId(projectId) {
-    try {
-        const commitsResult = await fetch(`https://api.chub.ai/api/v4/projects/${projectId}/repository/commits`, {
-            method: 'GET',
-            headers: { 'Accept': 'application/json', 'User-Agent': USER_AGENT },
-        });
-        if (!commitsResult.ok) return null;
-        /** @type {any} */
-        const commits = await commitsResult.json();
-        const ref = Array.isArray(commits) && commits[0]?.id;
-        if (!ref) return null;
-
-        const downloadUrl = `https://api.chub.ai/api/v4/projects/${projectId}/repository/files/raw%252Fsillytavern_raw.json/raw?ref=${ref}`;
-        const downloadResult = await fetch(downloadUrl, {
-            method: 'GET',
-            headers: { 'Accept': 'application/json', 'User-Agent': USER_AGENT },
-        });
-        if (!downloadResult.ok) return null;
-
-        const buffer = Buffer.from(await downloadResult.arrayBuffer());
-        const fileName = `chub_lorebook_${projectId}.json`;
-        const fileType = downloadResult.headers.get('content-type');
-        return { buffer, fileName, fileType };
-    } catch (error) {
-        console.error('Failed to download Chub lorebook by project id', projectId, error);
-        return null;
-    }
-}
-
 async function downloadChubCharacter(id) {
     const [creatorName, projectName] = id.split('/');
     const result = await fetch(`https://api.chub.ai/api/characters/${creatorName}/${projectName}?full=true`, {
@@ -516,10 +478,17 @@ async function downloadChubCharacter(id) {
     const { definition, topics } = metadata.node;
 
     // Kept separate from any linked (non-embedded) lorebooks - those are resolved individually
-    // via a follow-up request per id (see /importChubLorebookById), not merged in here.
+    // via a follow-up request per path (see /importChubLorebookByPath), not merged in here.
     const characterBook = definition.embedded_lorebook;
-    /** @type {number[]} */
-    const relatedLorebookIds = Array.isArray(metadata.node.related_lorebooks) ? metadata.node.related_lorebooks : [];
+    // The top-level node.related_lorebooks is bare numeric ids only, no slug - but
+    // definition.extensions.chub.related_lorebooks carries the same ids WITH a path
+    // ("lorebooks/creator/project-name"), which downloadChubLorebook() already knows how to
+    // resolve. Paths matter here specifically because Chub's own path-based lookup is what
+    // still works for unlisted content; a bare numeric id is not guaranteed to.
+    /** @type {string[]} */
+    const relatedLorebookPaths = (definition.extensions?.chub?.related_lorebooks ?? [])
+        .map(entry => entry?.path)
+        .filter(Boolean);
 
     /** @type {TavernCardV2} */
     const characterCard = {
@@ -562,7 +531,7 @@ async function downloadChubCharacter(id) {
     const fileName = `${sanitize(characterCard.data.name)}.png`;
     const fileType = 'image/png';
 
-    return { buffer, fileName, fileType, relatedLorebookIds };
+    return { buffer, fileName, fileType, relatedLorebookPaths };
 }
 
 /**
@@ -1125,8 +1094,8 @@ router.post('/importURL', async (request, response) => {
         if (result.fileType) response.set('Content-Type', result.fileType);
         response.set('Content-Disposition', `attachment; filename="${encodeURI(result.fileName)}"`);
         response.set('X-Custom-Content-Type', type);
-        if (Array.isArray(result.relatedLorebookIds) && result.relatedLorebookIds.length > 0) {
-            response.set('X-Related-Lorebook-Ids', result.relatedLorebookIds.join(','));
+        if (Array.isArray(result.relatedLorebookPaths) && result.relatedLorebookPaths.length > 0) {
+            response.set('X-Related-Lorebook-Paths', result.relatedLorebookPaths.map(encodeURIComponent).join(','));
         }
         return response.send(result.buffer);
     } catch (error) {
@@ -1137,20 +1106,23 @@ router.post('/importURL', async (request, response) => {
 
 /**
  * Fetches and imports a single Chub lorebook that's linked to a character (as opposed to
- * embedded in the card) by its numeric project id - as surfaced via the X-Related-Lorebook-Ids
- * header on a prior /importURL response for a Chub character. One id per request, by design: the
- * character import and each of its linked lorebooks are independent downloads, not one bundled
- * payload. Writes the World Info file server-side (untrusted external content is validated and
- * persisted in one place, not round-tripped as raw bytes through the client and back).
+ * embedded in the card) by its "lorebooks/creator/project-name" path - as surfaced via the
+ * X-Related-Lorebook-Paths header on a prior /importURL response for a Chub character. One path
+ * per request, by design: the character import and each of its linked lorebooks are independent
+ * downloads, not one bundled payload. Writes the World Info file server-side (untrusted external
+ * content is validated and persisted in one place, not round-tripped as raw bytes through the
+ * client and back). Reuses downloadChubLorebook() - the same path-based resolution Chub's own
+ * lorebook page uses, and (per Chub's related_lorebooks numeric ids being unreliable for
+ * unlisted content) preferred over id-based lookup.
  */
-router.post('/importChubLorebookById', async (request, response) => {
-    const projectId = request.body.id;
-    if (!projectId || !/^\d+$/.test(String(projectId))) {
+router.post('/importChubLorebookByPath', async (request, response) => {
+    const path = request.body.path;
+    if (typeof path !== 'string' || !path.startsWith('lorebooks/')) {
         return response.sendStatus(400);
     }
 
     try {
-        const result = await downloadChubLorebookByProjectId(projectId);
+        const result = await downloadChubLorebook(path);
         if (!result) {
             return response.sendStatus(404);
         }
