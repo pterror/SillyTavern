@@ -94,6 +94,7 @@ install_default_extension GuidedGenerations-Extension https://github.com/Samuera
 install_default_extension SillyTavern-MoonlitEchoesTheme https://github.com/RivelleDays/SillyTavern-MoonlitEchoesTheme
 install_default_extension SillyTavern-Tavernary https://github.com/pterror/SillyTavern-Tavernary
 install_default_extension SillyTavern-ChubSearch https://github.com/pterror/SillyTavern-ChubSearch
+install_default_extension SillyTavern-CharacterLibrary https://github.com/Sillyanonymous/SillyTavern-CharacterLibrary
 
 cat > config.yaml <<EOF
 port: 8000
