@@ -14,6 +14,10 @@ For DigitalOcean specifically, `docker/create-droplet.sh` (bash) / `create-dropl
 Windows-native, no WSL needed) collapse the whole thing into one command via `doctl` - no web UI, no
 manual paste. See the comments at the top of each script for setup.
 
+The script also installs a set of default extensions (WorldInfoInfo, Guided Generations, Moonlit Echoes
+Theme, Tavernary, Chub Search) the same way SillyTavern's own "Install extension" button would - see
+`install_default_extension` calls in `docker/cloud-init.sh` to add/remove from the list.
+
 ## Resources
 
 - GitHub: <https://github.com/SillyTavern/SillyTavern>

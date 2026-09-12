@@ -78,6 +78,23 @@ fi
 cd /opt/SillyTavern
 npm install --no-audit --no-fund --omit=dev
 
+# Default extensions - cloned straight into third-party/, same as SillyTavern's own
+# "Install extension" button does. Idempotent: pull if already present, clone otherwise.
+mkdir -p public/scripts/extensions/third-party
+install_default_extension() {
+  local name="$1" url="$2" dir="public/scripts/extensions/third-party/$1"
+  if [ -d "$dir/.git" ]; then
+    git -C "$dir" pull --ff-only
+  else
+    git clone --depth=1 "$url" "$dir"
+  fi
+}
+install_default_extension SillyTavern-WorldInfoInfo https://github.com/LenAnderson/SillyTavern-WorldInfoInfo
+install_default_extension GuidedGenerations-Extension https://github.com/Samueras/GuidedGenerations-Extension
+install_default_extension SillyTavern-MoonlitEchoesTheme https://github.com/RivelleDays/SillyTavern-MoonlitEchoesTheme
+install_default_extension SillyTavern-Tavernary https://github.com/pterror/SillyTavern-Tavernary
+install_default_extension SillyTavern-ChubSearch https://github.com/pterror/SillyTavern-ChubSearch
+
 cat > config.yaml <<EOF
 port: 8000
 listen: true
