@@ -86,6 +86,7 @@ listenAddress:
   ipv6: "::"
 whitelistMode: false
 securityOverride: true
+enableUserAccounts: true
 EOF
 
 cat > /etc/systemd/system/sillytavern.service <<'EOF'

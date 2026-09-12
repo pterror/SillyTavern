@@ -15,6 +15,14 @@
     transition: visibility 0s !important;
 }
 
+body:not(.advancedMode) .advanced-setting {
+    display: none !important;
+}
+
+body.chat-completion-selected .text-completion-only {
+    display: none !important;
+}
+
 body.tts .mes[is_system="true"] .mes_narrate {
     display: none;
 }

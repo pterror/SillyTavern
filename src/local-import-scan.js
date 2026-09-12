@@ -469,6 +469,11 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
                     const destPath = path.join(directories.characters, `${pngName}.png`);
                     await pipelineResult.finish({ type: 'write', destPath, data });
                     await fireMetadataUpsertHook(directories, `${pngName}.png`, data, contentHash);
+                    try {
+                        await setCharacterDateAdded(directories, `${pngName}.png`, stat.mtimeMs);
+                    } catch (err) {
+                        console.debug(`[local-import] Failed to set date_added for ${pngName}.png from source mtime ${sourcePath}:`, err.message);
+                    }
                     console.log(color.cyan(`[local-import] Imported ${sourcePath} as ${pngName}.png`));
                     if (tagImportSetting !== 2) {
                         try {
@@ -492,6 +497,11 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
                     console.debug(`[local-import] Skipped ${sourcePath} - duplicate of already-imported character ${result.duplicateOf}.`);
                 } else {
                     console.log(color.cyan(`[local-import] Imported ${sourcePath} as ${result.fileName}.png`));
+                    try {
+                        await setCharacterDateAdded(directories, `${result.fileName}.png`, stat.mtimeMs);
+                    } catch (err) {
+                        console.debug(`[local-import] Failed to set date_added for ${result.fileName}.png from source mtime ${sourcePath}:`, err.message);
+                    }
                     if (tagImportSetting !== 2) {
                         try {
                             await seedCardTagsForSingleCharacter(directories, `${result.fileName}.png`);
