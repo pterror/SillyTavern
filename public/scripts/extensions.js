@@ -701,6 +701,7 @@ function moveExtensionContainerIntoTab(container) {
     }
 
     const listItem = document.createElement('li');
+    listItem.classList.add('extensions_tab_button');
     const link = document.createElement('a');
     link.href = `#${tabId}`;
     link.textContent = title;
@@ -709,6 +710,7 @@ function moveExtensionContainerIntoTab(container) {
 
     const panel = document.createElement('div');
     panel.id = tabId;
+    panel.classList.add('extensions_tab_panel');
     panel.appendChild(container); // moves container (and its content) out of its original column
     document.getElementById(EXTENSIONS_TABS_CONTAINER_ID)?.appendChild(panel);
 }
