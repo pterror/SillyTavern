@@ -64,6 +64,23 @@ module.exports = {
                 SillyTavern: 'readonly',
             },
         },
+        {
+            // openai.js is a back-compat shim for third-party extensions only (see its own header comment) -
+            // internal code must import chat-completion-settings.js directly.
+            files: ['public/**/*.js'],
+            rules: {
+                'no-restricted-syntax': ['error',
+                    {
+                        selector: "CallExpression[callee.name='saveSettingsDebounced'][arguments.length=0]",
+                        message: "saveSettingsDebounced() requires at least one settings key — pass the key(s) you modified, e.g. saveSettingsDebounced('power_user'). Third-party extensions are exempt from this rule.",
+                    },
+                    {
+                        selector: 'ImportDeclaration[source.value=/openai\\.js$/]',
+                        message: "openai.js was renamed to chat-completion-settings.js (it covers every Chat Completion provider, not just OpenAI) - import from there instead. The old path is kept only as a back-compat shim for third-party extensions.",
+                    },
+                ],
+            },
+        },
     ],
     ignorePatterns: [
         '**/node_modules/**',
@@ -121,10 +138,6 @@ module.exports = {
         'space-unary-ops': ['error', { words: true, nonwords: false }],
         'arrow-spacing': ['error', { before: true, after: true }],
         'template-curly-spacing': ['error', 'never'],
-        'no-restricted-syntax': ['error', {
-            selector: "CallExpression[callee.name='saveSettingsDebounced'][arguments.length=0]",
-            message: "saveSettingsDebounced() requires at least one settings key — pass the key(s) you modified, e.g. saveSettingsDebounced('power_user'). Third-party extensions are exempt from this rule.",
-        }],
         'rest-spread-spacing': ['error', 'never'],
         'generator-star-spacing': ['error', { before: false, after: true }],
         'yield-star-spacing': ['error', { before: false, after: true }],

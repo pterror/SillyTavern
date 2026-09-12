@@ -89,7 +89,7 @@ import { addLocaleData, getCurrentLocale, t, translate } from './i18n.js';
 import { hideLoader, showLoader } from './loader.js';
 import { loader } from './action-loader.js';
 import { MacrosParser } from './macros.js';
-import { getChatCompletionModel, oai_settings } from './openai.js';
+import { getChatCompletionModel, oai_settings } from './chat-completion-settings.js';
 import { callGenericPopup, Popup, POPUP_RESULT, POPUP_TYPE } from './popup.js';
 import { power_user, personaStore, registerDebugFunction } from './power-user.js';
 import { getPresetManager } from './preset-manager.js';

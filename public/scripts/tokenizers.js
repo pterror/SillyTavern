@@ -1,7 +1,7 @@
 import { localforage } from '../lib.js';
 import { event_types, eventSource, getCurrentCharacter, getSelectionState, main_api, nai_settings, online_status } from '../script.js';
 import { power_user, registerDebugFunction } from './power-user.js';
-import { chat_completion_sources, model_list, oai_settings } from './openai.js';
+import { chat_completion_sources, model_list, oai_settings } from './chat-completion-settings.js';
 import { groupsStore } from './group-chats.js';
 import { getStringHash } from './utils.js';
 import { kai_flags, kai_settings } from './kai-settings.js';
