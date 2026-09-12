@@ -6678,6 +6678,51 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 //MARK: Generate() ends
 
 /**
+ * Assembles the full prompt that would be sent for the next generation, without sending it - a dry run of
+ * Generate() that captures whichever combine-prompt event fires for the active backend, then displays it.
+ */
+export async function previewFullPrompt() {
+    if (is_send_press) {
+        toastr.warning(t`Cannot preview the prompt while a generation is in progress.`);
+        return;
+    }
+
+    if (getSelectionState().type === 'none') {
+        toastr.warning(t`Select a character or group first.`);
+        return;
+    }
+
+    // Generate() can recurse internally (e.g. re-running once WI activation changes the budget), firing the
+    // combine-prompt event more than once per dry run - keep overwriting so we end up with the last (final)
+    // one once Generate() actually returns, rather than an earlier, possibly-incomplete recursive pass.
+    let captured = null;
+    const onChatCompletionReady = (data) => { if (data.dryRun) captured = { chatCompletion: data.chat }; };
+    const onCombinePrompts = (data) => { if (data.dryRun) captured = { textCompletion: data.prompt }; };
+
+    eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, onChatCompletionReady);
+    eventSource.on(event_types.GENERATE_AFTER_COMBINE_PROMPTS, onCombinePrompts);
+
+    try {
+        await Generate('normal', {}, true);
+
+        if (!captured) {
+            toastr.error(t`Could not assemble the prompt.`);
+            return;
+        }
+
+        const text = captured.chatCompletion
+            ? captured.chatCompletion.map(m => `${m.role}:\n${m.content}`).join('\n\n')
+            : captured.textCompletion;
+
+        const pre = $('<pre class="justifyLeft" style="white-space: pre-wrap; word-break: break-word;"></pre>').text(text);
+        await callGenericPopup(pre, POPUP_TYPE.TEXT, '', { wide: true, large: true, allowVerticalScrolling: true });
+    } finally {
+        eventSource.removeListener(event_types.CHAT_COMPLETION_PROMPT_READY, onChatCompletionReady);
+        eventSource.removeListener(event_types.GENERATE_AFTER_COMBINE_PROMPTS, onCombinePrompts);
+    }
+}
+
+/**
  * Stops the generation and any streaming if it is currently running.
  */
 export function stopGeneration() {
@@ -14992,6 +15037,10 @@ jQuery(async function () {
             if (is_send_press == false || fromSlashCommand) {
                 is_send_press = true;
                 Generate('continue', buildOrFillAdditionalArgs());
+            }
+        } else if (id == 'option_preview_prompt') {
+            if (is_send_press == false) {
+                await previewFullPrompt();
             }
         } else if (id == 'option_delete_mes') {
             setTimeout(() => openMessageDelete(fromSlashCommand, deleteToolCalls), animation_duration);
