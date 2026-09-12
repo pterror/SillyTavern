@@ -116,7 +116,7 @@ import {
     loadProxyPresets,
     selected_proxy,
     initOpenAI,
-} from './scripts/openai.js';
+} from './scripts/chat-completion-settings.js';
 
 import {
     generateNovelWithStreaming,
