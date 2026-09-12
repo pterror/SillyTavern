@@ -42,16 +42,8 @@ async function doTokenCounter() {
     callGenericPopup(dialog, POPUP_TYPE.TEXT, '', { wide: true, large: true, allowVerticalScrolling: true });
 }
 
-/**
- * Draws the tokenized chunks in the UI
- * @param {string[]} chunks
- * @param {number[]} ids
- */
 function drawChunks(chunks, ids) {
     const pastelRainbow = [
-        //main_text_color,
-        //italics_text_color,
-        //quote_text_color,
         '#FFB3BA',
         '#FFDFBA',
         '#FFFFBA',
@@ -62,15 +54,13 @@ function drawChunks(chunks, ids) {
     $('#tokenized_chunks_display').empty();
 
     for (let i = 0; i < chunks.length; i++) {
-        let chunk = chunks[i].replace(/[▁Ġ]/g, ' '); // This is a leading space in sentencepiece. More info: Lower one eighth block (U+2581)
+        let chunk = chunks[i].replace(/[▁Ġ]/g, ' '); // sentencepiece leading-space marker (U+2581)
 
-        // If <0xHEX>, decode it
         if (/^<0x[0-9A-F]+>$/i.test(chunk)) {
             const code = parseInt(chunk.substring(3, chunk.length - 1), 16);
             chunk = String.fromCodePoint(code);
         }
 
-        // If newline - insert a line break
         if (chunk === '\n') {
             $('#tokenized_chunks_display').append('<br>');
             continue;
@@ -86,14 +76,11 @@ function drawChunks(chunks, ids) {
 }
 
 async function doCount() {
-    // get all of the messages in the chat
     const context = getContext();
     const messages = context.chat.filter(x => x.mes && !x.is_system).map(x => x.mes);
 
-    //concat all the messages into a single string
     const allMessages = messages.join(' ');
 
-    //toastr success with the token count of the chat
     const count = await getTokenCountAsync(allMessages);
     toastr.success(`Token count: ${count}`);
     return count;

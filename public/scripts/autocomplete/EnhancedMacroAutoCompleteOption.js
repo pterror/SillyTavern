@@ -85,35 +85,26 @@ export class EnhancedMacroAutoCompleteOption extends AutoCompleteOption {
      * @param {MacroAutoCompleteContext|EnhancedMacroAutoCompleteOptions|null} [contextOrOptions] - Context for argument hints, or options object.
      */
     constructor(macro, contextOrOptions = null) {
-        // Use the macro name as the autocomplete key
         super(macro.name, enumIcons.macro);
         this.#macro = macro;
 
-        // Detect if second argument is context or options
-        // Context has 'identifier' property, options may have 'noBraces'
         if (contextOrOptions && typeof contextOrOptions === 'object') {
             if ('noBraces' in contextOrOptions || 'paddingAfter' in contextOrOptions || 'closeWithBraces' in contextOrOptions) {
-                // It's an options object
                 this.#options = /** @type {EnhancedMacroAutoCompleteOptions} */ (contextOrOptions);
                 this.#noBraces = this.#options.noBraces ?? false;
                 this.#paddingAfter = this.#options.paddingAfter ?? '';
 
-                // If noBraces mode with closeWithBraces, complete with name + padding + }}
                 if (this.#options.closeWithBraces) {
                     this.valueProvider = () => `${macro.name}${this.#paddingAfter}}}`;
                     this.makeSelectable = true;
                 }
             } else {
-                // It's a context object
                 this.#context = /** @type {MacroAutoCompleteContext} */ (contextOrOptions);
             }
         }
 
-        // nameOffset = 2 to skip the {{ prefix in the display (formatMacroSignature includes braces)
-        // When noBraces is true, nameOffset = 0 since we don't show braces
         this.nameOffset = this.#noBraces ? 0 : 2;
 
-        // For macros that take no arguments, auto-complete with closing }} (unless already set by options)
         if (!this.valueProvider) {
             const takesNoArgs = macro.minArgs === 0 && macro.maxArgs === 0 && macro.list === null;
             if (takesNoArgs) {
@@ -122,10 +113,10 @@ export class EnhancedMacroAutoCompleteOption extends AutoCompleteOption {
             }
         }
 
-        // {{//}} needs special handling. If we autocomplete right after **one** slash is already typed, we need to replace that, as it's treated as a flag otherwise.
+        // {{//}} right after a lone typed slash would otherwise be treated as a flag, not the macro name
         const fullText = this.#options?.fullText ?? this.#context?.fullText ?? '';
         if (macro.name === '//' && fullText.endsWith('/')) {
-            this.replacementStartOffset = (this.replacementStartOffset ?? 0) - 1; // Cut the leading slash
+            this.replacementStartOffset = (this.replacementStartOffset ?? 0) - 1;
         }
     }
 
@@ -145,22 +136,17 @@ export class EnhancedMacroAutoCompleteOption extends AutoCompleteOption {
         li.setAttribute('data-name', this.name);
         li.setAttribute('data-option-type', 'macro');
 
-        // Type icon
         const type = document.createElement('span');
         type.classList.add('type', 'monospace');
         type.textContent = '{}';
         li.append(type);
 
-        // Specs container (for fuzzy highlight compatibility)
         const specs = document.createElement('span');
         specs.classList.add('specs');
 
-        // Name with character spans for fuzzy highlighting
         const nameEl = document.createElement('span');
         nameEl.classList.add('name', 'monospace');
 
-        // Build signature with individual character spans
-        // When noBraces is true, show just the macro name without {{ }}
         const sigText = this.#noBraces ? this.#macro.name : formatMacroSignature(this.#macro);
         for (const char of sigText) {
             const span = document.createElement('span');
@@ -170,12 +156,10 @@ export class EnhancedMacroAutoCompleteOption extends AutoCompleteOption {
         specs.append(nameEl);
         li.append(specs);
 
-        // Stopgap (spacer for flex layout)
         const stopgap = document.createElement('span');
         stopgap.classList.add('stopgap');
         li.append(stopgap);
 
-        // Help text (description)
         const help = document.createElement('span');
         help.classList.add('help');
         const content = document.createElement('span');
@@ -184,14 +168,12 @@ export class EnhancedMacroAutoCompleteOption extends AutoCompleteOption {
         help.append(content);
         li.append(help);
 
-        // Alias indicator icon (if this is an alias)
         const aliasIcon = createAliasIndicator(this.#macro);
         if (aliasIcon) {
             aliasIcon.classList.add('macro-ac-indicator');
             li.append(aliasIcon);
         }
 
-        // Source indicator icon
         const sourceIcon = createSourceIndicator(this.#macro);
         sourceIcon.classList.add('macro-ac-indicator');
         li.append(sourceIcon);
@@ -207,38 +189,31 @@ export class EnhancedMacroAutoCompleteOption extends AutoCompleteOption {
     renderDetails() {
         const frag = document.createDocumentFragment();
 
-        // Check for arity warnings
         const warning = this.#getArityWarning();
         if (warning) {
             const warningEl = this.#renderWarning(warning);
             frag.append(warningEl);
         }
 
-        // Show scoped content info banner if we're in scoped content
         if (this.#context?.isInScopedContent) {
             const scopedInfo = this.#renderScopedContentInfo();
             if (scopedInfo) frag.append(scopedInfo);
         }
 
-        // Determine current argument index for highlighting
         const currentArgIndex = this.#context?.currentArgIndex ?? -1;
 
         // For most warnings, we can still highlight which argument we are currently at.
         // This even goes for "too many arguments" when navigating the cursor back to
         // a valid argument.
-        // Extend this in the future, if *some* warnings don't make sense to still highlight args.
         const hightlightArgsHint = currentArgIndex >= 0;
 
-        // Render argument hint banner if we're typing an argument
         if (hightlightArgsHint && currentArgIndex >= 0) {
             const hint = this.#renderArgumentHint();
             if (hint) frag.append(hint);
         }
 
-        // Reuse MacroBrowser's renderMacroDetails with options
         const details = renderMacroDetails(this.#macro, { currentArgIndex: hightlightArgsHint ? currentArgIndex : -1 });
 
-        // Add class for autocomplete-specific styling overrides
         details.classList.add('macro-ac-details');
         frag.append(details);
 
@@ -254,10 +229,8 @@ export class EnhancedMacroAutoCompleteOption extends AutoCompleteOption {
 
         const argCount = this.#context.args.length;
         const maxArgs = this.#macro.maxArgs;
-        //const minArgs = this.#macro.minArgs;
         const hasList = this.#macro.list !== null;
 
-        // Check for too many arguments (only if no list args)
         if (!hasList && argCount > maxArgs) {
             return `Too many arguments: this macro accepts ${maxArgs === 0 ? 'no arguments' : `up to ${maxArgs} argument${maxArgs === 1 ? '' : 's'}`}, but ${argCount} provided.`;
         }
@@ -274,13 +247,11 @@ export class EnhancedMacroAutoCompleteOption extends AutoCompleteOption {
             }
         }
 
-        // Check if trying to add args to a no-arg macro via ::
         // List-arg macros can accept args even if maxArgs === 0
         if (this.#context.separatorCount > 0 && maxArgs === 0 && !hasList) {
             return 'This macro does not accept any arguments.';
         }
 
-        // Check list bounds (min/max) if the macro has a list with constraints
         if (hasList && typeof this.#macro.list === 'object') {
             const listItemCount = Math.max(0, argCount - maxArgs);
             const listMin = this.#macro.list.min ?? 0;
@@ -373,7 +344,6 @@ export class EnhancedMacroAutoCompleteOption extends AutoCompleteOption {
         hint.append(icon);
 
         if (isListArg) {
-            // List argument hint
             const listIndex = argIndex - this.#macro.maxArgs + 1;
             const totalListItems = this.#context.args.length - this.#macro.maxArgs;
 
@@ -394,7 +364,6 @@ export class EnhancedMacroAutoCompleteOption extends AutoCompleteOption {
 
             hint.append(text);
         } else {
-            // Unnamed argument hint (required or optional)
             const argDef = this.#macro.unnamedArgDefs[argIndex];
             let optionalLabel = '';
             if (argDef?.optional) {
@@ -449,8 +418,6 @@ export class MacroFlagAutoCompleteOption extends AutoCompleteOption {
      * @param {import('../macros/engine/MacroFlags.js').MacroFlagDefinition} flagDef - The flag definition.
      */
     constructor(flagDef) {
-        // Use the flag symbol as the name, with a flag icon
-        // Display name includes both symbol and name for clarity
         super(flagDef.type, '🚩');
         this.#flagDef = flagDef;
     }
@@ -466,7 +433,6 @@ export class MacroFlagAutoCompleteOption extends AutoCompleteOption {
      * @returns {HTMLElement}
      */
     renderItem() {
-        // Use base class makeItem for consistent styling
         const li = this.makeItem(
             `${this.#flagDef.type} ${this.#flagDef.name}`, // Display: "? Optional"
             '🚩',
@@ -491,25 +457,21 @@ export class MacroFlagAutoCompleteOption extends AutoCompleteOption {
         const details = document.createElement('div');
         details.classList.add('macro-flag-details');
 
-        // Header with flag symbol and name
         const header = document.createElement('h3');
         header.classList.add('macro-flag-details-header');
         header.innerHTML = `<code>${this.#flagDef.type}</code> ${this.#flagDef.name} Flag`;
         details.append(header);
 
-        // Description
         const desc = document.createElement('p');
         desc.classList.add('macro-flag-details-desc');
         desc.textContent = this.#flagDef.description;
         details.append(desc);
 
-        // Status
         const status = document.createElement('p');
         status.classList.add('macro-flag-details-status');
         status.innerHTML = `<strong>Status:</strong> ${this.#flagDef.implemented ? 'Implemented' : 'Planned for future release'}`;
         details.append(status);
 
-        // Parser effect note
         if (this.#flagDef.affectsParser) {
             const parserNote = document.createElement('p');
             parserNote.classList.add('macro-flag-details-note');
@@ -599,7 +561,6 @@ export class VariableShorthandAutoCompleteOption extends AutoCompleteOption {
      * @param {VariableShorthandDefinition} varDef - The variable shorthand definition.
      */
     constructor(varDef) {
-        // Use the prefix symbol as the name, with a variable icon
         super(varDef.type, '📦');
         this.#varDef = varDef;
     }
@@ -638,19 +599,16 @@ export class VariableShorthandAutoCompleteOption extends AutoCompleteOption {
         const details = document.createElement('div');
         details.classList.add('macro-variable-details');
 
-        // Header with prefix symbol and name
         const header = document.createElement('h3');
         header.classList.add('macro-variable-details-header');
         header.innerHTML = `<code>${this.#varDef.type}</code> ${this.#varDef.name}`;
         details.append(header);
 
-        // Description
         const desc = document.createElement('p');
         desc.classList.add('macro-variable-details-desc');
         desc.textContent = this.#varDef.description;
         details.append(desc);
 
-        // Supported operations
         const opsHeader = document.createElement('p');
         opsHeader.innerHTML = '<strong>Supported Operations:</strong>';
         details.append(opsHeader);
@@ -664,7 +622,6 @@ export class VariableShorthandAutoCompleteOption extends AutoCompleteOption {
         }
         details.append(opsList);
 
-        // Examples
         const exampleHeader = document.createElement('p');
         exampleHeader.innerHTML = '<strong>Examples:</strong>';
         details.append(exampleHeader);
@@ -802,7 +759,6 @@ export class VariableNameAutoCompleteOption extends AutoCompleteOption {
         const scopeLabel = this.#scope === 'local' ? 'Local' : 'Global';
         const prefix = this.#scope === 'local' ? '.' : '$';
 
-        // Show big warning for invalid names
         if (this.#isInvalidName) {
             const warningBox = document.createElement('div');
             warningBox.classList.add('variable-invalid-warning');
@@ -828,14 +784,12 @@ export class VariableNameAutoCompleteOption extends AutoCompleteOption {
             return frag;
         }
 
-        // Header
         const header = document.createElement('h3');
         header.innerHTML = this.#isNewVariable
             ? `<code>${prefix}${this.#varName}</code> (New ${scopeLabel} Variable)`
             : `<code>${prefix}${this.#varName}</code> ${scopeLabel} Variable`;
         details.append(header);
 
-        // Description
         const desc = document.createElement('p');
         const variableSuggestion = this.#scope === 'local'
             ? 'Local variables are scoped to the current chat.'
@@ -847,7 +801,6 @@ export class VariableNameAutoCompleteOption extends AutoCompleteOption {
         }
         details.append(desc);
 
-        // Usage examples
         const usageHeader = document.createElement('p');
         usageHeader.innerHTML = '<strong>Usage:</strong>';
         details.append(usageHeader);
@@ -1042,17 +995,14 @@ export class VariableOperatorAutoCompleteOption extends AutoCompleteOption {
         const details = document.createElement('div');
         details.classList.add('macro-variable-operator-details');
 
-        // Header
         const header = document.createElement('h3');
         header.innerHTML = `<code>${this.#operatorDef.symbol}</code> ${this.#operatorDef.name}`;
         details.append(header);
 
-        // Description
         const desc = document.createElement('p');
         desc.textContent = this.#operatorDef.description;
         details.append(desc);
 
-        // Value note
         const valueNote = document.createElement('p');
         valueNote.innerHTML = this.#operatorDef.needsValue
             ? '<em>This operator requires a value after it.</em>'
@@ -1120,24 +1070,20 @@ export class VariableValueContextAutoCompleteOption extends AutoCompleteOption {
         const details = document.createElement('div');
         details.classList.add('macro-variable-value-context-details');
 
-        // Header
         const header = document.createElement('h3');
         header.innerHTML = `Value for <code>${this.#operatorDef.symbol}</code> (${this.#operatorDef.name})`;
         details.append(header);
 
-        // Description of what value is expected
         const desc = document.createElement('p');
         desc.textContent = this.#operatorDef.description;
         details.append(desc);
 
-        // Current value being typed
         if (this.#currentValue) {
             const currentNote = document.createElement('p');
             currentNote.innerHTML = `<em>Currently typing:</em> <code>${this.#currentValue}</code>`;
             details.append(currentNote);
         }
 
-        // Hint
         const hint = document.createElement('p');
         hint.classList.add('hint');
         hint.innerHTML = '<em>Type your value and close with <code>}}</code> to complete the macro.</em>';
@@ -1178,7 +1124,6 @@ export class MacroClosingTagAutoCompleteOption extends AutoCompleteOption {
      * @param {number} [options.nestingLevel=0] - Nesting level (0 = innermost).
      */
     constructor(macroName, options = {}) {
-        // The closing tag is what we're suggesting - use /macroName as the name for matching
         const closingTag = `/${macroName}`;
         super(closingTag, '{/');
         this.#macroName = macroName;
@@ -1187,27 +1132,20 @@ export class MacroClosingTagAutoCompleteOption extends AutoCompleteOption {
         this.#isOptional = options.isOptional ?? false;
         this.#nestingLevel = options.nestingLevel ?? 0;
 
-        // Calculate the replacement offset to replace any existing whitespace the user typed
-        // This allows us to normalize the whitespace to match the opening tag's style
+        // Negative so replacement eats whitespace the user already typed, normalizing it to paddingBefore
         const currentPadding = options.currentPadding ?? '';
-        // Negative offset to start replacement earlier (eating the user's whitespace)
         this.replacementStartOffset = -currentPadding.length;
 
-        // Custom valueProvider to return the correct replacement text
-        // Includes the target paddingBefore from the opening tag, replacing any user-typed whitespace
         this.valueProvider = () => {
-            // Return: paddingBefore + /macroName + paddingAfter + }}
             return `${this.#paddingBefore}/${macroName}${this.#paddingAfter}}}`;
         };
 
-        // Make selectable so TAB completion works (valueProvider alone makes it non-selectable)
+        // valueProvider alone makes the option non-selectable; this re-enables TAB completion
         this.makeSelectable = true;
 
-        // nameOffset = 2 to skip the {{ prefix in the display for fuzzy highlighting
-        // The name is /macroName but display shows {{/macroName}}
         this.nameOffset = 2;
 
-        // Highest priority - closing tags should always appear at the very top
+        // Closing tags should always appear at the very top
         this.sortPriority = 1;
     }
 
@@ -1225,20 +1163,16 @@ export class MacroClosingTagAutoCompleteOption extends AutoCompleteOption {
         const li = document.createElement('li');
         li.classList.add('item', 'macro-ac-item');
 
-        // Type icon (same column as other macros)
         const type = document.createElement('span');
         type.classList.add('type', 'monospace');
         type.textContent = this.typeIcon;
         li.append(type);
 
-        // Specs container (for fuzzy highlight compatibility)
         const specs = document.createElement('span');
         specs.classList.add('specs');
 
-        // Name element with character spans
         const nameEl = document.createElement('span');
         nameEl.classList.add('name', 'monospace');
-        // Display full closing tag like other macros show full syntax
         const displayName = `{{/${this.#macroName}}}`;
         for (const char of displayName) {
             const span = document.createElement('span');
@@ -1248,18 +1182,15 @@ export class MacroClosingTagAutoCompleteOption extends AutoCompleteOption {
         specs.append(nameEl);
         li.append(specs);
 
-        // Stopgap (spacer for flex layout)
         const stopgap = document.createElement('span');
         stopgap.classList.add('stopgap');
         li.append(stopgap);
 
-        // Help text (description)
         const help = document.createElement('span');
         help.classList.add('help');
         const content = document.createElement('span');
         content.classList.add('helpContent');
 
-        // Build description based on optional status and nesting
         if (this.#isOptional) {
             const optionalBadge = document.createElement('span');
             optionalBadge.classList.add('macro-ac-optional-badge', 'macro-ac-optional-badge-small');
@@ -1289,7 +1220,6 @@ export class MacroClosingTagAutoCompleteOption extends AutoCompleteOption {
         const details = document.createElement('div');
         details.classList.add('macro-closing-tag-details');
 
-        // If optional, show badge at the top
         if (this.#isOptional) {
             const optionalBadge = document.createElement('span');
             optionalBadge.classList.add('macro-ac-optional-badge');
@@ -1297,12 +1227,10 @@ export class MacroClosingTagAutoCompleteOption extends AutoCompleteOption {
             details.append(optionalBadge);
         }
 
-        // Header
         const header = document.createElement('h3');
         header.innerHTML = `Close <code>{{${this.#macroName}}}</code>`;
         details.append(header);
 
-        // Description
         const desc = document.createElement('p');
         if (this.#isOptional) {
             const nestingInfo = this.#nestingLevel > 0 ? ` This scope is nested ${this.#nestingLevel} level${this.#nestingLevel > 1 ? 's' : ''} deep.` : '';
@@ -1480,13 +1408,11 @@ export function parseMacroContext(macroText, cursorOffset) {
 
         // If operator requires a value, parse the value
         // Do this BEFORE isTypingClosingBrace detection so we can check for } in value area
-        // let valueStartPos = i;
         if (operatorNeedsValue) {
             // Skip whitespace after operator
             while (i < macroText.length && /\s/.test(macroText[i])) {
                 i++;
             }
-            // valueStartPos = i;
             variableValue = macroText.slice(i).trimEnd();
         }
 
@@ -1663,7 +1589,6 @@ export function parseMacroContext(macroText, cursorOffset) {
 
     let identifierOnly;
     let spaceArgText = '';
-    //let spaceArgStart = -1;
     let hasSpaceAfterIdentifier = false;
 
     if (firstSpaceInIdentifier > 0 && separatorPositions.length === 0) {
@@ -1677,7 +1602,6 @@ export function parseMacroContext(macroText, cursorOffset) {
         if (contentAfterSpace.length > 0 && !contentAfterSpace.startsWith(':')) {
             // There's actual argument content after the space
             spaceArgText = contentAfterSpace;
-            //spaceArgStart = identifierStartPos + firstSpaceInIdentifier + (afterIdentifier.length - contentAfterSpace.length);
         }
     } else {
         identifierOnly = trimmedFirstPart.trimEnd();
@@ -1808,13 +1732,11 @@ export class SimpleAutoCompleteOption extends AutoCompleteOption {
         li.setAttribute('data-name', this.name);
         li.setAttribute('data-option-type', this.type);
 
-        // Type icon
         const typeSpan = document.createElement('span');
         typeSpan.classList.add('type', 'monospace');
         typeSpan.textContent = this.typeIcon;
         li.append(typeSpan);
 
-        // Name
         const specs = document.createElement('span');
         specs.classList.add('specs');
         const nameSpan = document.createElement('span');
@@ -1827,12 +1749,10 @@ export class SimpleAutoCompleteOption extends AutoCompleteOption {
         specs.append(nameSpan);
         li.append(specs);
 
-        // Stopgap
         const stopgap = document.createElement('span');
         stopgap.classList.add('stopgap');
         li.append(stopgap);
 
-        // Help/description
         const help = document.createElement('span');
         help.classList.add('help');
         const content = document.createElement('span');
@@ -1850,7 +1770,6 @@ export class SimpleAutoCompleteOption extends AutoCompleteOption {
     renderDetails() {
         const frag = document.createDocumentFragment();
 
-        // Header with name
         const specs = document.createElement('div');
         specs.classList.add('specs');
         const nameDiv = document.createElement('div');
@@ -1859,7 +1778,6 @@ export class SimpleAutoCompleteOption extends AutoCompleteOption {
         specs.append(nameDiv);
         frag.append(specs);
 
-        // Description
         if (this.detailedDescription) {
             const helpDiv = document.createElement('div');
             helpDiv.classList.add('help');

@@ -1,22 +1,12 @@
 import { debounce_timeout } from './constants.js';
 
-/**
- * Drag and drop handler
- *
- * Can be used on any element, enabling drag&drop styling and callback on drop.
- */
 export class DragAndDropHandler {
     /** @private @type {JQuery.Selector} */ selector;
     /** @private @type {(files: File[], event:JQuery.DropEvent<HTMLElement, undefined, any, any>) => void} */ onDropCallback;
-    /** @private @type {NodeJS.Timeout} Remark: Not actually NodeJS timeout, but it's close */ dragLeaveTimeout;
+    /** @private @type {NodeJS.Timeout} not actually a NodeJS.Timeout, but close enough */ dragLeaveTimeout;
 
     /** @private @type {boolean} */ noAnimation;
 
-    /**
-     * Create a DragAndDropHandler
-     * @param {JQuery.Selector} selector - The CSS selector for the elements to enable drag and drop
-     * @param {(files: File[], event:JQuery.DropEvent<HTMLElement, undefined, any, any>) => void} onDropCallback - The callback function to handle the drop event
-     */
     constructor(selector, onDropCallback, { noAnimation = false } = {}) {
         this.selector = selector;
         this.onDropCallback = onDropCallback;
@@ -27,9 +17,6 @@ export class DragAndDropHandler {
         this.init();
     }
 
-    /**
-     * Destroy the drag and drop functionality
-     */
     destroy() {
         if (this.selector === 'body') {
             $(document.body).off('dragover', this.handleDragOver.bind(this));
@@ -44,11 +31,7 @@ export class DragAndDropHandler {
         $(this.selector).remove('drop_target no_animation');
     }
 
-    /**
-     * Initialize the drag and drop functionality
-     * Automatically called on construction
-     * @private
-     */
+    /** @private */
     init() {
         if (this.selector === 'body') {
             $(document.body).on('dragover', this.handleDragOver.bind(this));
@@ -64,10 +47,7 @@ export class DragAndDropHandler {
         if (this.noAnimation) $(this.selector).addClass('no_animation');
     }
 
-    /**
-     * @param {JQuery.DragOverEvent<HTMLElement, undefined, any, any>} event - The dragover event
-     * @private
-     */
+    /** @private */
     handleDragOver(event) {
         event.preventDefault();
         event.stopPropagation();
@@ -76,25 +56,19 @@ export class DragAndDropHandler {
         if (this.noAnimation) $(this.selector).addClass('no_animation');
     }
 
-    /**
-     * @param {JQuery.DragLeaveEvent<HTMLElement, undefined, any, any>} event - The dragleave event
-     * @private
-     */
+    /** @private */
     handleDragLeave(event) {
         event.preventDefault();
         event.stopPropagation();
 
-        // Debounce the removal of the class, so it doesn't "flicker" on dragging over
+        // Debounced so the class removal doesn't flicker while still dragging over
         clearTimeout(this.dragLeaveTimeout);
         this.dragLeaveTimeout = setTimeout(() => {
             $(this.selector).removeClass('dragover');
         }, debounce_timeout.quick);
     }
 
-    /**
-     * @param {JQuery.DropEvent<HTMLElement, undefined, any, any>} event - The drop event
-     * @private
-     */
+    /** @private */
     handleDrop(event) {
         event.preventDefault();
         event.stopPropagation();

@@ -64,7 +64,7 @@ export class SlashCommandClosure {
                 list: { min: 1, max: 2 },
                 handler: (context) => {
                     try {
-                        // NB: Legacy replacer halted the script execution on unknown variables
+                        // unlike the legacy replacer, unknown variables must not halt execution
                         return scope.getVariable(context.list[0], context.list[1]);
                     } catch (error) {
                         console.warn('{{var}} dynamic macro execution error:', error);
@@ -74,7 +74,6 @@ export class SlashCommandClosure {
             },
         };
 
-        // Special marker to denote closures in the substituted text
         const CLOSURE_BOUNDARY = '\uFFF0~CLOSURE~\uFFF0';
         /** @type {Map<string, SlashCommandClosure>} */
         const closures = new Map();
@@ -94,7 +93,6 @@ export class SlashCommandClosure {
                 strictArgs: false,
                 list: { min: 0, max: Number.MAX_SAFE_INTEGER },
                 handler: (context) => {
-                    // Sort to prefer exact matches over wildcard matches
                     const sortedMacroArgs = macroArguments.toSorted((a, b) => {
                         const aHasWildcard = a.args.includes('*');
                         const bHasWildcard = b.args.includes('*');
@@ -136,13 +134,11 @@ export class SlashCommandClosure {
 
         const substitutedText = substituteParams(text, { dynamicMacros });
 
-        // If any closures were inserted, split the text accordingly
         if (closures.size > 0) {
             const parts = substitutedText.split(CLOSURE_BOUNDARY).map(part => closures.has(part) ? closures.get(part) : part).filter(Boolean);
             return parts.length === 1 ? parts[0] : parts;
         }
 
-        // No closures, return substituted text as-is
         return substitutedText;
     }
 
@@ -234,13 +230,9 @@ export class SlashCommandClosure {
         return closure;
     }
 
-    /**
-     *
-     * @returns {Promise<SlashCommandClosureResult>}
-     */
+    /** @returns {Promise<SlashCommandClosureResult>} */
     async execute() {
-        // execute a copy of the closure to no taint it and its scope with the effects of its execution
-        // as this would affect the closure being called a second time (e.g., loop, multiple /run calls)
+        // Executes a copy, so a closure called twice (loop, multiple /run) isn't tainted by its own effects.
         const closure = this.getCopy();
         const gen = closure.executeDirect();
         let step;
@@ -255,7 +247,6 @@ export class SlashCommandClosure {
 
     async* executeDirect() {
         this.debugController?.down(this);
-        // closure arguments
         for (const arg of this.argumentList) {
             let v = arg.value;
             if (v instanceof SlashCommandClosure) {
@@ -311,19 +302,13 @@ export class SlashCommandClosure {
         const stepper = this.executeStep();
         let step;
         while (!step?.done && !this.breakController?.isBreak) {
-            // get executor before execution
             step = await stepper.next();
             if (step.value instanceof SlashCommandBreakPoint) {
                 if (this.debugController) {
-                    // resolve args
                     step = await stepper.next();
-                    // "execute" breakpoint
                     step = await stepper.next();
-                    // get next executor
                     step = await stepper.next();
-                    // breakpoint has to yield before arguments are resolved if one of the
-                    // arguments is an immediate closure, otherwise you cannot step into the
-                    // immediate closure
+                    // Must yield before arguments resolve if one is an immediate closure, or stepping into it is impossible.
                     const hasImmediateClosureInNamedArgs = /**@type {SlashCommandExecutor}*/(step.value)?.namedArgumentList?.find(it => it.value instanceof SlashCommandClosure && it.value.executeNow);
                     const hasImmediateClosureInUnnamedArgs = /**@type {SlashCommandExecutor}*/(step.value)?.unnamedArgumentList?.find(it => it.value instanceof SlashCommandClosure && it.value.executeNow);
                     if (hasImmediateClosureInNamedArgs || hasImmediateClosureInUnnamedArgs) {
@@ -335,15 +320,13 @@ export class SlashCommandClosure {
                 }
             } else if (!step.done && this.debugController?.testStepping(this)) {
                 this.debugController.isSteppingInto = false;
-                // if stepping, have to yield before arguments are resolved if one of the arguments
-                // is an immediate closure, otherwise you cannot step into the immediate closure
+                // Must yield before arguments resolve if one is an immediate closure, or stepping into it is impossible.
                 const hasImmediateClosureInNamedArgs = /**@type {SlashCommandExecutor}*/(step.value)?.namedArgumentList?.find(it => it.value instanceof SlashCommandClosure && it.value.executeNow);
                 const hasImmediateClosureInUnnamedArgs = /**@type {SlashCommandExecutor}*/(step.value)?.unnamedArgumentList?.find(it => it.value instanceof SlashCommandClosure && it.value.executeNow);
                 if (hasImmediateClosureInNamedArgs || hasImmediateClosureInUnnamedArgs) {
                     this.debugController.isStepping = yield { closure: this, executor: step.value };
                 }
             }
-            // resolve args
             step = await stepper.next();
             if (step.value instanceof SlashCommandBreak) {
                 if (this.breakController) {
@@ -354,11 +337,10 @@ export class SlashCommandClosure {
                 this.debugController.isSteppingInto = false;
                 this.debugController.isStepping = yield { closure: this, executor: step.value };
             }
-            // execute executor
             step = await stepper.next();
         }
 
-        // if execution has returned a closure result, return that (should only happen on abort)
+        // execution can return a closure result directly, which should only happen on abort
         if (step.value instanceof SlashCommandClosureResult) {
             this.debugController?.up();
             return step.value;
@@ -368,13 +350,8 @@ export class SlashCommandClosure {
         this.debugController?.up();
         return result;
     }
-    /**
-     * Generator that steps through the executor list.
-     * Every executor is split into three steps:
-     *  - before arguments are resolved
-     *  - after arguments are resolved
-     *  - after execution
-     */
+    // Steps through the executor list; each executor yields three times: before/after argument
+    // resolution, and after execution.
     async* executeStep() {
         let done = 0;
         let isFirst = true;
@@ -385,9 +362,7 @@ export class SlashCommandClosure {
                 this.debugController.namedArguments = undefined;
                 this.debugController.unnamedArguments = undefined;
             }
-            // yield before doing anything with this executor, the debugger might want to do
-            // something with it (e.g., breakpoint, immediate closures that need resolving
-            // or stepping into)
+            // The debugger might want to act on this executor before anything happens to it.
             yield executor;
             /**@type {import('./SlashCommand.js').NamedArguments} */
             // @ts-ignore
@@ -477,13 +452,7 @@ export class SlashCommandClosure {
      * @param {import('./SlashCommand.js').NamedArguments} args
      */
     async substituteNamedArguments(executor, args) {
-        /**
-         * Handles the assignment of named arguments, considering if they accept multiple values
-         * @param {string} name The name of the argument, as defined for the command execution
-         * @param {string|SlashCommandClosure|(string|SlashCommandClosure)[]} value The value to be assigned
-         */
         const assign = (name, value) => {
-            // If an array is supposed to be assigned, assign it one by one
             if (Array.isArray(value)) {
                 for (const val of value) {
                     assign(name, val);
@@ -492,21 +461,16 @@ export class SlashCommandClosure {
             }
 
             const definition = executor.command.namedArgumentList.find(x => x.name == name);
-
-            // Prefer definition name if a valid named args defintion is found
             name = definition?.name ?? name;
 
-            // Unescape named argument
             if (value && typeof value == 'string') {
                 value = value
                     .replace(/\\\{/g, '{')
                     .replace(/\\\}/g, '}');
             }
 
-            // If the named argument accepts multiple values, we have to make sure to build an array correctly
             if (definition?.acceptsMultiple) {
                 if (args[name] !== undefined) {
-                    // If there already is something for that named arg, make the value is an array and add to it
                     let currentValue = args[name];
                     if (!Array.isArray(currentValue)) {
                         currentValue = [currentValue];
@@ -514,7 +478,6 @@ export class SlashCommandClosure {
                     currentValue.push(value);
                     args[name] = currentValue;
                 } else {
-                    // If there is nothing in there, we create an array with that singular value
                     args[name] = [value];
                 }
             } else {
@@ -523,7 +486,6 @@ export class SlashCommandClosure {
             }
         };
 
-        // substitute named arguments
         for (const arg of executor.namedArgumentList) {
             if (arg.value instanceof SlashCommandClosure) {
                 /**@type {SlashCommandClosure}*/
@@ -552,7 +514,6 @@ export class SlashCommandClosure {
      */
     async substituteUnnamedArgument(executor, isFirst, args) {
         let value;
-        // substitute unnamed argument
         if (executor.unnamedArgumentList.length == 0) {
             if (!isFirst && executor.injectPipe) {
                 value = this.scope.pipe;
@@ -589,7 +550,6 @@ export class SlashCommandClosure {
                 }
             }
         }
-        // unescape unnamed argument
         if (typeof value == 'string') {
             value = value
                 ?.replace(/\\\{/g, '{')
@@ -608,7 +568,6 @@ export class SlashCommandClosure {
 
         value ??= '';
 
-        // Make sure that if unnamed args are split, it should always return an array
         if (executor.command.splitUnnamedArgument && !Array.isArray(value)) {
             value = [value];
         }

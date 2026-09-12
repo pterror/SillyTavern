@@ -4,26 +4,14 @@ import { saveTtsProviderSettings } from './index.js';
 export { XTTSTtsProvider };
 
 class XTTSTtsProvider {
-    //########//
-    // Config //
-    //########//
-
     settings;
     ready = false;
     voices = [];
     separator = '. ';
 
-    /**
-     * Perform any text processing before passing to TTS engine.
-     * @param {string} text Input text
-     * @returns {string} Processed text
-     */
     processText(text) {
-        // Replace fancy ellipsis with "..."
         text = text.replace(/…/g, '...');
-        // Remove quotes
         text = text.replace(/["“”‘’]/g, '');
-        // Replace multiple "." with single "."
         text = text.replace(/\.+/g, '.');
         return text;
     }
@@ -118,11 +106,9 @@ class XTTSTtsProvider {
     }
 
     onSettingsChange() {
-        // Used when provider settings are updated from UI
         this.settings.provider_endpoint = $('#xtts_tts_endpoint').val();
         this.settings.language = $('#xtts_api_language').val();
 
-        // Update the default TTS settings based on input fields
         this.settings.speed = $('#xtts_speed').val();
         this.settings.temperature = $('#xtts_temperature').val();
         this.settings.length_penalty = $('#xtts_length_penalty').val();
@@ -133,7 +119,6 @@ class XTTSTtsProvider {
         this.settings.enable_text_splitting = $('#xtts_enable_text_splitting').is(':checked');
         this.settings.streaming = $('#xtts_tts_streaming').is(':checked');
 
-        // Update the UI to reflect changes
         $('#xtts_tts_speed_output').text(this.settings.speed);
         $('#xtts_tts_temperature_output').text(this.settings.temperature);
         $('#xtts_length_penalty_output').text(this.settings.length_penalty);
@@ -147,7 +132,6 @@ class XTTSTtsProvider {
     }
 
     async loadSettings(settings) {
-        // Only accept keys defined in defaultSettings
         this.settings = this.defaultSettings;
 
         for (const key in settings) {
@@ -159,7 +143,6 @@ class XTTSTtsProvider {
         }
 
         const apiCheckInterval = setInterval(() => {
-            // Use Extras API if TTS support is enabled
             if (modules.includes('tts') || modules.includes('xtts-tts')) {
                 const baseUrl = new URL(getApiUrl());
                 baseUrl.pathname = '/api/tts';
@@ -169,7 +152,6 @@ class XTTSTtsProvider {
             }
         }, 2000);
 
-        // Set initial values from the settings
         $('#xtts_tts_endpoint').val(this.settings.provider_endpoint);
         $('#xtts_api_language').val(this.settings.language);
         $('#xtts_speed').val(this.settings.speed);
@@ -182,7 +164,6 @@ class XTTSTtsProvider {
         $('#xtts_stream_chunk_size').val(this.settings.stream_chunk_size);
         $('#xtts_tts_streaming').prop('checked', this.settings.streaming);
 
-        // Update the UI to reflect changes
         $('#xtts_tts_speed_output').text(this.settings.speed);
         $('#xtts_tts_temperature_output').text(this.settings.temperature);
         $('#xtts_length_penalty_output').text(this.settings.length_penalty);
@@ -191,7 +172,6 @@ class XTTSTtsProvider {
         $('#xtts_top_p_output').text(this.settings.top_p);
         $('#xtts_stream_chunk_size_output').text(this.settings.stream_chunk_size);
 
-        // Register input/change event listeners to update settings on user interaction
         $('#xtts_tts_endpoint').on('input', () => { this.onSettingsChange(); });
         $('#xtts_api_language').on('change', () => { this.onSettingsChange(); });
         $('#xtts_speed').on('input', () => { this.onSettingsChange(); });
@@ -207,7 +187,6 @@ class XTTSTtsProvider {
         await this.checkReady();
     }
 
-    // Perform a simple readiness check by trying to fetch voiceIds
     async checkReady() {
         await Promise.allSettled([this.fetchTtsVoiceObjects(), this.changeTTSSettings()]);
     }
@@ -215,10 +194,6 @@ class XTTSTtsProvider {
     async onRefreshClick() {
         return;
     }
-
-    //#################//
-    //  TTS Interfaces //
-    //#################//
 
     async getVoice(voiceName) {
         if (this.voices.length == 0) {
@@ -238,9 +213,6 @@ class XTTSTtsProvider {
         return response;
     }
 
-    //###########//
-    // API CALLS //
-    //###########//
     async fetchTtsVoiceObjects() {
         const response = await doExtrasFetch(`${this.settings.provider_endpoint}/speakers`);
         if (!response.ok) {
@@ -250,7 +222,6 @@ class XTTSTtsProvider {
         return responseJson;
     }
 
-    // Each time a parameter is changed, we change the configuration
     async changeTTSSettings() {
         if (!this.settings.provider_endpoint) {
             return;
@@ -294,7 +265,7 @@ class XTTSTtsProvider {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'Cache-Control': 'no-cache',  // Added this line to disable caching of file so new files are always played - Rolyat 7/7/23
+                    'Cache-Control': 'no-cache', // disable caching so newly generated audio is always played
                 },
                 body: JSON.stringify({
                     'text': inputText,
@@ -310,7 +281,7 @@ class XTTSTtsProvider {
         return response;
     }
 
-    // Interface not used by XTTS TTS
+    // XTTS has no history endpoint
     async fetchTtsFromHistory(history_item_id) {
         return Promise.resolve(history_item_id);
     }

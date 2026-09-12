@@ -33,11 +33,6 @@ const MAX_RETRIES = 480;
 const CHECK_INTERVAL = 2500;
 const MIN_LENGTH = 16;
 
-/**
- * Gets the available workers from Horde.
- * @param {boolean} force Do a force refresh of the workers
- * @returns {Promise<Array>} Array of workers
- */
 async function getWorkers(force) {
     const response = await fetch('/api/horde/text-workers', {
         method: 'POST',
@@ -47,11 +42,6 @@ async function getWorkers(force) {
     return await response.json();
 }
 
-/**
- * Gets the available models from Horde.
- * @param {boolean} force Do a force refresh of the models
- * @returns {Promise<Array>} Array of models
- */
 async function getModels(force) {
     const response = await fetch('/api/horde/text-models', {
         method: 'POST',
@@ -64,11 +54,6 @@ async function getModels(force) {
 }
 
 
-/**
- * Gets the status of a Horde task.
- * @param {string} taskId Task ID
- * @returns {Promise<Object>} Task status
- */
 async function getTaskStatus(taskId) {
     const response = await fetch('/api/horde/task-status', {
         method: 'POST',
@@ -83,10 +68,6 @@ async function getTaskStatus(taskId) {
     return await response.json();
 }
 
-/**
- * Cancels a Horde task.
- * @param {string} taskId Task ID
- */
 async function cancelTask(taskId) {
     const response = await fetch('/api/horde/cancel-task', {
         method: 'POST',
@@ -99,10 +80,6 @@ async function cancelTask(taskId) {
     }
 }
 
-/**
- * Checks if Horde is online.
- * @returns {Promise<boolean>} True if Horde is online, false otherwise
- */
 export async function checkHordeStatus() {
     try {
         const response = await fetch('/api/horde/status', {
@@ -158,7 +135,6 @@ export async function adjustHordeGenerationParams(max_context_length, max_length
     for (const model of selectedModels) {
         for (const worker of workers) {
             if (model.cluster === worker.cluster && worker.models.includes(model.name)) {
-                // Skip workers that are not trusted if the option is enabled
                 if (horde_settings.trusted_workers_only && !worker.trusted) {
                     continue;
                 }
@@ -189,14 +165,6 @@ function setContextSizePreview() {
     }
 }
 
-/** Generates text using the Horde API.
- * @param {string} prompt
- * @param params
- * @param signal
- * @param reportProgress
- * @returns {Promise<{text: *, workerName: string}>}
- * @throws {Error}
- */
 export async function generateHorde(prompt, params, signal, reportProgress) {
     validateHordeModel();
     delete params.prompt;
@@ -281,10 +249,6 @@ export async function generateHorde(prompt, params, signal, reportProgress) {
 }
 
 
-/**
- * Displays the available models in the Horde model selection dropdown.
- * @param {boolean} force Force refresh of the models
- */
 export async function getHordeModels(force) {
     const sortByPerformance = (a, b) => b.performance - a.performance;
     const sortByWhitelisted = (a, b) => b.is_whitelisted - a.is_whitelisted;
@@ -413,7 +377,6 @@ export function initHorde() {
         horde_settings.models = Array.isArray(modelValue) ? modelValue : [];
         console.log('Updated Horde models', horde_settings.models);
 
-        // Try select instruct preset
         autoSelectInstructPreset(horde_settings.models.join(' '));
         if (horde_settings.models.length) {
             adjustHordeGenerationParams(max_context, amount_gen);

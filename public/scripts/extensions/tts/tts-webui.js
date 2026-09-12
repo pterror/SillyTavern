@@ -10,7 +10,7 @@ class TtsWebuiProvider {
     audioElement = document.createElement('audio');
     audioContext = null;
     audioWorkletNode = null;
-    currentVolume = 1.0; // Track current volume
+    currentVolume = 1.0;
 
     defaultSettings = {
         voiceMap: {},
@@ -194,12 +194,10 @@ class TtsWebuiProvider {
     }
 
     async loadSettings(settings) {
-        // Populate Provider UI given input settings
         if (Object.keys(settings).length == 0) {
             console.info('Using default TTS Provider settings');
         }
 
-        // Only accept keys defined in defaultSettings
         this.settings = this.defaultSettings;
 
         for (const key in settings) {
@@ -275,7 +273,6 @@ class TtsWebuiProvider {
         $('#tts_webui_seed').val(this.settings.seed);
         $('#tts_webui_seed').on('input', () => { this.onSettingsChange(); });
 
-        // Update output labels
         $('#tts_webui_volume_output').text(this.settings.volume);
         $('#tts_webui_desired_length_output').text(this.settings.desired_length);
         $('#tts_webui_max_length_output').text(this.settings.max_length);
@@ -290,7 +287,6 @@ class TtsWebuiProvider {
     }
 
     onSettingsChange() {
-        // Update dynamically
         this.settings.provider_endpoint = String($('#tts_webui_endpoint').val());
         this.settings.model = String($('#tts_webui_model').val());
         this.settings.available_voices = String($('#tts_webui_voices').val()).split(',');
@@ -313,10 +309,8 @@ class TtsWebuiProvider {
         this.settings.chunk_overlap_method = String($('#tts_webui_chunk_overlap_method').val());
         this.settings.seed = parseInt($('#tts_webui_seed').val()) || -1;
 
-        // Apply volume change immediately
         this.setVolume(this.settings.volume);
 
-        // Update output labels
         $('#tts_webui_volume_output').text(this.settings.volume);
         $('#tts_webui_desired_length_output').text(this.settings.desired_length);
         $('#tts_webui_max_length_output').text(this.settings.max_length);
@@ -355,7 +349,6 @@ class TtsWebuiProvider {
         const response = await this.fetchTtsGeneration(text, voiceId);
 
         if (this.settings.streaming) {
-            // Stream audio in real-time
             await this.processStreamingAudio(response);
             // Return empty string since audio is already played via AudioWorklet
             return '';
@@ -365,7 +358,6 @@ class TtsWebuiProvider {
     }
 
     async fetchTtsVoiceObjects() {
-        // Try to fetch voices from the provider endpoint
         try {
             const voicesEndpoint = this.settings.provider_endpoint.replace('/speech', '/voices/' + this.settings.model);
             const response = await fetch(voicesEndpoint);
@@ -388,7 +380,6 @@ class TtsWebuiProvider {
             console.warn('Voice discovery failed, using configured voices:', error);
         }
 
-        // Fallback to configured voices
         this.voices = this.settings.available_voices.map(name => ({
             name, voice_id: name, lang: 'en-US',
         }));
@@ -399,7 +390,6 @@ class TtsWebuiProvider {
     async initAudioWorklet(wavSampleRate) {
         this.audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: wavSampleRate });
 
-        // Load the PCM processor from separate file
         const processorUrl = './scripts/extensions/tts/lib/pcm-processor.js';
         await this.audioContext.audioWorklet.addModule(processorUrl);
         this.audioWorkletNode = new AudioWorkletNode(this.audioContext, 'pcm-processor');
@@ -433,10 +423,8 @@ class TtsWebuiProvider {
             }
 
             if (!headerParsed) {
-                // Parse WAV header to get sample rate
                 wavInfo = this.parseWavHeader(value.buffer);
 
-                // Initialize AudioWorklet with correct sample rate
                 await this.initAudioWorklet(wavInfo.sampleRate);
 
                 // Skip WAV header (first 44 bytes typically)
@@ -448,7 +436,6 @@ class TtsWebuiProvider {
                 return processStream(next);
             }
 
-            // Send PCM data to AudioWorklet for immediate playback
             this.audioWorkletNode.port.postMessage({ pcmData: value });
             const next = await reader.read();
             return processStream(next);
@@ -466,10 +453,8 @@ class TtsWebuiProvider {
         const response = await this.fetchTtsGeneration(text, voiceId);
 
         if (this.settings.streaming) {
-            // Use shared streaming method
             await this.processStreamingAudio(response);
         } else {
-            // For non-streaming, response is a fetch Response object
             if (!response.ok) {
                 throw new Error(`HTTP ${response.status}`);
             }
@@ -546,13 +531,10 @@ class TtsWebuiProvider {
     }
 
     setVolume(volume) {
-        // Clamp volume between 0.0 and 2.0 (0% to 200%)
         this.currentVolume = Math.max(0, Math.min(2.0, volume));
 
-        // Set volume for regular audio element (non-streaming)
         this.audioElement.volume = Math.min(this.currentVolume, 1.0); // HTML audio element max is 1.0
 
-        // Set volume for AudioWorklet (streaming)
         if (this.audioWorkletNode) {
             this.audioWorkletNode.port.postMessage({ volume: this.currentVolume });
         }

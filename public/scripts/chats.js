@@ -1,5 +1,3 @@
-// Move chat functions here from script.js (eventually)
-
 import { Popper, css, DOMPurify } from '../lib.js';
 import {
     addCopyToCodeBlocks,
@@ -85,9 +83,7 @@ const ATTACHMENT_SOURCE = {
     CHAT: 'chat',
 };
 
-/**
- * @type {Record<string, ConverterFunction>} File converters
- */
+/** @type {Record<string, ConverterFunction>} */
 const converters = {
     'application/pdf': extractTextFromPDF,
     'text/html': extractTextFromHTML,
@@ -101,19 +97,12 @@ const converters = {
     'application/vnd.oasis.opendocument.spreadsheet': extractTextFromOffice,
 };
 
-/**
- * Finds a matching key in the converters object.
- * @param {string} type MIME type
- * @returns {string} Matching key
- */
 function findConverterKey(type) {
     return Object.keys(converters).find((key) => {
-        // Match exact type
         if (type === key) {
             return true;
         }
 
-        // Match wildcards
         if (key.endsWith('*')) {
             return type.startsWith(key.substring(0, key.length - 1));
         }
@@ -122,33 +111,15 @@ function findConverterKey(type) {
     });
 }
 
-/**
- * Determines if the file type has a converter function.
- * @param {string} type MIME type
- * @returns {boolean} True if the file type is convertible, false otherwise.
- */
 function isConvertible(type) {
     return Boolean(findConverterKey(type));
 }
 
-/**
- * Gets the converter function for a file type.
- * @param {string} type MIME type
- * @returns {ConverterFunction} Converter function
- */
 function getConverter(type) {
     const key = findConverterKey(type);
     return key && converters[key];
 }
 
-/**
- * Mark a range of messages as hidden ("is_system") or not.
- * @param {number} start Starting message ID
- * @param {number} end Ending message ID (inclusive)
- * @param {boolean} unhide If true, unhide the messages instead.
- * @param {string} nameFitler Optional name filter
- * @returns {Promise<void>}
- */
 export async function hideChatMessageRange(start, end, unhide, nameFitler = null) {
     if (isNaN(start)) return;
     if (!end) end = start;
@@ -163,17 +134,14 @@ export async function hideChatMessageRange(start, end, unhide, nameFitler = null
         updateMessage(messageId, { is_system: hide });
         changed.push(messageId);
 
-        // Also toggle "hidden" state for all visible messages
         const messageBlock = $(`.mes[mesid="${messageId}"]`);
         if (!messageBlock.length) continue;
         messageBlock.attr('is_system', String(hide));
     }
 
-    // Reload swipes. Useful when a last message is hidden.
     refreshSwipeButtons();
 
-    // Hiding/unhiding a range is a single decision the reader made, not one edit per message
-    // discovered afterwards by diffing.
+    // Save as one batched edit, not one per message
     if (chat_metadata?._tree_stored) {
         await chatOpEditMany(changed).catch(error =>
             console.error('Could not save the hidden state for those messages:', error));
@@ -182,33 +150,16 @@ export async function hideChatMessageRange(start, end, unhide, nameFitler = null
     }
 }
 
-/**
- * Mark message as hidden (system message).
- * @deprecated Use hideChatMessageRange.
- * @param {number} messageId Message ID
- * @param {JQuery<Element>} _messageBlock Unused
- * @returns {Promise<void>}
- */
+/** @deprecated Use hideChatMessageRange. */
 export async function hideChatMessage(messageId, _messageBlock) {
     return hideChatMessageRange(messageId, messageId, false);
 }
 
-/**
- * Mark message as visible (non-system message).
- * @deprecated Use hideChatMessageRange.
- * @param {number} messageId Message ID
- * @param {JQuery<Element>} _messageBlock Unused
- * @returns {Promise<void>}
- */
+/** @deprecated Use hideChatMessageRange. */
 export async function unhideChatMessage(messageId, _messageBlock) {
     return hideChatMessageRange(messageId, messageId, true);
 }
 
-/**
- * Adds a file attachment to the message.
- * @param {ChatMessage} message Message object
- * @returns {Promise<void>} A promise that resolves when file is uploaded.
- */
 export async function populateFileAttachment(message, inputId = 'file_form_input') {
     try {
         if (!message) return;
@@ -282,12 +233,6 @@ export async function populateFileAttachment(message, inputId = 'file_form_input
     }
 }
 
-/**
- * Uploads file to the server.
- * @param {string} fileName
- * @param {string} base64Data
- * @returns {Promise<string>} File URL
- */
 export async function uploadFileAttachment(fileName, base64Data) {
     try {
         const result = await fetch('/api/files/upload', {
@@ -312,11 +257,6 @@ export async function uploadFileAttachment(fileName, base64Data) {
     }
 }
 
-/**
- * Downloads file from the server.
- * @param {string} url File URL
- * @returns {Promise<string>} File text
- */
 export async function getFileAttachment(url) {
     try {
         const result = await fetch(url, {
@@ -338,11 +278,6 @@ export async function getFileAttachment(url) {
     }
 }
 
-/**
- * Validates file to make sure it is not binary or not image.
- * @param {File} file File object
- * @returns {Promise<boolean>} True if file is valid, false otherwise.
- */
 async function validateFile(file) {
     const fileText = await file.text();
     const isMedia = file.type.startsWith('image/') || file.type.startsWith('video/') || file.type.startsWith('audio/');
@@ -353,7 +288,6 @@ async function validateFile(file) {
         return false;
     }
 
-    // If file is binary
     if (isBinary && !isMedia && !isConvertible(file.type)) {
         toastr.error(t`Binary files are not supported. Select a text file or image.`);
         return false;
@@ -368,18 +302,12 @@ export function hasPendingFileAttachment() {
     return fileInput.files.length > 0;
 }
 
-/**
- * Displays file information in the message sending form.
- * @param {FileList} fileList File object
- * @returns {Promise<void>}
- */
 async function onFileAttach(fileList) {
     if (!fileList || fileList.length === 0) return;
 
     for (const file of fileList) {
         const isValid = await validateFile(file);
 
-        // If file is binary
         if (!isValid) {
             toastr.warning(t`File ${file.name} is not supported.`);
             $('#file_form').trigger('reset');
@@ -404,7 +332,6 @@ async function onFileAttach(fileList) {
 }
 
 /**
- * Deletes file from a message.
  * @param {JQuery<HTMLElement>} messageBlock Message block element
  * @param {number} messageId Message ID
  * @param {number} fileIndex File index
@@ -448,7 +375,6 @@ async function deleteMessageFile(messageBlock, messageId, fileIndex) {
 }
 
 /**
- * Opens file from message in a modal.
  * @param {number} messageId Message ID
  * @param {number} fileIndex File index
  */
@@ -481,7 +407,6 @@ async function viewMessageFile(messageId, fileIndex) {
 }
 
 /**
- * Inserts a file embed into the message.
  * @param {number} messageId
  * @param {JQuery<HTMLElement>} messageBlock
  * @returns {Promise<void>}
@@ -526,7 +451,6 @@ function embedMessageFile(messageId, messageBlock) {
 }
 
 /**
- * Appends file content to the message text.
  * @param {ChatMessage} message Message object
  * @param {string} messageText Message text
  * @returns {Promise<string>} Message text with file content appended.
@@ -566,7 +490,6 @@ export async function appendFileContent(message, messageText) {
 }
 
 /**
- * Replaces style tags in the message text with custom tags with encoded content.
  * @param {string} text
  * @returns {string} Encoded message text
  * @copyright https://github.com/kwaroran/risuAI
@@ -579,7 +502,6 @@ export function encodeStyleTags(text) {
 }
 
 /**
- * Sanitizes custom style tags in the message text to prevent DOM pollution.
  * @param {string} text Message text
  * @param {object} options Options object
  * @param {string} options.prefix Prefix the selectors with this value
@@ -663,12 +585,8 @@ export function decodeStyleTags(text, { prefix } = { prefix: '.mes_text ' }) {
     });
 }
 
-/**
- * Class to manage style preferences for characters.
- */
 class StylesPreference {
     /**
-     * Creates a new StylesPreference instance.
      * @param {string|null} avatarId - The avatar ID of the character
      */
     constructor(avatarId) {
@@ -676,7 +594,6 @@ class StylesPreference {
     }
 
     /**
-     * Checks if a preference exists for this character.
      * @returns {boolean} True if preference exists, false otherwise
      */
     exists() {
@@ -686,7 +603,6 @@ class StylesPreference {
     }
 
     /**
-     * Gets the current style preference.
      * @returns {boolean} True if global styles are allowed, false otherwise
      */
     get() {
@@ -696,7 +612,6 @@ class StylesPreference {
     }
 
     /**
-     * Sets the global styles preference via the character DB.
      * @param {boolean} allowed - Whether global styles are allowed
      */
     set(allowed) {
@@ -706,7 +621,6 @@ class StylesPreference {
         if (character) {
             character.allow_global_styles = allowed;
         }
-        // Persist to the character metadata DB
         fetch('/api/characters/allow-global-styles', {
             method: 'POST',
             headers: getRequestHeaders(),
@@ -715,10 +629,6 @@ class StylesPreference {
     }
 }
 
-/**
- * One-time migration of AllowGlobalStyles preferences from localStorage/accountStorage to the
- * character metadata DB. Reads existing keys, bulk-POSTs them, then marks migration complete.
- */
 async function migrateAllowGlobalStylesToDb() {
     if (localStorage.getItem('AllowGlobalStyles_migrated_to_db') === '1') return;
 
@@ -749,7 +659,6 @@ async function migrateAllowGlobalStylesToDb() {
 }
 
 /**
- * Formats creator notes in the message text.
  * @param {string} text Raw Markdown text
  * @param {string} avatarId Avatar ID
  * @returns {string} Formatted HTML text
@@ -807,7 +716,6 @@ async function openGlobalStylesPreferenceDialog() {
 
     await callGenericPopup(template, POPUP_TYPE.TEXT, '', { wide: false, large: false });
 
-    // Re-render the notes if the preference changed
     const newValue = preference.get();
     if (newValue !== currentValue) {
         $('#rm_button_selected_ch').trigger('click');
@@ -816,7 +724,6 @@ async function openGlobalStylesPreferenceDialog() {
 }
 
 async function checkForCreatorNotesStyles() {
-    // Don't do anything if in group chat or not in a chat
     if (getSelectionState().type !== 'character') {
         return;
     }
@@ -862,7 +769,6 @@ async function checkForCreatorNotesStyles() {
 }
 
 /**
- * Sets the class of the global styles button based on the state.
  * @param {boolean|null} state State of the button
  */
 function setGlobalStylesButtonClass(state) {
@@ -873,7 +779,6 @@ function setGlobalStylesButtonClass(state) {
 }
 
 /**
- * Extracts the contents of all style elements from the Markdown text.
  * @param {string} text Markdown text
  * @returns {string} The joined contents of all style elements
  */
@@ -940,7 +845,6 @@ export function isExternalMediaAllowed() {
 }
 
 /**
- * Expands the message media attachment.
  * @param {number} messageId Message ID
  * @param {number} mediaIndex Media index
  * @returns {HTMLElement} Enlarged media element
@@ -976,7 +880,6 @@ function expandMessageMedia(messageId, mediaIndex) {
 }
 
 /**
- * Shows a media lightbox popup for the given URL.
  * @param {string} url Media URL
  * @param {string} title Optional title to display
  * @param {boolean} isVideo Whether the media is a video
@@ -1082,7 +985,6 @@ export function showMediaLightbox(url, title = '', isVideo = false) {
 }
 
 /**
- * Deletes an image from a message.
  * @param {number} messageId Message ID
  * @param {number} mediaIndex Image index
  * @param {JQuery<HTMLElement>} messageBlock Message block element
@@ -1180,7 +1082,6 @@ async function deleteMessageMedia(messageId, mediaIndex, messageBlock) {
 }
 
 /**
- * Switches the media display mode for a message.
  * @param {number} messageId Message ID
  * @param {JQuery<HTMLElement>} messageBlock Message block element
  * @param {MEDIA_DISPLAY} targetDisplay Target display mode
@@ -1213,7 +1114,6 @@ async function switchMessageMediaDisplay(messageId, messageBlock, targetDisplay)
 }
 
 /**
- * Deletes media file from the server.
  * @param {string} url Path to the media file on the server
  * @param {boolean} [silent=false] If true, do not show error messages
  * @returns {Promise<boolean>} True if media file was deleted, false otherwise.
@@ -1244,7 +1144,6 @@ export async function deleteMediaFromServer(url, silent = false) {
 }
 
 /**
- * Deletes file from the server.
  * @param {string} url Path to the file on the server
  * @param {boolean} [silent=false] If true, do not show error messages
  * @returns {Promise<boolean>} True if file was deleted, false otherwise.
@@ -1275,7 +1174,6 @@ export async function deleteFileFromServer(url, silent = false) {
 }
 
 /**
- * Opens file attachment in a modal.
  * @param {FileAttachment} attachment File attachment
  */
 async function openFilePopup(attachment) {
@@ -1290,7 +1188,6 @@ async function openFilePopup(attachment) {
 }
 
 /**
- * Edit a file attachment in a notepad-like modal.
  * @param {FileAttachment} attachment Attachment to edit
  * @param {string} source Attachment source
  * @param {function} callback Callback function
@@ -1328,7 +1225,6 @@ async function editAttachment(attachment, source, callback) {
 }
 
 /**
- * Downloads an attachment to the user's device.
  * @param {FileAttachment} attachment Attachment to download
  */
 async function downloadAttachment(attachment) {
@@ -1343,7 +1239,6 @@ async function downloadAttachment(attachment) {
 }
 
 /**
- * Removes an attachment from the disabled list.
  * @param {FileAttachment} attachment Attachment to enable
  * @param {function} callback Success callback
  */
@@ -1355,7 +1250,6 @@ function enableAttachment(attachment, callback) {
 }
 
 /**
- * Adds an attachment to the disabled list.
  * @param {FileAttachment} attachment Attachment to disable
  * @param {function} callback Success callback
  */
@@ -1367,7 +1261,6 @@ function disableAttachment(attachment, callback) {
 }
 
 /**
- * Moves a file attachment to a different source.
  * @param {FileAttachment} attachment Attachment to moves
  * @param {string} source Source of the attachment
  * @param {function} callback Success callback
@@ -1399,7 +1292,6 @@ async function moveAttachment(attachment, source, callback) {
 }
 
 /**
- * Deletes an attachment from the server and the chat.
  * @param {FileAttachment} attachment Attachment to delete
  * @param {string} source Source of the attachment
  * @param {function} callback Callback function
@@ -1442,7 +1334,6 @@ export async function deleteAttachment(attachment, source, callback, confirm = t
 }
 
 /**
- * Determines if the attachment is disabled.
  * @param {FileAttachment} attachment Attachment to check
  * @returns {boolean} True if attachment is disabled, false otherwise.
  */
@@ -1450,18 +1341,13 @@ function isAttachmentDisabled(attachment) {
     return extension_settings.disabled_attachments.some(url => url === attachment?.url);
 }
 
-/**
- * Opens the attachment manager.
- */
 async function openAttachmentManager() {
     /**
-     * Renders a list of attachments.
      * @param {FileAttachment[]} attachments List of attachments
      * @param {string} source Source of the attachments
      */
     async function renderList(attachments, source) {
         /**
-         * Sorts attachments by sortField and sortOrder.
          * @param {FileAttachment} a First attachment
          * @param {FileAttachment} b Second attachment
          * @returns {number} Sort order
@@ -1476,7 +1362,6 @@ async function openAttachmentManager() {
         }
 
         /**
-         * Filters attachments by name.
          * @param {FileAttachment} a Attachment
          * @returns {boolean} True if attachment matches the filter, false otherwise.
          */
@@ -1501,7 +1386,6 @@ async function openAttachmentManager() {
 
         template.find(sources[source]).empty();
 
-        // Sort attachments by sortField and sortOrder, and apply filter
         const sortedAttachmentList = attachments.slice().filter(filterFn).sort(sortFn);
 
         for (const attachment of sortedAttachmentList) {
@@ -1529,9 +1413,7 @@ async function openAttachmentManager() {
         }
     }
 
-    /**
-     * Renders buttons for the attachment manager.
-     */
+    
     async function renderButtons() {
         const sources = {
             [ATTACHMENT_SOURCE.GLOBAL]: '.globalAttachmentsTitle',
@@ -1748,7 +1630,6 @@ async function openAttachmentManager() {
 }
 
 /**
- * Gets a list of available targets for attachments.
  * @returns {string[]} List of available targets
  */
 function getAvailableTargets() {
@@ -1769,7 +1650,6 @@ function getAvailableTargets() {
 }
 
 /**
- * Runs a known scraper on a source and saves the result as an attachment.
  * @param {string} scraperId Id of the scraper
  * @param {string} target Target for the attachment
  * @param {function} callback Callback function
@@ -1804,7 +1684,6 @@ async function runScraper(scraperId, target, callback) {
 }
 
 /**
- * Uploads a file attachment to the server.
  * @param {File} file File to upload
  * @param {string} target Target for the attachment
  * @returns {Promise<string>} Path to the uploaded file
@@ -1893,7 +1772,6 @@ function ensureAttachmentsExist() {
 }
 
 /**
- * Gets all currently available attachments. Ignores disabled attachments by default.
  * @param {boolean} [includeDisabled=false] If true, include disabled attachments
  * @returns {FileAttachment[]} List of attachments
  */
@@ -1907,7 +1785,6 @@ export function getDataBankAttachments(includeDisabled = false) {
 }
 
 /**
- * Gets all attachments for a specific source. Includes disabled attachments by default.
  * @param {string} source Attachment source
  * @param {boolean} [includeDisabled=true] If true, include disabled attachments
  * @returns {FileAttachment[]} List of attachments
@@ -1932,7 +1809,6 @@ export function getDataBankAttachmentsForSource(source, includeDisabled = true) 
 }
 
 /**
- * Verifies all attachments in the Data Bank.
  * @returns {Promise<void>} A promise that resolves when attachments are verified.
  */
 async function verifyAttachments() {
@@ -1942,7 +1818,6 @@ async function verifyAttachments() {
 }
 
 /**
- * Verifies all attachments for a specific source.
  * @param {string} source Attachment source
  * @returns {Promise<void>} A promise that resolves when attachments are verified.
  */
@@ -2000,7 +1875,6 @@ export function restoreNeutralChat() {
 }
 
 /**
- * Registers a file converter function.
  * @param {string} mimeType MIME type
  * @param {ConverterFunction} converter Function to convert file
  * @returns {void}
@@ -2020,7 +1894,6 @@ export function registerFileConverter(mimeType, converter) {
 }
 
 export function addDOMPurifyHooks() {
-    // Allow target="_blank" in links
     DOMPurify.addHook('afterSanitizeAttributes', function (node) {
         if ('target' in node) {
             node.setAttribute('target', '_blank');
@@ -2060,7 +1933,6 @@ export function addDOMPurifyHooks() {
             return;
         }
 
-        // Replace line breaks with <br> in unknown elements
         if (node instanceof HTMLUnknownElement) {
             node.innerHTML = node.innerHTML.trim();
 
@@ -2071,7 +1943,6 @@ export function addDOMPurifyHooks() {
                 const textNode = /** @type {Text} */ (walker.currentNode);
                 if (!textNode.data.includes('\n')) continue;
 
-                // Skip if this text node is within a <pre> (any ancestor)
                 if (textNode.parentElement && textNode.parentElement.closest('pre')) continue;
 
                 candidates.push(textNode);
@@ -2173,7 +2044,6 @@ export function addDOMPurifyHooks() {
 }
 
 /**
- * Switches an image to the next or previous one in the swipe list.
  * @param {number} messageId Message ID
  * @param {JQuery<HTMLElement>} element Message element
  * @param {string} direction Swipe direction
@@ -2211,13 +2081,11 @@ async function onImageSwiped(messageId, element, direction) {
         return;
     }
 
-    // Switch to previous image or wrap around if at the beginning
     if (direction === SWIPE_DIRECTION.LEFT) {
         const newIndex = currentIndex === 0 ? media.length - 1 : currentIndex - 1;
         updateIn(messageId, ['extra', 'media_index'], newIndex);
     }
 
-    // Switch to next image or generate a new one if at the end
     if (direction === SWIPE_DIRECTION.RIGHT) {
         const newIndex = currentIndex === media.length - 1 ? 0 : currentIndex + 1;
         updateIn(messageId, ['extra', 'media_index'], newIndex >= media.length ? 0 : newIndex);
@@ -2458,7 +2326,6 @@ export function initChatUtilities() {
     });
 
     /**
-     * Returns information about the closest media container.
      * @returns {MediaContainerInfo} Information about the media container
      * @typedef {object} MediaContainerInfo
      * @property {JQuery<HTMLElement>} messageBlock The closest message block
@@ -2526,7 +2393,6 @@ export function initChatUtilities() {
     });
 
     /**
-     * Common handler for file attachments.
      * @param {File[]} files Files to attach
      * @returns {Promise<void>}
      */

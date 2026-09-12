@@ -3,23 +3,14 @@ import { getPreviewString, saveTtsProviderSettings } from './index.js';
 export { SBVits2TtsProvider };
 
 class SBVits2TtsProvider {
-    //########//
-    // Config //
-    //########//
-
     settings;
     ready = false;
     voices = [];
     separator = '. ';
     audioElement = document.createElement('audio');
 
-    /**
-     * Perform any text processing before passing to TTS engine.
-     * @param {string} text Input text
-     * @returns {string} Processed text
-     */
     processText(text) {
-        // backup for auto_split
+        // encode newlines so auto_split doesn't collapse them; decoded back in fetchTtsGeneration
         text = text.replace(/\n+/g, '<br>');
         return text;
     }
@@ -110,13 +101,11 @@ class SBVits2TtsProvider {
     }
 
     onSettingsChange() {
-        // Used when provider settings are updated from UI
         this.settings.provider_endpoint = $('#sbvits_tts_endpoint').val();
         this.settings.language = $('#sbvits_api_language').val();
         this.settings.assist_text = $('#sbvits_assist_text').val();
         this.settings.reference_audio_path = $('#sbvits_reference_audio_path').val();
 
-        // Update the default TTS settings based on input fields
         this.settings.sdp_ratio = $('#sbvits_sdp_ratio').val();
         this.settings.noise = $('#sbvits_noise').val();
         this.settings.noisew = $('#sbvits_noisew').val();
@@ -126,7 +115,6 @@ class SBVits2TtsProvider {
         this.settings.assist_text_weight = $('#sbvits_assist_text_weight').val();
         this.settings.style_weight = $('#sbvits_style_weight').val();
 
-        // Update the UI to reflect changes
         $('#sbvits_sdp_ratio_output').text(this.settings.sdp_ratio);
         $('#sbvits_noise_output').text(this.settings.noise);
         $('#sbvits_noisew_output').text(this.settings.noisew);
@@ -140,7 +128,6 @@ class SBVits2TtsProvider {
     }
 
     async loadSettings(settings) {
-        // Only accept keys defined in defaultSettings
         this.settings = this.defaultSettings;
 
         for (const key in settings) {
@@ -151,7 +138,6 @@ class SBVits2TtsProvider {
             }
         }
 
-        // Set initial values from the settings
         $('#sbvits_tts_endpoint').val(this.settings.provider_endpoint);
         $('#sbvits_api_language').val(this.settings.language);
         $('#sbvits_assist_text').val(this.settings.assist_text);
@@ -165,7 +151,6 @@ class SBVits2TtsProvider {
         $('#sbvits_assist_text_weight').val(this.settings.assist_text_weight);
         $('#sbvits_style_weight').val(this.settings.style_weight);
 
-        // Update the UI to reflect changes
         $('#sbvits_sdp_ratio_output').text(this.settings.sdp_ratio);
         $('#sbvits_noise_output').text(this.settings.noise);
         $('#sbvits_noisew_output').text(this.settings.noisew);
@@ -174,7 +159,6 @@ class SBVits2TtsProvider {
         $('#sbvits_assist_text_weight_output').text(this.settings.assist_text_weight);
         $('#sbvits_style_weight_output').text(this.settings.style_weight);
 
-        // Register input/change event listeners to update settings on user interaction
         $('#sbvits_tts_endpoint').on('input', () => { this.onSettingsChange(); });
         $('#sbvits_api_language').on('change', () => { this.onSettingsChange(); });
         $('#sbvits_assist_text').on('input', () => { this.onSettingsChange(); });
@@ -191,7 +175,6 @@ class SBVits2TtsProvider {
         await this.checkReady();
     }
 
-    // Perform a simple readiness check by trying to fetch voiceIds
     async checkReady() {
         await Promise.allSettled([this.fetchTtsVoiceObjects(), this.changeTTSSettings()]);
     }
@@ -200,15 +183,6 @@ class SBVits2TtsProvider {
         return;
     }
 
-    //#################//
-    //  TTS Interfaces //
-    //#################//
-
-    /**
-     * Get a voice from the TTS provider.
-     * @param {string} voiceName Voice name to get
-     * @returns {Promise<Object>} Voice object
-     */
     async getVoice(voiceName) {
         if (this.voices.length == 0) {
             this.voices = await this.fetchTtsVoiceObjects();
@@ -227,9 +201,6 @@ class SBVits2TtsProvider {
         return response;
     }
 
-    //###########//
-    // API CALLS //
-    //###########//
     async fetchTtsVoiceObjects() {
         const response = await fetch(`${this.settings.provider_endpoint}/models/info`);
         if (!response.ok) {
@@ -252,25 +223,17 @@ class SBVits2TtsProvider {
             });
         });
 
-        this.voices = voices; // Assign to the class property
-        return voices; // Also return this list
+        this.voices = voices;
+        return voices;
     }
 
-    // Each time a parameter is changed, we change the configuration
     async changeTTSSettings() {
     }
 
-    /**
-     * Fetch TTS generation from the API.
-     * @param {string} inputText Text to generate TTS for
-     * @param {string} voiceId Voice ID to use (model_id-speaker_id-style)
-     * @returns {Promise<Response>} Fetch response
-     */
     async fetchTtsGeneration(inputText, voiceId) {
         const [model_id, speaker_id, ...rest] = voiceId.split('-');
         const style = rest.join('-');
         const params = new URLSearchParams();
-        // restore for auto_split
         inputText = inputText.replaceAll('<br>', '\n');
         params.append('text', inputText);
         params.append('model_id', model_id);
@@ -308,10 +271,6 @@ class SBVits2TtsProvider {
         return response;
     }
 
-    /**
-     * Preview TTS for a given voice ID.
-     * @param {string} id Voice ID
-     */
     async previewTtsVoice(id) {
         this.audioElement.pause();
         this.audioElement.currentTime = 0;
@@ -328,7 +287,6 @@ class SBVits2TtsProvider {
         this.audioElement.play();
     }
 
-    // Interface not used
     async fetchTtsFromHistory(history_item_id) {
         return Promise.resolve(history_item_id);
     }

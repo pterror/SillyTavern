@@ -24,10 +24,7 @@ const GOOGLE_MODEL_MIGRATIONS = new Map([
     ['gemini-3-pro-image-preview', 'gemini-3-pro-image'],
 ]);
 
-/**
- * Migrates old extension settings to the new format.
- * Must keep this function for compatibility with old settings.
- */
+/** Kept for compatibility with old settings. */
 function migrateSettings() {
     if (extension_settings.caption.local !== undefined) {
         extension_settings.caption.source = extension_settings.caption.local ? 'local' : 'extras';
@@ -71,9 +68,6 @@ function migrateSettings() {
     }
 }
 
-/**
- * Sets an image icon for the send button.
- */
 async function setImageIcon() {
     try {
         const sendButton = $('#send_picture .extensionsMenuExtensionButton');
@@ -84,9 +78,6 @@ async function setImageIcon() {
     }
 }
 
-/**
- * Sets a spinner icon for the send button.
- */
 async function setSpinnerIcon() {
     try {
         const sendButton = $('#send_picture .extensionsMenuExtensionButton');
@@ -97,11 +88,6 @@ async function setSpinnerIcon() {
     }
 }
 
-/**
- * Wraps a caption with a message template.
- * @param {string} caption Raw caption
- * @returns {Promise<string>} Wrapped caption
- */
 async function wrapCaptionTemplate(caption) {
     let template = extension_settings.caption.template || TEMPLATE_DEFAULT;
 
@@ -127,12 +113,6 @@ async function wrapCaptionTemplate(caption) {
     return messageText;
 }
 
-/**
- * Appends caption to an existing message.
- * @param {ChatMessage} message Message data
- * @param {number} mediaIndex Index of the image to caption
- * @returns {Promise<void>}
- */
 async function captionExistingMessage(message, mediaIndex) {
     if (!Array.isArray(message?.extra?.media) || message.extra.media.length === 0) {
         return;
@@ -195,13 +175,6 @@ async function captionExistingMessage(message, mediaIndex) {
     }
 }
 
-/**
- * Sends a captioned message to the chat.
- * @param {string} caption Caption text
- * @param {string} image Image URL
- * @param {string} mimeType Image MIME type
- * @returns {Promise<void>}
- */
 async function sendCaptionedMessage(caption, image, mimeType) {
     const messageText = await wrapCaptionTemplate(caption);
 
@@ -238,13 +211,6 @@ async function sendCaptionedMessage(caption, image, mimeType) {
     setTimeout(() => context.scrollOnMediaLoad(), debounce_timeout.short);
 }
 
-/**
- * Generates a caption for an image using a selected source.
- * @param {string} base64Img Base64 encoded image without the data:image/...;base64, prefix
- * @param {string} fileData Base64 encoded image with the data:image/...;base64, prefix
- * @param {string} externalPrompt Caption prompt
- * @returns {Promise<{caption: string}>} Generated caption
- */
 async function doCaptionRequest(base64Img, fileData, externalPrompt) {
     switch (extension_settings.caption.source) {
         case 'local':
@@ -260,11 +226,6 @@ async function doCaptionRequest(base64Img, fileData, externalPrompt) {
     }
 }
 
-/**
- * Generates a caption for an image using Extras API.
- * @param {string} base64Img Base64 encoded image without the data:image/...;base64, prefix
- * @returns {Promise<{caption: string}>} Generated caption
- */
 async function captionExtras(base64Img) {
     if (!modules.includes('caption')) {
         throw new Error('No captioning module is available.');
@@ -290,11 +251,6 @@ async function captionExtras(base64Img) {
     return data;
 }
 
-/**
- * Generates a caption for an image using a local model.
- * @param {string} base64Img Base64 encoded image without the data:image/...;base64, prefix
- * @returns {Promise<{caption: string}>} Generated caption
- */
 async function captionLocal(base64Img) {
     const apiResult = await fetch('/api/extra/caption', {
         method: 'POST',
@@ -310,11 +266,6 @@ async function captionLocal(base64Img) {
     return data;
 }
 
-/**
- * Generates a caption for an image using a Horde model.
- * @param {string} base64Img Base64 encoded image without the data:image/...;base64, prefix
- * @returns {Promise<{caption: string}>} Generated caption
- */
 async function captionHorde(base64Img) {
     const apiResult = await fetch('/api/horde/caption-image', {
         method: 'POST',
@@ -330,12 +281,6 @@ async function captionHorde(base64Img) {
     return data;
 }
 
-/**
- * Generates a caption for an image using a multimodal model.
- * @param {string} base64Img Base64 encoded image with the data:image/...;base64, prefix
- * @param {string} externalPrompt Caption prompt
- * @returns {Promise<{caption: string}>} Generated caption
- */
 async function captionMultimodal(base64Img, externalPrompt) {
     let prompt = externalPrompt || extension_settings.caption.prompt || PROMPT_DEFAULT;
 
@@ -353,13 +298,6 @@ async function captionMultimodal(base64Img, externalPrompt) {
     return { caption };
 }
 
-/**
- * Handles the image selection event.
- * @param {Event} e Input event
- * @param {string} prompt Caption prompt
- * @param {boolean} quiet Suppresses sending a message
- * @returns {Promise<string>} Generated caption
- */
 async function onSelectImage(e, prompt, quiet) {
     if (!(e.target instanceof HTMLInputElement)) {
         return '';
@@ -378,13 +316,6 @@ async function onSelectImage(e, prompt, quiet) {
     return caption;
 }
 
-/**
- * Gets a caption for an image file.
- * @param {File} file Input file
- * @param {string} prompt Caption prompt
- * @param {boolean} quiet Suppresses sending a message
- * @returns {Promise<string>} Generated caption
- */
 async function getCaptionForFile(file, prompt, quiet) {
     try {
         if (file.type.startsWith('video/') && !isVideoCaptioningAvailable()) {
@@ -417,11 +348,6 @@ function onRefineModeInput() {
     saveSettingsDebounced('extension_settings');
 }
 
-/**
- * Callback for the /caption command.
- * @param {object} args Named parameters
- * @param {string} prompt Caption prompt
- */
 async function captionCommandCallback(args, prompt) {
     const quiet = isTrueBoolean(args?.quiet);
     const messageId = args?.mesId ?? args?.id;
@@ -470,10 +396,6 @@ async function captionCommandCallback(args, prompt) {
     });
 }
 
-/**
- * Checks if video captioning is available for the current source.
- * @returns {boolean} True if video captioning is supported for the current source.
- */
 function isVideoCaptioningAvailable() {
     if (extension_settings.caption.source !== 'multimodal') {
         return false;
@@ -495,17 +417,14 @@ export async function init() {
             const hasCaptionModule = (() => {
                 const settings = extension_settings.caption;
 
-                // Handle non-multimodal sources
                 if (settings.source === 'extras' && modules.includes('caption')) return true;
                 if (settings.source === 'local' || settings.source === 'horde') return true;
 
-                // Handle multimodal sources
                 if (settings.source === 'multimodal') {
                     const api = settings.multimodal_api;
                     const altEndpointEnabled = settings.alt_endpoint_enabled;
                     const altEndpointUrl = settings.alt_endpoint_url;
 
-                    // APIs that support reverse proxy
                     const reverseProxyApis = {
                         'openai': SECRET_KEYS.OPENAI,
                         'mistral': SECRET_KEYS.MISTRALAI,

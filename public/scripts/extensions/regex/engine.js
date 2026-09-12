@@ -65,7 +65,6 @@ export class RegexProvider {
             this.#cache.delete(regexString);
             this.#cache.set(regexString, regex);
         } else {
-            // Evict oldest if at capacity
             if (this.#cache.size >= this.#maxSize) {
                 const firstKey = this.#cache.keys().next().value;
                 this.#cache.delete(firstKey);
@@ -332,7 +331,6 @@ function sanitizeRegexMacro(x) {
  * @typedef {{characterOverride?: string, isMarkdown?: boolean, isPrompt?: boolean, isEdit?: boolean, depth?: number }} RegexParams The parameters to use for the regex script
  */
 export function getRegexedString(rawString, placement, { characterOverride, isMarkdown, isPrompt, isEdit, depth } = {}) {
-    // WTF have you passed me?
     if (typeof rawString !== 'string') {
         console.warn('getRegexedString: rawString is not a string. Returning empty string.');
         return '';
@@ -346,11 +344,9 @@ export function getRegexedString(rawString, placement, { characterOverride, isMa
     const allRegex = getRegexScripts({ allowedOnly: true });
     allRegex.forEach((script) => {
         if (
-            // Script applies to Markdown and input is Markdown
             (script.markdownOnly && isMarkdown) ||
-            // Script applies to Generate and input is Generate
             (script.promptOnly && isPrompt) ||
-            // Script applies to all cases when neither "only"s are true, but there's no need to do it when `isMarkdown`, the as source (chat history) should already be changed beforehand
+            // Unrestricted scripts skip isMarkdown, since the chat-history source they'd act on is already regexed by then.
             (!script.markdownOnly && !script.promptOnly && !isMarkdown && !isPrompt)
         ) {
             if (isEdit && !script.runOnEdit) {
@@ -358,7 +354,6 @@ export function getRegexedString(rawString, placement, { characterOverride, isMa
                 return;
             }
 
-            // Check if the depth is within the min/max depth
             if (typeof depth === 'number') {
                 if (!isNaN(script.minDepth) && script.minDepth !== null && script.minDepth >= -1 && depth < script.minDepth) {
                     console.debug(`getRegexedString: Skipping script ${script.scriptName} because depth ${depth} is less than minDepth ${script.minDepth}`);
@@ -421,26 +416,21 @@ export function runRegexScript(regexScript, rawString, { characterOverride } = {
         const replaceString = regexScript.replaceString.replace(/{{match}}/gi, '$0');
         const replaceWithGroups = replaceString.replaceAll(/\$(\d+)|\$<([^>]+)>/g, (_, num, groupName) => {
             if (num) {
-                // Handle numbered capture groups ($1, $2, etc.)
                 match = args[Number(num)];
             } else if (groupName) {
-                // Handle named capture groups ($<name>)
                 const groups = args[args.length - 1];
                 match = groups && typeof groups === 'object' && groups[groupName];
             }
 
-            // No match found - return the empty string
             if (!match) {
                 return '';
             }
 
-            // Remove trim strings from the match
             const filteredMatch = filterString(match, regexScript.trimStrings, { characterOverride });
 
             return filteredMatch;
         });
 
-        // Substitute at the end
         return substituteParams(replaceWithGroups);
     });
 

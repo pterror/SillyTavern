@@ -267,7 +267,7 @@ export class ToolManager {
      * @param {ToolRegistration} tool The tool to register.
      */
     static registerFunctionTool({ name, displayName, description, parameters, action, formatMessage, shouldRegister, stealth }) {
-        // Convert WIP arguments
+        // Back-compat: support the old positional-arguments call signature
         if (typeof arguments[0] !== 'object') {
             [name, description, parameters, action] = arguments;
         }
@@ -586,7 +586,6 @@ export class ToolManager {
                         target[key] = deltaValue;
                     }
                 } else if (typeof targetValue === 'string') {
-                    // Concatenate strings
                     target[key] = targetValue + deltaValue;
                 } else {
                     target[key] = deltaValue;
@@ -595,10 +594,8 @@ export class ToolManager {
                 if (typeof targetValue !== 'object' || targetValue === null || Array.isArray(targetValue)) {
                     target[key] = {};
                 }
-                // Recursively apply deltas to nested objects
                 ToolManager.#applyToolCallDelta(target[key], deltaValue);
             } else {
-                // Assign other types directly
                 target[key] = deltaValue;
             }
         }
@@ -728,7 +725,6 @@ export class ToolManager {
 
         // Parsed tool calls from non-streaming data
         if (Array.isArray(data?.choices)) {
-            // Find a choice with 0-index
             const choice = data.choices.find(choice => choice.index === 0);
 
             if (choice && typeof choice.message === 'object' && Array.isArray(choice.message.tool_calls)) {

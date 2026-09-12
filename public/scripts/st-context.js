@@ -115,55 +115,22 @@ import { IGNORE_SYMBOL } from './constants.js';
 import { macros } from './macros/macro-system.js';
 import { MessageFormatter } from './message-formatter.js';
 
-/**
- * Read-only O(1) lookup for a group by id, backed by groupsStore's Map index - use this instead of
- * `context.groups.find(x => x.id === id)` wherever the id is already known, since that scan is O(n) over
- * every group. `context.groups` (the raw array) stays available unchanged for anything that isn't a by-id
- * lookup (iteration, filtering, etc.) or that hasn't been updated to use this yet.
- * Deliberately exposes only the read (`.get()`), not the groupsStore instance itself, since that also has
- * mutation methods (`.update()`/`.remove()`/etc.) that extensions shouldn't get write access to via a read path.
- * @param {string} id - the group's id
- * @returns {object|undefined} the group, or undefined if no group with that id exists
- */
+/** O(1) by-id lookup via groupsStore's Map index; exposes only the read, not the store's mutation methods. */
 function getGroupById(id) {
     return groupsStore.get(id);
 }
 
-/**
- * Read-only O(1) lookup for a character by avatar filename (the character id), backed by charactersStore's
- * Map index - use this instead of `context.characters.find(x => x.avatar === avatar)` wherever the avatar is
- * already known. Same rationale as getGroupById above - deliberately exposes only the read.
- * @param {string} avatar - the character's avatar filename (its id)
- * @returns {object|undefined} the character, or undefined if no character with that avatar exists
- */
+/** O(1) by-avatar lookup via charactersStore's Map index; exposes only the read, not the store's mutation methods. */
 function getCharacterByAvatar(avatar) {
     return charactersStore.get(avatar);
 }
 
-/**
- * Read-only O(1) lookup for a tag by id, backed by tagsStore's Map index - use this instead of
- * `context.tags.find(x => x.id === id)` wherever the id is already known, since that scan is O(n) over
- * every tag. `context.tags` (the raw array) stays available unchanged for anything that isn't a by-id
- * lookup (iteration, filtering, etc.) or that hasn't been updated to use this yet.
- * Deliberately exposes only the read (`.get()`), not the tagsStore instance itself, since that also has
- * mutation methods (`.update()`/`.remove()`/etc.) that extensions shouldn't get write access to via a read path.
- * @param {string} id - the tag's id
- * @returns {object|undefined} the tag, or undefined if no tag with that id exists
- */
+/** O(1) by-id lookup via tagsStore's Map index; exposes only the read, not the store's mutation methods. */
 function getTagById(id) {
     return tagsStore.get(id);
 }
 
-/**
- * Read-only O(1) lookup for a persona by avatar id, backed by personaStore's Map index. Personas aren't
- * exposed on `getContext()` at all otherwise (unlike `groups`/`tags`, there's no raw array/dict here to keep
- * for backwards compat - `context.powerUserSettings.persona_data` is technically reachable but not a clean
- * accessor), so this is the only path in.
- * Deliberately exposes only the read (`.get()`), not the personaStore instance itself, since that also has
- * mutation methods (`.update()`/`.remove()`/etc.) that extensions shouldn't get write access to via a read path.
- * @param {string} avatar - the persona's avatar id
- * @returns {object|undefined} the persona, or undefined if no persona with that avatar id exists
- */
+/** O(1) by-avatar lookup via personaStore's Map index; exposes only the read, not the store's mutation methods. */
 function getPersonaById(avatar) {
     return personaStore.get(avatar);
 }
@@ -172,21 +139,15 @@ export function getContext() {
     return {
         accountStorage,
         chat,
-        // Raw array - unchanged, O(n) `.find()` for by-id lookups. Kept exactly as-is for backwards
-        // compatibility with existing extensions. Prefer getCharacterByAvatar(avatar) below for O(1) lookups.
+        // Raw array kept as-is for backwards compat; prefer getCharacterByAvatar(avatar) for O(1) lookups.
         characters,
         getCharacterByAvatar,
-        // Raw array - unchanged, O(n) `.find()` for by-id lookups. Kept exactly as-is for backwards
-        // compatibility with existing extensions. Prefer getGroupById(id) below for O(1) by-id lookups.
+        // Raw array kept as-is for backwards compat; prefer getGroupById(id) for O(1) lookups.
         groups,
         getGroupById,
         name1,
         name2,
-        // Lazy getter (not a snapshot like this_chid used to be here) so extensions that read
-        // context.characterId later - after an await, from a closure, etc. - get an index recomputed
-        // fresh from the live characters array/current avatar, instead of one that can go stale if the
-        // array reorders or reloads in the meantime. Matches setCharacterId()'s own idx !== -1 ? String(idx)
-        // : undefined convention, since this_chid itself is always a numeric string or undefined.
+        // Lazy getter so it stays fresh instead of going stale like a snapshot would.
         get characterId() {
             const avatar = getCurrentCharacter()?.avatar;
             const index = avatar !== undefined ? characters.findIndex(x => x.avatar === avatar) : -1;

@@ -12,39 +12,14 @@ import { copyText } from './utils.js';
 let PromptArrayItemForRawPromptDisplay;
 let priorPromptArrayItemForRawPromptDisplay;
 
-/**
- * 2026-09 server-migration note: server-side storage (`src/endpoints/itemized-prompts.js`) is now the
- * source of truth. This IndexedDB instance now serves two purposes only: a local mirror of whatever's on
- * the server (so itemization is viewable without a network round trip - matters on a phone connection),
- * kept in sync by loadItemizedPrompts()/saveItemizedPrompts() below, and the read-only source for
- * migrateAllItemizedPrompts()'s one-time upload of each browser's pre-server-migration backlog.
- */
+/** Server-side storage is the source of truth; this is a local mirror for offline/instant reads. */
 const promptStorage = localforage.createInstance({ name: 'SillyTavern_Prompts' });
 export let itemizedPrompts = [];
 
 /** Bumped only if the pool-dedup wire format itself changes. */
 const POOL_VERSION = 2;
 
-/**
- * Exact-content dedup, not diffing: replaces any non-empty string with a reference into a shared per-chat
- * content pool, keyed by the string's own exact value (a plain `Map` lookup - O(1) per field, pure
- * equality, nothing that can search/backtrack/hang the way a diff algorithm can - see the 2026-09-06
- * removal of this file's previous diff-match-patch-based compression, which pegged the main thread hard
- * enough to make the app unusable). Recurses into arrays and plain objects, so the same mechanism covers
- * every shape an itemized-prompt entry's fields take:
- *  - whole flattened strings (non-OAI's rawPrompt/finalPrompt/mesSendString) - catches the same
- *    byte-identical-field case the old intra-entry dedup did (finalPrompt often equals rawPrompt exactly),
- *    for free, as a side effect of pooling by content rather than needing a dedicated field-to-field check.
- *  - `historyParts`, the per-message content list script.js's finishGenerating() captures structurally at
- *    the source (see its own comment on why this can't be reliably reconstructed from a flattened string
- *    after the fact) - this is where the real win is, since consecutive entries in the same chat share
- *    almost this entire list verbatim.
- *  - OAI's own rawPrompt shape, an array of `{role, content}` objects - `content` gets pooled the same way.
- * @param {*} value
- * @param {Map<string, number>} pool Content string -> pool key, mutated in place.
- * @param {string[]} poolOut Pool key -> content string (index = key), mutated in place (appended to only).
- * @returns {*} `value` with every non-empty string replaced by `{$r: key}`. Never mutates `value`.
- */
+/** Exact-content dedup (plain Map lookup, not diffing) - replaces each non-empty string, recursively, with a reference into a shared per-chat pool. */
 function poolizeValue(value, pool, poolOut) {
     if (typeof value === 'string') {
         if (value.length === 0) {
@@ -71,12 +46,7 @@ function poolizeValue(value, pool, poolOut) {
     return value;
 }
 
-/**
- * Inverse of poolizeValue() - resolves every `{$r: key}` reference back to its content string.
- * @param {*} value
- * @param {string[]} poolOut Pool key -> content string, as produced by poolizeValue().
- * @returns {*}
- */
+/** Inverse of poolizeValue(). */
 function unpoolizeValue(value, poolOut) {
     if (Array.isArray(value)) {
         return value.map(item => unpoolizeValue(item, poolOut));
@@ -95,12 +65,7 @@ function unpoolizeValue(value, poolOut) {
     return value;
 }
 
-/**
- * Pool-dedupes every entry in `entries` from scratch - used by migrateAllItemizedPrompts(), where each
- * chat is only ever processed once, so there's no previous pool to reuse.
- * @param {object[]} entries
- * @returns {{v: number, pool: string[], entries: object[]}}
- */
+/** Pool-dedupes every entry from scratch (no previous pool to reuse against). */
 function poolDedupAll(entries) {
     const pool = new Map();
     const poolOut = [];
@@ -108,26 +73,12 @@ function poolDedupAll(entries) {
     return { v: POOL_VERSION, pool: poolOut, entries: outEntries };
 }
 
-/** Cache of the last pool-dedup computed for saveItemizedPrompts()'s CURRENTLY loaded chat - see
- * poolDedupIncremental()'s own doc comment. Naturally invalidated (never explicitly reset) whenever a
- * different chatId is saved, since the lookup below checks chatId first. */
+/** Cache for poolDedupIncremental(); invalidated implicitly whenever a different chatId is saved. */
 let incrementalPoolCache = /** @type {{chatId: string, sourceEntries: object[], pool: Map<string, number>, poolOut: string[], entries: object[]} | null} */ (null);
 
 /**
- * Same contract as poolDedupAll(), but reuses the cached pool and already-pool-ized prefix for any prefix
- * of `entries` that's reference-identical to what was pool-deduped last time for this exact chatId.
- *
- * saveItemizedPrompts() is called after every single generated message (script.js's saveChatConditional()),
- * and this whole chat's data is re-sent to the server every time (not an incremental patch) - reusing the
- * unchanged prefix keeps each call's real work down to just the newly appended/changed entries, rather than
- * re-walking (and re-inserting into a fresh pool) the entire chat history on every single message.
- *
- * An entry earlier in the array being edited/regenerated (script.js's finishGenerating() replaces the
- * object at that index rather than mutating it, so this is a genuine reference change) correctly
- * invalidates and recomputes everything from that point onward.
- * @param {string} chatId
- * @param {object[]} entries
- * @returns {{v: number, pool: string[], entries: object[]}}
+ * Same contract as poolDedupAll(), but reuses the cached pool for any entries-array prefix that's still
+ * reference-identical to last time, since the whole chat is re-sent (not patched) on every save.
  */
 function poolDedupIncremental(chatId, entries) {
     const cached = incrementalPoolCache?.chatId === chatId ? incrementalPoolCache : null;
@@ -156,18 +107,7 @@ function poolDedupIncremental(chatId, entries) {
     return { v: POOL_VERSION, pool: poolOut, entries: outEntries };
 }
 
-/**
- * Decodes a stored itemized-prompts value into a plain, fully-resolved `entries[]` array. Handles every
- * shape this file has ever written:
- *  - a plain array: either the legacy pre-compression format, or the 2026-09-06 stopgap's "no compression"
- *    format - identical shapes, nothing to resolve either way.
- *  - `{v, pool, entries}`: the current exact-content pool-dedup format (poolDedupAll()/poolDedupIncremental()).
- *  - `{v, entries, dedup, rawPromptDelta}`: the brief diff-match-patch-based format this file used between
- *    the server-storage move and the pool-dedup redesign - removed for pegging the main thread, but kept
- *    readable here in case anything was ever written in this shape before the removal landed.
- * @param {object[]|{v: number, pool: string[], entries: object[]}|{v: number, entries: object[], dedup: (string[]|undefined)[], rawPromptDelta: (string|undefined)[]}|null|undefined} stored
- * @returns {object[]}
- */
+/** Decodes a stored value into a plain `entries[]` array, handling the plain-array, pool-dedup, and legacy diff-patch formats this file has written over time. */
 function decodeStoredItemizedPrompts(stored) {
     if (Array.isArray(stored)) {
         return stored;
@@ -204,13 +144,8 @@ function decodeStoredItemizedPrompts(stored) {
 }
 
 /**
- * Gets the itemized prompts for a chat. Reads the local IndexedDB mirror first (if present) for an
- * instant, network-free result, then always reconciles against the server in the background - the server
- * response, whenever it resolves, is authoritative and overwrites both the live `itemizedPrompts` state and
- * the local mirror. Callers that need to know when the server-backed result has landed can listen for
- * event_types.ITEMIZED_PROMPTS_LOADED, which fires once for the local read (if any) and again once the
- * server reconciliation completes.
- * @param {string} chatId Chat ID to load
+ * Reads the local mirror first for an instant result, then reconciles against the server, which is
+ * authoritative. ITEMIZED_PROMPTS_LOADED fires once per source, so listeners may see it twice.
  */
 export async function loadItemizedPrompts(chatId) {
     if (!chatId) {
@@ -235,15 +170,12 @@ export async function loadItemizedPrompts(chatId) {
             body: JSON.stringify({ chatId }),
         });
 
-        // The chat may have changed out from under this call while the request was in flight (loading is
-        // fired off per chat-switch, not queued) - never clobber whatever's current with a stale response.
+        // Avoid clobbering with a stale response if the user switched chats while this was in flight.
         if (getCurrentChatId() !== chatId) {
             return;
         }
 
         if (response.status === 404) {
-            // Nothing stored server-side yet - only actually "nothing" if the local mirror didn't have it
-            // either (checked above); otherwise leave the locally-loaded result in place.
             if (!itemizedPrompts.length) {
                 itemizedPrompts = [];
             }
@@ -261,14 +193,7 @@ export async function loadItemizedPrompts(chatId) {
     }
 }
 
-/**
- * Saves the itemized prompts for a chat: pool-dedupes (exact-content, not diffing - see
- * poolDedupIncremental()'s doc comment), sends the result to server-side storage
- * (`src/endpoints/itemized-prompts.js`, which gzips it at rest), and writes the same result to the local
- * IndexedDB mirror so it stays available without a network round trip. Called after every single generated
- * message (script.js's saveChatConditional()).
- * @param {string} chatId Chat ID to save itemized prompts for
- */
+/** Pool-dedupes and saves the itemized prompts for a chat to both server storage and the local mirror. */
 export async function saveItemizedPrompts(chatId) {
     try {
         if (!chatId) {
@@ -294,46 +219,16 @@ export async function saveItemizedPrompts(chatId) {
     }
 }
 
-/** Set once a background local-to-server migration has been kicked off this session (see
- * migrateAllItemizedPrompts()), so it's never launched more than once per session. */
 let allChatsMigrationStarted = false;
 
-/**
- * One-time upload of this browser's locally-accumulated IndexedDB backlog (`promptStorage`, the
- * pre-2026-09 `SillyTavern_Prompts` store) to server-side storage, then reclaims the local space -
- * this is the actual fix for "itemized prompts are missing on other devices/browsers": before this,
- * every chat's itemized breakdown existed ONLY in whichever browser generated it.
- *
- * Not just the chats a user happens to reopen: loadItemizedPrompts() only mirrors locally what it's
- * already asked the server for, so a chat sitting untouched in the local backlog would otherwise never get
- * uploaded, and its browser-local bytes would never be reclaimed either. This does a full scan instead.
- *
- * Call once at boot; safe to call unconditionally - both the in-session guard and the server's own "already
- * present" check (POST /api/itemized-prompts/migrate) make it a no-op on every call after the backlog is
- * drained. Never awaited by its caller, and never retried within a session on failure - a real (non-4xx)
- * failure just logs once and leaves the whole local backlog in place for the next boot to pick up, rather
- * than looping or hammering the server. Naturally resumable if interrupted: a chat is only removed from the
- * local backlog once the server has confirmed (in its response) that it holds the data, so a browser closed
- * mid-upload just means the next boot's scan finds - and only re-considers - whatever didn't get confirmed.
- *
- * Chats go up in size-capped batches (POST /api/itemized-prompts/migrate, body { chats: [...] }) rather
- * than one GET+save round trip per chat, and rather than the whole backlog in a single request: a real
- * backlog can run to tens of thousands of chats totaling gigabytes, so per-chat round-tripping is a request
- * flood (and made each chat's very first, expected-not-found 404 read as a routing bug), while one request
- * for everything risks a single-digit-GB request body. Each batch is capped at MAX_BATCH_BYTES of
- * serialized JSON (falling back to one oversized chat per batch if a single chat alone exceeds that), so
- * batch count scales with backlog size but stays in the tens/hundreds rather than one-per-chat or one huge
- * blob; BATCH_CONCURRENCY of them are in flight at once. The "does the server already have this" check
- * that used to be a GET per chat happens server-side, inside each batch's request, so it still can't
- * clobber a chat already migrated from another device/browser.
- */
+/** One-time upload of this browser's local backlog to server storage; scans the whole store since loadItemizedPrompts() only mirrors chats that get reopened, and batches uploads since a backlog can run to tens of thousands of chats. */
 export async function migrateAllItemizedPrompts() {
     if (allChatsMigrationStarted) {
         return;
     }
     allChatsMigrationStarted = true;
 
-    /** @type {[string, object[]|object][]} [chatId, raw stored value] pairs still sitting in local IndexedDB. */
+    /** @type {[string, object[]|object][]} */
     const local = [];
     try {
         await promptStorage.iterate((value, chatId) => {
@@ -353,10 +248,7 @@ export async function migrateAllItemizedPrompts() {
         return;
     }
 
-    // Chosen so a batch's JSON body stays comfortably small (low single-digit MB) while still cutting a
-    // 10k+ chat backlog down to tens/hundreds of requests instead of one per chat. MAX_BATCH_CHATS is a
-    // secondary cap for backlogs of many small chats, where the byte cap alone would still pack thousands
-    // into one batch.
+    // MAX_BATCH_CHATS also caps backlogs of many small chats, where the byte cap alone wouldn't limit count.
     const MAX_BATCH_BYTES = 4 * 1024 * 1024;
     const MAX_BATCH_CHATS = 200;
     const BATCH_CONCURRENCY = 4;
@@ -399,8 +291,7 @@ export async function migrateAllItemizedPrompts() {
                 });
 
                 if (!response.ok) {
-                    // A real (transient) failure, not per-chat - leave this batch's chats alone and let a
-                    // future boot's scan retry them, rather than looping or falling back to per-chat requests.
+                    // Leave this batch's chats in place for a future boot's scan to retry, rather than looping here.
                     console.log('Error migrating a batch of itemized prompts to server:', response.statusText);
                     continue;
                 }
@@ -420,12 +311,6 @@ export async function migrateAllItemizedPrompts() {
     console.log(`[itemized-prompts] Server migration pass complete (${migratedCount}/${local.length} chat(s) migrated across ${batches.length} batch(es)).`);
 }
 
-/**
- * Replaces the itemized prompt text for a message.
- * @param {number} mesId Message ID to get itemized prompt for
- * @param {string} promptText New raw prompt text
- * @returns
- */
 export async function replaceItemizedPromptText(mesId, promptText) {
     if (!Array.isArray(itemizedPrompts)) {
         itemizedPrompts = [];
@@ -440,10 +325,6 @@ export async function replaceItemizedPromptText(mesId, promptText) {
     itemizedPrompt.rawPrompt = promptText;
 }
 
-/**
- * Deletes the itemized prompts for a chat from server-side storage and the local mirror.
- * @param {string} chatId Chat ID to delete itemized prompts for
- */
 export async function deleteItemizedPrompts(chatId) {
     try {
         if (!chatId) {
@@ -462,9 +343,6 @@ export async function deleteItemizedPrompts(chatId) {
     }
 }
 
-/**
- * Empties the itemized prompts array, every chat's server-side storage, and the local mirror.
- */
 export async function clearItemizedPrompts() {
     try {
         await fetch('/api/itemized-prompts/clear', {
@@ -694,9 +572,7 @@ export async function promptItemize(itemizedPrompts, requestedMesId) {
 }
 
 export function initItemizedPrompts() {
-    // Fire-and-forget: sweeps every OTHER chat's stored prompts into the compressed format in the
-    // background (see this function's own doc comment on why the per-chat-open path alone isn't enough).
-    migrateAllItemizedPrompts();
+    migrateAllItemizedPrompts(); // fire-and-forget
 
     registerDebugFunction('clearPrompts', 'Delete itemized prompts', 'Deletes all itemized prompts from the local storage.', async () => {
         await clearItemizedPrompts();
@@ -721,11 +597,6 @@ export function initItemizedPrompts() {
     });
 }
 
-/**
- * Swaps the itemized prompts between two messages. Useful when moving messages around in the chat.
- * @param {number} sourceMessageId Source message ID
- * @param {number} targetMessageId Target message ID
- */
 export function swapItemizedPrompts(sourceMessageId, targetMessageId) {
     if (!Array.isArray(itemizedPrompts)) {
         return;
@@ -745,11 +616,6 @@ export function swapItemizedPrompts(sourceMessageId, targetMessageId) {
     itemizedPrompts.sort((a, b) => a.mesId - b.mesId);
 }
 
-/**
- * Deletes the itemized prompt for a specific message.
- * Shifts down other itemized prompts as necessary.
- * @param {number} messageId Message ID to delete itemized prompt for
- */
 export function deleteItemizedPromptForMessage(messageId) {
     if (!Array.isArray(itemizedPrompts)) {
         return;

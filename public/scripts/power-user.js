@@ -298,11 +298,8 @@ export const power_user = {
         max_additions: 1,
     },
 
-    // personas/persona_descriptions below are compat views over persona_data (see installPersonaCompatProxies()
-    // near the bottom of this file) - persona_data is the real, merged, avatar-id-keyed store; personas/
-    // persona_descriptions are Proxy objects that read/write through to it in the old two-dict shape, for
-    // outside code (third-party extensions, settings.json's on-disk shape for downgrade/backup-restore
-    // compat) that still expects that shape. In-repo code should use personaStore, not these two fields.
+    // personas/persona_descriptions are compat Proxy views over persona_data (installPersonaCompatProxies())
+    // for outside code that still expects the old two-dict shape. In-repo code should use personaStore instead.
     personas: {},
     default_persona: null,
     persona_descriptions: {},
@@ -380,8 +377,7 @@ export const power_user = {
  */
 
 /**
- * @returns {PersonaRecord} A freshly-defaulted persona record, matching what personas.js's initPersona() has
- * always defaulted a persona to when given nothing but a name.
+ * @returns {PersonaRecord} A freshly-defaulted persona record.
  */
 function defaultPersonaRecord() {
     return {
@@ -397,21 +393,16 @@ function defaultPersonaRecord() {
 }
 
 /**
- * The real, canonical persona store - avatarId-keyed, backed by power_user.persona_data. This is what in-repo
- * code should use going forward; power_user.personas/persona_descriptions (below) are compat views over it for
- * outside code only.
+ * The canonical persona store - avatarId-keyed, backed by power_user.persona_data. In-repo code should use
+ * this going forward; power_user.personas/persona_descriptions (below) are compat views over it.
  * @type {DictEntityStore<PersonaRecord>}
  */
 export let personaStore = new DictEntityStore(power_user.persona_data);
 
 /**
- * Merges power_user.personas (avatarId -> name string) and power_user.persona_descriptions (avatarId -> the
- * rest of the fields) - as freshly loaded from settings.json, i.e. before installPersonaCompatProxies() below
- * replaces them with live views - into power_user.persona_data, the new merged/canonical shape. Upgrade-safe:
- * never drops a persona that exists in either legacy dict, even if the two disagree (same "don't silently
- * orphan existing user data on upgrade" concern that applied to PromptManager's now-removed legacy chid path).
- * Idempotent and safe to call on every load (skips ids already present in persona_data), so it also picks up
- * personas that predate this migration but only surface later (e.g. restored from an older backup file).
+ * Merges the legacy power_user.personas/persona_descriptions dicts into persona_data. Idempotent (skips ids
+ * already present) and never drops a persona present in either legacy dict, so upgrading doesn't silently
+ * orphan existing data.
  * @param {{[avatarId: string]: string}} legacyPersonas
  * @param {{[avatarId: string]: Partial<PersonaRecord>}} legacyDescriptions
  */
@@ -430,19 +421,9 @@ export function migrateLegacyPersonaDicts(legacyPersonas, legacyDescriptions) {
 }
 
 /**
- * Builds the read-through/write-through Proxy that makes personaStore look like the old
- * `power_user.personas` (avatarId -> name string) shape to code that hasn't migrated onto personaStore -
- * currently at least one third-party extension (SillyTavern-Smart-Dialogue-Colorizer) reads this directly, and
- * `power_user` as a whole gets JSON.stringify'd straight into settings.json on every save, so this shape also
- * needs to keep showing up there for downgrade/backup-restore compat. The proxy has no state of its own (empty
- * target, everything virtualized through traps) - every read is computed live from personaStore, so there's no
- * second copy that can drift out of sync the way the original personas/persona_descriptions split could.
- *
- * Writes are two-way: `power_user.personas[id] = name` on an existing persona is a plain rename
- * (personaStore.update); on an unknown id it creates a new persona defaulted the same way initPersona() always
- * has when given only a name, and replicates the same side effects a real create call site would
- * (saveSettingsDebounced + PERSONA_CREATED). `delete power_user.personas[id]` removes the persona entirely
- * (mirrors deletePersona() deleting both legacy dicts' entries together) and emits PERSONA_DELETED.
+ * Read-through/write-through Proxy making personaStore look like the old `power_user.personas`
+ * (avatarId -> name string) shape, for code that hasn't migrated onto personaStore and for settings.json's
+ * on-disk compat shape. No state of its own - every read is computed live, so nothing can drift out of sync.
  * @returns {{[avatarId: string]: string}}
  */
 function makePersonasCompatProxy() {
@@ -490,16 +471,9 @@ function makePersonasCompatProxy() {
 }
 
 /**
- * Same idea as makePersonasCompatProxy(), for the old `power_user.persona_descriptions` (avatarId -> {
- * description, position, depth, role, lorebook, title, connections }) shape. Unlike the personas proxy, this
- * one's get() returns the *live* PersonaRecord itself rather than a projected copy (it does carry a `name`
- * field the old shape never had, which nothing reads for the absence of) - the old descriptions dict was
- * always mutated in place by callers (`power_user.persona_descriptions[id].title = x`, `.connections = [...]`,
- * etc, each followed by its own explicit saveSettingsDebounced('power_user')), and a copy would silently discard those
- * writes since they'd land on a throwaway object instead of the store. Returning the live record instead means
- * nested in-place mutation keeps working exactly as it always did (still requires the caller to save/emit
- * itself, same as before - this proxy doesn't add auto-save on nested mutation, since it has no way to observe
- * it), which matters while any old-style nested-mutation call sites haven't been migrated onto personaStore yet.
+ * Same idea as makePersonasCompatProxy(), for the old `power_user.persona_descriptions` shape. get() returns
+ * the *live* PersonaRecord rather than a copy, so old-style nested in-place mutation
+ * (`power_user.persona_descriptions[id].title = x`) keeps working - a copy would silently discard those writes.
  * @returns {{[avatarId: string]: Partial<PersonaRecord>}}
  */
 function makePersonaDescriptionsCompatProxy() {
@@ -535,11 +509,6 @@ function makePersonaDescriptionsCompatProxy() {
             return true;
         },
         deleteProperty(target, prop) {
-            // The old code never deleted a whole persona_descriptions[id] entry directly (only sub-fields on
-            // it, e.g. `delete power_user.persona_descriptions[id].title`, which the live-reference get()
-            // above already handles correctly) - but if anything does, treat it the same as deletePersona()
-            // deleting both legacy dicts' entries together, rather than leaving personas/persona_data out of
-            // sync with an orphaned name and no description.
             if (typeof prop === 'symbol') { delete target[prop]; return true; }
             const entity = personaStore.get(prop);
             if (entity) {
@@ -555,12 +524,8 @@ function makePersonaDescriptionsCompatProxy() {
 
 /**
  * (Re)builds personaStore to wrap the current power_user.persona_data reference, migrates any not-yet-merged
- * legacy persona data found on power_user.personas/persona_descriptions into it, and installs fresh compat
- * proxies over power_user.personas/persona_descriptions. Called once at module load (so personaStore/the
- * proxies exist even before settings finish loading) and again from loadPowerUserSettings() after
- * Object.assign(power_user, settings.power_user) - which replaces persona_data/personas/persona_descriptions
- * with whatever was actually saved, so the store and proxies need to be rebuilt against those, same reasoning
- * as tags.js's rebuildTagStores().
+ * legacy persona data into it, and installs fresh compat proxies. Called at module load and again after
+ * settings load replaces persona_data/personas/persona_descriptions with the saved values.
  */
 export function installPersonaCompatProxies() {
     if (!power_user.persona_data || typeof power_user.persona_data !== 'object') {
@@ -1814,12 +1779,8 @@ export async function loadPowerUserSettings(settings, data) {
         Object.assign(power_user, settings.power_user);
     }
 
-    // Rebuild personaStore (and power_user.personas/persona_descriptions' compat proxies) against whatever
-    // persona_data/personas/persona_descriptions actually came back from settings.json - a store/proxy built
-    // against the pre-load defaults would otherwise keep pointing at stale, orphaned objects. Also migrates
-    // any pre-existing personas/persona_descriptions data (from a settings.json saved before this migration)
-    // into persona_data the first time it's seen; safe to call unconditionally since it's a no-op for ids
-    // already present in persona_data.
+    // Rebuild against whatever came back from settings.json, or the store/proxies keep pointing at stale
+    // pre-load defaults; also migrates any legacy persona data, a no-op if already migrated.
     installPersonaCompatProxies();
 
     if (power_user.stscript === undefined) {
@@ -2773,8 +2734,7 @@ export function sortEntitiesList(entities, forceSearch, filterHelper = null) {
         }
 
         // Seeded hash instead of a shuffle: a stable total order, so it doesn't reshuffle on every re-render,
-        // and narrowing the set (search, tag filters) never reorders whatever survives. See random-sort.js
-        // and docs/design/character-data-residency-redesign.md §5.3.
+        // and narrowing the set (search, tag filters) never reorders whatever survives.
         if (isRandom) {
             return compareByRandomSeed(`${a.type}.${a.id}`, `${b.type}.${b.id}`, randomSeed);
         }
@@ -3161,12 +3121,9 @@ function findTagIdByName(name) {
 }
 
 /**
- * Picks one random character, optionally tag-filtered, via the server's `ORDER BY RANDOM() LIMIT 1` (design doc
- * §5.3): this is the one-shot `/random` pick, unrelated to the persisted seeded random-sort *list* ordering
- * (random-sort.js, phase 5b) - no residency requirement, so it goes straight through
- * `characterRepository.query()` instead of scanning `characters`/`tag_map`. The `/query` endpoint requires a
- * finite `sort.seed` even for a one-row pick (src/endpoints/characters.js), so this mints one with the same
- * helper random-sort.js uses - it just never persists it, since a one-shot pick has nothing to reroll.
+ * Picks one random character, optionally tag-filtered, via the server's `ORDER BY RANDOM() LIMIT 1` - a
+ * one-shot pick unrelated to the persisted seeded random-sort *list* ordering, so it goes straight through
+ * `characterRepository.query()` instead of scanning `characters`/`tag_map`.
  * @param {string} [tagName] Optional tag name to filter the pick to.
  * @returns {Promise<string|undefined>} The avatar of the randomly selected character, or undefined if none matched.
  */
@@ -3179,10 +3136,8 @@ async function getRandomCharacterAvatar(tagName) {
         }
     }
 
-    // Reuses buildCharacterQuery() (character-repository.js) - the same pure filter/sort builder
-    // getEntitiesList()/favsToHotswap()/getGroupCharacters() already go through - rather than hand-shaping the
-    // wire filter here, so this stays covered by its existing unit coverage (tests/character-repository.test.js)
-    // instead of needing its own.
+    // Reuses buildCharacterQuery() - the same filter/sort builder other query call sites go through - rather
+    // than hand-shaping the wire filter here.
     const { filter, sort } = buildCharacterQuery({
         tagsInclude: tagId ? [tagId] : [],
         sortField: 'random',

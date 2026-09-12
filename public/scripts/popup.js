@@ -460,9 +460,7 @@ export class Popup {
                 //Text shows OK if not explicitly set to false, and CANCEL only if defined as true or with a caption
                 if (okButton === false) this.okButton.style.display = 'none';
                 if (!cancelButton) this.cancelButton.style.display = 'none';
-                // A TEXT popup without a cancel button has no real second outcome to decide between - it's just
-                // dismissed. Give it an X that closes it exactly like OK would (never CANCELLED), so it doesn't
-                // trigger any different downstream handling than clicking OK already does.
+                // No cancel button means no real second outcome, so the X should complete like OK (not CANCELLED).
                 if (!cancelButton && okButton !== false) {
                     this.closeButton.style.display = 'block';
                     this.closeButton.dataset.result = this.okButton.dataset.result;

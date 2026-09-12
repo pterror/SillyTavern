@@ -89,9 +89,6 @@ const FANCY_NAMES = {
     'regex-preset': 'Regex Preset',
 };
 
-/**
- * A wrapper for the connection manager spinner.
- */
 class ConnectionManagerSpinner {
     /**
      * @type {AbortController[]}
@@ -187,14 +184,12 @@ const profilesProvider = () => [
  * @returns {ConnectionProfile|null} Best match or null
  */
 function findProfileByName(value) {
-    // Try to find exact match
     const profile = extension_settings.connectionManager.profiles.find(p => p.name === value);
 
     if (profile) {
         return profile;
     }
 
-    // Try to find fuzzy match
     const fuse = new Fuse(extension_settings.connectionManager.profiles, { keys: ['name'] });
     const results = fuse.search(value);
 
@@ -492,7 +487,6 @@ async function generateStreamCallback(args, value) {
         return '';
     }
 
-    // Check if Connection Manager is available
     const context = getContext();
     if (context.extensionSettings.disabledExtensions.includes('connection-manager')) {
         toastr.error(t`Connection Manager is required for /profile-genstream. Use /gen or /genraw instead.`);
@@ -525,10 +519,8 @@ async function generateStreamCallback(args, value) {
         }
     }
 
-    // Create abort controller for stop functionality (when stop is enabled)
     const abortController = enableStop ? new AbortController() : null;
 
-    // Compose the stop handler: abort the request + optionally invoke user closure
     const onStopHandler = enableStop ? async () => {
         abortController.abort();
         if (onStopClosure) {
@@ -547,14 +539,11 @@ async function generateStreamCallback(args, value) {
             deactivateSendButtons();
         }
 
-        // Determine which profile to use
-        // Use the currently selected profile if no profile specified
         let effectiveProfileId = context.extensionSettings.connectionManager.selectedProfile;
 
         const profiles = context.extensionSettings.connectionManager.profiles;
 
         if (profileIdOrName) {
-            // Use try to find profile by id first, then fuse search
             const profile = profiles.find(p => p.id === profileIdOrName);
             if (profile) {
                 effectiveProfileId = profile.id;
@@ -577,7 +566,6 @@ async function generateStreamCallback(args, value) {
             return '';
         }
 
-        // Create streaming display
         const display = new StreamingDisplay();
         display.show({
             label: generatingLabel,
@@ -595,7 +583,6 @@ async function generateStreamCallback(args, value) {
 
         /** Gets the final (if requested, formatted) text to return for this command @returns {string} */
         function buildResultText() {
-            // Format output with reasoning if requested
             if (includeReasoning && finalReasoning) {
                 const { formatted } = formatReasoning(finalReasoning, finalText);
                 return formatted;
@@ -605,7 +592,6 @@ async function generateStreamCallback(args, value) {
         }
 
         try {
-            // Attempt streaming first
             const streamResponse = await ConnectionManagerRequestService.sendRequest(
                 effectiveProfileId,
                 messages,
@@ -622,7 +608,6 @@ async function generateStreamCallback(args, value) {
                     display.updateContent(finalText);
                 }
             } else {
-                // Non-streaming fallback within the try block
                 const extracted = streamResponse;
                 finalText = extracted?.content || '';
                 finalReasoning = extracted?.reasoning || '';
@@ -641,7 +626,6 @@ async function generateStreamCallback(args, value) {
             console.warn('[Slash Commands] Streaming failed, falling back to non-streaming:', error);
             display.hide({ instant: true });
 
-            // Retry with non-streaming
             const response = await ConnectionManagerRequestService.sendRequest(
                 effectiveProfileId,
                 messages,
@@ -653,7 +637,6 @@ async function generateStreamCallback(args, value) {
             finalText = extracted?.content || '';
             finalReasoning = extracted?.reasoning || '';
 
-            // Show quick non-streaming display
             display.show({
                 label: generatingLabel,
                 icon: ConnectionManagerRequestService.getProfileIcon(effectiveProfileId),
@@ -667,7 +650,6 @@ async function generateStreamCallback(args, value) {
         // Mark as complete with delay (null = stay open until user closes)
         display.complete({ label: completedLabel, delay: completeDelay });
 
-        // Invoke onComplete closure if provided
         if (onCompleteClosure) {
             try {
                 const localClosure = onCompleteClosure.getCopy();

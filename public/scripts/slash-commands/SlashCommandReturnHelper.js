@@ -14,7 +14,7 @@ export const slashCommandReturnHelper = {
     /**
      * Gets/creates the enum list of types of return relevant for a slash command
      *
-     * @param {object} [options={}] Options
+     * @param {object} [options={}]
      * @param {boolean} [options.allowPipe=true] Allow option to pipe the return value
      * @param {boolean} [options.allowObject=false] Allow option to return the value as an object
      * @param {boolean} [options.allowChat=false] Allow option to return the value as a chat message
@@ -40,7 +40,7 @@ export const slashCommandReturnHelper = {
      *
      * @param {SlashCommandReturnType} type The type of return
      * @param {object|number|string} value The value to return
-     * @param {object} [options={}] Options
+     * @param {object} [options={}]
      * @param {(o: object) => string} [options.objectToStringFunc=null] Function to convert the object to a string, if object was provided and 'object' was not the chosen return type
      * @param {(o: object) => string} [options.objectToHtmlFunc=null] Analog to 'objectToStringFunc', which will be used here if not provided - but can do a different string layout if HTML is requested
      * @returns {Promise<*>} The processed return value

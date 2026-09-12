@@ -104,46 +104,14 @@ export class FilterHelper {
             [fuzzySearchCategories.tags]: { resultMap: new Map() },
             [fuzzySearchCategories.groups]: { resultMap: new Map() },
         };
-        /**
-         * Pre-computed character/group search results from the server's fast full-content index (see
-         * setServerSearchResults() below), or null if none are available for the current search value/fav state
-         * yet.
-         * @type {{ searchValue: string, favOnly: boolean, characterScores: Map<string, number>, groupScores: Map<string, number>, total: number } | null}
-         */
+        /** @type {{ searchValue: string, favOnly: boolean, characterScores: Map<string, number>, groupScores: Map<string, number>, total: number } | null} */
         this.serverSearchResults = null;
     }
 
     /**
-     * Supplies pre-computed character/group search scores from the server's fast full-content search (POST
-     * /api/characters/all with `search`), so searchFilter() can use those instead of the client-side
-     * fuzzySearchCharacters()/fuzzySearchGroups() pass.
-     *
-     * This matters beyond speed: when `performance.lazyLoadCharacters` is on, the client's resident `characters`
-     * array only has description/mes_example/scenario/personality/first_mes/creator_notes/alternate_greetings
-     * populated for characters that have been individually opened this session - so the client-side fuzzy pass
-     * silently only ever searches name/tags for the rest of the library. The server always indexes full
-     * character data regardless of that setting, so routing through it here closes that gap, not just the
-     * multi-second-per-keystroke slowness the fast server index was originally built to fix.
-     *
-     * `favOnly` records whether these results were fetched with the server-side favorites restriction applied
-     * (fetchServerCharacterSearchResults(), script.js, mirrors the current FILTER_TYPES.FAV state into the
-     * request) - searchFilter() below only reuses a cache entry when both `searchValue` AND `favOnly` match the
-     * current filter state, not just `searchValue`. Without that second check, toggling the favorites filter
-     * while a search is already in flight (or before the corresponding re-fetch lands) could silently reuse
-     * favorites-blind (or, symmetrically, over-restricted) scores - the underlying bug this whole `favOnly` plumbing
-     * exists to fix in the first place: a search index page capped by relevance alone can easily contain zero
-     * favorited items even when many exist, so combining it with the *client-side* favorite filter's own pass
-     * (FilterHelper.favFilter() below) can never recover them after the fact.
-     *
-     * Call with `searchValue`/`favOnly` not matching the current search box value/fav filter state has no effect
-     * (searchFilter() only uses a cache entry when both match exactly); call with `null` to clear a stale/failed
-     * result and let searchFilter() fall back to the client-side pass for this search (that fallback runs over
-     * every resident character/group, not a relevance-capped page, so it isn't subject to this same gap - just
-     * slower, per this file's other perf notes).
-     * `total` is the server's real match count (POST /api/characters/all's own `total`, uncapped by its
-     * page-fetch limit - see paginateSearchResults()'s JSDoc in characters.js) - callers that only have the
-     * capped `characterScores`/`groupScores` map to derive a count from (e.g. printCharacters()'s local
-     * pagination navigator) can use this to show the true match count instead of the capped one.
+     * Supplies pre-computed character/group search scores from the server's full-content search index, so
+     * searchFilter() can use those instead of the client-side fuzzy pass, which only sees the lazily-loaded
+     * subset of character data. Pass `null` to clear stale/failed results.
      * @param {{ searchValue: string, favOnly: boolean, characterScores: Map<string, number>, groupScores: Map<string, number>, total: number } | null} results
      */
     setServerSearchResults(results) {
@@ -366,10 +334,7 @@ export class FilterHelper {
 
         const searchValue = this.filterData[FILTER_TYPES.SEARCH];
 
-        // Save fuzzy search results and scores if enabled
         if (power_user.fuzzy_search) {
-            // Tags are always fully resident client-side (a small, cheap dataset), so there's no shallow-data
-            // gap for them and no reason to route them through the server - only characters/groups need that.
             const fuzzySearchTagsResult = fuzzySearchTags(searchValue, this.fuzzySearchCaches);
             this.cacheScores(FILTER_TYPES.SEARCH, new Map(fuzzySearchTagsResult.map(i => [`tag.${i.item.id}`, i.score])));
 
@@ -378,11 +343,7 @@ export class FilterHelper {
                 this.cacheScores(FILTER_TYPES.SEARCH, new Map([...this.serverSearchResults.characterScores].map(([avatar, score]) => [`character.${avatar}`, score])));
                 this.cacheScores(FILTER_TYPES.SEARCH, new Map([...this.serverSearchResults.groupScores].map(([id, score]) => [`group.${id}`, score])));
             } else {
-                // Server results for this exact search string + fav filter state aren't in yet (still in flight,
-                // or the request failed) - fall back to the client-side pass so search still returns something
-                // meanwhile. This client-side pass runs over every resident character/group (not a
-                // relevance-capped server page), so favFilter() below can still correctly narrow it even before
-                // the server results land - see setServerSearchResults()'s doc comment for the gap this avoids.
+                // Server results for this search/fav state aren't in yet; fall back to the client-side pass.
                 const fuzzySearchCharactersResults = fuzzySearchCharacters(searchValue, this.fuzzySearchCaches);
                 const fuzzySearchGroupsResults = fuzzySearchGroups(searchValue, this.fuzzySearchCaches);
                 this.cacheScores(FILTER_TYPES.SEARCH, new Map(fuzzySearchCharactersResults.map(i => [`character.${i.item.avatar}`, i.score])));

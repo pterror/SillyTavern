@@ -2931,21 +2931,14 @@ function getQuietPrompt(mode, trigger) {
     return stringFormat(extension_settings.sd.prompts[mode], trigger);
 }
 
-/**
- * Sanitizes generated prompt for image generation.
- * @param {string} str String to process
- * @returns {string} Processed reply
- */
 function processReply(str) {
     if (!str) {
         return '';
     }
 
     if (extension_settings.sd.minimal_prompt_processing) {
-        // Minimal prompt processing
-        // JSON and similar should be preserved
         str = str.normalize('NFD');
-        str = str.replace(/\s+/g, ' '); // Collapse multiple whitespaces into one
+        str = str.replace(/\s+/g, ' ');
         str = str.trim();
         return str;
     }
@@ -2955,17 +2948,16 @@ function processReply(str) {
     str = str.replaceAll('\n', ', ');
     str = str.normalize('NFD');
 
-    // Strip out non-alphanumeric characters barring model syntax exceptions
     str = str.replace(/[^a-zA-Z0-9.,:_(){}<>[\]/\-'|#]+/g, ' ');
 
-    str = str.replace(/\s+/g, ' '); // Collapse multiple whitespaces into one
+    str = str.replace(/\s+/g, ' ');
     str = str.trim();
 
     str = str
-        .split(',') // list split by commas
-        .map(x => x.trim()) // trim each entry
-        .filter(x => x) // remove empty entries
-        .join(', '); // join it back with proper spacing
+        .split(',')
+        .map(x => x.trim())
+        .filter(x => x)
+        .join(', ');
 
     return str;
 }
@@ -3090,7 +3082,6 @@ async function generatePicture(initiator, args, trigger, message, callback) {
     try {
         const combineNegatives = (prefix) => { negativePromptPrefix = combinePrefixes(negativePromptPrefix, prefix); };
 
-        // generate the text prompt for the image
         let prompt = await getPrompt(generationType, message, trigger, quietPrompt, combineNegatives);
         console.log('Processed image prompt:', prompt);
 
@@ -3103,7 +3094,6 @@ async function generatePicture(initiator, args, trigger, message, callback) {
             args._abortController.addEventListener('abort', stopListener);
         }
 
-        // Show non-blocking stoppable toast for this generation
         loaderHandle = loader.show({
             blocking: false,
             slug: `${MODULE_NAME}-image-generation`,
@@ -3112,10 +3102,8 @@ async function generatePicture(initiator, args, trigger, message, callback) {
             onStop: stopListener,
         });
 
-        // generate the image
         imagePath = await sendGenerationRequest(generationType, prompt, negativePromptPrefix, characterName, callback, initiator, abortController.signal);
     } catch (err) {
-        // Check if this was an intentional abort by user
         if (abortController.signal.aborted) {
             console.log('SD: Image generation aborted by user');
             toastr.info('Image generation stopped.', 'Image Generation');
@@ -3123,8 +3111,7 @@ async function generatePicture(initiator, args, trigger, message, callback) {
         }
 
         console.trace(err);
-        // errors here are most likely due to text generation failure
-        // sendGenerationRequest mostly deals with its own errors
+        // Errors here are usually from prompt text generation, not sendGenerationRequest (which handles its own).
         const reason = err.error?.message || err.message || 'Unknown error';
         const errorText = 'SD prompt text generation failed. ' + reason;
         toastr.error(errorText, 'Image Generation');
@@ -3869,7 +3856,6 @@ async function generateAutoImage(prompt, negativePrompt, signal) {
         do_not_save_samples: false,
     };
 
-    // Conditionally add the ADetailer if adetailer_face is enabled
     if (extension_settings.sd.adetailer_face) {
         payload = deepMerge(payload, {
             alwayson_scripts: {
@@ -3886,7 +3872,6 @@ async function generateAutoImage(prompt, negativePrompt, signal) {
         });
     }
 
-    // Make the fetch call with the payload
     const result = await fetch('/api/sd/generate', {
         method: 'POST',
         headers: getRequestHeaders(),
@@ -5227,7 +5212,7 @@ async function sdMessageButton($icon, { animate } = {}) {
         return;
     }
 
-    // Normalise up front, same as before, but through the lens - the message is frozen.
+    // Message objects are frozen, so build the normalized extra object through updateIn.
     message = context.updateIn(messageId, ['extra'], (e) => {
         const next = { ...(e ?? {}) };
         if (!Array.isArray(next.media)) {

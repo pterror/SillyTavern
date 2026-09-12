@@ -55,7 +55,6 @@ class OpenAITtsProvider {
     }
 
     async loadSettings(settings) {
-        // Only accept keys defined in defaultSettings
         this.settings = this.defaultSettings;
 
         for (const key in settings) {
@@ -79,9 +78,7 @@ class OpenAITtsProvider {
         $('#openai-tts-speed-output').text(this.settings.speed);
 
         await this.checkReady();
-        // Initialize UI state based on current model (gpt-4o-mini-tts or other)
         this.updateInstructionsUI();
-        // Look for voice map changes
         this.setupVoiceMapObserver();
     }
 
@@ -105,7 +102,6 @@ class OpenAITtsProvider {
     }
 
     onSettingsChange() {
-        // Update dynamically
         this.settings.model = String($('#openai-tts-model').find(':selected').val());
         this.settings.speed = Number($('#openai-tts-speed').val());
         $('#openai-tts-speed-output').text(this.settings.speed);

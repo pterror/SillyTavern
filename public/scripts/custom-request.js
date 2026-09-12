@@ -97,7 +97,6 @@ export class TextCompletionService {
             ...props,
         };
 
-        // Remove undefined values to avoid API errors
         Object.keys(payload).forEach(key => {
             if (payload[key] === undefined) {
                 delete payload[key];
@@ -204,7 +203,7 @@ export class TextCompletionService {
 
         // Clone the preset to avoid modifying the original
         instructPreset = structuredClone(instructPreset);
-        if (instructSettings) {  // apply any additional settings
+        if (instructSettings) {
             Object.assign(instructPreset, instructSettings);
         }
 
@@ -213,7 +212,6 @@ export class TextCompletionService {
             return;
         }
 
-        // Format messages using instruct formatting
         const formattedMessages = [];
         const prefillActive = prompt.length > 0 ? prompt[prompt.length - 1].role === 'assistant' : false;
         for (const message of prompt) {
@@ -221,9 +219,7 @@ export class TextCompletionService {
             if (!message.ignoreInstruct) {
                 const isLastMessage = message === prompt[prompt.length - 1];
 
-                // This complicated logic means:
-                // 1. If prefill is not active, format all messages
-                // 2. If prefill is active, format all messages except the last one
+                // Prefill active: format every message except the last one.
                 if (!isLastMessage || !prefillActive) {
                     messageContent = formatInstructModeChat(
                         message.name ?? message.role,
@@ -238,8 +234,6 @@ export class TextCompletionService {
                     );
                 }
 
-                // Add prompt formatting for the last message.
-                // e.g. "<|im_start|>assistant"
                 if (isLastMessage) {
                     let last_line = formatInstructModePrompt(
                         'assistant',  // for sequences using {{name}}
@@ -283,13 +277,11 @@ export class TextCompletionService {
     static async processRequest(requestData, options = {}, extractData = true, signal = null) {
         const { presetName, instructName } = options;
 
-        // remove any undefined params in given request data
         requestData = this.createRequestData(requestData);
 
         /** @type {InstructSettings | undefined} */
         let instructPreset;
         const prompt = requestData.prompt;
-        // Handle instruct formatting if requested
         if (Array.isArray(prompt)) {
             if (instructName) {
                 const instructPresetManager = getPresetManager('instruct');
@@ -310,13 +302,11 @@ export class TextCompletionService {
             requestData.prompt = prompt;
         }
 
-        // Apply generation preset if specified
         if (presetName) {
             const presetManager = getPresetManager(this.TYPE);
             if (presetManager) {
                 const preset = presetManager.getCompletionPresetByName(presetName);
                 if (preset) {
-                    // Convert preset to payload and merge with custom data
                     requestData = this.presetToGeneratePayload(preset, {}, requestData);
                 } else {
                     console.warn(`Preset "${presetName}" not found, continuing with default settings`);
@@ -328,7 +318,6 @@ export class TextCompletionService {
 
         const response = await this.sendRequest(requestData, extractData, signal);
 
-        // Remove stopping strings from the end
         if (!requestData.stream && extractData) {
             /** @type {ExtractedData} */
             // @ts-ignore
@@ -397,20 +386,17 @@ export class TextCompletionService {
             throw new Error('Invalid preset: must be an object');
         }
 
-        // apply preset overrides
         preset = { ...preset, ...overridePreset };
 
-        // Only take fields from the preset specified in setting_names to use as TextCompletionSettings
+        // Only fields listed in setting_names count as TextCompletionSettings.
         const settings = structuredClone(textgenerationwebui_settings);
         for (const [key, value] of Object.entries(preset)) {
             if (!setting_names.includes(key)) continue;
             settings[key] = value;
         }
 
-        // convert to a generation payload
         const payload = createTextGenGenerationData(settings, overridePayload.model, overridePayload.prompt, preset.genamt);
 
-        // apply overrides
         return this.createRequestData({ ...payload, ...overridePayload });
     }
 }
@@ -441,7 +427,6 @@ export class ChatCompletionService {
             ...props,
         };
 
-        // Remove undefined values to avoid API errors
         Object.keys(payload).forEach(key => {
             if (payload[key] === undefined) {
                 delete payload[key];
@@ -486,7 +471,6 @@ export class ChatCompletionService {
                     ignoreShowThoughts: true,
                 }),
             };
-            // Try parse JSON
             if (data.json_schema) {
                 result.content = JSON.parse(extractJsonFromData(json, { mainApi: this.TYPE, chatCompletionSource: data.chat_completion_source }));
             }
@@ -545,13 +529,11 @@ export class ChatCompletionService {
         const { presetName } = options;
         requestData = this.createRequestData(requestData);
 
-        // Apply generation preset if specified
         if (presetName) {
             const presetManager = getPresetManager(this.TYPE);
             if (presetManager) {
                 const preset = presetManager.getCompletionPresetByName(presetName);
                 if (preset) {
-                    // Convert preset to payload and merge with custom parameters
                     requestData = await this.presetToGeneratePayload(preset, {}, requestData);
                 } else {
                     console.warn(`Preset "${presetName}" not found, continuing with default settings`);
@@ -577,13 +559,11 @@ export class ChatCompletionService {
             throw new Error('Invalid preset: must be an object');
         }
 
-        // apply preset overrides
         preset = { ...preset, ...overridePreset };
 
-        // Fix any fields before converting to settings
-        preset.bias_preset_selected = preset.bias_presets !== undefined ? preset.bias_preset_selected : undefined;  // presets might have bias_preset_selected but not bias_presets, but settings need both or neither.
+        // presets might have bias_preset_selected but not bias_presets, but settings need both or neither.
+        preset.bias_preset_selected = preset.bias_presets !== undefined ? preset.bias_preset_selected : undefined;
 
-        // Convert from preset to ChatCompletionSettings
         const settings = structuredClone(oai_settings);
         for (const [key, value] of Object.entries(preset)) {
             const settingToUpdate = settingsToUpdate[key];
@@ -591,17 +571,14 @@ export class ChatCompletionService {
             settings[settingToUpdate[1]] = value;
         }
 
-        // Ensure api-url is properly applied for all sources that accept it
+        // Precedence: connection profile => CC preset => CC settings
         ['custom_url', 'vertexai_region', 'zai_endpoint', 'siliconflow_endpoint', 'minimax_endpoint', 'pollinations_endpoint'].forEach(field => {
-            // The order is: connection profile => CC preset => CC settings
             overridePayload[field] = overridePayload[field] || settings[field] || oai_settings[field];
         });
 
-        // Convert from settings to generation payload
         const data = await createGenerationParameters(settings, overridePayload.model, 'quiet', overridePayload.messages);
         const payload = data.generate_data;
 
-        // apply overrides
         return this.createRequestData({ ...payload, ...overridePayload });
     }
 }

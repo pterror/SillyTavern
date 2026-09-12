@@ -7,7 +7,6 @@ import { MacroRegistry, MacroCategory, MacroValueType } from '../engine/MacroReg
 export function registerVariableMacros() {
     const ctx = SillyTavern.getContext();
 
-    // {{setvar::name::value}} -> '' (side-effect on local variable)
     MacroRegistry.registerMacro('setvar', {
         category: MacroCategory.VARIABLE,
         unnamedArgs: [
@@ -31,7 +30,6 @@ export function registerVariableMacros() {
         },
     });
 
-    // {{addvar::name::value}} -> '' (side-effect via addLocalVariable)
     MacroRegistry.registerMacro('addvar', {
         category: MacroCategory.VARIABLE,
         unnamedArgs: [
@@ -55,7 +53,6 @@ export function registerVariableMacros() {
         },
     });
 
-    // {{incvar::name}} -> returns new value
     MacroRegistry.registerMacro('incvar', {
         category: MacroCategory.VARIABLE,
         unnamedArgs: [
@@ -75,7 +72,6 @@ export function registerVariableMacros() {
         },
     });
 
-    // {{decvar::name}} -> returns new value
     MacroRegistry.registerMacro('decvar', {
         category: MacroCategory.VARIABLE,
         unnamedArgs: [
@@ -95,7 +91,6 @@ export function registerVariableMacros() {
         },
     });
 
-    // {{getvar::name}} -> returns current value
     MacroRegistry.registerMacro('getvar', {
         category: MacroCategory.VARIABLE,
         unnamedArgs: [
@@ -115,7 +110,6 @@ export function registerVariableMacros() {
         },
     });
 
-    // {{hasvar::name}} -> returns 'true' or 'false'
     MacroRegistry.registerMacro('hasvar', {
         aliases: [{ alias: 'varexists' }],
         category: MacroCategory.VARIABLE,
@@ -135,7 +129,6 @@ export function registerVariableMacros() {
         },
     });
 
-    // {{deletevar::name}} -> returns ''
     MacroRegistry.registerMacro('deletevar', {
         aliases: [{ alias: 'flushvar' }],
         category: MacroCategory.VARIABLE,
@@ -155,7 +148,6 @@ export function registerVariableMacros() {
         },
     });
 
-    // {{setvarkey::name::key::value}} -> ''
     MacroRegistry.registerMacro('setvarkey', {
         aliases: [{ alias: 'setvarindex' }],
         category: MacroCategory.VARIABLE,
@@ -185,7 +177,6 @@ export function registerVariableMacros() {
         },
     });
 
-    // {{getvarkey::name::key}} -> returns value at key
     MacroRegistry.registerMacro('getvarkey', {
         aliases: [{ alias: 'getvarindex' }],
         category: MacroCategory.VARIABLE,
@@ -211,7 +202,6 @@ export function registerVariableMacros() {
         },
     });
 
-    // {{setglobalvar::name::value}} -> ''
     MacroRegistry.registerMacro('setglobalvar', {
         category: MacroCategory.VARIABLE,
         unnamedArgs: [
@@ -235,7 +225,6 @@ export function registerVariableMacros() {
         },
     });
 
-    // {{addglobalvar::name::value}} -> ''
     MacroRegistry.registerMacro('addglobalvar', {
         category: MacroCategory.VARIABLE,
         unnamedArgs: [
@@ -259,7 +248,6 @@ export function registerVariableMacros() {
         },
     });
 
-    // {{incglobalvar::name}} -> returns new value
     MacroRegistry.registerMacro('incglobalvar', {
         category: MacroCategory.VARIABLE,
         unnamedArgs: [
@@ -279,7 +267,6 @@ export function registerVariableMacros() {
         },
     });
 
-    // {{decglobalvar::name}} -> returns new value
     MacroRegistry.registerMacro('decglobalvar', {
         category: MacroCategory.VARIABLE,
         unnamedArgs: [
@@ -299,7 +286,6 @@ export function registerVariableMacros() {
         },
     });
 
-    // {{getglobalvar::name}} -> returns current value
     MacroRegistry.registerMacro('getglobalvar', {
         category: MacroCategory.VARIABLE,
         unnamedArgs: [
@@ -319,7 +305,6 @@ export function registerVariableMacros() {
         },
     });
 
-    // {{hasglobalvar::name}} -> returns 'true' or 'false'
     MacroRegistry.registerMacro('hasglobalvar', {
         aliases: [{ alias: 'globalvarexists' }],
         category: MacroCategory.VARIABLE,
@@ -339,7 +324,6 @@ export function registerVariableMacros() {
         },
     });
 
-    // {{deleteglobalvar::name}} -> returns ''
     MacroRegistry.registerMacro('deleteglobalvar', {
         aliases: [{ alias: 'flushglobalvar' }],
         category: MacroCategory.VARIABLE,
@@ -359,7 +343,6 @@ export function registerVariableMacros() {
         },
     });
 
-    // {{setglobalvarkey::name::key::value}} -> ''
     MacroRegistry.registerMacro('setglobalvarkey', {
         aliases: [{ alias: 'setglobalvarindex' }],
         category: MacroCategory.VARIABLE,
@@ -389,7 +372,6 @@ export function registerVariableMacros() {
         },
     });
 
-    // {{getglobalvarkey::name::key}} -> returns value at key
     MacroRegistry.registerMacro('getglobalvarkey', {
         aliases: [{ alias: 'getglobalvarindex' }],
         category: MacroCategory.VARIABLE,

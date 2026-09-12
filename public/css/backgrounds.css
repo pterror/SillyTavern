@@ -1,4 +1,3 @@
-/* Main Page Backgrounds */
 #bg1 {
     background-repeat: no-repeat;
     background-attachment: fixed;
@@ -10,37 +9,31 @@
     z-index: -1;
 }
 
-/* Fitting options */
 #background_fitting {
     max-width: 8em;
 }
 
-/* Fill/Cover - scales to fill width while maintaining aspect ratio */
 #bg1.cover {
     background-size: cover;
     background-position: center;
 }
 
-/* Fit/Contain - shows entire image maintaining aspect ratio */
 #bg1.contain {
     background-size: contain;
     background-position: center;
     background-repeat: no-repeat;
 }
 
-/* Stretch - stretches to fill entire space */
 #bg1.stretch {
     background-size: 100% 100%;
 }
 
-/* Center - centers without scaling */
 #bg1.center {
     background-size: auto;
     background-position: center;
     background-repeat: no-repeat;
 }
 
-/* This is the main flex container for the entire drawer */
 .drawer-content.openDrawer.bg-drawer-layout {
     display: flex;
 }
@@ -66,7 +59,6 @@
     align-items: baseline;
 }
 
-/* Control buttons in header */
 .heading-container-with-controls {
     position: relative;
 }
@@ -102,7 +94,6 @@
     flex-shrink: 0;
 }
 
-/* Thumbnails */
 .bg_example:hover .BGSampleTitle {
     opacity: 1;
 }
@@ -244,7 +235,6 @@
     background-color: rgba(255, 255, 255, 0.2);
 }
 
-/* Scroll-to-Top Button */
 #bg-scroll-top {
     position: absolute;
     bottom: 20px;
@@ -299,7 +289,6 @@
     display: none;
 }
 
-/* Thumbnail Title */
 .bg_example .BGSampleTitle {
     position: absolute;
     bottom: 0;
@@ -475,7 +464,6 @@
     text-overflow: ellipsis;
 }
 
-/* Folder tile action menu */
 .bg_folder_tile .bg_folder_tile_menu {
     display: flex;
     position: absolute;
@@ -520,7 +508,6 @@
     background-color: rgba(255, 255, 255, 0.2);
 }
 
-/* New Folder placeholder tile */
 .bg_new_folder_tile {
     border: 2px dashed var(--SmartThemeBorderColor);
     outline: none;
@@ -536,7 +523,6 @@
     transform: scale(1.03);
 }
 
-/* Breadcrumb bar */
 .bg_folder_breadcrumb {
     display: flex;
     align-items: center;
@@ -562,7 +548,6 @@
     display: flex !important;
 }
 
-/* Hide folder actions on custom (chat-specific) backgrounds */
 .bg_example[custom="true"] .jg-folder,
 .bg_example[custom="true"] .jg-set-cover {
     display: none !important;

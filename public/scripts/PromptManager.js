@@ -728,9 +728,7 @@ class PromptManager {
                 const promptId = event.target.dataset.pmPrompt;
                 const prompt = this.getPromptById(promptId);
 
-                // Losing focus (e.g. the browser tab/window regaining focus can blur whatever
-                // element was previously active) isn't itself an edit - only persist when the
-                // textarea's value actually diverged from what's already saved.
+                // Blur can fire without an edit (e.g. tab/window regaining focus); only persist on an actual change.
                 if (prompt.content === event.target.value) {
                     return;
                 }
@@ -773,10 +771,7 @@ class PromptManager {
 
         // Re-render when the character changes.
         eventSource.on(event_types.CHAT_LOADED, (event) => {
-            // CHAT_LOADED fires during boot (RA_autoloadchat -> selectCharacterByAvatar -> getChat),
-            // so an unconditional save here made merely opening the page write settings back. Loading
-            // is a read: only persist when handleCharacterSelected actually added a default prompt
-            // order for a character that had none, which is the one thing it can mutate.
+            // Fires during boot too; only save if a default prompt order actually had to be seeded.
             const mutated = this.handleCharacterSelected(event);
             if (!mutated) {
                 this.renderDebounced();
@@ -787,14 +782,7 @@ class PromptManager {
 
         // Re-render when the character gets edited.
         eventSource.on(event_types.CHARACTER_EDITED, (event) => {
-            // Unlike handleCharacterSelected/handleGroupSelected (which can add a default prompt
-            // order for a character that doesn't have one yet), handleCharacterUpdated only
-            // re-points activeCharacter at the freshly-saved character data - it never mutates
-            // promptOrder or anything else this service persists. CHARACTER_EDITED fires on every
-            // saveCharacterDebounced() flush (i.e. on essentially every edit to the character's
-            // definitions - description, personality, scenario, first message, example dialogue,
-            // etc.), so unconditionally saving here fired a real settings save on every such edit
-            // with nothing to actually persist.
+            // Fires on every character save; handleCharacterUpdated never mutates persisted state, so no save here.
             this.handleCharacterUpdated(event);
             this.renderDebounced();
         });
@@ -1358,9 +1346,7 @@ class PromptManager {
 
         const textarea = /** @type {HTMLTextAreaElement} */(document.getElementById(textareaIdentifier));
         textarea.addEventListener('blur', () => {
-            // Same reasoning as handleQuickEditSave above: a blur alone (including one caused by
-            // the window/tab regaining focus while this field happened to be focused) is not an
-            // edit. Only save if the value actually changed.
+            // Blur can fire without an edit (e.g. tab/window regaining focus); only save on an actual change.
             if (prompt.content === textarea.value) {
                 return;
             }

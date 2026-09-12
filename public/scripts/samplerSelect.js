@@ -1,10 +1,6 @@
 import {
     main_api,
 } from '../script.js';
-//import { BIAS_CACHE, displayLogitBias, getLogitBiasListResult } from './logit-bias.js';
-//import { getEventSourceStream } from './sse-stream.js';
-//import { getSortableDelay, onlyUnique } from './utils.js';
-//import { getCfgPrompt } from './cfg-scale.js';
 import { setting_names as TGsamplerNames, showTGSamplerControls, textgenerationwebui_settings } from './textgen-settings.js';
 import { renderTemplateAsync } from './templates.js';
 import { Popup, POPUP_TYPE } from './popup.js';
@@ -21,7 +17,6 @@ const SELECT_SAMPLER = {
 const textGenObjectStore = localforage.createInstance({ name: 'SillyTavern_TextCompletions' });
 let selectedSamplers = {};
 
-// Goal 1: show popup with all samplers for active API
 async function showSamplerSelectPopup() {
     const html = $(document.createElement('div'));
     html.attr('id', 'sampler_view_list')
@@ -117,27 +112,27 @@ function getRelatedDOMElement(samplerName) {
         targetDisplayType = 'block';
     }
 
-    if (samplerName === 'sampler_order') { //this is for kcpp sampler order
+    if (samplerName === 'sampler_order') {
         relatedDOMElement = $('#sampler_order_block_kcpp');
         displayname = 'KCPP Sampler Order Block';
     }
 
-    if (samplerName === 'samplers') { //this is for lcpp sampler order
+    if (samplerName === 'samplers') {
         relatedDOMElement = $('#sampler_order_block_lcpp');
         displayname = 'LCPP Sampler Order Block';
     }
 
-    if (samplerName === 'sampler_priority') { //this is for ooba's sampler priority
+    if (samplerName === 'sampler_priority') {
         relatedDOMElement = $('#sampler_priority_block_ooba');
         displayname = 'Ooba Sampler Priority Block';
     }
 
-    if (samplerName === 'samplers_priorities') { //this is for aphrodite's sampler priority
+    if (samplerName === 'samplers_priorities') {
         relatedDOMElement = $('#sampler_priority_block_aphrodite');
         displayname = 'Aphrodite Sampler Priority Block';
     }
 
-    if (samplerName === 'penalty_alpha') { //contrastive search only has one sampler, does it need its own block?
+    if (samplerName === 'penalty_alpha') {
         relatedDOMElement = $('#contrastiveSearchBlock');
         displayname = 'Contrast Search Block';
     }
@@ -148,7 +143,7 @@ function getRelatedDOMElement(samplerName) {
         displayname = 'Beam Search Block';
     }
 
-    if (samplerName === 'smoothing_factor') { // num_beams is the killswitch for Beam Search
+    if (samplerName === 'smoothing_factor') {
         relatedDOMElement = $('#smoothingBlock');
         targetDisplayType = 'block';
         displayname = 'Smoothing Block';
@@ -158,13 +153,11 @@ function getRelatedDOMElement(samplerName) {
 }
 
 function setSamplerListListeners() {
-    // Goal 2: hide unchecked samplers from DOM
     let listContainer = $('#apiSamplersList');
     listContainer.find('input').off('change').on('change', async function () {
         const samplerName = this.name.replace('_checkbox', '');
         const { relatedDOMElement, targetDisplayType } = getRelatedDOMElement(samplerName);
 
-        // Get the current state of the custom data attribute
         const previousState = relatedDOMElement.data(SELECT_SAMPLER.DATA);
         const isChecked = $(this).prop('checked');
         const popupInputLabel = $(this).parent().find('.sampler_name');
@@ -255,9 +248,6 @@ async function listSamplers(main_api, arrayOnly = false) {
 
     return samplersListHTML;
 }
-
-// Goal 3: make "sampler is hidden/disabled" status persistent (save settings)
-// this runs on initial getSettings as well as after API changes
 
 export async function validateDisabledSamplers(redraw = false) {
     const APISamplers = await listSamplers(main_api, true);
@@ -422,8 +412,3 @@ export function isSamplerManualPriorityEnabled(tcApiType = '') {
 export async function initCustomSelectedSamplers() {
     $('#samplerSelectButton').off('click').on('click', showSamplerSelectPopup);
 }
-
-// Goal 4: filter hidden samplers from API output
-
-// Goal 5: allow addition of custom samplers to be displayed
-// Goal 6: send custom sampler values into prompt

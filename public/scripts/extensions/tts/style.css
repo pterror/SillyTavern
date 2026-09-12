@@ -98,8 +98,8 @@
     margin-bottom: 10px;
     padding: 18px;
     font-weight: bold;
-    border-top: 1px solid #e1e1e1; /* Grey line */
-    border-bottom: 1px solid #e1e1e1; /* Grey line */
+    border-top: 1px solid #e1e1e1;
+    border-bottom: 1px solid #e1e1e1;
     text-align: center;
 }
 

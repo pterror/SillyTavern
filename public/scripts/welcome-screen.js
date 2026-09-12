@@ -379,10 +379,7 @@ async function sendWelcomePanel(chats, expand = false) {
         });
         fragment.querySelectorAll('button.openTemporaryChat').forEach((button) => {
             button.addEventListener('click', async () => {
-                // Whatever character or group was selected before this button was reachable has to be
-                // cleared first - newAssistantChat() itself never touches that selection, and leaving
-                // it in place makes the chat that follows save for real under the leftover character
-                // instead of staying temporary.
+                // newAssistantChat() doesn't clear a prior selection, so without this the chat saves for real.
                 await closeCurrentChat();
                 await newAssistantChat({ temporary: true });
                 if (sendTextArea instanceof HTMLTextAreaElement) {
@@ -932,9 +929,6 @@ export function initWelcomeScreen() {
         assignCharacterAsAssistant(getCurrentCharacter()?.avatar);
     });
 
-    // Was a raw CHARACTER_RENAMED listener - charactersStore's 'renamed' op carries the same oldId/newId a
-    // rename report gives (see script.js's renameCharacter -> charactersStore.reportRenamed()), so this is a
-    // direct port onto the store, same identity space (avatar-keyed) both before and after.
     charactersStore.onChange((change) => {
         if (change.op === 'renamed' && change.oldId === getPermanentAssistantAvatar()) {
             accountStorage.setItem(assistantAvatarKey, change.newId);

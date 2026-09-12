@@ -68,10 +68,6 @@ const state = {
     messageLogprobs: new Map(),
 };
 
-/**
- * Renders the Token Probabilities UI and all subviews with the active message's
- * logprobs data. If the message has no token logprobs, a message is displayed.
- */
 function renderAlternativeTokensView() {
     const view = $('#logprobs_generation_output');
     if (!view.is(':visible')) {
@@ -107,7 +103,7 @@ function renderAlternativeTokensView() {
 
         let cumulativeOffset = 0;
         const words = prefix.split(/\s+/);
-        const delimiters = prefix.match(/\s+/g) || []; // Capture the actual delimiters
+        const delimiters = prefix.match(/\s+/g) || [];
 
         words.forEach((word, i) => {
             const span = $('<span></span>');
@@ -162,14 +158,6 @@ function addKeyboardProps(element) {
     });
 }
 
-/**
- * renderTopLogprobs renders the top logprobs subview with the currently
- * selected token highlighted. If no token is selected, the subview is hidden.
- *
- * Callers:
- * - renderAlternativeTokensView, to render the entire view
- * - onSelectedTokenChanged, to update the view when a token is selected
- */
 function renderTopLogprobs() {
     $('#logprobs_top_logprobs_hint').hide();
     const view = $('.logprobs_candidate_list');
@@ -221,8 +209,7 @@ function renderTopLogprobs() {
         nodes.push(container);
     }
 
-    // Highlight the <others> node if the selected token was not included in the
-    // top logprobs
+    // Highlight <others> if the selected token wasn't among the top logprobs.
     if (!matched) {
         nodes[nodes.length - 1].css('background-color', 'rgba(255, 0, 0, 0.1)');
     }
@@ -230,12 +217,6 @@ function renderTopLogprobs() {
     view.append(nodes);
 }
 
-/**
- * User clicks on a token in the token output view. It updates the selected token state
- * and re-renders the top logprobs view, or deselects the token if it was already selected.
- * @param {TokenLogprobs} logprobs - logprob data for the selected token
- * @param {Node|JQuery} span - target span node that was clicked
- */
 function onSelectedTokenChanged(logprobs, span) {
     $('.logprobs_output_token.selected').removeClass('selected');
     if (state.selectedTokenLogprobs === logprobs) {
@@ -247,14 +228,8 @@ function onSelectedTokenChanged(logprobs, span) {
     renderTopLogprobs();
 }
 
-/**
- * onAlternativeClicked is called when the user clicks on an alternative token
- * in the top logprobs view. It will create a new swipe message and prefill it
- * with all text up to the selected token, followed by the chosen alternative.
- * Then it requests a `continue` completion from the model with the new prompt.
- * @param {TokenLogprobs} tokenLogprobs - logprob data for selected alternative
- * @param {string} alternative - selected alternative token's text
- */
+// Creates a new swipe prefilled up to the selected token plus the chosen alternative, then
+// requests a `continue` completion with that prompt.
 function onAlternativeClicked(tokenLogprobs, alternative) {
     if (!checkGenerateReady()) {
         return;
@@ -278,18 +253,6 @@ function onAlternativeClicked(tokenLogprobs, alternative) {
     addGeneration(prompt);
 }
 
-/**
- * User clicks on the reroll button in the token output view, or on a word in the
- * prefix. Retrieve the prefix for the current message and truncate it at the
- * offset for the selected word. Then request a `continue` completion from the
- * model with the new prompt.
- *
- * If no offset is provided, the entire prefix will be rerolled.
- *
- * @param {number} offset - index of the token in the prefix to reroll from
- * @returns {void}
- * @param offset
- */
 function onPrefixClicked(offset = undefined) {
     if (!checkGenerateReady()) {
         return;
@@ -308,12 +271,6 @@ function checkGenerateReady() {
     return true;
 }
 
-/**
- * Generates a new swipe as a continuation of the given prompt, when user selects
- * an alternative token or rerolls from a prefix.
- *
- * @param prompt
- */
 function addGeneration(prompt) {
     const messageId = chat.length - 1;
     if (prompt && prompt.length > 0) {
@@ -325,15 +282,9 @@ function addGeneration(prompt) {
     }
 }
 
-/**
- * onToggleLogprobsPanel is called when the user performs an action that toggles
- * the logprobs view, such as clicking the Token Probabilities menu item or the
- * close button.
- */
 function onToggleLogprobsPanel() {
     const logprobsViewer = $('#logprobsViewer');
 
-    // largely copied from CFGScale toggle
     if (logprobsViewer.css('display') === 'none') {
         logprobsViewer.addClass('resizing');
         logprobsViewer.css('display', 'flex');
@@ -362,14 +313,8 @@ function onToggleLogprobsPanel() {
     }
 }
 
-/**
- * Appends a new swipe to the target chat message with the given text.
- * @param {number} messageId - target chat message ID
- * @param {string} prompt - initial prompt text which will be continued
- */
 function createSwipe(messageId, prompt) {
-    // need to call `cleanUpMessage` on our new prompt, because we were working
-    // with raw model output and our new prompt is missing trimming/macro replacements
+    // prompt is raw model output, so it still needs trimming/macro replacements
     let cleanedPrompt = cleanUpMessage({
         getMessage: prompt,
         isImpersonate: false,
@@ -385,28 +330,21 @@ function createSwipe(messageId, prompt) {
     const msgHasParsedReasoning = msg.extra?.reasoning?.length > 0;
     let shouldRerollReasoning = false;
 
-    //if we have pre-existing reasoning and are currently autoparsing
     if (isReasoningAutoParsed && msgHasParsedReasoning) {
-        //but the reroll prompt does not include the end of reasoning
+        // reroll prompt is missing the end-of-reasoning tag, so it needs to be routed
+        // back through the reasoning handler instead of the response
         if (cleanedPrompt.includes(reasoningPrefix) && !cleanedPrompt.includes(reasoningSuffix)) {
-            //we need to send the results to the reasoning block
-            //this will involve the ReasoningHandler from reasoning.js
             shouldRerollReasoning = true;
         }
 
         let hasReasoningPrefix = cleanedPrompt.includes(reasoningPrefix);
         let hasReasoningSuffix = cleanedPrompt.includes(reasoningSuffix);
 
-        //..with both the start and end think tags
-        //OR
-        //..with only the end think tag (implying prefilled think start)
         if (hasReasoningPrefix && hasReasoningSuffix) {
-            //we need to send the results to the response block without reasoning attached
             const endOfThink = cleanedPrompt.indexOf(reasoningSuffix) + reasoningSuffix.length;
             cleanedPrompt = cleanedPrompt.substring(endOfThink);
         }
 
-        //if cleanedprompt includes the think prefix, but no suffix..
         if (hasReasoningPrefix && !hasReasoningSuffix) {
             cleanedPrompt = cleanedPrompt.replace(reasoningPrefix, '');
         }
@@ -423,17 +361,11 @@ function createSwipe(messageId, prompt) {
     const swipes = [...(msg.swipes ?? [])];
     const swipeInfo = [...(msg.swipe_info ?? [])];
 
-    // Add our new swipe, then make sure the active swipe is the one just before
-    // it. The call to `swipe_right` in addGeneration() will switch to it immediately.
-
-    //if we determined that we need to reroll from reasoning
     if (shouldRerollReasoning) {
-        //cleaned prompt goes into reasoning
+        // empty mes_text makes the reasoning handler parse the reasoning first
         newSwipeInfo.extra.reasoning = cleanedPrompt;
-        //mes_text becomes empty, causing the reasoning handler to parse the reasoning first
         swipes.push('');
     } else {
-        //otherwise just add the cleaned prompt to the message and continue
         swipes.push(cleanedPrompt);
     }
 
@@ -445,24 +377,12 @@ function createSwipe(messageId, prompt) {
     });
 }
 
-/**
- * toVisibleWhitespace receives input text and replaces spaces with &middot; and
- * newlines with ↵.
- * @param {string} input
- * @returns {string}
- */
 function toVisibleWhitespace(input) {
     return input.replace(/ /g, '·').replace(/[▁Ġ]/g, '·').replace(/[Ċ\n]/g, '↵');
 }
 
-/**
- * withVirtualWhitespace inserts line breaks and a zero-width space before and
- * after the span node if its token begins or ends with whitespace in order to
- * allow text to wrap despite whitespace characters being replaced with a dot.
- * @param {string} text - token text being evaluated for whitespace
- * @param {Node|JQuery} span - target span node to be wrapped
- * @returns {NodeArray} - array of nodes to be appended to the parent element
- */
+// Inserts a zero-width space around whitespace-adjacent tokens so text can still wrap after
+// whitespace characters are replaced with a visible dot.
 function withVirtualWhitespace(text, span) {
     /** @type {NodeArray} */
     const result = [span];
@@ -475,11 +395,7 @@ function withVirtualWhitespace(text, span) {
     if (text.match(/^[▁Ġ]/)) {
         result.unshift(document.createTextNode('\u200b'));
     }
-    // line breaks are trickier. we don't currently handle consecutive line
-    // breaks or line breaks occuring in between non-whitespace characters, but
-    // tokenizers generally don't produce those anyway.
-
-    // matches leading line break, at least one character, and trailing line break
+    // Doesn't handle consecutive line breaks or ones mid-token; tokenizers don't produce those.
     if (text.match(/^\n(?:.|\n)+\n$/)) {
         result.unshift($('<br>'));
         result.push($('<br>'));
@@ -491,20 +407,8 @@ function withVirtualWhitespace(text, span) {
     return result;
 }
 
-/**
- * Receives the top logprobs for each token in a message and associates it with the active message.
- *
- * Ensure the active message has been updated and rendered before calling this function
- * or the logprobs data will be saved to the wrong message.
- *
- * Callers:
- * - Generate:onSuccess via saveLogprobsForActiveMessage, for non-streaming text completion
- * - StreamingProcessor:onFinishStreaming, for streaming text completion
- * - sendOpenAIRequest, for non-streaming chat completion
- *
- * @param {TokenLogprobs[]} logprobs - array of logprobs data for each token
- * @param {string | null} continueFrom  - for 'continue' generations, the prompt
- */
+// Must be called after the active message has been updated and rendered, or this saves to the
+// wrong message.
 export function saveLogprobsForActiveMessage(logprobs, continueFrom) {
     if (!logprobs) {
         // non-streaming APIs could return null data
@@ -530,7 +434,6 @@ export function saveLogprobsForActiveMessage(logprobs, continueFrom) {
 
     state.messageLogprobs.set(data.hash, data);
 
-    // Clean up old logprobs data
     const oldLogprobs = Array.from(state.messageLogprobs.values())
         .sort((a, b) => b.created - a.created)
         .slice(MAX_MESSAGE_LOGPROBS);
@@ -550,11 +453,6 @@ function getMessageHash(message) {
     return getStringHash(JSON.stringify(hashParams));
 }
 
-/**
- * getActiveMessageLogprobData returns the logprobs data for the active chat
- * message.
- * @returns {MessageLogprobData|null}
- */
 function getActiveMessageLogprobData() {
     if (chat.length === 0) {
         return null;
@@ -565,12 +463,7 @@ function getActiveMessageLogprobData() {
 }
 
 
-/**
- * convertLogprobTokenIdsToText replaces token IDs in logprobs data with text tokens,
- * for APIs that return token IDs instead of text tokens, to wit: NovelAI.
- *
- * @param {TokenLogprobs[]} input - logprobs data with numeric token IDs
- */
+// Replaces numeric token IDs with text tokens, for APIs (NovelAI) that return IDs instead of text.
 function convertTokenIdLogprobsToText(input) {
     const api = getGeneratingApi();
     if (api !== 'novel') {
@@ -585,12 +478,10 @@ function convertTokenIdLogprobsToText(input) {
         logprobs.topLogprobs.map(([token]) => token).concat(logprobs.token),
     )));
 
-    // Submit token IDs to tokenizer to get token text, then build ID->text map
     // noinspection JSCheckFunctionSignatures - mutates input in-place
     const { chunks } = decodeTextTokens(tokenizerId, tokenIds);
     const tokenIdText = new Map(tokenIds.map((id, i) => [id, chunks[i]]));
 
-    // Fixup logprobs data with token text
     input.forEach(logprobs => {
         logprobs.token = tokenIdText.get(logprobs.token);
         logprobs.topLogprobs = logprobs.topLogprobs.map(([token, logprob]) =>

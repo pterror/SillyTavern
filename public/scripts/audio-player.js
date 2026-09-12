@@ -1,12 +1,6 @@
 import { formatTime } from './utils.js';
 
 export class AudioPlayer {
-    /**
-     * Creates an audio player instance
-     * @param {HTMLElement} audioElement - The audio element to control
-     * @param {HTMLElement} containerElement - The container element with player controls
-     * @param {Object} options - Configuration options
-     */
     constructor(audioElement, containerElement, options = {}) {
         if (!(audioElement instanceof HTMLAudioElement)) {
             throw new Error('First argument must be an HTMLAudioElement');
@@ -32,16 +26,13 @@ export class AudioPlayer {
         this.isDragging = false;
         this.isDestroyed = false;
 
-        // Store bound event handlers for cleanup
         this.boundHandlers = {
-            // Audio event handlers
             audioLoadedMetadata: this.onAudioLoadedMetadata.bind(this),
             audioTimeUpdate: this.onAudioTimeUpdate.bind(this),
             audioPlay: this.onAudioPlay.bind(this),
             audioPause: this.onAudioPause.bind(this),
             audioEnded: this.onAudioEnded.bind(this),
             audioVolumeChange: this.onAudioVolumeChange.bind(this),
-            // Control event handlers
             playPauseClick: this.onPlayPauseClick.bind(this),
             volumeClick: this.onVolumeClick.bind(this),
             volumeInput: this.onVolumeInput.bind(this),
@@ -52,16 +43,11 @@ export class AudioPlayer {
             documentMouseUp: this.onDocumentMouseUp.bind(this),
         };
 
-        // MutationObserver for DOM cleanup detection
         this.observer = null;
 
         this.init();
     }
 
-    /**
-     * Initializes the audio player by setting up elements, events, and initial state
-     * @returns {void}
-     */
     init() {
         this.findElements();
         this.bindEvents();
@@ -82,14 +68,9 @@ export class AudioPlayer {
 
         this.setVolume(this.options.volume);
 
-        // Initialize time displays
         this.updateTimeDisplays();
     }
 
-    /**
-     * Finds and caches all required DOM elements within the container
-     * @returns {void}
-     */
     findElements() {
         this.elements = {
             title: this.container.querySelector('.audio-player-title'),
@@ -101,7 +82,6 @@ export class AudioPlayer {
             volumeBtn: this.container.querySelector('.audio-player-volume'),
         };
 
-        // Validate required elements
         const requiredElements = ['playPauseBtn', 'currentTime', 'totalTime', 'progress', 'progressBar', 'volumeBtn'];
         for (const key of requiredElements) {
             if (!this.elements[key]) {
@@ -110,12 +90,7 @@ export class AudioPlayer {
         }
     }
 
-    /**
-     * Sets up a MutationObserver to detect when audio or container elements are removed from DOM
-     * @returns {void}
-     */
     setupDOMObserver() {
-        // Watch for removal of audio or container from DOM
         this.observer = new MutationObserver((mutations) => {
             for (const mutation of mutations) {
                 for (const node of mutation.removedNodes) {
@@ -128,7 +103,6 @@ export class AudioPlayer {
             }
         });
 
-        // Observe the parent nodes
         const chatParent = this.audio.closest('#chat') ?? document.body;
 
         if (chatParent) {
@@ -136,12 +110,7 @@ export class AudioPlayer {
         }
     }
 
-    /**
-     * Binds all event listeners to audio and control elements
-     * @returns {void}
-     */
     bindEvents() {
-        // Audio events
         this.audio.addEventListener('loadedmetadata', this.boundHandlers.audioLoadedMetadata);
         this.audio.addEventListener('timeupdate', this.boundHandlers.audioTimeUpdate);
         this.audio.addEventListener('play', this.boundHandlers.audioPlay);
@@ -149,7 +118,6 @@ export class AudioPlayer {
         this.audio.addEventListener('ended', this.boundHandlers.audioEnded);
         this.audio.addEventListener('volumechange', this.boundHandlers.audioVolumeChange);
 
-        // Control events
         if (this.elements.playPauseBtn) {
             this.elements.playPauseBtn.addEventListener('click', this.boundHandlers.playPauseClick);
         }
@@ -163,12 +131,7 @@ export class AudioPlayer {
         }
     }
 
-    /**
-     * Removes all event listeners from audio and control elements
-     * @returns {void}
-     */
     unbindEvents() {
-        // Audio events
         this.audio.removeEventListener('loadedmetadata', this.boundHandlers.audioLoadedMetadata);
         this.audio.removeEventListener('timeupdate', this.boundHandlers.audioTimeUpdate);
         this.audio.removeEventListener('play', this.boundHandlers.audioPlay);
@@ -176,7 +139,6 @@ export class AudioPlayer {
         this.audio.removeEventListener('ended', this.boundHandlers.audioEnded);
         this.audio.removeEventListener('volumechange', this.boundHandlers.audioVolumeChange);
 
-        // Control events
         if (this.elements.playPauseBtn) {
             this.elements.playPauseBtn.removeEventListener('click', this.boundHandlers.playPauseClick);
         }
@@ -189,25 +151,15 @@ export class AudioPlayer {
             this.elements.progress.removeEventListener('mousemove', this.boundHandlers.progressMouseMove);
         }
 
-        // Document events
         document.removeEventListener('mousemove', this.boundHandlers.documentMouseMove);
         document.removeEventListener('mouseup', this.boundHandlers.documentMouseUp);
     }
 
-    // Audio event handlers
-    /**
-     * Handles the audio element's loadedmetadata event
-     * @returns {void}
-     */
     onAudioLoadedMetadata() {
         if (this.isDestroyed) return;
         this.updateTimeDisplays();
     }
 
-    /**
-     * Handles the audio element's timeupdate event
-     * @returns {void}
-     */
     onAudioTimeUpdate() {
         if (this.isDestroyed || this.isDragging) return;
 
@@ -224,10 +176,6 @@ export class AudioPlayer {
         }
     }
 
-    /**
-     * Handles the audio element's play event
-     * @returns {void}
-     */
     onAudioPlay() {
         if (this.isDestroyed) return;
 
@@ -242,10 +190,6 @@ export class AudioPlayer {
         }
     }
 
-    /**
-     * Handles the audio element's pause event
-     * @returns {void}
-     */
     onAudioPause() {
         if (this.isDestroyed) return;
 
@@ -260,10 +204,6 @@ export class AudioPlayer {
         }
     }
 
-    /**
-     * Handles the audio element's ended event
-     * @returns {void}
-     */
     onAudioEnded() {
         if (this.isDestroyed) return;
 
@@ -278,10 +218,6 @@ export class AudioPlayer {
         }
     }
 
-    /**
-     * Handles the audio element's volumechange event
-     * @returns {void}
-     */
     onAudioVolumeChange() {
         if (this.isDestroyed) return;
 
@@ -292,43 +228,22 @@ export class AudioPlayer {
         }
     }
 
-    // Control event handlers
-    /**
-     * Handles click events on the play/pause button
-     * @param {MouseEvent} e - The click event
-     * @returns {void}
-     */
     onPlayPauseClick(e) {
         e.preventDefault();
         this.togglePlay();
     }
 
-    /**
-     * Handles click events on the volume button
-     * @param {MouseEvent} e - The click event
-     * @returns {void}
-     */
     onVolumeClick(e) {
         e.preventDefault();
         this.toggleMute();
     }
 
-    /**
-     * Handles input events on the volume slider
-     * @param {InputEvent} e - The input event
-     * @returns {void}
-     */
     onVolumeInput(e) {
         if (!(e.target instanceof HTMLInputElement)) return;
         const value = parseFloat(e.target.value);
         this.setVolume(value);
     }
 
-    /**
-     * Handles mousedown events on the progress bar
-     * @param {MouseEvent} e - The mousedown event
-     * @returns {void}
-     */
     onProgressMouseDown(e) {
         this.isDragging = true;
         this.updateProgress(e);
@@ -336,43 +251,24 @@ export class AudioPlayer {
         document.addEventListener('mouseup', this.boundHandlers.documentMouseUp);
     }
 
-    /**
-     * Handles click events on the progress bar
-     * @param {MouseEvent} e - The click event
-     * @returns {void}
-     */
     onProgressClick(e) {
         if (!this.isDragging) {
             this.updateProgress(e);
         }
     }
 
-    /**
-     * Handles mousemove on the progress bar (no-op if dragging)
-     * @param {MouseEvent} e - The mousemove event
-     * @returns {void}
-     */
     onProgressMouseMove(e) {
         if (!this.isDragging) {
             this.updateProgressTitle(e);
         }
     }
 
-    /**
-     * Handles document mousemove events during progress bar dragging
-     * @param {MouseEvent} e - The mousemove event
-     * @returns {void}
-     */
     onDocumentMouseMove(e) {
         if (this.isDragging) {
             this.updateProgress(e);
         }
     }
 
-    /**
-     * Handles document mouseup events to end progress bar dragging
-     * @returns {void}
-     */
     onDocumentMouseUp() {
         if (this.isDragging) {
             this.isDragging = false;
@@ -381,11 +277,6 @@ export class AudioPlayer {
         }
     }
 
-    /**
-     * Updates the progress bar position and seeks audio based on mouse position
-     * @param {MouseEvent} e - The mouse event containing position information
-     * @returns {void}
-     */
     updateProgress(e) {
         if (!this.elements.progress) return;
 
@@ -407,10 +298,6 @@ export class AudioPlayer {
         }
     }
 
-    /**
-     * Updates the volume icon based on current volume and mute state
-     * @returns {void}
-     */
     updateVolumeIcon() {
         if (!this.elements.volumeBtn) return;
 
@@ -428,10 +315,6 @@ export class AudioPlayer {
         }
     }
 
-    /**
-     * Updates the current time and total time display elements
-     * @returns {void}
-     */
     updateTimeDisplays() {
         if (this.elements.currentTime) {
             this.elements.currentTime.textContent = formatTime(this.audio.currentTime || 0);
@@ -441,11 +324,6 @@ export class AudioPlayer {
         }
     }
 
-    /**
-     * Updates the mouseover title on the progress bar to show time at cursor position
-     * @param {MouseEvent} e - The mouse event
-     * @returns {void}
-     */
     updateProgressTitle(e) {
         if (!this.elements.progress) return;
 
@@ -457,11 +335,6 @@ export class AudioPlayer {
         this.elements.progress.setAttribute('title', formatTime((percent / 100) * this.audio.duration));
     }
 
-    // Public methods
-    /**
-     * Starts audio playback
-     * @returns {void}
-     */
     play() {
         if (this.isDestroyed) return;
         if (this.audio.paused) {
@@ -474,10 +347,6 @@ export class AudioPlayer {
         }
     }
 
-    /**
-     * Pauses audio playback
-     * @returns {void}
-     */
     pause() {
         if (this.isDestroyed) return;
         if (!this.audio.paused) {
@@ -485,10 +354,6 @@ export class AudioPlayer {
         }
     }
 
-    /**
-     * Toggles between play and pause states
-     * @returns {void}
-     */
     togglePlay() {
         if (this.audio.paused) {
             this.play();
@@ -497,11 +362,6 @@ export class AudioPlayer {
         }
     }
 
-    /**
-     * Seeks to a specific time in the audio
-     * @param {number} time - The time in seconds to seek to
-     * @returns {void}
-     */
     seek(time) {
         if (this.isDestroyed) return;
         if (isFinite(time) && time >= 0 && time <= this.audio.duration) {
@@ -509,11 +369,6 @@ export class AudioPlayer {
         }
     }
 
-    /**
-     * Sets the volume level
-     * @param {number} volume - Volume level between 0.0 and 1.0
-     * @returns {void}
-     */
     setVolume(volume) {
         if (this.isDestroyed) return;
         volume = Math.max(0, Math.min(1, volume));
@@ -524,48 +379,26 @@ export class AudioPlayer {
         }
     }
 
-    /**
-     * Mutes the audio
-     * @returns {void}
-     */
     mute() {
         if (this.isDestroyed) return;
         this.audio.muted = true;
     }
 
-    /**
-     * Unmutes the audio
-     * @returns {void}
-     */
     unmute() {
         if (this.isDestroyed) return;
         this.audio.muted = false;
     }
 
-    /**
-     * Toggles the mute state
-     * @returns {void}
-     */
     toggleMute() {
         if (this.isDestroyed) return;
         this.audio.muted = !this.audio.muted;
     }
 
-    /**
-     * Sets the audio source URL
-     * @param {string} src - The URL of the audio file
-     * @returns {void}
-     */
     setSrc(src) {
         if (this.isDestroyed) return;
         this.audio.src = src;
     }
 
-    /**
-     * Sets the title displayed in the player
-     * @param {string} title - The title text to display
-     * @returns {void}
-     */
     setTitle(title) {
         if (this.isDestroyed) return;
         this.options.title = title;
@@ -574,28 +407,20 @@ export class AudioPlayer {
         }
     }
 
-    /**
-     * Cleans up the player by removing event listeners and clearing references
-     * @returns {void}
-     */
     destroy() {
         if (this.isDestroyed) return;
         this.isDestroyed = true;
 
-        // Stop observing DOM changes
         if (this.observer) {
             this.observer.disconnect();
             this.observer = null;
         }
 
-        // Pause and clear audio
         this.pause();
         this.audio.src = '';
 
-        // Remove all event listeners
         this.unbindEvents();
 
-        // Clear references to prevent memory leaks
         this.audio = null;
         this.container = null;
         this.elements = null;

@@ -69,7 +69,6 @@ class ChutesTtsProvider {
             this.settings.voiceMap = {};
         }
 
-        // Update UI
         $('#chutes_tts_model').val(this.settings.model);
         $('#chutes_tts_speed').val(this.settings.speed);
         $('#chutes_tts_speed_output').text(this.settings.speed);
@@ -92,7 +91,6 @@ class ChutesTtsProvider {
     async checkReady() {
         await this.updateModels();
         if (this.models.length === 0) {
-            // No models available
         }
         await this.updateVoices();
     }
@@ -102,7 +100,6 @@ class ChutesTtsProvider {
     }
 
     async updateModels() {
-        // For Chutes TTS, we always use the Kokoro model currently.
         this.models = ['kokoro'];
 
         $('#chutes_tts_model').empty();
@@ -113,7 +110,6 @@ class ChutesTtsProvider {
     }
 
     async updateVoices() {
-        // Kokoro voices list
         const kokoroVoices = [
             { id: 'af_alloy', name: 'Alloy (Female)', lang: 'en-US' },
             { id: 'af_aoede', name: 'Aoede (Female)', lang: 'en-US' },

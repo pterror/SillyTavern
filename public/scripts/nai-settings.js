@@ -449,17 +449,14 @@ function getBadWordIds(banned_tokens, tokenizerType) {
     for (let token of sequence) {
         const trimmed = token.trim();
 
-        // Skip empty lines
         if (trimmed.length === 0) {
             continue;
         }
 
-        // Verbatim text
         if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
             const tokens = getTextTokens(tokenizerType, trimmed.slice(1, -1));
             result.push(tokens);
         } else if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
-            // Raw token ids, JSON serialized
             try {
                 const tokens = JSON.parse(trimmed);
 
@@ -472,13 +469,11 @@ function getBadWordIds(banned_tokens, tokenizerType) {
                 console.log(`Failed to parse bad word token list: ${trimmed}`, err);
             }
         } else {
-            // Apply permutations
             const permutations = getBadWordPermutations(trimmed).map(t => getTextTokens(tokenizerType, t));
             result.push(...permutations);
         }
     }
 
-    // Cache the result
     console.debug(`Bad words ids for "${banned_tokens}"`, result);
     badWordsCache[cacheKey] = result;
 
@@ -488,25 +483,15 @@ function getBadWordIds(banned_tokens, tokenizerType) {
 function getBadWordPermutations(text) {
     const result = [];
 
-    // Original text
     result.push(text);
-    // Original text + leading space
     result.push(` ${text}`);
-    // First letter capitalized
     result.push(text[0].toUpperCase() + text.slice(1));
-    // Ditto + leading space
     result.push(` ${text[0].toUpperCase() + text.slice(1)}`);
-    // First letter lower cased
     result.push(text[0].toLowerCase() + text.slice(1));
-    // Ditto + leading space
     result.push(` ${text[0].toLowerCase() + text.slice(1)}`);
-    // Original all upper cased
     result.push(text.toUpperCase());
-    // Ditto + leading space
     result.push(` ${text.toUpperCase()}`);
-    // Original all lower cased
     result.push(text.toLowerCase());
-    // Ditto + leading space
     result.push(` ${text.toLowerCase()}`);
 
     return result.filter(onlyUnique);
@@ -606,7 +591,6 @@ export function getNovelGenerationData(finalPrompt, settings, maxLength, isImper
     };
 }
 
-// Check if the prefix needs to be overridden to use instruct mode
 function selectPrefix(selected_prefix, finalPrompt) {
     let useInstruct = false;
     const clio = nai_settings.model_novel.includes('clio');
@@ -637,24 +621,20 @@ function getTokenizerTypeForModel(model) {
     return tokenizers.NONE;
 }
 
-// Sort the samplers by the order array
 function sortItemsByOrder(orderArray) {
     console.debug('Preset samplers order: ' + orderArray);
     const $draggableItems = $('#novel_order');
 
-    // Sort the items by the order array
     for (let i = 0; i < orderArray.length; i++) {
         const index = orderArray[i];
         const $item = $draggableItems.find(`[data-id="${index}"]`).detach();
         $draggableItems.append($item);
     }
 
-    // Update the disabled class for each sampler
     $draggableItems.children().each(function () {
         const isEnabled = orderArray.includes(parseInt($(this).data('id')));
         $(this).toggleClass('disabled', !isEnabled);
 
-        // If the sampler is disabled, move it to the bottom of the list
         if (!isEnabled) {
             const item = $(this).detach();
             $draggableItems.append(item);
@@ -675,10 +655,6 @@ function saveSamplingOrder() {
     saveSettingsDebounced('nai_settings');
 }
 
-/**
- * Calculates logit bias for Novel AI
- * @returns {object[]} Array of logit bias objects
- */
 function calculateLogitBias() {
     const biasPreset = nai_settings.logit_bias;
 
@@ -688,11 +664,6 @@ function calculateLogitBias() {
 
     const tokenizerType = getTokenizerTypeForModel(nai_settings.model_novel);
 
-    /**
-     * Creates a bias object for Novel AI
-     * @param {number} bias Bias value
-     * @param {number[]} sequence Sequence of token ids
-     */
     function getBiasObject(bias, sequence) {
         return {
             bias: bias,
@@ -706,13 +677,7 @@ function calculateLogitBias() {
     return result;
 }
 
-/**
- * Transforms instruction into compatible format for Novel AI if Novel AI instruct format not already detected.
- * 1. Instruction must begin and end with curly braces followed and preceded by a space.
- * 2. Instruction must not contain square brackets as it serves different purpose in NAI.
- * @param {string} prompt Original instruction prompt
- * @returns Processed prompt
- */
+/** NAI instruct format requires the prompt wrapped in space-padded curly braces, with no square brackets (used for a different purpose in NAI). */
 export function adjustNovelInstructionPrompt(prompt) {
     const stripedPrompt = prompt.replace(/[[\]]/g, '').trim();
     if (!stripedPrompt.includes('{ ')) {
@@ -807,26 +772,20 @@ export function parseNovelAILogprobs(data) {
     const befores = data.before.map(([[tokenId], [before, _]]) => [tokenId, before]);
     const afters = data.after.map(([[tokenId], [_, after]]) => [tokenId, after]);
 
-    // Find any tokens in `befores` that are missing from `afters`. Then add
-    // them with a logprob of -Infinity (0% probability)
+    // Tokens present before but dropped from `after` are treated as 0% probability.
     const notInAfter = befores
         .filter(([id]) => !afters.some(([aid]) => aid === id))
         .map(([id]) => [id, -Infinity]);
     const merged = afters.concat(notInAfter);
 
-    // Add the chosen token to `merged` if it's not already there. This can
-    // happen if the chosen token was not among the top 10 most likely ones.
+    // The chosen token may not have been among the top-N and so may be missing from `merged`.
     // eslint-disable-next-line no-unused-vars
     const [[chosenId], [_, chosenAfter]] = data.chosen[0];
     if (!merged.some(([id]) => id === chosenId)) {
         merged.push([chosenId, chosenAfter]);
     }
 
-    // nb: returned logprobs are provided alongside token IDs, not decoded text.
-    // We don't want to send an API call for every streaming tick to decode the
-    // text so we will use the IDs instead and bulk decode them in
-    // StreamingProcessor. JSDoc typechecking may complain about this, but it's
-    // intentional.
+    // Kept as raw token IDs (not decoded text) so StreamingProcessor can bulk-decode instead of one API call per tick.
     // @ts-ignore
     return { token: chosenId, topLogprobs: merged };
 }
@@ -904,7 +863,6 @@ export function initNovelAISettings() {
         nai_settings.model_novel = String($('#model_novel_select').find(':selected').val());
         saveSettingsDebounced('nai_settings');
 
-        // Update the selected preset to something appropriate
         const default_preset = default_presets[nai_settings.model_novel];
         $('#settings_preset_novel').val(novelai_setting_names[default_preset]);
         $(`#settings_preset_novel option[value=${novelai_setting_names[default_preset]}]`).attr('selected', 'true');

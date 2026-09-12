@@ -30,7 +30,6 @@
     justify-content: center;
 }
 
-/* Action loader toast styles */
 .action-loader-toast {
     display: flex;
     align-items: center;
@@ -54,7 +53,6 @@
     color: color-mix(in srgb, currentColor 40%, #e74c3c 60%);
 }
 
-/* Splash screen styles for branded loading */
 #loader.splash-screen {
     display: flex;
     flex-direction: column;

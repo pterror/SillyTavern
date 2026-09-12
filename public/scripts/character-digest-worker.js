@@ -1,50 +1,18 @@
 import { getStringHash, emptyDigest128, combineDigest128, DEFAULT_DIGEST_BUCKET_COUNT, DEFAULT_TREE_BRANCHING } from './hash-utils.js';
 
 /**
- * Module Web Worker (see kokoro.js's `new Worker(new URL(...), { type: 'module' })` for this codebase's existing
- * precedent) for script.js's verifyCharacterCacheDigest() - the client half of the recursive hash-tree
- * anti-entropy check (character-metadata-db.js's treeDescend() is the server half; character-metadata-digest-
- * worker.js's own header has the full mechanism). Moved off the browser's main thread (2026-08 state-digest perf
- * investigation) for the same reason character-metadata-digest-worker.js moved the equivalent server-side scan
- * off the Express event loop: a real 326k-character cache measured multiple seconds of synchronous fingerprint-
- * extraction + hashing on this thread, which on a browser main thread means a multi-second frozen UI
- * (unresponsive scrolling/typing/clicks), not just queued-up requests.
+ * Client half of the recursive hash-tree anti-entropy check (verifyCharacterCacheDigest() in script.js);
+ * character-metadata-digest-worker.js is the server half. Runs off the main thread since hashing a large
+ * character cache synchronously would freeze the UI.
  *
- * PERSISTENT WORKER, unlike the fixed-depth-2 approach this replaces: the worker stays alive after its initial
- * `'end'` response instead of terminating, because the recursive descent protocol needs the worker to keep
- * computing children digests for whichever deeper tree nodes the server's own descent turns up as mismatched -
- * there's no way to know how many levels deep that goes up front (see character-metadata-digest-worker.js's own
- * header on why the depth isn't fixed). The main thread (verifyCharacterCacheDigest() in script.js) is
- * responsible for calling `worker.terminate()` once the descent finishes or errors.
+ * Stays alive after its initial 'ready' reply (unlike a one-shot worker) because the recursive descent can't
+ * know up front how many tree levels the server will ask it to re-fold; the main thread sends further
+ * 'compute-digests' requests as needed and is responsible for terminate()'ing this worker when done.
  *
- * PROTOCOL: the main thread owns reading `getAllCachedCharacters()` (IndexedDB access stays main-thread - see
- * this file's own header note below on why) and sends it here in three phases: exactly one `{type: 'init',
- * branching}` first, then any number of `{type: 'chunk', entries: [[id, {fav, tagIds, content}], ...]}`
- * (pre-computed per-field hashes), then exactly one
- * `{type: 'end'}`. This worker replies once to that sequence, with `{type: 'ready', children, localFavHashes:
- * [[id, hash], ...], localFieldsHashes: [[id, hash], ...]}` - `children` is the branching-length array of
- * level-0 digests, and the per-id hash lists are plain arrays (not Maps - Maps aren't structured-cloneable in
- * every target this project supports) the main thread reconstructs into Maps for the repair pass.
- *
- * After that, the main thread can send any number of `{type: 'compute-digests', nodes: [{path: [...]}, ...]}`
- * messages - each one asks this still-alive worker to compute children digests for specific deeper tree nodes
- * (id -> hash/favHash/fieldsHash are all kept in the `records` Map below, computed once up front, so a deeper-
- * level request is just a re-fold over already-hashed data, not a re-extraction). Each such message gets exactly
- * one `{type: 'digests', results: [{path, children}, ...]}` reply.
- *
- * NOT given its own IndexedDB access (unlike character-metadata-digest-worker.js, which DOES open its own
- * sqlite connection): localforage's driver selection/feature-detection (lib.js) hasn't been verified safe to
- * run inside a Worker global scope on every browser this app supports, and getCurrentUserHandle() (which
- * character-cache.js's store lookup depends on) reads app state that isn't obviously available off the main
- * thread either. Chunked message-passing sidesteps both unknowns entirely - the worker only ever receives plain,
- * already-resolved data - at the cost of the main thread doing the (cheap, IndexedDB-native) read and the
- * postMessage clone of already-fetched data, not a second copy of the actual heavy work (fingerprint
- * extraction/canonicalization/hashing, all done here).
- *
- * CHUNKED ON THIS SIDE TOO: both the initial 'chunk' ingestion and 'compute-digests' handling process records in
- * their own internal sub-batches with a yield between them - same reasoning as character-metadata-digest-
- * worker.js's own internal chunking: this worker should stay responsive to a future cancellation/second request
- * rather than running one long synchronous stretch, even though it's already off the main thread.
+ * No IndexedDB access of its own - localforage/getCurrentUserHandle() aren't verified safe off the main thread
+ * - so the main thread reads the cache and streams it in via postMessage ('init', then any number of 'chunk',
+ * then 'end'); per-id hashes are sent back as arrays rather than Maps since Maps aren't structured-cloneable
+ * everywhere.
  */
 
 let branching = DEFAULT_DIGEST_BUCKET_COUNT;
@@ -137,7 +105,6 @@ self.addEventListener('message', async (event) => {
         return;
     }
     if (msg.type === 'end') {
-        // Compute level-0 children from records (single 128-bit digest stream)
         const childDigest = Array.from({ length: branching }, () => emptyDigest128());
 
         for (const [id, { hash, favHash, tagIdsHash, contentHash }] of records) {

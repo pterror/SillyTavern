@@ -4,8 +4,6 @@
  * and color theory for complementary/accessible text colors.
  */
 
-// ===== sRGB <-> Linear RGB <-> Oklch conversions =====
-
 /**
  * Converts an sRGB component [0,255] to linear RGB [0,1].
  * @param {number} c sRGB component (0–255)
@@ -78,8 +76,6 @@ function oklchToSrgb(L, C, h) {
     };
 }
 
-// ===== Relative luminance & contrast ratio (WCAG) =====
-
 /**
  * Calculates the relative luminance of an sRGB color (WCAG 2.x definition).
  * @param {number} r Red (0–255)
@@ -104,8 +100,6 @@ function contrastRatio(c1, c2) {
     const darker = Math.min(l1, l2);
     return (lighter + 0.05) / (darker + 0.05);
 }
-
-// ===== Dominant color extraction =====
 
 /**
  * Extracts the dominant vivid color from an image element.
@@ -136,14 +130,13 @@ export function extractDominantColor(imgEl) {
         return { r: 128, g: 128, b: 128 };
     }
 
-    // Collect pixel samples in Oklch space
     const step = 4; // sample every 4th pixel for speed
     /** @type {{L: number, C: number, h: number}[]} */
     const pixels = [];
 
     for (let i = 0; i < data.length; i += 4 * step) {
         const pr = data[i], pg = data[i + 1], pb = data[i + 2], alpha = data[i + 3];
-        if (alpha < 128) continue; // skip transparent pixels
+        if (alpha < 128) continue;
 
         const lch = srgbToOklch(pr, pg, pb);
         pixels.push(lch);
@@ -172,13 +165,10 @@ export function extractDominantColor(imgEl) {
     wC /= totalWeight;
     const avgH = Math.atan2(wSinH / totalWeight, wCosH / totalWeight);
 
-    // Boost the chroma of the result slightly for a more vivid base color
     const boostedC = Math.min(wC * 1.3, 0.35); // cap so we don't get neon
 
     return oklchToSrgb(wL, boostedC, avgH);
 }
-
-// ===== Theme palette generation =====
 
 /**
  * Adjusts Oklch lightness of a color to ensure sufficient contrast with a reference.
@@ -225,12 +215,9 @@ function rgbaString(rgb, alpha = 1) {
 export function generateThemePalette(dominantRgb) {
     const base = srgbToOklch(dominantRgb.r, dominantRgb.g, dominantRgb.b);
 
-    // Determine if the background is dark or light
     const bgLuminance = relativeLuminance(dominantRgb.r, dominantRgb.g, dominantRgb.b);
     const isDark = bgLuminance < 0.3;
 
-    // --- Panel / tint colors (derived from base, with low alpha for transparency) ---
-    // Main blur tint: base color, darkened, semi-transparent
     const blurTintL = isDark ? Math.max(base.L * 0.5, 0.08) : Math.min(base.L * 0.35, 0.25);
     const blurTintC = base.C * 0.5;
     const blurTintRgb = oklchToSrgb(blurTintL, blurTintC, base.h);
@@ -238,19 +225,16 @@ export function generateThemePalette(dominantRgb) {
     const chatTintL = blurTintL * 0.9;
     const chatTintRgb = oklchToSrgb(chatTintL, blurTintC * 0.8, base.h);
 
-    // User/bot message tints: slight hue shifts
     const userHueShift = 0.15; // ~9° shift
     const botHueShift = -0.15;
     const userTintRgb = oklchToSrgb(blurTintL, base.C * 0.4, base.h + userHueShift);
     const botTintRgb = oklchToSrgb(blurTintL, base.C * 0.4, base.h + botHueShift);
 
-    // --- Reference background for contrast checking ---
-    // Effective panel background (what the text appears on)
+    // text is checked against this, not the full background
     const panelBg = blurTintRgb;
     const panelLuminance = relativeLuminance(panelBg.r, panelBg.g, panelBg.b);
     const panelIsDark = panelLuminance < 0.3;
 
-    // --- Text colors (ensure ≥ 3.0:1 contrast against panel background) ---
     const minContrast = 3.5;
 
     // Hue shift angles for color theory relationships (in radians)
@@ -278,7 +262,6 @@ export function generateThemePalette(dominantRgb) {
     const quote = ensureContrast(panelIsDark ? 0.65 : 0.38, quoteC, base.h + TRIADIC_HUE_SHIFT, panelBg, minContrast, panelIsDark);
     const quoteRgb = oklchToSrgb(quote.L, quote.C, quote.h);
 
-    // --- Shadow & border ---
     const shadowRgb = isDark ? { r: 0, g: 0, b: 0 } : { r: 40, g: 40, b: 40 };
     const borderL = isDark ? Math.max(base.L * 0.3, 0.05) : Math.min(base.L * 1.2, 0.6);
     const borderRgb = oklchToSrgb(borderL, base.C * 0.3, base.h);
@@ -305,18 +288,12 @@ export function generateThemePalette(dominantRgb) {
  * @returns {string} A cleaned-up name suitable for a theme name
  */
 export function deriveBackgroundName(bgUrl) {
-    // Extract filename from URL path
     let name = bgUrl.split('/').pop() || 'background';
-    // Remove query strings
     name = name.split('?')[0];
-    // URL-decode
     try {
         name = decodeURIComponent(name);
     } catch { /* use as-is */ }
-    // Remove file extension
     name = name.replace(/\.[^.]+$/, '');
-    // Replace underscores/dashes with spaces, trim
     name = name.replace(/[_-]+/g, ' ').trim();
-    // Limit length to 32 chars for theme name
     return name.slice(0, 32) || 'Background';
 }

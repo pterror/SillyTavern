@@ -7,11 +7,6 @@ import { enumTypes, SlashCommandEnumValue } from './slash-commands/SlashCommandE
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 import { isFalseBoolean, isTrueBoolean } from './utils.js';
 
-/**
- * @param {'enable' | 'disable' | 'toggle'} action - The action to perform on the extension
- * @typedef {import('./slash-commands/SlashCommand.js').NamedArguments | import('./slash-commands/SlashCommand.js').NamedArgumentsCapture} NamedArgumentsAssignment
- * @returns {(args: NamedArgumentsAssignment, extensionName: string | SlashCommandClosure) => Promise<string>}
- */
 function getExtensionActionCallback(action) {
     return async (args, extensionName) => {
         if (args?.reload instanceof SlashCommandClosure) throw new Error('\'reload\' argument cannot be a closure.');
@@ -45,8 +40,7 @@ function getExtensionActionCallback(action) {
         if (reload) {
             toastr.info(`${action.charAt(0).toUpperCase() + action.slice(1)}ing extension ${extension.name} and reloading...`);
 
-            // Clear input, so it doesn't stay because the command didn't "finish",
-            // and wait for a bit to both show the toast and let the clear bubble through.
+            // Command doesn't "finish", so clear input manually and let the toast show before continuing.
             $('#send_textarea').val('')[0].dispatchEvent(new Event('input', { bubbles: true }));
             await new Promise(resolve => setTimeout(resolve, 100));
         }
@@ -69,12 +63,6 @@ function getExtensionActionCallback(action) {
     };
 }
 
-/**
- * Provides an array of SlashCommandEnumValue objects based on the extension names.
- * Each object contains the name of the extension and a description indicating if it is a third-party extension.
- *
- * @returns {SlashCommandEnumValue[]} An array of SlashCommandEnumValue objects
- */
 const extensionNamesEnumProvider = () => extensionNames.map(name => {
     const isThirdParty = name.startsWith('third-party/');
     if (isThirdParty) name = name.slice('third-party/'.length);

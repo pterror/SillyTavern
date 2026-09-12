@@ -50,8 +50,7 @@ export const kai_settings = {
 };
 
 /**
- * Stable version of KoboldAI has a nasty payload validation.
- * It will reject any payload that has a key that is not in the whitelist.
+ * Stable KoboldAI rejects any payload key not in this whitelist.
  * @typedef {Object.<string, boolean>} kai_flags
  */
 export const kai_flags = {
@@ -127,7 +126,6 @@ export function loadKoboldSettings(data, preset, settings) {
 
     loadKoboldSettingsFromPreset(preset);
 
-    //Load the API server URL from settings
     $('#api_url_text').val(kai_settings.api_server);
 }
 
@@ -161,16 +159,6 @@ function loadKoboldSettingsFromPreset(preset) {
     }
 }
 
-/**
- * Gets the Kobold generation data.
- * @param {string} finalPrompt Final text prompt.
- * @param {object} settings Settings preset object.
- * @param {number} maxLength Maximum length.
- * @param {number} maxContextLength Maximum context length.
- * @param {boolean} isHorde True if the generation is for a horde, false otherwise.
- * @param {string} type Generation type.
- * @returns {object} Kobold generation data.
- */
 export function getKoboldGenerationData(finalPrompt, settings, maxLength, maxContextLength, isHorde, type) {
     const isImpersonate = type === 'impersonate';
     const isContinue = type === 'continue';
@@ -371,11 +359,6 @@ const sliders = [
     },
 ];
 
-/**
- * Sets the supported feature flags for the KoboldAI backend.
- * @param {string} koboldUnitedVersion Kobold United version
- * @param {string} koboldCppVersion KoboldCPP version
- */
 export function setKoboldFlags(koboldUnitedVersion, koboldCppVersion) {
     kai_flags.can_use_stop_sequence = versionCompare(koboldUnitedVersion, MIN_STOP_SEQUENCE_VERSION);
     kai_flags.can_use_streaming = versionCompare(koboldCppVersion, MIN_STREAMING_KCPPVERSION);
@@ -388,10 +371,6 @@ export function setKoboldFlags(koboldUnitedVersion, koboldCppVersion) {
     $('#koboldcpp_hint').toggleClass('displayNone', !isKoboldCpp);
 }
 
-/**
- * Sorts the sampler items by the given order.
- * @param {any[]} orderArray Sampler order array.
- */
 function sortItemsByOrder(orderArray) {
     console.debug('Preset samplers order: ' + orderArray);
     const $draggableItems = $('#kobold_order');
@@ -431,13 +410,10 @@ export async function getStatusKobold() {
             throw new Error(`Missing mandatory Kobold version in data: ${JSON.stringify(data)}`);
         }
 
-        // Determine instruct mode preset
         autoSelectInstructPreset(online_status);
-
-        // determine if we can use stop sequence and streaming
         setKoboldFlags(data.koboldUnitedVersion, data.koboldCppVersion);
 
-        // We didn't get a 200 status code, but the endpoint has an explanation. Which means it DID connect, but I digress.
+        // A non-200 with a response body still means the endpoint connected.
         if (online_status === 'no_connection' && data.response) {
             toastr.error(data.response, t`API Error`, { timeOut: 5000, preventDuplicates: true });
         }
@@ -513,10 +489,7 @@ export function initKoboldSettings() {
     });
 
     $('#settings_preset').on('change', async function () {
-        // loadKoboldSettings() re-selects and re-triggers this control on load just to re-run the
-        // UI-applying side effects below (disabling/enabling inputs, generation params, etc.), which
-        // do need to happen on load too. Only the persistence at the end is a genuine no-op when the
-        // preset didn't actually change, so just that part is guarded, not the whole handler.
+        // loadKoboldSettings() re-triggers this on load to re-run the side effects below; only the save at the end is guarded against that no-op.
         const previousPreset = kai_settings.preset_settings;
 
         if ($('#settings_preset').find(':selected').val() != 'gui') {
@@ -540,11 +513,7 @@ export function initKoboldSettings() {
                 .sortable('disable');
         }
 
-        // Only the save is skipped when the preset didn't actually change. PRESET_CHANGED is left
-        // firing unconditionally on purpose: regex/index.js listens to it (checkPresetEmbeddedRegexScripts),
-        // and on the gui-preset load path the value genuinely is unchanged, so gating the emit here would
-        // silently stop that listener running at load. Whether the emit should also be gated is a separate
-        // question about what PRESET_CHANGED is supposed to mean, not part of this fix.
+        // PRESET_CHANGED always fires, even when unchanged - other listeners rely on it running on load.
         if (kai_settings.preset_settings !== previousPreset) {
             saveSettingsDebounced('kai_settings');
         }

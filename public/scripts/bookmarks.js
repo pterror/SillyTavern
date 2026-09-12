@@ -52,10 +52,6 @@ import {
 
 const bookmarkNameToken = 'Bookmark #';
 
-/**
- * Gets the names of existing chats for the current character or group.
- * @returns {Promise<string[]>} - Returns a promise that resolves to an array of existing chat names.
- */
 async function getExistingChatNames() {
     if (selected_group) {
         const group = groupsStore.get(selected_group);
@@ -95,9 +91,7 @@ async function getBookmarkName({ isReplace = false, forceName = null } = {}) {
     const mainChatName = (getCurrentChatDetails()).sessionName;
 
     function buildCheckpointName(name, i) {
-        // Strip off existing suffixes, then build new name
         let cleanName = name.replace(new RegExp(` - ${bookmarkNameToken}\\d+$`), '');
-        // Strip off legacy old name prefix too
         cleanName = cleanName.replace(new RegExp(`^${bookmarkNameToken}\\d+ - `), '');
         return `${cleanName} - ${bookmarkNameToken}${i}`;
     }
@@ -106,7 +100,6 @@ async function getBookmarkName({ isReplace = false, forceName = null } = {}) {
 
     const body = await renderTemplateAsync('createCheckpoint', { isReplace: isReplace, suggestedName: suggestedName });
     let name = forceName ?? await Popup.show.input('Bookmark', body, suggestedName);
-    // Special handling for confirmed empty input (=> auto-generate name)
     if (name === '') {
         name = suggestedName;
     }
@@ -205,7 +198,6 @@ function isTreeStored() {
     return !!chat_metadata?._tree_stored;
 }
 
-// Export is used by Timelines extension. Do not remove.
 export async function createBranch(mesId, { swipeId = null } = {}) {
     if (!chat.length) {
         toastr.warning('The chat is empty.', 'Branch creation failed');
@@ -241,14 +233,10 @@ export async function createBranch(mesId, { swipeId = null } = {}) {
         return;
     }
 
-    // Naming a point requires the point to exist. An opening still sitting on a card-only greeting has
-    // no row yet, and being branched at is one of the things that earns it one.
+    // A card-only greeting has no node yet - being branched at is what earns it one.
     const branchNodeId = await ensureOpeningRow(mesId);
 
-    // Tree DB path: O(1) fork via the fork API — no data is copied
     if (isTreeStored() && !selected_group && branchNodeId) {
-        // If a specific swipe was selected, save the current chat first so the swipe state is
-        // persisted to the tree, then fork at the node.
         if (selectedSwipeId !== null) {
             const snapshot = await getBranchChatSnapshot(mesId, { swipeId: selectedSwipeId });
             if (!snapshot) {
@@ -258,10 +246,7 @@ export async function createBranch(mesId, { swipeId = null } = {}) {
             await saveChat({ mesId, chatData: snapshot });
         }
 
-        // Branching and bookmarking are the same act: put a name on a node. /api/chats/fork was a
-        // second route doing exactly that, left over from when a branch had to be a separate copy of
-        // the conversation. Nothing is copied now, so there is nothing to fork - the node is already
-        // there and shared, and naming it is what makes it findable.
+        // Nothing to copy - the node already exists, so branching is just naming it.
         const character = getCurrentCharacter();
         const response = await fetch('/api/chats/label', {
             method: 'POST',
@@ -278,9 +263,7 @@ export async function createBranch(mesId, { swipeId = null } = {}) {
             return;
         }
 
-        // Update local branch tracking for the UI - a flat list of sibling branch names, not
-        // grouped by swipe id (the tree has nowhere to keep per-branch fork-time swipe context;
-        // see the matching comment in loadBranch()'s server-side reconstruction).
+        // Kept as a flat list, not grouped by swipe id - the tree has no per-branch swipe context to key by.
         const extra = typeof lastMes.extra === 'object' ? { ...lastMes.extra } : {};
         const branches = Array.isArray(extra.branches) ? [...extra.branches] : [];
         if (!branches.includes(name)) branches.push(name);
@@ -313,20 +296,10 @@ export async function createBranch(mesId, { swipeId = null } = {}) {
 }
 
 /**
- * Reads the local sibling list for a fork point, without touching the network.
- * Only meaningful when the current chat is the one that natively hosts the message (the fork's
- * origin) - a branch's own copy of the message never carries this (it's read from the origin on
- * demand instead, see resolveForkRing).
- *
- * NOT scoped by swipe id - siblings off one fork point all share the same parent row, which has
- * exactly one swipe_id field, not one per branch, and /api/chats/fork records no per-branch
- * fork-time swipe context either. So every sibling at a fork point is returned together,
- * regardless of which swipe of this message happens to be selected right now.
- *
- * `extra.branches` is written as a flat array going forward (see createBranch() above); a plain
- * object is still read here too and flattened, purely for chats forked before this change whose
- * saved data still has the old swipe-id-keyed shape - no migration needed for those, this just
- * reads them correctly either way.
+ * Reads the local sibling list for a fork point, without touching the network. Not scoped by swipe id -
+ * all siblings at a fork point share one parent row, so they're returned together regardless of which
+ * swipe is currently selected. Also flattens the older swipe-id-keyed object shape for chats forked
+ * before `extra.branches` became a flat array.
  * @param {ChatMessage} message
  * @returns {string[]} Sibling branch names, in creation order (deduped). Empty if none.
  */
@@ -350,12 +323,7 @@ function getLocalForkSiblings(message) {
 }
 
 /**
- * Returns whether a message has fork branches, meaning branch navigation arrows should be shown.
- * Checks both the local case (current chat is the origin, so extra.branches has entries) and the
- * branch case (current chat was forked from this message, so chat_metadata.fork_point matches -
- * legacy JSONL branches still record their own fork-time swipe id independently, so that check
- * stays swipe-scoped for them; it just doesn't apply to the tree, which has nothing to check it
- * against).
+ * Whether a message has fork branches, i.e. branch navigation arrows should be shown for it.
  * @param {number} mesId
  * @param {ChatMessage} [message]
  * @returns {boolean}
@@ -364,11 +332,9 @@ export function hasForkBranches(mesId, message) {
     message ??= chat[mesId];
     if (!message) return false;
 
-    // Local case: this chat is the origin and has branches recorded
     const localSiblings = getLocalForkSiblings(message);
     if (localSiblings.length > 0) return true;
 
-    // Branch case: we're on a branch that was forked from this message
     const swipeId = Number(message.swipe_id ?? 0);
     const forkPoint = chat_metadata?.fork_point;
     if (forkPoint && forkPoint.mesId === mesId && forkPoint.swipeId === swipeId) return true;
@@ -409,14 +375,9 @@ async function fetchChatMessage(chatName, mesId) {
 
 /**
  * Resolves the full sibling ring for a fork point: [originChatName, ...branchNames], in creation
- * order, plus which position in that ring is the currently open chat.
- *
- * The origin chat (whichever chat's message this fork point actually lives on) is the single source
- * of truth for the sibling list - branches never carry their own duplicate copy of it, so there's
- * nothing that can drift out of sync across N files. The current chat is the origin whenever mesId's
- * own extra.branches already lists this fork point (no fetch needed, the common case while browsing
- * the trunk). Otherwise, if the current chat IS a branch and this is exactly the message it was
- * forked from, the list is fetched from the origin file on demand.
+ * order, plus which position in that ring is the currently open chat. The origin chat is the single
+ * source of truth for the sibling list, fetched on demand when the current chat is a branch rather
+ * than the origin itself.
  * @param {number} mesId
  * @param {number} swipeId
  * @returns {Promise<{ring: string[], selfIndex: number}?>} null when this isn't a recognized fork point
@@ -507,11 +468,10 @@ export async function branchSwipe(mesId, direction) {
 
 /**
  * Creates a new bookmark for a message.
- *
- * @param {number} mesId - The ID of the message.
- * @param {Object} [options={}] - Optional parameters.
- * @param {string?} [options.forceName=null] - The name to force for the bookmark.
- * @returns {Promise<string?>} - A promise that resolves to the bookmark name when the bookmark is created.
+ * @param {number} mesId
+ * @param {object} [options={}]
+ * @param {string?} [options.forceName] - forced name instead of prompting.
+ * @returns {Promise<string?>}
  */
 export async function createNewBookmark(mesId, { forceName = null } = {}) {
     if (getSelectionState().type === 'none') {
@@ -540,17 +500,11 @@ export async function createNewBookmark(mesId, { forceName = null } = {}) {
         return null;
     }
 
-    // Bookmarking names the node, and that is the whole of it. There is nothing to copy - the node
-    // already exists, and a label on it is what makes it findable. Forking as well used to leave a
-    // second thing pointing at the same place.
-    // Same as branching: a label needs a row to sit on, and an opening on a card-only greeting earns
-    // one by being checkpointed.
     const bookmarkNodeId = await ensureOpeningRow(mesId);
 
     if (isTreeStored() && !selected_group && bookmarkNodeId) {
         const character = getCurrentCharacter();
 
-        // Label the node (the checkpoint name)
         await fetch('/api/chats/label', {
             method: 'POST',
             headers: getRequestHeaders(),
@@ -751,10 +705,8 @@ export async function branchChat(mesId, { swipeId = null } = {}) {
 }
 
 /**
- * Creates a fork (branch) from the message with the given ID and navigates to it.
- * This is the merged checkpoint+branch action: branching is the primary behavior, and the
- * fork point is automatically labeled with the branch name so it can still be found again
- * on the source chat, the same way a checkpoint used to work.
+ * Creates a branch from the message with the given ID and navigates to it, also labeling the fork
+ * point with the branch name so it acts as a checkpoint on the source chat.
  * @param {number} mesId Message ID
  * @param {{swipeId?: number|null}} [options={}] Branch options
  * @returns {Promise<string?>} Branch file name
@@ -806,11 +758,7 @@ export async function forkChat(mesId, { swipeId = null } = {}) {
 
 function registerBookmarksSlashCommands() {
     /**
-     * Validates a message ID. (Is a number, exists as a message)
-     *
-     * @param {number} mesId - The message ID to validate.
-     * @param {string} context - The context of the slash command. Will be used as the title of any toasts.
-     * @returns {boolean} - Returns true if the message ID is valid, otherwise false.
+     * @param {string} context - used as the toast title on failure.
      */
     function validateMessageId(mesId, context) {
         if (isNaN(mesId)) {
@@ -1018,8 +966,6 @@ export function initBookmarks() {
     $('#option_back_to_main').on('click', backToMainChat);
     $('#option_convert_to_group').on('click', convertSoloToGroupChat);
 
-    // Bookmark whichever message this is. Naming the node is the whole operation - nothing is copied
-    // and nothing forks, so a bookmark is just a name you can find the place by.
     $(document).on('click', '.mes_bookmark_add', async function (e) {
         e.stopPropagation();
         const mesId = Number($(this).closest('.mes').attr('mesid'));
@@ -1030,9 +976,8 @@ export function initBookmarks() {
     });
 
     $(document).on('click', '.select_chat_block', async function () {
-        // Prefer the node. A name is not an identifier - `label` is not unique per owner, so opening
-        // by name picks whichever row sorts first. The name is the fallback for file-backed chats,
-        // which have no nodes at all.
+        // `label` isn't unique per owner, so a name alone would pick whichever row sorts first -
+        // prefer the node id; the name is only a fallback for file-backed chats, which have no nodes.
         const nodeId = $(this).attr('node_id');
         const target = nodeId || $(this).attr('file_name');
 
@@ -1040,12 +985,8 @@ export function initBookmarks() {
             return;
         }
 
-        // A bookmark's node very often shares most of its ancestry with whatever is already on screen
-        // (another bookmark a few messages further down the same branch, or a sibling branch off it) -
-        // switchToNode() finds that overlap and replaces only what's actually different. It only
-        // handles solo tree-backed chats and only actually does anything when there IS shared
-        // ancestry to build on; anything else (a group chat, a legacy chat, a genuinely unrelated
-        // conversation) falls through to the full open below exactly as before.
+        // switchToNode() reuses whatever ancestry this chat already shares with the target and only
+        // replaces the difference; falls through to a full open when there's nothing to share.
         if (nodeId && await switchToNode(nodeId)) {
             $('#shadow_select_chat_popup').css('display', 'none');
             return;

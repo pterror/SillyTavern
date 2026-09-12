@@ -278,14 +278,11 @@ export class QuickReplySet {
                 // not JSON data
             }
             if (data) {
-                // JSON data
                 if (data.label === undefined || data.message === undefined) {
-                    // not a QR
                     toastr.error('Not a QR.');
                     return;
                 }
             } else {
-                // no JSON, use plaintext as QR message
                 data = { message: qrJson };
             }
         } else {

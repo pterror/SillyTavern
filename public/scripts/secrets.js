@@ -267,7 +267,7 @@ export function updateSecretDisplay() {
 
 /**
  * Gets the active secret label for a given key.
- * @param {string} key Gets the active secret label for a given key.
+ * @param {string} key Secret key
  * @returns {string} The label of the active secret, or '[No label]' if none is active.
  */
 function getActiveSecretLabel(key) {
@@ -369,7 +369,6 @@ export async function writeSecret(key, value, label, { allowEmpty } = {}) {
         }
 
         const { id } = await response.json();
-        // Clear the input field
         $(INPUT_MAP[key]).val('').trigger('input');
         await readSecretState();
         await eventSource.emit(event_types.SECRET_WRITTEN, key);
@@ -528,13 +527,11 @@ async function authorizeOpenRouter() {
         }
     }
 
-    // Generate a PKCE code verifier and code challenge
     const codeVerifier = uuidv4() + uuidv4();
     const codeChallenge = generateChallenge(codeVerifier);
     accountStorage.setItem(getVerifierKey('openrouter'), codeVerifier);
     await saveSettings();
 
-    // Redirect to OpenRouter authorization URL with the code challenge and callback URL
     const redirectUrl = new URL('/callback/openrouter', window.location.origin);
     const openRouterUrl = `https://openrouter.ai/auth?callback_url=${encodeURIComponent(redirectUrl.toString())}&code_challenge=${codeChallenge}&code_challenge_method=S256`;
     location.href = openRouterUrl;
@@ -592,7 +589,6 @@ export async function checkOpenRouterAuth() {
             toastr.error('Could not verify OpenRouter token. Please try again.');
             console.error('OpenRouter OAuth error:', err);
         } finally {
-            // Remove the code from the URL
             const currentUrl = window.location.href;
             const urlWithoutSearchParams = currentUrl.split('?')[0];
             window.history.pushState({}, '', urlWithoutSearchParams);
@@ -630,7 +626,6 @@ function updateInputDataLists() {
             container.appendChild(dataList);
         }
 
-        // Clear existing options
         dataList.innerHTML = '';
 
         const secrets = secret_state[key];
@@ -645,7 +640,6 @@ function updateInputDataLists() {
             dataList.appendChild(option);
         }
 
-        // Set the input element to use the datalist
         inputElements.forEach(element => {
             element.setAttribute('list', dataListId);
         });
@@ -897,7 +891,6 @@ function registerSecretSlashCommands() {
                 return '';
             }
 
-            // Delete the secret
             await deleteSecret(key, savedSecret.id);
             if (!quiet) {
                 toastr.success(t`Secret with ID: ${id} has been deleted for the key: ${key}`);
@@ -1054,7 +1047,6 @@ function registerSecretSlashCommands() {
                 return '';
             }
 
-            // Rename the secret
             await renameSecret(key, savedSecret.id, newLabel);
             if (!quiet) {
                 toastr.success(t`Secret with ID: ${id} has been renamed to "${newLabel}" for the key: ${key}`);
@@ -1148,7 +1140,6 @@ export async function initSecrets() {
         const id = $(this).attr('id');
         const value = $(this).val();
 
-        // Find the key based on the entered value
         for (const [key, inputSelector] of Object.entries(INPUT_MAP)) {
             if (!value || !this.matches(inputSelector)) {
                 continue;

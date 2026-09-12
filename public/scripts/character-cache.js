@@ -2,45 +2,19 @@ import { localforage } from '../lib.js';
 import { getCurrentUserHandle } from './user.js';
 import { characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash, groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash } from './hash-utils.js';
 
-/**
- * Client-side residency cache for character data (see getCharacters()/fetchCharactersDelta() in script.js).
- *
- * The server's `/api/characters/all` returns every character's full data on every call, which is fine for a
- * small library but doesn't scale - a multi-tens-of-MB response on every single boot, regardless of whether
- * anything actually changed since last time. `POST /api/characters/changes` (character-metadata-db.js's
- * `getChangesSince()`) is the replacement for the old manifest-diff scheme this module used to implement: a
- * real per-item change feed (`{id, op: 'upsert'|'delete'}`) keyed off a revision counter the client just has to
- * remember and send back, not a `[{avatar, mtime}, ...]` snapshot of the *entire* library that the client had
- * to diff itself. That's why this cache no longer stores or compares a per-character `mtime` - the server
- * already tells us exactly which ids changed and how, so there's nothing left for the client to diff.
- *
- * One IndexedDB database per user handle (matches the multi-user server model - each user has their own
- * character library on disk, so caches must not bleed between accounts sharing a browser).
- */
+// Client-side residency cache for character data, keyed off the server's per-item change feed
+// (`getChangesSince()`) rather than a per-character mtime. One IndexedDB database per user handle.
 
-/** Bumped when the hash function's output changes (e.g. removing DOMPurify from character.name).
- * Records with a different or missing version get their hashes recomputed on first read. */
+// Bumped when the hash function's output changes; records with a different/missing version get
+// their hashes recomputed on first read.
 const HASH_VERSION = 2;
 
-/**
- * Top-level fields that Spec V2 cards commonly mirror verbatim under `data.*` for V1-client back-compat.
- * When a character's top-level copy is byte-identical to its `data.*` copy, storing both in the cache is pure
- * duplication (2026-09 cache-size investigation: sampled at ~6.7KB/character on average, ~31% of a typical
- * cached record). saveCachedCharacters() strips the top-level copy when it's an exact duplicate and records
- * which fields it stripped in the record's sibling `dedup` array (never inside the stored `character` object
- * itself); getAllCachedCharacters()/getCachedEntriesByIds() restore it on read by copying back from `data.*`,
- * so every reader downstream sees exactly the same shape a fresh (uncompressed) fetch would have produced.
- */
+// Top-level fields Spec V2 cards mirror under `data.*` for V1 back-compat; saveCachedCharacters()
+// strips a byte-identical top-level copy and records it in `dedup`, restored by readers on the way out.
 const DUPLICATE_FIELDS = ['description', 'first_mes', 'mes_example', 'scenario', 'tags', 'personality'];
 
-/**
- * Restores top-level fields saveCachedCharacters() stripped as exact duplicates of their `data.*` counterpart.
- * Mutates and returns `character` in place - safe because callers only ever call this on a freshly
- * IDB-deserialized object with no other live references.
- * @param {object} character
- * @param {string[]|undefined} dedup Field names stripped at write time (record's sibling `dedup` array).
- * @returns {object} `character`, with any stripped fields restored.
- */
+// Mutates and returns `character` in place - safe since callers only pass a freshly IDB-deserialized
+// object with no other live references.
 function rehydrateDuplicateFields(character, dedup) {
     if (dedup && dedup.length && character?.data) {
         for (const field of dedup) {
@@ -50,22 +24,14 @@ function rehydrateDuplicateFields(character, dedup) {
     return character;
 }
 
-/** Bumped only if the dedup transform itself changes (e.g. DUPLICATE_FIELDS gains/loses a field) - forces
- * every record to be reconsidered by migrateDedupCompression() below even if it already carries a stamp
- * from an older transform. */
+// Bumped only if the dedup transform itself changes, forcing every record to be reconsidered even
+// if it already carries a stamp from an older transform.
 const DEDUP_VERSION = 1;
 
-/** Set once a background compression migration has been kicked off this session (see getAllCachedCharacters()),
- * so the multiple times it's called during one boot/sync cycle don't each launch their own overlapping pass. */
+/** Guards against overlapping migration passes when getAllCachedCharacters() is called multiple times in one boot/sync cycle. */
 let dedupMigrationStarted = false;
 
-/**
- * Computes the {toStore, dedup} split for a single already-processed, already-rehydrated (i.e. full/
- * uncompressed) character object - shared by saveCachedCharacters() (fresh writes) and
- * migrateDedupCompression() (rewriting records that predate this stripping). Never mutates `character`.
- * @param {object} character
- * @returns {{toStore: object, dedup: string[]|undefined}}
- */
+/** Never mutates `character`. */
 function computeDedupSplit(character) {
     let toStore = character;
     let dedup;
@@ -80,21 +46,8 @@ function computeDedupSplit(character) {
     return { toStore, dedup };
 }
 
-/**
- * One-time background rewrite of records that predate v1/v2 field dedup (or predate a later
- * DEDUP_VERSION bump), so the space savings actually apply to the existing cache instead of only
- * newly-synced characters going forward. Never awaited by its caller - pure background disk-space
- * reclamation, not something boot should ever wait on.
- *
- * Interruption-safe with no separate progress cursor: each record is only stamped `dedupV` after its
- * rewrite commits, so a browser closed mid-migration simply leaves those records unstamped - the next
- * boot's getAllCachedCharacters() scan finds them again via the same `dedupV !== DEDUP_VERSION` check
- * and resumes from there. A second tab running its own pass concurrently is redundant work, never
- * corruption - both converge on the same stripped bytes.
- * @param {LocalForage} store
- * @param {[string, object][]} unmigrated [key, record] pairs; `record.character` was already rehydrated
- * to its full (uncompressed) shape by the caller's own iterate pass - recompressed here as-is.
- */
+// Never awaited by its caller - background reclamation. Interruption-safe with no progress cursor:
+// a record is only stamped `dedupV` after its rewrite commits.
 async function migrateDedupCompression(store, unmigrated) {
     console.log(`[character-cache] Compressing ${unmigrated.length} cached record(s) that predate v1/v2 field dedup...`);
     const MIGRATE_BATCH = 500;
@@ -105,8 +58,7 @@ async function migrateDedupCompression(store, unmigrated) {
             return store.setItem(key, { ...record, character: toStore, dedup, dedupV: DEDUP_VERSION }).catch(error =>
                 console.error(`Failed to compress cached character data for ${key}:`, error));
         }));
-        // Yield to the main thread between batches, same reasoning as the hash migration above - a
-        // multi-hundred-thousand-record pass must not make the browser unresponsive for seconds.
+        // Yield between batches so a multi-hundred-thousand-record pass doesn't freeze the browser.
         await new Promise(resolve => setTimeout(resolve, 0));
     }
     console.log(`[character-cache] Compression migration complete (${unmigrated.length} record(s)).`);
@@ -115,17 +67,12 @@ async function migrateDedupCompression(store, unmigrated) {
 /** @type {Map<string, LocalForage>} */
 const storesByHandle = new Map();
 
-// Reserved key for the change-feed revision cursor (see getCachedCursor()/setCachedCursor()) - never collides
-// with a real avatar filename, which always ends in `.png`.
+// Never collides with a real avatar filename, which always ends in `.png`.
 const CURSOR_KEY = '__cursor__';
 
-// Pre-rename name of CURSOR_KEY, still present in caches written before the rename. Read once and migrated
-// forward by getCachedCursor(); nothing ever writes it again.
+// Pre-rename name of CURSOR_KEY, still present in caches written before the rename.
 const LEGACY_REV_KEY = '__rev__';
 
-/**
- * @returns {LocalForage} The character cache store for the currently logged-in user.
- */
 function getCharacterCacheStore() {
     const handle = getCurrentUserHandle();
     let store = storesByHandle.get(handle);
@@ -136,13 +83,7 @@ function getCharacterCacheStore() {
     return store;
 }
 
-/**
- * The change-feed revision this cache was last synced up to - the `sinceRev` to send on the next
- * `POST /api/characters/changes` call. `0` (never synced) is a legitimate first-ever value: per
- * `getChangesSince()`'s own contract, `sinceRev: 0` returns the entire library as `op: 'upsert'` entries, which
- * is exactly what a cold cache needs.
- * @returns {Promise<number>}
- */
+/** `0` (never synced) is a legitimate value - `getChangesSince()` treats `sinceRev: 0` as "send everything". */
 export async function getCachedCursor() {
     const store = getCharacterCacheStore();
     try {
@@ -163,10 +104,6 @@ export async function getCachedCursor() {
     }
 }
 
-/**
- * @param {number} seq
- * @returns {Promise<void>}
- */
 export async function setCachedCursor(seq) {
     const store = getCharacterCacheStore();
     try {
@@ -176,20 +113,11 @@ export async function setCachedCursor(seq) {
     }
 }
 
-// Reserved key for the last-verified root digest (see verifyCharacterCacheDigest's fast-path skip).
 const LAST_VERIFIED_DIGEST_KEY = '__last_verified_digest__';
 
-// Reserved key for tracking IDB write failures (see fetchCharactersDelta's retry-on-failure path).
 const WRITE_FAILURES_KEY = '__write_failures__';
 
-/**
- * The 128-bit root digest that was current when the last successful digest verification completed.
- * Content-derived (XOR-fold of all per-record per-field hashes), not a counter - so it can't
- * silently be wrong the way a rev counter can. If the server's current root matches this, nothing
- * has changed since the last full verification, and the expensive O(library) client-side
- * recomputation can be skipped entirely.
- * @returns {Promise<{a: number, b: number, c: number, d: number} | null>}
- */
+/** Content-derived (XOR-fold of per-record hashes), not a counter, so it can't silently drift like a rev counter can. */
 export async function getLastVerifiedDigest() {
     const store = getCharacterCacheStore();
     try {
@@ -205,10 +133,6 @@ export async function getLastVerifiedDigest() {
     }
 }
 
-/**
- * @param {{a: number, b: number, c: number, d: number}} digest
- * @returns {Promise<void>}
- */
 export async function setLastVerifiedDigest(digest) {
     const store = getCharacterCacheStore();
     try {
@@ -218,12 +142,7 @@ export async function setLastVerifiedDigest(digest) {
     }
 }
 
-/**
- * Avatar IDs whose IDB write failed on the last sync. fetchCharactersDelta re-fetches these on the
- * next boot so the failure is retried exactly once, driven by the actual failure event rather than
- * a periodic verification sweep.
- * @returns {Promise<string[]>}
- */
+/** Avatar IDs whose IDB write failed on the last sync; fetchCharactersDelta retries these on next boot. */
 export async function getWriteFailures() {
     const store = getCharacterCacheStore();
     try {
@@ -234,10 +153,7 @@ export async function getWriteFailures() {
     }
 }
 
-/**
- * @param {string[]} ids Empty array clears the failure list.
- * @returns {Promise<void>}
- */
+/** Empty array clears the failure list. */
 export async function setWriteFailures(ids) {
     const store = getCharacterCacheStore();
     try {
@@ -251,18 +167,11 @@ export async function setWriteFailures(ids) {
     }
 }
 
-/**
- * Reads every cached character, keyed by avatar. This IS the client's current view of the whole library once
- * it's caught up with the change feed - unlike the old manifest-diff scheme, nothing here needs a fresh
- * ground-truth listing from the server to know the full current id set: every real mutation since this cache's
- * last synced rev arrives as an explicit `changes` entry (upsert or delete), so applying those on top of
- * whatever's already cached is sufficient (see fetchCharactersDelta() in script.js).
- * @returns {Promise<Map<string, object>>} avatar -> already-processed character object.
- */
+/** Reads every cached character, keyed by avatar - the client's full view once caught up with the change feed. */
 export async function getAllCachedCharacters() {
     const store = getCharacterCacheStore();
     const result = new Map();
-    /** @type {[string, object][]} records predating DEDUP_VERSION - queued for migrateDedupCompression() below. */
+    /** @type {[string, object][]} */
     const unmigrated = [];
     try {
         await store.iterate((record, key) => {
@@ -284,30 +193,8 @@ export async function getAllCachedCharacters() {
     return result;
 }
 
-/**
- * Reads per-field hashes for every cached character, keyed by avatar. These were computed and stored
- * atomically with the character data in saveCachedCharacters(), so they're guaranteed to match the
- * record they describe. Verification reads these instead of the full character data (~24 bytes per
- * record instead of ~1KB), avoiding the expensive IDB deserialize + structured-clone + rehash that
- * previously dominated the digest check.
- *
- * Falls back gracefully for records cached before hashes were stored: a missing `hashes` field
- * is simply omitted from the result, and the caller recomputes those records' hashes on demand.
- * @returns {Promise<Map<string, {fav: number, tagIds: number, content: number}>>} avatar -> hashes
- */
-/**
- * Reads per-field hashes for every cached character, keyed by avatar. These were computed and stored
- * atomically with the character data in saveCachedCharacters(), so they're guaranteed to match the
- * record they describe. Verification reads these instead of the full character data (~24 bytes per
- * record instead of ~1KB), avoiding the expensive IDB deserialize + structured-clone + rehash that
- * previously dominated the digest check.
- *
- * Migration: records cached before hash storage was added lack a `hashes` field. These are computed
- * from the character data on first encounter and persisted back to IDB (batched with yields), so
- * subsequent calls read stored hashes for all records. This is a one-time cost proportional to the
- * number of unhashed records, not the library size on every call.
- * @returns {Promise<Map<string, {fav: number, tagIds: number, content: number}>>} avatar -> hashes
- */
+// Stored atomically with the character data, so verification can read these instead of rehashing
+// full data. Records cached before hash storage lack `hashes`; computed and persisted on first read.
 export async function getAllCachedHashes() {
     const store = getCharacterCacheStore();
     const result = new Map();
@@ -319,7 +206,6 @@ export async function getAllCachedHashes() {
             if (record?.hashes?.v === HASH_VERSION) {
                 result.set(key, record.hashes);
             } else if (record?.character) {
-                // Collect for migration - hash computation + persist happens in batches below.
                 unhashed.push([key, record]);
             }
         });
@@ -327,8 +213,6 @@ export async function getAllCachedHashes() {
         console.error('Failed to read cached character hashes:', error);
     }
 
-    // Migration: compute and persist hashes for records that predate hash storage.
-    // Batched with yields so the main thread stays responsive during the one-time migration.
     if (unhashed.length > 0) {
         console.log(`[character-cache] Computing hashes for ${unhashed.length} cached record(s) that predate hash storage...`);
         const MIGRATE_BATCH = 500;
@@ -337,8 +221,7 @@ export async function getAllCachedHashes() {
             const toStore = [];
             for (const [key, record] of batch) {
                 const character = rehydrateDuplicateFields(record.character, record.dedup);
-                // Restore raw name from data.name if it was mangled by the now-removed
-                // DOMPurify sanitization (data.name was never sanitized).
+                // data.name was never DOMPurify-sanitized, unlike the top-level copy.
                 if (character?.data?.name !== undefined) {
                     character.name = character.data.name;
                 }
@@ -351,7 +234,6 @@ export async function getAllCachedHashes() {
                 result.set(key, hashes);
                 toStore.push({ key, value: { character, hashes } });
             }
-            // Persist the batch back to IDB so next call reads stored hashes directly.
             await Promise.all(toStore.map(({ key, value }) =>
                 store.setItem(key, value).catch(error =>
                     console.error(`Failed to persist migrated hashes for ${key}:`, error))));
@@ -362,12 +244,6 @@ export async function getAllCachedHashes() {
     return result;
 }
 
-/**
- * Reads per-field hashes for a specific set of cached characters, keyed by avatar. Used by the
- * incremental digest path in fetchCharactersDelta() to read old hashes before mutations.
- * @param {string[]} ids Avatar filenames to look up.
- * @returns {Promise<Map<string, {fav: number, tagIds: number, content: number}>>} avatar -> hashes (only for ids that exist and have valid hashes)
- */
 export async function getCachedHashesByIds(ids) {
     const store = getCharacterCacheStore();
     const result = new Map();
@@ -384,22 +260,7 @@ export async function getCachedHashesByIds(ids) {
     return result;
 }
 
-/**
- * Reads full cached entries (character + hashes) for a specific set of ids in one pass - the per-id-cache half
- * of `/query`'s hash-only mode (2026-09 /query bandwidth pass, `CharacterRepository.query()` in
- * character-repository.js): given the `{id, favHash, tagIdsHash, contentHash}` rows the server's hash-mode
- * response carries, a caller checks each id's hashes against what's stored here - a match means the cached
- * `character` object can be used as-is with zero refetch; a miss (or absent entry) means the id needs to go
- * through `/api/characters/batch` for its actual field values.
- *
- * Deliberately a single combined read (character + hashes together) rather than `getCachedHashesByIds()` followed
- * by a second per-id character read: they're stored under the same key in the same IDB write already
- * (`saveCachedCharacters()` below), so reading them apart would just be two IDB round trips for data that's
- * always fetched and used together here.
- * @param {string[]} ids
- * @returns {Promise<Map<string, {character: object, hashes: {fav: number, tagIds: number, content: number}}>>}
- * keyed by id; ids with no cached entry, or whose stored hash predates `HASH_VERSION`, are simply absent.
- */
+// A hash match means the cached `character` can be used as-is with zero refetch.
 export async function getCachedEntriesByIds(ids) {
     const store = getCharacterCacheStore();
     const result = new Map();
@@ -417,45 +278,23 @@ export async function getCachedEntriesByIds(ids) {
     return result;
 }
 
-/**
- * Persists freshly-fetched characters into the cache, keyed by avatar. Callers should pass already fully
- * processed character objects (DOMPurify-sanitized name, defaulted chat, etc. - i.e. exactly what would've been
- * assigned into the `characters` array before this cache existed), since getAllCachedCharacters() returns cache
- * hits as-is with no further processing applied on the next read.
- *
- * Also stores per-field hashes (fav, tagIds, content) alongside the character data in the same IDB write, so
- * they can never drift from the record they describe. The state-digest drift check (script.js's
- * verifyCharacterCacheDigest()) reads these instead of recomputing from the full character data - see
- * getAllCachedHashes() and public/scripts/hash-utils.js's header for the full reasoning on the hashing scheme.
- * @param {{avatar: string, character: object}[]} entries
- * @returns {Promise<string[]>} Avatar IDs that failed to write (empty if all succeeded).
- */
+/** Callers must pass already fully processed character objects - reads return cache hits as-is, unprocessed. */
 export async function saveCachedCharacters(entries) {
     const store = getCharacterCacheStore();
     const failed = [];
-    // Batched to avoid overwhelming IndexedDB with hundreds of thousands of concurrent writes
-    // (a one-time tag_ids backfill across 314k records would otherwise fire 314k concurrent
-    // setItem calls via Promise.all, making the browser unresponsive for seconds).
+    // Batched so a large backfill doesn't fire hundreds of thousands of concurrent setItem calls.
     const SAVE_BATCH = 500;
     for (let i = 0; i < entries.length; i += SAVE_BATCH) {
         const batch = entries.slice(i, i + SAVE_BATCH);
         await Promise.all(batch.map(({ avatar, character }) => {
-            // Per-field hashes stored atomically with the character data in the same IDB write,
-            // so they can never drift from the record they describe. Verification reads these
-            // instead of recomputing from scratch (O(1) per record instead of O(fields)).
             const hashes = {
                 fav: characterDigestFavHash(character) % 4294967296,
                 tagIds: characterDigestTagIdsHash(character),
                 content: characterDigestFieldsHash(character) % 4294967296,
                 v: HASH_VERSION,
             };
-            // Strip top-level fields that exactly duplicate their data.* counterpart (see DUPLICATE_FIELDS'
-            // own doc comment) - computed from the original `character` above so the hashes still reflect the
-            // real full content regardless of what's actually stored. Never mutates the caller's object
-            // (which may still be live in the in-memory `characters` array) - only the clone written to IDB
-            // is stripped, and only when a field is present at all (an already-absent field, the common case
-            // for a V2-only card with no V1 mirror, must stay absent rather than becoming an explicit
-            // `undefined` key added by the clone).
+            // Hashed from the original `character` before stripping, so hashes reflect full content
+            // regardless of what's stored; never mutates the caller's (possibly still-live) object.
             const { toStore, dedup } = computeDedupSplit(character);
             return store.setItem(avatar, { character: toStore, hashes, dedup, dedupV: DEDUP_VERSION }).catch(error => {
                 console.error(`Failed to cache character data for ${avatar}:`, error);
@@ -466,12 +305,6 @@ export async function saveCachedCharacters(entries) {
     return failed;
 }
 
-/**
- * Removes cached entries directly by avatar id - used for `op: 'delete'` entries from `/api/characters/changes`,
- * which name exactly what was deleted rather than requiring the client to infer deletions from absence in a
- * full manifest (the old scheme's `pruneCharacterCache()`, which this replaces).
- * @param {string[]} avatars
- */
 export async function removeCachedCharacters(avatars) {
     const store = getCharacterCacheStore();
     await Promise.all(avatars.map(avatar =>
@@ -479,12 +312,7 @@ export async function removeCachedCharacters(avatars) {
             console.error(`Failed to remove cached character data for ${avatar}:`, error))));
 }
 
-/**
- * Drops the entire character cache (including the revision cursor) for the current user. Used as a fallback
- * when the change-feed/batch delta path fails or looks inconsistent (including a `truncated: true` response -
- * see fetchCharactersDelta()), so the next successful sync starts from a clean `sinceRev: 0` slate instead of
- * potentially mixing in stale cached entries.
- */
+/** Fallback for when the change-feed/batch delta path fails or looks inconsistent - forces a clean `sinceRev: 0` resync. */
 export async function clearCharacterCache() {
     const store = getCharacterCacheStore();
     try {
@@ -494,16 +322,7 @@ export async function clearCharacterCache() {
     }
 }
 
-/**
- * Group-side persisted cache (2026-09, extending /query's hash-mode client caching to `includeGroups: true`
- * requests). A separate IndexedDB instance, not a second key namespace inside the character store above -
- * groups were never part of that store's boot-time manifest/batch/changes sync (they're "always resident" per
- * the design doc, never lazily faulted in the way characters are), so this is a genuinely new cache, not an
- * extension of an existing one. Same per-id `{group, hashes: {fav, tagIds, content, v}}` shape as the character
- * store, same `HASH_VERSION` migrate-on-read convention, for the same reasons (see that constant's own comment
- * above) - kept as its own constant (`GROUP_HASH_VERSION`) rather than shared, since a future change to either
- * digest scheme shouldn't force a cache-wide invalidation of the other.
- */
+/** Separate IndexedDB instance, not a namespace in the character store - groups are always resident, never lazily faulted like characters. */
 const GROUP_HASH_VERSION = 1;
 
 /** @type {Map<string, LocalForage>} */
@@ -520,13 +339,7 @@ function getGroupCacheStore() {
     return store;
 }
 
-/**
- * Reads full cached entries (group + hashes) for a specific set of group ids - the group-side counterpart to
- * getCachedEntriesByIds() above. See that function's own doc comment for the full reasoning (identical here,
- * just against the group store instead of the character one).
- * @param {string[]} ids
- * @returns {Promise<Map<string, {group: object, hashes: {fav: number, tagIds: number, content: number}}>>}
- */
+/** Group-side counterpart to getCachedEntriesByIds() above. */
 export async function getCachedGroupEntriesByIds(ids) {
     const store = getGroupCacheStore();
     const result = new Map();
@@ -543,15 +356,7 @@ export async function getCachedGroupEntriesByIds(ids) {
     return result;
 }
 
-/**
- * Persists freshly-fetched groups into the cache, keyed by id - the group-side counterpart to
- * saveCachedCharacters() above. Computes and stores the same three-way digest split
- * (groupDigestFavHash/TagIdsHash/ContentHash, hash-utils.js) the server's own write-path hooks compute
- * (upsertGroupRowSync()/assignEntityTag()'s group branch, character-metadata-db.js) - same shared-module
- * guarantee that keeps the two sides comparable, same reasoning characters already rely on.
- * @param {{id: string, group: object}[]} entries
- * @returns {Promise<string[]>} ids that failed to write.
- */
+/** Group-side counterpart to saveCachedCharacters() above. */
 export async function saveCachedGroups(entries) {
     const store = getGroupCacheStore();
     const failed = [];

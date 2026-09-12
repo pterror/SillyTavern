@@ -28,7 +28,6 @@ let firstTime = true;
 let deleteModeActive = false;
 
 
-// Remove all draggables associated with the gallery
 $('#movingDivs').on('click', '.dragClose', function () {
     const relatedId = $(this).data('related-id');
     if (!relatedId) return;
@@ -132,7 +131,7 @@ async function getGalleryItems(url) {
         const item = {
             src: `user/images/${url}/${file}`,
             srct: `user/images/${url}/${file}`,
-            title: '', // Optional title for each item
+            title: '',
         };
 
         if (isVideo(file)) {
@@ -253,7 +252,6 @@ async function initGallery(items, url) {
             return;
         }
 
-        // Upload each file
         for (const file of files) {
             await uploadFile(file, url);
         }
@@ -282,14 +280,11 @@ async function initGallery(items, url) {
         eventSource.removeListener('resizeUI', resizeHandler);
     });
 
-    // Set dropzone height to be the same as the parent
     gallery.css('height', gallery.parent().css('height'));
 
-    //let images populate first
     await delay(100);
-    //unset the height (which must be getting set by the gallery library at some point)
+    // The gallery library sets its own height at some point during population; unset it after so it doesn't stick.
     gallery.css('height', 'unset');
-    //force a resize to make images display correctly
     gallery.nanogallery2('resize');
 }
 
@@ -322,16 +317,13 @@ async function showCharGallery(deleteModeState = false) {
 
     try {
         deleteModeActive = deleteModeState;
-        // The selected-group id never actually reaches the /api/images/list request as a folder name -
-        // when a character is selected the branch below always overwrites url with the avatar/name-derived
-        // gallery folder, so this is just a (falsy) placeholder for "no group, no character selected yet".
+        // selected_group is only a placeholder here; a character selection always overwrites it below.
         let url = selected_group;
         if (getSelectionState().type === 'character') {
             url = getGalleryFolder(getCurrentCharacter());
         }
 
         const items = await getGalleryItems(url);
-        // if there already is a gallery, destroy it and place this one in its place
         $('#dragGallery').closest('#gallery').remove();
         await makeMovable(url);
         await delay(100);
@@ -352,7 +344,6 @@ async function showCharGallery(deleteModeState = false) {
  */
 async function uploadFile(file, url) {
     try {
-        // Convert the file to a base64 string
         const fileBase64 = await getBase64Async(file);
         const base64Data = fileBase64.split(',')[1];
         const extension = getFileExtension(file);
@@ -361,8 +352,6 @@ async function uploadFile(file, url) {
         toastr.success(t`File uploaded successfully. Saved at: ${path}`);
     } catch (error) {
         console.error('There was an issue uploading the file:', error);
-
-        // Replacing alert with toastr error notification
         toastr.error(t`Failed to upload the file.`);
     }
 }
@@ -389,7 +378,6 @@ async function makeMovable(url) {
     titleText.textContent = t`Image Gallery`;
     dragTitle.append(titleText);
 
-    // Create a container for the controls
     const controlsContainer = document.createElement('div');
     controlsContainer.classList.add('flex-container', 'alignItemsCenter');
 
@@ -419,26 +407,22 @@ async function makeMovable(url) {
     addImageButton.title = 'Add Image';
     addImageButton.innerHTML = '<i class="fa-solid fa-plus fa-fw"></i><div>Add Image</div>';
 
-    // Create a hidden file input
     const fileInput = document.createElement('input');
     fileInput.type = 'file';
     fileInput.accept = 'image/*,video/*';
     fileInput.multiple = true;
     fileInput.style.display = 'none';
 
-    // Trigger file input when the button is clicked
     addImageButton.addEventListener('click', () => {
         fileInput.click();
     });
 
-    // Handle file selection
     fileInput.addEventListener('change', async () => {
         const files = fileInput.files;
         if (files.length > 0) {
             for (const file of files) {
                 await uploadFile(file, url);
             }
-            // Refresh the gallery
             closeButton.trigger('click');
             await showCharGallery();
         }
@@ -446,12 +430,10 @@ async function makeMovable(url) {
 
     controlsContainer.appendChild(addImageButton);
     dragTitle.append(controlsContainer);
-    newElement.append(fileInput); // Append hidden file input to the main element
+    newElement.append(fileInput);
 
-    // add no-scrollbar class to this element
     newElement.addClass('no-scrollbar');
 
-    // get the close button and set its id and data-related-id
     const closeButton = newElement.find('.dragClose');
     closeButton.attr('id', `${id}close`);
     closeButton.attr('data-related-id', `${id}`);
@@ -524,7 +506,6 @@ async function makeMovable(url) {
     topBarElement.appendChild(galleryFolderRestore);
     newElement.append(topBarElement);
 
-    // Populate the gallery folder input with a list of available folders
     const folders = await getGalleryFolders();
     $(galleryFolderInput)
         .autocomplete({
@@ -541,7 +522,6 @@ async function makeMovable(url) {
         })
         .on('focus', () => $(galleryFolderInput).autocomplete('search', ''));
 
-    //add a div for the gallery
     newElement.append('<div id="dragGallery"></div>');
 
     $('#dragGallery').css('display', 'block');
@@ -584,10 +564,8 @@ function updateGalleryFolder(newUrl) {
         throw new Error('Character PNG ID is not found');
     }
     if (newUrl === name) {
-        // Default folder name is picked, remove the override
         delete context.extensionSettings.gallery.folders[avatar];
     } else {
-        // Custom folder name is provided, set the override
         context.extensionSettings.gallery.folders[avatar] = newUrl;
     }
     context.saveSettingsDebounced('extension_settings');
@@ -628,7 +606,6 @@ function restoreGalleryFolder() {
  * @param {string} url - The URL of the image to be added to the draggable element.
  */
 function makeDragImg(id, url) {
-    // Step 1: Clone the template content
     const template = document.getElementById('generic_draggable_template');
 
     if (!(template instanceof HTMLTemplateElement)) {
@@ -638,7 +615,6 @@ function makeDragImg(id, url) {
 
     const newElement = document.importNode(template.content, true);
 
-    // Step 2: Append the given image
     const mediaElement = isVideo(url)
         ? document.createElement('video')
         : document.createElement('img');
@@ -653,8 +629,6 @@ function makeDragImg(id, url) {
     if (draggableElem) {
         draggableElem.appendChild(mediaElement);
 
-        // Find a unique id for the draggable element
-
         let counter = 1;
         while (document.getElementById(uniqueId)) {
             uniqueId = `draggable_${id}_${counter}`;
@@ -662,40 +636,32 @@ function makeDragImg(id, url) {
         }
         draggableElem.id = uniqueId;
 
-        // Add the galleryImageDraggable to have unique class
         draggableElem.classList.add('galleryImageDraggable');
 
-        // Ensure that the newly added element is displayed as block
         draggableElem.style.display = 'block';
-        //and has no padding unlike other non-zoomed-avatar draggables
+        // No padding, unlike other non-zoomed-avatar draggables.
         draggableElem.style.padding = '0';
 
-        // Add an id to the close button
-        // If the close button exists, set related-id
         const closeButton = /** @type {HTMLElement} */ (draggableElem.querySelector('.dragClose'));
         if (closeButton) {
             closeButton.id = `${uniqueId}close`;
             closeButton.dataset.relatedId = uniqueId;
         }
 
-        // Find the .drag-grabber and set its matching unique ID
         const dragGrabber = draggableElem.querySelector('.drag-grabber');
         if (dragGrabber) {
-            dragGrabber.id = `${uniqueId}header`; // appending _header to make it match the parent's unique ID
+            dragGrabber.id = `${uniqueId}header`;
         }
     }
 
-    // Step 3: Attach it to the movingDivs container
     document.getElementById('movingDivs').appendChild(newElement);
 
-    // Step 4: Call dragElement and loadMovingUIState
     const appendedElement = document.getElementById(uniqueId);
     if (appendedElement) {
         var elmntName = $(appendedElement);
         loadMovingUIState();
         dragElement(elmntName);
 
-        // Prevent dragging the image
         $(`#${uniqueId} img`).on('dragstart', (e) => {
             e.preventDefault();
             return false;
@@ -713,7 +679,6 @@ function makeDragImg(id, url) {
  * @returns {string} - The sanitized ID.
  */
 function sanitizeHTMLId(id) {
-    // Replace spaces and non-word characters
     id = id.replace(/\s+/g, '-')
         .replace(/[^\x00-\x7F]/g, '-')
         .replace(/\W/g, '');
@@ -732,7 +697,7 @@ function sanitizeHTMLId(id) {
  */
 function viewWithDragbox(items) {
     if (items && items.length > 0) {
-        const url = items[0].responsiveURL(); // Get the URL of the clicked image/video
+        const url = items[0].responsiveURL();
         if (deleteModeActive) {
             Popup.show.confirm(t`Are you sure you want to delete this image?`, url)
                 .then(async (confirmed) => {
@@ -742,7 +707,6 @@ function viewWithDragbox(items) {
                     deleteGalleryItem(url).then(() => showCharGallery(deleteModeActive));
                 });
         } else {
-            // ID should just be the last part of the URL, removing the extension
             const id = sanitizeHTMLId(url.substring(url.lastIndexOf('/') + 1, url.lastIndexOf('.')));
             makeDragImg(id, url);
         }
@@ -750,7 +714,6 @@ function viewWithDragbox(items) {
 }
 
 
-// Registers a simple command for opening the char gallery.
 SlashCommandParser.addCommandObject(SlashCommand.fromProps({
     name: 'show-gallery',
     aliases: ['sg'],
@@ -784,9 +747,7 @@ SlashCommandParser.addCommandObject(SlashCommand.fromProps({
 
 async function listGalleryCommand(args) {
     try {
-        // Same as listGalleryCallback: the selected-group id never actually reaches the request as a folder
-        // name, since the branch below overwrites url with the avatar/name-derived gallery folder whenever a
-        // character is selected - it's just a (falsy) placeholder otherwise.
+        // selected_group is only a placeholder here; a character selection always overwrites it below.
         let url = args.char ?? (args.group ? groups.find(it => it.name == args.group)?.id : null) ?? selected_group;
         if (!args.char && !args.group && getSelectionState().type === 'character') {
             url = getGalleryFolder(getCurrentCharacter());
@@ -820,7 +781,6 @@ function addGalleryWandButton() {
     showGalleryContainer.appendChild(showGalleryButton);
 }
 
-// On extension load, ensure the settings are initialized
 export async function init() {
     initSettings();
     eventSource.on(event_types.CHARACTER_RENAMED, (oldAvatar, newAvatar) => {
@@ -845,7 +805,6 @@ export async function init() {
         }
     });
 
-    // Add an option to the dropdown
     $('#char-management-dropdown').append(
         $('<option>', {
             id: 'show_char_gallery',

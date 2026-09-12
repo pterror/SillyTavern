@@ -303,7 +303,6 @@ export class ReasoningHandler {
 
         this.#isHiddenReasoningModel = isHiddenReasoningModel();
 
-        // Cached DOM elements for reasoning
         /** @type {HTMLElement} Main message DOM element `.mes` */
         this.messageDom = null;
         /** @type {HTMLDetailsElement} Reasoning details DOM element `.mes_reasoning_details` */
@@ -371,7 +370,6 @@ export class ReasoningHandler {
         // Prefill main dom element, as message might not have been rendered yet
         this.messageDom = messageElement;
 
-        // Make sure reset correctly clears all relevant states
         if (reset) {
             this.state = this.#isHiddenReasoningModel ? ReasoningState.Thinking : ReasoningState.None;
             this.type = null;
@@ -419,7 +417,6 @@ export class ReasoningHandler {
         reasoning = allowReset ? reasoning ?? this.reasoning : reasoning || this.reasoning;
         reasoning = trimSpaces(reasoning);
 
-        // Ensure the chat extra exists
         if (!chat[messageId].extra) {
             updateMessage(messageId, { extra: {} });
         }
@@ -462,7 +459,6 @@ export class ReasoningHandler {
         if (!this.reasoning && !this.#isHiddenReasoningModel)
             return;
 
-        // Ensure reasoning string is updated and regexes are applied correctly
         const reasoningChanged = this.updateReasoning(messageId, null, { persist: true });
 
         if ((this.#isHiddenReasoningModel || reasoningChanged) && this.state === ReasoningState.None) {
@@ -569,15 +565,12 @@ export class ReasoningHandler {
     updateDom(messageId) {
         this.#checkDomElements(messageId);
 
-        // Main CSS class to show this message includes reasoning
         this.messageDom.classList.toggle('reasoning', this.state !== ReasoningState.None);
 
-        // Update states to the relevant DOM elements
         setDatasetProperty(this.messageDom, 'reasoningState', this.state !== ReasoningState.None ? this.state : null);
         setDatasetProperty(this.messageReasoningDetailsDom, 'state', this.state);
         setDatasetProperty(this.messageReasoningDetailsDom, 'type', this.type);
 
-        // Update the reasoning message
         const rawReasoning = this.reasoningDisplayText ?? this.reasoning;
         const reasoning = trimSpaces(rawReasoning);
         // Keep whitespace-only saved reasoning editable without showing it as visible content.
@@ -592,7 +585,6 @@ export class ReasoningHandler {
             this.messageReasoningContentDom.innerHTML = displayReasoning;
         }
 
-        // Update tooltip for hidden reasoning edit
         /** @type {HTMLElement} */
         const button = this.messageDom.querySelector('.mes_edit_add_reasoning');
         const isHiddenLikeReasoning = this.state === ReasoningState.Hidden || (hasStoredReasoning && !hasReasoningContent);
@@ -603,7 +595,6 @@ export class ReasoningHandler {
             this.messageReasoningDetailsDom.open = false;
         }
 
-        // Update the reasoning duration in the UI
         this.#updateReasoningTimeUI();
     }
 
@@ -618,7 +609,6 @@ export class ReasoningHandler {
             this.messageDom = null;
         }
 
-        // Cache the DOM elements once
         if (this.messageDom === null) {
             this.messageDom = document.querySelector(`#chat .mes[mesid="${messageId}"]`);
             if (this.messageDom === null) throw new Error('message dom does not exist');
@@ -759,10 +749,8 @@ export class PromptReasoning {
             return content;
         }
 
-        // Increment the counter
         this.counter++;
 
-        // Substitute macros in variable parts
         const prefix = substituteParams(power_user.reasoning.prefix || '');
         const separator = substituteParams(power_user.reasoning.separator || '');
         const suffix = substituteParams(power_user.reasoning.suffix || '');
@@ -955,7 +943,6 @@ function registerReasoningSlashCommands() {
             if (!message) {
                 return '';
             }
-            // Make sure the message has an extra object
             const existingExtra = (message.extra && typeof message.extra === 'object') ? message.extra : {};
 
             updateMessage(messageId, {
@@ -1307,7 +1294,6 @@ function setReasoningEventHandlers() {
         const textareaRect = textarea.getBoundingClientRect();
         const chatRect = chatElement.getBoundingClientRect();
 
-        // Scroll if textarea bottom is below visible area
         if (textareaRect.bottom > chatRect.bottom) {
             const scrollOffset = textareaRect.bottom - chatRect.bottom;
             chatElement.scrollTop += scrollOffset;
@@ -1390,7 +1376,6 @@ function setReasoningEventHandlers() {
             messageBlock.attr('data-reasoning-state', ReasoningState.Done);
         }
 
-        // Open the reasoning area so we can actually edit it
         details.attr('open', '');
         messageBlock.find('.mes_reasoning_edit').trigger('click');
         await saveChatConditional();
@@ -1492,7 +1477,7 @@ export function getReasoningTemplateByName(name) {
  * @returns {ParsedReasoning|null} Parsed reasoning block and message content
  */
 export function parseReasoningFromString(str, { strict = true } = {}, template = null) {
-    template = template ?? power_user.reasoning;  // if no template given, use the currently selected template
+    template = template ?? power_user.reasoning;
 
     // Both prefix and suffix must be defined
     if (!template.prefix || !template.suffix) {
@@ -1536,17 +1521,14 @@ export function parseReasoningFromString(str, { strict = true } = {}, template =
 export function formatReasoning(reasoning, content, template = null) {
     template = template ?? power_user.reasoning;
 
-    // If no reasoning provided, return content only
     if (!reasoning || !template.prefix || !template.suffix) {
         return { formatted: content, contentOnly: content };
     }
 
-    // Substitute macros in template parts
     const prefix = substituteParams(template.prefix || '');
     const suffix = substituteParams(template.suffix || '');
     const separator = substituteParams(template.separator || '');
 
-    // Build the formatted string: prefix + reasoning + suffix + separator + content
     const formatted = `${prefix}${reasoning}${suffix}${separator}${content}`;
 
     return { formatted, contentOnly: content };
@@ -1568,7 +1550,6 @@ export function parseReasoningInSwipes(swipes, swipeInfoArray, duration) {
         return;
     }
 
-    // Something ain't right, don't parse
     if (!Array.isArray(swipes) || !Array.isArray(swipeInfoArray) || swipes.length !== swipeInfoArray.length) {
         return;
     }
@@ -1616,18 +1597,15 @@ function registerReasoningAppEvents() {
 
         const parsedReasoning = parseReasoningFromString(prefix + message.mes);
 
-        // No reasoning block found
         if (!parsedReasoning) {
             return;
         }
 
         const contentUpdated = !!parsedReasoning.reasoning || parsedReasoning.content !== message.mes;
 
-        // Make sure the message has an extra object
         const existingExtra = (message.extra && typeof message.extra === 'object') ? message.extra : {};
         const extraUpdates = { ...existingExtra };
 
-        // If reasoning was found, add it to the message
         if (parsedReasoning.reasoning) {
             extraUpdates.reasoning = getRegexedString(parsedReasoning.reasoning, regex_placement.REASONING);
             extraUpdates.reasoning_type = ReasoningType.Parsed;
@@ -1635,7 +1613,6 @@ function registerReasoningAppEvents() {
 
         const updates = { extra: extraUpdates };
 
-        // Update the message text if it was changed
         if (parsedReasoning.content !== message.mes) {
             updates.mes = parsedReasoning.content;
         }
@@ -1647,7 +1624,6 @@ function registerReasoningAppEvents() {
             syncMesToSwipe();
             saveChatDebounced();
 
-            // Find if a message already exists in DOM and must be updated
             const messageRendered = document.querySelector(`.mes[mesid="${idx}"]`) !== null;
             if (messageRendered) {
                 console.debug('[Reasoning] Updating message block', idx);

@@ -124,7 +124,6 @@ class MacroEngine {
 
         const { cst, lexingErrors, parserErrors } = MacroParser.parseDocument(preProcessed);
 
-        // For now, we log and still try to process what we can.
         if (lexingErrors && lexingErrors.length > 0) {
             logMacroSyntaxWarning({ phase: 'lexing', input, errors: lexingErrors });
         }
@@ -132,7 +131,6 @@ class MacroEngine {
             logMacroSyntaxWarning({ phase: 'parsing', input, errors: parserErrors });
         }
 
-        // If the parser did not produce a valid CST, fall back to the original input.
         if (!cst || typeof cst !== 'object' || !cst.children) {
             logMacroGeneralError({ message: 'Macro parser produced an invalid CST. Returning original input.', error: { input, lexingErrors, parserErrors } });
             return input;
@@ -170,34 +168,25 @@ class MacroEngine {
         const raw = `{{${call.rawInner}}}`;
         if (!name) return raw;
 
-        // First check if this is a dynamic macro to use. If so, we will create a temporary macro definition for it and use that over any registered macro.
-        // Dynamic macro keys are normalized to lowercase for case-insensitive matching.
+        // Dynamic macros take priority over any registered macro of the same name; keys are lowercased for case-insensitive lookup.
         /** @type {MacroDefinition|null} */
         let defOverride = null;
         const nameLower = name.toLowerCase();
         if (Object.hasOwn(env.dynamicMacros, nameLower)) {
             const impl = env.dynamicMacros[nameLower];
 
-            // Dynamic macros support three formats:
-            // 1. string - direct value, no args allowed
-            // 2. function - handler function, no args allowed (legacy behavior)
-            // 3. MacroDefinitionOptions object - full definition with handler, args, type validation, etc.
-
-            // Check if this looks like a MacroDefinitionOptions object (has handler property)
+            // Dynamic macros: a plain string, a handler function (legacy), or a full MacroDefinitionOptions object.
             const looksLikeOptions = impl && typeof impl === 'object' &&
                 'handler' in impl && typeof impl.handler === 'function';
 
             if (looksLikeOptions) {
-                // Case 3: MacroDefinitionOptions - use the full definition builder
                 try {
                     const options = /** @type {MacroDefinitionOptions} */ (impl);
                     defOverride = MacroRegistry.buildMacroDefFromOptions(name, options);
                 } catch (error) {
-                    // If building fails, log warning and fall through to check registered macros
                     logMacroRuntimeWarning({ message: `Dynamic macro "${name}" has invalid options: ${error.message}`, call });
                 }
             } else if (['string', 'number', 'boolean', 'function'].includes((typeof impl))) {
-                // Case 1 & 2: string or handler function
                 if (['number', 'boolean'].includes(typeof impl)) {
                     logMacroRuntimeWarning({ message: `Dynamic macro "${name}" uses unsupported number/boolean format.`, call });
                 }
@@ -212,9 +201,8 @@ class MacroEngine {
             }
         }
 
-        // If not, check if the macro exists and is registered
         if (!defOverride && !MacroRegistry.hasMacro(name)) {
-            return raw; // Unknown macro: keep macro syntax, but nested macros inside rawInner are already resolved.
+            return raw; // Unknown macro: nested macros inside rawInner are already resolved.
         }
 
         try {
@@ -271,17 +259,15 @@ class MacroEngine {
      * Registers the core pre/post processors that handle legacy syntax and cleanup.
      */
     #registerCorePreProcessors() {
-        // Pre-processors (priority 0-50 reserved for core)
+        // Priority 0-50 is reserved for core pre-processors.
 
-        // This legacy macro will not be supported by the new macro parser, but rather regex-replaced beforehand
-        // {{time_UTC-10}}   =>   {{time::UTC-10}}
+        // {{time_UTC-10}} isn't parsed by the new macro syntax, so rewrite it to {{time::UTC-10}} first.
         this.addPreProcessor(
             text => text.replace(/{{time_(UTC[+-]\d+)}}/gi, (_match, utcOffset) => `{{time::${utcOffset}}}`),
             { priority: 10, source: 'core:legacy-time-syntax' },
         );
 
-        // Legacy non-curly markers like <USER>, <BOT>, <GROUP>, etc.
-        // These are rewritten into their equivalent macro forms so they go through the normal engine pipeline.
+        // Legacy non-curly markers (<USER>, <BOT>, <GROUP>, ...) rewritten into their macro equivalents.
         this.addPreProcessor(
             text => text
                 .replace(/<USER>/gi, '{{user}}')
@@ -297,25 +283,21 @@ class MacroEngine {
      * Registers the core post-processors that handle legacy syntax and cleanup.
      */
     #registerCorePostProcessors() {
-        // Post-processors (priority 0-50 reserved for core)
+        // Priority 0-50 is reserved for core post-processors.
 
-        // Unescape braces: \{ → { and \} → }
-        // Since \{\{ doesn't match {{ (MacroStart), it passes through as plain text.
-        // We only need to remove the backslashes in post-processing.
+        // \{\{ doesn't match the MacroStart token, so escaped braces pass through unprocessed and are unescaped here.
         this.addPostProcessor(
             text => text.replace(/\\([{}])/g, '$1'),
             { priority: 10, source: 'core:unescape-braces' },
         );
 
-        // The original trim macro is reaching over the boundaries of the defined macro. This is not something the engine supports.
-        // To treat {{trim}} as it was before, we won't process it by the engine itself,
-        // but doing a regex replace on {{trim}} and the surrounding area, after all other macros have been processed.
+        // {{trim}} reaches outside its own macro boundaries, which the engine can't support, so it's handled via regex instead.
         this.addPostProcessor(
             text => text.replace(/(?:\r?\n)*{{trim}}(?:\r?\n)*/gi, ''),
             { priority: 20, source: 'core:legacy-trim' },
         );
 
-        // Remove any wrongly placed leftover ELSE_MARKER that might have been inserted during processing
+        // Clean up any leftover ELSE_MARKER left behind by processing.
         this.addPostProcessor(
             text => text.replaceAll(ELSE_MARKER, ''),
             { priority: 30, source: 'core:cleanup-else-marker' },
@@ -348,22 +330,7 @@ class MacroEngine {
     }
 
     /**
-     * Trims scoped content with optional indentation dedent.
-     *
-     * When trimIndent is true (default), this function:
-     * 1. Trims leading and trailing whitespace (like String.trim())
-     * 2. Finds the indentation of the first non-empty line
-     * 3. Removes that amount of leading whitespace from all subsequent lines
-     *
-     * This allows neatly formatted scoped macros like:
-     * ```
-     * {{if condition}}
-     *   # Heading
-     *   Content here
-     * {{/if}}
-     * ```
-     * To produce "# Heading\nContent here" instead of "# Heading\n  Content here"
-     *
+     * Dedents scoped macro content to the indentation of its first non-empty line, e.g. so a `{{if}}` body indented for readability doesn't carry that indentation into the output.
      * @param {string} content - The content to trim
      * @param {Object} options - Configuration options
      * @param {boolean} [options.trimIndent=true] - Whether to also dedent consistent indentation
@@ -372,43 +339,34 @@ class MacroEngine {
     trimScopedContent(content, { trimIndent = true } = {}) {
         if (!content) return '';
 
-        // If not dedenting, just do a basic trim
         if (!trimIndent) {
             return content.trim();
         }
 
-        // Split into lines BEFORE trimming to preserve indentation info
         const lines = content.split('\n');
 
-        // Find the first non-empty line (has non-whitespace characters)
         let baseIndent = 0;
         for (const line of lines) {
             if (line.trim() !== '') {
-                // Found first non-empty line - get its indentation
                 const match = line.match(/^[ \t]*/);
                 baseIndent = match ? match[0].length : 0;
                 break;
             }
         }
 
-        // If no indentation to remove, just trim and return
         if (baseIndent === 0) {
             return content.trim();
         }
 
-        // Remove the base indentation from ALL lines
         const dedentedLines = lines.map(line => {
-            // Only remove indentation if the line has enough leading whitespace
             const match = line.match(/^[ \t]*/);
             const lineIndent = match ? match[0].length : 0;
             if (lineIndent >= baseIndent) {
                 return line.slice(baseIndent);
             }
-            // Line has less indentation than base - just trim its leading whitespace
             return line.trimStart();
         });
 
-        // Join and trim the final result
         return dedentedLines.join('\n').trim();
     }
 }

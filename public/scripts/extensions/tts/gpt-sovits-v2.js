@@ -64,7 +64,6 @@ class GptSovitsV2Provider {
     }
 
     onSettingsChange() {
-        // Used when provider settings are updated from UI
         this.settings.provider_endpoint = $('#tts_endpoint').val();
         this.settings.text_lang = $('#text_lang').val();
         this.settings.prompt_lang = $('#prompt_lang').val();
@@ -75,12 +74,10 @@ class GptSovitsV2Provider {
     }
 
     async loadSettings(settings) {
-        // Pupulate Provider UI given input settings
         if (Object.keys(settings).length == 0) {
             console.info('Using default TTS Provider settings');
         }
 
-        // Only accept keys defined in defaultSettings
         this.settings = this.defaultSettings;
 
         for (const key in settings) {
@@ -91,7 +88,6 @@ class GptSovitsV2Provider {
             }
         }
 
-        // Set initial values from the settings
         $('#tts_endpoint').val(this.settings.provider_endpoint).on('change', this.onSettingsChange.bind(this));
         $('#text_lang').val(this.settings.text_lang).on('change', this.onSettingsChange.bind(this));
         $('#prompt_lang').val(this.settings.prompt_lang).on('change', this.onSettingsChange.bind(this));
@@ -99,7 +95,6 @@ class GptSovitsV2Provider {
         await this.checkReady();
     }
 
-    // Perform a simple readiness check by trying to fetch voiceIds
     async checkReady() {
         await Promise.allSettled([this.fetchTtsVoiceObjects(), this.changeTTSSettings()]);
     }
@@ -150,7 +145,6 @@ class GptSovitsV2Provider {
         return responseJson;
     }
 
-    // Each time a parameter is changed, we change the configuration
     async changeTTSSettings() {
     }
 
@@ -191,7 +185,7 @@ class GptSovitsV2Provider {
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify(params), // Convert parameter objects to JSON strings
+                body: JSON.stringify(params),
             },
         );
         if (!response.ok) {

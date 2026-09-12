@@ -66,7 +66,6 @@ export class SettingsUi {
 
 
     prepareGeneralSettings() {
-        // general settings
         this.isEnabled = this.dom.querySelector('#qr--isEnabled');
         this.isEnabled.checked = this.settings.isEnabled;
         this.isEnabled.addEventListener('click', () => this.onIsEnabled());
@@ -113,17 +112,13 @@ export class SettingsUi {
             info.textContent = 'No character is currently loaded.';
             setListContainer.append(info);
         } else {
-            // Let the config object handle its own rendering. It will render an empty list if there are no sets,
-            // but the "add" button will always be functional.
             this.settings.charConfig.renderSettingsInto(clone);
         }
 
-        // Replace the old DOM element with our newly prepared clone.
         this.dom.querySelector('#qr--character').replaceWith(clone);
     }
 
     prepareQrEditor() {
-        // qr editor
         this.dom.querySelector('#qr--set-rename').addEventListener('click', async () => this.renameQrSet());
         this.dom.querySelector('#qr--set-new').addEventListener('click', async () => this.addQrSet());
         /**@type {HTMLInputElement}*/
@@ -309,7 +304,7 @@ export class SettingsUi {
     }
     async doDeleteQrSet(qrs) {
         await qrs.delete();
-        //TODO (HACK) should just bubble up from QuickReplySet.delete() but that would require proper or at least more comples onDelete listeners
+        // QuickReplySet.delete() doesn't remove it from these setLists, so prune manually.
         for (let i = this.settings.config.setList.length - 1; i >= 0; i--) {
             if (this.settings.config.setList[i].set == qrs) {
                 this.settings.config.setList.splice(i, 1);
@@ -344,7 +339,6 @@ export class SettingsUi {
             this.currentQrSet.name = newName;
             await this.currentQrSet.performFullSave();
 
-            // Update it in both set lists
             this.settings.config.setList.forEach(set => {
                 if (set.set.name === oldName) {
                     set.set.name = newName;
@@ -362,7 +356,7 @@ export class SettingsUi {
             });
             this.settings.save();
 
-            // Update the option in the current selected QR dropdown. All others will be refreshed via the prepare calls below.
+            // Other dropdowns are refreshed via the prepare calls below.
             /** @type {HTMLOptionElement} */
             const option = this.currentSet.querySelector(`#qr--set option[value="${oldName}"]`);
             option.value = newName;

@@ -27,7 +27,6 @@ const settingType = {
     positive_prompt: 2,
 };
 
-// Used for character and chat CFG values
 function updateSettings() {
     saveSettingsDebounced('extension_settings');
     loadSettings();
@@ -36,7 +35,6 @@ function updateSettings() {
 function setCharCfg(tempValue, setting) {
     const avatarName = getCharaFilename();
 
-    // Assign temp object
     let tempCharaCfg = {
         name: avatarName,
     };
@@ -111,14 +109,12 @@ function setChatCfg(tempValue, setting) {
     return true;
 }
 
-// TODO: Only change CFG when character is selected
 function onCfgMenuItemClick() {
     if (getSelectionState().type === 'none') {
         toastr.warning('Select a character before trying to configure CFG', '', { timeOut: 2000 });
         return;
     }
 
-    //show CFG config if it's hidden
     if ($('#cfgConfig').css('display') !== 'flex') {
         $('#cfgConfig').addClass('resizing');
         $('#cfgConfig').css('display', 'flex');
@@ -131,7 +127,6 @@ function onCfgMenuItemClick() {
             $('#cfgConfig').removeClass('resizing');
         });
 
-        //auto-open the main AN inline drawer
         if ($('#CFGBlockToggle')
             .siblings('.inline-drawer-content')
             .css('display') !== 'block') {
@@ -139,7 +134,6 @@ function onCfgMenuItemClick() {
             $('#CFGBlockToggle').trigger('click');
         }
     } else {
-        //hide AN if it's already displayed
         $('#cfgConfig').addClass('resizing');
         $('#cfgConfig').transition({
             opacity: 0.0,
@@ -152,8 +146,7 @@ function onCfgMenuItemClick() {
             $('#cfgConfig').hide();
         }, animation_duration);
     }
-    //duplicate options menu close handler from script.js
-    //because this listener takes priority
+    // Duplicated from script.js's close handler so this listener takes priority
     $('#options').stop().fadeOut(animation_duration);
 }
 
@@ -170,13 +163,10 @@ async function modifyCharaHtml() {
     } else {
         $('#chara_cfg_container').show();
         $('#groupchat_cfg_use_chara_container').hide();
-        // TODO: Remove chat checkbox here
     }
 }
 
-// Reloads chat-specific settings
 function loadSettings() {
-    // Set chat CFG if it exists
     $('#chat_cfg_guidance_scale').val(chat_metadata[metadataKeys.guidance_scale] ?? 1.0.toFixed(2));
     $('#chat_cfg_guidance_scale_counter').val(chat_metadata[metadataKeys.guidance_scale]?.toFixed(2) ?? 1.0.toFixed(2));
     $('#chat_cfg_negative_prompt').val(chat_metadata[metadataKeys.negative_prompt] ?? '');
@@ -207,7 +197,6 @@ function loadSettings() {
 
     $('#cfg_prompt_insertion_depth').val(chat_metadata[metadataKeys.prompt_insertion_depth] ?? 1);
 
-    // Set character CFG if it exists
     if (!selected_group) {
         const charaCfg = extension_settings.cfg.chara.find((e) => e.name === getCharaFilename());
         $('#chara_cfg_guidance_scale').val(charaCfg?.guidance_scale ?? 1.00);
@@ -217,16 +206,13 @@ function loadSettings() {
     }
 }
 
-// Load initial extension settings
 async function initialLoadSettings() {
-    // Create the settings if they don't exist
     extension_settings[extensionName] = extension_settings[extensionName] || {};
     if (Object.keys(extension_settings[extensionName]).length === 0) {
         Object.assign(extension_settings[extensionName], defaultSettings);
         saveSettingsDebounced('extension_settings');
     }
 
-    // Set global CFG values on load
     $('#global_cfg_guidance_scale').val(extension_settings.cfg.global.guidance_scale);
     $('#global_cfg_guidance_scale_counter').val(extension_settings.cfg.global.guidance_scale.toFixed(2));
     $('#global_cfg_negative_prompt').val(extension_settings.cfg.global.negative_prompt);
@@ -276,7 +262,6 @@ function migrateSettings() {
     }
 }
 
-// This function is called when the extension is loaded
 export function initCfg() {
     $('#CFGClose').on('click', function () {
         $('#cfgConfig').transition({
@@ -375,7 +360,6 @@ export function initCfg() {
 
     $('#option_toggle_CFG').on('click', onCfgMenuItemClick);
 
-    // Hook events
     eventSource.on(event_types.CHAT_CHANGED, async () => {
         await onChatChanged();
     });
@@ -397,8 +381,7 @@ export const metadataKeys = {
     prompt_separator: 'cfg_prompt_separator',
 };
 
-// Gets the CFG guidance scale
-// If the guidance scale is 1, ignore the CFG prompt(s) since it won't be used anyways
+// A guidance scale of 1 means the CFG prompt(s) won't be used, so skip it
 export function getGuidanceScale() {
     if (!extension_settings.cfg) {
         console.warn('CFG extension is not enabled. Skipping CFG guidance.');

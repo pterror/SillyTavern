@@ -154,7 +154,6 @@ export async function bindModelTemplates(power_user, online_status) {
     const bound = [];
 
     if (bindingsMatch) {
-        // unmap current preset
         delete power_user.model_templates_mappings[chatTemplateHash];
         delete power_user.model_templates_mappings[online_status];
         toastr.info(t`Context preset for ${online_status} will use defaults when loaded the next time.`);
@@ -162,9 +161,6 @@ export async function bindModelTemplates(power_user, online_status) {
         if (power_user.context_derived) {
             if (power_user.context.preset !== bindModelTemplates.context) {
                 bound.push(`${power_user.context.preset} context preset`);
-                // toastr.info(`Bound ${power_user.context.preset} preset to currently loaded model and all models that share its chat template.`);
-
-                // map current preset to current chat template hash
                 bindModelTemplates.context = power_user.context.preset;
             }
         } else {

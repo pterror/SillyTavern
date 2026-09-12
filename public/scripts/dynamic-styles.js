@@ -59,39 +59,29 @@ function applyDynamicFocusStyles(styleSheet, { fromExtension = false } = {}) {
     function processRules(rules, wrappers = []) {
         Array.from(rules).forEach(rule => {
             if (rule instanceof CSSImportRule) {
-                // Make sure that @import rules are processed recursively
-                // If the @import has media conditions, treat them as wrappers as well
                 /** @type {WrapperCond[]} */
                 const extra = (rule.media && rule.media.mediaText) ? [{ type: 'media', conditionText: rule.media.mediaText }] : [];
                 processImportedStylesheet(rule.styleSheet, [...wrappers, ...extra]);
             } else if (rule instanceof CSSStyleRule) {
-                // Separate multiple selectors on a rule
                 const selectors = rule.selectorText.split(',').map(s => s.trim());
 
-                // We collect all hover and focus rules to be able to later decide which hover rules don't have a matching focus rule
                 selectors.forEach(selector => {
                     const isHover = selector.includes(':hover'), isFocus = selector.includes(':focus');
                     if (isHover && isFocus) {
-                        // We currently do nothing here. Rules containing both hover and focus are very specific and should never be automatically touched
+                        // Rules with both are specific enough that they shouldn't be auto-touched
                     } else if (isHover) {
                         const baseSelector = selector.replace(/:hover/g, PLACEHOLDER).trim();
                         hoverRules.push({ baseSelector, rule, wrappers: [...wrappers] });
                     } else if (isFocus) {
-                        // We need to make sure that we remember all existing :focus, :focus-within and :focus-visible rules
                         const baseSelector = selector.replace(/:focus(-within|-visible)?/g, PLACEHOLDER).trim();
                         focusRules.add(`${baseSelector}|${wrapperSignature(wrappers)}`);
                     }
                 });
             } else if (rule instanceof CSSMediaRule) {
-                // Recursively process nested @media rules
                 processRules(rule.cssRules, [...wrappers, { type: 'media', conditionText: rule.conditionText }]);
             } else if (rule instanceof CSSSupportsRule) {
-                // Recursively process nested @supports rules
                 processRules(rule.cssRules, [...wrappers, { type: 'supports', conditionText: rule.conditionText }]);
             } else if (rule instanceof window.CSSContainerRule) {
-                // Recursively process nested @container rules (if supported by the browser)
-                // Note: conditionText contains the query like "(min-width: 300px)" or "style(color)"
-                // Using 'container' as the type ensures uniqueness separate from @media/@supports
                 processRules(rule.cssRules, [...wrappers, { type: 'container', conditionText: rule.conditionText }]);
             }
         });
@@ -113,31 +103,20 @@ function applyDynamicFocusStyles(styleSheet, { fromExtension = false } = {}) {
     /** @type {CSSStyleSheet} */
     let targetStyleSheet = null;
 
-    // Now finally create the dynamic focus rules
     hoverRules.forEach(({ baseSelector, rule, wrappers }) => {
         if (!focusRules.has(`${baseSelector}|${wrapperSignature(wrappers)}`)) {
-            // Only initialize the dynamic stylesheet if needed
             targetStyleSheet ??= getDynamicStyleSheet({ fromExtension });
 
-            // The closest keyboard-equivalent to :hover styling is utilizing the :focus-visible rule from modern browsers.
-            // It let's the browser decide whether a focus highlighting is expected and makes sense.
-            // So we take all :hover rules that don't have a manually defined focus rule yet, and create their
-            // :focus-visible counterpart, which will make the styling work the same for keyboard and mouse.
-            // If something like :focus-within or a more specific selector like `.blah:has(:focus-visible)` for elements inside,
-            // it should be manually defined in CSS.
+            // :focus-visible is the closest keyboard-equivalent to :hover; only generated for rules without a manual focus rule already
             const focusSelector = rule.selectorText.replace(/:hover/g, ':focus-visible');
 
-            // Skip pseudo-elements (::before, ::after, ::-webkit-scrollbar, etc.)
-            // as they cannot have :focus-visible appended (invalid CSS syntax)
+            // Pseudo-elements can't take :focus-visible appended (invalid CSS syntax)
             if (focusSelector.includes('::')) {
                 return;
             }
             let focusRule = `${focusSelector} { ${rule.style.cssText} }`;
 
-            // Wrap the generated rule into the same @media/@supports/@container chain (if any)
             if (wrappers.length > 0) {
-                // Build nested blocks from outermost to innermost
-                // Example: @media (x) { @supports (y) { <rule> } }
                 focusRule = wrappers.reduceRight((inner, w) => {
                     if (w.type === 'media') return `@media ${w.conditionText} { ${inner} }`;
                     if (w.type === 'supports') return `@supports ${w.conditionText} { ${inner} }`;
@@ -186,13 +165,11 @@ function getDynamicStyleSheet({ fromExtension = false } = {}) {
  * Initializes dynamic styles for ST
  */
 export function initDynamicStyles() {
-    // Start observing the head for any new added stylesheets
     observer.observe(document.head, {
         childList: true,
         subtree: true,
     });
 
-    // Process all stylesheets on initial load
     Array.from(document.styleSheets).forEach(sheet => {
         try {
             applyDynamicFocusStyles(sheet, { fromExtension: sheet.href?.toLowerCase().includes('scripts/extensions') == true });

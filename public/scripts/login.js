@@ -1,25 +1,14 @@
 import { initAccessibility } from './a11y.js';
 
-/**
- * CRSF token for requests.
- */
 let csrfToken = '';
 let discreetLogin = false;
 
-/**
- * Gets a CSRF token from the server.
- * @returns {Promise<string>} CSRF token
- */
 async function getCsrfToken() {
     const response = await fetch('/csrf-token');
     const data = await response.json();
     return data.token;
 }
 
-/**
- * Gets a list of users from the server.
- * @returns {Promise<object>} List of users
- */
 async function getUserList() {
     const response = await fetch('/api/users/list', {
         method: 'POST',
@@ -44,11 +33,6 @@ async function getUserList() {
     return userListObj;
 }
 
-/**
- * Requests a recovery code for the user.
- * @param {string} handle User handle
- * @returns {Promise<void>}
- */
 async function sendRecoveryPart1(handle) {
     const response = await fetch('/api/users/recover-step1', {
         method: 'POST',
@@ -67,13 +51,6 @@ async function sendRecoveryPart1(handle) {
     showRecoveryBlock();
 }
 
-/**
- * Sets a new password for the user using the recovery code.
- * @param {string} handle User handle
- * @param {string} code Recovery code
- * @param {string} newPassword New password
- * @returns {Promise<void>}
- */
 async function sendRecoveryPart2(handle, code, newPassword) {
     const recoveryData = {
         handle,
@@ -99,12 +76,6 @@ async function sendRecoveryPart2(handle, code, newPassword) {
     await performLogin(handle, newPassword);
 }
 
-/**
- * Attempts to log in the user.
- * @param {string} handle User's handle
- * @param {string} password User's password
- * @returns {Promise<void>}
- */
 async function performLogin(handle, password) {
     const userInfo = {
         handle: handle,
@@ -138,13 +109,7 @@ async function performLogin(handle, password) {
     }
 }
 
-/**
- * Handles the user selection event.
- * @param {object} user User object
- * @returns {Promise<void>}
- */
 async function onUserSelected(user) {
-    // No password, just log in
     if (!user.password) {
         return await performLogin(user.handle, '');
     }
@@ -169,55 +134,29 @@ async function onUserSelected(user) {
     displayError('');
 }
 
-/**
- * Displays an error message to the user.
- * @param {string} message Error message
- */
 function displayError(message) {
     $('#errorMessage').text(message);
 }
 
-/**
- * Redirects the user to the home page.
- * Preserves the query string.
- */
 function redirectToHome() {
-    // Create a URL object based on the current location
     const currentUrl = new URL(window.location.href);
-
-    // After a login there's no need to preserve the
-    // noauto parameter (if present)
     currentUrl.searchParams.delete('noauto');
-
-    // Set the pathname to root and keep the updated query string
     currentUrl.pathname = '/';
-
-    // Redirect to the new URL
     window.location.href = currentUrl.toString();
 }
 
-/**
- * Hides the password entry block and shows the password recovery block.
- */
 function showRecoveryBlock() {
     $('#passwordEntryBlock').hide();
     $('#passwordRecoveryBlock').show();
     displayError('');
 }
 
-/**
- * Hides the password recovery block and shows the password entry block.
- */
 function onCancelRecoveryClick() {
     $('#passwordRecoveryBlock').hide();
     $('#passwordEntryBlock').show();
     displayError('');
 }
 
-/**
- * Configures the login page for normal login.
- * @param {import('../../src/users').UserViewModel[]} userList List of users
- */
 function configureNormalLogin(userList) {
     console.log('Discreet login is disabled');
     $('#handleEntryBlock').hide();
@@ -236,9 +175,6 @@ function configureNormalLogin(userList) {
     }
 }
 
-/**
- * Configures the login page for discreet login.
- */
 function configureDiscreetLogin() {
     console.log('Discreet login is enabled');
     $('#handleEntryBlock').show();

@@ -191,9 +191,7 @@ import {
     getStringHash,
     cancelDebounce,
 } from './scripts/utils.js';
-// Imported directly from hash-utils.js (not re-exported via utils.js like getStringHash) so this doesn't widen
-// utils.js's re-export surface - a mocked utils.js in tests/utils-findchar.test.js stubs hash-utils.js with only
-// getStringHash, and this stays independent of that.
+// Imported directly from hash-utils.js, not re-exported via utils.js, so tests mocking utils.js aren't affected.
 import { getAtPath, seedKeyHashes, treeNodeAt, digestsEqual128, foldDigests128, emptyDigest128, DEFAULT_TREE_BRANCHING, characterDigestFieldsHash, characterDigestCardBodyHash, combineDigest128, characterDigestFavHash, characterDigestTagIdsHash } from './scripts/hash-utils.js';
 import { debounce_timeout, GENERATION_TYPE_TRIGGERS, IGNORE_SYMBOL, inject_ids, MEDIA_DISPLAY, MEDIA_SOURCE, MEDIA_TYPE, OVERSWIPE_BEHAVIOR, SCROLL_BEHAVIOR, SWIPE_DIRECTION, SWIPE_SOURCE, SWIPE_STATE } from './scripts/constants.js';
 
@@ -303,18 +301,10 @@ import { SimpleMutex } from './scripts/util/SimpleMutex.js';
 import { AudioPlayer } from './scripts/audio-player.js';
 import { MacroEnvBuilder } from './scripts/macros/engine/MacroEnvBuilder.js';
 import { MessageFormatter } from './scripts/message-formatter.js';
-// Re-exported so existing `import { messageFormatting } from '../script.js'` call sites elsewhere in
-// the codebase keep working unchanged - the function itself now lives in message-formatting.js, on
-// purpose: see that file's own header for why display formatting is no longer allowed to share this
-// module's scope (and therefore its access to updateMessage()) at all.
+// Lives in message-formatting.js, isolated from this module's chat-store write access; re-exported for existing importers.
 import { messageFormatting } from './scripts/message-formatting.js';
 export { messageFormatting };
-// Re-exported for the same reason: updateMessage()/updateIn() and the named chat-op actions that call
-// them (ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath,
-// chatOpSelect) now live in chat-store.js - see that file's own header for why - and several external
-// files (reasoning.js, bookmarks.js, personas.js, chats.js, tool-calling.js, slash-commands.js,
-// st-context.js) already import one or more of these `from '../script.js'`. Re-exporting keeps every
-// existing import statement working unchanged.
+// Lives in chat-store.js, the only module allowed to write messages; re-exported for existing importers.
 import {
     updateMessage, updateIn, deepFreeze,
     ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath, chatOpSelect,
@@ -374,9 +364,6 @@ export {
     getMaxPromptTokens as getMaxContextSize,
 };
 
-/**
- * Wait for page to load before continuing the app initialization.
- */
 await new Promise((resolve) => {
     if (document.readyState === 'complete') {
         resolve();
@@ -385,7 +372,6 @@ await new Promise((resolve) => {
     }
 });
 
-// Configure toast library:
 toastr.options = {
     positionClass: 'toast-top-center',
     closeButton: false,
@@ -400,13 +386,11 @@ toastr.options = {
     hideMethod: 'fadeOut',
     escapeHtml: true,
     onHidden: function () {
-        // If we have any dialog still open, the last "hidden" toastr will remove the toastr-container. We need to keep it alive inside the dialog though
-        // so the toasts still show up inside there.
+        // Keep the toastr-container alive inside an open dialog, or its toasts stop showing there.
         fixToastrForDialogs();
     },
 };
 
-// Run once during startup
 toastr.subscribe(function (args) {
     if (args.state !== 'visible') {
         return;
@@ -438,13 +422,7 @@ export const characterGroupOverlay = new BulkEditOverlay();
 
 // Markdown converter
 export let mesForShowdownParse; //intended to be used as a context to compare showdown strings against
-/**
- * The one write message-formatting.js makes: it cannot assign to an imported `let` binding directly
- * (that's an ESM live-binding, read-only from the importing side), and separating that module out is
- * the whole point - see that file's own header. This is markdown-parser context, unrelated to any
- * message's stored content, so it does not carry the chat-store-write risk the split exists to avoid.
- * @param {string} value
- */
+// Setter exists because `mesForShowdownParse` is an ESM live-binding: message-formatting.js can't assign to it directly.
 export function setMesForShowdownParse(value) {
     mesForShowdownParse = value;
 }
@@ -461,40 +439,18 @@ export let name2 = systemUserName;
 /** @type {ChatMessage[]} */
 export let chat = [];
 
-// ---------------------------------------------------------------------------
-//  Immutable messages + slim wire protocol.
-//
-//  Messages in the chat array are frozen (Object.freeze) after loading from the
-//  server or after creation. Every mutation goes through updateMessage()/updateIn()
-//  (now in ./scripts/chat-store.js, imported below - moved there along with the
-//  named chat-op actions that call them, so nothing outside that module can reach
-//  the raw writer at all), which replaces the array element with a new frozen
-//  object. This makes change detection for the slim wire protocol trivial:
-//  reference equality (msg === snapshot) means unchanged, different reference
-//  means changed. No hashing, no dirty flags.
-//
-//  The slim wire protocol replaces unchanged messages with lightweight stubs
-//  ({ node_id, _unchanged: true }) on save, reducing payload from O(total messages)
-//  to O(changed messages) — measured: 765KB → ~2KB for a 700-message chat.
-// ---------------------------------------------------------------------------
+// Messages in `chat` are frozen after load/creation; all mutation goes through updateMessage()/updateIn()
+// (chat-store.js), which swaps in a new frozen object - so reference equality against a snapshot is a
+// complete, hash-free change-detection signal for the slim wire save protocol below.
 
-/**
- * Snapshot: maps node_id -> message reference, taken after load/save.
- * Reference equality against the snapshot is the change-detection mechanism.
- * With deep-frozen messages, in-place mutation is impossible (throws TypeError),
- * so reference equality is sufficient — no hash safety net needed.
- * @type {Map<string, object>}
- */
 /** @type {((mesId: number, message?: object) => boolean) | null} */
 let _hasForkBranches = null;
 import('./scripts/bookmarks.js').then(m => { _hasForkBranches = m.hasForkBranches; });
 
+// Snapshot after load/save: node_id -> message reference, for the reference-equality check above.
+/** @type {Map<string, object>} */
 export const _messageSnapshots = new Map();
 
-/**
- * Takes a snapshot of all messages with node_id.
- * Called after loading a chat and after each successful save.
- */
 function _snapshotMessages() {
     _messageSnapshots.clear();
     for (const msg of chat) {
@@ -504,13 +460,6 @@ function _snapshotMessages() {
     }
 }
 
-/**
- * Builds a slim payload: unchanged messages (same reference as snapshot) become stubs,
- * changed/new messages are sent with full content. With deep-frozen messages, in-place
- * mutation is impossible, so reference equality is a complete change-detection mechanism.
- * @param {object[]} messages
- * @returns {object[]}
- */
 function _buildSlimPayload(messages) {
     return messages.map(msg => {
         if (msg.node_id && _messageSnapshots.get(msg.node_id) === msg) {
@@ -520,41 +469,11 @@ function _buildSlimPayload(messages) {
     });
 }
 
-// ---------------------------------------------------------------------------
-//  Provisional node ids.
-//
-//  A greeting that lives on the character card and has never been used has no row in the tree - and
-//  it should not get one just for being looked at, or a card with a thousand greetings mints a
-//  thousand rows the moment someone swipes through them.
-//
-//  The obvious encoding of that is a missing node_id, and it is what this used to do. It meant every
-//  reader of chat[0].node_id had to know whether the opening was "real yet", and each one answered
-//  differently: the hole repair read it as "not tree-backed", the merge read it as "card text", the
-//  save read it as "brand new alternative to create". One absent field standing for three different
-//  facts is what made greeting handling fragile.
-//
-//  So an unstored greeting carries an id too - one derived from its own content, so it is stable
-//  across reloads and identical wherever the same greeting appears. Every consumer can then just use
-//  the id it is handed: as a map key, an equality check, a slot marker. Only the handful of places
-//  that genuinely need a ROW (appending after it, labelling it, forking at it, editing it) have to
-//  ask, and they all go through ensureOpeningRow(), which is the single writer that turns a
-//  provisional id into a real one.
-//
-//  The scheme mirrors the server's own message identity (nodeIdentityKey in message-tree-db.js):
-//  speaker plus text, nothing else. It deliberately does NOT reproduce the server's hash - nothing
-//  looks a provisional id up server-side, and cyrb53 is available synchronously here where sha1 is
-//  not. The prefix is what makes "is this a real row" a total, local question.
-// ---------------------------------------------------------------------------
-
+// Unused card greetings get no tree row (avoids minting one per greeting just for being looked at), but still
+// need a stable id - so it's derived from speaker+text (mirrors the server's nodeIdentityKey), prefixed to mark
+// it provisional. ensureOpeningRow() is the only place that turns one into a real row.
 const PROVISIONAL_NODE_PREFIX = 'card:';
 
-/**
- * The id an unstored card greeting carries. Content-derived, so the same greeting is the same id in
- * every chat and across reloads.
- * @param {string} speaker who says it - part of identity, same as server-side
- * @param {string} mes the greeting text
- * @returns {string}
- */
 export function provisionalNodeId(speaker, mes) {
     return PROVISIONAL_NODE_PREFIX + getStringHash(`c\u0001${speaker ?? ''}\u0000${mes ?? ''}`);
 }
@@ -584,58 +503,20 @@ export let displayVersion = 'SillyTavern';
 let generation_started = new Date();
 /** @type {Character[]} */
 export let characters = [];
-/**
- * Read-path backing store for `characters` (see entity-store.js) - wraps the same array in place, so every
- * other read call site in this file (and every other file that imports `characters` directly) keeps working
- * completely unchanged. `characters` itself is never reassigned to a new array reference (unlike `tags` during
- * settings load), so this doesn't need a rebuild-on-reassignment hook the way tagsStore does.
- *
- * Unlike tags, character lifecycle mutations (create/delete/rename/duplicate) are not targeted array
- * push/splice-by-id - they're all implemented (server-side and client-side) as a bulk refetch-and-merge via
- * getCharacters(). getCharacters() itself merges the refetched data field-by-field into the existing array in
- * place (adding/removing entries as needed, but never wholesale-replacing an existing entity - see its own
- * comment) and calls charactersStore.reindex()/reset() as appropriate; callers that know a specific
- * create/delete/rename happened report it via
- * charactersStore.reportCreated()/.reportRemoved()/.reportRenamed() instead of the generic reset(), so
- * consumers hear the specific thing that happened rather than "something changed, go re-scan".
- * @type {EntityStore<Character>}
- */
+// Wraps the same `characters` array in place; never reassigned to a new reference (unlike `tags`), so no
+// rebuild-on-reassignment hook is needed.
 export const charactersStore = new EntityStore(characters, c => c.avatar);
-// Consumer side of the characters migration (mutation side landed in the commits referenced above): the
-// persistent character search index (power-user.js) needs invalidating after any character data change, same
-// as tags.js already does for tagsStore/tagMapStore. One subscriber here replaces what used to be manual
-// invalidateCharactersFuseIndex() calls at each individual mutation site (getOneCharacter, getCharacters).
-// Deliberately not narrowed to specific ops/fields - invalidateCharactersFuseIndex() just sets a dirty flag,
-// the actual rebuild is lazy on next search, so over-invalidating on e.g. a `.chat`-only update() costs nothing.
+// Not narrowed to specific ops/fields: invalidateCharactersFuseIndex() just sets a dirty flag, rebuild is lazy.
 charactersStore.onChange(() => invalidateCharactersFuseIndex());
-/**
- * Avatar (stable id, see charactersStore) of the currently selected character. This is the source of truth for
- * character selection. Never assign this directly - go through setCharacterId().
- * @type {string|undefined}
- */
+// Source of truth for character selection. Never assign directly - go through setCharacterId().
 let this_avatar;
 
-/**
- * Resolves the currently selected character by identity (this_avatar), not by array position. Forward-looking:
- * once the `characters` array can stop being a full resident copy of every character (server-side list
- * pagination), the *selected* character still needs to resolve correctly regardless of what page the list UI
- * is showing. No pagination has landed yet, so `characters` is still the full array.
- * @returns {Character|undefined}
- */
 export function getCurrentCharacter() {
     return this_avatar !== undefined ? charactersStore.get(this_avatar) : undefined;
 }
 
-/**
- * Resolves what is currently selected: a character, a group, or neither (the neutral/temp-chat state,
- * `name2 === neutralCharacterName`). Selection is a tristate, not a boolean - see
- * docs/design/character-data-residency-redesign.md §2.3 - and this is the one place that classifies it,
- * replacing the `this_chid === undefined && !selected_group` conjunction that used to be repeated at every
- * call site needing to know which of the three states is live. Callers that also need to confirm the
- * neutral-chat name2 invariant (rather than just "no character and no group") still check that themselves -
- * it's an orthogonal signal, not folded in here.
- * @returns {{ type: 'character', avatar: string } | { type: 'group', groupId: string } | { type: 'none' }}
- */
+// Classifies selection as a tristate (character / group / none) instead of repeating the
+// `this_chid === undefined && !selected_group` conjunction at every call site.
 export function getSelectionState() {
     if (selected_group) {
         return { type: 'group', groupId: selected_group };
@@ -648,22 +529,8 @@ export function getSelectionState() {
 
 let saveCharactersPage = 0;
 
-// Last known match total for the server-paginated character list (design doc §6's dynamic-total branch below) -
-// mirrors saveCharactersPage's "survive a full .pagination({...}) reconstruction" job, but for the total instead
-// of the page. Needed because pagination.js's own dynamic-total-number boot path (public/lib/pagination.js's
-// observer(), `validTotalPage = Math.max(self.getTotalPage(), 1)`) has no way to know the real total before its
-// first ajax response lands - self.getTotalNumber() falls through to 0 at construction time whenever
-// totalNumberLocator is set and no `attributes.totalNumber` was supplied. With no seed, EVERY re-render
-// (printCharactersDebounced() on a search keystroke, tag toggle, sort/filter change - any of which reconstructs
-// this plugin from scratch) clamps `Math.min(defaultPageNumber, validTotalPage)` down to 1 regardless of
-// `pageNumber: saveCharactersPage || 1`, so a user mid-way through the list gets silently bounced back to a page-1
-// request, and - worse - the synchronous `render(true)` boot shell (built before that request even fires) briefly
-// shows the "0 of 0" empty state on the currently-rendered page until the real response arrives. That gap is
-// normally too fast to see, but it's exactly what surfaces when the server is busy (e.g. a concurrent local-import
-// batch competing for the event loop/SQLite) and the response is slow enough to notice. Seeding `totalNumber` here
-// keeps `validTotalPage` honest from the very first synchronous render, so a reconstruction re-requests the page
-// the user was actually on instead of quietly resetting to 1 (see the `resetPageNumberOnInit: false` pairing
-// below - the seed alone isn't enough, since resetPageNumberOnInit's own force-to-1 branch fires independently).
+// Seeds pagination.js's totalNumber on reconstruction, or it reads 0 until the first ajax response and clamps
+// the page back to 1 (see the resetPageNumberOnInit: false pairing below).
 let saveCharactersTotal = 0;
 export const default_avatar = 'img/ai4.png';
 export const system_avatar = 'img/five.png';
@@ -690,12 +557,7 @@ export let chat_metadata = {};
 export let streamingProcessor = null;
 let crop_data = undefined;
 
-/**
- * Maps form field IDs to their card paths. createOrEditCharacter()'s edit path sends the CURRENT value of
- * every one of these fields on every save (see that function's own doc comment on why this is no longer a
- * diffed subset) and uses this same map to compute per-field loaded-value hashes for conflict detection.
- * @type {Object<string, {v1?: string, v2: string, transform?: string}>}
- */
+/** @type {Object<string, {v1?: string, v2: string, transform?: string}>} */
 const FORM_TO_CARD = {
     '#character_name_pole': { v1: 'name', v2: 'data.name' },
     '#description_textarea': { v1: 'description', v2: 'data.description' },
@@ -713,36 +575,14 @@ const FORM_TO_CARD = {
     '#depth_prompt_depth': { v2: 'data.extensions.depth_prompt.depth', transform: 'int' },
     '#depth_prompt_role': { v2: 'data.extensions.depth_prompt.role' },
     '#character_world': { v2: 'data.extensions.world' },
-    // Embedded lorebook - no visible form control of its own. #character_book_json is a hidden field
-    // populated with the character's current character_book as JSON whenever the character loads (or reset
-    // to '' if it has none), and written to directly by world-info.js's embedded-lore editor
-    // (saveEmbeddedLore()) and its delete action. '' round-trips to the same "no character_book" state
-    // (UNSET_VALUE, see the 'json' transform below) whether the character never had one or one was just
-    // removed.
+    // #character_book_json is a hidden field, not a visible control; world-info.js writes it directly.
     '#character_book_json': { v2: 'data.character_book', transform: 'json' },
 };
 
-/**
- * FORM_TO_CARD field ids (e.g. `'#description_textarea'`) whose own input/change event has fired since
- * the character editor was last (re)populated. Mutation-tracked, not value-compared: "did this field
- * change" is answered by "did its own event actually fire", never by diffing a currently-read value
- * against some remembered baseline - there is no baseline stored anywhere. createOrEditCharacter() sends
- * exactly the fields in this set on save, then clears it; select_selected_character()/select_rm_create()
- * clear it whenever a (different) character or create-mode form gets populated, since a field set via
- * `.val()` alone (no `.trigger()`) during that populate never enters this set in the first place - see the
- * delegated listener right below for the only place anything gets added to it.
- * @type {Set<string>}
- */
+// A field counts as dirty once its input/change event fires; setting a value programmatically must `.trigger('input')` itself.
+/** @type {Set<string>} */
 const _dirtyCharacterFields = new Set();
 
-// The only place _dirtyCharacterFields ever gets a member added: bound once, here, via delegation (never
-// re-bound per character load) so it covers every FORM_TO_CARD field regardless of when it entered the
-// DOM. Listens to both input and change - the mapped fields span plain text inputs/textareas (input) and
-// at least one range slider (change, and also input while dragging) - a field firing both for one user
-// action is harmless, since adding an already-dirty field again is a no-op. Code that sets one of these
-// fields' value PROGRAMMATICALLY as an intentional edit (e.g. world-info.js's charUpdatePrimaryWorld(),
-// saveEmbeddedLore()) MUST `.trigger('input')` (or 'change') itself for that edit to register here -
-// `.val()` alone never fires either event.
 $(document).on('input change', Object.keys(FORM_TO_CARD).join(', '), function () {
     _dirtyCharacterFields.add(`#${this.id}`);
 });
@@ -760,17 +600,7 @@ export const DEFAULT_SAVE_EDIT_TIMEOUT = debounce_timeout.relaxed;
 export const DEFAULT_PRINT_TIMEOUT = debounce_timeout.quick;
 
 const _debouncedSaveImpl = debounce(() => saveSettings(), DEFAULT_SAVE_EDIT_TIMEOUT);
-/**
- * Debounced settings save. When called with top-level settings key name(s) (the keys of the settings payload
- * object that the surrounding code just mutated), accumulates them and fires a partial save via
- * /api/settings/save-partial when the debounce triggers - sending only the named keys instead of the full
- * ~148KB blob. When called with no arguments (backward compat for unmigrated call sites or direct
- * saveSettings() callers), triggers a full save via /api/settings/save as before.
- *
- * Multiple calls within the debounce window merge their keys: saveSettingsDebounced('power_user') followed by
- * saveSettingsDebounced('oai_settings') within the same window sends both keys in a single partial save.
- * @param {...string} keys Top-level payload key name(s) that were mutated (e.g. 'power_user', 'oai_settings')
- */
+// With key(s) given, fires a partial save instead of the full settings blob; with none, falls back to a full save.
 export function saveSettingsDebounced(...keys) {
     for (const key of keys) {
         if (typeof key === 'string') pendingSettingsKeys.add(key);
@@ -789,19 +619,7 @@ export const printCharactersDebounced = debounce(() => { printCharacters(false);
 
 const getCharactersDebounced = debounce(() => getCharacters(), 2000);
 
-/**
- * Opens the one permanent SSE connection this tab holds for as long as it's alive. Carries two independent
- * purposes over a single socket (merged - see the server route's own doc comment, characters.js
- * `/changes/stream`, for why): pushing a "something changed, go ask `/changes`" notification, AND doubling as
- * the presence heartbeat that lets the server tell (at its next boot) a tab is already open/reconnecting, so
- * it skips auto-launching a new one. Each used to be its own separate EventSource; the browser's per-origin
- * connection pool is shared across every tab/window of that origin (not per-tab), so N tabs open meant 2N
- * permanently-occupied connections before any other request could even be sent - only a handful of tabs was
- * enough to exhaust the ~6-connection pool entirely and stall every other request, including plain static
- * files. One connection per tab instead of two halves that permanent cost.
- *
- * `EventSource` auto-reconnects on error/drop on its own (e.g. a server restart) - nothing else to do here.
- */
+// One SSE connection per tab, doubling as change notification and presence heartbeat - avoids exhausting the per-origin connection pool.
 function setupCharacterChangeStream() {
     if (typeof EventSource === 'undefined') return;
     const source = new EventSource('/api/characters/changes/stream');
@@ -886,13 +704,8 @@ export function getCurrentChatId() {
     }
 }
 
-/**
- * Builds the chat-draft context for whatever chat is currently loaded, for use with chat-draft.js's
- * saveDraft/loadDraft/clearDraft. Returns null when there's no fully-resolved chat to scope a draft to (e.g.
- * no character/group selected yet, or a group with no chat_id) - callers must treat that as "don't
- * save/load/clear anything", not fall back to some shared key that unrelated chats could collide on.
- * @returns {{type: 'character'|'group', id: string, chatId: string}|null} The current draft context, or null.
- */
+// null means no fully-resolved chat to scope a draft to - callers must skip save/load/clear, not fall back to
+// a shared key that unrelated chats could collide on.
 function getCurrentDraftContext() {
     const selection = getSelectionState();
     const chatId = getCurrentChatId();
@@ -908,12 +721,7 @@ function getCurrentDraftContext() {
     return null;
 }
 
-/**
- * Saves the current `#send_textarea` content as the draft for whatever chat is currently loaded. Synchronous
- * (localStorage.setItem doesn't wait on anything), so it's safe to call directly - not just through the
- * debounced wrapper - right before an unavoidable page reload (see the chat-integrity-conflict path below),
- * where waiting for the debounce to fire on its own is not guaranteed.
- */
+// Synchronous, so safe to call directly right before a page reload rather than relying on the debounced wrapper.
 function flushDraftSave() {
     const context = getCurrentDraftContext();
     if (!context) {
@@ -993,72 +801,19 @@ let this_edit_mes_id = undefined;
 
 //settings
 export let settings;
-/**
- * Hash of the JSON-stringified payload from the most recent successful /api/settings/save call, or null before
- * the first one this session. saveSettings() rebuilds its payload object from scratch on every call (679 call
- * sites share saveSettingsDebounced(), several of which fire on blur/focusout/change with no dirty-check of
- * their own), so a fresh object each time makes reference-equality useless - this lets saveSettings() skip the
- * POST (and the write-file-atomic disk write it triggers server-side) when nothing in the payload actually
- * changed since the last save, without requiring every call site to remember to check itself.
- * @type {number|null}
- */
+// Lets saveSettings() skip a POST when the rebuilt payload hashes the same as last time.
+/** @type {number|null} */
 let lastSavedSettingsHash = null;
-/**
- * Hash of the settings content this client currently believes is persisted on the server, matching the exact
- * canonical string the server itself hashes against (settings-store.js's readAllSettingsAsJson() -
- * JSON.stringify(..., null, 4) of the reconstructed settings object, top-level keys in the server's own
- * canonical order - see /api/settings/save in settings.js). Seeded from the raw string /api/settings/get returns
- * (that string IS the server's canonical content verbatim), and updated again after each successful save to
- * whatever hash the server itself returns in the response (settingsHash) - NOT self-computed from this client's
- * own JSON.stringify(payload), because the server's sharded on-disk storage reconstructs top-level keys in its
- * own (alphabetical-by-file) order, which generally does not match this object's insertion order even when the
- * content is identical; hashing the client's own serialization would drift from the server's the very first
- * time an unrelated key order differed, and every subsequent full save would spuriously 409. Sent back on the
- * next save as X-Settings-Hash so the server can detect whether some other tab/device wrote in between and
- * reject the save instead of silently clobbering that write - see checkSettingsConflict() server-side.
- *
- * Deliberately distinct from lastSavedSettingsHash above: that one hashes a *compact*, same-session-only string
- * purely to skip redundant same-tab POSTs, and is never set from a /get. This one has to match the server's
- * canonical hash exactly (since it's compared against a hash the server computes the same way) and has to exist
- * before this tab's first save of the session, seeded from /get.
- * @type {number|null}
- */
+// Hash (server key order) of settings this client believes is persisted server-side; sent as X-Settings-Hash for conflict detection.
+/** @type {number|null} */
 let knownServerSettingsHash = null;
-/**
- * Top-level settings keys accumulated since the last debounced save fired. When saveSettingsDebounced() is
- * called with key name(s), they're collected here; when the debounce triggers, saveSettings() drains this set
- * and sends only those keys via /api/settings/save-partial instead of the full ~148KB blob. Empty means no
- * caller specified keys (backward compat / unmigrated call site), which falls through to the full /save path.
- */
+// Top-level settings keys mutated since the last debounced save; empty falls through to a full save.
 const pendingSettingsKeys = new Set();
-/**
- * Per-key content hashes of what this client believes the server currently has. Keyed by top-level
- * settings key or dotted sub-path (e.g. 'power_user.font_scale'). Used for two things in the
- * partial save path: (1) diffing live values against the server to find which sub-fields actually
- * changed, and (2) sending expectedHashes to the server for conflict detection. Populated from the
- * parsed settings in getSettings(), updated with hashes (not values) after each successful save.
- *
- * This replaces the old approach of maintaining `settings` as a value mirror - storing just hashes
- * means the save path never needs a second copy of the actual state, so the aliasing between
- * `settings.power_user` and the live `power_user` export that caused spurious 409s can't happen.
- * @type {Record<string, number>}
- */
+// Per-key content hashes of what this client believes the server has; used for the partial save's expectedHashes conflict check.
+/** @type {Record<string, number>} */
 const serverKeyHashes = {};
-/** Module-scope retry counter for TempResponseLength customization, replacing the old loopCounter parameter. */
 let _saveRetryCounter = 0;
-/**
- * Serializes saveSettings()'s actual save work (drain pendingSettingsKeys -> read serverKeyHashes -> fetch ->
- * write serverKeyHashes) so at most one invocation's body runs at a time. Without this, two overlapping
- * invocations - e.g. two debounce windows more than DEFAULT_SAVE_EDIT_TIMEOUT apart, or an immediate
- * keys-based saveSettings(key) call landing while a debounced one is still awaiting its fetch - can each read
- * serverKeyHashes at the same stale snapshot before either has written its own result back. The second one
- * then sends a request built from a hash the first invocation's write has already invalidated, and gets a
- * false "changed by another session" conflict on itself, even though nothing but this same client touched the
- * key. Chaining every call onto this promise guarantees each invocation only starts once every save that was
- * already running when it was called has fully finished (including its serverKeyHashes update), so its own
- * snapshot is always current.
- * @type {Promise<void>}
- */
+// Serializes saveSettings() so overlapping calls can't race on a stale serverKeyHashes snapshot.
 let _saveQueue = Promise.resolve();
 export let amount_gen = 80; //default max length of AI generated responses
 export let max_context = 2048;
@@ -1177,7 +932,6 @@ async function firstLoadInit() {
     initLoaderOverlay.appendChild(splashMessage);
     initLoaderOverlay.appendChild(splashStagesLog);
 
-    // Boot stage timing
     const bootStart = performance.now();
     /** @type {{stage: string, ms: number}[]} */
     const stageTimings = [];
@@ -1189,7 +943,6 @@ async function firstLoadInit() {
         const elapsed = now - stageStart;
         stageTimings.push({ stage: currentStageLabel, ms: elapsed });
 
-        // Add completed stage to the on-screen log
         const entry = document.createElement('div');
         entry.className = 'splash-stage-entry';
         entry.textContent = `${currentStageLabel} — ${(elapsed / 1000).toFixed(1)}s`;
@@ -1259,30 +1012,12 @@ async function firstLoadInit() {
     initBookmarks();
     await getUserAvatars(true, user_avatar);
 
-    // Boot-residency decoupling (docs/design/boot-residency-decoupling.md): the full character/group fetch no
-    // longer gates first paint. `printCharacters(true)` right below this renders via the server-query path
-    // (`canUseServerQueryForEntitiesList()`) whenever eligible - the common boot case (no restored search, a
-    // queryable sort field) - which needs no local `characters`/`groups` residency at all, so it's safe to call
-    // before either array is populated. This promise is awaited later, right before APP_READY, so nothing that
-    // genuinely assumes full residency by the time APP_READY fires (extensions included - see the design doc's
-    // §5 "what this doc does not know" on extension compatibility) observes any behavior change; only the visual
-    // first paint moves earlier. `getCharacters()` (via its own trailing `printCharacters(true)`) already redraws
-    // itself once real data lands, so the ineligible-boot-state case (an active search restored from session, or
-    // a non-server-queryable sort field - design doc §3) still converges to a correct render, just not the very
-    // first one. Tag assignments are seeded via `seedTagMapFromRecords()` (tags.js), called right after
-    // `getCharacters()` inside this promise — character tags are derived from each character's `tag_ids`
-    // field (already part of the shallow record), and group tags are fetched separately in one small
-    // `/api/tags/for` call, not blocking first paint since this promise runs concurrently with the initial render.
+    // No longer gates first paint; awaited later, right before APP_READY, to keep its full-residency guarantee.
     let residencyResolved = false;
     const characterResidencyPromise = (async () => {
-        // Seed from the persisted local cache first - no network dependency, so on a warm cache this makes
-        // `characters`/`charactersStore` non-empty far sooner than the network delta fetch below ever could
-        // (see seedCharactersFromCache()'s own doc comment). getCharacters() then reconciles the real network
-        // delta on top of this seed exactly like it already does for any other already-resident entry.
         await seedCharactersFromCache();
         await getCharacters();
-        // Must run after getCharacters() (which also awaits getGroups() internally), since building the
-        // tag_map needs both the populated `characters` array and the group ids to fetch group tags for.
+        // Must run after getCharacters() (also awaits getGroups()): tag_map needs both characters and group ids.
         await seedTagMapFromRecords();
     })();
     characterResidencyPromise.then(() => { residencyResolved = true; });
@@ -1323,11 +1058,9 @@ async function firstLoadInit() {
     doDailyExtensionUpdatesCheck();
     await eventSource.emit(event_types.APP_INITIALIZED);
 
-    // Record final stage timing and stop the live elapsed display
     stageTimings.push({ stage: currentStageLabel, ms: performance.now() - stageStart });
     clearInterval(elapsedInterval);
 
-    // Log boot timing summary to console
     const totalMs = performance.now() - bootStart;
     console.groupCollapsed(`[Boot] Completed in ${(totalMs / 1000).toFixed(2)}s`);
     console.table(stageTimings.map(s => ({ Stage: s.stage, Duration: `${(s.ms / 1000).toFixed(2)}s` })));
@@ -1335,10 +1068,6 @@ async function firstLoadInit() {
 
     await initLoaderHandle.hide();
     await fixViewport();
-    // Full character/group residency (and the tag-map seed that depends on it) is awaited here rather than
-    // earlier - see this function's own comment above `characterResidencyPromise` - so APP_READY keeps its
-    // pre-existing guarantee (full residency by the time it fires) even though the splash screen itself no
-    // longer waits on it.
     if (!residencyResolved) {
         const residencyWaitStart = performance.now();
         await characterResidencyPromise;
@@ -1421,36 +1150,12 @@ export function resultCheckStatus() {
     stopStatusLoading();
 }
 
-/**
- * Switches the currently selected character to the one with the given avatar (stable id). This is the primary
- * selection logic - prefer this over selectCharacterById() everywhere internally, since avatar is the source
- * of truth (this_avatar - see setCharacterId()'s doc comment) and this needs no array-index lookup at all.
- *
- * If the character doesn't exist, if the chat is being saved, or if a group is being generated, this function
- * does nothing. If the character is different from the currently selected one, it will clear the chat and
- * reset any selected character or group.
- * @param {string} avatar The avatar (stable id) of the character to switch to.
- * @param {object} [options] Options for the switch.
- * @param {boolean} [options.switchMenu=true] Whether to switch the right menu to the character edit menu if the character is already selected.
- * @returns {Promise<void>} A promise that resolves when the character is switched.
- */
+// Prefer this over selectCharacterById() internally - avatar is the source of truth (this_avatar), no
+// array-index lookup needed.
 export async function selectCharacterByAvatar(avatar, { switchMenu = true } = {}) {
     let entity = charactersStore.get(avatar);
     if (!entity) {
-        // Not yet resident in charactersStore - most commonly hit inside firstLoadInit()'s boot residency-fill
-        // window (docs/design/boot-residency-decoupling.md): printCharacters(true) renders the visible list via
-        // the server-query path, which needs no local residency at all, before charactersStore's own boot
-        // hydration (characterResidencyPromise: getCharacters() + tag-map seeding) has finished - so a row can
-        // be on screen, clickable, before its character is resident. CharacterRepository.full()'s own doc
-        // comment (character-repository.js) names this exact gap - "entry-level fault-in for a non-resident id
-        // is not implemented" - and deliberately throws there rather than silently deciding whether a fetch
-        // should grow charactersStore, because that's a real residency-model call for an anonymous read. A user
-        // explicitly clicking a character to open it isn't an anonymous read, though - it's the one unambiguous
-        // case where making the row resident is obviously correct, the same thing unshallowCharacter()/
-        // getOneCharacter() already do for an entry that exists, just extended to cover "doesn't have an entry
-        // yet". Without this, opening silently did nothing whenever the click landed before residency caught up
-        // - indistinguishable from the character list itself being broken, and with no correlation to whether
-        // the character's own tags/description/etc. were "ready": the row was just never in charactersStore.
+        // Can be hit before boot residency hydration finishes; an explicit open is worth an on-demand fetch.
         try {
             const response = await fetch('/api/characters/get', {
                 method: 'POST',
@@ -1461,9 +1166,7 @@ export async function selectCharacterByAvatar(avatar, { switchMenu = true } = {}
                 const data = await response.json();
                 data.chat = String(data.chat);
                 data.shallow = false;
-                // Re-check after the await: the boot fill (or another concurrent fetch) may have made this
-                // avatar resident while this request was in flight. Prefer whatever's already there rather than
-                // fighting/duplicating charactersStore's own state.
+                // Re-check: a concurrent fetch may have made this resident while this request was in flight.
                 entity = charactersStore.get(avatar) ?? charactersStore.create(data)?.entity;
             }
         } catch (error) {
@@ -1498,12 +1201,6 @@ export async function selectCharacterByAvatar(avatar, { switchMenu = true } = {}
             chat_metadata = {};
             await getChat();
         } else {
-            // A generation appears to be in flight, so switching mid-reply is refused - same reasoning
-            // as the isChatSaving guard just above. This used to fail the exact same way but silently:
-            // no toast, no console line, nothing - a click that visibly did nothing looked identical to
-            // the character list simply being broken. Telling the user why is the whole fix; whether
-            // is_send_press itself ever gets stuck true after generation has genuinely finished is a
-            // separate question this doesn't answer, but at minimum the failure is no longer invisible.
             toastr.info(t`Please wait until the current generation finishes before switching characters.`, t`Generation in progress...`);
         }
     } else {
@@ -1514,16 +1211,8 @@ export async function selectCharacterByAvatar(avatar, { switchMenu = true } = {}
     }
 }
 
-/**
- * Switches the currently selected character to the one with the given ID. (character index, not the character key!)
- * Thin wrapper around selectCharacterByAvatar() kept only for the public extension API
- * (context.selectCharacterById, st-context.js) - the DOM no longer carries a data-chid to read an index from,
- * and no internal caller uses this anymore. Internal code should call selectCharacterByAvatar() directly.
- * @param {number} id The ID of the character to switch to.
- * @param {object} [options] Options for the switch.
- * @param {boolean} [options.switchMenu=true] Whether to switch the right menu to the character edit menu if the character is already selected.
- * @returns {Promise<void>} A promise that resolves when the character is switched.
- */
+// Thin wrapper around selectCharacterByAvatar(), kept for the public extension API (context.selectCharacterById).
+// Internal code should call selectCharacterByAvatar() directly.
 export async function selectCharacterById(id, { switchMenu = true } = {}) {
     const avatar = characters[id]?.avatar;
     if (avatar === undefined) {
@@ -1560,16 +1249,8 @@ async function getHiddenBlock(hidden) {
     return $(hiddenBlock);
 }
 
-/**
- * Order-independent equality check for two tag-id arrays (or nullish - either missing/non-array input counts as
- * "no tags", so `undefined` and `[]` compare equal). Used by renderCharacterBlock() to decide whether a resident
- * charactersStore entry's tag_ids actually needs patching from a freshly-fetched row, without treating a same-
- * membership-different-order array (a real possibility - the server and the resident copy don't guarantee the
- * same insertion order) as a mismatch and re-writing it on every render for no reason.
- * @param {string[]|undefined} a
- * @param {string[]|undefined} b
- * @returns {boolean}
- */
+// Order-independent equality (nullish treated as empty) - the server and the resident copy don't guarantee the
+// same tag_ids insertion order, so a plain array compare would false-positive on every render.
 function arraysHaveSameMembers(a, b) {
     const setA = new Set(Array.isArray(a) ? a : []);
     const setB = new Set(Array.isArray(b) ? b : []);
@@ -1580,34 +1261,13 @@ function arraysHaveSameMembers(a, b) {
     return true;
 }
 
-/**
- * Populates a `.character_select` template (freshly cloned, or an existing row being reused across a
- * re-render - see `printCharacters`'s keyed diff) with a character's current data.
- * @param {JQuery<HTMLElement>} template The `.character_select` element to populate, already in the DOM tree
- * or detached
- * @param {object} item Character entity data
- * @param {string} id Character id (the avatar)
- */
 function renderCharacterBlock(template, item, id) {
     let this_avatar = default_avatar;
     if (item.avatar && item.avatar != 'none') {
-        // The gallery-style browsing view displays card art at a size where the 96x144 thumbnail would be
-        // visibly upscaled, so always use the original image via /characters/<file> (the same path the
-        // zoomed-avatar viewer uses). Lazy loading (loading="lazy" below) ensures only visible cards fetch.
         this_avatar = `/characters/${encodeURIComponent(item.avatar)}`;
     }
     template.attr({ 'data-avatar': item.avatar });
-    // loading="lazy": without this, every rendered card's <img> starts fetching its thumbnail immediately -
-    // on an install with Characters_PerPage bumped up (the size-changer dropdown goes up to 1000) or a broad
-    // search match, that's hundreds of simultaneous GET requests firing the instant the list re-renders. HTTP/1.1
-    // caps this browser to ~6 concurrent connections per origin (see server-startup.js - this server is plain
-    // http.createServer(), not http2), so the excess queues - and *any other request issued during that window*
-    // (including the very next debounced search-as-you-type fetch) queues right behind them, showing up in
-    // devtools as many seconds of "Blocked" even though the server itself answered in tens of milliseconds.
-    // Native lazy loading defers off-screen images until they're about to scroll into view, so only the
-    // actually-visible rows fire immediately - confirmed via CDP repro against this install's real 24,171-
-    // character library: a broad search rendered 500 cards and 500 concurrent thumbnail requests, which is
-    // exactly the request-storm this fixes.
+    // loading="lazy": avoids a request storm when a large library renders hundreds of cards at once.
     template.find('img').attr('src', this_avatar).attr('loading', 'lazy').attr('alt', item.name);
     template.find('.avatar').attr('title', `[Character] ${item.name}\nFile: ${item.avatar}`);
     template.find('.ch_name').text(item.name).attr('title', `[Character] ${item.name}`);
@@ -1616,20 +1276,12 @@ function renderCharacterBlock(template, item, id) {
     template.toggleClass('is_fav', item.fav || item.fav == 'true');
     template.find('.ch_fav').val(item.fav);
 
-    // .toggle() rather than the original one-shot .remove(), so this stays correct when re-run against a
-    // row that's being reused in place instead of freshly cloned (see printCharacters).
+    // .toggle() (not .remove()) so this stays correct when the row is reused in place, not freshly cloned.
     const isAssistant = item.avatar === getPermanentAssistantAvatar();
     template.find('.ch_assistant').toggle(isAssistant);
 
-    // .toggleClass('displayNone', ...) rather than .toggle(bool): jQuery's .toggle()/.show() implement
-    // "visible" by writing an inline style="display: block" onto the element (not by clearing a class), which
-    // outranks any class-based CSS selector - including toggle-dependent.css's
-    // `body.charListGrid #rm_print_characters_block .ch_description`/`.character_version` grid-view-hide
-    // rules. Once a row's description/version had been shown at all, that inline style stuck around
-    // (persisting across grid<->list toggles and, with the keyed-diff reuse in printCharacters, across
-    // re-renders too) and permanently defeated the grid-view hide rule for that row. Toggling a class instead
-    // never writes an inline style, so the grid rule (and any future view mode) stays free to hide these
-    // purely through the cascade.
+    // toggleClass, not .toggle(bool): jQuery's .toggle()/.show() write an inline display style that outranks
+    // the grid-view CSS hide rule for these fields, and it sticks around across reused rows.
     const description = item.data?.creator_notes || '';
     template.find('.ch_description').text(description).toggleClass('displayNone', !description);
 
@@ -1637,12 +1289,8 @@ function renderCharacterBlock(template, item, id) {
     const auxFieldValue = (item.data && item.data[auxFieldName]) || '';
     template.find('.character_version').text(auxFieldValue).toggleClass('displayNone', !auxFieldValue);
 
-    // Keep a resident charactersStore entry's own tag_ids from drifting behind this row's fresher fetch - other
-    // surfaces (the `#tags` fuzzy-search field, filter-sidebar counts, anything reading charactersStore directly
-    // outside of this render) still go through the resident copy, so it's worth correcting even though the tag
-    // paint below no longer depends on it (see that comment). A no-op (`update()` skips work when the id isn't
-    // resident at all, and Object.assign() is cheap when the arrays already agree) for the overwhelmingly common
-    // case where nothing was ever stale.
+    // Keep the resident charactersStore entry's tag_ids from drifting behind this row's fresher fetch - other
+    // surfaces still read the resident copy directly. No-op when nothing was actually stale.
     if (Array.isArray(item.tag_ids)) {
         const resident = charactersStore.get(id);
         if (resident && !arraysHaveSameMembers(resident.tag_ids, item.tag_ids)) {
@@ -1650,22 +1298,8 @@ function renderCharacterBlock(template, item, id) {
         }
     }
 
-    // Display inline tags. printTagList() clears and rebuilds this container itself, so it's already
-    // safe to call against a reused row.
-    //
-    // `tags: () => ...` resolves this row's own tag pills straight from `item.tag_ids` - the same fresh row
-    // every other field on this template reads from (name/avatar/fav/description/version above), instead of
-    // routing through printTagList()'s default `getTagsList(key, sort, entityTagIds)` lookup. That lookup
-    // unconditionally prefers a *resident* charactersStore entry over whatever fallback ids a caller hands it
-    // (see getTagsList()'s own doc comment - correct for callers like the character editor's own tag list, which
-    // genuinely want "the live resident entity's current tags" mid-edit) - for a list row that's the wrong
-    // priority, since `item` can outrun a stale resident copy (see the reconciliation just above) and the row
-    // has no business ever painting anything other than what it was just handed. `forEntityOrKey: id` is still
-    // passed alongside `tags` - printTagList uses the key it derives from that for expansion-state/empty-list
-    // bookkeeping independent of tag *resolution*, which `tags` here fully overrides. Confirmed live (2026-09
-    // tag-pill investigation): this was the list-view-only "new card shows no tags, opening it shows them fine"
-    // bug - bypassing the resident lookup here removes the possibility entirely rather than only patching it out
-    // from under a still-preferred stale path.
+    // `tags` resolves pills from `item.tag_ids` directly rather than printTagList()'s default resident-store
+    // lookup, since `item` here can be fresher than a not-yet-reconciled resident entry.
     const tagsElement = template.find('.tags');
     const rowTags = Array.isArray(item.tag_ids)
         ? item.tag_ids.map(tagId => tagsStore.get(tagId)).filter(Boolean).sort(compareTagsForSort)
@@ -1679,14 +1313,6 @@ function getCharacterBlock(item, id) {
     return template;
 }
 
-/**
- * Updates an existing character row in place with fresh data, instead of tearing it down and rebuilding
- * it from the template. Used by printCharacters's keyed diff for rows whose avatar is still on the page.
- * @param {HTMLElement} node The existing `.character_select` element for this avatar
- * @param {object} item Character entity data
- * @param {string} id Character id (the avatar)
- * @returns {HTMLElement} The same node, updated
- */
 function updateCharacterBlock(node, item, id) {
     renderCharacterBlock($(node), item, id);
     return node;
@@ -1700,16 +1326,8 @@ function updateCharacterBlock(node, item, id) {
  *
  * @param {boolean} fullRefresh - If true, the list is fully refreshed and the navigation is being reset
  */
-/**
- * The `dataSource`+`ajaxFunction` combination is what actually gets a real per-page server request out of
- * pagination.js (`public/lib/pagination.js`), not its literal "dataSource as a function" form - that form
- * (`parseDataSource`) only defers the *initial* fetch by one tick and then re-enters the plain-array branch, so
- * every later page turn still slices a fully materialized local array. `dataSource` as a *string* instead flips
- * the plugin into `isAsync` mode, and every `go()` (page turn, size-changer change, `.pagination('go', n)`) then
- * calls `ajaxFunction` fresh with that page's `pageNumber`/`pageSize` - a real request per page turn, which is
- * what design doc §6 ("printCharacters()'s pagination becomes a controller... instead of a slicer") asks for.
- * The string value itself is never fetched (see below); it only has to be a string to select this code path.
- */
+// Must be a string, not a function: pagination.js only enters real per-page `isAsync` mode (calling
+// `ajaxFunction` fresh on every page turn) for a string `dataSource`. The value itself is never fetched.
 const SERVER_PAGINATED_DATA_SOURCE = '/api/characters/query';
 
 export async function printCharacters(fullRefresh = false) {
@@ -1740,25 +1358,14 @@ export async function printCharacters(fullRefresh = false) {
     const pageSize = Number(accountStorage.getItem(storageKey)) || per_page_default;
     const sizeChangerOptions = [10, 25, 50, 100, 250, 500, 1000];
 
-    /**
-     * Shared page-render callback, parameterized over how the caller knows the current match-count-for-the-
-     * "N hidden"-badge (design doc §4.1) - the two `printCharacters()` paths below know that differently (one
-     * has the whole filtered array resident, the other only ever holds one page), but the DOM diff / back-block
-     * / empty-block / hidden-badge rendering itself must not drift between them.
-     * @param {() => number} getMatchTotal
-     */
+    // getMatchTotal parameterizes the "N hidden" count, since the two printCharacters() paths below know the
+    // match total differently (one holds the whole filtered array, the other only one page).
     function makePageCallback(getMatchTotal) {
         return async function (/** @type {Entity[]} */ data) {
             const list = $(listId).get(0);
 
-            // Keyed diff for character rows: index the currently-rendered rows by avatar *before* touching
-            // the DOM. A row whose avatar is still present on the new page gets moved into the new fragment
-            // and updated in place (updateCharacterBlock) instead of being torn down and rebuilt from the
-            // template - this used to happen to every visible card on every debounced search keystroke, even
-            // though most of the time the underlying character list hadn't actually changed, only the
-            // filter/sort/page had. Groups and tags aren't keyed here (out of scope for this pass;
-            // they're far fewer per page than character rows) and keep being rebuilt every render, same as
-            // before.
+            // Keyed diff: rows whose avatar is still on the new page are moved/updated in place rather than
+            // rebuilt from the template. Groups and tags aren't keyed (far fewer per page) and rebuild every time.
             const existingCharacterRows = new Map();
             for (const child of list.children) {
                 if (child instanceof HTMLElement && child.hasAttribute('data-avatar')) {
@@ -1766,12 +1373,8 @@ export async function printCharacters(fullRefresh = false) {
                 }
             }
 
-            // Build all rows into a detached DocumentFragment first, and append it once. Appending elements
-            // one by one into the live (attached, display:flex) list forces a reflow per row; batching this
-            // way costs one reflow for the whole page instead of one per row (up to 500/page on this install).
-            // Moving a still-attached node into this fragment (fragment.appendChild) detaches it from `list`
-            // automatically, which is what makes the plain `list.replaceChildren()` below safe: by the time
-            // it runs, every row worth keeping has already been moved out into the fragment.
+            // Build into a detached fragment and append once - one reflow for the page instead of one per row.
+            // Moving an attached node into the fragment detaches it from `list`, so replaceChildren() below is safe.
             const fragment = document.createDocumentFragment();
             for (const i of data) {
                 switch (i.type) {
@@ -1794,9 +1397,6 @@ export async function printCharacters(fullRefresh = false) {
                 }
             }
 
-            // Whatever's left in `list` now is either a structural row from the previous render (back-block
-            // /empty-block/hidden-block) or a character row that fell off this page (filtered out, or paged
-            // away) - none of it survives into the new render, so a full clear here is correct, not wasteful.
             list.replaceChildren();
             if (power_user.bogus_folders && isBogusFolderOpen()) {
                 $(list).append(getBackBlock());
@@ -1807,12 +1407,8 @@ export async function printCharacters(fullRefresh = false) {
             }
             list.appendChild(fragment);
 
-            // design doc §4.1: this used to be `(characters.length + groups.length) - displayCount`, which
-            // conflated "filtered out by the active filter" with "not on this page" - a multi-page result with
-            // an active filter would show a nonsensical "N hidden" count that was really just every item on
-            // every *other* page. `getMatchTotal()` is the real match count for the active filter, independent
-            // of which page is currently showing - the library-wide total minus that is the real "hidden by
-            // filter" count.
+            // getMatchTotal() is the match count for the active filter, independent of the current page - using
+            // page-local displayCount here would conflate "filtered out" with "not on this page".
             const hidden = (characters.length + groups.length) - getMatchTotal();
             if (hidden > 0 && entitiesFilter.hasAnyFilter()) {
                 const hiddenBlock = await getHiddenBlock(hidden);
@@ -1848,24 +1444,12 @@ export async function printCharacters(fullRefresh = false) {
         },
     };
 
-    // Pre-existing fully-local path, preserved exactly: an active search term with no queryable state, an
-    // `isInvalidSortFieldError()` rejection from the server branch below (a sort field the server genuinely
-    // doesn't have a column for), or any other case `canUseServerQueryForEntitiesList()` declines - the whole
-    // filtered/sorted candidate set is materialized client-side and the plugin slices it in memory on page turn.
+    // Fallback when canUseServerQueryForEntitiesList() declines: the whole filtered/sorted set is materialized
+    // client-side and the plugin slices it in memory on page turn.
     async function renderLocalPaginated() {
         const entities = await getEntitiesList({ doFilter: true });
 
-        // When a search term is active, `entities` was narrowed by `entitiesFilter.serverSearchResults`
-        // (searchFilter(), filters.js), which is itself capped at the server's page-fetch limit
-        // (POST /api/characters/all's `DEFAULT_PAGE_LIMIT`, characters.js) - so `entities.length` here can be
-        // far smaller than the real match count. Without this override the navigator would render e.g.
-        // "1-500 .. 500" - individually correct against the capped `entities` array, but silently wrong against
-        // the real match count `entitiesFilter.serverSearchResults` (fetchServerCharacterSearchResults()) already
-        // knows. `entities.length` still drives the actual page-turn math (`pageSize`/`totalPage` derive from it,
-        // unaffected by this override) - only the displayed total number changes, since paging itself genuinely
-        // can't go past what the server actually sent down. (2026-08: this list used to also carry its own
-        // separate "Showing X of Y matches" text next to the navigator, computed by a second independent fetch -
-        // removed as pure duplication of what this navigator already shows.)
+        // entities.length is capped by the page-fetch limit during search; use serverSearchResults.total for the displayed total instead.
         const searchResults = entitiesFilter.serverSearchResults;
         const searchTerm = entitiesFilter.getFilterData(FILTER_TYPES.SEARCH);
         const realMatchTotal = searchTerm && searchResults?.searchValue === searchTerm && searchResults.total > entities.length
@@ -1887,36 +1471,10 @@ export async function printCharacters(fullRefresh = false) {
     }
 
     if (canUseServerQueryForEntitiesList()) {
-        // Real server-side pagination (design doc §6/§9 phase 5): the character+group rows for the visible
-        // page come from one `/query` request per page turn, not from re-slicing a fully materialized array.
-        // Bogus-folder tag tiles are the one deliberate exception - they're computed locally, once per
-        // full render, and prepended only to page 1 rather than forced through the server query. Two reasons:
-        // folders are pinned to a fixed small prefix by `sortEntitiesList()` (never part of the sortable
-        // character+group continuum §5 describes, so there's no "page 2 of folders" to ask the server for),
-        // and their member counts/nesting already require the local tag-membership computation
-        // `getFolderTileEntities()` shares with `getEntitiesList()`. Net effect, disclosed rather than hidden:
-        // when folders are open, page 1 shows `pageSize` characters/groups *plus* however many folder tiles
-        // matched, i.e. folders no longer eat into the page-size budget the way the old static-array slice
-        // silently did (a folder tile used to occupy one of the `pageSize` slots on whichever page it landed
-        // on). "Open a folder" itself needs no special-casing here: an open bogus folder is just a selected tag
-        // in `entitiesFilter`'s TAG filter data, which `buildCharacterQueryFromCurrentFilterState()` already
-        // threads into `filter.tags.include` - so it composes with `includeGroups` and paginates for free,
-        // including group folder members (`group_tags`), instead of the old "dump every member of the open
-        // folder into the static dataSource regardless of the outer pagination" behavior.
+        // Bogus-folder tag tiles are computed locally and prepended to page 1 only (never paginated), so page 1 can exceed pageSize.
         const { filter, sort } = buildCharacterQueryFromCurrentFilterState({ includeGroups: true });
 
-        // `canUseServerQueryForEntitiesList()` above is only an "attempt" signal now (see its doc comment) - it
-        // no longer guarantees the server actually has a column for the current sort field. Rather than let a
-        // rejection surface per page-turn deep inside pagination.js's `ajaxFunction` (where the only thing this
-        // code could do about it is show an error state - a real regression from the old pre-check, which never
-        // attempted a field it didn't already know was safe), probe with the page-1 request up front: if the
-        // server accepts it, hand that already-fetched page straight to `ajaxFunction` below (so this probe
-        // never costs a second, wasted round-trip on the common path) and build the server-paginated widget; if
-        // it rejects with `isInvalidSortFieldError()`, fall back to `renderLocalPaginated()` before ever touching
-        // the pagination.js plugin, exactly like `getEntitiesList()`'s own fallback. A rejection on a *later*
-        // page turn (filter/sort didn't change between page 1 and then) would mean the server's answer changed
-        // out from under an already-committed widget - not the drift scenario this fallback exists for - so that
-        // case still just surfaces as an error, unchanged from before.
+        // Probe with the page-1 request up front so an unsupported sort field falls back to renderLocalPaginated() before the plugin is built.
         const folderTiles = await getFolderTileEntities();
         /** @type {Awaited<ReturnType<typeof characterRepository.query>>|undefined} */
         let firstPage;
@@ -1932,26 +1490,11 @@ export async function printCharacters(fullRefresh = false) {
         if (firstPageError !== undefined) {
             await renderLocalPaginated();
         } else {
-            // Server total for the character+group match set (may be an approximate `~`-prefixed count - design
-            // doc §5 decision 6 - which is fine for the "N hidden" badge and for pagination.js's own page-count
-            // math, both of which only need an honest approximation, never a bare-but-truncated number). Updated
-            // by `ajaxFunction` on every page fetch; read by the callback's `getMatchTotal` and by
-            // `totalNumberLocator`. Folder tiles are added back in because the pre-existing formula's `entities`
-            // array (see the fallback branch below) always included them too.
+            // May be an approximate `~`-prefixed count; fine for the "N hidden" badge and page-count math.
             let matchTotal = 0;
-            // Serves the already-fetched probe result to `ajaxFunction`'s very first call instead of
-            // re-fetching - consumed (set to `undefined`) after that one use; every later call (page turn, size
-            // change) fetches for real.
+            // Serves the already-fetched probe to ajaxFunction's first call instead of re-fetching.
             let pendingFirstPage = firstPage;
 
-            // Same single-source rule as renderLocalPaginated()'s own `realMatchTotal` above: when the active
-            // search term's own fetch (fetchServerCharacterSearchResults(), entitiesFilter.serverSearchResults)
-            // reports a higher total than this render's own just-fetched page, defer to that shared total for
-            // the *displayed* navigator text rather than trusting this render's own number - the two no longer
-            // computed their own independent totals for the same search (2026-08 "500 of 501" investigation).
-            // `matchTotal` (closed over by `callback`/`totalNumberLocator` above) still drives the actual
-            // page-turn math from this render's own fetch, unaffected - paging still can't go past what this
-            // request actually returned, exactly like the fallback path's own disclosed compromise.
             const searchTerm = entitiesFilter.getFilterData(FILTER_TYPES.SEARCH);
             $('#rm_print_characters_pagination').pagination({
                 ...sharedPaginationOptions,
@@ -1966,16 +1509,7 @@ export async function printCharacters(fullRefresh = false) {
                     const rangeEnd = Math.min(currentPage * pageSize, totalNumber);
                     return `${rangeStart}-${rangeEnd} .. ${realMatchTotal}`;
                 },
-                // Seed pagination.js's dynamic-total boot math with the last real total we saw (see
-                // saveCharactersTotal's own doc comment above) - without this, `self.getTotalNumber()` reads 0
-                // until the first ajax response of *this* reconstruction lands, which clamps the boot page
-                // request (and the synchronous pre-ajax render) down to page 1 / "0 of 0" no matter what
-                // `pageNumber` says. `resetPageNumberOnInit: false` is the other half: pagination.js's own init
-                // path force-overwrites the requested page to 1 whenever a `totalNumberLocator` is present,
-                // independent of the totalNumber seed. Together they let a debounced re-render (search
-                // keystroke, tag toggle, sort/filter change - anything that reconstructs this plugin without an
-                // explicit fullRefresh) re-request the page the user was actually on instead of silently
-                // bouncing them back to page 1 with a momentary empty flash.
+                // Lets a re-render restore the page the user was on instead of bouncing to page 1 while the ajax response is in flight.
                 totalNumber: saveCharactersTotal || undefined,
                 resetPageNumberOnInit: false,
                 totalNumberLocator: function (/** @type {{total: number|string}} */ response) {
@@ -2015,24 +1549,17 @@ export async function printCharacters(fullRefresh = false) {
     updatePersonaConnectionsAvatarList();
 }
 
-/**
- * Shows/hides the "Search" sort option depending on whether a search term is active - it's meaningless
- * without one, since it sorts by search relevance score. Auto-selects it when the search term first becomes
- * active (the option going from hidden to visible), but does not re-force it on every render afterward - so a
- * user who manually switches away from it while still searching keeps their choice.
- */
+// Auto-selects the "Search" sort option only when the search term first becomes active, preserving a manual switch away from it.
 function verifyCharactersSearchSortRule() {
     const searchTerm = entitiesFilter.getFilterData(FILTER_TYPES.SEARCH);
     const searchOption = $('#character_sort_order option[data-field="search"]');
     const isHidden = searchOption.attr('hidden') !== undefined;
 
-    // If we have a search term, we are displaying the sorting option for it, and selecting it since it just became active
     if (searchTerm && isHidden) {
         searchOption.removeAttr('hidden');
         searchOption.prop('selected', true);
     }
-    // If search got cleared, hide the option, and fall back to the last real sort if it was the selected one
-    // (it's no longer a valid choice with nothing to rank by).
+    // No longer a valid sort with nothing to rank by - fall back to the last real sort.
     if (!searchTerm && !isHidden) {
         searchOption.attr('hidden', '');
         if (searchOption.is(':selected')) {
@@ -2081,72 +1608,22 @@ export function tagToEntity(tag) {
     return { item: structuredClone(tag), id: tag.id, type: 'tag', entities: [] };
 }
 
-/**
- * Whether the current sort selection is the "Search" relevance option (`#character_sort_order`'s hidden-unless-
- * searching entry) - the one case `power_user.sort_field`/`sort_order` alone can't express, since that option
- * overrides both while selected (mirrors sortEntitiesList()'s own `isSearch` check, power-user.js).
- * @returns {boolean}
- */
+// The one sort state power_user.sort_field/sort_order alone can't express, since selecting this option
+// overrides both (mirrors sortEntitiesList()'s own isSearch check).
 function isSearchSortSelected() {
     return $('#character_sort_order option[data-field="search"]').is(':selected');
 }
 
-/**
- * Whether the character+group candidate set (`getEntitiesList()`) and the visible page
- * (`printCharacters()`'s pagination controller) should even ATTEMPT the server `/query` endpoint (design doc
- * §5/§6, `filter.includeGroups: true`) instead of going straight to the fully-local `characters`/`groups`
- * arrays. This is no longer "can", in the sense of a guaranteed-safe pre-check - it's "should try": the actual
- * answer to whether the server supports the current `sort.field` comes back from the server itself (a real
- * `400 { reason: 'invalid-sort-field' }` response), not from anything predicted here. See
- * `isServerQueryableSort()`'s doc comment (character-repository.js) for why the client stopped keeping its own
- * copy of that knowledge. Every caller of this function attempts the server query when it returns `true` and
- * catches that specific rejection (`isInvalidSortFieldError()`) to fall back to the pre-existing local path -
- * see `getEntitiesList()` below and `printCharacters()`'s server-paginated branch.
- *
- * Groups being queryable through the same endpoint (`includeGroups`) doesn't change *when* this returns true,
- * only what the caller does with a `true` answer - the eligibility conditions below are about the sort/search
- * state, which is orthogonal to whether groups are merged in.
- *
- * An active search term no longer excludes this path (it used to - see git history around this comment for the
- * old rationale, and the `/query` route's own doc comment in characters.js for why it stopped applying): this
- * app previously had a *separate* server search integration (`fetchServerCharacterSearchResults()` /
- * `entitiesFilter.serverSearchResults`, both in this file/filters.js) that scored characters AND groups
- * together via `/api/characters/all`, on the theory that `/query`'s own `filter.search` used a different index
- * that might disagree with it or (for groups) not cover them at all. That gap is closed - groups now have their
- * own full-text index wired into `/query`'s `filter.search` + `filter.includeGroups` handling (see that route's
- * doc comment), so `filter.search` here and the old `/all`-based search are the exact same underlying indexes,
- * not two that could silently diverge. `fetchServerCharacterSearchResults()`/`serverSearchResults` still exist -
- * they now call `/query` themselves (see that function's doc comment) - but only matter for a caller that
- * caught an `isInvalidSortFieldError()` rejection for its sort field (independent of search), which still needs
- * the pre-existing fully-local fallback and its own score cache.
- *
- * `isSearchSortSelected()` is still checked, but no longer disqualifies outright - `sort.field: 'search'`
- * requires a non-empty search term (mirrors the `/query` route's own "requires, doesn't merely permit" rule),
- * which `verifyCharactersSearchSortRule()` already guarantees by hiding the option otherwise, but this function
- * doesn't get to assume UI state stayed in sync, so it re-checks directly.
- * @returns {boolean}
- */
+// This is "should try", not a guaranteed-safe precheck: whether the server actually supports the current sort
+// field comes back as a real rejection, and every caller catches isInvalidSortFieldError() to fall back locally.
 function canUseServerQueryForEntitiesList() {
     if (isSearchSortSelected()) return String(entitiesFilter.getFilterData(FILTER_TYPES.SEARCH) ?? '').trim().length > 0;
     const sortField = power_user.sort_order === 'random' ? 'random' : power_user.sort_field;
     return isServerQueryableSort(sortField);
 }
 
-/**
- * Maps the current tag-filter/fav-filter/sort UI state (`entitiesFilter`, `power_user`) into the normalized
- * input `buildCharacterQuery()` (character-repository.js) expects, and calls it. Kept as its own function so
- * the state-reading side (this) stays separate from the pure mapping (that), matching the pure/impure split the
- * design doc's client data model section (§6) asks for.
- *
- * `tagFilterData.selected` doubles as "which bogus folder is currently open" (`isBogusFolderOpen()`,
- * `chooseBogusFolder()`/`toggleTagThreeState()` in tags.js just add/remove the folder's tag id from this same
- * TAG filter selection) - so passing it through as `filter.tags.include` is *already* item 3's "open folder
- * becomes a real /query-style paginated filter", no separate wiring needed at the folder-click site. A folder
- * can contain groups too (`group_tags`), which is exactly what `includeGroups` composes with.
- * @param {object} [param0]
- * @param {boolean} [param0.includeGroups] - see `CharacterQueryFilter.includeGroups` (character-repository.js).
- * @returns {{filter: import('./scripts/character-repository.js').CharacterQueryFilter, sort: import('./scripts/character-repository.js').CharacterQuerySort|undefined}}
- */
+// tagFilterData.selected doubles as "which bogus folder is open", so passing it through as filter.tags.include
+// makes an open folder a real paginated filter with no separate wiring needed.
 function buildCharacterQueryFromCurrentFilterState({ includeGroups = false } = {}) {
     const tagFilterData = entitiesFilter.getFilterData(FILTER_TYPES.TAG) ?? { selected: [], excluded: [] };
     const favState = entitiesFilter.getFilterData(FILTER_TYPES.FAV);
@@ -2168,36 +1645,13 @@ function buildCharacterQueryFromCurrentFilterState({ includeGroups = false } = {
     });
 }
 
-/**
- * Maps one normalized `/query` row (design doc §5, `filter.includeGroups: true`) to its `Entity` form -
- * `characterToEntity()` for a character row, `groupToEntity()` for a group row. The one place that combination
- * happens, so `getEntitiesList()` and `printCharacters()`'s server-paginated controller can't drift apart on it.
- * @param {Character|{type: 'character'|'group', item: Character|Group}} row
- * @returns {Entity}
- */
+// Maps one normalized `/query` row to its `Entity` form.
 function queryRowToEntity(row) {
     const { type, item } = normalizeQueryRow(row);
     return type === 'group' ? groupToEntity(item) : characterToEntity(item);
 }
 
-/**
- * Runs the shared tag/fav/folder filter pipeline and the final sort over an already-assembled raw entity list
- * (characters + groups + bogus-folder tag tiles, unfiltered). Factored out of `getEntitiesList()` so
- * `getFolderTileEntities()` below can reuse the exact same filtering - including the closed-folder/empty-folder/
- * "isUseless" logic - without a second, divergence-prone copy of it.
- *
- * We need to do multiple filter runs in a specific order, otherwise different settings might override each
- * other and screw up tags and search filter, sub lists or similar. The specific filters are written inside the
- * "filterByTagState" method and its different parameters. Generally what we do is the following:
- *   1. First swipe over the list to remove the most obvious things
- *   2. Build sub entity lists for all folders, filtering them similarly to the second swipe
- *   3. We do the last run, where global filters are applied, and the search filters last
- * @param {Entity[]} rawEntities
- * @param {object} param1
- * @param {boolean} [param1.doFilter]
- * @param {boolean} [param1.doSort]
- * @returns {Entity[]}
- */
+// Filter runs must stay in this order: an initial pass, per-folder sub-lists, then the final pass with search filters last.
 function filterAndSortEntities(rawEntities, { doFilter = false, doSort = true } = {}) {
     let entities = rawEntities;
 
@@ -2253,35 +1707,7 @@ function filterAndSortEntities(rawEntities, { doFilter = false, doSort = true } 
     return entities;
 }
 
-/**
- * Builds the full list of all entities available
- *
- * They will be correctly marked and filtered.
- *
- * The character+group portion of the candidate set is built two ways depending on `doFilter` and the current
- * filter/sort state (design doc §6, phase 5):
- * - `doFilter: true` and `canUseServerQueryForEntitiesList()` says to attempt it: one merged call -
- *   `characterRepository.queryAll(filter, sort)` with `filter.includeGroups: true` - already narrowed by the
- *   active tag/fav filters (including an open bogus folder, since that's just a selected tag - see
- *   `buildCharacterQueryFromCurrentFilterState()`'s doc comment) and in the active sort order, straight from the
- *   server, characters and groups already merged and sorted together. The rest of this function's filter
- *   pipeline (tag/fav/folder filtering, the final sort) still runs over the result same as always; that's a
- *   redundant but harmless second pass (server and client agree on tag/fav membership, since both read the same
- *   underlying tag_map/fav data), and it's the pass that does real work for the bogus-folder tag tiles, which
- *   `/query` does not and cannot answer (design doc §5: folders aren't part of the sortable character+group
- *   continuum at all - `sortEntitiesList()` always pins them to the top in their own order, independent of
- *   `sort_field`/`sort_order`).
- *   If that call rejects with `isInvalidSortFieldError()` - the current sort field genuinely has no server
- *   column - this falls back to the local path below instead of throwing; any other failure (network error, a
- *   500, ...) propagates normally, same as it always has.
- * - Otherwise (an active search term-less non-eligible state, `doFilter: false`, or a caught
- *   `isInvalidSortFieldError()`): the pre-existing fully-local path - `characters.map(...)` + `groups.map(...)`
- *   over the whole resident arrays, filtered/sorted entirely client-side exactly as before this change.
- * @param {object} param0 - Optional parameters
- * @param {boolean} [param0.doFilter] - Whether this entity list should already be filtered based on the global filters
- * @param {boolean} [param0.doSort] - Whether the entity list should be sorted when returned
- * @returns {Promise<Entity[]>} All entities
- */
+// When eligible, fetches characters+groups already merged/sorted/filtered from the server; the local filter pipeline still runs over the result.
 export async function getEntitiesList({ doFilter = false, doSort = true } = {}) {
     let characterAndGroupEntities;
     if (doFilter && canUseServerQueryForEntitiesList()) {
@@ -2309,19 +1735,7 @@ export async function getEntitiesList({ doFilter = false, doSort = true } = {}) 
     return filterAndSortEntities(rawEntities, { doFilter, doSort });
 }
 
-/**
- * The bogus-folder tag tiles for the current filter state, fully filtered/annotated (`entity.entities`,
- * `entity.hidden`, `entity.isUseless`) exactly as `getEntitiesList()` would compute them - via the same
- * `filterAndSortEntities()` pipeline, just fed the fully-resident local candidate set (`characters`/`groups`
- * arrays) rather than a server page, since folder tiles are pinned to a fixed small prefix (design doc §5,
- * `sortEntitiesList()`) and are never part of what `printCharacters()`'s server-paginated controller pages
- * through - see that function's doc comment for the "unpaginated addendum on page 1" call. `characters`/`groups`
- * stay fully client-resident regardless of that controller (phase 5's residency bounding is a later phase, §9),
- * so this costs exactly what the pre-existing fully-local `getEntitiesList()` path already cost whenever
- * `power_user.bogus_folders` was on - not a new scan, just no longer gated behind the character/group portion
- * of the same call.
- * @returns {Promise<Entity[]>} tag-type entities only, in `sortEntitiesList()`'s pinned-folder order.
- */
+// Folder tiles are never part of a server-paginated page, so this filters the local arrays directly.
 async function getFolderTileEntities() {
     if (!power_user.bogus_folders) return [];
 
@@ -2347,25 +1761,10 @@ export async function getOneCharacter(avatarUrl) {
     if (response.ok) {
         const getData = await response.json();
         getData.chat = String(getData.chat);
-        // /api/characters/get always processes with `shallow: false` server-side (see characters.js), so this
-        // response is unconditionally full data - but processCharacter() only ever sets a `shallow: true` key
-        // on the *shallow* branch's output; the full-data branch never sets `shallow: false` explicitly, so
-        // getData here simply lacks a `shallow` key. Object.assign() below (via charactersStore.update()) only
-        // overwrites keys that are actually present in the patch, so without this explicit reset, an entity
-        // that started shallow (lazyLoadCharacters) keeps `shallow: true` forever, no matter how many times it
-        // gets unshallowed - making unshallowCharacter() (script.js) treat it as still-shallow and refetch (and
-        // Object.assign-clobber any pending in-memory edit, e.g. doNewChat()'s chat rename) on every single call
-        // instead of just the first.
+        // This response is always full data; reset shallow explicitly or a once-shallow entity stays shallow forever.
         getData.shallow = false;
 
         if (charactersStore.has(avatarUrl)) {
-            // Was `characters[indexOf] = getData` (a full reference swap) - now goes through
-            // charactersStore.update(), which Object.assign()s getData's fields onto the *existing* entity
-            // object instead of replacing it. Since getData is a full character object, the end state is the
-            // same either way - the difference is that any other code holding a reference to the old character
-            // object (rather than re-reading `characters[indexOf]`) now sees the update too, instead of quietly
-            // going stale. No known caller relied on the old "distinct object after edit" behavior.
-            // Fuse-index invalidation is handled by the charactersStore.onChange subscriber above.
             charactersStore.update(avatarUrl, getData);
         } else {
             toastr.error(t`Character ${avatarUrl} not found in the list`, t`Error`, { timeOut: 5000, preventDuplicates: true });
@@ -2418,38 +1817,17 @@ export function getCharacterSource(character = getCurrentCharacter()) {
     return '';
 }
 
+// getCharacters() also refetches the full group list as a side effect; several group-mutation call sites piggyback on this.
 /**
- * Refetches the full character list from the server and rebuilds `characters` in place. Also refetches the
- * full group list (getGroups()) as a side effect, since the character/group lists are shown as one combined
- * UI list and several group-mutation call sites in group-chats.js piggyback on this function to also trigger
- * their reload/re-render, rather than calling getGroups() directly.
  * @param {object} [options]
- * @param {boolean} [options.silent=false] - If true, skips charactersStore's generic reset() notification -
- * pass this when the caller already knows the specific create/delete/rename that this reload happened for,
- * and will report it itself via charactersStore.reportCreated()/.reportRemoved()/.reportRenamed() once this
- * returns (which need the post-reload id index, so charactersStore.reindex() still runs either way - only
- * the emitted change differs). Leave false for reloads with no more specific intent than "resync".
- * @param {boolean} [options.silentGroups=false] - Same as `silent`, but for the internal getGroups() reload's
- * groupsStore notification - independent of `silent`, since a reload can know the specific thing that
- * happened to *one* of the two collections without knowing anything specific about the other (e.g. a pure
- * group edit doesn't want charactersStore to fire a redundant reset(), and a character delete doesn't
- * necessarily know whether server-side cleanup removed that character from any group's member list, so it
- * should NOT default to silencing groupsStore just because it's silencing charactersStore).
+ * @param {boolean} [options.silent=false]
+ * @param {boolean} [options.silentGroups=false]
  */
-// A single /api/characters/batch request is kept bounded to this many avatars, same motivation as
-// DEFAULT_PAGE_LIMIT server-side (characters.js) - a boot where most/all of a very large library changed at
-// once (e.g. first-ever boot, nothing cached yet) shouldn't turn into one giant response any more than a
-// paginated search should.
+// Bounds a single /api/characters/batch request so a large-library boot doesn't become one giant response.
 const CHARACTER_BATCH_CHUNK_SIZE = 500;
 
-/**
- * Sanitizes/defaults a single character object exactly as getCharacters() has always done to every character in
- * the response, in place. Only meant to be called on freshly-fetched data - a cache hit already has this
- * applied (see character-cache.js), applying it twice would be harmless but wasted work.
- * @param {object} character
- */
+// Only meant for freshly-fetched data; a cache hit already has this applied.
 function finalizeFetchedCharacter(character) {
-    // For dropped-in cards
     if (!character.chat) {
         character.chat = `${character.name} - ${humanizedDateTime()}`;
     }
@@ -2457,35 +1835,7 @@ function finalizeFetchedCharacter(character) {
     character.chat = String(character.chat);
 }
 
-/**
- * Fetches the current character list via the change-feed/delta-cache path: `POST /api/characters/changes` for
- * a cheap `{ seq, changes: [{id, op, fields}], truncated }` since this cache's last-synced revision (character-cache.js's
- * `getCachedCursor()`), applied on top of whatever's already cached so only characters that are genuinely new or
- * changed (`op: 'upsert'`) get fetched (via `/api/characters/batch`) and re-processed (DOMPurify/chat-default) -
- * deleted characters (`op: 'delete'`) are dropped from the cache directly, by id, rather than inferred from
- * absence in a full snapshot. Replaces the old `/api/characters/manifest` full-library scan entirely: every
- * real mutation (create/rename/delete/edit) already writes a `changes` row server-side (character-metadata-db.js
- * `writeRowSync()`, called unconditionally by every write path including the one-time bootstrap backfill - see
- * that function's own doc comment), so a `sinceSeq: 0` cold sync's change list already IS the full current
- * library, with no separate ground-truth listing needed to know what's been deleted since.
- *
- * Throws on any failure (network, non-OK response, etc.) - callers should retry rather than partially apply a
- * broken delta. There is deliberately no full-fetch fallback (see getCharacters()'s retry loop): this install's
- * scale makes an unconditional `/api/characters/all` dump (every character's full data, no pagination) a
- * multi-hundred-MB response and a server-side readdir+parse-everything scan - a real outage of its own, not a
- * safe recovery from what's usually a transient network blip.
- *
- * Note on ordering: unlike the old manifest-diff scheme (which preserved the server's readdir order), the
- * returned list's order is cache insertion order, not any particular library order - nothing downstream should
- * be relying on `characters` array order as meaningful (display always goes through sortEntitiesList()).
- *
- * Note on thumbnails: the old `/manifest` response's `thumbnailVersion` field let getThumbnailUrl() skip a
- * no-cache redirect hop for every character in the library, up front. `/changes` doesn't carry that (it only
- * knows what changed, not a thumbnail cache-bust token), and `/batch` doesn't return it either - this is a real,
- * accepted perf regression for cache-hit characters (they fall back to the pre-existing "no cached version"
- * path getThumbnailUrl() already had before this field existed), not a correctness issue.
- * @returns {Promise<object[]>} The full character list, cache order (see note above).
- */
+// Syncs via the change-feed against the local cache instead of a full-library dump; no full-fetch fallback on failure since that dump can be multi-hundred-MB.
 async function fetchCharactersDelta() {
     const sinceSeq = await getCachedCursor();
     const changesResponse = await fetch('/api/characters/changes', {
@@ -2502,17 +1852,14 @@ async function fetchCharactersDelta() {
     const { seq, changes, truncated } = await changesResponse.json();
 
     if (truncated) {
-        // sinceSeq predates anything the server's change log still has - this cache can no longer be trusted
-        // to catch up incrementally. Wipe it and retry as a fresh sinceSeq: 0 sync, whose change list is the
-        // full current library (see this function's own doc comment).
+        // sinceSeq predates the server's change log; wipe the cache and retry as a fresh full sync.
         await clearCharacterCache();
         return fetchCharactersDelta();
     }
 
     const deleteIds = [];
     const wholeRecordIds = [];
-    // Group field-level changes by their field set so each distinct set becomes one batched /batch
-    // call with that `fields` filter, rather than one call per changed character.
+    // Group field-level changes by their field set so each set becomes one batched /batch call.
     /** @type {Map<string, { fields: string[], ids: string[] }>} */
     const fieldGroupMap = new Map();
 
@@ -2520,10 +1867,8 @@ async function fetchCharactersDelta() {
         if (op === 'delete') {
             deleteIds.push(id);
         } else if (!fields) {
-            // null/undefined fields = whole record changed (full card edit, import, rename, etc.)
             wholeRecordIds.push(id);
         } else {
-            // Field-level change - group by the same field set to batch efficiently.
             const key = JSON.stringify([...fields].sort());
             if (!fieldGroupMap.has(key)) {
                 fieldGroupMap.set(key, { fields, ids: [] });
@@ -2532,8 +1877,7 @@ async function fetchCharactersDelta() {
         }
     }
 
-    // Re-fetch records that failed to write on a previous sync (event-driven retry: the write
-    // failure itself is the trigger, not a periodic verification sweep).
+    // Re-fetch records that failed to write on a previous sync, triggered by the failure itself.
     const previousFailures = await getWriteFailures();
     if (previousFailures.length > 0) {
         const deleteSet = new Set(deleteIds);
@@ -2545,11 +1889,7 @@ async function fetchCharactersDelta() {
         console.log(`[sync] Re-fetching ${previousFailures.length} record(s) from previous write failure(s)`);
     }
 
-    // --- Incremental digest maintenance (catch-up path) ---
-    // Read old hashes BEFORE any IDB mutations so the incremental update can XOR-out old
-    // contributions and XOR-in new ones. The stored digest gets updated at the end so that
-    // the deferred verify's fast-path comparison (server root vs stored digest) succeeds
-    // without a full O(library) client-side recomputation.
+    // Read before any IDB mutations so the digest update below can XOR-out old / XOR-in new without a full recomputation.
     const storedDigest = await getLastVerifiedDigest();
     const allAffectedIds = [...deleteIds, ...wholeRecordIds];
     for (const { ids } of fieldGroupMap.values()) {
@@ -2566,7 +1906,6 @@ async function fetchCharactersDelta() {
     /** @type {Map<string, object>} fresh/updated records to save back to the cache */
     const fresh = new Map();
 
-    // Whole-record fetches: same as before - full processCharacter() on the server, full record back.
     for (let i = 0; i < wholeRecordIds.length; i += CHARACTER_BATCH_CHUNK_SIZE) {
         const chunk = wholeRecordIds.slice(i, i + CHARACTER_BATCH_CHUNK_SIZE);
         const batchResponse = await fetch('/api/characters/batch', {
@@ -2586,12 +1925,9 @@ async function fetchCharactersDelta() {
         }
     }
 
-    // Field-level fetches: request only the changed fields from the metadata store's shallow_json
-    // (no PNG read server-side), then merge into the existing cached record. This is the key
-    // optimization: a tag_ids change on 314k records transfers ~11.5MB instead of ~314MB.
+    // Field-level fetches request only the changed fields, e.g. skipping the PNG read server-side.
     if (fieldGroupMap.size > 0) {
-        // Read the full cache once up front - cheaper than N individual IndexedDB reads for large
-        // field-level fills (e.g. the one-time tag_ids backfill across 314k records).
+        // Read the full cache once up front - cheaper than N individual IndexedDB reads for a large fill.
         const allCachedBefore = await getAllCachedCharacters();
 
         for (const { fields, ids } of fieldGroupMap.values()) {
@@ -2611,10 +1947,7 @@ async function fetchCharactersDelta() {
                 const batchMerged = [];
                 for (const partial of batchData) {
                     const avatar = partial.avatar;
-                    // Merge: overlay fetched fields onto the existing cached record, keyed by
-                    // avatar - never positionally. Check `fresh` first (a whole-record fetch in
-                    // this same sync supersedes any prior cached version), then fall back to the
-                    // pre-sync cache.
+                    // Check `fresh` first - a whole-record fetch in this same sync supersedes the pre-sync cache.
                     const existing = fresh.get(avatar) || allCachedBefore.get(avatar);
                     if (existing) {
                         for (const field of fields) {
@@ -2625,12 +1958,8 @@ async function fetchCharactersDelta() {
                         fresh.set(avatar, existing);
                         batchMerged.push({ avatar, character: existing });
                     }
-                    // If no existing record to merge into (field-level change for a record not in
-                    // cache - shouldn't happen normally), skip - the anti-entropy check or next
-                    // full sync will catch it.
                 }
-                // Save field-level merges incrementally per batch to avoid accumulating
-                // hundreds of thousands of entries for one bulk IndexedDB write at the end.
+                // Saved incrementally per batch to avoid one huge IndexedDB write at the end.
                 if (batchMerged.length > 0) {
                     await saveCachedCharacters(batchMerged);
                 }
@@ -2643,19 +1972,13 @@ async function fetchCharactersDelta() {
         writeFailures = await saveCachedCharacters(Array.from(fresh, ([avatar, character]) => ({ avatar, character })));
     }
     await setCachedCursor(seq);
-    // Persist any write failures for retry on next boot; clear if all succeeded.
-    // This replaces the per-boot verify with event-driven failure tracking.
     await setWriteFailures(writeFailures);
 
-    // Incremental digest maintenance: update the stored digest to reflect applied changes,
-    // so the deferred verify's fast-path (which compares server root to stored digest) succeeds
-    // without needing a full O(library) client-side recomputation. The decision "am I up to date"
-    // still comes from comparing content hashes (verify's server-root vs stored-root comparison),
-    // not from trusting the seq cursor.
+    // Keeps the deferred verify's fast-path from needing a full recomputation.
     if (storedDigest && (fresh.size > 0 || deleteIds.length > 0)) {
         let runningDigest = { ...storedDigest };
 
-        // XOR-out deleted records' old contributions (XOR is self-inverse)
+        // XOR is self-inverse, so XOR-ing a contribution out again removes it.
         for (const id of deleteIds) {
             const old = oldHashesMap.get(id);
             if (old) {
@@ -2663,14 +1986,11 @@ async function fetchCharactersDelta() {
             }
         }
 
-        // XOR-out old + XOR-in new for upserted records
         for (const [avatar, character] of fresh) {
             const old = oldHashesMap.get(avatar);
             if (old) {
-                // XOR-out old contribution
                 runningDigest = combineDigest128(runningDigest, avatar, old.fav, old.tagIds, old.content);
             }
-            // XOR-in new contribution (same hash computation as saveCachedCharacters)
             const newFav = characterDigestFavHash(character) % 4294967296;
             const newTagIds = characterDigestTagIdsHash(character);
             const newContent = characterDigestFieldsHash(character) % 4294967296;
@@ -2681,44 +2001,22 @@ async function fetchCharactersDelta() {
         console.log('[sync] Stored digest updated incrementally for', fresh.size, 'upsert(s) and', deleteIds.length, 'delete(s)');
     }
 
-    // The cache is now caught up: everything still in it, plus whatever this pass upserted, minus whatever it
-    // deleted, IS the current library (see this function's own doc comment on why no separate ground-truth
-    // listing is needed). Re-read rather than reconstruct in place so a character that failed
-    // processCharacter() server-side (corrupt file etc., filtered out of the batch response, matching /all's
-    // own `.filter(c => c.name)` behavior) correctly stays absent instead of resurfacing from a stale local var.
+    // Re-read rather than reconstruct in place, so a server-side failed character correctly stays absent.
     const allCached = await getAllCachedCharacters();
 
-    // `changed` tells getCharacters() whether this sync actually touched anything - `changes` already covers
-    // both upserts and deletes (op: 'upsert'|'delete'), and `previousFailures` covers the retry-refetch path
-    // (a record this function re-pulled even though the server-reported delta for THIS call was empty). An
-    // empty delta with no retries means the cache genuinely didn't move, which is what lets getCharacters() skip
-    // its O(library) merge-and-reindex pass instead of unconditionally repeating it (2026-08 repeated-`/query`
-    // investigation) on every boot/nav/SSE-triggered call, most of which find nothing new.
+    // `changed` lets getCharacters() skip its O(library) merge-and-reindex pass when nothing moved.
     return { list: Array.from(allCached.values()), changed: changes.length > 0 || previousFailures.length > 0 };
 }
 
-// Only run the state-digest anti-entropy check once per page session (see verifyCharacterCacheDigest()'s own
-// doc comment on why this doesn't need to run on every getCharacters() call to still catch real drift promptly)
-// - getCharacters() is called far more often than once (boot, chat-reset-to-neutral, every create/rename/
-// duplicate/delete, every character-library nav open per fetchCharactersDelta()'s own header), and re-running a
-// full bucket-digest comparison on every one of those would be pure waste for a check whose whole point is that
-// real drift is rare.
+// Runs at most once per page session - real drift is rare, and getCharacters() is called too often to re-check every time.
 let hasVerifiedCharacterCacheDigestThisSession = false;
 
-/** Local cache entries sent to character-digest-worker.js per 'chunk' message - see that worker's own header.
- * Small enough that even a single chunk's `postMessage` structured-clone doesn't itself become a long
- * synchronous stretch on this thread, large enough to keep message-passing overhead a small fraction of total
- * time for a real multi-hundred-thousand-character library. */
+// Chunk size for postMessage to character-digest-worker.js, balancing thread-blocking against message overhead.
 const DIGEST_WORKER_SEND_CHUNK_SIZE = 2000;
 
+// Worker is kept alive (not terminated) so the recursive descent can keep requesting deeper digests; caller owns terminating it.
 /**
- * Starts a persistent character-digest-worker.js worker (see that module's own header for the full protocol/
- * rationale), sends it `localHashes` in chunks off this (the browser's main) thread, and resolves once the
- * worker's initial level-0 tree is ready - WITHOUT terminating the worker, unlike the fixed-depth-2 approach this
- * replaces. The worker stays alive so the recursive descent in verifyCharacterCacheDigest() can keep asking it
- * (via workerComputeDigests() below) for children digests at whatever deeper tree nodes the server's own descent
- * turns up as mismatched - the caller owns terminating it once the descent is done.
- * @param {Map<string, {fav: number, tagIds: number, content: number}>} localHashes Pre-computed per-field hashes from getAllCachedHashes()
+ * @param {Map<string, {fav: number, tagIds: number, content: number}>} localHashes
  * @param {number} branching
  * @returns {Promise<{ children: {digest: {a:number,b:number,c:number,d:number}}[], localHashes: Map<string, {fav:number,tagIds:number,content:number}>, worker: Worker }>}
  */
@@ -2731,8 +2029,6 @@ function computeLocalCharacterDigest(localHashes, branching) {
         };
         worker.onmessage = (event) => {
             if (event.data.type === 'ready') {
-                // Don't terminate - the worker stays alive for follow-up 'compute-digests' requests as the
-                // descent goes deeper. The caller is responsible for terminate()'ing it when done.
                 const t_mapBuild = performance.now();
                 const computedHashes = new Map(event.data.localHashes);
                 console.log(`[digest-timing] new Map(localHashes): ${(performance.now() - t_mapBuild).toFixed(1)}ms (${computedHashes.size} entries, localHashes array length: ${event.data.localHashes?.length})`);
@@ -2764,10 +2060,6 @@ function computeLocalCharacterDigest(localHashes, branching) {
 }
 
 /**
- * Asks the still-alive character-digest-worker.js worker (from computeLocalCharacterDigest()) to compute
- * children digests for specific tree nodes, one level deeper than whatever it's already computed - used by
- * verifyCharacterCacheDigest()'s recursive descent once the server's own `/tree-descend` response says a node
- * needs expanding beyond level 0.
  * @param {Worker} worker
  * @param {{ path: number[] }[]} nodes
  * @returns {Promise<{ path: number[], children: { fav: {hi:number,lo:number}, fields: {hi:number,lo:number} }[] }[]>}
@@ -2789,12 +2081,7 @@ function workerComputeDigests(worker, nodes) {
     });
 }
 
-/**
- * Decodes a binary tree-descend response into the same JS structure as the JSON path.
- * See serializeTreeDescendBinary() server-side for the matching encoder and format spec.
- * @param {ArrayBuffer} buffer
- * @returns {{ results: { path: number[], type: string, children?: {digest:{a:number,b:number,c:number,d:number}}[], members?: {id:string,favHash:number,tagIdsHash:number,contentHash:number,fav:boolean}[] }[] }}
- */
+// Decodes a binary tree-descend response into the same JS structure as the JSON path; see serializeTreeDescendBinary() server-side.
 function deserializeTreeDescendBinary(buffer) {
     const view = new DataView(buffer);
     let offset = 0;
@@ -2845,46 +2132,7 @@ function deserializeTreeDescendBinary(buffer) {
     return { results };
 }
 
-/**
- * Anti-entropy check for the character cache (see character-metadata-digest-worker.js's own header for the
- * server-side recursive hash-tree shape, and character-metadata-db.js's treeDescend() for the server half).
- * `/api/characters/changes`'s seq cursor tells a client what's mutated SINCE it last synced, but has no way to
- * notice a cursor that LOOKS caught-up while the actual cached content has quietly diverged - e.g. a
- * character-cache.js write that silently failed (saveCachedCharacters() logs and swallows per-entry errors
- * rather than aborting the sync), or a browser evicting part of this origin's IndexedDB under storage pressure.
- *
- * Deliberately built on content hashes (hash-utils.js's `contentHashOf()`), computed fresh from whatever's
- * actually sitting in the cache right now (getAllCachedCharacters()), never from a separately-stored per-record
- * value this function would otherwise have to trust.
- *
- * GENUINELY RECURSIVE DESCENT, not a fixed 2-level tree: the client calls `/api/characters/tree-descend`
- * repeatedly, once per descent level, expanding whichever nodes mismatched at the previous level, until every
- * mismatch is either resolved to individual records (`type: 'leaves'`) or the loop runs out of nodes to expand.
- * RT 1 asks for the root (`path: []`); the server replies with either `children` (if the corpus is bigger than
- * leafThreshold) or `leaves` directly. Every subsequent RT expands exactly the child indices whose digests
- * disagreed with this client's own locally-computed digests for that node - level 0 comes for free from
- * computeLocalCharacterDigest()'s initial pass, and any deeper level is computed on demand by asking the still-
- * alive worker (workerComputeDigests()) rather than recomputing from scratch. The number of round trips this
- * takes is NOT fixed - it adapts to how deep the actual divergence sits, and to corpus size (see
- * character-metadata-digest-worker.js's own header on the O(log_N(corpusSize / leafThreshold)) depth).
- *
- * LEAF RESPONSES ARE HASH-ONLY: `type: 'leaves'` members carry just `{id, favHash, fieldsHash}` (~40 bytes per
- * record), not fingerprint values - see character-metadata-digest-worker.js's own header on why. After the
- * descent loop below finishes, drifted ids (those whose local hash disagrees) are collected, and their actual
- * fingerprint field values are fetched in one targeted follow-up call to `/api/characters/fingerprint-values`
- * (resolveFingerprints() server-side) - never inline with the leaf response itself.
- *
- * NO ABORT CAP: with hash-only leaf responses and leafThreshold derived from the branching factor's per-record
- * vs per-children-digest crossover (see DEFAULT_TREE_BRANCHING in hash-utils.js), the tree's total cost at
- * any corruption level is structurally ≤ a flat full digest (transferring per-record hashes for every record).
- * At low corruption, the tree prunes matching subtrees and costs far less. At high corruption, the tree
- * converges to exactly the flat digest cost as every subtree is expanded. There is no corruption level where
- * the tree costs MORE than the simplest possible alternative, so no abort/fallback is needed.
- *
- * Never awaited by its caller (fetchCharactersDelta()) - runs after the delta sync has already returned, so it
- * never adds latency to boot or any other getCharacters() call.
- * @returns {Promise<void>}
- */
+// Anti-entropy check: the /changes cursor can look caught-up while cached content has quietly diverged (e.g. a failed IndexedDB write). Not awaited by its caller.
 async function verifyCharacterCacheDigest() {
     if (hasVerifiedCharacterCacheDigestThisSession) return;
     hasVerifiedCharacterCacheDigestThisSession = true;
@@ -2895,9 +2143,6 @@ async function verifyCharacterCacheDigest() {
     console.log('[digest-timing] verifyCharacterCacheDigest starting');
     const t_start = performance.now();
 
-    // Step 1: Fetch server's root-level children (one HTTP call, triggers a server-side table scan
-    // on the digest worker thread - not on the Node event loop). This is the cheapest possible way
-    // to learn the server's current state without any client-side computation.
     const rootResponse = await fetch('/api/characters/tree-descend', {
         method: 'POST',
         headers: getRequestHeaders(),
@@ -2909,10 +2154,7 @@ async function verifyCharacterCacheDigest() {
     const { results: rootResults } = deserializeTreeDescendBinary(await rootResponse.arrayBuffer());
     const rootResult = rootResults?.[0];
 
-    // Step 2: Fast-path - compare server's root aggregate against stored digest from the last
-    // successful verification. Both are 128-bit content-derived hashes (XOR-fold of per-record
-    // per-field hashes), not counters. If they match, the server hasn't changed since the last
-    // full verification, so the expensive O(library) client-side computation can be skipped.
+    // Fast path: if the server's root digest matches what was last verified, skip full computation.
     if (rootResult?.type === 'children') {
         let serverRoot = emptyDigest128();
         for (const child of rootResult.children) {
@@ -2927,8 +2169,6 @@ async function verifyCharacterCacheDigest() {
         console.log('[digest-timing] server root changed or no stored digest, proceeding with full verification');
     }
 
-    // Step 3: Full verification - expensive client-side computation only runs when the server's
-    // root actually differs from what was last verified.
     const t_cache = performance.now();
     const localHashes = await getAllCachedHashes();
     console.log(`[digest-timing] getAllCachedHashes: ${(performance.now() - t_cache).toFixed(1)}ms (${localHashes.size} entries)`);
@@ -2939,8 +2179,7 @@ async function verifyCharacterCacheDigest() {
     console.log(`[digest-timing] computeLocalCharacterDigest total: ${(performance.now() - t_compute).toFixed(1)}ms`);
 
     try {
-        // Reuse the root response from step 1 (don't re-fetch). Process it the same way the
-        // descent loop would, but inline since we already have the data.
+        // Reuse the root response from above instead of re-fetching.
         let currentNodes = [];
         const allLeaves = [];
 
@@ -2958,8 +2197,6 @@ async function verifyCharacterCacheDigest() {
 
         const t_descent = performance.now();
 
-        // Continue descent for any mismatched children (same loop as before, just starting
-        // from level 1 since level 0 was already processed above from the reused root response).
         while (currentNodes.length > 0) {
             const response = await fetch('/api/characters/tree-descend', {
                 method: 'POST',
@@ -2973,8 +2210,6 @@ async function verifyCharacterCacheDigest() {
 
             const nextNodes = [];
 
-            // Collect all children-type results that need local digest comparison. For nodes deeper than level
-            // 0, batch the workerComputeDigests calls to avoid one message-round-trip per node.
             const childrenResults = allResults.filter(r => r.type !== 'leaves');
             for (const result of allResults) {
                 if (result.type === 'leaves') {
@@ -2983,7 +2218,6 @@ async function verifyCharacterCacheDigest() {
             }
 
             if (childrenResults.length > 0) {
-                // Compute local digests for all non-root children results in one worker call
                 const deeperNodes = childrenResults.filter(r => r.path.length > 0);
                 let localDigestsByPath = new Map();
                 if (deeperNodes.length > 0) {
@@ -3019,10 +2253,7 @@ async function verifyCharacterCacheDigest() {
         console.log(`[digest-timing] tree descent total: ${(performance.now() - t_descent).toFixed(1)}ms, leaves: ${allLeaves.length}`);
         const t_repair = performance.now();
 
-        // Process all collected leaf results: compare per-record hashes, identify drift by id. Leaf members are
-        // hash-only ({id, favHash, fieldsHash}) - no fingerprint values are carried here (see this function's own
-        // doc comment) - so this pass only decides WHICH ids drifted; their actual field values are fetched in a
-        // single targeted follow-up call below, not per-leaf.
+        // Leaves are hash-only; this pass only decides which ids drifted, actual values are fetched below.
         const toRemove = [];
         /** @type {Map<string, string[]>} id -> drifted field groups */
         const driftedById = new Map();
@@ -3038,10 +2269,7 @@ async function verifyCharacterCacheDigest() {
             for (const member of leaf.members) {
                 serverIdsInLeaf.add(member.id);
                 if (!localHashes.has(member.id)) {
-                    // Record exists on server but not locally - genuine set-difference drift
-                    // (a new import the change feed will sync), NOT a per-field collision.
-                    // Must set leafHasFieldDrift so the collision fallback doesn't fire for
-                    // the entire leaf's other members.
+                    // Exists on server but not locally: set-difference drift, not a per-field collision.
                     leafHasFieldDrift = true;
                     continue;
                 }
@@ -3066,9 +2294,7 @@ async function verifyCharacterCacheDigest() {
                 }
             }
 
-            // Collision handling: this leaf was reached because a parent's 128-bit aggregate
-            // disagreed, but no per-field 32-bit hash mismatches were found. A 32-bit collision
-            // is hiding a real difference. Fall back to value comparison for all members.
+            // Parent aggregate disagreed but no per-field hash did: a 32-bit collision - fall back to value comparison.
             if (!leafHasFieldDrift) {
                 for (const member of leaf.members) {
                     if (localHashes.has(member.id)) {
@@ -3155,8 +2381,6 @@ async function verifyCharacterCacheDigest() {
             }
         }
 
-        // Collision repair: 128-bit aggregate disagreed but every 32-bit per-field hash agreed.
-        // Fall back to value comparison using the fingerprint-values endpoint.
         if (collisionIds.length > 0) {
             console.warn(`Tree descent: ${collisionIds.length} record(s) in collision leaf, falling back to value comparison.`);
             const fpResponse = await fetch('/api/characters/fingerprint-values', {
@@ -3207,8 +2431,7 @@ async function verifyCharacterCacheDigest() {
         }
         console.log(`[digest-timing] repair total: ${(performance.now() - t_repair).toFixed(1)}ms, patched: ${patched.size}, removed: ${toRemove.length}, collisions: ${collisionIds.length}`);
 
-        // Store the server's root digest for next session's fast-path. Content-derived (XOR-fold
-        // of all per-record per-field hashes), not a counter.
+        // Stored for next session's fast-path comparison.
         if (rootResult?.type === 'children') {
             let serverRoot = emptyDigest128();
             for (const child of rootResult.children) {
@@ -3224,20 +2447,7 @@ async function verifyCharacterCacheDigest() {
     }
 }
 
-/**
- * Customizer for lodash's mergeWith(), used to merge a shallow character payload onto a resident one (see
- * getCharacters() below). Plain lodash merge() would be right for objects (recurse field-by-field, key absent
- * from source leaves the destination's value untouched) but wrong for arrays (it merges them index-by-index,
- * e.g. a shorter incoming array would only overwrite the leading elements and leave trailing ones from the old
- * array behind) - toShallow()'s projection nests thin objects under `data`/`data.extensions`, and any of those
- * fields (e.g. `data.tags`) can be an array that's meant to replace wholesale, including replacing with an
- * empty one. Returning the incoming array as-is here (rather than undefined, which would fall through to
- * mergeWith's default per-index merge) makes arrays and everything else that isn't a plain object replace
- * wholesale, while plain objects still keep recursing via the default behavior.
- * @param {*} _objValue
- * @param {*} srcValue
- * @returns {*} the replacement value, or undefined to let mergeWith apply its default behavior
- */
+// lodash merge() would merge arrays index-by-index; returning arrays as-is makes them replace wholesale instead.
 function mergeShallowCharacterCustomizer(_objValue, srcValue) {
     if (Array.isArray(srcValue)) {
         return srcValue;
@@ -3245,23 +2455,7 @@ function mergeShallowCharacterCustomizer(_objValue, srcValue) {
     return undefined;
 }
 
-/**
- * Seeds in-memory character residency (`characters`/`charactersStore`) from the persisted IndexedDB cache
- * (character-cache.js) before getCharacters() ever makes a network call. character-cache.js's own doc comment
- * explains what the cache is *for* - avoiding re-shipping character data the client already has on every boot
- * - but until now that avoidance only ever paid off for *bandwidth* (fetchCharactersDelta() only re-fetches
- * what actually changed, via `/api/characters/changes`), never for *latency*: `characters` starts as an empty
- * array (see its declaration above) and stayed that way on every single refresh until the network round trip
- * gating fetchCharactersDelta() completed and it read the cache back at the very end - even though virtually
- * everything it needed was already sitting locally the whole time, readable with no network dependency at all.
- *
- * This only ever grows `characters` from empty - it's a no-op if something (a previous call, a concurrent
- * boot path) already populated it, so it can never clobber fresher in-memory state with a stale cached one.
- * getCharacters()'s own merge logic (mergeWith onto an already-present entry by avatar, not a wholesale
- * replace) is what reconciles the subsequent network delta on top of this seed - the exact same merge it
- * already does for a repeat call against an already-populated array, so seeding first changes nothing about
- * eventual correctness, only how soon `characters` stops being empty.
- */
+// Seeds `characters` from the persisted cache before getCharacters()'s network call. Only grows from empty, so it can't clobber fresher state.
 async function seedCharactersFromCache() {
     if (characters.length > 0) {
         return;
@@ -3273,47 +2467,15 @@ async function seedCharactersFromCache() {
     for (const character of cached.values()) {
         characters.push(character);
     }
-    // Fuse-index invalidation etc. handled by the charactersStore.onChange subscriber - reset() is the right
-    // call here (not reindex()) since this is a bulk "the whole collection just appeared" event, same as
-    // getCharacters()'s own non-silent path.
     charactersStore.reset();
 }
 
-/** How many times getCharacters() retries a failed delta fetch before giving up - see this function's own
- * doc comment on why there's no full-library fallback to reach for instead. */
 const DELTA_FETCH_MAX_RETRIES = 3;
-/** Backoff delay (ms) before each retry attempt - index 0 is the delay before the 2nd attempt, etc. A transient
- * network blip (the case this exists for) is typically over well within this window; a genuinely down server
- * or unavailable metadata store isn't fixed by retrying faster, so this doesn't spin harder than that. */
 const DELTA_FETCH_RETRY_DELAYS_MS = [1000, 3000, 8000];
 
-/**
- * Fetches and applies the current character list. Delegates the actual network fetch to
- * fetchCharactersDelta(), retrying it a bounded number of times (DELTA_FETCH_MAX_RETRIES) with backoff on
- * failure. Deliberately never falls back to an unconditional full-library fetch on exhausted retries: that
- * fallback (`/api/characters/all` with no pagination) used to turn any transient failure of the delta fetch -
- * including an ordinary one-off `NetworkError` - into a multi-hundred-MB response and a server-side
- * readdir+parse-every-character-file scan for a large library, i.e. a much worse outage than the blip that
- * triggered it. On exhausted retries this reports the failure (console + a persistent toast) and returns with
- * `characters` left exactly as it was - stale, but not corrupted, and correct as soon as a later sync succeeds
- * (getCharactersDebounced() and the various post-mutation `getCharacters()` call sites - create/rename/delete,
- * the SSE change-stream handler - all provide their own later opportunities to resync; nothing depends on this
- * particular call succeeding synchronously). Never throws - every failure path here is caught and reported
- * internally, so callers (including the boot sequence's un-`.catch()`-ed characterResidencyPromise) can safely
- * `await` this without risking an unhandled rejection.
- * @param {object} [options]
- * @param {boolean} [options.silent]
- * @param {boolean} [options.silentGroups]
- * @returns {Promise<void>}
- */
+// Never falls back to an unconditional full-library fetch on exhausted retries; reports the failure and leaves `characters` stale but uncorrupted.
 export async function getCharacters({ silent = false, silentGroups = false } = {}) {
     let newCharacters;
-    // Whether the character sync actually found anything to apply - drives whether the O(library) merge below
-    // (and the reindex/this_avatar-reselect work that follows it) runs at all. Only the delta path can know this
-    // (a fresh fetch has no cheap way to tell "unchanged" apart from "changed" without one) - see the
-    // 2026-08 repeated-`/query` investigation: getCharacters() used to pay this merge and an unconditional
-    // trailing printCharacters(true) on every call, even the many that fetchCharactersDelta() itself found
-    // nothing to sync.
     let charactersChanged = true;
     let lastError;
     for (let attempt = 0; attempt <= DELTA_FETCH_MAX_RETRIES; attempt++) {
@@ -3344,42 +2506,16 @@ export async function getCharacters({ silent = false, silentGroups = false } = {
     }
 
     if (newCharacters === undefined) {
-        // Nothing further to do - same as the old code's implicit no-op on a failed response.
         return;
     }
 
     if (charactersChanged) {
-    // Merge newCharacters into the existing `characters` array in place rather than wholesale-replacing it.
-    // newCharacters can legitimately be a *shallow* projection of the library (toShallow() / useShallowCharacters)
-    // that simply omits heavy fields like data.alternate_greetings - that omission means "not included in this
-    // projection", not "this field is now gone". A full splice-replace was treating it as the latter: a
-    // character that had already been unshallowed (e.g. by the autoload path during boot, which races this
-    // still-in-flight fetch) would get its full entity swapped out for the thinner shallow one, silently losing
-    // alternate_greetings and anything else the projection doesn't carry. Merging field-by-field onto the
-    // existing object (incoming fields overwrite, fields the incoming payload doesn't carry are left alone)
-    // keeps already-resident heavy data intact while still picking up whatever did change upstream. The merge
-    // has to be deep, not a shallow Object.assign: toShallow() nests its own thin projection under a `data` key
-    // (and `data.extensions` under that), so `data` itself is a key *present* on the incoming payload - a
-    // shallow assign would replace the whole `data` object, alternate_greetings included, reproducing the same
-    // clobber one level down. lodash's mergeWith() (with a customizer that keeps arrays replacing wholesale
-    // rather than merging index-by-index - see mergeShallowCharacterCustomizer() above) recurses into plain
-    // objects instead, so a key absent from the incoming payload is left untouched at any depth, while a key
-    // that IS present - including an array or an empty value - still overwrites. Characters no longer present
-    // upstream are removed (this is also how deletions propagate - a
-    // merge that only ever added/updated would leave deleted characters resident forever), and characters newly
-    // present are added.
+    // Merge field-by-field rather than a wholesale replace, since newCharacters can be a shallow projection missing heavy fields.
     const newByAvatar = new Map(newCharacters.map(c => [c.avatar, c]));
     for (const existing of characters) {
         const incoming = newByAvatar.get(existing.avatar);
         if (!incoming) continue;
-        // getOneCharacter() (above) explicitly resets `shallow` to false when it fetches full data, because
-        // processCharacter()'s full-data branch never sets `shallow: false` itself, and the merge below only
-        // overwrites keys actually present in the patch - so without that reset, an entity that was ever shallow
-        // would keep reading as shallow forever. The same asymmetry applies here in reverse: `incoming.shallow
-        // === true` is a true statement about *this* fetched payload, but not about `existing` if it was already
-        // unshallowed - it still holds the earlier full data underneath these fresher shallow fields. Letting the
-        // merge downgrade it back to `shallow: true` would make unshallowCharacter() treat an already-full
-        // character as needing a redundant re-fetch, so that one field is preserved rather than merged.
+        // Don't let an incoming shallow projection downgrade an already-unshallowed entity back to shallow.
         const wasUnshallowed = existing.shallow === false;
         lodash.mergeWith(existing, incoming, mergeShallowCharacterCustomizer);
         if (wasUnshallowed && incoming.shallow === true) {
@@ -3398,12 +2534,6 @@ export async function getCharacters({ silent = false, silentGroups = false } = {
         }
     }
 
-    // Fuse-index invalidation is handled by the charactersStore.onChange subscriber (see charactersStore's
-    // definition above) - reset() emits directly, and reindex()'s silent callers all follow up with a
-    // reportCreated()/reportRemoved()/reportRenamed() of their own right after this call returns. The merge
-    // above is still a bulk refetch-and-rebuild with no single more-specific create/delete/rename intent (see
-    // EntityStore's own reset() doc comment), so it still fits reset()'s "the whole collection may have
-    // changed" semantics - one summary event, not a flood of per-entity ones.
     if (silent) {
         charactersStore.reindex();
     } else {
@@ -3411,9 +2541,6 @@ export async function getCharacters({ silent = false, silentGroups = false } = {
     }
 
     if (this_avatar) {
-        // this_avatar is untouched by the merge/reload above (it's a separate variable, not derived from
-        // the array), so it's still exactly the avatar that was selected before this reload - selecting by
-        // avatar directly needs no index lookup.
         if (charactersStore.get(this_avatar)) {
             await selectCharacterByAvatar(this_avatar, { switchMenu: false });
         } else {
@@ -3486,8 +2613,7 @@ export async function deleteCharacterChatByName(avatar, fileName) {
             body: JSON.stringify({ avatar_url: character.avatar }),
         });
         const chatsData = await chatsResponse.json();
-        // /api/characters/chats sends { error: true } (not an array) on a real read failure - guard against
-        // that here instead of crashing on chats[0].file_name of a non-chat entry.
+        // Guards against { error: true } (not an array) on a real read failure.
         const chats = Array.isArray(chatsData) ? chatsData : [];
         chats.sort((a, b) => sortMoments(timestampToMoment(a.last_mes), timestampToMoment(b.last_mes)));
         const newChatName = chats.length && typeof chats[0] === 'object' ? chats[0].file_name.replace('.jsonl', '') : `${character.name} - ${humanizedDateTime()}`;
@@ -3779,8 +2905,7 @@ export async function deleteMessage(id, swipeDeletionIndex = undefined, askConfi
     const firstMessageId = getMessageDeletionStartId(id, deleteToolCalls);
     const messageIds = Array.from({ length: id - firstMessageId + 1 }, (_, index) => id - index);
 
-    // If the message being edited is about to be removed, close the editor first while its
-    // DOM element and chat entry still exist, so the editor UI gets restored properly.
+    // Close the editor first, before its DOM element and chat entry are removed.
     if (this_edit_mes_id !== undefined && messageIds.includes(Number(this_edit_mes_id))) {
         closeMessageEditor();
     }
@@ -3794,14 +2919,7 @@ export async function deleteMessage(id, swipeDeletionIndex = undefined, askConfi
 
     chat_metadata.tainted = true;
 
-    // Removing the tail of a conversation is the store's "this ends here", said on the message it now
-    // ends at. Without it the comparison-driven save had nothing to send: it walks the messages it was
-    // handed and writes them, and a message no longer in the array is simply never mentioned, so the
-    // deletion showed on screen and came back on the next load.
-    //
-    // Only for a removal that reaches the end. Taking one out of the middle cannot be said this way -
-    // the conversation is read off the last message's chain of parents, so a node in the middle of
-    // that chain is not something a selection can step around - and it is still unhandled.
+    // Only meaningful for a removal reaching the end - the tree-backed store otherwise has no way to learn where the conversation now ends.
     if (chat_metadata?._tree_stored && chat.length > 0 && Math.min(...messageIds) === chat.length) {
         await chatOpEndPath(chat.length - 1).catch(error =>
             console.error('Could not end the conversation at the last remaining message:', error));
@@ -3846,11 +2964,7 @@ export async function reloadCurrentChatUnsafe() {
     refreshSwipeButtons();
 }
 
-/**
- * Send the message currently typed into the chat box.
- */
 export async function sendTextareaMessage() {
-    // don't proceed during swipeGenerate()
     if (swipeState == SWIPE_STATE.EDITING) {
         toastr.warning(t`Confirm the edit to start a generation.`, t`You cannot send a message during a swipe-edit.`);
         return;
@@ -3858,14 +2972,7 @@ export async function sendTextareaMessage() {
     if (swipeState !== SWIPE_STATE.NONE) return; // don't proceed if mid-swipe.
     if (is_send_press) return;
 
-    // Overswiping a user message opens a blank slot at the end to type into, and truncates the view to
-    // it. Nothing has been written yet, so there is nothing to send - generating from here puts an empty
-    // user turn at the end of the prompt.
-    //
-    // Asked of the slot rather than of a flag. The SWIPE_STATE.EDITING check above was meant to cover
-    // this, but nothing in the client ever assigns that state, so it can never fire (option_continue
-    // survives only because it also checks this_edit_mes_id, which is genuinely maintained). A state
-    // nobody sets is the same hazard as one nobody clears; the slot's own emptiness cannot get stuck.
+    // Overswiping opens a blank slot with nothing written yet; SWIPE_STATE.EDITING is never actually set for it.
     const lastIndex = chat.length - 1;
     if (lastIndex >= 0 && _isBlankUnwrittenSwipe(chat[lastIndex])) {
         toastr.warning(t`Write something in the message first, or cancel the edit.`, t`Nothing to send`);
@@ -4023,8 +3130,7 @@ export function ensureMessageMediaIsArray(mes) {
             return;
         }
 
-        // Frozen objects (deep-frozen messages) can't have properties defined on them.
-        // The wrappers were set up pre-freeze during initial load; skip for frozen objects.
+        // Frozen objects can't have properties defined on them; the wrappers were set up pre-freeze.
         if (Object.isFrozen(obj)) {
             return;
         }
@@ -4391,8 +3497,7 @@ export function appendMediaToMessage(mes, messageElement, scrollBehavior = SCROL
 
     // Add files to message
     if (hasFiles) {
-        // Resolved once and reused for every per-file clone below instead of re-running the selector fresh
-        // per loop iteration (same fix, and rationale, as the tags.js selector-in-loop fix).
+        // Resolved once and reused for every clone, instead of re-running the selector per iteration.
         const $fileTemplate = $('#message_file_template .mes_file_container');
         for (let index = 0; index < mes.extra.files.length; index++) {
             const file = mes.extra.files[index];
@@ -4637,11 +3742,7 @@ export function updateMessageElement(mes, { messageId = chat.length - 1, message
     messageElement.find('.mes_text').html(messageHTML);
     addCopyToCodeBlocks(messageElement);
 
-    // Set the swipes counter. User messages carry alternatives too in this fork (not just
-    // character messages), so this used to skip them - "for all non-user messages" was true
-    // upstream, where only character messages could have swipes, but leaving user messages
-    // out here meant their M/N indicator was never computed on initial render: it stayed blank
-    // until something else happened to call refreshSwipeButtons(true), which most callers don't.
+    // User messages can carry alternatives too, so this isn't limited to non-user messages.
     updateSwipeCounter(messageId, { message: mes, messageElement });
 
     return messageElement;
@@ -5041,9 +4142,7 @@ export async function generateQuietPrompt({ quietPrompt = '', quietToLoud = fals
             force_name2: true,
             quietImage: quietImage ?? null,
             quietName: quietName ?? null,
-            // forceChId is the public compat surface (numeric legacy character id) - translated to an avatar
-            // right here, so everything downstream of this point (Generate(), generateGroupWrapper()) is
-            // avatar-shaped internally.
+            // forceChId (legacy numeric id) translated to an avatar here, so everything downstream is avatar-shaped.
             force_avatar: (forceChId !== null && forceChId !== undefined) ? characters[forceChId]?.avatar ?? null : null,
             jsonSchema: jsonSchema ?? null,
         };
@@ -5735,8 +4834,7 @@ class StreamingProcessor {
         saveLogprobsForActiveMessage(this.messageLogprobs.filter(Boolean), this.continueMessage);
 
         if (Array.isArray(this.images) && this.images.length > 0) {
-            // processImageAttachment mutates the message object; clone so the frozen original isn't touched,
-            // then apply the changed extra back via updateMessage.
+            // processImageAttachment mutates its argument; clone so the frozen original isn't touched.
             const mutableMsg = structuredClone(chat[messageId]);
             await processImageAttachment(mutableMsg, { imageUrls: this.images });
             updateMessage(messageId, { extra: mutableMsg.extra });
@@ -6358,9 +5456,8 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         is_send_press = true;
         textareaText = String($('#send_textarea').val());
         $('#send_textarea').val('')[0].dispatchEvent(new Event('input', { bubbles: true }));
-        // Explicit, synchronous clear (not just relying on the debounced input-triggered save eventually
-        // observing the now-empty box) - a message that was just sent must not be resurrectable as a "draft"
-        // by a reload that happens to land in the gap before the debounce fires.
+        // Explicit synchronous clear: a message just sent must not be resurrectable as a draft by a reload
+        // landing before the debounced save observes the now-empty box.
         const sentDraftContext = getCurrentDraftContext();
         if (sentDraftContext) {
             clearDraft(localStorage, sentDraftContext);
@@ -6450,20 +5547,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         setExtensionPrompt(inject_ids.DEPTH_PROMPT, depthPromptText, extension_prompt_types.IN_CHAT, depthPromptDepth, extension_settings.note.allowWIScan, depthPromptRole);
     }
 
-    // First message in fresh 1-on-1 chat reacts to user/character settings changes.
-    //
-    // This used to persist the substituted copy straight onto chat[0] via updateMessage() - the same
-    // mistake message-formatting.js's header documents at length, just in Generate() instead of the
-    // formatter: a card greeting is never "typed" the way a user message is, so nothing has run its
-    // macros through substituteParams() before, and doing it here by writing chat[0].mes makes
-    // _saveTreeChat()'s "was something written into this opening" check see a change that was never
-    // the user's - promoting an untouched greeting into a permanent row on the very first prompt
-    // build, even one from a generation that gets cancelled before anything else happens, and (for an
-    // opening that already has a real row) overwriting it with a persona/character-name-baked-in copy
-    // on every later build. Only the prompt needs the substituted text, and coreChat's own per-message
-    // map immediately below already builds a local, non-persisted copy for every other message in the
-    // chat - threading the substitution through there for chat[0] specifically gets prompt-building
-    // what it needs without ever writing it back onto the canonical stored message.
+    // Kept local, not written back onto chat[0] - that would make the save path see an untouched greeting as user-edited.
     const substitutedFirstMessage = chat.length ? substituteParams(chat[0].mes) : null;
 
     // Collect messages with usable content
@@ -7349,15 +6433,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             presetName: getPresetManager()?.getSelectedPresetName() || '',
             messagesCount: main_api !== 'openai' ? mesSend.length : oaiMessages.length,
             examplesCount: main_api !== 'openai' ? (pinExmString ? mesExamplesArray.length : count_exm_add) : oaiMessageExamples.length,
-            // Structural per-message content, captured here at the source rather than reconstructed later
-            // by re-splitting the flattened rawPrompt/mesSendString - itemized-prompts.js's server-upload
-            // path pool-dedupes these by exact string match (consecutive generations in the same chat
-            // share almost this entire list verbatim). Not the same array used to build finalPrompt itself
-            // (that's finalMesSend, local to getCombinedPrompt() and not reachable from here) - this is the
-            // pre-injection per-message content, which is what's actually worth deduping since it's the
-            // part that repeats byte-for-byte across entries; the last message's cfg/bias-injected suffix
-            // isn't reflected here, which only affects this one field's own use (content-dedup), not the
-            // full rawPrompt/finalPrompt text already stored separately above.
+            // Per-message content before injection, captured here rather than re-split from rawPrompt later.
             historyParts: main_api === 'openai' ? oaiMessages.map(m => m.content) : mesSend.map(e => e.message),
         };
 
@@ -7870,9 +6946,7 @@ export async function sendMessageAsUser(messageText, messageBias, insertAt = nul
         is_system: false,
         send_date: getMessageTimeStamp(),
         mes: substituteParams(messageText),
-        // Who this was said as. This is the speaker for identity purposes: the same words under the
-        // same parent said as two different personas are two different messages. The avatar id rather
-        // than the display name, because the name drifts on rename and the id doesn't.
+        // Identity uses the avatar id, not the display name, since the name drifts on rename.
         persona: avatar,
         extra: {
             isSmallSys: compact,
@@ -7908,14 +6982,11 @@ export async function sendMessageAsUser(messageText, messageBias, insertAt = nul
         chat.push(message);
         const chat_id = (chat.length - 1);
 
-        // Render the message immediately so the user sees it before the save round-trip.
         addOneMessage(message);
         await eventSource.emit(event_types.MESSAGE_SENT, chat_id);
         await eventSource.emit(event_types.USER_MESSAGE_RENDERED, chat_id);
 
-        // Save is awaited (not fire-and-forget) to guarantee persistence before generation
-        // starts and to avoid a timeout race where save #2 (after AI response) could miss
-        // the isChatSaving window and silently drop the AI message.
+        // Awaited, not fire-and-forget: otherwise the next save can miss the isChatSaving window and drop the AI message.
         await saveChatConditional();
     }
 
@@ -8674,14 +7745,7 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
     const generationFinished = new Date();
     if (type === 'swipe') {
         oldMessage = lastMessage.mes;
-        // Make room for the incoming swipe. The slot is an empty string rather than `undefined`, and
-        // swipe_info gets a matching entry: leaving a genuine non-string here (and leaving the two
-        // arrays different lengths) is what made ensureSwipes warn and "repair" on every single
-        // generation. It was papering over a placeholder that gets filled moments later.
-        //
-        // Empty is also the honest value for it. Nothing has been written into this slot yet, and the
-        // save path deliberately ignores an empty slot that carries no node_id, so a save landing
-        // mid-generation writes nothing instead of trying to store a blank message.
+        // Empty string, not undefined - a non-string slot made ensureSwipes warn/repair on every generation.
         const newSwipes = [...(lastMessage.swipes || []), ''];
         const newSwipeInfo = [...(lastMessage.swipe_info || []), {
             send_date: getMessageTimeStamp(),
@@ -8938,12 +8002,7 @@ export function ensureSwipes(message, mesId = undefined) {
     let swipesDirty = !Array.isArray(message.swipes);
     let swipeInfoDirty = !Array.isArray(message.swipe_info);
 
-    // A tree-backed message arrives with a window of alternatives filled in and the rest as null
-    // HOLES, meaning "this exists, it just wasn't sent". Repairing a hole into '' (or fabricating
-    // swipe_info for it) turns "not loaded" into "empty", and a save then writes that emptiness over
-    // real stored text. Holes belong to hydrateSwipes(); leave them be. A message with no node_id
-    // isn't tree-backed and always arrives complete, so a non-string there is genuine corruption and
-    // still gets repaired exactly as before.
+    // A tree-backed message can have null holes (unfetched alternatives) among its swipes - left alone here, belongs to hydrateSwipes() instead.
     const hasHoles = !!message.node_id;
 
     for (let i = 0; i < swipes.length; i++) {
@@ -8963,29 +8022,7 @@ export function ensureSwipes(message, mesId = undefined) {
         }
     }
 
-    // The selected slot IS this message - same row, same text. Saying so matters: the save path reads
-    // a slot with text and no node_id as a brand new alternative, so a synthesised entry made this
-    // message look like it had one, on every message in the chat, on every save. The server deduped
-    // each back onto the row it came from and the client asked again next time.
-    // Unless the slot is the blank one an overswipe just opened. That slot is not this message - it is
-    // an empty place to write something new, and it has no row precisely because nothing has been
-    // written into it yet. Stamping it with this message's row made it look like a real alternative,
-    // and everything that asks "has anything been written here" then answered yes: cancelling the
-    // editor stopped removing it, so the blank stayed selected with the conversation below it still
-    // detached, and the message kept an empty alternative to swipe past forever after.
-    //
-    // isMessageSwipeable() runs this on the way past, so simply asking whether the arrows should be
-    // shown was enough to do it.
-    //
-    // A node_id belongs to exactly one slot, never two. Overswiping opens a genuinely new, blank slot
-    // and moves swipe_id onto it - the message's OWN row is still sitting in whatever slot it was
-    // always in, still correctly carrying its real node_id. The instant something (a streamed chunk,
-    // syncMesToSwipe()) writes real text into that new slot, it stops being blank, and without this
-    // guard the check above would stamp it with the SAME node_id the original slot already has - one
-    // row, claimed by two slots. The save path then reads the new slot as "already has a row" and
-    // never creates the alternative; it falls through to editing the OLD row with the NEW text
-    // instead, silently overwriting it. Skipping the stamp whenever some other slot already carries
-    // this node_id is what keeps a row pointing at exactly the slot it actually is.
+    // Stamps the selected slot with this message's node_id, except a still-blank overswipe slot, or when another slot already carries this node_id.
     const selectedSlot = updates.swipe_id ?? message.swipe_id ?? 0;
     const slotIsBlank = typeof swipes[selectedSlot] === 'string' && swipes[selectedSlot].length === 0;
     const nodeIdClaimedElsewhere = message.node_id
@@ -9002,15 +8039,7 @@ export function ensureSwipes(message, mesId = undefined) {
     if (updated) {
         mesId ??= chat.indexOf(message);
         if (mesId >= 0) {
-            // Giving a message the swipe arrays it was missing is not an edit to it. The text is
-            // untouched; this only fills in shape the loader does not send, and a user message never
-            // has any, so a chat full of them arrives needing this on every single one.
-            //
-            // updateMessage() replaces the object, and a message that is not the object the snapshot
-            // holds reads as changed - so without saying otherwise, merely opening a chat left every
-            // message dirty and the next save rewrote every row with the content it already had. One
-            // full rewrite of the conversation per load, which is what the write amplification looked
-            // like from the outside.
+            // Backfilling missing swipe arrays isn't an edit; restore the snapshot so it doesn't read as changed.
             const wasClean = _messageSnapshots.get(message.node_id) === message;
             updateMessage(mesId, updates);
             if (wasClean && chat[mesId]?.node_id) {
@@ -9089,28 +8118,14 @@ export function syncMesToSwipe(messageId = null) {
     return true;
 }
 
-/**
- * How many alternatives either side of a requested one to pull in when filling holes, matching the
- * window the server sends inline so stepping onward stays instant.
- */
+// Matches the window the server sends inline, so stepping onward stays instant.
 const ALTERNATIVE_FETCH_WINDOW = 25;
 
 /**
- * Fills in alternatives that a chat load left as holes.
- *
- * A tree-backed load sends a window of alternatives around the selected one and `null` everywhere
- * else, because a wide fork point can carry well over a thousand and their text runs to hundreds of
- * KB that nothing reads. `null` rather than an empty string on purpose: a hole has to be
- * distinguishable from a genuinely empty message, so anything indexing into it fails visibly instead
- * of quietly rendering blank text as though it were real.
- *
- * Anything that needs an alternative at an arbitrary index awaits this first. Messages are
- * deep-frozen, so the filled arrays go back through updateMessage rather than being written in place.
- *
- * @param {number} mesId Index into `chat`
- * @param {{ index?: number|null, all?: boolean }} [options] Which holes to fill: a single index (plus
- *   a window around it), or every hole in the message.
- * @returns {Promise<boolean>} true when the requested alternatives are present afterwards
+ * A tree-backed load leaves unfetched alternatives as `null` holes rather than empty strings; this fills them in on demand.
+ * @param {number} mesId
+ * @param {{ index?: number|null, all?: boolean }} [options]
+ * @returns {Promise<boolean>}
  */
 export async function hydrateSwipes(mesId, { index = null, all = false } = {}) {
     const message = chat[mesId];
@@ -9126,28 +8141,15 @@ export async function hydrateSwipes(mesId, { index = null, all = false } = {}) {
         return true;
     }
 
-    // Whether this message had unsaved changes BEFORE hydrating. Filling in holes is not an edit -
-    // the text comes from the server - so a message that was clean should stay clean afterwards.
-    // Checked up front so a genuine pending edit is never marked saved by accident.
+    // Filling holes isn't an edit, so a clean message should stay clean afterward.
     const wasClean = _messageSnapshots.get(message.node_id) === message;
 
-    // Chats that aren't tree-backed always arrive complete, so a hole there is not something a fetch
-    // can repair.
     if (!message.node_id) {
         return false;
     }
 
-    // The opening is not addressed like the rest of the chat.
-    //
-    // Its alternatives are the UNION of the character's stored openings and the greetings that only
-    // exist on the card, computed by the openings endpoint - which is what sized this swipe array in
-    // the first place. Asking /alternatives for siblings of the opening's row returns only the stored
-    // half, in a different order past the stored prefix, so the text landing in each hole would be the
-    // wrong greeting. It also cannot answer at all for an opening that has no row yet, which under
-    // provisional ids is the ordinary case rather than an edge one.
+    // The opening's alternatives are stored openings plus card-only greetings; /alternatives only knows the stored half.
     const isOpening = mesId === 0 && !!chat_metadata?._tree_stored;
-    // The server reads the card's greetings itself now (see chats.js's `_cardGreetingsFromDisk` and its
-    // doc comment) - nothing here needs to hold or send the card's text any more, just which character.
     const character = isOpening ? getCurrentCharacter() : null;
     if (isOpening && !character?.avatar) {
         return false;
@@ -9163,8 +8165,7 @@ export async function hydrateSwipes(mesId, { index = null, all = false } = {}) {
         body.offset = Math.max(0, index - ALTERNATIVE_FETCH_WINDOW);
         body.limit = ALTERNATIVE_FETCH_WINDOW * 2 + 1;
     } else if (isOpening) {
-        // The openings endpoint windows by default (a character here has over 1,500 of them), so
-        // "every hole" has to be asked for as a range rather than by leaving the range off.
+        // The openings endpoint windows by default, so "every hole" needs an explicit range.
         body.offset = 0;
         body.limit = message.swipes.length;
     }
@@ -9200,14 +8201,10 @@ export async function hydrateSwipes(mesId, { index = null, all = false } = {}) {
     payload.alternatives.forEach((alt, i) => {
         const at = from + i;
         if (at >= swipes.length) return;
-        // Never overwrite something already in hand - a locally edited alternative that hasn't been
-        // saved yet would otherwise be clobbered by the stored copy.
+        // Never overwrite an already-hydrated slot - a local edit could otherwise be clobbered by the stored copy.
         if (typeof swipes[at] === 'string') return;
         swipes[at] = alt.mes ?? '';
-        // An id is what marks this slot as settled. Without one the save path reads a hydrated slot as
-        // a brand new alternative forever: it posts a create for every one on every save (harmless,
-        // since adding is idempotent, but endless) and selects the shown one on top. A card-only
-        // opening has no row to name, so it gets its provisional id here for the same reason.
+        // An id marks this slot as settled; without one the save path reads it as a brand new alternative forever.
         swipeInfo[at] = {
             send_date: alt.send_date,
             extra: alt.extra ?? {},
@@ -9219,9 +8216,7 @@ export async function hydrateSwipes(mesId, { index = null, all = false } = {}) {
 
     updateMessage(mesId, { swipes, swipe_info: swipeInfo });
 
-    // Hydrating only fills in what was already stored, so it does not make the message unsaved. Left
-    // dirty, every hole filled would earn the message an edit on the next save, re-sending content the
-    // server had just sent.
+    // Hydrating only fills in what was already stored, so it does not make the message unsaved.
     if (wasClean && chat[mesId]?.node_id) {
         _messageSnapshots.set(chat[mesId].node_id, chat[mesId]);
     }
@@ -9229,37 +8224,16 @@ export async function hydrateSwipes(mesId, { index = null, all = false } = {}) {
     return all ? true : typeof chat[mesId].swipes[index] === 'string';
 }
 
-/**
- * Moves the client onto a different alternative's path.
- *
- * Switching message N to a sibling means the conversation below N is that sibling's continuation,
- * not the old one's. So N's node_id becomes the sibling's actual row, everything after N is dropped
- * from the in-memory chat, and the sibling's own default_child_id chain is fetched and put in its
- * place - the same walk a fresh chat load does.
- *
- * Nothing is removed from the database by any of this. The old alternative keeps its children
- * exactly as they were, and swiping back reaches them again.
- *
- * @param {number} mesId
- * @param {number} swipeId Index of the alternative being switched to
- * @returns {Promise<boolean>} true when the path was switched
- */
+// Switches to a sibling's path; nothing is removed from the database, so swiping back reaches the old alternative's children again.
 export async function switchToAlternativePath(mesId, swipeId) {
     const message = chat[mesId];
     const targetNodeId = message?.swipe_info?.[swipeId]?.node_id;
 
-    // Nothing to move onto. Either this isn't tree-backed (a JSONL chat, where swipes are just an
-    // array on the message and there is no separate path), or the slot is a blank one that overswiping
-    // opened to type into and nothing has been written yet.
     if (!targetNodeId || message.node_id === targetNodeId) {
         return false;
     }
 
-    // Moving onto a greeting the tree has no row for. Showing it is not using it, so no row is minted
-    // here - it gets one from ensureOpeningRow() when something actually needs one. That also settles
-    // what follows it: a greeting nothing has ever been said to has no continuation, which is a fact,
-    // not a failed lookup. Asking the server would only turn it into a 404 that reads as an error and
-    // aborts the switch.
+    // An unstored greeting has no continuation to fetch; no row is minted here (ensureOpeningRow() does that when needed).
     const unstored = isProvisionalNodeId(targetNodeId);
     let payload = { messages: [] };
     if (!unstored) {
@@ -9288,21 +8262,7 @@ export async function switchToAlternativePath(mesId, swipeId) {
     updateMessage(mesId, { node_id: targetNodeId, swipe_id: swipeId });
     chat.splice(mesId + 1, chat.length - (mesId + 1), ...(payload.messages ?? []));
 
-    // Persist the choice, and move the pointer onto the node now being shown.
-    //
-    // select() records which child this fork shows. On its own that was never enough: a reload
-    // resolved the character's chat pointer, and while that pointer named a position on the OLD
-    // alternative's path, walking up from it returned the old alternative every time. The choice was
-    // being written somewhere the reload never consulted.
-    //
-    // The pointer is where you are. Switching alternatives moves you, so it moves too. It does not
-    // need updating as the conversation grows, since a load descends default_child_id from wherever
-    // it points down to the leaf.
-    //
-    // An unstored greeting has nothing to persist and nothing to point at: naming it as the selected
-    // child or as the character's position would write an id no row answers to, and the next load
-    // would resolve it to nowhere. It becomes persistable the moment ensureOpeningRow() gives it a
-    // row, which is also the moment there is something worth coming back to.
+    // Moves the character's chat pointer onto the node now being shown, or a reload resolves to the old path. An unstored greeting has nothing to persist.
     const avatar = getCurrentCharacter()?.avatar;
     if (!unstored) {
         try {
@@ -9320,10 +8280,7 @@ export async function switchToAlternativePath(mesId, swipeId) {
         }
     }
 
-    // Everything in the chat now matches what is stored: the messages below came straight from the
-    // server, and the switch itself was persisted above. Without saying so they are fresh objects the
-    // snapshot has never seen, so the next save reads every one as changed and posts an edit for it -
-    // one per message, on every switch, re-sending content the server just handed over.
+    // Without this the freshly-fetched messages read as changed against the snapshot on the next save.
     _snapshotMessages();
 
     await redisplayChat({ startIndex: mesId });
@@ -9332,31 +8289,12 @@ export async function switchToAlternativePath(mesId, swipeId) {
     return true;
 }
 
-/**
- * Moves onto any node in the currently-open tree-backed chat - a bookmark, most often - not just a
- * sibling swipe at the message already showing. Selecting a bookmark used to mean a full
- * clearChat()+getChat(): tear the whole view down and reload the whole conversation from scratch, even
- * when the bookmark sits a few messages off a branch that is already on screen. This is that same case
- * switchToAlternativePath() handles for one fork, generalized to jump straight to an arbitrary node: it
- * asks the server only for the path between the node and the root (cheap - ids and text for that
- * segment only, not the whole conversation), finds the deepest point in that path that is already
- * loaded, and replaces only what is actually different.
- *
- * A node's own position never depends on any fork's default_child_id above it - reloading later
- * resolves the stored pointer by parentage the same way this does - so nothing needs to be marked
- * default along the way for the new position to be correct on the next load.
- *
- * Solo, tree-backed chats only. Returns false without changing anything when there is no such thing to
- * build on - a group chat, a legacy JSONL chat, nothing loaded yet, or a node with no ancestry shared
- * with what is on screen (a genuinely different chat) - so the caller can fall back to a full open.
- */
+// Jumps to any node in the open tree-backed chat without a full reload. Solo tree-backed chats only; returns false so the caller can fall back to a full open.
 export async function switchToNode(targetNodeId) {
     if (selected_group || !chat_metadata?._tree_stored || chat.length === 0) {
         return false;
     }
 
-    // Already part of what's loaded - an earlier message on the branch already showing, most likely.
-    // The stored position still needs to move onto it, but nothing about the view does.
     const alreadyLoadedAt = chat.findIndex(m => m.node_id === targetNodeId);
     if (alreadyLoadedAt >= 0) {
         const avatar = getCurrentCharacter()?.avatar;
@@ -9387,9 +8325,7 @@ export async function switchToNode(targetNodeId) {
         return false;
     }
 
-    // The deepest ancestor of the target that is already part of the loaded chat - where the two paths
-    // fork. Walked from the target backward so a long shared prefix is found at its closest point, not
-    // its furthest.
+    // Deepest already-loaded ancestor of the target, walked backward so the closest fork point is found first.
     let forkPos = -1;
     let forkAncestryIdx = -1;
     for (let j = ancestry.length - 1; j >= 0; j--) {
@@ -9431,9 +8367,6 @@ export async function switchToNode(targetNodeId) {
             console.warn('[switchToNode] Failed to persist the selection:', error));
     }
 
-    // Same reason switchToAlternativePath() does this: the spliced-in messages came straight from the
-    // server and the snapshot has never seen them, so without this the next save reads every one as
-    // changed and posts a needless edit for it.
     _snapshotMessages();
 
     await redisplayChat({ startIndex: forkPos + 1 });
@@ -9457,9 +8390,7 @@ export function syncSwipeToMes(messageId = null, swipeId = null, targetMessage =
         return false;
     }
 
-    // isChatResident: true when operating on the live chat array (use updateMessage for frozen
-    // messages), false when called with an external targetMessage (e.g. a cloned snapshot in
-    // getBranchChatSnapshot) that can be mutated directly.
+    // False when called with an external targetMessage (e.g. a cloned snapshot) that can be mutated directly.
     const isChatResident = !targetMessage;
     const resolvedMessageId = messageId ?? chat.length - 1;
 
@@ -9941,15 +8872,8 @@ export function saveChatDebounced() {
 }
 
 
-/**
- * True when the message is sitting on a swipe slot that is blank and has never been written.
- *
- * Overswiping opens an empty slot for the user to type into. Nothing exists for it yet, so there is
- * nothing to save - and trying anyway means asking the server to blank the row the message still
- * names, which it refuses.
- *
- * @param {object} message
- */
+// Overswiping opens an empty slot to type into; nothing exists for it yet, so there is nothing to save, and
+// trying anyway means asking the server to blank the row the message still names, which it refuses.
 function _isBlankUnwrittenSwipe(message) {
     if (!Array.isArray(message?.swipes)) return false;
     const at = message.swipe_id ?? 0;
@@ -9957,39 +8881,8 @@ function _isBlankUnwrittenSwipe(message) {
     return !message.swipe_info?.[at]?.node_id;
 }
 
-/**
- * Saves a tree-backed chat by RECONSTRUCTING operations from a before-and-after comparison, and
- * sending those.
- *
- * It used to say it saved "the operations it actually is", which is not what it does and is worth
- * being blunt about, because the difference is the whole problem. It has no idea what the user did.
- * It walks the conversation, asks of each message "is this the same object the last snapshot held",
- * and turns every answer of no into an edit.
- *
- * Reference equality is standing in for "the content changed", and it is not that. updateMessage()
- * replaces a message for plenty of reasons that are not edits: moving to a different swipe, clearing
- * generation data, filling in a hole that was fetched, recording the id a slot turned out to have. So
- * swiping produces edits that re-send text nobody touched, which is the write amplification, and it
- * is inherent to guessing after the fact rather than a flaw in how the guess is made.
- *
- * The operations themselves are the right shape - edit this node, append after this node, add an
- * alternative alongside this node, each naming a row, so a row the client never received cannot be
- * touched. What is wrong is deriving which one happened instead of being told. The client knows at
- * the time: a message was typed, an edit was confirmed, a swipe was chosen. Every caller here has
- * already thrown that away by the time it asks for a save.
- *
- * Untangling that reaches past this function - roughly fifty callers ask for a save with no
- * operation attached, extensions among them, through a context API whose whole contract is "I
- * changed `chat`, please persist it".
- *
- * Returns null when the chat has nothing persisted yet (a brand new chat), because "create this
- * conversation" genuinely is a whole-array operation and there is no node to hang anything off.
- *
- * @param {string} fileName
- * @param {object} metadata
- * @param {object[]} messages the chat slice being saved
- * @returns {Promise<{ integrity?: string } | null>}
- */
+// Saves a tree-backed chat by reconstructing operations from a before/after snapshot comparison, since callers don't tell this function what changed.
+// Returns null for a brand new chat (nothing persisted yet).
 async function _saveTreeChat(fileName, metadata, messages, addressedByName = false) {
     const avatar = getCurrentCharacter()?.avatar;
     if (!avatar) return null;
@@ -10009,12 +8902,7 @@ async function _saveTreeChat(fileName, metadata, messages, addressedByName = fal
     let lastPersisted = null;
     let firstNewIndex = -1;
 
-    // Each operation records its own message as saved the moment its write lands, rather than leaving
-    // all of it to the single _snapshotMessages() the caller runs after the whole save succeeds. One
-    // message failing used to abort the rest before that snapshot ever ran, so every message still
-    // compared as unsaved next time - including the ones whose writes did land - and the save re-sent
-    // the entire chat, growing by one per exchange.
-
+    // Each operation records its own message as saved as it lands, so one failing doesn't leave every other write's message looking unsaved next time.
     for (let i = 0; i < messages.length; i++) {
         let msg = messages[i];
 
@@ -10023,21 +8911,10 @@ async function _saveTreeChat(fileName, metadata, messages, addressedByName = fal
             continue;
         }
 
-        // A provisional id is a greeting the card has and the tree does not. This is the seam where it
-        // stops being that - and the only one, so there is exactly one moment at which the opening's
-        // id, its slot bookkeeping and its snapshot all change, together.
-        //
-        // Two questions cover everything that needs a row: was something written into the opening, and
-        // does anything follow it. Neither of them is "the greeting was shown", which is the whole
-        // point - a card of a thousand greetings swiped through end to end still writes nothing.
+        // A provisional id earns a real row only if something was written into the opening or something follows it - never merely because it was shown.
         let justEnsured = false;
         if (isProvisionalNodeId(msg.node_id)) {
-            // "Was something written into this greeting" is answerable from the message alone, because
-            // the provisional id is derived from the text it stands for: text that still hashes to its
-            // own id is text nobody has changed. That is deliberately not the same question as "is this
-            // object different from the last snapshot" - a message gets replaced for all sorts of
-            // reasons (holes filled, swipe arrays normalised, a slot's bookkeeping learned) and none of
-            // those is a reason to write a row.
+            // The provisional id is derived from the message's own text, so text still hashing to it hasn't changed.
             const at = msg.swipe_id ?? 0;
             const said = msg.swipe_info?.[at]?.name ?? msg.name;
             const written = msg.node_id !== provisionalNodeId(said, msg.mes);
@@ -10051,41 +8928,20 @@ async function _saveTreeChat(fileName, metadata, messages, addressedByName = fal
             }
         }
 
-        // Still card-only: nothing is stored for it, so there is nothing to edit and nothing an
-        // append could attach to. Leaving lastPersisted alone is what says so.
         if (!isStoredNodeId(msg.node_id)) continue;
 
         lastPersisted = msg.node_id;
 
-        // Reference equality against the snapshot is the change detector; messages are frozen, so an
-        // unchanged message is literally the same object.
         const seen = _messageSnapshots.get(msg.node_id);
         if (seen === msg) continue;
 
-        // A different object is not the same thing as different content, and this is where that
-        // distinction was being lost. Plenty replaces a message without changing it - the loader fills
-        // in swipe arrays a user message never has, a slot learns the id it turned out to be - and
-        // every one of those made the message compare as changed. Measured: opening a chat and saving
-        // it, having touched nothing, sent an edit for every message in it, each carrying content
-        // byte-identical to the row it was rewriting.
-        //
-        // Comparing the content itself only ever suppresses a write that provably changes nothing, so
-        // it cannot lose an edit: anything that differs at all still goes. It is not an attempt to
-        // work out what the caller did - that question belongs to the operations above, which are told
-        // rather than left to guess.
+        // A different object isn't necessarily different content (holes filled, arrays normalized, etc) - suppress a write that provably changes nothing.
         if (seen && JSON.stringify(seen) === JSON.stringify(msg)) {
             _markMessageSaved(i, msg.node_id);
             continue;
         }
 
-        // One rule for every slot: no node_id means no row yet, so it is new. Holes are skipped
-        // (never loaded, nothing to say about them) and so are empty slots (overswiping opens a blank
-        // one, and a blank nobody has typed into is not an alternative yet).
-        //
-        // The selected slot used to be exempt here, which was wrong and is why writing a new greeting
-        // over an overswipe edited the PREVIOUS greeting's row instead of making a sibling - the
-        // message still named the old node, so the "new" greeting inherited its children and looked
-        // like an identical tree.
+        // The selected slot counts as new too - skipping it used to make overswiping edit the previous row instead of creating a sibling.
         const hasSlots = Array.isArray(msg.swipes) && Array.isArray(msg.swipe_info);
         const selected = msg.swipe_id ?? 0;
 
@@ -10103,19 +8959,12 @@ async function _saveTreeChat(fileName, metadata, messages, addressedByName = fal
             for (let k = 0; k < msg.swipes.length; k++) {
                 if (typeof msg.swipes[k] !== 'string') continue;
                 if (msg.swipes[k].length === 0) continue;
-                // Any id at all, real or provisional, means this slot is not something to create. A
-                // provisional one is card text the union injected for display (see
-                // _mergeCardGreetingsIntoOpening): deliberately not a row, because a greeting earns
-                // one by being used rather than by being on the card. Reading those as "new" minted an
-                // opening for every greeting on the card, on every save of message 0.
+                // Card text the union injected for display, not a row - skip it, or every card greeting mints an opening on save.
                 if (msg.swipe_info[k]?.node_id) continue;
 
                 const createdId = await chatOpAddAlternative(i, msg.swipes[k]);
                 if (!createdId) continue;
 
-                // Remember the row this slot turned out to be. Without this the slot stays id-less and
-                // gets posted again on every subsequent save - harmless, since adding is idempotent,
-                // but it never stops.
                 learnedIds = learnedIds ?? [...msg.swipe_info];
                 learnedIds[k] = { ...(learnedIds[k] || {}), node_id: createdId };
                 if (k === selected) newSelectedId = createdId;
@@ -10126,27 +8975,16 @@ async function _saveTreeChat(fileName, metadata, messages, addressedByName = fal
         }
 
         if (newSelectedId) {
-            // The slot being shown is itself brand new, so it becomes this message's node rather than
-            // the old one being rewritten underneath it. The slot already learned its id just above,
-            // which is what lets the select name it.
+            // The shown slot is itself brand new, so it becomes this message's node instead of the old one.
             await chatOpSelect(i, selected);
             lastPersisted = newSelectedId;
         } else {
-            // Never send an edit that empties a message. The route refuses one outright
-            // (wouldBlankStoredText: "no legitimate edit empties a message that has text"), so posting
-            // it can only ever come back 409 - and post() throws on that, aborting the rest of the
-            // save. Overswiping a greeting reaches exactly this state: the blank slot empties `mes`
-            // while the message still names the previous greeting's row, so the save tries to write
-            // the blank over it. Mirroring the server's own rule here means no client state can
-            // produce the request, rather than guarding the one shape that was found producing it.
+            // The route 409s on an edit that empties a message that has text; overswiping a greeting reaches exactly this state.
             if (typeof msg.mes === 'string' && msg.mes.length === 0) {
                 continue;
             }
 
-            // The row this opening just earned was created FROM this message, so it already holds
-            // what an edit would send. Posting one anyway asks the server to rewrite a row into the
-            // content it was made from, which collides with its own identity and comes back 409 -
-            // and a 409 aborts the rest of the save.
+            // This row was just created from this message, so it already holds what an edit would send.
             if (justEnsured) {
                 _markMessageSaved(i, msg.node_id);
                 continue;
@@ -10162,25 +9000,7 @@ async function _saveTreeChat(fileName, metadata, messages, addressedByName = fal
         await chatOpAppend(firstNewIndex);
     }
 
-    // Address the chat by where it actually IS, re-read now rather than taken from the name this save
-    // was handed before it ran.
-    //
-    // Metadata is stored on the node the chat is positioned at, so it needs something that resolves to
-    // one. A freshly minted chat name does not: nothing in the tree carries it. A brand new chat on a
-    // character that isn't in the tree yet gets away with it, because its first save goes through the
-    // whole-array route and that labels a node with the name on the way past - but a new chat on a
-    // character ALREADY in the tree is tree-backed from its very first save, never takes that route,
-    // and so its name labels nothing at all. The position, meanwhile, is a real node the entire time.
-    //
-    // Only when the caller didn't name a specific chat: an explicit chatName is a deliberate target
-    // (a rename, a branch) and is not ours to second-guess.
-    // The opening is the fallback because of WHEN a brand new chat first saves: that save runs before
-    // the character has been pointed anywhere, so there is no position to read yet - but the node the
-    // chat starts from is right here, and it is the very node the pointer is about to be set to.
-    // "Names a row", not "isn't provisional". isStoredNodeId() answers the second question, and a
-    // minted chat name passes it - it is a string and it has no card: prefix - which is precisely the
-    // value that resolves to nothing. Asking whether the conversation in hand actually holds a message
-    // by that id answers the first question exactly, with no guessing at the shape of an id.
+    // Metadata is stored on the node the chat is positioned at; `target` falls back to the opening's own node for a chat's first save.
     const position = getCurrentCharacter()?.chat;
     const opening = chat[0]?.node_id;
     const target = addressedByName
@@ -10188,14 +9008,7 @@ async function _saveTreeChat(fileName, metadata, messages, addressedByName = fal
         : (chat.some(m => m.node_id === position) ? position
             : (isStoredNodeId(opening) ? opening : fileName));
 
-    // A metadata write that fails must not take the save down with it.
-    //
-    // This is the last step, and by now every message write has landed and been recorded. Letting a
-    // refusal here throw discarded the caller's snapshot pass, so every message compared as unsaved
-    // next time and the save re-sent the whole conversation - and kept doing it, growing by one
-    // message per exchange, for as long as the underlying cause persisted. The edit amplification was
-    // never a change detector believing content changed; it was bookkeeping thrown away wholesale
-    // because of an unrelated failure at the end.
+    // A metadata write failure must not take the save down with it - every message write has already landed by this point.
     try {
         const meta = await post('/api/chats/metadata', { file_name: target, metadata });
         return { integrity: meta.integrity };
@@ -10231,10 +9044,7 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
     const fileName = chatName ?? getCurrentCharacter()?.chat;
 
     if (getSelectionState().type === 'none' && name2 === neutralCharacterName) {
-        // A temporary chat has no character or group selected at all - checking `fileName` here
-        // instead would key off getCurrentCharacter(), which can still resolve to a character left
-        // selected from before the temporary chat opened, letting this fall through to a real save
-        // under that character's name instead of being skipped.
+        // Checking selection state, not `fileName`: a character left selected from before could fall through to a real save under it.
         return;
     }
 
@@ -10261,9 +9071,6 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
     try {
         const isTreeChat = !!metadata?._tree_stored && !Array.isArray(chatData);
 
-        // A tree-backed chat saves as operations against rows that already exist. The whole-array
-        // path below is only for what genuinely is a whole array: a chat with nothing persisted yet,
-        // a custom snapshot (branch creation), or a chat that isn't tree-stored at all.
         if (isTreeChat) {
             const treeResult = await _saveTreeChat(fileName, metadata, trimmedChat, chatName !== undefined);
             if (treeResult) {
@@ -10272,11 +9079,7 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
                 }
                 _snapshotMessages();
             } else {
-                // Nothing persisted to hang operations off. A chat whose opening message has no
-                // node_id has never touched the tree, and there is nothing to save yet - the greeting
-                // it sits on already exists under the character's anchor, so starting a chat is a
-                // selection rather than a write. It stops being a no-op the moment the opening
-                // message carries the id of the alternative it is on.
+                // An opening with no node_id has never touched the tree - opening this chat is a selection, not a write.
                 console.debug('[saveChat] Tree chat has no persisted opening; nothing to save yet.');
             }
             return;
@@ -10306,13 +9109,6 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
                 chat_metadata.integrity = data.integrity;
             }
 
-            // Write assigned node_ids back into the chat array so subsequent saves
-            // can identify these messages as existing (prevents duplicate inserts).
-            // Uses updateMessage() since messages may be frozen (immutable). The index
-            // from assigned_node_ids maps directly to the chat array position (both are
-            // derived from the same 0-based message array). Using the index directly
-            // instead of chat.indexOf() avoids stale-reference mismatches when
-            // updateMessage() replaced the object between chat.slice() and now.
             if (Array.isArray(data?.assigned_node_ids)) {
                 for (const { index, node_id } of data.assigned_node_ids) {
                     if (index < chat.length) {
@@ -10320,21 +9116,10 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
                     }
                 }
 
-                // Rows came back, so this chat lives in the tree - learn that from the answer rather
-                // than from what was known when the chat was opened.
-                //
-                // A character with no chat history used to be read as not having tree storage at all,
-                // so the chat began on a plain card greeting and was marked as not tree-backed. Its
-                // very first save put it in the tree anyway, and from that moment the chat IS
-                // tree-backed - but nothing said so until the next reload, so for the rest of the
-                // session the client kept treating it as a file: every save handed the whole array
-                // over (the route our frontend is not supposed to use, and where a save can speak for
-                // rows it never received), and the card's greetings were never merged into the opening,
-                // so editing one changed nothing on screen.
+                // Rows came back, so this chat now lives in the tree - a character with no prior history would otherwise stay treated as file-backed.
                 chat_metadata._tree_stored = true;
             }
 
-            // Update content snapshots for next save's change detection
             if (isTreeChat) {
                 _snapshotMessages();
             }
@@ -10359,9 +9144,7 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
 
         if (!forceSaveConfirmed) {
             console.warn('Chat integrity check failed, and user did not confirm the overwrite. Reloading the page.');
-            // Flush the draft synchronously before reloading - this reload happens on a forced/error path,
-            // not through the normal debounced-on-input save, so whatever's sitting unsent in the textarea
-            // right now would otherwise be destroyed with no chance for the debounce timer to have fired.
+            // This reload skips the normal debounced save, so flush the draft synchronously first.
             flushDraftSave();
             window.location.reload();
             return;
@@ -10433,25 +9216,13 @@ async function read_avatar_load(input) {
     }
 }
 
-/**
- * Cache of thumbnail versions known ahead of a request, keyed by `${type}:${file}`. Populated by the list
- * endpoints that already know a file's cached-thumbnail mtime (character manifest, background list, persona
- * list - see fetchCharactersDelta(), backgrounds.js's getBackgrounds(), personas.js's getUserAvatars()) via
- * setThumbnailVersion(), so getThumbnailUrl() below can emit the thumbnail route's `?v=` on the very first
- * request instead of always taking its no-cache redirect detour (src/endpoints/thumbnails.js).
- *
- * Best-effort only: a missing or stale entry just means that one request rides the redirect once, same as
- * before this cache existed - the thumbnail route's version check is self-correcting regardless.
- * @type {Map<string, string>}
- */
+// Thumbnail versions known ahead of a request, so getThumbnailUrl() can emit `?v=` on the first request instead of taking the no-cache redirect detour. Best-effort; self-correcting if stale.
 const thumbnailVersionCache = new Map();
 
 /**
- * Records a known thumbnail version for a type+file pair (see thumbnailVersionCache above). No-op if version
- * is null/undefined/empty.
- * @param {import('../src/endpoints/thumbnails.js').ThumbnailType} type The type of the thumbnail
- * @param {string} file The file name or path the version applies to
- * @param {string|number|null|undefined} version The cached thumbnail's version, if known
+ * @param {import('../src/endpoints/thumbnails.js').ThumbnailType} type
+ * @param {string} file
+ * @param {string|number|null|undefined} version
  */
 export function setThumbnailVersion(type, file, version) {
     if (version === null || version === undefined || version === '') return;
@@ -10491,8 +9262,7 @@ export function buildAvatarList(block, entities, { templateId = 'inline_avatar_t
         if (entity.type === 'character') {
             avatarTemplate.attr('data-avatar', entity.item.avatar);
         }
-        // loading="lazy" - see the matching comment in getCharacterBlock() above; same request-storm risk
-        // applies here (group member/candidate pickers can list the whole library).
+        // loading="lazy": avoids a request storm when this list is the whole library (group member/candidate pickers).
         avatarTemplate.find('img').attr('src', this_avatar).attr('loading', 'lazy').attr('alt', entity.item.name);
         avatarTemplate.attr('title', `[Character] ${entity.item.name}\nFile: ${entity.item.avatar}`);
         if (highlightFavs) {
@@ -10552,12 +9322,8 @@ export async function unshallowCharacter(avatar) {
 }
 
 /**
- * Fetches the current character's chat from the server and renders it.
- * @param {object} [options] Additional options.
- * @param {boolean} [options.isNewChat] True when the caller just assigned a freshly-generated chat
- * filename that has never been saved (e.g. doNewChat(), or replaceCurrentChat()'s "start new chat"
- * fallback). Such a filename is *expected* to 404 - it's not a deleted chat being resurrected, it's
- * a chat that doesn't exist yet - so the "resurrection guard" below must not treat it as one.
+ * @param {object} [options]
+ * @param {boolean} [options.isNewChat] True when the filename has never been saved, so a 404 is expected rather than a deleted-chat resurrection.
  */
 export async function getChat({ isNewChat = false } = {}) {
     try {
@@ -10575,13 +9341,7 @@ export async function getChat({ isNewChat = false } = {}) {
         });
 
         if (response.status === 404 && !isNewChat) {
-            // This character's persisted "current chat" pointer names a file that's gone from disk -
-            // most likely deleted from another tab/session (or from the chat-select modal while this
-            // character was loaded elsewhere) after this session last synced. Falling through to the
-            // normal empty-chat path below would push a fresh first-message save right back out under
-            // that same filename, silently resurrecting the chat the user just deleted. Route through
-            // the same "pick another existing chat, or genuinely start a new one" logic delChat() uses
-            // when it deletes the active chat itself, instead of reviving the old name.
+            // The persisted "current chat" pointer names a file gone from disk; fall back the same way delChat() does.
             console.warn(`Chat file not found for ${getCurrentCharacter()?.chat}, replacing with an existing or new chat`);
             await replaceCurrentChat();
             return;
@@ -10591,8 +9351,7 @@ export async function getChat({ isNewChat = false } = {}) {
             throw new Error('Chat could not be loaded');
         }
 
-        // A brand-new, never-yet-saved chat file legitimately 404s (see the isNewChat check above) -
-        // treat that the same as the "empty/corrupted chat" case below instead of parsing a 404 body.
+        // A brand-new, never-yet-saved chat file legitimately 404s - treat like the "empty/corrupted chat" case below.
         const data = response.ok ? await response.json() : [];
         if (Array.isArray(data) && data.length > 0) {
             /** @type {ChatHeader} */
@@ -10606,8 +9365,6 @@ export async function getChat({ isNewChat = false } = {}) {
                     chat[i] = deepFreeze(chat[i]);
                 }
                 _snapshotMessages();
-                // The card's greetings are not rows until used, so an already-open chat has to be
-                // told about them or an edited greeting would never show up.
                 await _mergeCardGreetingsIntoOpening();
             }
         } else {
@@ -10620,15 +9377,7 @@ export async function getChat({ isNewChat = false } = {}) {
         }
         await getChatResult();
 
-        // printMessages() (inside getChatResult()) just ran ensureSwipes() over every message on the
-        // way past - synthesising swipes/swipe_id/swipe_info for whichever ones arrived without them
-        // (any message with only one alternative, since the loader only sends that shape for forks
-        // wider than one). Each synthesis replaces the object via updateMessage(), so the snapshot
-        // taken before printMessages() ran no longer matches: a message that got nothing but its
-        // missing shape filled in now differs from its own snapshot by exactly those keys, and reads
-        // as edited. Re-snapshotting now, after the fill-in has already happened, is what keeps
-        // merely opening a chat from queueing an edit for every single-alternative message in it on
-        // the next save.
+        // printMessages() -> ensureSwipes() synthesizes missing swipe shape via updateMessage(); re-snapshot so that alone doesn't queue an edit.
         if (chat_metadata?._tree_stored) {
             _snapshotMessages();
         }
@@ -10661,20 +9410,9 @@ async function getChatResult() {
             freshChat = true;
         }
 
-        // A chat with no stored messages arrives with no header, so getChat() leaves chat_metadata
-        // empty and _tree_stored unset. Every save this chat then makes reads as non-tree and takes
-        // the whole-array legacy route, which re-sends rows that already exist - including the
-        // greeting, which already has one. That is what was tripping the identity constraint on an
-        // ordinary chat open, and it happened on every fresh chat, not in some edge case.
-        //
-        // The opening coming back carrying a node_id is what says this chat lives in the tree:
-        // _openingFromTree() returns one whenever the store can be reached, real or provisional.
+        // A node_id on the opening says this chat lives in the tree; without _tree_stored, saves would take the whole-array legacy route.
         if (message?.node_id) {
             chat_metadata._tree_stored = true;
-            // The opening arrived from storage (or from the card, unchanged either way), so it is
-            // already in step with what the server holds. Saying so is what stops the very first save
-            // of a fresh chat from posting an edit that rewrites a row into the content it was just
-            // read from.
             _snapshotMessages();
         }
 
@@ -10701,13 +9439,7 @@ async function getFirstMessage() {
     const regexedGreetings = greetings.map(greeting => getRegexedString(greeting, regex_placement.AI_OUTPUT));
     const swipeId = defaultIndex ?? 0;
 
-    // A tree-backed character's openings already exist as nodes. Starting here means SELECTING one of
-    // them and holding its id, not copying a greeting off the card into a brand new message - the
-    // copy was a file-era necessity (a file couldn't reference a shared node) and it is why the
-    // opening message had no node_id and nothing could be anchored to it.
-    // Raw greetings, not the regexed ones: identity is the message as stored, and stored openings hold
-    // the card's own text. Regex is a display transform, and sending it makes every existing greeting
-    // look new.
+    // Raw greetings, not regexed: identity is the message as stored, and regex is a display transform.
     const fromTree = await _openingFromTree(greetings, swipeId);
     if (fromTree) return fromTree;
 
@@ -10720,9 +9452,7 @@ async function getFirstMessage() {
         extra: {},
     };
 
-    // Swipes mirror the greeting list in stable order, with swipe_id pointing at the default (or the
-    // first greeting when there's no default). Only set when there is more than one to move between;
-    // a lone default with no alternates stays a plain, non-swipeable message.
+    // A lone default with no alternates stays a plain, non-swipeable message.
     const hasSwipeableGreetings = regexedGreetings.length > (defaultIndex !== null ? 1 : 0);
     if (hasSwipeableGreetings) {
         message.swipe_id = swipeId;
@@ -10738,15 +9468,7 @@ async function getFirstMessage() {
     return message;
 }
 
-/**
- * Builds the opening message from the character's existing opening nodes, so it carries a real
- * node_id from the first moment.
- *
- * Returns null when the character isn't tree-backed, leaving the file-era path to handle it.
- *
- * @param {string[]} cardGreetings the card's greetings, already regexed
- * @param {number} preferredIndex which of them the card considers the default
- */
+// Builds the opening from existing opening nodes so it carries a real node_id; returns null when not tree-backed.
 async function _openingFromTree(cardGreetings, preferredIndex) {
     const character = getCurrentCharacter();
     if (!character?.avatar) return null;
@@ -10762,7 +9484,6 @@ async function _openingFromTree(cardGreetings, preferredIndex) {
     };
 
     const sendDate = getMessageTimeStamp();
-    // Same reason as above: the speaker is the character on the card, not whatever name2 currently is.
     const speaker = character.name ?? name2;
     const asMessage = text => ({
         name: speaker,
@@ -10773,23 +9494,12 @@ async function _openingFromTree(cardGreetings, preferredIndex) {
         extra: {},
     });
 
-    // Only used locally below, for the preferred-index fallback match and the nothing-stored-yet
-    // fallback object - the server merges the card's own greetings in at read time itself now (see
-    // chats.js's `_cardGreetingsFromDisk`), so this is no longer sent along with the request.
+    // Used only locally for the preferred-index fallback match; the server merges the card's greetings at read time.
     const contents = (cardGreetings ?? [])
         .filter(text => typeof text === 'string' && text.length > 0)
         .map(asMessage);
 
-    // Only the store being unreachable sends a chat back to the file-era path. It used to also bail on
-    // the character having no chat history and on there being no openings yet, and neither of those is
-    // a fact about storage. That flag went out as `migrated` back then, which is what made it read
-    // like one; it says whether a chat has ever been saved, and a character nobody has chatted with
-    // answers no forever, while the save route puts that very character's first chat in the tree
-    // regardless.
-    //
-    // So the chat opened as a file, and only became tree-backed after a save had already gone out the
-    // wrong way. There is no such in-between: a greeting with no row is exactly what a provisional id
-    // is for, and one earns its row when it is used, same as any other.
+    // Only an unreachable store falls back to the file-era path - not "no chat history yet" or "no openings yet".
     const openings = await post('/api/chats/openings', {});
     if (!openings) return null;
 
@@ -10801,26 +9511,15 @@ async function _openingFromTree(cardGreetings, preferredIndex) {
     }
     if (chosenOffset < 0) chosenOffset = 0;
 
-    // A character with nothing stored still has the greetings on its card, and the union is built from
-    // both, so the only way there is nothing to open on is the card having no greeting at all - which
-    // is the one case the file-era path is still the right answer for.
+    // Nothing to open on only happens when the card itself has no greeting.
     const chosen = openings.alternatives[chosenOffset]
         ?? (preferredText !== undefined ? { node_id: null, mes: preferredText, name: speaker, is_user: false, send_date: sendDate, extra: {} } : null);
     if (!chosen) return null;
 
-    // Showing a greeting is not using it, so nothing is written here. A greeting the tree has no row
-    // for gets a provisional id instead: stable, content-derived, and enough for everything short of
-    // an operation that names a row. ensureOpeningRow() turns it into a real one at the moment
-    // something does.
-    //
-    // Minting here is what this used to do, and it meant simply swiping through a card's greetings
-    // wrote a row per greeting seen - on a card with hundreds, hundreds of rows, for a conversation
-    // that had not started.
+    // Showing a greeting is not using it: a greeting with no row gets a provisional id, minted for real only when needed.
     const chosenNodeId = chosen.node_id ?? provisionalNodeId(chosen.name ?? speaker, chosen.mes);
 
     const message = {
-        // The same speaker the provisional id was derived from. A provisional id is only useful if it
-        // can be recomputed from the message, and the speaker is half of what it is computed from.
         name: chosen.name ?? speaker,
         is_user: !!chosen.is_user,
         is_system: false,
@@ -10831,17 +9530,14 @@ async function _openingFromTree(cardGreetings, preferredIndex) {
     };
 
     if (openings.total > 1) {
-        // Same holed shape a chat load produces. A slot with no node_id is a card-only greeting: its
-        // text is known, it simply has no row, and it gains one if selected.
+        // Same holed shape a chat load produces: a slot with no node_id is a card-only greeting.
         const swipes = new Array(openings.total).fill(null);
         const swipeInfo = new Array(openings.total).fill(null);
         openings.alternatives.forEach((alt, k) => {
             const at = windowStart + k;
             if (at >= openings.total) return;
             swipes[at] = alt.mes;
-            // Every slot carries an id, real or provisional. A card-only slot used to carry none plus
-            // a card_only flag, which the save path had to be taught to skip; a provisional id says
-            // the same thing without a second field to keep in step.
+            // Every slot carries an id, real or provisional, rather than a separate card_only flag to keep in step.
             const nodeId = alt.node_id ?? provisionalNodeId(alt.name ?? speaker, alt.mes);
             swipeInfo[at] = {
                 send_date: alt.send_date, extra: alt.extra ?? {},
@@ -10858,12 +9554,9 @@ async function _openingFromTree(cardGreetings, preferredIndex) {
 }
 
 /**
- * Persists a character's active chat pointer as a targeted metadata-only write, instead of rewriting the
- * whole character card (createOrEditCharacter() -> POST /api/characters/edit, or the merge-attributes
- * route) - same idiom as the favorite-status toggle (#favorite_button click handler): a small, dedicated
- * POST that doesn't touch the card file, so it doesn't defeat reflink sharing on its PNG.
- * @param {string} avatar Character avatar to update the chat pointer for
- * @param {string} chat New active chat file name (no .jsonl extension)
+ * A targeted metadata-only write, instead of rewriting the whole character card - doesn't defeat reflink sharing on its PNG.
+ * @param {string} avatar
+ * @param {string} chat
  * @returns {Promise<void>}
  */
 export async function saveActiveChat(avatar, chat) {
@@ -10886,9 +9579,7 @@ export async function openCharacterChat(file_name) {
     charactersStore.update(getCurrentCharacter().avatar, { chat: file_name });
     chat_metadata = {};
 
-    // saveActiveChat must run even if getChat fails (rendering errors, tree migration issues,
-    // etc.) — otherwise "which chat was open" is lost on reload. The active-chat pointer is
-    // the character's own metadata, independent of whether the chat content loaded cleanly.
+    // Must run even if getChat fails, or "which chat was open" is lost on reload.
     try {
         await getChat();
     } finally {
@@ -11036,10 +9727,6 @@ async function doOnboarding(avatarId) {
         userName = String(userName).replace('\n', ' ');
         setUserName(userName);
         console.log(`Binding persona ${avatarId} to name ${userName}`);
-        // Was previously two hand-written statements (power_user.personas[avatarId] = ...; power_user
-        // .persona_descriptions[avatarId] = {...}) that only set `description`/`position`, leaving
-        // depth/role/lorebook/title/connections undefined instead of the defaults every other persona-creation
-        // path (initPersona()) uses - now goes through the same merged record shape as everywhere else.
         personaStore.create(avatarId, {
             name: userName,
             description: '',
@@ -11081,12 +9768,10 @@ export async function getSettings(initLoaderHandle = null, onStageChange = null)
 
     const data = await response.json();
     if (data.result != 'file not find' && data.settings) {
-        // data.settings is the on-disk settings.json content verbatim - hash it as-received (before parsing) so
-        // this matches what the server will hash on the next save. See knownServerSettingsHash's doc comment.
+        // Hashed as-received (before parsing) so this matches what the server will hash on the next save.
         knownServerSettingsHash = getStringHash(data.settings);
         settings = JSON.parse(data.settings);
-        // Seed per-key hashes for partial-save conflict detection. Recursive (not just one level of
-        // nesting) - a dirty key can be an arbitrarily deep dotted path (e.g. 'power_user.reasoning.name').
+        // Recursive - a dirty key can be an arbitrarily deep dotted path (e.g. 'power_user.reasoning.name').
         seedKeyHashes(serverKeyHashes, settings);
         if (settings.username !== undefined && settings.username !== '') {
             name1 = settings.username;
@@ -11207,10 +9892,7 @@ export async function getSettings(initLoaderHandle = null, onStageChange = null)
     }
     await validateDisabledSamplers();
 
-    // Seed the dirty-check baseline from the state we just loaded so the first saveSettings()
-    // call doesn't waste a round trip re-writing the exact same payload it just received. If any
-    // init code between here and the first save actually mutates a settings variable, the hash
-    // will differ and the save will correctly proceed; this only suppresses the no-op case.
+    // Seeds the dirty-check baseline so the first saveSettings() doesn't re-write the exact payload it just received.
     const bootPayload = JSON.stringify({
         firstRun: firstRun,
         accountStorage: accountStorage.getState(),
@@ -11243,15 +9925,12 @@ export async function getSettings(initLoaderHandle = null, onStageChange = null)
 
 //MARK: saveSettings()
 export async function saveSettings(...keys) {
-    // Callers that need an immediate (non-debounced) scoped save can pass keys directly:
-    // `await saveSettings('extension_settings')` adds the key, cancels any pending debounce
-    // (so it won't re-fire with an empty set afterward), and saves immediately.
+    // Keys given directly trigger an immediate scoped save instead of a debounced one.
     if (keys.length > 0) {
         for (const key of keys) {
             if (typeof key === 'string') pendingSettingsKeys.add(key);
         }
-        // debounce() returns a plain function and tracks its timer in a WeakMap, so it has no .cancel
-        // of its own - calling one threw here every time, before the save it was guarding could run.
+        // debounce()'s returned function has no .cancel of its own; cancelDebounce() finds it via the WeakMap.
         cancelDebounce(_debouncedSaveImpl);
     }
     if (!settingsReady) {
@@ -11275,17 +9954,14 @@ export async function saveSettings(...keys) {
     }
     _saveRetryCounter = 0;
 
-    // Queue behind any save already in flight - see _saveQueue's own doc comment for why.
+    // Queue behind any save already in flight, so overlapping calls can't race on a stale serverKeyHashes snapshot.
     const run = () => performSave();
     const queued = _saveQueue.then(run, run);
     _saveQueue = queued.catch(() => {});
     return queued;
 }
 
-/**
- * The actual body of saveSettings(), pulled out so saveSettings() can queue invocations of this behind
- * _saveQueue instead of letting them run concurrently. Not exported - always reached through saveSettings().
- */
+// The body of saveSettings(), pulled out so it can be queued behind _saveQueue instead of running concurrently.
 async function performSave() {
     // Drain accumulated keys before the async gap - anything added after this point belongs to the next save.
     const dirtyKeys = pendingSettingsKeys.size > 0 ? [...pendingSettingsKeys] : null;
@@ -11330,19 +10006,13 @@ async function performSave() {
                 // Dotted path: extract just the addressed sub-field from the payload.
                 const topLevel = key.split('.')[0];
                 if (topLevel in payload) {
-                    // Only when the addressed field actually has a value. JSON.stringify drops an
-                    // undefined one, so it would silently vanish from `keys` while still appearing in
-                    // expectedHashes below - the client would end up asserting the key is absent on the
-                    // server while claiming not to be writing it, and any real value there is a conflict.
+                    // Skip undefined: JSON.stringify would drop it while it still asserted an absence in expectedHashes.
                     const value = getAtPath(payload, key);
                     if (value !== undefined) {
                         partialPayload[key] = value;
                     }
                 }
             } else if (key in payload && payload[key] !== undefined) {
-                // Top-level key: send the whole value. Call sites that want per-field granularity
-                // pass a dotted path instead (same pattern as /merge-attributes and /save-partial
-                // for quick replies).
                 partialPayload[key] = payload[key];
             }
         }
@@ -11351,12 +10021,7 @@ async function performSave() {
             return;
         }
 
-        // A key with no cached hash means this client never observed the server's value at that path (not
-        // that the value is 0/absent - see seedKeyHashes()'s doc comment) - omit it rather than asserting a
-        // fabricated 0, which the server would (correctly) read as "I know this is absent" and conflict
-        // against any real value it finds there. Omitting a key from expectedHashes just skips the
-        // conflict check for it server-side (see /save-partial's doc comment), same as expectedHashes being
-        // absent entirely.
+        // A key with no cached hash was never observed by this client - omit it rather than assert a fabricated 0.
         const expectedHashes = {};
         for (const key of Object.keys(partialPayload)) {
             if (key in serverKeyHashes) {
@@ -11384,14 +10049,11 @@ async function performSave() {
                 throw new Error(`Failed to save partial settings: ${result.statusText}`);
             }
 
-            // Update per-key hashes for what was just written (and, recursively, anything nested under it -
-            // a parent key's cached hash going stale would leave any child dotted path under it stale too).
             for (const key of Object.keys(partialPayload)) {
                 seedKeyHashes(serverKeyHashes, partialPayload[key], key);
             }
             lastSavedSettingsHash = payloadHash;
-            // The server returns the whole-file hash so knownServerSettingsHash stays in sync
-            // without needing a full copy of the settings content.
+            // Server-returned hash keeps knownServerSettingsHash in sync without a full copy of the settings content.
             const partialSaveResponse = await result.json().catch(() => ({}));
             if (partialSaveResponse.settingsHash != null) {
                 knownServerSettingsHash = partialSaveResponse.settingsHash;
@@ -11430,8 +10092,7 @@ async function performSave() {
             // Update per-key hashes from the full payload (recursively - see seedKeyHashes()).
             seedKeyHashes(serverKeyHashes, payload);
             lastSavedSettingsHash = payloadHash;
-            // knownServerSettingsHash's own doc comment on why this is the server-returned hash, not a local
-            // JSON.stringify(payload) computation.
+            // Server-returned hash, not a local JSON.stringify(payload) computation.
             const saveResponse = await result.json().catch(() => ({}));
             if (saveResponse.settingsHash != null) {
                 knownServerSettingsHash = saveResponse.settingsHash;
@@ -11446,31 +10107,14 @@ async function performSave() {
 
 //MARK: savePartialSettings()
 /**
- * Sends only the given top-level settings keys to be merged into the server's settings.json (read-modify-write)
- * instead of the full ~148KB blob saveSettings() sends every time. New, additive capability -
- * saveSettings()/saveSettingsDebounced() are unchanged and remain the path virtually every call site uses;
- * nothing is required to migrate to this. No existing call site currently does: saveSettings() rebuilds its
- * whole payload from scratch on every call (see its own doc comment) and doesn't track which key(s) it actually
- * touched, so wiring any of the 679 saveSettingsDebounced() call sites to use this would need each one to start
- * tracking that itself - a separate, larger piece of work than this function's existence, and not done here.
- *
- * Conflict check is per-key (via serverKeyHashes), not saveSettings()'s whole-file
- * knownServerSettingsHash: hashes only the keys actually being sent, looked up from serverKeyHashes
- * (seeded at getSettings() time and updated after each successful save).
- * This means two concurrent partial updates to genuinely disjoint keys can both succeed server-side;
- * only a real overlap on the same key(s) gets rejected - deliberately different from (and better-fitting than)
- * full saves' single whole-file hash, which would reject on any concurrent change regardless of overlap.
+ * Sends only the given top-level settings keys to be merged into settings.json, instead of the full blob saveSettings() sends.
+ * Conflict check is per-key (via serverKeyHashes), not saveSettings()'s whole-file hash - two concurrent updates to disjoint keys can both succeed.
  * @param {Record<string, unknown>} partialSettings Top-level settings keys to merge; only these keys change.
  * @returns {Promise<boolean>} True if the update was applied, false if it was rejected due to a conflict.
  */
 export async function savePartialSettings(partialSettings) {
-    // Same reason as saveSettings()'s dotted-key handling: a key whose value is undefined is dropped
-    // by JSON.stringify, so asserting a hash for it claims something about a key this request is not
-    // sending.
     const keys = Object.keys(partialSettings).filter(key => partialSettings[key] !== undefined);
     if (!keys.length) return true;
-    // Same reasoning as the debounced partial-save path above: a key with no cached hash means "never
-    // observed", not "hash is 0" - omit it instead of asserting a fabricated 0.
     const expectedHashes = {};
     for (const key of keys) {
         if (key in serverKeyHashes) {
@@ -11487,9 +10131,7 @@ export async function savePartialSettings(partialSettings) {
 
     if (result.status === 409) {
         const data = await result.json().catch(() => ({}));
-        // Same reasoning as saveSettings()'s 409 handling: don't retry with the same (now-stale) keys, and don't
-        // try to auto-reapply anything on top of a refreshed baseline - both risk re-clobbering the other
-        // session's write in a subtler way. Refetch and let the caller/user redo the change instead.
+        // Refetch and let the caller/user redo the change, rather than risk re-clobbering the other session's write.
         console.warn('Partial settings save rejected, conflicting keys:', data.conflictingKeys);
         toastr.warning(t`Settings were changed in another tab or device. Refreshing - please reapply your change.`, t`Settings save rejected`);
         await getSettings();
@@ -11704,9 +10346,7 @@ export async function messageEdit(editMessageId) {
  * @param {number} [messageId=this_edit_mes_id]
  */
 async function messageEditCancel(messageId = this_edit_mes_id) {
-    // Overswiping opens a blank slot for something to be typed into. Cancelling means nothing was, so
-    // the slot goes away again rather than being left behind as an empty alternative to swipe past.
-    // Only the trailing blank is removed, and only when it has no row - anything stored stays.
+    // Cancelling an overswipe's untyped blank slot removes it rather than leaving an empty alternative behind; anything stored stays.
     const editing = chat[messageId];
     if (_isBlankUnwrittenSwipe(editing) && Array.isArray(editing.swipes) && editing.swipes.length > 1) {
         const at = editing.swipe_id ?? 0;
@@ -11853,9 +10493,7 @@ async function messageEditDone(div) {
     await eventSource.emit(event_types.MESSAGE_UPDATED, this_edit_mes_id);
     const editedMesId = this_edit_mes_id;
     this_edit_mes_id = undefined;
-    // An edit was confirmed on this row - say so directly rather than letting the fallback save infer
-    // it from a snapshot diff. Still falls back to the whole-chat save for a chat that isn't tree-backed
-    // yet (chatOpEdit() has no row to write against there) or if the direct write itself failed.
+    // Says the edit directly rather than letting the fallback save infer it from a snapshot diff.
     let editedViaOp = false;
     if (chat_metadata?._tree_stored) {
         try {
@@ -12030,8 +10668,7 @@ async function displayChats(searchQuery, currentChat, displayName, avatarImg, se
         }
 
         const filteredData = await response.json();
-        // Resolved once and reused for every per-chat clone/append/scroll below instead of re-running the
-        // selectors fresh per loop iteration (same fix, and rationale, as the tags.js selector-in-loop fix).
+        // Resolved once and reused for every clone/append/scroll below, instead of re-running the selectors per iteration.
         const $chatDiv = $('#select_chat_div');
         const $chatTemplate = $('#past_chat_template .select_chat_block_wrapper');
         $chatDiv.empty();
@@ -12039,9 +10676,7 @@ async function displayChats(searchQuery, currentChat, displayName, avatarImg, se
         filteredData.sort((a, b) => sortMoments(timestampToMoment(a.last_mes), timestampToMoment(b.last_mes)));
 
         for (const chat of filteredData) {
-            // Opening one uses the node it sits on. A name only ever resolved to a position by
-            // lookup, and not uniquely, so the id is the thing that actually identifies it. The name
-            // stays for display and for the file-backed path, which has no nodes.
+            // The node_id identifies a chat uniquely; the name is only for display and the file-backed path.
             const isSelected = currentChat === chat.file_name || (!!chat.node_id && currentChat === chat.node_id);
             const template = $chatTemplate.clone();
             template.find('.select_chat_block').attr('file_name', chat.file_name);
@@ -12078,14 +10713,19 @@ async function displayChats(searchQuery, currentChat, displayName, avatarImg, se
     }
 }
 
-// #right-nav-panel and #char-info-panel are both .fillRight - pinning lets one stay open while the other
-// opens alongside it, and with panel translucency enabled two overlapping .fillRight panels would blend into
-// an unreadable mess. Only one is ever visually "front" at a time; the other stays logically open (state,
-// scroll position, DOM all preserved) but is hidden via the .frontFillRight CSS rule in toggle-dependent.css.
+// Only one .fillRight panel is ever visually "front"; the other stays logically open but hidden via CSS, so translucent panels don't blend together.
 function activateFillRightDrawer(contentId) {
     document.querySelectorAll('.fillRight').forEach(el => el.classList.remove('frontFillRight'));
     document.getElementById(contentId)?.classList.add('frontFillRight');
     accountStorage.setItem('FillRightFront', contentId);
+}
+
+// Mirrors activateFillRightDrawer but for all 4 pinnable panels, mobile-only in effect (see mobile-styles.css).
+const MOBILE_OVERLAY_PANEL_IDS = ['right-nav-panel', 'char-info-panel', 'left-nav-panel', 'WorldInfo'];
+function activateMobileOverlayPanel(contentId) {
+    if (!MOBILE_OVERLAY_PANEL_IDS.includes(contentId)) return;
+    MOBILE_OVERLAY_PANEL_IDS.forEach(id => document.getElementById(id)?.classList.remove('frontMobileOverlay'));
+    document.getElementById(contentId)?.classList.add('frontMobileOverlay');
 }
 
 function ensureDrawerOpen(drawerId) {
@@ -12094,9 +10734,7 @@ function ensureDrawerOpen(drawerId) {
     const content = drawer.querySelector('.drawer-content');
     const icon = drawer.querySelector('.drawer-icon');
     if (content && !content.classList.contains('openDrawer')) {
-        // #right-nav-panel and #char-info-panel (both .fillRight) are meant to coexist - opening one
-        // shouldn't close the other, pinned or not, since .frontFillRight/.fillRightIcon already keep only
-        // one of them visually in front. Opening any other (non-fillRight) drawer still closes both, as before.
+        // .fillRight panels are meant to coexist - opening one shouldn't close the other.
         const isFillRight = content.classList.contains('fillRight');
         document.querySelectorAll('.openDrawer:not(.pinnedOpen)').forEach(el => {
             if (isFillRight && el.classList.contains('fillRight')) return;
@@ -12112,15 +10750,13 @@ function ensureDrawerOpen(drawerId) {
     if (content && content.classList.contains('fillRight')) {
         activateFillRightDrawer(content.id);
     }
+    if (content) {
+        activateMobileOverlayPanel(content.id);
+    }
 }
 
 /**
- * Switches which #right-nav-panel menu is visible. Only one is ever shown at once - with panel
- * translucency enabled, two overlapping menus would blend into an unreadable mess - but hiding a menu
- * here does not close it: menus other than the one becoming visible keep whatever logical "open" state
- * right-menu-state.js has for them (and keep their DOM state too, since display:none doesn't destroy
- * elements). Only closeRightMenu() actually closes one, for the rarer case where its underlying data
- * stopped being valid.
+ * Switches which menu is visible; hiding a menu here doesn't close it (only closeRightMenu() does).
  * @param {string} selectedMenuId The menu to show, e.g. 'rm_ch_create_block'.
  */
 export function selectRightMenuWithAnimation(selectedMenuId) {
@@ -12131,10 +10767,7 @@ export function selectRightMenuWithAnimation(selectedMenuId) {
     };
     const normalizedId = selectedMenuId ? selectedMenuId.replace('#', '') : null;
     $('#result_info').toggle(normalizedId === 'rm_ch_create_block');
-    // Find which panel contains the target menu and only hide/show menus within THAT panel.
-    // Now that character-list and character-info live in separate drawers, switching to a menu in
-    // one panel must not touch the other panel's menus (that was hiding #rm_characters_block when
-    // the user opened a character for editing, then leaving it hidden when they came back).
+    // Only hide/show menus within the panel that contains the target menu, not the other panel's.
     const targetMenu = normalizedId ? document.getElementById(normalizedId) : null;
     const targetPanel = targetMenu?.closest('#right-nav-panel, #char-info-panel');
     if (targetPanel) {
@@ -12146,9 +10779,7 @@ export function selectRightMenuWithAnimation(selectedMenuId) {
     } else if (normalizedId === 'rm_characters_block') {
         ensureDrawerOpen('rightNavHolder');
     }
-    // #right-nav-panel only has one real menu (rm_characters_block) - it never needs hiding.
-    // Only #char-info-panel has multiple menus (rm_ch_create_block, rm_group_chats_block) that
-    // need the hide-all-then-show-one dance. For right-nav-panel, just ensure it's visible.
+    // #right-nav-panel only has one real menu - it never needs the hide-all-then-show-one dance.
     if (targetPanel?.id === 'right-nav-panel') {
         const charBlock = document.getElementById('rm_characters_block');
         if (charBlock) {
@@ -12180,10 +10811,7 @@ export function select_rm_info(type, charId, previousCharId = null, displayName 
         toastr.error(t`Invalid process (no 'type')`);
         return;
     }
-    // charId is the avatar file name, needed below to locate/scroll to the character in the list - it's not a
-    // friendly display value (especially now that file names are moving to uuidv7). Callers that know the
-    // character's actual name should pass it separately via displayName; this only falls back to deriving one
-    // from charId for callers that don't.
+    // charId is not a friendly display value (especially with uuidv7 file names); callers with the real name should pass displayName.
     if (type !== 'group_create' && displayName === null) {
         displayName = String(charId).replace('.png', '');
     }
@@ -12352,8 +10980,7 @@ export function select_selected_character(avatar, { switchMenu = true } = {}) {
 
     $('#form_create').attr('actiontype', 'editcharacter');
 
-    // This character's fields were just populated programmatically (.val(), no .trigger()), so none
-    // of that counts as a real edit - start clean. See _dirtyCharacterFields' own doc comment.
+    // Fields were just populated programmatically (.val(), no .trigger()), so none of that counts as a real edit.
     _dirtyCharacterFields.clear();
     $('.form_create_bottom_buttons_block .chat_lorebook_button').show();
 
@@ -12365,19 +10992,12 @@ export function select_selected_character(avatar, { switchMenu = true } = {}) {
     // Update some stuff about the char management dropdown
     $('#character_source').attr('disabled', !getCharacterSource(character) ? '' : null);
 
-    // CHARACTER_EDITOR_OPENED is public extension API surface and documents its payload as a chid
-    // (array index), so keep emitting that even though this function is avatar-driven internally.
+    // CHARACTER_EDITOR_OPENED's public API payload is a chid (array index), so keep emitting that even though this function is avatar-driven internally.
     const editedEntity = charactersStore.get(avatar);
     const chid = editedEntity ? characters.indexOf(editedEntity) : -1;
     eventSource.emit(event_types.CHARACTER_EDITOR_OPENED, chid);
 
-    // This function only populates DOM fields from already-persisted character data and reads/toggles UI
-    // state - it never mutates active_character or anything else the settings payload includes, so there's
-    // nothing here that needs saving. It runs both when switching to a different character (where the
-    // .character_select click handler in RossAscends-mods.js already calls saveSettingsDebounced() after
-    // setActiveCharacter()) and, via the "already selected" branch of selectCharacterByAvatar(), on a plain
-    // re-click of the character that's already open - which used to unconditionally queue a settings save on
-    // every such re-open with nothing new to persist.
+    // Only populates DOM fields from already-persisted data; nothing here needs saving.
 }
 
 /**
@@ -12742,10 +11362,7 @@ export function isMessageSwipeable(messageId, message = undefined) {
         //Only messages below the currently edited message can be swiped, if it's not mid-swipe edit.
         ((messageId > (this_edit_mes_id ?? -1)) && (swipeState != SWIPE_STATE.EDITING)) &&
 
-        //Any message can be swiped, not just the last one: every message on the loaded path carries
-        //its own sibling set now, so navigating between an earlier message's alternatives is just
-        //moving along that message's own fork. Whether an overswipe past the end GENERATES is a
-        //separate question, and that stays last-message-only - see getOverswipeBehavior().
+        //Any message can be swiped now, not just the last - each carries its own sibling set (see getOverswipeBehavior() for the generate-on-overswipe rule).
         (message &&
             //Small system messages cannot be swiped.
             !(message?.extra?.isSmallSys) &&
@@ -12773,15 +11390,7 @@ export function isMessageSwipeable(messageId, message = undefined) {
 export function getOverswipeBehavior(messageId, message = undefined) {
     message ??= chat[messageId];
 
-    // Every branch below is a property of the MESSAGE, not of where it sits. A position check used to
-    // sit in here forcing LOOP for anything but the last message, which overrode all of it: an earlier
-    // message could neither generate a new alternative nor, having only one, navigate to anything. So
-    // most of a conversation had arrows that did nothing.
-    //
-    // It was added out of a worry that generating mid-conversation would disturb what follows. In a
-    // tree it does not - generating makes a new sibling, and the old one keeps its continuation. That
-    // is a fork, which is the point.
-
+    // Every branch below is a property of the message, not of where it sits - generating mid-conversation just forks a new sibling.
     const isGreeting = messageId === 0;
 
     //Do not override explicitly set overswipe_behavior.
@@ -12790,12 +11399,7 @@ export function getOverswipeBehavior(messageId, message = undefined) {
     else if (message?.extra?.swipeable === false) return OVERSWIPE_BEHAVIOR.NONE;
     //Small System messages can't be swiped.
     else if (message?.extra?.isSmallSys) return OVERSWIPE_BEHAVIOR.NONE;
-    //Greetings are card data the user authors, never something the LLM produces, so overswiping one must never
-    //start a generation. It appends an empty greeting slot and opens the editor instead (EDIT_GENERATE does not
-    //generate despite its name - see its branch in swipe()). This deliberately covers tainted chats too: the
-    //pristine-only check this replaces let a greeting that was the only message in a tainted chat fall through
-    //to REGENERATE below and call the LLM. Supersedes the pristine-loop behaviour from
-    //https://github.com/SillyTavern/SillyTavern/pull/4712#issuecomment-3557893373
+    //Greetings are user-authored card data, never LLM output, so overswiping one opens the editor instead of generating.
     else if (isGreeting) return OVERSWIPE_BEHAVIOR.EDIT_GENERATE;
     //Non-user and non-prompt hidden messages will regenerate.
     else if (!message?.is_user && !message?.is_system) return OVERSWIPE_BEHAVIOR.REGENERATE;
@@ -12856,11 +11460,7 @@ export function refreshSwipeButtons(updateCounters = false, fade = true) {
 
             div.classList.toggle('last_swipe', isOverswipeable);
 
-            //If there's only one swipe, the left arrow should not be shown - except where an overswipe is
-            //meaningful on its own. Greetings now always resolve to EDIT_GENERATE (see getOverswipeBehavior),
-            //so a card with a single greeting still needs its chevrons to add a second one. This replaces the
-            //narrower pristine-greeting check that used to keep them visible:
-            //https://github.com/SillyTavern/SillyTavern/pull/4712#issuecomment-3557893373
+            //Shown for a single swipe too when an overswipe is still meaningful (e.g. a single-greeting card can still add a second).
             div.classList.toggle('swipes_visible', hasSwipes || isOverswipeable);
             swipePickerButton.toggle(canOpenSwipePicker);
 
@@ -12979,25 +11579,7 @@ export async function deleteSwipe(swipeId = null, messageId = chat.length - 1) {
     return newSwipeId;
 }
 
-/**
- * Persists chat_metadata alone, without touching a single message - the metadata-only counterpart to
- * saveChat()'s tree path. A metadata change (locking a persona, setting a note) says nothing about
- * what happened to any message, so routing it through saveChatConditional() -> _saveTreeChat() dragged
- * the entire per-message diff along for a write that never touched `chat` at all: opening a chat and
- * locking a persona to it, having typed nothing, posted an edit for every message ensureSwipes() had
- * to fill shape into on the way past.
- *
- * Resolves the same target node _saveTreeChat() would (the character's current position, falling back
- * to the opening) and posts straight to /api/chats/metadata - duplicated rather than shared, because
- * sharing it would mean threading a "skip the messages" flag through the one function whose whole job
- * is reconciling `chat` against the tree.
- *
- * Falls back to the whole-chat save for anything this can't address on its own: a group chat, a chat
- * that isn't tree-backed, nothing persisted yet to hang metadata off of, or the direct write failing -
- * a brand-new chat's first save is genuinely a whole-array operation regardless of what triggered it,
- * and the old behaviour is still the correct one to fall back on rather than silently dropping the
- * metadata change.
- */
+// Persists chat_metadata alone, without dragging the per-message diff a full tree save would do. Falls back to the whole-chat save for anything it can't address directly.
 export async function saveMetadata() {
     const metadata = chat_metadata;
     const avatar = getCurrentCharacter()?.avatar;
@@ -13178,9 +11760,7 @@ async function openCharacterWorldPopup() {
 
     const worldCharacter = charactersStore.get(avatar);
 
-    // Explicit undefined when `avatar` doesn't resolve to a real character (including when it's undefined
-    // itself, e.g. menu_type === 'create' with no character bound yet) - distinct from getCharaFilename()'s
-    // own "no avatar given" fallback to the currently selected character, which isn't what's wanted here.
+    // Explicit undefined when unresolved, distinct from getCharaFilename()'s own "no avatar given" fallback to the currently selected character.
     // TODO: Maybe make this utility function not use the window context?
     const fileName = worldCharacter ? getCharaFilename(avatar) : undefined;
     const charName = (menu_type == 'create' ? create_save.name : worldCharacter?.data?.name) || 'Nameless';
@@ -13244,18 +11824,7 @@ async function openCharacterWorldPopup() {
     await popup.show();
 }
 
-/**
- * Card <-> stable-order-greetings model, the single source of truth for splitting a character's
- * greetings between `first_mes` (the current default, or '' when there is no default) and
- * `alternate_greetings` (everything else, in stable order) and back. The card format itself can
- * only express "which greeting is default" as leading position in the array, which conflates that
- * with "where it sits in the list" - picking a new default would otherwise permanently reorder the
- * list. `data.extensions.${GREETING_DEFAULT_POSITION_KEY}` records where in the stable order the
- * default came from, so re-reading the card can restore it without ever touching the order. Every
- * site that edits greetings (the sidebar pager, the Alt. Greetings popup, character load/create-mode
- * fill, the full character save) goes through cardToGreetingsModel()/greetingsModelToCardFields()
- * rather than doing its own index arithmetic.
- */
+// Records the default greeting's stable-order position separately, so picking a new default doesn't reorder the list.
 const GREETING_DEFAULT_POSITION_KEY = 'greeting_default_position';
 
 /**
@@ -13285,15 +11854,12 @@ function cardToGreetingsModel(card) {
         return { greetings, defaultIndex: recordedPosition };
     }
 
-    // No usable recorded position (missing, out of range, or a card written/edited by something that
-    // doesn't know about it) - fall back to the pre-existing behavior: the default leads the list.
+    // No usable recorded position - fall back to the pre-existing behavior: the default leads the list.
     return { greetings: [firstMes, ...altGreetings], defaultIndex: 0 };
 }
 
 /**
- * Inverse of {@link cardToGreetingsModel}. Callers still run the result's `alternateGreetings`
- * through stripEmptyAlternateGreetings() themselves (with their own context label) before writing,
- * same as every other write path.
+ * Inverse of {@link cardToGreetingsModel}. Callers still run `alternateGreetings` through stripEmptyAlternateGreetings() themselves before writing.
  * @param {GreetingsModel} model
  * @returns {{firstMes: string, alternateGreetings: string[], greetingDefaultPosition: number|null}}
  */
@@ -13308,9 +11874,7 @@ function greetingsModelToCardFields({ greetings, defaultIndex }) {
 }
 
 /**
- * Where a tracked index (the default's position) ends up after removing one element at
- * `removedIndex` from the same array. Removing the default itself clears it (returns null) rather
- * than guessing which neighbor should inherit default status.
+ * Removing the default itself clears it (returns null) rather than guessing which neighbor should inherit default status.
  * @param {number|null} defaultIndex
  * @param {number} removedIndex
  */
@@ -13321,9 +11885,7 @@ function reindexDefaultAfterRemoval(defaultIndex, removedIndex) {
 }
 
 /**
- * Where a tracked index (the default's position) ends up after a pick-and-place move: one element
- * removed from `sourceIndex`, then reinserted at `finalTargetIndex` (already adjusted for the
- * removal, i.e. the exact position passed to the reinserting splice).
+ * `finalTargetIndex` is already adjusted for the removal - the exact position passed to the reinserting splice.
  * @param {number|null} defaultIndex
  * @param {number} sourceIndex
  * @param {number} finalTargetIndex
@@ -13338,13 +11900,7 @@ function reindexDefaultAfterMove(defaultIndex, sourceIndex, finalTargetIndex) {
 }
 
 /**
- * Same hashing convention src/greeting-ops.js's hashGreetingText() uses server-side - `getStringHash()`
- * of the value's JSON. Only ever used to seed the *initial* per-position hash list right after a fresh
- * load from the server (the text just came from disk, so hashing it here is hashing the truth). Every
- * hash after that comes verbatim from a greeting-op response's `hashes` array - never recomputed from
- * whatever the client currently has typed, which would make every precondition trivially match itself
- * and silently defeat the mechanism (see src/greeting-ops.js's doc comment - this trap already got hit
- * once in this codebase).
+ * Only used to seed the initial per-position hash list after a fresh load; every hash after that comes verbatim from a greeting-op response, never recomputed from what the client has typed.
  * @param {string} text
  * @returns {number}
  */
@@ -13353,12 +11909,8 @@ function hashGreetingText(text) {
 }
 
 /**
- * Posts one named greeting-list operation - see src/greeting-ops.js and the six
- * `/api/characters/greetings/*` routes in src/endpoints/characters.js. `opName` is the path segment
- * after `/greetings/` (e.g. `'add'`, `'default/set'`). Resolves to a result object rather than
- * throwing for a refused op (409) or any other non-2xx response; only a network-level failure counts
- * as an exception, and even that is caught and folded into the same shape.
- * @param {string} opName
+ * Posts one named greeting-list operation; resolves to a result object rather than throwing, even for a refused op (409) or network failure.
+ * @param {string} opName The path segment after `/greetings/`, e.g. `'add'`, `'default/set'`.
  * @param {object} body
  * @returns {Promise<{ok: true, hashes: number[], defaultPosition: number|null}|{ok: false, status?: number, reason?: string}>}
  */
@@ -13382,11 +11934,7 @@ async function postGreetingOp(opName, body) {
 }
 
 /**
- * Writes a GreetingsModel onto an in-memory character object's first_mes/alternate_greetings/
- * extensions fields (mirrors src/greeting-list.js's applyGreetingsModelToCard() server-side) after a
- * greeting op the client already knows the resulting text for - text is always client-authored, only
- * positions/hashes are server-derived, so this is safe to call with the client's own array. Also
- * refreshes the digest caches other UI (list re-render diffing) reads off the character object.
+ * Writes a GreetingsModel onto an in-memory character object, and refreshes the digest caches other UI reads off it.
  * @param {object} character
  * @param {import('../src/greeting-list.js').GreetingsModel} model
  */
@@ -13408,11 +11956,7 @@ function applyGreetingsModelToCharacter(character, model) {
 }
 
 /**
- * Lands a successful greeting op's result everywhere it needs to: the in-memory character object (so
- * other UI - chat greeting selection, digest hashes - sees the new text) and the sidebar pager, whose
- * `hashes` is the one place per-position precondition hashes live (the Alt. Greetings popup reads
- * them from there too on its next open). `greetings`/`defaultIndex` are the caller's own already-known
- * post-op model; `hashes` must be the op response's `hashes`, never recomputed locally.
+ * `hashes` must be the op response's `hashes`, never recomputed locally.
  * @param {object} character
  * @param {string[]} greetings
  * @param {number|null} defaultIndex
@@ -13424,13 +11968,7 @@ async function applyGreetingOpSuccess(character, greetings, defaultIndex, hashes
     await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character: character } });
 }
 
-/**
- * In-memory state for the sidebar greeting pager (`< [M]/N >` next to the "First message" field).
- * `greetings` is the stable-order list (see GreetingsModel above), `defaultIndex` mirrors the card's
- * current default, `hashes` is the post-op per-position precondition hash list (see
- * hashGreetingText()'s doc comment - only ever seeded from a fresh load or a server response), and
- * `index` is which slot the pager is currently showing.
- */
+// In-memory state for the sidebar greeting pager; `hashes` is the post-op per-position precondition hash list.
 const greetingPagerState = {
     greetings: [''],
     defaultIndex: 0,
@@ -13439,9 +11977,7 @@ const greetingPagerState = {
 };
 
 /**
- * Replaces the pager's greetings list, default pointer, and precondition hashes (e.g. on character
- * load, create-mode fill, or after a greeting op succeeds) and clamps the current index in case the
- * list shrank.
+ * Replaces the pager's greetings, default pointer, and precondition hashes, and clamps the current index in case the list shrank.
  * @param {string[]} greetings Stable-order greeting list.
  * @param {number|null} defaultIndex
  * @param {number[]} hashes Position-aligned with `greetings`.
@@ -13467,8 +12003,7 @@ function renderGreetingPager() {
 }
 
 /**
- * Steps the pager to a (clamped) index, first committing whatever is currently in the visible
- * field back into the greetings array so it isn't lost.
+ * Commits the visible field into the greetings array before stepping to a (clamped) index.
  * @param {number} newIndex
  */
 function navigateGreetingPager(newIndex) {
@@ -13478,20 +12013,11 @@ function navigateGreetingPager(newIndex) {
     renderGreetingPager();
 }
 
-/**
- * One debounce instance per pager slot (lazily created, kept for the page's lifetime) - a single
- * shared debounce would let switching slots mid-type (type in slot A, page to slot B before A's timer
- * fires, type in B) cancel slot A's still-pending call outright, silently losing that edit instead of
- * ever sending it as its own op. Keyed by position; a position that later shifts under an add/delete/
- * move just leaves a stale, harmless, never-refired entry - nothing keyed to it fires again.
- * @type {Map<number, (position: number, text: string) => void>}
- */
+// One debounce instance per pager slot - a shared debounce would let switching slots mid-type cancel a still-pending call and silently lose that edit.
+/** @type {Map<number, (position: number, text: string) => void>} */
 const greetingPagerEditDebouncers = new Map();
 
 /**
- * Debounced per-position save for the sidebar pager (`< [M]/N >`). Every slot, default included,
- * saves through the same named `edit` operation (src/greeting-ops.js's opEdit()) - there is no more
- * first_mes-specific save path, #firstmessage_textarea is gone.
  * @param {number} position
  * @param {string} text
  */
@@ -13521,11 +12047,7 @@ function saveGreetingPagerEditDebounced(position, text) {
 }
 
 /**
- * Final safety net for the "no empty string ever lands in alternate_greetings" invariant. The
- * primary defense is that a greeting row never becomes a real array entry while it's blank (see the
- * `pending`/`committed` handling in addAlternateGreeting) - this just catches anything that slips
- * through regardless, and says so loudly, because at that point some path put an empty in that
- * shouldn't have been able to.
+ * Final safety net for the "no empty string ever lands in alternate_greetings" invariant.
  * @param {string[]} alternateGreetings
  * @param {string} context Short label identifying which write path this ran in, for the log.
  */
@@ -13540,8 +12062,7 @@ function stripEmptyAlternateGreetings(alternateGreetings, context) {
 
 function openAlternateGreetings() {
     const avatar = $('.open_alternate_greetings').data('avatar');
-    // Every use below is a read/mutation of this same character's own fields, never a positional array
-    // operation, so the resolved entity itself is all that's needed - no index required.
+    // Every use below reads/mutates this character's own fields directly - no index required.
     const greetingsCharacter = charactersStore.get(avatar);
 
     if (menu_type != 'create' && avatar === undefined) {
@@ -13558,24 +12079,14 @@ function openAlternateGreetings() {
         ? cardToGreetingsModel({ first_mes: create_save.first_message ?? '', data: { alternate_greetings: create_save.alternate_greetings, extensions: create_save.extensions } })
         : cardToGreetingsModel(greetingsCharacter);
 
-    // Live working copy for this popup instance, read for display and for the pre-op values row
-    // handlers need (current text, current default). It's only ever mutated after a row handler's own
-    // server op is confirmed (see addAlternateGreeting()) - create mode is the one exception, where
-    // there's no server side yet to confirm against, so its handlers mutate this directly, same as
-    // before. Nothing here accumulates a diff to flush on close any more for real characters; every
-    // mutation is its own named operation (src/greeting-ops.js), fired the moment the user makes it.
+    // Live working copy for this popup instance; only mutated after a row handler's server op is confirmed, except in create mode (no server side to confirm against).
     const model = { greetings: initialModel.greetings.slice(), defaultIndex: initialModel.defaultIndex };
 
     const getArray = () => model.greetings;
 
     const template = $('#alternate_greetings_template .alternate_grettings').clone();
 
-    /**
-     * Create-mode-only: syncs the working model back to create_save's first_message/
-     * alternate_greetings/extensions and rebuilds the pager. Real characters never call this - every
-     * row handler below already lands its own op's result via applyGreetingOpSuccess() the moment it's
-     * confirmed, so there's nothing left to flush at close.
-     */
+    // Create-mode-only: real characters land each op's result via applyGreetingOpSuccess() as it happens, so there's nothing to flush at close.
     function syncCreateModeFromUnified() {
         const fields = greetingsModelToCardFields(model);
         const newAltGreetings = stripEmptyAlternateGreetings(fields.alternateGreetings, 'alt greetings popup (create mode)');
@@ -13616,9 +12127,7 @@ function openAlternateGreetings() {
 
     template.find('.add_alternate_greeting').on('click', function () {
         const array = getArray();
-        // The new row is UI-only until it has text - see the `pending` handling in
-        // addAlternateGreeting(). It doesn't get pushed into the array here, so closing the popup
-        // (or any other write) without typing into it just never sees it, no filtering needed.
+        // The new row is UI-only until it has text - not pushed into the array here (see addAlternateGreeting()'s `pending` handling).
         const index = array.length;
         addAlternateGreeting(template, '', index, getArray, popup, model, index + 1, true);
         updateAlternateGreetingsHintVisibility(template);
@@ -13689,32 +12198,21 @@ function refreshInsertionPoints(template, getArray) {
 }
 
 /**
- * Adds a greeting row to the template.
  * @param {JQuery<HTMLElement>} template
  * @param {string} greeting
- * @param {number} index Position in the stable-order greetings array. For a `pending` row this is
- *   only a prediction of where it'll land once it has text - see below.
+ * @param {number} index Position in the stable-order greetings array; for a `pending` row, only a prediction until it has text.
  * @param {() => any[]} getArray
  * @param {Popup} popup
- * @param {GreetingsModel} model Live working model for this popup instance - `model.defaultIndex` is
- *   read here to decide badge/set-default-vs-demote visibility, and reassigned by the set/demote
- *   handlers below (a pure pointer move - the stable order never changes).
+ * @param {GreetingsModel} model Live working model; `model.defaultIndex` is reassigned by the set/demote handlers below.
  * @param {number} [displayPosition] 1-based slot number to show the user; defaults to index + 1.
- * @param {boolean} [pending] True for a just-added, still-blank row: it exists only in this DOM
- *   block, not yet as a real entry in the array, so closing the popup (or any other write) while
- *   it's still blank simply never sees it - no entry, nothing to filter out. The very first
- *   non-blank keystroke commits it into the array (at whatever the end is *at that moment*, since
- *   another pending row may have committed first); every keystroke after that is a normal update.
+ * @param {boolean} [pending] True for a just-added, still-blank row - not yet a real array entry, so a write while blank never sees it.
  */
 function addAlternateGreeting(template, greeting, index, getArray, popup, model, displayPosition = index + 1, pending = false) {
     const greetingBlock = $('#alternate_greeting_form_template .alternate_greeting').clone();
     let committed = !pending;
     greetingBlock.attr('data-index', index);
 
-    // Per-row debounced `edit` op for keystrokes after the row is committed - one row, one debounce
-    // instance, so typing in a different row doesn't reset this one's pending save (unlike a single
-    // shared debounced function would). Never fires in create mode - create_save is synced at popup
-    // close via syncCreateModeFromUnified(), same as every other create-mode field on this popup.
+    // Per-row debounce, so typing in a different row doesn't reset this one's pending save. Never fires in create mode.
     const debouncedRowEdit = debounce(async (rowIndex, text) => {
         const avatar = $('.open_alternate_greetings').data('avatar');
         const character = avatar ? charactersStore.get(avatar) : null;
@@ -13767,8 +12265,7 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
                 }
                 console.error('Greeting add failed', { avatar, position: addedIndex, status: result.status, reason: result.reason });
                 toastr.error(t`Failed to save the new greeting. It's still shown here - keep typing in it to retry.`, t`Greeting not saved`);
-                // Wasn't actually saved - revert to an uncommitted draft so the next keystroke retries
-                // the add, instead of leaving this row looking saved when it isn't.
+                // Wasn't actually saved - revert to an uncommitted draft so the next keystroke retries.
                 array.splice(addedIndex, 1);
                 committed = false;
                 return;
@@ -13779,9 +12276,7 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
     greetingBlock.find('.editor_maximize').attr('data-for', `alternate_greeting_${index}`);
     greetingBlock.find('.greeting_index').text(displayPosition);
 
-    // Badge and demote-vs-set-as-default are keyed on whether this row IS the current default, not
-    // its position - the default can sit anywhere in the stable order now. When model.defaultIndex is
-    // null (no default at all), every row falls into the set-as-default branch.
+    // Keyed on whether this row IS the current default, not its position - the default can sit anywhere in the stable order.
     if (index === model.defaultIndex) {
         greetingBlock.find('.greeting_default_badge').show();
         greetingBlock.find('.demote_default_greeting').show();
@@ -13946,8 +12441,7 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
         openAlternateGreetings();
     });
 
-    // Demote from default - clears the default entirely (a card can have no default at all); pointer
-    // move only, the stable order never changes.
+    // Clears the default entirely - a card can have no default at all.
     greetingBlock.find('.demote_default_greeting').on('click', async function (event) {
         event.preventDefault();
         event.stopPropagation();
@@ -13990,8 +12484,7 @@ export async function createOrEditCharacter(e) {
     $('#rm_info_avatar').html('');
     const formData = new FormData(/** @type {HTMLFormElement} */($('#form_create').get(0)));
     formData.set('fav', String(fav_ch_checked));
-    // Captured now, before the post-save field-clearing loop below resets create_save.name to '' - this is the
-    // only point where the just-typed character name is still available for the "Character Created" toast.
+    // Captured before the post-save field-clearing loop resets create_save.name to '', for the "Character Created" toast.
     const newCharacterName = String(formData.get('ch_name') || '');
     const isNewChat = e instanceof CustomEvent && e.type === 'newChat';
 
@@ -14020,9 +12513,7 @@ export async function createOrEditCharacter(e) {
                 url += `?crop=${encodeURIComponent(JSON.stringify(crop_data))}`;
             }
 
-            // #firstmessage_textarea used to carry this via its `name="first_mes"` form field - now that
-            // it's gone, create_save.first_message (kept live by the greeting pager/popup in create
-            // mode) is the source instead.
+            // #firstmessage_textarea is gone; create_save.first_message is the source now.
             formData.set('first_mes', create_save.first_message);
 
             formData.delete('alternate_greetings');
@@ -14114,8 +12605,7 @@ export async function createOrEditCharacter(e) {
         try {
             const previousFav = getCurrentCharacter()?.fav;
 
-            // No-op guard: skip the save entirely if no tracked field's own input/change event has
-            // fired since this character was loaded (see _dirtyCharacterFields' own doc comment).
+            // No-op guard: skip the save if no tracked field's input/change event has fired since load.
             const avatarInput = formData.get('avatar');
             const hasNewAvatar = avatarInput instanceof File && avatarInput.size > 0;
             if (!hasNewAvatar && _dirtyCharacterFields.size === 0) {
@@ -14125,18 +12615,7 @@ export async function createOrEditCharacter(e) {
             const editCharacter = getCurrentCharacter();
             const avatarUrl = String(formData.get('avatar_url'));
 
-            // ─── Avatar image upload via edit-avatar ─────────────────────────
-            // Independent of the field save below: edit-avatar re-reads the character
-            // straight off disk and only ever touches the image and crop, so it can't
-            // clobber card fields and needs no conflict detection of its own.
-            //
-            // Sent first, fields second. The field save below still negotiates the
-            // existing merge-attributes 409 conflict popup, which can end with the user
-            // discarding their edits and reloading the page. A new avatar the user
-            // explicitly picked and cropped isn't part of that conflict - it has nothing
-            // to do with "another session changed these fields" - so it shouldn't be at
-            // risk of silently not landing depending on how that unrelated conflict gets
-            // resolved. Uploading it first means it always lands regardless.
+            // Sent first, fields second: an explicitly picked avatar isn't part of the merge-attributes conflict below, so it shouldn't risk not landing depending on how that's resolved.
             if (hasNewAvatar) {
                 let avatarEditUrl = '/api/characters/edit-avatar';
                 if (crop_data != undefined) {
@@ -14160,19 +12639,7 @@ export async function createOrEditCharacter(e) {
                 }
             }
 
-            // ─── Field-granular save via merge-attributes ───────────────────
-            // Only sends fields actually marked dirty in _dirtyCharacterFields - never a value
-            // comparison. A field can only ever be silently unsaveable by not being in FORM_TO_CARD
-            // at all (the actual root cause of character_book never saving: it had no entry there,
-            // so nothing could ever mark it dirty OR include it); it can no longer additionally be
-            // missed by a stale/desynced diff, because there is no diff - "is this dirty" and "is
-            // this in the map" are the same question now (_dirtyCharacterFields only ever holds
-            // FORM_TO_CARD ids - see that Set's own doc comment on the delegated listener that's the
-            // only thing that ever adds to it).
-            //
-            // Conflict detection stays per-field: only the fields actually being sent get a
-            // loaded-value hash, so a concurrent change to a field this save doesn't touch is never
-            // flagged as a conflict.
+            // Only sends fields actually marked dirty; conflict detection stays per-field so an untouched field's concurrent change is never flagged.
             const mergeData = { avatar: avatarUrl };
             const loadedFieldHashes = {};
 
@@ -14191,8 +12658,7 @@ export async function createOrEditCharacter(e) {
                     const n = Number(currentValue);
                     cardValue = !isNaN(n) ? n : 4;
                 } else if (mapping.transform === 'json') {
-                    // '' means "no value" (never set, or explicitly cleared) - unset the card path
-                    // entirely rather than writing an empty string/null over it.
+                    // '' means "no value" - unset the card path entirely rather than write an empty string/null over it.
                     if (!currentValue) {
                         cardValue = UNSET_VALUE;
                     } else {
@@ -14269,8 +12735,6 @@ export async function createOrEditCharacter(e) {
             // ─── Common post-save logic ────────────────────────────────────
             await getOneCharacter(avatarUrl);
 
-            // This save succeeded for every field that was dirty - none of them are dirty relative
-            // to what's now saved, so the set is clear until the next real edit fires an event.
             _dirtyCharacterFields.clear();
 
             if (Boolean(previousFav) !== Boolean(fav_ch_checked)) {
@@ -14355,8 +12819,7 @@ export async function swipe(event, direction, { source, repeated, message = chat
 
     const mesId = Number(forceMesId ?? event?.currentTarget?.closest('.mes')?.getAttribute('mesid') ?? messageIndex ?? chat.length - 1);
 
-    //A click carries its own message id. `message` defaults to the last message, so without this an
-    //arrow on an earlier message would be checked against the wrong one.
+    //`message` defaults to the last message; without this an arrow on an earlier message would be checked against the wrong one.
     if (forceMesId == null && event?.currentTarget?.closest('.mes')?.getAttribute('mesid') != null && chat[mesId]) {
         message = chat[mesId];
         messageIndex = mesId;
@@ -14387,8 +12850,7 @@ export async function swipe(event, direction, { source, repeated, message = chat
     swipeState = SWIPE_STATE.SWIPING;
     let generation;
 
-    // Reassigned after loadFromSwipeId() below - it can redraw the DOM out from under mesId, and
-    // everything from here on needs to keep targeting the live element rather than a detached one.
+    // Reassigned after loadFromSwipeId() below, which can redraw the DOM out from under mesId.
     let thisMesDiv = chatElement.children('.mes').filter(`[mesid="${mesId}"]`);
     let thisMesText = thisMesDiv.find('.mes_block .mes_text');
     const thisMesDivHeight = thisMesDiv[0]?.scrollHeight;
@@ -14485,15 +12947,7 @@ export async function swipe(event, direction, { source, repeated, message = chat
             }
             //Out of bounds swipes should not be saved.
         } else if (source != SWIPE_SOURCE.BACK && !_isBlankUnwrittenSwipe(chat[mesId])) {
-            // A tree-backed chat has already recorded this: switchToAlternativePath() posts the
-            // selection against the row it is moving onto, at the moment the move happens. Asking for
-            // a whole-conversation save on top of that adds nothing it could write - the choice is
-            // already stored - and costs an edit per message, because the comparison it runs sees
-            // objects that swiping replaced and reads them as changed. Measured: six swipes sent four
-            // edits, every one re-sending text nobody had touched.
-            //
-            // A file-backed chat has no such op. Its swipe_id lives in the saved array and nowhere
-            // else, so there the save IS the persistence.
+            // A tree-backed chat already recorded this via switchToAlternativePath(); a file-backed chat has no such op, so there the save IS the persistence.
             if (!chat_metadata?._tree_stored) {
                 saveChatDebounced();
             }
@@ -14510,9 +12964,7 @@ export async function swipe(event, direction, { source, repeated, message = chat
         if (newSwipeId !== originalSwipeId || source == SWIPE_SOURCE.DELETE || source == SWIPE_SOURCE.BACK) {
             //Update the chat.
             await loadFromSwipeId(mesId, newSwipeId);
-            // A tree-backed chat's switchToAlternativePath() (called from loadFromSwipeId() above) may
-            // have just replaced mesId's element via redisplayChat() - reacquire the live one so the
-            // rest of this swipe animates and measures the node actually on screen, not a detached one.
+            // loadFromSwipeId() may have just replaced mesId's element via redisplayChat() - reacquire the live one.
             thisMesDiv = chatElement.children('.mes').filter(`[mesid="${mesId}"]`);
             thisMesText = thisMesDiv.find('.mes_block .mes_text');
             //Transition to the new chat.
@@ -14551,18 +13003,11 @@ export async function swipe(event, direction, { source, repeated, message = chat
      * @param {number} newSwipeId
      */
     async function loadFromSwipeId(mesId, newSwipeId) {
-        // Leaving a blank slot means the truncation it caused is over, so what followed comes back.
-        // Checked before the switch, since the slot stops being current afterwards.
-        //
-        // Reachable via confirming an EMPTY edit: applyMessageEdit has no empty guard, so the slot
-        // stays blank while messageEditDone clears this_edit_mes_id and re-enables the buttons. That
-        // leaves a blank selected, a truncated view, and the message swipeable again. Cancelling
-        // takes the other exit and restores from there instead.
+        // Leaving a blank slot means the truncation it caused is over, so what followed comes back. Checked before the switch, since the slot stops being current afterwards.
         const leavingBlank = _isBlankSlot(chat[mesId], chat[mesId]?.swipe_id ?? 0)
             && newSwipeId !== (chat[mesId]?.swipe_id ?? 0);
 
-        // A wide fork point arrives with most alternatives as holes; fetch this one before switching
-        // to it, so the swipe never lands on empty.
+        // A wide fork point arrives with most alternatives as holes; fetch this one first so the swipe never lands on empty.
         await hydrateSwipes(mesId, { index: newSwipeId });
 
         //Update the swipe_id and clear stale generation data.
@@ -14578,13 +13023,10 @@ export async function swipe(event, direction, { source, repeated, message = chat
             return true;
         }
 
-        //Moving to a different alternative means moving onto its path: adopt its node, drop what
-        //belonged to the old one, and load what actually follows it. This runs after the sync so the
-        //message already holds the new text by the time the chat is redrawn.
+        //Moving to a different alternative means adopting its node and loading what follows it.
         const switched = await switchToAlternativePath(mesId, newSwipeId);
 
-        // Swiping back onto the slot we were already on does not change node, so the switch above is
-        // a no-op and cannot restore anything. Do it explicitly.
+        // Swiping back onto the same slot doesn't change node, so the switch above is a no-op - restore explicitly.
         if (leavingBlank && !switched) {
             await _restoreContinuation(mesId);
         }
@@ -14665,36 +13107,17 @@ export async function swipe(event, direction, { source, repeated, message = chat
     }
 
     /**
-     * @returns {number|null} The scrollTop that pins mesId's live element's bottom to the chat's
-     * visible bottom, or null if mesId has no live on-screen element to measure against.
+     * @returns {number|null} The scrollTop that pins mesId's live element's bottom to the chat's visible bottom, or null if it has no live on-screen element.
      */
     function getMessageBottomHeight() {
-        // Resolved fresh against mesId on every call, never against a reference a caller might be
-        // holding onto: a tree-backed chat's redisplayChat() (via loadFromSwipeId()'s
-        // switchToAlternativePath(), or endSwipe()'s revert path) can replace mesId's element with a
-        // new one at any point while a swipe's animation is still in flight, including between this
-        // function's own progress and complete calls. A detached element reports an all-zero
-        // getBoundingClientRect(), which would otherwise silently compute a scrollTop nowhere near
-        // correct - so there is nothing here a caller could pass that would be safe to trust across
-        // that gap. Give up cleanly (no scroll adjustment) when mesId is not currently on screen at
-        // all, rather than measure a box that was never rendered.
+        // Resolved fresh against mesId every call, never a held reference - the element can be replaced mid-swipe by redisplayChat().
         const liveMesDiv = chatElement.children('.mes').filter(`[mesid="${mesId}"]`);
         if (!liveMesDiv[0]?.isConnected) {
             return null;
         }
-        // thisMesRect.top/bottom are viewport-relative, so they can only be combined with
-        // chatElement.scrollTop() (content-relative) after anchoring to chatElement's own
-        // viewport position. Mixing them directly used to add scrollTop() to a viewport
-        // coordinate instead of chatElement's own rect, which threw the target off by
-        // chatElement's offset from the top of the viewport - the more that offset varied
-        // (layout shifts, mobile keyboards, etc.), the more arbitrary the resulting jump,
-        // even when starting pinned to the bottom with nothing to restore.
+        // Viewport-relative rects must anchor to chatElement's own rect before combining with its content-relative scrollTop().
         const containerRect = chatElement[0].getBoundingClientRect();
         const thisMesRect = liveMesDiv[0].getBoundingClientRect();
-        // How far the message's bottom edge currently sits past the bottom of the visible
-        // chat area. Adding this delta to the current scroll position pins the message's
-        // bottom to the container's bottom, regardless of where the container itself sits
-        // on the page.
         const overflow = thisMesRect.bottom - containerRect.bottom;
         return chatElement.scrollTop() + overflow;
     }
@@ -14713,9 +13136,7 @@ export async function swipe(event, direction, { source, repeated, message = chat
             if (is_animation_scroll && target !== null) chatElement.scrollTop(target);
         };
 
-        // thisMesDiv only drives the height tween below - if mesId's element gets replaced mid-swipe,
-        // this animation simply keeps running on the orphaned node, with no visual effect either way.
-        // The scroll pin is a separate, always-live concern: see getMessageBottomHeight().
+        // thisMesDiv only drives the height tween; the scroll pin is a separate, always-live concern (getMessageBottomHeight()).
         //Expand new message.
         thisMesDiv.animate({ height: new_height + 'px' }, {
             duration: 0, //used to be 100 //Disabled on Cohee's request. https://github.com/SillyTavern/SillyTavern/pull/4610/files#r2408731744
@@ -14755,13 +13176,7 @@ export async function swipe(event, direction, { source, repeated, message = chat
             //console.log('showing previously generated swipe candidate, or "..."');
             //console.log('onclick right swipe calling addOneMessage');
 
-            // Scrolling here raced with expandNewMessage()'s own scroll pin below: both read/write
-            // chatElement's scrollTop from independent rAF callbacks for the same swipe, and whichever
-            // ran last won - a visible double-jump, and (since this fired for any swipe of the last
-            // message, not only one where the view was already at the bottom) a forced jump to the
-            // bottom even when the user had deliberately scrolled away first. expandNewMessage() is the
-            // single source of truth for scroll position during a swipe: it only adjusts when the view
-            // was already pinned to the bottom, and it tracks the swiped message's actual growing height.
+            // Scrolling here raced with expandNewMessage()'s own scroll pin, causing a visible double-jump; expandNewMessage() is now the single source of truth for scroll position during a swipe.
             //The swipe buttons will be refreshed in endSwipe(), refreshing them now will cause flickering.
             addOneMessage(chat[mesId], { type: 'swipe', forceId: mesId, scroll: false, showSwipes: false });
 
@@ -14877,23 +13292,8 @@ export async function swipe(event, direction, { source, repeated, message = chat
                 await endSwipe();
                 return;
             } else if (overswipe == OVERSWIPE_BEHAVIOR.REGENERATE) {
-                // Asking for another response to THIS message means the conversation now ends here.
-                // What followed was the previous alternative's continuation, not this one's - the new
-                // one has none yet - so it stops being shown, exactly as the edit branch below does.
-                // Nothing is deleted: those messages keep their rows under the alternative they belong
-                // to, and swiping back to it brings them straight back.
-                //
-                // It is also what makes the generation land on the right message. Every part of the
-                // generate path answers "which message is this for" with chat.length - 1: the prompt
-                // drops the last entry, the itemizer records it, the streaming write targets it, and
-                // saveReply appends the new alternative to it. Aiming meant either teaching all of
-                // them to handle a target that is not the last message, or making the last message BE
-                // the target. Truncating first does the second, so there is one truth about where the
-                // conversation ends instead of five places agreeing to disagree with it.
-                // Redrawn from the message AFTER this one, deliberately. Redrawing from this one
-                // rebuilds its element, and the swipe already holds a reference to the old one - the
-                // "..." placeholder, the timer reset and the media all go through it, so they would
-                // land on a node no longer in the document and silently do nothing.
+                // Truncates rather than deletes: what followed belonged to the previous alternative and comes back on swiping back to it.
+                // Also makes the generation target the right message - every part of the generate path answers "which message is this for" with chat.length - 1.
                 if (chat.length > mesId + 1) {
                     chat.splice(mesId + 1);
                     await redisplayChat({ startIndex: mesId + 1 });
@@ -14919,10 +13319,7 @@ export async function swipe(event, direction, { source, repeated, message = chat
                 updateMessage(mesId, { swipes: newSwipes, swipe_info: newSwipeInfo });
                 await standardSwipe(newSwipeId);
 
-                // Truncate the view to this message. You are now sitting at this point about to say
-                // something else, so what currently follows is not what follows any more. Nothing is
-                // deleted - there is no DELETE anywhere in the tree - and typing here appends under
-                // this node, which forks. Leaving the blank slot restores the old continuation.
+                // Truncates the view, not the tree - typing here appends under this node, forking; leaving the blank slot restores the old continuation.
                 if (chat.length > mesId + 1) {
                     chat.splice(mesId + 1);
                     await redisplayChat({ startIndex: mesId });
@@ -14970,14 +13367,7 @@ export async function swipe_right(event = null, { source, repeated, message } = 
 }
 
 /**
- * Imports supported files dropped into the app window.
- *
- * Each file is imported, applied to charactersStore, and (per `power_user.tag_import_setting`) has its tags
- * imported, all before moving on to the next file - see importCharacter()'s and applyImportedCharacter()'s own
- * comments for why this no longer needs a second full-library-refetch pass afterward the way it used to.
- * ASK-mode's popup (tags.js's showTagImportPopup(), reached through importTags() below) still runs once per
- * character, still sequentially - that part is unchanged, it just now happens inline in this same loop instead
- * of in a separate one.
+ * Imports supported files dropped into the app window. Each file is imported, applied to charactersStore, and (per `power_user.tag_import_setting`) has its tags imported before moving to the next file.
  * @param {File[]} files Array of files to process
  * @param {Map<File, string>} [data] Extra data to pass to the import function
  * @returns {Promise<void>}
@@ -15010,14 +13400,7 @@ export async function processDroppedFiles(files, data = new Map()) {
         return;
     }
 
-    // Explicit batch-import mode (character-metadata-db.js's begin/endBatchImport, wired here for the first
-    // time - see this repo's design doc §3.3 item 7) buffers metadata-store writes and suspends its directory
-    // watcher, built specifically for bringing in a large corpus without paying one SQLite transaction and one
-    // watcher event per file. Gated on more than one file, not every drop: a single-file drop already gets a
-    // small, cheap, unbuffered write (its own tiny transaction, one watcher event) - wrapping that in batch mode
-    // would only add two extra round trips (begin/end) plus force an end-of-batch reconcile pass, for no
-    // benefit, since the entire point of batch mode (avoiding N transactions/watcher events) only pays off once
-    // N is actually large. A multi-file drop is unambiguously the case the mechanism exists for.
+    // Batch mode buffers metadata-store writes and suspends the directory watcher - gated on more than one file, since a single-file drop's own unbuffered write is already cheap.
     const useBatchImportMode = importable.length > 1;
     if (useBatchImportMode) {
         await beginMetadataBatchImport();
@@ -15045,19 +13428,14 @@ export async function processDroppedFiles(files, data = new Map()) {
 
             let tagsAdded = false;
             if (result.serverHandledTags) {
-                // ALL/ONLY_EXISTING: the server already resolved and assigned this card's tags atomically as
-                // part of the import request itself (characters.js's `/import` route) - no separate
-                // `/api/tags/assign` round trip needed here, that was the actual bug. `result.character.tag_ids`
-                // already reflects it (db-authoritative stamp, same response). Only local bookkeeping left is
-                // merging in any tag definitions this client had never seen before this request.
+                // ALL/ONLY_EXISTING: the server already resolved and assigned tags atomically as part of the import - no separate assign round trip needed.
                 mergeServerTagDefinitions(result.tagDefinitions);
                 tagsAdded = Array.isArray(result.character?.tag_ids) && result.character.tag_ids.length > 0;
             } else if (power_user.tag_import_setting !== tag_import_setting.NONE) {
                 tagsAdded = await importTags(result.character, { suppressSuccessToast: true });
             }
 
-            // One toast per character for the whole create/replace + tag-import outcome, instead of a separate
-            // "Character Created"/"Importing Tags" popup for each - see this function's own doc comment.
+            // One toast per character for the whole create/replace + tag-import outcome, instead of a separate popup for each.
             const charName = result.character?.name || String(result.avatarFileName).replace('.png', '');
             const toastMessage = result.replaced
                 ? (tagsAdded ? t`Replaced character '${charName}' (tags imported)` : t`Replaced character '${charName}'`)
@@ -15065,9 +13443,7 @@ export async function processDroppedFiles(files, data = new Map()) {
             toastr.success(toastMessage);
         }
     } finally {
-        // Always ends batch mode, even if an import threw mid-loop - an un-ended batch would leave every
-        // subsequent write for this user silently buffered (and the watcher silently suspended) well past this
-        // request, which is worse than any single failed import.
+        // Always ends batch mode, even on a mid-loop throw - an un-ended batch leaves writes silently buffered well past this request.
         if (useBatchImportMode) {
             await endMetadataBatchImport();
         }
@@ -15083,13 +13459,7 @@ export async function processDroppedFiles(files, data = new Map()) {
     }
 }
 
-/**
- * Starts the server's metadata-store batch-import mode (see processDroppedFiles()) for the duration of a bulk
- * drop. Never throws - a failure here just means writes for this batch go through the normal unbuffered path
- * instead (still correct, only slower), matching the metadata store's own "never let this block the actual
- * character save" convention elsewhere.
- * @returns {Promise<void>}
- */
+// Never throws - a failure here just means writes for this batch go through the normal unbuffered path instead.
 async function beginMetadataBatchImport() {
     try {
         const result = await fetch('/api/characters/metadata/batch-import/begin', {
@@ -15104,13 +13474,7 @@ async function beginMetadataBatchImport() {
     }
 }
 
-/**
- * Ends the server's metadata-store batch-import mode (see beginMetadataBatchImport()). Never throws, for the
- * same reason as beginMetadataBatchImport() - but importantly, this is still always called (from
- * processDroppedFiles()'s `finally`) even after a begin failure, since the server itself treats begin/end as
- * idempotent no-ops when batch mode was never actually entered.
- * @returns {Promise<void>}
- */
+// Always called even after a begin failure - the server treats begin/end as idempotent no-ops when batch mode was never entered.
 async function endMetadataBatchImport() {
     try {
         const result = await fetch('/api/characters/metadata/batch-import/end', {
@@ -15125,21 +13489,7 @@ async function endMetadataBatchImport() {
     }
 }
 
-/**
- * Inserts (brand-new avatar) or updates (a preserved-name replace) a just-imported character straight into
- * charactersStore, using the `character` payload `/api/characters/import` now returns directly - the same shape
- * `/batch`/`/all`/`/get` already produce (server-side processCharacter()), so this is exactly as correct as a
- * refetch would have been, without the round trip.
- *
- * Inserting here (rather than deferring to some later printCharacters()/getCharacters() call) matters beyond
- * just avoiding the refetch: tags.js's getTagKeyForEntity() - what addTagsToEntity()/importTags() below actually
- * assigns tags through - only seeds a fresh tag_map entry for an avatar it can resolve via charactersStore (or
- * one already present in tag_map). A character tag-imported before it's in charactersStore would silently fail
- * to record any tag assignment at all. So this must run before importTags() is called for the same character -
- * see processDroppedFiles()'s loop ordering.
- * @param {object} [character] Shape from server processCharacter() - undefined if the import didn't return one
- * @returns {void}
- */
+// Must run before importTags() for the same character - getTagKeyForEntity() can't seed a tag_map entry for an avatar not yet in charactersStore.
 function applyImportedCharacter(character) {
     if (!character?.avatar) {
         return;
@@ -15164,14 +13514,10 @@ function selectImportedChar(charId) {
 }
 
 /**
- * Imports a character from a file.
  * @param {File} file File to import
  * @param {object} [options] - Options
  * @param {string} [options.preserveFileName] Whether to preserve original file name
- * @returns {Promise<{ avatarFileName: string, replaced: boolean, character: object } | { duplicate: true } | undefined>}
- * `undefined` for an unsupported extension or a hard failure (already toasted). `{ duplicate: true }` when the
- * server recognized the upload's exact bytes as already present in the library (see characters.js's `/import` -
- * exact byte-identical dedup only, no near-duplicate matching) and skipped importing it.
+ * @returns {Promise<{ avatarFileName: string, replaced: boolean, character: object } | { duplicate: true } | undefined>} undefined for an unsupported extension or a hard failure (already toasted); `{ duplicate: true }` for exact byte-identical dedup.
  */
 async function importCharacter(file, { preserveFileName = '' } = {}) {
     if (is_group_generating || is_send_press) {
@@ -15194,13 +13540,7 @@ async function importCharacter(file, { preserveFileName = '' } = {}) {
     formData.append('user_name', name1);
     if (preserveFileName) formData.append('preserved_name', preserveFileName);
 
-    // ALL/ONLY_EXISTING tag-import modes have no interactive decision to make (unlike ASK, which needs the
-    // review popup - showTagImportPopup(), tags.js), so there's no reason to import the card, THEN separately
-    // round-trip every one of its tags back to the server via `/api/tags/assign` the way processDroppedFiles()'s
-    // own importTags() call still has to for ASK/NONE. Telling the server the mode up front lets it seed those
-    // two modes atomically, in the same request that creates the row - see characters.js's `/import` route and
-    // seedCardTagsForSingleCharacter()'s own doc comment for the "why" (this was the actual root cause behind
-    // tonight's recurring "tags missing after import" reports for exactly these two modes).
+    // ALL/ONLY_EXISTING have no interactive decision to make (unlike ASK), so tell the server the mode up front to seed tags atomically in the same request.
     const effectiveTagSetting = Object.values(tag_import_setting).find(setting => setting === power_user.tag_import_setting) ?? tag_import_setting.ASK;
     if (effectiveTagSetting === tag_import_setting.ALL) {
         formData.append('tagImportMode', 'all');
@@ -15240,15 +13580,7 @@ async function importCharacter(file, { preserveFileName = '' } = {}) {
 
             $('#character_search_bar').val('').trigger('input');
 
-            // No toast here - processDroppedFiles() (this function's only caller) folds this result together
-            // with the tag-import outcome into a single combined notification per character.
-            //
-            // serverHandledTags mirrors whether `tagImportMode` was actually sent above (ALL/ONLY_EXISTING) - lets
-            // processDroppedFiles() skip its own client-driven importTags() call for those two modes, since the
-            // server already resolved and assigned the card's tags atomically as part of this same request.
-            // tagDefinitions carries the (existing-or-newly-minted) tag definitions the server resolved this
-            // card's tags to - the client's local tag-definitions store has no other way to learn about a
-            // brand-new-this-request tag id (see characters.js's `/import` route doc comment on why).
+            // No toast here - processDroppedFiles() folds this into one combined notification per character.
             return {
                 avatarFileName, replaced: exists, character: data.character,
                 serverHandledTags: effectiveTagSetting === tag_import_setting.ALL || effectiveTagSetting === tag_import_setting.ONLY_EXISTING,
@@ -15310,22 +13642,8 @@ export async function doNewChat({ deleteCurrentChat = false } = {}) {
         charactersStore.update(getCurrentCharacter().avatar, { chat: newChatName });
         $('#selected_chat_pole').val(newChatName);
         await getChat({ isNewChat: true });
-        // getChat() can refetch this character from the server (unshallowCharacter() -> getOneCharacter(), for
-        // a shallow-loaded entity) and Object.assign the response onto the in-memory entity - since the chat
-        // rename above hasn't been persisted server-side yet at this point, that refetch silently clobbers it
-        // back to the still-old server value (and select_selected_character(), at the tail of getChat(), then
-        // re-syncs #selected_chat_pole from that clobbered entity too). Reapplying both here, right before the
-        // save, is what actually makes createOrEditCharacter() below persist the new chat name instead of
-        // silently re-saving the old one - without this, "start new chat" looks like it worked (a fresh empty
-        // chat renders) but no new chat file is ever created.
-        // Point at the opening node itself. Nothing was created here - the greeting already exists as a
-        // node, and starting here is moving to one with nothing after it yet. The name above only
-        // exists to make the load above find nothing; keeping it as the pointer left it naming
-        // something that does not exist, so metadata saves (which resolve node-then-name) failed
-        // outright and the position could not be resolved back to anywhere.
-        // Only a real row can be a position. An opening still sitting on a card-only greeting has no
-        // row to point at, so the chat keeps its name as the pointer until something gives it one -
-        // storing the provisional id would leave the character pointing at nothing resolvable.
+        // getChat() can refetch and clobber the chat rename above back to the still-old server value; reapply it before the save below.
+        // Points at the opening node itself when it's a real row; a card-only greeting has no row to point at, so the name stays the pointer.
         const openingNodeId = chat[0]?.node_id;
         const pointer = isStoredNodeId(openingNodeId) ? openingNodeId : newChatName;
 
@@ -15350,10 +13668,7 @@ export async function renameGroupOrCharacterChat({ characterAvatar, groupId, old
     const body = {
         is_group: !!groupId,
         avatar_url: characterAvatar,
-        // A node id is not a file, so it does not get a file extension glued on. It happened to
-        // survive because the route strips .jsonl again, but it was only ever describing storage that
-        // does not exist for this value. The JSONL path uses original_file as a real filename, so a
-        // name-addressed rename still sends one.
+        // A node id isn't a file, so no .jsonl extension gets glued on.
         original_file: byNode ? oldFileName : `${oldFileName}.jsonl`,
         renamed_file: `${newFileName.trim()}.jsonl`,
     };
@@ -15397,14 +13712,11 @@ export async function renameGroupOrCharacterChat({ characterAvatar, groupId, old
 
         if (groupId) {
             await renameGroupChat(groupId, oldFileName, newFileName);
-        // When the target is a node, the pointer already names that node and renaming its bookmark
-        // does not move it. Only a name-addressed pointer has to follow the new name.
+        // Only a name-addressed pointer has to follow the rename - a node-addressed one already names that node.
         } else if (!byNode && characterAvatar !== undefined && characterAvatar === this_avatar && charactersStore.get(characterAvatar)?.chat === oldFileName) {
             charactersStore.update(characterAvatar, { chat: newFileName });
             $('#selected_chat_pole').val(charactersStore.get(characterAvatar).chat);
-            // Update the chat pointer through merge-attributes (which routes it to
-            // setCharacterActiveChat) instead of createOrEditCharacter(), which would
-            // do a full-card save and potentially trigger shouldRegenerateMessage.
+            // merge-attributes instead of createOrEditCharacter(), which would do a full-card save.
             await fetch('/api/characters/merge-attributes', {
                 method: 'POST',
                 headers: getRequestHeaders(),
@@ -15460,8 +13772,7 @@ export async function closeCurrentChat() {
         chat_metadata = {};
         selected_button = 'characters';
         $('#rm_button_selected_ch').children('h2').text('');
-        // The character/chat this panel was showing no longer applies once the chat is closed, so this
-        // is a real close (not just switching the visible menu away) - see right-menu-state.js.
+        // A real close, not just switching the visible menu away - the panel's character/chat no longer applies.
         closeRightMenu('rm_ch_create_block');
         select_rm_characters();
         await eventSource.emit(event_types.CHAT_CHANGED, getCurrentChatId());
@@ -15596,18 +13907,14 @@ export async function deleteCharacter(characterKey, { deleteChats = true } = {})
  * character ID, resetting characters array and chat metadata, deselecting character's tab
  * panel, removing character name from navigation tabs, clearing chat, fetching updated list of characters.
  * It also ensures to save the settings after all the operations.
- * @param {{avatar: string, entity: object}[]} [removedCharacters] - the characters that were just deleted
- * (avatar + the entity object as it existed before removal), so charactersStore can report exactly what
- * happened instead of a generic reset. Empty/omitted when nothing was actually deleted (deleteCharacter's own
- * "not found, skipping" case can reach here with zero successful deletions).
+ * @param {{avatar: string, entity: object}[]} [removedCharacters] The just-deleted characters, so charactersStore can report exactly what happened instead of a generic reset.
  */
 async function removeCharacterFromUI(removedCharacters = []) {
     preserveNeutralChat();
     await clearChat();
     $('#character_cross').trigger('click');
     resetChatState();
-    // The character(s) the create/edit panel may have been showing no longer exist, so this is a real
-    // close (not just switching the visible menu away) - see right-menu-state.js.
+    // A real close, not just switching the visible menu away - the panel's character no longer exists.
     closeRightMenu('rm_ch_create_block');
     $(document.getElementById('rm_button_selected_ch')).children('h2').text('');
     restoreNeutralChat();
@@ -15616,8 +13923,6 @@ async function removeCharacterFromUI(removedCharacters = []) {
         charactersStore.reportRemoved(avatar, entity);
     }
     await printMessages();
-    // No save: nothing in this function or its call chain writes active_character/active_group - only
-    // setActiveCharacter()/setActiveGroup() do, and neither is reached from here.
     await eventSource.emit(event_types.CHAT_CHANGED, getCurrentChatId());
 }
 
@@ -15665,8 +13970,7 @@ export async function doNavbarIconClick() {
     const targetDrawerID = $(this).parent().find('.drawer-content').attr('id');
 
     if (!drawerWasOpenAlready) {
-        // See ensureDrawerOpen's comment: the two .fillRight drawers coexist, so opening one of them must
-        // not sweep-close the other (pinned or not) here either.
+        // .fillRight drawers coexist, so opening one must not sweep-close the other here either.
         const isFillRight = drawer.hasClass('fillRight');
         const $openDrawers = $('.openDrawer:not(.pinnedOpen)').not(isFillRight ? '.fillRight' : []);
         const $openIcons = $('.openIcon:not(.drawerPinnedOpen)').not(isFillRight ? '.fillRightIcon' : []);
@@ -15694,6 +13998,7 @@ export async function doNavbarIconClick() {
         if (drawer.hasClass('fillRight')) {
             activateFillRightDrawer(targetDrawerID);
         }
+        activateMobileOverlayPanel(targetDrawerID);
 
         // Set the height of "autoSetHeight" textareas within the drawer to their scroll height
         if (!CSS.supports('field-sizing', 'content')) {
@@ -15707,6 +14012,10 @@ export async function doNavbarIconClick() {
         // instead of closing - the user is switching between the two right-side panels.
         if (drawer.hasClass('fillRight') && !drawer.hasClass('frontFillRight')) {
             activateFillRightDrawer(targetDrawerID);
+            return;
+        }
+        if (MOBILE_OVERLAY_PANEL_IDS.includes(targetDrawerID) && !drawer.hasClass('frontMobileOverlay')) {
+            activateMobileOverlayPanel(targetDrawerID);
             return;
         }
         icon.toggleClass('closedIcon openIcon');
@@ -15731,9 +14040,7 @@ function addDebugFunctions() {
             editedIds.push(i);
         }
 
-        // Every recalculated message changed the same way (its token count), so this is one batch edit
-        // rather than something the fallback save has to work out from a diff. Still falls back to the
-        // whole-chat save for a chat that isn't tree-backed yet.
+        // One batch edit rather than something the fallback save has to work out from a diff.
         let editedViaOp = false;
         if (chat_metadata?._tree_stored && editedIds.length) {
             try {
@@ -15804,15 +14111,8 @@ API Settings: ${JSON.stringify(getSettingsContents[getSettingsContents.main_api 
     });
 }
 
-/**
- * Per-backend UI info for the persistent `#character_search_backend_indicator` icon - null means "hide it, this
- * backend is fully healthy." See search-engine.js for what each backend actually means; this only decides how
- * loudly to say so. 'tantivy' is the fastest tier (no indicator). 'native'/'wasm' are the SQLite FTS5 fallback
- * chain used when tantivy's native binding isn't usable on this install (see tantivy-engine.js) - same ranking
- * and 'label:query' support as each other, 'wasm' just slower than 'native'; both are a real, if mild, warning
- * now that they're fallback tiers rather than the primary engine. 'unavailable' means the whole chain failed.
- * @type {Record<string, { icon: string, tone: 'warning' | 'error', tooltip: string } | null>}
- */
+// Per-backend UI info for the persistent search-backend indicator icon; null means "hide it, this backend is fully healthy".
+/** @type {Record<string, { icon: string, tone: 'warning' | 'error', tooltip: string } | null>} */
 const SEARCH_BACKEND_INDICATOR = {
     tantivy: null,
     get native() {
@@ -15838,49 +14138,13 @@ const SEARCH_BACKEND_INDICATOR = {
     },
 };
 
-/**
- * Tracks the most recent server-side search response's backend, so fetchServerCharacterSearchResults() only
- * pops a transition toast when the backend actually changes rather than on every debounced keystroke while it
- * stays degraded - the persistent `#character_search_backend_indicator` icon (toggled below) is what stays
- * visible for the rest of the time.
- * @type {string | null}
- */
+// Lets fetchServerCharacterSearchResults() pop a transition toast only when the backend actually changes.
+/** @type {string | null} */
 let lastKnownSearchBackend = null;
 
+// Results come back best-first; each match gets a synthetic ascending-is-better score from its position, since the endpoint exposes no raw relevance score.
+// The fav filter is mirrored into the request rather than applied client-side, since a favorited character ranking below the server's top-pageSize cutoff would never reach the client.
 /**
- * Fetches full-content character/group search results from the server's fast index (`POST /api/characters/query`,
- * `filter.search` + `sort.field: 'search'`) and stores them on entitiesFilter for searchFilter() (filters.js) to
- * use instead of its client-side pass - see FilterHelper.setServerSearchResults()'s JSDoc for why this isn't
- * just a speed optimization.
- *
- * Previously called `POST /api/characters/all` - a second, separate search pipeline from the `/query` endpoint
- * plain browse/sort already used, kept apart specifically because `/query`'s `filter.search` used to answer from
- * a characters-only index and would have silently dropped every group match. That gap is closed now (groups have
- * their own full-text index, groups-search-index.js, wired into `/query`'s `filter.search` + `filter.includeGroups`
- * handling - see that route's own doc comment, characters.js) - `canUseServerQueryForEntitiesList()` no longer
- * excludes an active search term either, so this is genuinely the same query the main list's own server-paginated
- * render path issues, not a parallel one that could disagree with it.
- *
- * Results come back already best-first sorted (relevance order - see the `/query` route's `sort.field === 'search'`
- * handling, characters.js), so this assigns each match a synthetic ascending-is-better score by its position in
- * that order - the endpoint doesn't expose the underlying relevance score directly, and rank alone is enough for
- * both consumers: searchFilter()'s membership check (does a cached score exist at all) and sortEntitiesList()'s
- * ascending sort. This still matters even though the main list itself now renders straight from `/query`'s own
- * rows (not through this scoring path) - it's what keeps a caller whose *sort field* got rejected by the server
- * (a caught `isInvalidSortFieldError()`, not a search one - `canUseServerQueryForEntitiesList()`, script.js)
- * working on its own pre-existing fully-local fallback while a search term is also active.
- *
- * The response also carries `searchBackend` ('tantivy'|'native'|'wasm'|'unavailable' - see the `/query` route and
- * search-engine.js). Previously a degraded backend only ever showed up as a server console warning; this surfaces
- * it as a persistent icon (toggled here, see SEARCH_BACKEND_INDICATOR) plus a one-time toast on the transition
- * into a worse state.
- * Also mirrors the current FILTER_TYPES.FAV filter state into the request (`fav: true` when the main character
- * list's favorites-only filter is active) so the server restricts matches to favorites *inside* the search index
- * query - see the `/query` route's `filter.fav` + `filter.search` composition (characters.js) for why that has to
- * happen there rather than after this function's own results get narrowed client-side: the server only ever
- * returns its top-`pageSize` matches by text relevance, which has no relationship to favorite status, so a
- * favorited character/group can easily rank outside that page and never reach the client at all - no client-side
- * filter, however correct, can recover a result it was never sent.
  * @param {string} searchQuery The current search box value
  * @returns {Promise<void>}
  */
@@ -15893,10 +14157,7 @@ export async function fetchServerCharacterSearchResults(searchQuery) {
     const favOnly = isFilterState(entitiesFilter.getFilterData(FILTER_TYPES.FAV), FILTER_STATES.SELECTED);
 
     try {
-        // pageSize mirrors the pre-existing /all-based call's own implicit cap (DEFAULT_PAGE_LIMIT, 500,
-        // characters.js) - this is a UI-chrome/local-fallback data source, not the main list's own render (that
-        // goes through printCharacters()'s server-paginated branch directly), so it only ever needs a bounded
-        // top page, same as before.
+        // This is a UI-chrome/local-fallback data source, not the main list's own render, so it only ever needs a bounded top page.
         const result = await characterRepository.query(
             { search: searchQuery, includeGroups: true, ...(favOnly ? { fav: true } : {}) },
             { field: 'search' },
@@ -15904,11 +14165,7 @@ export async function fetchServerCharacterSearchResults(searchQuery) {
         );
 
         const rows = Array.isArray(result.rows) ? result.rows : [];
-        // `total` may be `~`-prefixed (design doc §5 decision 6, an approximate count under a capped search
-        // candidate set) - stripped to a plain number here since every consumer of `serverSearchResults.total`
-        // (printCharacters()'s fallback-path pagination navigator, filters.js) treats it as an ordinary number,
-        // same convention printCharacters()'s server-paginated branch already uses for its own
-        // `totalNumberLocator`.
+        // `total` may be `~`-prefixed (an approximate count under a capped search set) - stripped to a plain number.
         const parsedTotal = Number(String(result.total ?? 0).replace(/^~/, ''));
         const total = Number.isFinite(parsedTotal) ? parsedTotal : rows.length;
         const searchBackend = result.searchBackend;
@@ -15944,27 +14201,16 @@ export async function fetchServerCharacterSearchResults(searchQuery) {
     }
 }
 
-/**
- * `label:value` labels recognized purely for turning a completed token into a visual pill in the search box
- * (see initCharacterSearch()) - mirrors the label sets characters-search-index.js's and groups-search-index.js's
- * `FIELD_LABELS` actually accept server-side, so a token only becomes a pill when the server will really treat
- * it as a filter, not for an arbitrary `word:value` (a URL, say) that would just be searched as a literal string
- * either way.
- * @type {Set<string>}
- */
+// Mirrors the label sets the server's FIELD_LABELS actually accept, so a token only becomes a pill when the server will really treat it as a filter.
+/** @type {Set<string>} */
 const SEARCH_PILL_LABELS = new Set([
     'name', 'tag', 'tags', 'desc', 'description', 'example', 'scenario', 'personality',
     'greeting', 'notes', 'creator', 'alt', 'alternate', 'member', 'members', 'id',
 ]);
 
 function initCharacterSearch() {
-    /**
-     * Completed `label:value` tokens already promoted out of the free-text input into a removable pill -
-     * Discord's `from:`/`in:`/`has:` filter-chip interaction. Purely a display/editing convenience: pills are
-     * reassembled back into the identical `label:value` text (currentSearchQuery() below) before being sent
-     * anywhere, so the server-side parser (search-query.js) never needs to know pills exist.
-     * @type {{ label: string, value: string }[]}
-     */
+    // Purely a display/editing convenience - pills are reassembled back into `label:value` text before being sent anywhere.
+    /** @type {{ label: string, value: string }[]} */
     let searchPills = [];
 
     const debouncedCharacterSearch = debounce(async (searchQuery) => {
@@ -16015,18 +14261,13 @@ function initCharacterSearch() {
 
     searchInput.on('input', function () {
         const raw = String($(this).val());
-        // A trailing space means the token right before it is "completed" - if it's a recognized label:value,
-        // promote it to a pill and strip it out of the input, same as Discord's filter-chip typing UX.
+        // A trailing space "completes" the token right before it - if recognized, promote it to a pill.
         if (raw.endsWith(' ')) {
             const trimmed = raw.slice(0, -1);
-            // Match a complete label:value or label:"quoted value" at the end of the string,
-            // respecting quotes so a space inside "quoted value" doesn't split the token.
             const pillMatch = trimmed.match(/(?:^|\s)([A-Za-z][A-Za-z0-9_]*):("[^"]*"|\S+)$/);
             if (pillMatch && SEARCH_PILL_LABELS.has(pillMatch[1].toLowerCase())) {
                 searchPills.push({ label: pillMatch[1].toLowerCase(), value: pillMatch[2] });
                 renderPills();
-                // Keep everything before the matched token (pillMatch.index is the start
-                // of the full match including the leading space/start-of-string anchor).
                 searchInput.val(trimmed.slice(0, pillMatch.index));
             }
         }
@@ -16069,24 +14310,17 @@ jQuery(async function () {
     $(document).on('click', '.api_loading', () => cancelStatusCheck('Canceled because connecting was manually canceled'));
 
     //////////DRAFT PERSISTENCE LOGIC/////////////
-    // Debounced save on every keystroke (including programmatic `.val(...).dispatchEvent(new Event('input'))`
-    // calls elsewhere, e.g. slash commands filling the box) - see chat-draft.js for why an empty/whitespace
-    // value clears the draft instead of persisting one, which is what makes this also handle "the draft's
-    // chat got closed/emptied out from under it" without any extra code here.
+    // Debounced save on every keystroke, including programmatic ones (e.g. slash commands filling the box).
     $('#send_textarea').on('input', () => saveDraftDebounced());
 
-    // Restore whatever draft belongs to the chat that just became current - on first load and on every
-    // subsequent chat switch alike, since CHAT_CHANGED fires for both. Only restores when a draft actually
-    // exists for the *exact* now-current context, so switching to a chat with no saved draft never pulls in
-    // a stale one from wherever the textarea happened to be left.
-    // Editing a greeting changes the card, and an open chat's openings are the union of stored rows
-    // and the card's current greetings - so it should show up there and then, not on the next load.
+    // Editing a greeting changes the card, and an open chat's openings are the union of stored rows and the card's current greetings.
     eventSource.on(event_types.CHARACTER_EDITED, async (event) => {
         const edited = event?.detail?.character?.avatar;
         if (!edited || edited !== getCurrentCharacter()?.avatar) return;
         await _mergeCardGreetingsIntoOpening();
     });
 
+    // Restores the draft for whatever chat just became current; no-op when none exists for this exact context.
     eventSource.on(event_types.CHAT_CHANGED, () => {
         const context = getCurrentDraftContext();
         if (!context) {
@@ -16192,18 +14426,9 @@ jQuery(async function () {
             selected_button = 'character_edit';
             select_selected_character(getCurrentCharacter()?.avatar);
         }
-        // Note: this used to also clear #character_search_bar here, but that just discarded whatever
-        // search/pills the user had typed into the (currently hidden, since we're switching away to the
-        // character/group-chats view) character-list search box every time this button - which does
-        // nothing to that list - was clicked. Reproduced by: search for something, open a character's
-        // chat, then click this header (the currently-open character's name) to jump back to its info
-        // panel - the list's search was gone on the next visit even though nothing about the list itself
-        // changed.
     });
 
     $(document).on('click', '.character_select', async function () {
-        // Origin point of character selection - resolve by avatar (the stable id), the only identifier a
-        // character row carries.
         const avatar = $(this).attr('data-avatar');
         await selectCharacterByAvatar(avatar);
     });
@@ -16282,16 +14507,7 @@ jQuery(async function () {
     });
 
     /**
-     * Handles the deletion of a chat file, including group chats.
-     *
-     * Deleting a chat that isn't the one currently loaded doesn't change any other on-screen state - the
-     * modal's list is the only thing affected, so the deleted row is just removed from the already-open
-     * modal instead of tearing the whole thing down and refetching every chat again (that used to close the
-     * popup, wait out a flat 2s "edge case" delay, then rebuild the full list from scratch - painful with
-     * hundreds/thousands of chats on one character). Deleting the *active* chat is a real exception: the
-     * delete call itself swaps in a different chat (or a fresh one), so the main chat view and the modal's
-     * highlighted row both genuinely need to reflect that - hence the full-refresh path stays for that case.
-     *
+     * Deleting a chat that isn't the one currently loaded only removes its row from the already-open modal, rather than a full refetch-and-rebuild. Deleting the *active* chat still needs the full-refresh path.
      * @param {string} chatFile - The name of the chat file to delete.
      * @param {object} group - The group object if the chat is part of a group.
      * @param {boolean} [fromSlashCommand=false] - Whether the deletion was triggered from a slash command.
@@ -16303,8 +14519,6 @@ jQuery(async function () {
             ? groupsStore.get(group)?.chat_id === chatFile
             : getCurrentCharacter()?.chat === chatFile;
 
-        // Local removal only applies when a modal row is on hand, the deleted chat isn't loaded anywhere
-        // else in the UI, and this isn't the slash-command path (which has its own no-modal handling).
         if (row && row.length && !isActiveChat && !fromSlashCommand) {
             const loaderHandle = loader.show({
                 slug: 'chat-delete',
@@ -16364,8 +14578,7 @@ jQuery(async function () {
 
     $(document).on('click', '.PastChat_cross', async function (e, { fromSlashCommand = false } = {}) {
         e.stopPropagation();
-        // The node it sits on, when there is one. Deleting removes the bookmark; a name would only
-        // find whichever row sorted first.
+        // Prefer the node id - a name would only find whichever row sorted first.
         const deleteFileName = $(this).attr('node_id') || $(this).attr('file_name');
         const row = $(this).closest('.select_chat_block_wrapper');
         console.debug('detected cross click for' + deleteFileName);
@@ -16519,8 +14732,7 @@ jQuery(async function () {
         });
     });
 
-    // Greeting pager: steps through the stable-order greeting list in the sidebar, editing whichever
-    // one is currently shown. See setGreetingPagerGreetings() and friends above.
+    // Greeting pager: steps through the stable-order greeting list in the sidebar, editing whichever one is currently shown.
     $('#greeting_field').on('input', function () {
         const value = String($(this).val());
         const { index, defaultIndex } = greetingPagerState;
@@ -16574,14 +14786,10 @@ jQuery(async function () {
         const newState = !fav_ch_checked;
         updateFavButtonState(newState);
         if (menu_type == 'create') {
-            // No row exists yet - the state just toggled here rides along in the create request's own `fav`
-            // field (createOrEditCharacter()'s formData.set('fav', ...)) and gets seeded once the row is
-            // actually INSERTed - see the server's /create route.
+            // No row exists yet - rides along in the create request's own `fav` field instead.
             return;
         }
-        // Favorite status is a pure metadata-store mutation now (owner decision - see character-metadata-db.js's
-        // setCharacterFav() doc comment), not a card-file edit - this used to fold into the full debounced
-        // saveCharacterDebounced() card save; now it's its own immediate, targeted write.
+        // A pure metadata-store mutation now, not a card-file edit - its own immediate, targeted write.
         const character = getCurrentCharacter();
         if (!character?.avatar) return;
         try {
@@ -16591,9 +14799,6 @@ jQuery(async function () {
                 body: JSON.stringify({ avatar: character.avatar, fav: newState }),
             });
             if (!response.ok) throw new Error(String(response.status));
-            // Same "refresh this one character" idiom the merge-attributes-based edit flows already use
-            // (slash-commands.js's /char-attribute, createOrEditCharacter() above) - keeps charactersStore's
-            // copy (and anything derived from it, e.g. the character list) in sync with what the db now has.
             await getOneCharacter(character.avatar);
             printCharactersDebounced();
             favsToHotswap();
@@ -16841,9 +15046,7 @@ jQuery(async function () {
             chatElement.find(`.mes[mesid="${this_del_mes}"]`).remove();
             chat.length = this_del_mes;
             chat_metadata.tainted = true;
-            // Cutting a chat back to a point is the store's "this ends here", said on the message it
-            // now ends at. The messages below keep their rows and their own continuations; selecting
-            // one again brings the whole thing back.
+            // Removed messages keep their rows and continuations; selecting one again brings the whole thing back.
             if (chat_metadata?._tree_stored && chat.length > 0) {
                 await chatOpEndPath(chat.length - 1).catch(error =>
                     console.error('Could not cut the conversation back:', error));
@@ -17052,8 +15255,7 @@ jQuery(async function () {
         }
     });
 
-    // Save the edit as a NEW alternative instead of over the original. The original keeps its row and
-    // its children; the new one starts its own, so continuing from here forks rather than overwrites.
+    // Saves as a new alternative rather than over the original - the original keeps its row and children.
     $(document).on('click', '.mes_edit_duplicate', async function () {
         const mesElement = $(this).closest('.mes');
         const mesId = Number(mesElement.attr('mesid'));
@@ -17070,8 +15272,7 @@ jQuery(async function () {
             return;
         }
 
-        // Forking beside a card-only greeting is one of the things that earns it a row: there has to
-        // be something for the new alternative to be a sibling OF.
+        // Forking beside a card-only greeting is one of the things that earns it a row - the new alternative needs a sibling.
         const siblingNodeId = await ensureOpeningRow(mesId);
         if (isProvisionalNodeId(message.node_id) && !siblingNodeId) {
             toastr.error(t`Could not create the alternative.`);
@@ -17125,11 +15326,7 @@ jQuery(async function () {
             });
             at = swipes.length - 1;
         }
-        // `mes` has to move onto the new alternative too, not just the slot bookkeeping. The editor is
-        // about to be closed by messageEditCancel(), which redraws from `mes` - and switchToAlternativePath()
-        // only adopts the node and the swipe index, it never touches the text. Leaving `mes` on the old
-        // wording made the edit look discarded: the new row held it, the screen did not. The swipe-arrow
-        // path avoids this by calling syncMesToSwipe() before switching; this one had no equivalent.
+        // `mes` must move onto the new text too - switchToAlternativePath() adopts the node and swipe index but never touches text, and messageEditCancel() redraws from `mes`.
         updateMessage(mesId, { swipes, swipe_info: swipeInfo, mes: text });
 
         await messageEditCancel(mesId);
@@ -17215,10 +15412,7 @@ jQuery(async function () {
             return;
         }
 
-        // Shares processDroppedFiles()'s per-card import+tag-interleave and batch-import-mode gating - this
-        // handler (the "Import Character" file-picker button) is the exact same bulk-import shape as a
-        // drag-and-drop, just with a different trigger, so it reuses that logic outright instead of keeping a
-        // second, independently-drifting copy of it.
+        // Same bulk-import shape as a drag-and-drop, just a different trigger.
         await processDroppedFiles(Array.from(e.target.files));
 
         // Clear the file input value to allow re-uploading the same file
@@ -17424,13 +15618,7 @@ jQuery(async function () {
         const messageElement = $(this).closest('.mes');
         const thumbURL = $(this).children('img').attr('src');
         const charsPath = '/characters/';
-        // Pull the `file=` query param specifically, not "whatever's after the last =" - getThumbnailUrl()
-        // can append a trailing `&v=<version>` or `&t=<timestamp>` after `file=`, and grabbing the last `=`
-        // segment would then yield that cache-busting value instead of the avatar filename.
-        // URL/URLSearchParams decodes the param value, so re-encode it to keep the same raw-encoded contract
-        // downstream code already relies on (decodeURIComponent(targetAvatarImg) calls, charsPath + targetAvatarImg
-        // used directly as an <img> src). Falls back to the old last-= slice for non-thumbnail src values
-        // (data URLs, plain paths without a file= param).
+        // Pull the `file=` query param specifically - a trailing `&v=`/`&t=` cache-buster would otherwise win the "last =" slice.
         let targetAvatarImg;
         try {
             const fileParam = new URL(thumbURL, window.location.origin).searchParams.get('file');

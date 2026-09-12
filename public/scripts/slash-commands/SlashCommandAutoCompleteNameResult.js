@@ -72,7 +72,6 @@ export class SlashCommandAutoCompleteNameResult extends AutoCompleteNameResult {
         const unamedArgLength = this.executor.endUnnamedArgs - this.executor.startUnnamedArgs;
         const namedArgsFollowedBySpace = text[this.executor.endNamedArgs] == ' ';
         if (this.executor.startNamedArgs <= index && this.executor.endNamedArgs + (namedArgsFollowedBySpace ? 1 : 0) >= index) {
-            // cursor is somewhere within the named arguments (including final space)
             argAssign = this.executor.namedArgumentList.find(it => it.start <= index && it.end >= index);
             if (argAssign) {
                 const [argName, ...v] = text.slice(argAssign.start, index).split(getSplitRegex());
@@ -86,7 +85,6 @@ export class SlashCommandAutoCompleteNameResult extends AutoCompleteNameResult {
                 start = index;
             }
         } else if (unamedArgLength > 0 && index >= this.executor.startUnnamedArgs && index <= this.executor.endUnnamedArgs) {
-            // cursor is somewhere within the unnamed arguments
             // if index is in first array item and that is a string, treat it as an unfinished named arg
             if (typeof this.executor.unnamedArgumentList[0]?.value == 'string') {
                 if (index <= this.executor.startUnnamedArgs + this.executor.unnamedArgumentList[0].value.length) {
@@ -103,7 +101,6 @@ export class SlashCommandAutoCompleteNameResult extends AutoCompleteNameResult {
         }
 
         if (name.includes('=') && cmdArg) {
-            // if cursor is already behind "=" check for enums
             const enumList = cmdArg?.enumProvider?.(this.executor, this.scope) ?? cmdArg?.enumList;
             if (cmdArg && enumList?.length) {
                 if (isSelect && enumList.find(it => it.value == value) && argAssign && argAssign.end == index) {
@@ -146,7 +143,6 @@ export class SlashCommandAutoCompleteNameResult extends AutoCompleteNameResult {
         let cmdArg;
         let argAssign;
         if (this.executor.startUnnamedArgs <= index && this.executor.endUnnamedArgs + 1 >= index) {
-            // cursor is somwehere in the unnamed args
             const idx = this.executor.unnamedArgumentList.findIndex(it => it.start <= index && it.end >= index);
             if (idx > -1) {
                 argAssign = this.executor.unnamedArgumentList[idx];

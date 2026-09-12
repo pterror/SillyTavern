@@ -33,10 +33,6 @@ export class ScraperManager {
      */
     static #scrapers = [];
 
-    /**
-     * Register a scraper to be used by the Data Bank.
-     * @param {Scraper} scraper Instance of a scraper to register
-     */
     static async registerDataBankScraper(scraper) {
         if (ScraperManager.#scrapers.some(s => s.id === scraper.id)) {
             console.warn(`Scraper with ID ${scraper.id} already registered`);
@@ -50,19 +46,10 @@ export class ScraperManager {
         ScraperManager.#scrapers.push(scraper);
     }
 
-    /**
-     * Gets a list of scrapers available for the Data Bank.
-     * @returns {ScraperInfo[]} List of scrapers available for the Data Bank
-     */
     static getDataBankScrapers() {
         return ScraperManager.#scrapers.map(s => ({ id: s.id, name: s.name, description: s.description, iconClass: s.iconClass, iconAvailable: s.iconAvailable }));
     }
 
-    /**
-     * Run a scraper to scrape data into the Data Bank.
-     * @param {string} scraperId ID of the scraper to run
-     * @returns {Promise<File[]>} List of files scraped by the scraper
-     */
     static runDataBankScraper(scraperId) {
         const scraper = ScraperManager.#scrapers.find(s => s.id === scraperId);
         if (!scraper) {
@@ -72,11 +59,6 @@ export class ScraperManager {
         return scraper.scrape();
     }
 
-    /**
-     * Check if a scraper is available.
-     * @param {string} scraperId ID of the scraper to check
-     * @returns {Promise<boolean>} Whether the scraper is available
-     */
     static isScraperAvailable(scraperId) {
         const scraper = ScraperManager.#scrapers.find(s => s.id === scraperId);
         if (!scraper) {
@@ -87,10 +69,7 @@ export class ScraperManager {
     }
 }
 
-/**
- * Create a text file from a string.
- * @implements {Scraper}
- */
+/** @implements {Scraper} */
 class Notepad {
     constructor() {
         this.id = 'text';
@@ -100,18 +79,10 @@ class Notepad {
         this.iconAvailable = true;
     }
 
-    /**
-     * Check if the scraper is available.
-     * @returns {Promise<boolean>}
-     */
     async isAvailable() {
         return true;
     }
 
-    /**
-     * Create a text file from a string.
-     * @returns {Promise<File[]>} File attachments scraped from the text
-     */
     async scrape() {
         const template = $(await renderExtensionTemplateAsync('attachments', 'notepad', {}));
         let fileName = `Untitled - ${new Date().toLocaleString()}`;
@@ -134,10 +105,7 @@ class Notepad {
     }
 }
 
-/**
- * Scrape data from a webpage.
- * @implements {Scraper}
- */
+/** @implements {Scraper} */
 class WebScraper {
     constructor() {
         this.id = 'web';
@@ -147,29 +115,16 @@ class WebScraper {
         this.iconAvailable = true;
     }
 
-    /**
-     * Check if the scraper is available.
-     * @returns {Promise<boolean>}
-     */
     async isAvailable() {
         return true;
     }
 
-    /**
-    * Parse the title of an HTML file from a Blob.
-    * @param {Blob} blob Blob of the HTML file
-    * @returns {Promise<string>} Title of the HTML file
-    */
     async getTitleFromHtmlBlob(blob) {
         const text = await blob.text();
         const titleMatch = text.match(/<title>(.*?)<\/title>/i);
         return titleMatch ? titleMatch[1] : '';
     }
 
-    /**
-     * Scrape file attachments from a webpage.
-     * @returns {Promise<File[]>} File attachments scraped from the webpage
-     */
     async scrape() {
         const template = $(await renderExtensionTemplateAsync('attachments', 'web-scrape', {}));
         const linksString = await callGenericPopup(template, POPUP_TYPE.INPUT, '', { wide: false, large: false, okButton: 'Scrape', cancelButton: 'Cancel', rows: 4 });
@@ -209,10 +164,7 @@ class WebScraper {
     }
 }
 
-/**
- * Scrape data from a file selection.
- * @implements {Scraper}
- */
+/** @implements {Scraper} */
 class FileScraper {
     constructor() {
         this.id = 'file';
@@ -222,18 +174,10 @@ class FileScraper {
         this.iconAvailable = true;
     }
 
-    /**
-     * Check if the scraper is available.
-     * @returns {Promise<boolean>}
-     */
     async isAvailable() {
         return true;
     }
 
-    /**
-     * Scrape file attachments from a file.
-     * @returns {Promise<File[]>} File attachments scraped from the files
-     */
     async scrape() {
         return new Promise(resolve => {
             const fileInput = document.createElement('input');
@@ -331,10 +275,7 @@ class MediaWikiScraper {
     }
 }
 
-/**
- * Scrape data from a Fandom wiki.
- * @implements {Scraper}
- */
+/** @implements {Scraper} */
 class FandomScraper {
     constructor() {
         this.id = 'fandom';
@@ -344,10 +285,6 @@ class FandomScraper {
         this.iconAvailable = true;
     }
 
-    /**
-     * Check if the scraper is available.
-     * @returns {Promise<boolean>}
-     */
     async isAvailable() {
         try {
             const result = await fetch('/api/plugins/fandom/probe', {
@@ -362,11 +299,6 @@ class FandomScraper {
         }
     }
 
-    /**
-     * Get the ID of a fandom from a URL or name.
-     * @param {string} fandom URL or name of the fandom
-     * @returns {string} ID of the fandom
-     */
     getFandomId(fandom) {
         try {
             const url = new URL(fandom);
@@ -456,10 +388,7 @@ const iso6391Codes = [
     'ty', 'ug', 'uk', 'ur', 'uz', 've', 'vi', 'vo', 'wa', 'wo', 'xh', 'yi',
     'yo', 'za', 'zh', 'zu'];
 
-/**
- * Scrape transcript from a YouTube video.
- * @implements {Scraper}
- */
+/** @implements {Scraper} */
 class YouTubeScraper {
     constructor() {
         this.id = 'youtube';
@@ -497,21 +426,11 @@ class YouTubeScraper {
         }));
     }
 
-    /**
-     * Check if the scraper is available.
-     * @returns {Promise<boolean>}
-     */
     async isAvailable() {
         return true;
     }
 
-    /**
-     * Parse the ID of a YouTube video from a URL.
-     * @param {string} url URL of the YouTube video
-     * @returns {string} ID of the YouTube video
-     */
     parseId(url) {
-        // If the URL is already an ID, return it
         if (/^[a-zA-Z0-9_-]{11}$/.test(url)) {
             return url;
         }
@@ -521,10 +440,6 @@ class YouTubeScraper {
         return (match?.length && match[1] ? match[1] : url);
     }
 
-    /**
-     * Scrape transcript from a YouTube video.
-     * @returns {Promise<File[]>} File attachments scraped from the YouTube video
-     */
     async scrape() {
         let lang = '';
         const template = $(await renderExtensionTemplateAsync('attachments', 'youtube-scrape', {}));

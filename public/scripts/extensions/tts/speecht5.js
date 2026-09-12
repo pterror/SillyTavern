@@ -41,7 +41,6 @@ class SpeechT5TtsProvider {
     }
 
     onSettingsChange() {
-        // Used when provider settings are updated from UI
         this.settings.speaker = $('#speecht5_tts_speaker').val();
         saveTtsProviderSettings();
     }

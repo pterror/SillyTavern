@@ -70,9 +70,6 @@ class CharacterContextMenu {
         const character = CharacterContextMenu.#getCharacter(avatar);
         const newFavState = !character.fav;
 
-        // Favorite status is a pure metadata-store mutation now (owner decision - see character-metadata-db.js's
-        // setCharacterFav() doc comment), not a card-file edit - this used to round-trip the whole card through
-        // /merge-attributes just to flip one bit.
         const favResponse = await fetch('/api/characters/fav', {
             method: 'POST',
             headers: getRequestHeaders(),
