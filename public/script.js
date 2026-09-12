@@ -6401,6 +6401,13 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 
         //set array object for prompt token itemization of this message
         let currentArrayEntry = Number(thisPromptBits.length - 1);
+        const activeSamplerSettings = {
+            kobold: kai_settings,
+            koboldhorde: kai_settings,
+            textgenerationwebui: textgen_settings,
+            novel: nai_settings,
+            openai: oai_settings,
+        }[main_api];
         let additionalPromptStuff = {
             ...thisPromptBits[currentArrayEntry],
             rawPrompt: generate_data.prompt || generate_data.input,
@@ -6431,6 +6438,9 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             userPersona: (power_user.persona_description_position == persona_description_positions.IN_PROMPT ? (persona || '') : ''),
             tokenizer: getFriendlyTokenizerName(main_api).tokenizerName || '',
             presetName: getPresetManager()?.getSelectedPresetName() || '',
+            // JSON-stringified so the existing pool-dedup (poolizeValue/poolDedupIncremental) can dedupe
+            // byte-identical configs across consecutive generations for free, no separate dedup logic needed.
+            samplerConfigJson: JSON.stringify(activeSamplerSettings ?? {}),
             messagesCount: main_api !== 'openai' ? mesSend.length : oaiMessages.length,
             examplesCount: main_api !== 'openai' ? (pinExmString ? mesExamplesArray.length : count_exm_add) : oaiMessageExamples.length,
             // Per-message content before injection, captured here rather than re-split from rawPrompt later.

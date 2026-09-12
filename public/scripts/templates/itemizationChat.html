@@ -13,6 +13,12 @@
         <span>|</span>
         <small><span data-i18n="Tokenizer:">Tokenizer:</span> {{selectedTokenizer}}</small>
     </div>
+    {{#if samplerConfig}}
+    <details>
+        <summary data-i18n="Sampler Settings">Sampler Settings</summary>
+        <pre class="justifyLeft">{{samplerConfig}}</pre>
+    </details>
+    {{/if}}
 </div>
 
 <span class="tokenItemizingSubclass" data-i18n="Only the white numbers really matter. All numbers are estimates. Grey color items may not have been included in the context due to certain prompt format settings.">
