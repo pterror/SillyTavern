@@ -1,7 +1,7 @@
 import { DiffMatchPatch, DOMPurify, localforage } from '../lib.js';
 import { chat, event_types, eventSource, getCurrentChatId, getRequestHeaders, reloadCurrentChat } from '../script.js';
 import { t } from './i18n.js';
-import { oai_settings } from './openai.js';
+import { oai_settings } from './chat-completion-settings.js';
 import { Popup, POPUP_TYPE } from './popup.js';
 import { power_user, registerDebugFunction } from './power-user.js';
 import { isMobile } from './RossAscends-mods.js';
@@ -381,6 +381,13 @@ export async function itemizedParams(itemizedPrompts, thisPromptSet, incomingMes
         presetName: itemizedPrompts[thisPromptSet].presetName || t`(Unknown)`,
         messagesCount: String(itemizedPrompts[thisPromptSet].messagesCount ?? ''),
         examplesCount: String(itemizedPrompts[thisPromptSet].examplesCount ?? ''),
+        samplerConfig: (() => {
+            try {
+                return JSON.stringify(JSON.parse(itemizedPrompts[thisPromptSet].samplerConfigJson || '{}'), null, 2);
+            } catch {
+                return '';
+            }
+        })(),
     };
 
     const getFriendlyName = (value) => $(`#rm_api_block select option[value="${value}"]`).first().text() || value;
