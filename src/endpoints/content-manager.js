@@ -459,6 +459,41 @@ async function downloadChubLorebook(id) {
     return { buffer, fileName, fileType };
 }
 
+/**
+ * Resolves a Chub character's linked lorebook (a separate project referenced via
+ * related_lorebooks, as opposed to one embedded directly in the card definition) by
+ * reading the character's own Git-style project repo through Chub's V4 API - the
+ * repo's card.json snapshot carries the lorebook already inlined into character_book.
+ * @param {string} projectId Chub project id (metadata.node.id)
+ * @returns {Promise<any|null>} character_book object, or null if none/failed
+ */
+async function fetchChubLinkedLorebook(projectId) {
+    if (!projectId) return null;
+    try {
+        const commitsResult = await fetch(`https://api.chub.ai/api/v4/projects/${projectId}/repository/commits`, {
+            method: 'GET',
+            headers: { 'Accept': 'application/json', 'User-Agent': USER_AGENT },
+        });
+        if (!commitsResult.ok) return null;
+        /** @type {any} */
+        const commits = await commitsResult.json();
+        const ref = Array.isArray(commits) && commits[0]?.id;
+        if (!ref) return null;
+
+        const cardResult = await fetch(`https://api.chub.ai/api/v4/projects/${projectId}/repository/files/raw%252Fcard.json/raw?ref=${ref}`, {
+            method: 'GET',
+            headers: { 'Accept': 'application/json', 'User-Agent': USER_AGENT },
+        });
+        if (!cardResult.ok) return null;
+        /** @type {any} */
+        const card = await cardResult.json();
+        return card?.data?.character_book || card?.character_book || null;
+    } catch (error) {
+        console.error('Failed to resolve Chub linked lorebook for project', projectId, error);
+        return null;
+    }
+}
+
 async function downloadChubCharacter(id) {
     const [creatorName, projectName] = id.split('/');
     const result = await fetch(`https://api.chub.ai/api/characters/${creatorName}/${projectName}?full=true`, {
@@ -476,6 +511,14 @@ async function downloadChubCharacter(id) {
     const metadata = await result.json();
     const { definition, topics } = metadata.node;
 
+    let characterBook = definition.embedded_lorebook;
+    if (metadata.node.related_lorebooks?.length > 0 && metadata.node.id) {
+        const linkedBook = await fetchChubLinkedLorebook(metadata.node.id);
+        if (linkedBook?.entries?.length > 0) {
+            characterBook = linkedBook;
+        }
+    }
+
     /** @type {TavernCardV2} */
     const characterCard = {
         data: {
@@ -492,7 +535,7 @@ async function downloadChubCharacter(id) {
             tags: topics,
             creator: creatorName,
             character_version: '',
-            character_book: definition.embedded_lorebook,
+            character_book: characterBook,
             extensions: definition.extensions,
         },
         spec: 'chara_card_v2',
