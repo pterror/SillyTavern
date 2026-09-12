@@ -2298,7 +2298,7 @@ export function initChatUtilities() {
 
         const rawText = String(bro.val());
         const previewText = substituteParams(rawText);
-        const pre = $('<pre class="justifyLeft"></pre>').text(previewText);
+        const pre = $('<pre class="justifyLeft" style="white-space: pre-wrap; word-break: break-word;"></pre>').text(previewText);
         await callGenericPopup(pre, POPUP_TYPE.TEXT, '', { wide: true, large: true, allowVerticalScrolling: true });
     });
 
