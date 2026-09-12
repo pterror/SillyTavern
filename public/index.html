@@ -6262,6 +6262,22 @@
                                 </div>
                             </div>
                             <small id="creators_note_desc_hidden" data-i18n="Character details are hidden.">Character details are hidden.</small>
+                            <div id="mainPromptOverride" class="inline-drawer">
+                                <div class="inline-drawer-toggle inline-drawer-header">
+                                    <h4>
+                                        <span data-i18n="Main Prompt">Main Prompt</span>
+                                        <small>(<span data-token-counter="system_prompt_textarea">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
+                                    </h4>
+                                    <div class="inline-drawer-icon fa-solid fa-circle-chevron-up up"></div>
+                                </div>
+                                <div class="inline-drawer-content" style="display: none;">
+                                    <small data-i18n="Insert {{original}} to include the default Main Prompt from system settings. For Chat Completion and Instruct Mode.">Insert {{original}} to include the default Main Prompt from system settings. For Chat Completion and Instruct Mode.</small>
+                                    <h4 class="flex-container alignItemsBaseline">
+                                        <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="system_prompt_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
+                                    </h4>
+                                    <textarea id="system_prompt_textarea" name="system_prompt" data-macros data-i18n="[placeholder]Any contents here will replace the default Main Prompt used for this character. (v2 spec: system_prompt)" placeholder="Any contents here will replace the default Main Prompt used for this character.&#10;(v2 spec: system_prompt)" class="text_pole" autocomplete="off" rows="3"></textarea>
+                                </div>
+                            </div>
                             <div id="descriptionWrapper" class="flex-container flexFlowColumn flex1">
                                 <div id="description_div" class="title_restorable">
                                     <div class="flex-container alignitemscenter">
@@ -6312,6 +6328,22 @@
                                 <textarea id="greeting_field" class="mdHotkeys" data-macros data-i18n="[placeholder]This will be the first message from the character that starts every chat." placeholder="This will be the first message from the character that starts every chat."></textarea>
                                 <div class="extension_token_counter">
                                     <span data-i18n="extension_token_counter">Tokens:</span> <span data-token-counter="greeting_field">counting...</span>
+                                </div>
+                            </div>
+                            <div id="postHistoryInstructionsOverride" class="inline-drawer">
+                                <div class="inline-drawer-toggle inline-drawer-header">
+                                    <h4>
+                                        <span data-i18n="Post-History Instructions">Post-History Instructions</span>
+                                        <small>(<span data-token-counter="post_history_instructions_textarea">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
+                                    </h4>
+                                    <div class="inline-drawer-icon fa-solid fa-circle-chevron-up up"></div>
+                                </div>
+                                <div class="inline-drawer-content" style="display: none;">
+                                    <small data-i18n="Insert {{original}} to include the default Post-History Instructions from system settings. For Chat Completion and Instruct Mode.">Insert {{original}} to include the default Post-History Instructions from system settings. For Chat Completion and Instruct Mode.</small>
+                                    <h4 class="flex-container alignItemsBaseline">
+                                        <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="post_history_instructions_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
+                                    </h4>
+                                    <textarea id="post_history_instructions_textarea" name="post_history_instructions" data-macros data-i18n="[placeholder]Any contents here will replace the default Post-History Instructions used for this character. (v2 spec: post_history_instructions)" placeholder="Any contents here will replace the default Post-History Instructions used for this character.&#10;(v2 spec: post_history_instructions)" class="text_pole" autocomplete="off" rows="3"></textarea>
                                 </div>
                             </div>
                             <!-- these divs are invisible and used for server communication purposes -->
@@ -6574,38 +6606,6 @@
             </div>
             <hr class="margin-bot-10px">
             <div id="character_cross" class="fa-solid fa-circle-xmark"></div>
-            <div class="inline-drawer">
-                <div class="inline-drawer-toggle inline-drawer-header">
-                    <h4>
-                        <span data-i18n="Prompt Overrides">Prompt Overrides</span>
-                        <small data-i18n="(For Chat Completion and Instruct Mode)">(For Chat Completion and Instruct Mode)</small>
-                    </h4>
-                    <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
-                </div>
-                <div class="inline-drawer-content">
-                    <small data-i18n="Insert {{original}} into either box to include the respective default prompt from system settings.">Insert {{original}} into either box to include the respective default prompt from system settings.</small>
-                    <div>
-                        <h4 class="flex-container alignItemsBaseline">
-                            <span data-i18n="Main Prompt">Main Prompt</span>
-                            <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="system_prompt_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
-                        </h4>
-                        <textarea id="system_prompt_textarea" name="system_prompt" data-macros data-i18n="[placeholder]Any contents here will replace the default Main Prompt used for this character. (v2 spec: system_prompt)" placeholder="Any contents here will replace the default Main Prompt used for this character.&#10;(v2 spec: system_prompt)" form="form_create" class="text_pole" autocomplete="off" rows="3"></textarea>
-                        <div class="extension_token_counter">
-                            <span data-i18n="extension_token_counter">Tokens:</span> <span data-token-counter="system_prompt_textarea">counting...</span>
-                        </div>
-                    </div>
-                    <div>
-                        <h4 class="flex-container alignItemsBaseline">
-                            <span data-i18n="Post-History Instructions">Post-History Instructions</span>
-                            <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="post_history_instructions_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
-                        </h4>
-                        <textarea id="post_history_instructions_textarea" name="post_history_instructions" data-macros data-i18n="[placeholder]Any contents here will replace the default Post-History Instructions used for this character. (v2 spec: post_history_instructions)" placeholder="Any contents here will replace the default Post-History Instructions used for this character.&#10;(v2 spec: post_history_instructions)" form="form_create" class="text_pole" autocomplete="off" rows="3"></textarea>
-                        <div class="extension_token_counter">
-                            <span data-i18n="extension_token_counter">Tokens:</span> <span data-token-counter="post_history_instructions_textarea">counting...</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
             <hr>
             <div class="inline-drawer">
                 <div class="inline-drawer-toggle inline-drawer-header">
