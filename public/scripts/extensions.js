@@ -658,6 +658,106 @@ async function activateExtensions() {
     $('#extensions_details').toggleClass('warning', extensionLoadErrors.size > 0);
 }
 
+const EXTENSIONS_TABS_CONTAINER_ID = 'extensions_settings_tabs';
+const EXTENSIONS_TABS_LIST_ID = 'extensions_settings_tabs_list';
+let extensionsTabsInitialized = false;
+let extensionsTabsObserverAttached = false;
+
+/**
+ * @param {HTMLElement} container
+ * @returns {string}
+ */
+function getExtensionTabTitle(container) {
+    const header = container.querySelector('.inline-drawer-toggle b, .inline-drawer-toggle strong, .inline-drawer-header b, .inline-drawer-header strong');
+    if (header?.textContent?.trim()) return header.textContent.trim();
+    const fallback = container.querySelector('b, strong, summary');
+    if (fallback?.textContent?.trim()) return fallback.textContent.trim();
+    return container.id || 'Extension';
+}
+
+/**
+ * Moves one extension's already-injected settings block (a direct child of #extensions_settings or
+ * #extensions_settings2) into its own tab panel, if it has any content and hasn't already been moved.
+ * @param {HTMLElement} container
+ */
+function moveExtensionContainerIntoTab(container) {
+    if (!container || container.children.length === 0) return;
+    if (container.dataset.extensionTabbed === 'true') return;
+    container.dataset.extensionTabbed = 'true';
+
+    const title = getExtensionTabTitle(container);
+    const tabId = `ext_tab_${container.id || Math.random().toString(36).slice(2)}`;
+
+    // Selecting the tab already answers "which extension am I looking at" - auto-expand its own inner
+    // .inline-drawer so its settings are visible immediately, without a second click to un-collapse it.
+    // Runs exactly once per container (guarded above), so no need to check current open/closed state first.
+    const drawer = container.querySelector(':scope > .inline-drawer, .inline-drawer');
+    if (drawer) {
+        const icon = drawer.querySelector(':scope > .inline-drawer-header .inline-drawer-icon, .inline-drawer-icon');
+        icon?.classList.replace('down', 'up');
+        icon?.classList.replace('fa-circle-chevron-down', 'fa-circle-chevron-up');
+        const content = /** @type {HTMLElement} */ (drawer.querySelector(':scope > .inline-drawer-content'));
+        if (content) content.style.display = 'block';
+    }
+
+    const listItem = document.createElement('li');
+    const link = document.createElement('a');
+    link.href = `#${tabId}`;
+    link.textContent = title;
+    listItem.appendChild(link);
+    document.getElementById(EXTENSIONS_TABS_LIST_ID)?.appendChild(listItem);
+
+    const panel = document.createElement('div');
+    panel.id = tabId;
+    panel.appendChild(container); // moves container (and its content) out of its original column
+    document.getElementById(EXTENSIONS_TABS_CONTAINER_ID)?.appendChild(panel);
+}
+
+/**
+ * Converts whatever extensions have already appended their settings into #extensions_settings/
+ * #extensions_settings2 into a jQuery UI tab per extension, replacing the old two-column stacked-
+ * collapsibles layout. Safe to call multiple times (idempotent per extension container) - also attaches
+ * a MutationObserver on first call to catch extensions that inject asynchronously after this point (some
+ * third-party extensions have no reliable "settings HTML added" completion signal to await instead).
+ */
+export function initExtensionsTabs() {
+    const columns = [document.getElementById('extensions_settings'), document.getElementById('extensions_settings2')];
+    for (const column of columns) {
+        if (!column) continue;
+        for (const child of Array.from(column.children)) {
+            moveExtensionContainerIntoTab(/** @type {HTMLElement} */ (child));
+        }
+    }
+
+    const $tabs = $(`#${EXTENSIONS_TABS_CONTAINER_ID}`);
+    if (!extensionsTabsInitialized) {
+        $tabs.tabs();
+        extensionsTabsInitialized = true;
+    } else {
+        $tabs.tabs('refresh');
+    }
+
+    if (!extensionsTabsObserverAttached) {
+        extensionsTabsObserverAttached = true;
+        const observer = new MutationObserver(() => {
+            let anyMoved = false;
+            for (const column of columns) {
+                if (!column) continue;
+                for (const child of Array.from(column.children)) {
+                    if (child instanceof HTMLElement && child.dataset.extensionTabbed !== 'true' && child.children.length > 0) {
+                        moveExtensionContainerIntoTab(child);
+                        anyMoved = true;
+                    }
+                }
+            }
+            if (anyMoved) $tabs.tabs('refresh');
+        });
+        for (const column of columns) {
+            if (column) observer.observe(column, { childList: true, subtree: true });
+        }
+    }
+}
+
 async function connectClickHandler() {
     const baseUrl = String($('#extensions_url').val());
     extension_settings.apiUrl = baseUrl;
@@ -1804,6 +1904,7 @@ export async function loadExtensionSettings(settings, versionChanged, enableAuto
     }
 
     await activateExtensions();
+    initExtensionsTabs();
     if (extension_settings.autoConnect && extension_settings.apiUrl) {
         connectToApi(extension_settings.apiUrl);
     }
