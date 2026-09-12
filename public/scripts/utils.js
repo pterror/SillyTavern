@@ -2991,7 +2991,7 @@ export async function importFromExternalUrl(url, { preserveFileName = null } = {
         return;
     }
 
-    const relatedLorebookIdsHeader = request.headers.get('X-Related-Lorebook-Ids');
+    const relatedLorebookPathsHeader = request.headers.get('X-Related-Lorebook-Paths');
     const data = await request.blob();
     const customContentType = request.headers.get('X-Custom-Content-Type');
     let fileName = request.headers.get('Content-Disposition').split('filename=')[1].replace(/"/g, '');
@@ -3007,8 +3007,9 @@ export async function importFromExternalUrl(url, { preserveFileName = null } = {
         case 'character': {
             const avatarFileNames = await processDroppedFiles([file], extraData);
             const lastAvatar = avatarFileNames?.[avatarFileNames.length - 1];
-            if (lastAvatar && relatedLorebookIdsHeader) {
-                await importChubLinkedLorebooks(lastAvatar, relatedLorebookIdsHeader.split(',').filter(Boolean));
+            if (lastAvatar && relatedLorebookPathsHeader) {
+                const paths = relatedLorebookPathsHeader.split(',').filter(Boolean).map(decodeURIComponent);
+                await importChubLinkedLorebooks(lastAvatar, paths);
             }
             break;
         }
@@ -3023,30 +3024,30 @@ export async function importFromExternalUrl(url, { preserveFileName = null } = {
 }
 
 /**
- * Imports the Chub lorebooks linked to a just-imported character (one request per id - see
- * importChubLorebookById on the server) and binds each as an additional World for that
- * character. Best-effort: an id that fails to resolve (unlisted/private/deleted/etc) is skipped,
+ * Imports the Chub lorebooks linked to a just-imported character (one request per path - see
+ * importChubLorebookByPath on the server) and binds each as an additional World for that
+ * character. Best-effort: a path that fails to resolve (unlisted/private/deleted/etc) is skipped,
  * not fatal to the others or to the character import that already succeeded.
  * @param {string} characterAvatar Avatar filename of the character to bind the Worlds to
- * @param {string[]} relatedLorebookIds Chub numeric project ids
+ * @param {string[]} relatedLorebookPaths Chub "lorebooks/creator/project-name" paths
  */
-async function importChubLinkedLorebooks(characterAvatar, relatedLorebookIds) {
+async function importChubLinkedLorebooks(characterAvatar, relatedLorebookPaths) {
     const importedNames = [];
-    for (const id of relatedLorebookIds) {
+    for (const path of relatedLorebookPaths) {
         try {
-            const request = await fetch('/api/content/importChubLorebookById', {
+            const request = await fetch('/api/content/importChubLorebookByPath', {
                 method: 'POST',
                 headers: getRequestHeaders(),
-                body: JSON.stringify({ id }),
+                body: JSON.stringify({ path }),
             });
             if (!request.ok) {
-                console.warn('Failed to import Chub linked lorebook', id, request.status);
+                console.warn('Failed to import Chub linked lorebook', path, request.status);
                 continue;
             }
             const { name } = await request.json();
             if (name) importedNames.push(name);
         } catch (error) {
-            console.warn('Failed to import Chub linked lorebook', id, error);
+            console.warn('Failed to import Chub linked lorebook', path, error);
         }
     }
 
