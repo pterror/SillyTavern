@@ -13427,7 +13427,7 @@ export async function swipe_right(event = null, { source, repeated, message } = 
  * Imports supported files dropped into the app window. Each file is imported, applied to charactersStore, and (per `power_user.tag_import_setting`) has its tags imported before moving to the next file.
  * @param {File[]} files Array of files to process
  * @param {Map<File, string>} [data] Extra data to pass to the import function
- * @returns {Promise<void>}
+ * @returns {Promise<string[]>} Avatar filenames of the characters actually imported (skips duplicates), in import order
  */
 export async function processDroppedFiles(files, data = new Map()) {
     const allowedMimeTypes = [
@@ -13514,6 +13514,8 @@ export async function processDroppedFiles(files, data = new Map()) {
     if (duplicateCount > 0) {
         toastr.info(t`Skipped ${duplicateCount} duplicate character(s) already in your library.`, t`Import`);
     }
+
+    return avatarFileNames;
 }
 
 // Never throws - a failure here just means writes for this batch go through the normal unbuffered path instead.

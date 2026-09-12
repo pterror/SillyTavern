@@ -6056,7 +6056,13 @@ export function onWorldInfoChange(args, text) {
  * Imports world info from a file.
  * @param {File} file File to import
  */
-export async function importWorldInfo(file) {
+/**
+ * @param {File} file
+ * @param {Object} [options={}]
+ * @param {boolean} [options.interactive=true] Whether to prompt before overwriting an existing World of the same name, and to switch the World Info editor to the imported World on success. Set false for a background/automated import (e.g. one of several linked lorebooks pulled in alongside a character).
+ * @returns {Promise<string|false|void>} The imported World's name on success.
+ */
+export async function importWorldInfo(file, { interactive = true } = {}) {
     if (!file) {
         return;
     }
@@ -6104,7 +6110,7 @@ export async function importWorldInfo(file) {
 
     const worldName = file.name.substr(0, file.name.lastIndexOf('.'));
     const sanitizedWorldName = await getSanitizedFilename(worldName);
-    const allowed = await checkOverwriteExistingData('World Info', world_names, sanitizedWorldName, { interactive: true, actionName: 'Import', deleteAction: (existingName) => deleteWorldInfo(existingName) });
+    const allowed = await checkOverwriteExistingData('World Info', world_names, sanitizedWorldName, { interactive, actionName: 'Import', deleteAction: (existingName) => deleteWorldInfo(existingName) });
     if (!allowed) {
         return false;
     }
@@ -6126,12 +6132,15 @@ export async function importWorldInfo(file) {
         if (data.name) {
             await updateWorldInfoList();
 
-            const newIndex = world_names.indexOf(data.name);
-            if (newIndex >= 0) {
-                $('#world_editor_select').val(newIndex).trigger('change');
+            if (interactive) {
+                const newIndex = world_names.indexOf(data.name);
+                if (newIndex >= 0) {
+                    $('#world_editor_select').val(newIndex).trigger('change');
+                }
             }
 
             toastr.success(t`World Info "${data.name}" imported successfully!`);
+            return data.name;
         }
     } catch (error) {
         console.error('Error importing world info:', error);

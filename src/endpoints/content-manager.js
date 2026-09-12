@@ -12,6 +12,7 @@ import { write } from '../character-card-parser.js';
 import { serverDirectory } from '../server-directory.js';
 import { Jimp, JimpMime } from '../jimp.js';
 import { DEFAULT_AVATAR_PATH } from '../constants.js';
+import { importWorldInfoFromRaw } from './worldinfo.js';
 
 const contentDirectory = path.join(serverDirectory, 'default/content');
 const scaffoldDirectory = path.join(serverDirectory, 'default/scaffold');
@@ -460,15 +461,15 @@ async function downloadChubLorebook(id) {
 }
 
 /**
- * Resolves a Chub character's linked lorebook (a separate project referenced via
- * related_lorebooks, as opposed to one embedded directly in the card definition) by
- * reading the character's own Git-style project repo through Chub's V4 API - the
- * repo's card.json snapshot carries the lorebook already inlined into character_book.
- * @param {string} projectId Chub project id (metadata.node.id)
- * @returns {Promise<any|null>} character_book object, or null if none/failed
+ * Downloads a standalone Chub lorebook project by its already-known numeric project id (as
+ * opposed to downloadChubLorebook(), which resolves a creator/project-name slug into this id
+ * first). Used to resolve entries in a character's related_lorebooks, which Chub's character
+ * API only ever gives us as bare ids, no slug. Unauthenticated - fine for public/listed
+ * lorebooks; Chub's samwise/CH-API-KEY headers gate NSFL content specifically, not this.
+ * @param {number|string} projectId Chub project id
+ * @returns {Promise<{buffer: Buffer, fileName: string, fileType: string}|null>} null if unresolvable (private/unlisted/deleted/etc - non-fatal, caller should skip it)
  */
-async function fetchChubLinkedLorebook(projectId) {
-    if (!projectId) return null;
+async function downloadChubLorebookByProjectId(projectId) {
     try {
         const commitsResult = await fetch(`https://api.chub.ai/api/v4/projects/${projectId}/repository/commits`, {
             method: 'GET',
@@ -480,16 +481,19 @@ async function fetchChubLinkedLorebook(projectId) {
         const ref = Array.isArray(commits) && commits[0]?.id;
         if (!ref) return null;
 
-        const cardResult = await fetch(`https://api.chub.ai/api/v4/projects/${projectId}/repository/files/raw%252Fcard.json/raw?ref=${ref}`, {
+        const downloadUrl = `https://api.chub.ai/api/v4/projects/${projectId}/repository/files/raw%252Fsillytavern_raw.json/raw?ref=${ref}`;
+        const downloadResult = await fetch(downloadUrl, {
             method: 'GET',
             headers: { 'Accept': 'application/json', 'User-Agent': USER_AGENT },
         });
-        if (!cardResult.ok) return null;
-        /** @type {any} */
-        const card = await cardResult.json();
-        return card?.data?.character_book || card?.character_book || null;
+        if (!downloadResult.ok) return null;
+
+        const buffer = Buffer.from(await downloadResult.arrayBuffer());
+        const fileName = `chub_lorebook_${projectId}.json`;
+        const fileType = downloadResult.headers.get('content-type');
+        return { buffer, fileName, fileType };
     } catch (error) {
-        console.error('Failed to resolve Chub linked lorebook for project', projectId, error);
+        console.error('Failed to download Chub lorebook by project id', projectId, error);
         return null;
     }
 }
@@ -511,13 +515,11 @@ async function downloadChubCharacter(id) {
     const metadata = await result.json();
     const { definition, topics } = metadata.node;
 
-    let characterBook = definition.embedded_lorebook;
-    if (metadata.node.related_lorebooks?.length > 0 && metadata.node.id) {
-        const linkedBook = await fetchChubLinkedLorebook(metadata.node.id);
-        if (linkedBook?.entries?.length > 0) {
-            characterBook = linkedBook;
-        }
-    }
+    // Kept separate from any linked (non-embedded) lorebooks - those are resolved individually
+    // via a follow-up request per id (see /importChubLorebookById), not merged in here.
+    const characterBook = definition.embedded_lorebook;
+    /** @type {number[]} */
+    const relatedLorebookIds = Array.isArray(metadata.node.related_lorebooks) ? metadata.node.related_lorebooks : [];
 
     /** @type {TavernCardV2} */
     const characterCard = {
@@ -560,7 +562,7 @@ async function downloadChubCharacter(id) {
     const fileName = `${sanitize(characterCard.data.name)}.png`;
     const fileType = 'image/png';
 
-    return { buffer, fileName, fileType };
+    return { buffer, fileName, fileType, relatedLorebookIds };
 }
 
 /**
@@ -1123,9 +1125,43 @@ router.post('/importURL', async (request, response) => {
         if (result.fileType) response.set('Content-Type', result.fileType);
         response.set('Content-Disposition', `attachment; filename="${encodeURI(result.fileName)}"`);
         response.set('X-Custom-Content-Type', type);
+        if (Array.isArray(result.relatedLorebookIds) && result.relatedLorebookIds.length > 0) {
+            response.set('X-Related-Lorebook-Ids', result.relatedLorebookIds.join(','));
+        }
         return response.send(result.buffer);
     } catch (error) {
         console.error('Importing custom content failed', error);
+        return response.sendStatus(500);
+    }
+});
+
+/**
+ * Fetches and imports a single Chub lorebook that's linked to a character (as opposed to
+ * embedded in the card) by its numeric project id - as surfaced via the X-Related-Lorebook-Ids
+ * header on a prior /importURL response for a Chub character. One id per request, by design: the
+ * character import and each of its linked lorebooks are independent downloads, not one bundled
+ * payload. Writes the World Info file server-side (untrusted external content is validated and
+ * persisted in one place, not round-tripped as raw bytes through the client and back).
+ */
+router.post('/importChubLorebookById', async (request, response) => {
+    const projectId = request.body.id;
+    if (!projectId || !/^\d+$/.test(String(projectId))) {
+        return response.sendStatus(400);
+    }
+
+    try {
+        const result = await downloadChubLorebookByProjectId(projectId);
+        if (!result) {
+            return response.sendStatus(404);
+        }
+
+        const desiredName = typeof request.body.name === 'string' && request.body.name.trim()
+            ? request.body.name.trim()
+            : result.fileName;
+        const worldName = importWorldInfoFromRaw(request.user.directories, desiredName, result.buffer.toString('utf8'));
+        return response.send({ name: worldName });
+    } catch (error) {
+        console.error('Importing Chub linked lorebook failed', error);
         return response.sendStatus(500);
     }
 });
