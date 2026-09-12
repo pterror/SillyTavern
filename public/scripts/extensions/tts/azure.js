@@ -53,9 +53,7 @@ class AzureTtsProvider {
     }
 
     onSettingsChange() {
-        // Update dynamically
         this.settings.region = String($('#azure_tts_region').val());
-        // Reset voices
         this.voices = [];
         saveTtsProviderSettings();
     }
@@ -85,7 +83,6 @@ class AzureTtsProvider {
         }
     }
 
-    // Perform a simple readiness check by trying to fetch voiceIds
     async checkReady() {
         if (secret_state[SECRET_KEYS.AZURE_TTS]) {
             await this.fetchTtsVoiceObjects();
@@ -97,10 +94,6 @@ class AzureTtsProvider {
     async onRefreshClick() {
         await this.checkReady();
     }
-
-    //#################//
-    //  TTS Interfaces //
-    //#################//
 
     async getVoice(voiceName) {
         if (this.voices.length == 0) {
@@ -120,9 +113,6 @@ class AzureTtsProvider {
         return response;
     }
 
-    //###########//
-    // API CALLS //
-    //###########//
     async fetchTtsVoiceObjects() {
         if (!secret_state[SECRET_KEYS.AZURE_TTS]) {
             console.warn('Azure TTS API Key not set');
@@ -152,10 +142,6 @@ class AzureTtsProvider {
         return responseJson;
     }
 
-    /**
-     * Preview TTS for a given voice ID.
-     * @param {string} id Voice ID
-     */
     async previewTtsVoice(id) {
         this.audioElement.pause();
         this.audioElement.currentTime = 0;

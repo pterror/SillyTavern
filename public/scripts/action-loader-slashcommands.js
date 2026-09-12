@@ -9,19 +9,8 @@ import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 import { isFalseBoolean } from './utils.js';
 import { DOMPurify } from '../lib.js';
 
-/**
- * Registers slash commands for the action loader module.
- */
 export function registerActionLoaderSlashCommands() {
-    /**
-     * Helper to create a closure-based handler from a SlashCommandClosure argument.
-     * Allows all possible slash command arg types to be passed in, but only closure is accepted.
-     * @param {string | SlashCommandClosure | (string | SlashCommandClosure)[]} closure - The closure argument
-     * @param {Object} options - Configuration options
-     * @param {string} [options.argName='onStop'] - Name of the argument for error messages
-     * @param {boolean} [options.throwInvalid=true] - Whether to throw an error for invalid input
-     * @returns {(() => Promise<void>)|null} The handler function, or null if no closure
-     */
+    /** Accepts any slash-command arg type, but only a closure produces a handler. */
     function createClosureHandler(closure, { argName = 'onStop', throwInvalid = true } = {}) {
         if (!(closure instanceof SlashCommandClosure)) {
             if (closure && throwInvalid) {
@@ -41,7 +30,6 @@ export function registerActionLoaderSlashCommands() {
         };
     }
 
-    // Shared loader enum providers
     const loaderEnumProviders = {
         toastModeEnumProvider: () => [
             new SlashCommandEnumValue(ActionLoaderToastMode.NONE, 'No toast displayed', enumTypes.enum, enumIcons.disabled),
@@ -55,7 +43,6 @@ export function registerActionLoaderSlashCommands() {
         ),
     };
 
-    // /loader-wrap command - wraps a closure with loader display
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'loader-wrap',
         returns: 'result of the closure execution',
@@ -175,7 +162,6 @@ export function registerActionLoaderSlashCommands() {
         },
     }));
 
-    // /loader-show command - manually show a loader, returns handle ID
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'loader-show',
         returns: 'loader handle ID (use with /loader-hide)',
@@ -287,7 +273,6 @@ export function registerActionLoaderSlashCommands() {
         },
     }));
 
-    // /loader-hide command - manually hide a loader by handle ID
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'loader-hide',
         returns: 'true if an active loader was hidden, otherwise false',
@@ -321,13 +306,11 @@ export function registerActionLoaderSlashCommands() {
                 return 'false';
             }
 
-            // No handle provided - hide all active loaders
             const result = await loader.hide();
             return result ? 'true' : 'false';
         },
     }));
 
-    // /loader-stop command - trigger the stop action on a loader
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'loader-stop',
         returns: 'true if an active loader was stopped, otherwise false',

@@ -5,7 +5,6 @@ dialog {
     color: var(--SmartThemeBodyColor);
 }
 
-/* Closed state of the dialog */
 .popup {
     width: 500px;
     text-align: center;
@@ -21,18 +20,16 @@ dialog {
     max-width: calc(100dvw - 2em);
     min-height: fit-content;
 
-    /* Overflow visible so elements (like toasts) can appear outside of the dialog. '.popup-body' is hiding overflow for the real content. */
+    /* visible so toasts can escape the dialog; .popup-body clips the real content */
     overflow: visible;
 
     /* Fix weird animation issue with font-scaling during popup open */
     backface-visibility: hidden;
     -webkit-font-smoothing: subpixel-antialiased;
 
-    /* Variables setup */
     --popup-animation-speed: var(--animation-duration-slow);
 }
 
-/** Popup styles applied to the main popup */
 .popup--animation-fast {
     --popup-animation-speed: var(--animation-duration);
 }
@@ -45,7 +42,6 @@ dialog {
     --popup-animation-speed: 0ms;
 }
 
-/* Styling of main popup elements */
 .popup .popup-body {
     display: flex;
     flex-direction: column;
@@ -83,7 +79,6 @@ dialog {
     text-align: start;
 }
 
-/* Opening animation */
 .popup[opening] {
     animation: pop-in var(--popup-animation-speed) ease-in-out;
 }
@@ -97,7 +92,6 @@ dialog {
     visibility: hidden;
 }
 
-/* Open state of the dialog */
 .popup[open] {
     color: var(--SmartThemeBodyColor);
 }
@@ -113,7 +107,6 @@ body.no-blur .popup[open]::backdrop {
     -webkit-backdrop-filter: none;
 }
 
-/* Closing animation */
 .popup[closing] {
     animation: pop-out var(--popup-animation-speed) ease-in-out;
 }
@@ -122,7 +115,6 @@ body.no-blur .popup[open]::backdrop {
     animation: fade-out var(--popup-animation-speed) ease-in-out;
 }
 
-/* Edge inset to match Toastr default spacing */
 :root {
     --toast-edge: 12px;
 }
@@ -132,7 +124,6 @@ body.no-blur .popup[open]::backdrop {
     text-align: left;
 }
 
-/* Per-position position adjustments caused by the top bar, inside the popup */
 .popup #toast-container.toast-top-left {
     top: calc(var(--toast-edge) + var(--topBarBlockSize));
 }
@@ -155,7 +146,6 @@ body.no-blur .popup[open]::backdrop {
 
 .popup-crop-wrap img {
     max-width: 100%;
-    /* This rule is very important, please do not ignore this! */
 }
 
 .popup-inputs {
@@ -164,7 +154,6 @@ body.no-blur .popup[open]::backdrop {
 }
 
 .popup-inputs label span {
-    /* Make the title of the custom inputs a bit darker, but keep their text at default opacity. */
     opacity: 0.7;
 }
 

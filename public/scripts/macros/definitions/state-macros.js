@@ -25,10 +25,6 @@ function ensureLastGenerationTypeTracking() {
     }
 }
 
-/**
- * Registers macros that depend on runtime application state or event tracking
- * rather than static environment fields.
- */
 export function registerStateMacros() {
     ensureLastGenerationTypeTracking();
 
@@ -39,7 +35,6 @@ export function registerStateMacros() {
         handler: () => lastGenerationTypeValue,
     });
 
-    // Macro that checks if an extension is enabled
     MacroRegistry.registerMacro('hasExtension', {
         category: MacroCategory.STATE,
         unnamedArgs: [{

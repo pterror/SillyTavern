@@ -1,27 +1,11 @@
 /**
- * Client data model for character residency (design doc: docs/design/character-data-residency-redesign.md, §6,
- * phase 5). `CharacterRepository` is the one seam internal code is meant to go through instead of touching
- * `charactersStore/characters` directly for anything beyond "read a row I already know is on screen" - it owns
- * the resident/non-resident distinction §6 calls out as the whole point of this class:
+ * The seam for character data access: `peek()` is a sync, non-fetching resident read - a miss means "not
+ * currently resident", never "does not exist" (use `exists()` for that). Everything else (`get`, `getMany`,
+ * `full`, `query`, `exists`) is async since it may need a server round-trip to answer.
  *
- * > The bright line: `peek()` returning `undefined` must never be interpreted as "does not exist".
- *
- * `peek()` is the only sync member, and it is a pure `charactersStore` read - it never fetches and never lies
- * about that. Everything that might need to leave the resident set to answer (`get`, `getMany`, `full`, `query`,
- * `exists`) is async, even though today - full shallow residency, per phase 5's staging note in §9 - most of
- * them resolve synchronously in practice from an already-resident row. The async shape is not a nod to a
- * hypothetical: phase 6 (§7, IDB cache) swaps what backs a residency miss without any caller here changing, and
- * that swap is only possible because nothing upstream of this file assumed sync.
- *
- * Explicitly out of scope for this pass (phase 6, not phase 5): an IndexedDB tier in front of the server fetch.
- * `get()`/`getMany()`'s server fallback path also does *not* write fetched rows back into `charactersStore` -
- * see `get()`'s doc comment for why that's a deliberate correctness call, not an oversight.
- *
- * `query()`/`queryAll()` also carry `filter.includeGroups` (design doc §5/§6 close of the "getEntitiesList can't
- * answer a mixed character+group+folder ordering" gap): set it to merge groups into the same server-sorted,
- * server-paginated result instead of building the group portion from the fully-resident `groups` array. Use
- * `normalizeQueryRow()` to read the result regardless of which shape it came back as - script.js's
- * `getEntitiesList()`/`printCharacters()` are the reference callers.
+ * `query()`/`queryAll()` accept `filter.includeGroups` to merge groups into the same server-sorted/paginated
+ * result instead of building that portion from the fully-resident `groups` array; use `normalizeQueryRow()` to
+ * read a row regardless of which shape it came back as.
  */
 
 import { charactersStore, getRequestHeaders, unshallowCharacter } from '../script.js';
@@ -32,102 +16,71 @@ import { getCachedEntriesByIds, saveCachedCharacters, getCachedGroupEntriesByIds
  */
 
 /**
- * @typedef {object} CharacterQueryFilter - mirrors the server's `POST /api/characters/query` filter shape
- * (design doc §5; src/endpoints/characters.js `router.post('/query'`).
+ * @typedef {object} CharacterQueryFilter - mirrors the server's `POST /api/characters/query` filter shape.
  * @property {string} [search] - routed to the FTS/tantivy index, joined back to SQLite by id.
  * @property {{include: string[], exclude: string[], mode: 'and'|'or'}} [tags]
  * @property {boolean} [fav]
  * @property {string} [world]
  * @property {string[]} [excludeIds] - group member exclusion.
  * @property {string[]} [ids] - resolve-by-id batch; intersects with `search` when both are present.
- * @property {boolean} [includeGroups] - omitted/false: `rows` stays the pre-existing bare `Character[]` shape,
- * every caller that doesn't pass this keeps working unmodified. `true`: the server merges the user's groups into
- * the same sorted/paginated result, and `rows` becomes `Array<{type: 'character', item: Character} | {type:
- * 'group', item: Group}>` instead - see `normalizeQueryRow()` below for the one place callers should go to tell
- * the two apart, rather than re-deriving the discriminator ad hoc. Composes with `filter.tags` (a folder is just
- * a tag - `tags.include=[folderId]`, and a folder can contain groups too, via `group_tags`) AND with
- * `filter.search`: a non-empty `search` DOES include groups in the merged result when this flag is set - groups
- * have their own full-text index (server's groups-search-index.js, mirroring the character one) and the server
- * merges both indexes' relevance-ordered matches before answering (src/endpoints/characters.js, the `/query`
- * route's `hasSearch && includeGroups` branch). An earlier version of this doc claimed the opposite ("no group
- * full-text index exists") and attributed that exclusion to an owner decision the owner never actually made -
- * see that route's own doc comment for the git-history trace.
+ * @property {boolean} [includeGroups] - `true` merges groups into the same sorted/paginated result, and `rows`
+ * becomes `Array<{type: 'character', item: Character} | {type: 'group', item: Group}>` instead of bare
+ * `Character[]` - see `normalizeQueryRow()`. A non-empty `search` still includes matching groups when this is
+ * set - groups have their own full-text index, merged server-side with the character one.
  */
 
 /**
  * @typedef {object} CharacterQuerySort
  * @property {'name'|'date_added'|'date_last_chat'|'chat_size'|'fav'|'random'|'search'} field
  * @property {'asc'|'desc'} [order]
- * @property {number} [seed] - required (finite) when `field` is `'random'` - design doc §5.3 decisions 8/10/13;
- * mint/persist one with `getRandomSortSeed()` (random-sort.js), never invent one here.
+ * @property {number} [seed] - required (finite) when `field` is `'random'`; mint one with `getRandomSortSeed()`
+ * (random-sort.js), never invent one here.
  */
 
 /**
  * @typedef {object} CharacterQueryResult
  * @property {Character[]|Array<{type: 'character', item: Character}|{type: 'group', item: object}>} [rows] -
- * present iff `want` included `'rows'` (default: yes). Bare `Character[]` unless the request set
- * `filter.includeGroups: true`, in which case it's the tagged-row shape - see `CharacterQueryFilter.includeGroups`
- * and `normalizeQueryRow()`.
- * @property {number|string} [total] - present iff `want` included `'total'` (default: yes). A plain number is
- * exact; a `~`-prefixed string (e.g. `"~12345"`) is an approximate count that must still be treated as the real
- * scope of the result set, never as a truncated/capped one - design doc §5 decision 6. Callers that need a
- * number for arithmetic must strip the `~` themselves; this repository does not silently coerce it, since doing
- * so would throw away the "this is approximate" signal the `~` exists to carry.
- * @property {number} rev - the metadata store's current change revision at query time (§5.2); lets a caller
- * detect that what it just rendered may already be stale relative to `/api/characters/changes`.
- * @property {string} [searchBackend] - which search engine answered `filter.search` ('tantivy'),
- * present only when `filter.search` was non-empty.
+ * bare `Character[]` unless the request set `filter.includeGroups: true` - see `normalizeQueryRow()`.
+ * @property {number|string} [total] - a plain number is exact; a `~`-prefixed string (e.g. `"~12345"`) is an
+ * approximate count and must not be read as a truncated/capped one. Callers needing arithmetic must strip the
+ * `~` themselves - not coerced here, to avoid silently losing the "approximate" signal.
+ * @property {number} rev - the metadata store's current change revision at query time.
+ * @property {string} [searchBackend] - which search engine answered `filter.search` ('tantivy'), present only
+ * when `filter.search` was non-empty.
  */
 
 const DEFAULT_QUERY_WANT = /** @type {const} */ (['rows', 'total']);
 
 /**
- * Cache of the last-seen `/query` response per exact request shape (filter+sort+page+pageSize+want serialized to
- * a string), keyed so a caller that repeats the same request can send back the `seq` it was given and let the
- * server skip row hydration entirely when nothing's changed since (see the route's own doc comment,
- * src/endpoints/characters.js `router.post('/query'`) - this is what turns two boot-time
- * `printCharacters(true)` calls with an identical filter/sort/page into one real fetch plus one ~20-byte
- * "unchanged" response instead of two full row payloads. Capped defensively (cleared wholesale past the limit,
- * not LRU-evicted - this only exists to bound worst-case memory for a tab that mints many distinct signatures,
- * e.g. a fresh random-sort seed per session; losing the whole cache occasionally just costs one extra full fetch,
- * never a correctness issue, since a cache hit is always re-verified against the server's current `seq`).
+ * Last-seen `/query` response per exact request signature, so a repeated request can send back its `seq` and
+ * let the server skip row hydration when nothing changed. Cleared wholesale past the size limit rather than
+ * LRU-evicted - a miss just costs one extra full fetch, never a correctness issue, since a hit is always
+ * re-verified against the server's current `seq`.
  * @type {Map<string, any>}
  */
 const queryResponseCache = new Map();
 const QUERY_RESPONSE_CACHE_LIMIT = 100;
 
-/**
- * The server's own page cap (`MAX_QUERY_PAGE_SIZE`, src/endpoints/characters.js) - `queryAll()` below chunks its
- * internal loop at this size. Duplicated here rather than fetched from the server because it's a wire-contract
- * constant, not runtime state.
- */
+/** Mirrors the server's own page cap (`MAX_QUERY_PAGE_SIZE`) - `queryAll()` chunks its loop at this size. */
 const QUERY_ALL_PAGE_SIZE = 2000;
 
 /**
  * @typedef {object} CharacterQueryStateInput
- * @property {string} [searchTerm] - current search box value; non-empty disqualifies the server-query fast path
- * (see `isServerQueryEligible()`'s doc comment for why, not just this typedef).
- * @property {string[]} [tagsInclude] - selected tag ids (`FILTER_TYPES.TAG` filter data's `selected`) - doubles
- * as "which bogus folder is currently open", same as the pre-existing local `filterByTagState()`/`tagFilter()`.
- * @property {string[]} [tagsExclude] - excluded tag ids (`FILTER_TYPES.TAG` filter data's `excluded`).
- * @property {boolean} [fav] - `true`/`false` to restrict to favorited/non-favorited, `undefined` for no fav
- * filter - already-normalized from `FILTER_TYPES.FAV`'s tri-state via `isFilterState()`; this module takes no
- * dependency on filters.js, so callers normalize before calling.
- * @property {string} [sortField] - `power_user.sort_field`, or `'random'`/`'search'` for those two special
- * cases (matching the `#character_sort_order` dropdown's overloaded use of `data-order="random"` and the
- * separate "Search" option).
- * @property {'asc'|'desc'} [sortOrder] - `power_user.sort_order` (`'random'` itself is carried via `sortField`,
- * not this - see above).
+ * @property {string} [searchTerm] - current search box value.
+ * @property {string[]} [tagsInclude] - selected tag ids.
+ * @property {string[]} [tagsExclude] - excluded tag ids.
+ * @property {boolean} [fav] - `undefined` for no fav filter; this module takes no dependency on filters.js, so
+ * callers normalize the tri-state themselves before calling.
+ * @property {string} [sortField] - `power_user.sort_field`, or `'random'`/`'search'` for those two special cases.
+ * @property {'asc'|'desc'} [sortOrder] - `'random'` itself is carried via `sortField`, not this.
  * @property {number} [randomSeed] - required (finite) when `sortField === 'random'`.
  * @property {boolean} [includeGroups] - see `CharacterQueryFilter.includeGroups`.
  */
 
 /**
- * Pure mapping from the client's current filter/sort UI state to the server `/query` wire shape (design doc §5).
- * No DOM/module dependency beyond its own typedefs, so it's unit-testable without mocking script.js - see
- * tests/character-repository.test.js. Every caller (getEntitiesList(), favsToHotswap()) is expected to have
- * already decided (via `isServerQueryEligible()`) whether the server-query path applies at all; this function
- * just shapes whatever state it's given, it does not gate eligibility itself.
+ * Pure mapping from the client's current filter/sort UI state to the server `/query` wire shape. Does not gate
+ * eligibility for the server-query path itself - callers decide that first and just shape whatever state they
+ * pass.
  * @param {CharacterQueryStateInput} [state]
  * @returns {{filter: CharacterQueryFilter, sort: CharacterQuerySort|undefined}}
  */
@@ -143,9 +96,7 @@ export function buildCharacterQuery({
 } = {}) {
     /** @type {CharacterQueryFilter} */
     const filter = {};
-    // Trimmed, because the route trims before deciding whether a search is present. Comparing raw
-    // truthiness here instead means a box holding one space reads as a search on this side and as no
-    // search on that one, and 'search' sort is rejected outright for having nothing to rank by.
+    // Trimmed to match the route's own check - a whitespace-only term must not read as "search present" here.
     const search = String(searchTerm ?? '').trim();
     if (search) filter.search = search;
     if (tagsInclude.length > 0 || tagsExclude.length > 0) {
@@ -166,28 +117,12 @@ export function buildCharacterQuery({
 }
 
 /**
- * Whether `sortField` is even a candidate for the server `/query` path at all. This deliberately does NOT try to
- * know in advance whether the server actually has a matching column for `sortField` - that used to be
- * `QUERYABLE_CLIENT_SORT_FIELDS`, a hand-maintained mirror of the server's own `QUERYABLE_SORT_COLUMNS`
- * (src/character-metadata-db.js) that twice drifted out of sync with it in practice (`create_date`/`data_size`
- * both went live server-side without this mirror being updated, so every view using either sort silently kept
- * paying for the fully-local fallback for no reason). The client has no business maintaining a second copy of
- * "which columns the server supports" at all - the server's own `400 { reason: 'invalid-sort-field' }` response
- * (see `CharacterQueryError`/`isInvalidSortFieldError()` below) is now the sole source of truth for that
- * question. Callers attempt the server query unconditionally and treat that specific rejection as the trigger
- * for the pre-existing local-sort fallback - see `canUseServerQueryForEntitiesList()`/`getEntitiesList()`
- * (script.js), `canUseServerQueryForGroupCandidates()`/`getGroupCharacters()` (group-chats.js), and
- * `favsToHotswap()` (RossAscends-mods.js) for that try/catch.
- *
- * What's left here is narrower, and neither case is about column support:
- * - `'search'` isn't a plain-column sort at all - relevance order is answered by the search index directly, a
- *   different code path than a `sort.field` column (`fetchServerCharacterSearchResults()`/`serverSearchResults`,
- *   script.js) - excluded here so callers that ask "should I even try `/query` for this sort field" get `false`
- *   for it rather than sending a request that was never going to be the right mechanism.
- * - everything else, including `'random'` (which always needs a finite `sort.seed`, minted by the caller via
- *   `getRandomSortSeed()` before the request goes out - a request-shape concern, not a column-support one, and
- *   unrelated to this function) and every real or made-up column name: `true` - the caller finds out whether the
- *   server actually supports it from the response, not from asking here.
+ * Whether `sortField` is even a candidate for the server `/query` path. Deliberately does not try to know in
+ * advance which columns the server supports for sorting - that's the server's `400 { reason:
+ * 'invalid-sort-field' }` response to find out (see `isInvalidSortFieldError()`), not a client-side mirror of
+ * its column list, which drifts. Only `'search'` is excluded here: relevance order comes from the search index
+ * directly, not a `sort.field` column, so it was never going to work via `/query` regardless of what the server
+ * supports.
  * @param {string|undefined} sortField
  * @returns {boolean}
  */
@@ -196,11 +131,8 @@ export function isServerQueryableSort(sortField) {
 }
 
 /**
- * Normalizes one `/query` response row to a `{type, item}` shape regardless of whether the request that
- * produced it set `filter.includeGroups` - the one place a caller should go to tell a character row from a
- * group row, instead of re-deriving the discriminator ad hoc at every call site (a bare row has no `type` field
- * at all; `filter.includeGroups: true` rows already carry one straight from the server). A bare row is always a
- * character - `filter.includeGroups: false`/omitted never returns a group.
+ * Normalizes one `/query` response row to a `{type, item}` shape regardless of whether the request set
+ * `filter.includeGroups`. A bare row (no `type` field) is always a character.
  * @param {Character|{type: 'character'|'group', item: Character|object}} row
  * @returns {{type: 'character'|'group', item: Character|object}}
  */
@@ -212,11 +144,9 @@ export function normalizeQueryRow(row) {
 }
 
 /**
- * Thrown by `postJson()` for a non-ok response. Carries the parsed JSON body (when the response had one) so
- * callers can distinguish a specific server-declared rejection - most importantly `reason: 'invalid-sort-field'`,
- * the trigger for the local-sort fallback (see `isServerQueryableSort()`'s doc comment) - from a generic failure
- * (network error, a 500, a malformed/empty body) that must NOT be treated the same way. Prefer
- * `isInvalidSortFieldError()` over checking `.reason` directly at call sites.
+ * Thrown by `postJson()` for a non-ok response. Carries the parsed JSON body, when there was one, so callers can
+ * distinguish a specific server-declared rejection (e.g. `reason: 'invalid-sort-field'`) from a generic failure.
+ * Prefer `isInvalidSortFieldError()` over checking `.reason` directly.
  */
 export class CharacterQueryError extends Error {
     /**
@@ -237,11 +167,9 @@ export class CharacterQueryError extends Error {
 }
 
 /**
- * Whether `error` is `postJson()` rejecting a `/query` request specifically because `sort.field` isn't one the
- * server can answer (`400 { reason: 'invalid-sort-field' }`) - the one failure mode call sites should catch and
- * respond to by falling back to the pre-existing local sort, per `isServerQueryableSort()`'s doc comment. Every
- * other failure (network error, a 500, a malformed body, a different 400 reason like
- * `'search-sort-requires-search'`) must propagate normally, not be silently swallowed into the same fallback.
+ * Whether `error` is `postJson()` rejecting a `/query` request because `sort.field` isn't one the server can
+ * answer - the one failure mode callers should catch and fall back to a local sort for. Every other failure
+ * must propagate normally.
  * @param {unknown} error
  * @returns {boolean}
  */
@@ -283,10 +211,8 @@ const HASH_QUERY_SEARCH_BACKEND_NAMES = { 1: 'tantivy', 2: 'native', 3: 'wasm', 
 
 /**
  * Decodes `/query`'s hash-only mode (`want: ['hashes']`) binary response. See
- * `serializeQueryHashesBinary()`/`sendHashQueryResponse()` server-side (src/endpoints/characters.js) for the
- * matching encoder and the full field-by-field layout spec (that doc comment is the source of truth for the wire
- * format; this function just walks it with a `DataView`, the same approach script.js's own
- * `deserializeTreeDescendBinary()` uses for the sibling tree-descend binary format).
+ * `serializeQueryHashesBinary()` server-side (src/endpoints/characters.js) for the matching encoder and the
+ * field-by-field layout spec this just walks with a `DataView`.
  * @param {ArrayBuffer} buffer
  * @returns {{seq: number, total: number|undefined, totalApprox: boolean, searchBackend: string|undefined, hashRows: {id:string, isGroup:boolean, favHash:number, tagIdsHash:number, contentHash:number, date_added:number, create_date:number|null, date_last_chat:number, chat_size:number, data_size:number, chat:string|null}[]}}
  */
@@ -362,28 +288,20 @@ async function postHashQuery(body) {
     }
     const contentType = response.headers.get('content-type') ?? '';
     if (contentType.includes('application/json')) {
-        // Only ever the ifSeq "unchanged" stub in hash mode - the route sends that shape (never an error, since
-        // errors above already went through the !response.ok branch) before it ever branches into hash-row
-        // building. See sendHashQueryResponse()/the /query route's own ifSeq check, characters.js.
+        // JSON here only ever means the ifSeq "unchanged" stub - hash rows themselves are always binary.
         return response.json();
     }
     return deserializeQueryHashesBinary(await response.arrayBuffer());
 }
 
-// Mirrors script.js's own CHARACTER_BATCH_CHUNK_SIZE - `/api/characters/batch` bodies stay chunked at the same
-// size every other caller already uses, rather than sizing hash-mode's own stale-id batch to `/query`'s (larger)
-// MAX_QUERY_PAGE_SIZE.
+// Mirrors script.js's own CHARACTER_BATCH_CHUNK_SIZE, not /query's (larger) MAX_QUERY_PAGE_SIZE.
 const BATCH_FIELDS_CHUNK_SIZE = 500;
 
-// The hash-covered fields hash-mode never ships on the wire itself - resolved per id from the local per-id cache
-// when its stored hashes match what `/query` just reported, otherwise fetched here via `/api/characters/batch`'s
-// field-filtered mode. Exactly `characterDigestFingerprint()`'s own field list (hash-utils.js) minus `avatar`
-// (which `/batch`'s field-filtered mode always includes regardless of what's requested).
+// characterDigestFingerprint()'s own field list (hash-utils.js) minus `avatar`, which /batch always includes.
 const HASH_MODE_BATCH_FIELDS = /** @type {const} */ (['name', 'fav', 'tags', 'tag_ids', 'data']);
 
 /**
- * Fetches specific fields for specific ids via `/api/characters/batch`'s field-filtered mode, chunked the same
- * way script.js's own `/batch` callers already are.
+ * Fetches specific fields for specific ids via `/api/characters/batch`'s field-filtered mode.
  * @param {string[]} ids
  * @param {readonly string[]} fields
  * @returns {Promise<object[]>}
@@ -399,8 +317,7 @@ async function fetchBatchFields(ids, fields) {
 }
 
 /**
- * Fetches full group objects (every field - see `/api/groups/batch`'s own doc comment on why groups get no
- * field-filtering the way `fetchBatchFields()` above does for characters) for specific ids, chunked the same way.
+ * Fetches full group objects for specific ids - `/api/groups/batch` has no field-filtered mode.
  * @param {string[]} ids
  * @returns {Promise<object[]>}
  */
@@ -415,10 +332,9 @@ async function fetchGroupBatchFields(ids) {
 }
 
 /**
- * The small set of fields hash-mode ships live on every row regardless of cache state - see
- * `queryCharacters()`'s own doc comment (character-metadata-db.js) for why these specifically stay outside the
- * per-field hash's coverage. Always taken from the just-received hash row, never from a cached/fetched character
- * object, so a stale cache entry can never leave a character showing an outdated chat pointer or date/size.
+ * Fields hash-mode ships live on every row, outside the per-field hash's coverage. Always taken from the
+ * just-received hash row, never from a cached/fetched character object, so a stale cache entry can never leave
+ * a character showing an outdated chat pointer or date/size.
  * @param {{chat:string|null, date_added:number, create_date:number|null, date_last_chat:number, chat_size:number, data_size:number}} hashRow
  */
 function liveFieldsFromHashRow(hashRow) {
@@ -432,10 +348,7 @@ function liveFieldsFromHashRow(hashRow) {
     };
 }
 
-/**
- * Owns character residency for internal (non-extension) client code. See the module doc comment above for the
- * resident/non-resident contract this exists to make explicit.
- */
+/** Owns character residency for internal (non-extension) client code. */
 export class CharacterRepository {
     /** @type {import('./entity-store.js').EntityStore<Character>|undefined} explicit store passed to the constructor, if any */
     #explicitStore;
@@ -445,22 +358,17 @@ export class CharacterRepository {
 
     /**
      * @param {import('./entity-store.js').EntityStore<Character>} [store] - defaults to the app's real
-     * `charactersStore` singleton; overridable for tests, and this is what phase 6 swaps to change what backs a
-     * residency miss.
+     * `charactersStore` singleton; overridable for tests.
      */
     constructor(store) {
         this.#explicitStore = store;
     }
 
     /**
-     * Resolves lazily on first access rather than defaulting eagerly in the constructor: script.js imports this
-     * module (for `characterRepository`/`buildCharacterQuery`/etc) above its own `charactersStore` declaration,
-     * and this module's `export const characterRepository = new CharacterRepository()` runs at module-eval time -
-     * so a `store = charactersStore` constructor default would read `charactersStore` while script.js is still
-     * mid import-resolution, before its `export const charactersStore` has initialized (TDZ crash: "can't access
-     * lexical declaration 'charactersStore' before initialization"). Same class of bug as FILTER_TYPES in
-     * tags.js (commit f30735376) and getStringHash in utils.js (commit 85017bb94); same fix shape - defer the
-     * reference until first real use, by which point script.js has finished evaluating.
+     * Resolves lazily rather than defaulting eagerly in the constructor: this module's top-level
+     * `characterRepository` instance is constructed at module-eval time, before script.js's own
+     * `charactersStore` export has necessarily initialized - a `store = charactersStore` constructor default
+     * would hit a TDZ crash reading it that early.
      * @returns {import('./entity-store.js').EntityStore<Character>}
      */
     get store() {
@@ -471,9 +379,8 @@ export class CharacterRepository {
     }
 
     /**
-     * Sync resident read. Never fetches. `undefined` means "not currently resident", which is NOT the same
-     * claim as "does not exist" - see the module doc comment. Internal code that needs an authoritative
-     * existence answer must use `exists()`, never treat a `peek()` miss as one (design doc §4.2/§6).
+     * Sync resident read. Never fetches. `undefined` means "not currently resident", not "does not exist" -
+     * use `exists()` for an authoritative answer.
      * @param {string} id
      * @returns {Character|undefined}
      */
@@ -482,20 +389,13 @@ export class CharacterRepository {
     }
 
     /**
-     * Resolves one character: resident row if present, otherwise a server round-trip. Callers that already
-     * know they only need the sync/resident answer should call `peek()` directly rather than awaiting this for
-     * no reason.
-     *
-     * Deliberately does NOT write a server-fallback result back into `charactersStore` (unlike `full()`'s
-     * resident-hydration path, which mutates in place via `unshallowCharacter`). `charactersStore` backs
-     * `characters`, the array several call sites still read the length/contents of directly to mean "the
-     * boot-loaded library" (e.g. the "N hidden" badge's `characters.length + groups.length`, §4.1). Silently
-     * growing that array as a side effect of a read would make those counts lie. Until phase 6 gives this
-     * repository its own cache tier to write into instead, a server-fallback fetch is deliberately
-     * non-caching: correct and slightly wasteful beats fast and silently wrong.
+     * Resolves one character: resident row if present, otherwise a server round-trip. Deliberately does NOT
+     * write the fallback result back into `charactersStore` - several call sites read `characters.length`
+     * directly to mean "the boot-loaded library", and silently growing that array as a read side effect would
+     * make those counts lie.
      * @param {string} id
-     * @returns {Promise<Character|undefined>} `undefined` if the id genuinely does not resolve - a true miss,
-     * not merely "not resident" (equivalent to `exists()` saying `false` for it).
+     * @returns {Promise<Character|undefined>} `undefined` if the id genuinely does not resolve, not merely
+     * "not resident".
      */
     async get(id) {
         const resident = this.peek(id);
@@ -532,20 +432,12 @@ export class CharacterRepository {
     }
 
     /**
-     * Hydrates the full card (today's `unshallowCharacter()`/`getOneCharacter()` machinery in script.js) for an
-     * already-resident character, and returns the (in-place-updated) resident entity.
-     *
-     * For a genuinely non-resident id, this is the "entry-level fault-in" design doc §6 flags as not existing
-     * anywhere yet: `unshallowCharacter()` requires the row to already be in `charactersStore` (it hydrates
-     * *fields*, it does not create the entry), and `getOneCharacter()` inherits that requirement
-     * (`charactersStore.has(avatarUrl)` gate in script.js). Making that case work means deciding whether a
-     * fetched full card joins `charactersStore` (and therefore the "boot-loaded library" counts `get()`'s doc
-     * comment above describes) - a residency-model decision that belongs with phase 6's cache tier, not this
-     * pass. Left as a documented gap rather than papered over: this throws instead of silently returning
-     * `undefined` (which would be indistinguishable from "fetched successfully, card is empty").
+     * Hydrates the full card for an already-resident character and returns the (in-place-updated) resident
+     * entity. Throws for a non-resident id rather than fetching one in - entry-level fault-in isn't implemented,
+     * since it'd require deciding whether the fetched card should join `charactersStore` (see `get()`).
      * @param {string} id
      * @returns {Promise<Character>}
-     * @throws {Error} if `id` is not currently resident (see above).
+     * @throws {Error} if `id` is not currently resident.
      */
     async full(id) {
         if (!this.store.has(id)) {
@@ -561,9 +453,7 @@ export class CharacterRepository {
     }
 
     /**
-     * The workhorse: one page of query results, straight from `POST /api/characters/query` (design doc §5).
-     * `getEntitiesList()`/`printCharacters()` are built directly on top of this - see character-repository.js's
-     * module doc comment and script.js.
+     * The workhorse: one page of query results, straight from `POST /api/characters/query`.
      * @param {CharacterQueryFilter} [filter]
      * @param {CharacterQuerySort} [sort]
      * @param {number} [page] - 1-based, matching the server's convention.
@@ -573,10 +463,8 @@ export class CharacterRepository {
      * @returns {Promise<CharacterQueryResult>}
      */
     async query(filter = {}, sort = undefined, page = 1, pageSize = 100, want = DEFAULT_QUERY_WANT) {
-        // Mirrors the route's own rule rather than trusting each caller to have applied it: relevance
-        // order requires something to rank by, so a blank or whitespace-only term cannot ask for it.
-        // Callers that build their filter by hand (rather than via buildCharacterQuery()) reach the
-        // request through here too, so this is the one place that can guarantee the two agree.
+        // Mirrors the route's own rule: relevance order requires something to rank by, so a blank term
+        // cannot ask for a 'search' sort.
         const search = typeof filter.search === 'string' ? filter.search.trim() : '';
         const normalizedFilter = search ? { ...filter, search } : (() => {
             const rest = { ...filter };
@@ -588,15 +476,9 @@ export class CharacterRepository {
         const signature = JSON.stringify(requestShape);
         const cached = queryResponseCache.get(signature);
 
-        // Hash mode (2026-09 /query bandwidth pass, extended to `includeGroups: true` requests once the server
-        // gained group digest columns): whenever this request actually wants `rows`, transport the row data as
-        // `{id, hash}` plus a handful of live fields instead of full character/group JSON, and resolve each row
-        // from the persisted per-id cache (character-cache.js's IndexedDB store(s) - one for characters, a
-        // separate one for groups, see getCachedEntriesByIds()/getCachedGroupEntriesByIds()) when its stored
-        // hashes match - zero refetch on a hash match, a batched `/api/characters/batch` or `/api/groups/batch`
-        // call only for ids that are missing or whose hash actually changed. Falls back to the plain JSON path
-        // only for a bare `want: ['total']` (no `rows` to speak of, nothing to gain from hash mode) - that one
-        // keeps working exactly as before, byte-for-byte.
+        // Hash mode: when `rows` is wanted, transport row data as {id, hash} plus a few live fields instead of
+        // full JSON, resolving each row from the local per-id cache on a hash match and only batch-fetching ids
+        // that are missing or changed. A bare `want: ['total']` has nothing to gain from this, so it skips it.
         const useHashMode = want.includes('rows');
         const includeGroups = normalizedFilter.includeGroups === true;
 
@@ -604,10 +486,7 @@ export class CharacterRepository {
             ? await this.#queryHashMode(requestShape, cached, includeGroups)
             : await postJson('/api/characters/query', cached ? { ...requestShape, ifSeq: cached.seq } : requestShape);
 
-        // Server confirmed nothing changed since the cached response's `seq` - reuse it rather than the
-        // (rows/total-less) `unchanged` stub. If a caller somehow got here with a cached signature that no
-        // longer resolves (shouldn't happen - cache entries are only ever written from a real response for this
-        // exact signature), fall through and treat the stub as the real answer rather than throwing.
+        // Server confirmed nothing changed - reuse the cached response rather than the rows/total-less stub.
         if (result?.unchanged === true && cached) {
             return cached;
         }
@@ -621,11 +500,9 @@ export class CharacterRepository {
     }
 
     /**
-     * The hash-mode transport for `query()` above: sends `want: ['hashes', ...]` instead of `want: ['rows', ...]`,
-     * decodes the binary response, and resolves each row to a full `Character` object - from the local per-id
-     * cache on a hash match (zero refetch), otherwise via `/api/characters/batch`. Returns the exact same
-     * `{rows, total, seq, searchBackend}` shape `query()`'s JSON path returns, so nothing downstream of `query()`
-     * needs to know which transport actually ran.
+     * The hash-mode transport for `query()`: decodes the binary response and resolves each row to a full
+     * object, returning the same `{rows, total, seq, searchBackend}` shape the JSON path returns so nothing
+     * downstream needs to know which transport ran.
      * @param {{filter: object, sort: object|undefined, page: number, pageSize: number, want: string[]}} requestShape
      * @param {CharacterQueryResult|undefined} cached
      * @param {boolean} includeGroups
@@ -651,17 +528,9 @@ export class CharacterRepository {
 
     /**
      * Resolves hash-mode's `{id, isGroup, favHash, tagIdsHash, contentHash, ...live fields}` rows into full
-     * `Character`/group objects. A row whose three hashes all match what's stored in the local per-id cache is
-     * answered from that cache directly, with ZERO refetch - the cached object as-is, only its live fields (chat/
-     * dates/sizes, never hash-covered) overlaid from this response. Every other row (cache miss, or a real hash
-     * mismatch) goes through one batched fetch for just those ids - `/api/characters/batch` for character rows,
-     * `/api/groups/batch` for group rows (kept as two separate batch calls rather than one merged one: different
-     * endpoints, different response shapes, different local caches to write back to) - then gets cached for next
-     * time.
-     *
-     * When `includeGroups` is true, every resolved item is wrapped `{type, item}` (normalizeQueryRow()'s own
-     * shape) to match what the JSON path already returns for the same request; otherwise (the common case) items
-     * come back bare, matching the JSON path's own bare-`Character[]` contract for a non-includeGroups request.
+     * objects. A row whose hashes match the local per-id cache is answered from cache with its live fields
+     * overlaid, no refetch; everything else goes through one batched fetch (characters and groups separately,
+     * since they're different endpoints/caches) and gets cached for next time.
      * @param {ReturnType<typeof deserializeQueryHashesBinary>['hashRows']} hashRows
      * @param {boolean} includeGroups
      * @returns {Promise<Array<Character|{type: 'character'|'group', item: Character|object}>>}
@@ -688,15 +557,12 @@ export class CharacterRepository {
             return includeGroups ? { type: 'character', item: character } : character;
         });
 
-        // An id that its own batch call didn't return for (deleted out from under this response between the two
-        // calls) is simply dropped, rather than shipping a hole - same tolerance hydrateEntityRows() already has
-        // server-side for a group whose metadata row outlived its JSON file.
+        // An id its own batch call didn't return for (deleted mid-flight) is dropped rather than shipping a hole.
         return resolved.filter(Boolean);
     }
 
     /**
-     * The character half of #resolveHashRows() above - split out because it needs its own cache/batch-endpoint
-     * pair, distinct from the group half.
+     * The character half of #resolveHashRows(), using the character cache/batch endpoint.
      * @param {ReturnType<typeof deserializeQueryHashesBinary>['hashRows']} hashRows Already filtered to `!isGroup`.
      * @returns {Promise<Map<string, Character>>} keyed by id.
      */
@@ -738,9 +604,7 @@ export class CharacterRepository {
     }
 
     /**
-     * The group half of #resolveHashRows() above - same shape as #resolveCharacterHashRows(), against the
-     * group-side persisted cache (character-cache.js's getCachedGroupEntriesByIds()/saveCachedGroups()) and
-     * `/api/groups/batch` instead.
+     * The group half of #resolveHashRows(), against the group-side cache and `/api/groups/batch`.
      * @param {ReturnType<typeof deserializeQueryHashesBinary>['hashRows']} hashRows Already filtered to `isGroup`.
      * @returns {Promise<Map<string, object>>} keyed by id.
      */
@@ -782,26 +646,15 @@ export class CharacterRepository {
     }
 
     /**
-     * Fetches *every* row matching a filter+sort by looping `query()` pages internally (each request capped at
-     * `QUERY_ALL_PAGE_SIZE`, the server's own `MAX_QUERY_PAGE_SIZE`). This is deliberately NOT the endpoint's
-     * intended access pattern at scale - it fully materializes the matched set client-side, so it does not carry
-     * forward to the 10M-row target `/query`'s paging contract is sized for (design doc §5, §6). It exists as the
-     * documented, non-regressing fallback (design doc phase 5 entry) for callers that still need one fully
-     * resident, fully sorted array to hand to something else that isn't itself server-paginated yet -
-     * `getEntitiesList()`'s character candidate set (has to merge with the small, always-resident group/folder
-     * entity set - see script.js) and `favsToHotswap()`'s favorite-character list (has to merge with favorited
-     * groups the same way). A literal per-page server-driven pagination *controller* is blocked on that same
-     * group/folder interleave problem, which `/query`'s contract does not answer (no rank/cursor primitive) -
-     * that gap is intentionally left open, not papered over here.
+     * Fetches *every* row matching a filter+sort by looping `query()` pages internally. Not the endpoint's
+     * intended access pattern at scale (fully materializes the matched set client-side) - it exists for callers
+     * that need one fully resident, fully sorted array to merge with something not itself server-paginated
+     * (`getEntitiesList()`'s and `favsToHotswap()`'s always-resident group/folder merge).
      *
-     * Never trusts `total` as a loop-termination bound by itself: design doc §5 decision 6 allows `total` to be
-     * an approximate (`~`-prefixed) estimate for expensive-to-count filters, and an approximate count must never
-     * be read as an exact stopping point. The authoritative stop condition is a short page (fewer rows returned
-     * than requested), which is true regardless of whether `total` was exact or approximate.
+     * Never trusts `total` as a loop-termination bound: it may be an approximate estimate. The stop condition is
+     * always a short page (fewer rows than requested), exact or approximate `total` notwithstanding.
      * @param {CharacterQueryFilter} [filter] - pass `includeGroups: true` to merge groups into the loop too; the
-     * returned array is then the tagged `{type, item}` row shape (`normalizeQueryRow()`) rather than bare
-     * `Character[]` - this method doesn't reshape rows, it only loops pages, so the shape is whatever `filter`
-     * asked the server for.
+     * returned array is then the tagged `{type, item}` row shape rather than bare `Character[]`.
      * @param {CharacterQuerySort} [sort]
      * @returns {Promise<Array<Character|{type: 'character'|'group', item: Character|object}>>} every matching
      * row, in server sort order.
@@ -810,24 +663,9 @@ export class CharacterRepository {
         /** @type {Array<Character|{type: 'character'|'group', item: Character|object}>} */
         const rows = [];
         let page = 1;
-        // `sort.field: 'random'` is deliberately dropped for the actual per-page fetch here (falls through to
-        // the server's default order - the always-present `id ASC` tie-break in queryCharacters()'s ORDER BY,
-        // an indexed primary-key sort real OFFSET pagination can walk cheaply) rather than passed straight
-        // through. Requesting `RANDHASH(id, seed)` order per page is both pointless and, at real library scale,
-        // dangerously expensive here specifically: RANDHASH is a SQL function, not an indexed column, so SQLite
-        // can't use an index to satisfy OFFSET - every single page has to re-evaluate + fully re-sort the ENTIRE
-        // filtered table before it can even apply this page's slice. For a queryAll() loop that's O(pages) full
-        // -table sorts, i.e. quadratic in library size - confirmed (2026-08 getStringHash freeze investigation)
-        // as a multi-minute stall on a ~326k-character install, sampled paused inside getStringHash itself
-        // (hash-utils.js), which RANDHASH is built on (character-metadata-db.js).
-        // It's also provably wasted work: queryAll()'s only two callers that ever pass `sort.field: 'random'`
-        // (script.js's getEntitiesList(), group-chats.js's getGroupCharacters()) both unconditionally re-sort
-        // their result afterward via power-user.js's sortEntitiesList(), which reapplies this exact seeded order
-        // client-side (compareByRandomSeed(), random-sort.js) whenever `power_user.sort_order === 'random'` -
-        // so whatever order the server returned these rows in was always going to be discarded and redone. Any
-        // *future* caller that materializes a queryAll() random-sort result without re-sorting it the same way
-        // would see server-side row order, not seeded-random order - not a behavior change for either of
-        // today's callers, but worth knowing if a new one shows up.
+        // A per-page `sort.field: 'random'` would force SQLite to re-sort the entire filtered table on every
+        // page (RANDHASH isn't an indexed column, so OFFSET can't skip past it) - quadratic in library size.
+        // Dropped here since both current random-sort callers re-sort the result client-side afterward anyway.
         const pageSort = sort?.field === 'random' ? undefined : sort;
         for (;;) {
             const result = await this.query(filter, pageSort, page, QUERY_ALL_PAGE_SIZE, ['rows']);
@@ -840,18 +678,12 @@ export class CharacterRepository {
     }
 
     /**
-     * Authoritative existence check (design doc §4.2) - the primitive every destructive-existence site
-     * (group member pruning, world-info character-filter cleanup, tag-backup restore, ...) must go through
-     * instead of treating a resident-array miss as "deleted". A failed/partial check must abort whatever
-     * mutation it was gating, never fall through to "treat it as gone" - that rule lives with each call site,
-     * not here, since only the call site knows what the destructive action is.
+     * Authoritative existence check - destructive-existence call sites must go through this instead of treating
+     * a resident-array miss as "deleted", and must abort their mutation on a failed/partial check rather than
+     * treating it as "gone".
      *
-     * No client-side chunking: verified against `checkCharactersExist()` (src/character-metadata-db.js) that
-     * the server already chunks internally at 500 ids per SQL query (`BATCH_FLUSH_SIZE`, to stay clear of
-     * SQLite's bound-parameter ceiling) and returns every requested id in one response regardless of how many
-     * chunks that took server-side. Every §4.2 call site's `ids` is bounded by its own input (group member
-     * count, a tag-restore file's id list, ...), not by library size, so there's no case here that needs the
-     * request itself split up client-side too.
+     * No client-side chunking needed: the server already chunks internally and returns every requested id in
+     * one response.
      * @param {string[]} ids
      * @returns {Promise<Record<string, boolean>>} every requested id is present as a key.
      */
@@ -860,10 +692,7 @@ export class CharacterRepository {
     }
 
     /**
-     * Subscribes to residency changes (create/update/remove/rename/reset) on the backing store. Thin
-     * passthrough today; kept as its own method (rather than callers reaching into `charactersStore` directly)
-     * so phase 6 can widen this to also cover its own cache tier's admit/evict events without every caller
-     * needing to know that happened.
+     * Subscribes to residency changes (create/update/remove/rename/reset) on the backing store.
      * @param {(change: import('./entity-store.js').EntityChange<Character>) => void} fn
      * @returns {() => void} unsubscribe function
      */

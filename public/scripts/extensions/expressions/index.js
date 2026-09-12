@@ -941,10 +941,10 @@ async function uploadSpriteCommand({ name, label, folder = null, spriteName = nu
         const file = new File([blob], 'image.png', { type: 'image/png' });
 
         const formData = new FormData();
-        formData.append('name', folder); // this is the folder or character name
-        formData.append('label', label); // this is the expression label
-        formData.append('avatar', file); // this is the image file
-        formData.append('spriteName', spriteName); // this is a redundant comment
+        formData.append('name', folder);
+        formData.append('label', label);
+        formData.append('avatar', file);
+        formData.append('spriteName', spriteName);
 
         await handleFileUpload('/api/sprites/upload', formData);
         console.debug(`[${MODULE_NAME}] Upload of ${imageUrl} completed for ${name} with label ${label}`);
@@ -1626,7 +1626,6 @@ async function setExpression(spriteFolderName, expression, { force = false, over
             expressionClone.attr('id', '').css({ opacity: 0 });
             //add new sprite path to clone src
             expressionClone.attr('src', spriteFile.imageSrc);
-            //set relevant data tags
             expressionClone.attr('data-sprite-folder-name', spriteFolderName);
             expressionClone.attr('data-expression', expression);
             expressionClone.attr('data-sprite-filename', spriteFile.fileName);
@@ -1710,7 +1709,7 @@ async function setExpression(spriteFolderName, expression, { force = false, over
  */
 function setDefaultEmojiForImage(img, expression) {
     // Classifiers can return a falsy, literal "null"/"undefined", or otherwise unknown label,
-    // and custom expressions have no default assets; only known labels have an image (#5863).
+    // and custom expressions have no default assets; only known labels have an image.
     if (!DEFAULT_EXPRESSIONS.includes(expression)) {
         console.debug(`Can't set default emoji for expression (${expression}). setting to ${DEFAULT_FALLBACK_EXPRESSION} instead.`);
         expression = DEFAULT_FALLBACK_EXPRESSION;
@@ -2336,7 +2335,6 @@ export async function init() {
         spriteCache = {};
         lastExpression = {};
 
-        //clear expression
         let imgElement = document.getElementById('expression-image');
         if (imgElement && imgElement instanceof HTMLImageElement) {
             imgElement.src = '';

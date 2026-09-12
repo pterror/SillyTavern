@@ -5,13 +5,8 @@ import { saveTtsProviderSettings } from './index.js';
 export { AllTalkTtsProvider };
 
 class AllTalkTtsProvider {
-    //########//
-    // Config //
-    //########//
-
     settings = {};
     constructor() {
-        // Initialize with default settings if they are not already set
         this.settings = {
             provider_endpoint: this.settings.provider_endpoint || 'http://localhost:7851',
             server_version: this.settings.server_version || 'v2',
@@ -27,7 +22,6 @@ class AllTalkTtsProvider {
             rvc_narrator_pitch: this.settings.rvc_narrator_pitch || '0',
             finetuned_model: this.settings.finetuned_model || 'false',
         };
-        // Separate property for dynamically updated settings from the server
         this.dynamicSettings = {
             modelsAvailable: [],
             currentModel: '',
@@ -36,7 +30,7 @@ class AllTalkTtsProvider {
             lowvram_capable: false,
             lowvram_enabled: false,
         };
-        this.rvcVoices = []; // Initialize rvcVoices as an empty array
+        this.rvcVoices = [];
     }
     ready = false;
     voices = [];
@@ -64,9 +58,7 @@ class AllTalkTtsProvider {
     };
 
     get settingsHtml() {
-        // HTML template literals can trigger ESLint quotes warnings when quotes are used in HTML attributes.
-        // Disabling quotes rule for this one line as it's a false positive with HTML template literals.
-        // eslint-disable-next-line quotes
+        // eslint-disable-next-line quotes -- false positive on quotes inside the HTML attribute
         let html = `<div class="at-settings-separator">AllTalk V2 Settings</div>`;
 
         html += `<div class='at-settings-row'>
@@ -227,17 +219,12 @@ class AllTalkTtsProvider {
     }
 
 
-    //#################//
-    // Startup ST & AT //
-    //#################//
-
     async loadSettings(settings) {
         updateStatus('Offline');
 
         if (Object.keys(settings).length === 0) {
             console.info('Using default AllTalk TTS Provider settings');
         } else {
-            // Populate settings with provided values, ignoring server-provided settings
             for (const key in settings) {
                 if (key in this.settings) {
                     this.settings[key] = settings[key];
@@ -247,7 +234,6 @@ class AllTalkTtsProvider {
             }
         }
 
-        // Update UI elements to reflect the loaded settings
         $('#at_server').val(this.settings.provider_endpoint);
         $('#language_options').val(this.settings.language);
         $('#at_generation_method').val(this.settings.at_generation_method);
@@ -261,13 +247,12 @@ class AllTalkTtsProvider {
         $('#server_version').val(this.settings.server_version);
 
         try {
-            // Check if TTS provider is ready
             this.setupEventListeners();
             this.updateLanguageDropdown();
             await this.checkReady();
-            await this.updateSettingsFromServer(); // Fetch dynamic settings from the TTS server
-            await this.fetchTtsVoiceObjects(); // Fetch voices only if service is ready
-            await this.fetchRvcVoiceObjects(); // Fetch RVC voices
+            await this.updateSettingsFromServer();
+            await this.fetchTtsVoiceObjects();
+            await this.fetchRvcVoiceObjects();
             this.updateNarratorVoicesDropdown();
             this.applySettingsToHTML();
             updateStatus('Ready');
@@ -284,11 +269,9 @@ class AllTalkTtsProvider {
         const textNotInsideSelect = document.getElementById('at_narrator_text_not_inside');
         const generationMethodSelect = document.getElementById('at_generation_method');
         this.settings.narrator_voice = this.settings.narrator_voice_gen;
-        // Apply settings to Narrator Voice dropdown
         if (narratorVoiceSelect && this.settings.narrator_voice) {
-            narratorVoiceSelect.value = this.settings.narrator_voice; // Remove the parentheses
+            narratorVoiceSelect.value = this.settings.narrator_voice;
         }
-        // Apply settings to AT Narrator Enabled dropdown
         if (atNarratorSelect) {
             const ttsPassAsterisksCheckbox = document.getElementById('tts_pass_asterisks');
             const ttsNarrateQuotedCheckbox = document.getElementById('tts_narrate_quoted');
@@ -338,33 +321,23 @@ class AllTalkTtsProvider {
     }
 
 
-    //##############################//
-    // Check AT Server is Available //
-    //##############################//
-
     async checkReady() {
         try {
             const response = await fetch(`${this.settings.provider_endpoint}/api/ready`);
-            // Check if the HTTP request was successful
             if (!response.ok) {
                 throw new Error(`HTTP Error Response: ${response.status} ${response.statusText}`);
             }
             const statusText = await response.text();
-            // Check if the response is 'Ready'
             if (statusText === 'Ready') {
-                this.ready = true; // Set the ready flag to true
+                this.ready = true;
             } else {
                 this.ready = false;
             }
         } catch (error) {
             console.error('Error checking TTS service readiness:', error);
-            this.ready = false; // Ensure ready flag is set to false in case of error
+            this.ready = false;
         }
     }
-
-    //######################//
-    // Get Available Voices //
-    //######################//
 
     async fetchTtsVoiceObjects() {
         const response = await fetch(`${this.settings.provider_endpoint}/api/voices`);
@@ -377,12 +350,12 @@ class AllTalkTtsProvider {
             return {
                 name: filename,
                 voice_id: filename,
-                preview_url: null, // Preview URL will be dynamically generated
-                lang: 'en', // Default language
+                preview_url: null,
+                lang: 'en',
             };
         });
-        this.voices = voices; // Assign to the class property
-        return voices; // Also return this list
+        this.voices = voices;
+        return voices;
     }
 
     async fetchRvcVoiceObjects() {
@@ -413,22 +386,17 @@ class AllTalkTtsProvider {
             });
 
             console.log('RVC voices:', voices);
-            this.rvcVoices = voices; // Assign to the class property
-            this.updateRvcVoiceDropdowns(); // Update UI after fetching voices
-            return voices; // Also return this list
+            this.rvcVoices = voices;
+            this.updateRvcVoiceDropdowns();
+            return voices;
         } catch (error) {
             console.error('Error fetching RVC voices:', error);
-            this.rvcVoices = [{ name: 'Disabled', voice_id: 'Disabled' }]; // Set default on error
+            this.rvcVoices = [{ name: 'Disabled', voice_id: 'Disabled' }];
             throw error;
         } finally {
-            // Ensure dropdowns are updated even if there was an error
             this.updateRvcVoiceDropdowns();
         }
     }
-
-    //##########################################//
-    // Get Current AT Server Config & Update ST //
-    //##########################################//
 
     async updateSettingsFromServer() {
         try {
@@ -449,18 +417,17 @@ class AllTalkTtsProvider {
             this.settings.lowvram_capable = currentSettings.lowvram_capable;
             this.settings.lowvram_enabled = currentSettings.lowvram_enabled;
 
-            await this.fetchRvcVoiceObjects(); // Fetch RVC voices
+            await this.fetchRvcVoiceObjects();
 
             this.updateModelDropdown();
             this.updateCheckboxes();
-            this.updateRvcVoiceDropdowns(); // Update the RVC voice dropdowns
+            this.updateRvcVoiceDropdowns();
         } catch (error) {
             console.error(`Error updating settings from server: ${error}`);
         }
     }
 
     updateRvcVoiceDropdowns() {
-        // Handle all RVC-related elements
         const rvcElements = document.querySelectorAll('.rvc-setting');
         const isV2 = this.settings.server_version === 'v2';
 
@@ -468,7 +435,6 @@ class AllTalkTtsProvider {
             element.style.display = isV2 ? 'block' : 'none';
         });
 
-        // Update and disable/enable character voice dropdown
         const rvcCharacterVoiceSelect = document.getElementById('rvc_character_voice');
         if (rvcCharacterVoiceSelect) {
             rvcCharacterVoiceSelect.disabled = !isV2;
@@ -486,7 +452,6 @@ class AllTalkTtsProvider {
             }
         }
 
-        // Update and disable/enable narrator voice dropdown
         const rvcNarratorVoiceSelect = document.getElementById('rvc_narrator_voice');
         if (rvcNarratorVoiceSelect) {
             rvcNarratorVoiceSelect.disabled = !isV2;
@@ -504,7 +469,6 @@ class AllTalkTtsProvider {
             }
         }
 
-        // Update pitch inputs
         const characterPitch = document.getElementById('rvc_character_pitch');
         if (characterPitch) {
             characterPitch.disabled = !isV2;
@@ -516,53 +480,39 @@ class AllTalkTtsProvider {
         }
     }
 
-    //###################################################//
-    // Get Current AT Server Config & Update ST (Models) //
-    //###################################################//
-
     updateModelDropdown() {
         const modelSelect = document.getElementById('switch_model');
         if (modelSelect) {
-            modelSelect.innerHTML = ''; // Clear existing options
+            modelSelect.innerHTML = '';
             this.settings.modelsAvailable.forEach(model => {
                 const option = document.createElement('option');
                 option.value = model.name;
-                option.textContent = model.name; // Use model name directly
+                option.textContent = model.name;
                 option.selected = model.name === this.settings.currentModel;
                 modelSelect.appendChild(option);
             });
         }
     }
 
-    //#######################################################//
-    // Get Current AT Server Config & Update ST (DS and LVR) //
-    //#######################################################//
-
     updateCheckboxes() {
         const deepspeedCheckbox = document.getElementById('deepspeed');
         const lowVramCheckbox = document.getElementById('low_vram');
 
-        // Handle DeepSpeed checkbox
         if (deepspeedCheckbox) {
             if (this.settings.deepspeed_capable) {
-                // If TTS engine is capable of using DeepSpeed
                 deepspeedCheckbox.disabled = !this.settings.deepspeed_available;
                 this.settings.deepspeed_enabled = this.settings.deepspeed_available && this.settings.deepspeed_enabled;
             } else {
-                // If TTS engine is NOT capable of using DeepSpeed
                 deepspeedCheckbox.disabled = true;
                 this.settings.deepspeed_enabled = false;
             }
             deepspeedCheckbox.checked = this.settings.deepspeed_enabled;
         }
 
-        // Handle Low VRAM checkbox
         if (lowVramCheckbox) {
             if (this.settings.lowvram_capable) {
-                // If TTS engine is capable of low VRAM
                 lowVramCheckbox.disabled = false;
             } else {
-                // If TTS engine is NOT capable of low VRAM
                 lowVramCheckbox.disabled = true;
                 this.settings.lowvram_enabled = false;
             }
@@ -570,17 +520,10 @@ class AllTalkTtsProvider {
         }
     }
 
-
-    //###############################################################//
-    // Get Current AT Server Config & Update ST (AT Narrator Voices) //
-    //###############################################################//
-
     updateNarratorVoicesDropdown() {
         const narratorVoiceSelect = document.getElementById('narrator_voice');
         if (narratorVoiceSelect && this.voices) {
-            // Clear existing options
             narratorVoiceSelect.innerHTML = '';
-            // Add new options
             for (let voice of this.voices) {
                 const option = document.createElement('option');
                 option.value = voice.voice_id;
@@ -590,14 +533,9 @@ class AllTalkTtsProvider {
         }
     }
 
-    //######################################################//
-    // Get Current AT Server Config & Update ST (Languages) //
-    //######################################################//
-
     updateLanguageDropdown() {
         const languageSelect = document.getElementById('language_options');
         if (languageSelect) {
-            // Ensure default language is set
             this.settings.language = this.settings.language || 'en';
 
             languageSelect.innerHTML = '';
@@ -613,12 +551,7 @@ class AllTalkTtsProvider {
         }
     }
 
-    //########################################//
-    // Start AT TTS extenstion page listeners //
-    //########################################//
-
     setupEventListeners() {
-        // Define the event handler function
         const onModelSelectChange = async (event) => {
             const selectedModel = event.target.value;
             updateStatus('Processing');
@@ -638,14 +571,12 @@ class AllTalkTtsProvider {
             }
         };
 
-        // Switch Model Listener with debounce
         const modelSelect = document.getElementById('switch_model');
         if (modelSelect) {
             const debouncedModelSelectChange = debounce(onModelSelectChange, 1400);
             modelSelect.addEventListener('change', debouncedModelSelectChange);
         }
 
-        // AllTalk Server version change listener
         const serverVersionSelect = document.getElementById('server_version');
         if (serverVersionSelect) {
             serverVersionSelect.addEventListener('change', async (event) => {
@@ -658,7 +589,6 @@ class AllTalkTtsProvider {
             });
         }
 
-        // RVC Voice and Pitch listeners
         const rvcCharacterVoiceSelect = document.getElementById('rvc_character_voice');
         if (rvcCharacterVoiceSelect) {
             rvcCharacterVoiceSelect.addEventListener('change', (event) => {
@@ -691,7 +621,6 @@ class AllTalkTtsProvider {
             });
         }
 
-        // DeepSpeed Listener
         const deepspeedCheckbox = document.getElementById('deepspeed');
         if (deepspeedCheckbox) {
             const handleDeepSpeedChange = async (event) => {
@@ -717,7 +646,6 @@ class AllTalkTtsProvider {
             deepspeedCheckbox.addEventListener('change', debouncedHandleDeepSpeedChange);
         }
 
-        // Low VRAM Listener
         const lowVramCheckbox = document.getElementById('low_vram');
         if (lowVramCheckbox) {
             const handleLowVramChange = async (event) => {
@@ -743,7 +671,6 @@ class AllTalkTtsProvider {
             lowVramCheckbox.addEventListener('change', debouncedHandleLowVramChange);
         }
 
-        // Other listeners without debounce since they don't need it
         const narratorVoiceSelect = document.getElementById('narrator_voice');
         if (narratorVoiceSelect) {
             narratorVoiceSelect.addEventListener('change', (event) => {
@@ -760,7 +687,6 @@ class AllTalkTtsProvider {
             });
         }
 
-        // AT Narrator Dropdown Listener
         const atNarratorSelect = document.getElementById('at_narrator_enabled');
         const ttsPassAsterisksCheckbox = document.getElementById('tts_pass_asterisks');
         const ttsNarrateQuotedCheckbox = document.getElementById('tts_narrate_quoted');
@@ -799,20 +725,17 @@ class AllTalkTtsProvider {
             });
         }
 
-        // Event Listener for AT Generation Method Dropdown
         const atGenerationMethodSelect = document.getElementById('at_generation_method');
         if (atGenerationMethodSelect) {
             atGenerationMethodSelect.addEventListener('change', (event) => {
                 const selectedMethod = event.target.value;
 
                 if (selectedMethod === 'streaming_enabled') {
-                    // Disable and unselect AT Narrator
                     atNarratorSelect.disabled = true;
                     atNarratorSelect.value = 'false';
                     textNotInsideSelect.disabled = true;
                     narratorVoiceSelect.disabled = true;
                 } else if (selectedMethod === 'standard_generation') {
-                    // Enable AT Narrator
                     atNarratorSelect.disabled = false;
                 }
                 this.settings.at_generation_method = selectedMethod;
@@ -820,7 +743,6 @@ class AllTalkTtsProvider {
             });
         }
 
-        // Language Dropdown Listener
         const languageSelect = document.getElementById('language_options');
         if (languageSelect) {
             languageSelect.addEventListener('change', (event) => {
@@ -829,7 +751,6 @@ class AllTalkTtsProvider {
             });
         }
 
-        // AllTalk Endpoint Input Listener
         const atServerInput = document.getElementById('at_server');
         if (atServerInput) {
             atServerInput.addEventListener('input', (event) => {
@@ -839,15 +760,8 @@ class AllTalkTtsProvider {
         }
     }
 
-    //#############################//
-    // Store ST interface settings //
-    //#############################//
-
     onSettingsChange() {
-        // Update settings based on the UI elements
-        //this.settings.provider_endpoint = $('#at_server').val();
         this.settings.language = $('#language_options').val();
-        //this.settings.voiceMap = $('#voicemap').val();
         this.settings.at_generation_method = $('#at_generation_method').val();
         this.settings.narrator_enabled = $('#at_narrator_enabled').val();
         this.settings.at_narrator_text_not_inside = $('#at_narrator_text_not_inside').val();
@@ -856,44 +770,32 @@ class AllTalkTtsProvider {
         this.settings.rvc_character_pitch = $('#rvc_character_pitch').val();
         this.settings.rvc_narrator_pitch = $('#rvc_narrator_pitch').val();
         this.settings.narrator_voice_gen = $('#narrator_voice').val();
-        // Save the updated settings
         saveTtsProviderSettings();
     }
 
-    //#########################//
-    // ST Handle Reload button //
-    //#########################//
-
     async onRefreshClick() {
         try {
-            updateStatus('Processing'); // Set status to Processing while refreshing
-            await this.checkReady(); // Check if the TTS provider is ready
-            await this.loadSettings(this.settings); // Reload the settings
-            await this.checkReady(); // Check if the TTS provider is ready
-            updateStatus(this.ready ? 'Ready' : 'Offline'); // Update the status based on readiness
+            updateStatus('Processing');
+            await this.checkReady();
+            await this.loadSettings(this.settings);
+            await this.checkReady();
+            updateStatus(this.ready ? 'Ready' : 'Offline');
         } catch (error) {
             console.error('Error during refresh:', error);
-            updateStatus('Error'); // Set status to Error in case of failure
+            updateStatus('Error');
         }
     }
 
-    //##################//
-    // Preview AT Voice //
-    //##################//
-
     async previewTtsVoice(voiceName) {
         try {
-            // Prepare data for POST request
             const postData = new URLSearchParams();
             postData.append('voice', `${voiceName}`);
 
-            // Add RVC parameters for V2 if applicable
             if (this.settings.server_version === 'v2' && this.settings.rvc_character_voice !== 'Disabled') {
                 postData.append('rvccharacter_voice_gen', this.settings.rvc_character_voice);
                 postData.append('rvccharacter_pitch', this.settings.rvc_character_pitch || '0');
             }
 
-            // Making the POST request
             const response = await fetch(`${this.settings.provider_endpoint}/api/previewvoice/`, {
                 method: 'POST',
                 headers: {
@@ -910,7 +812,6 @@ class AllTalkTtsProvider {
 
             const data = await response.json();
             if (data.output_file_url) {
-                // Handle V1/V2 URL differences
                 const fullUrl = this.settings.server_version === 'v1'
                     ? data.output_file_url
                     : `${this.settings.provider_endpoint}${data.output_file_url}`;
@@ -927,58 +828,36 @@ class AllTalkTtsProvider {
         }
     }
 
-    //#####################//
-    //  Populate ST voices //
-    //#####################//
-
     async getVoice(voiceName, generatePreview = false) {
-        // Ensure this.voices is populated
         if (this.voices.length === 0) {
-            // Fetch voice objects logic
         }
-        // Find the object where the name matches voiceName
         const match = this.voices.find(voice => voice.name === voiceName);
         if (!match) {
-            // Error handling
         }
-        // Generate preview URL only if requested
         if (!match.preview_url && generatePreview) {
-            // Generate preview logic
         }
-        return match; // Return the found voice object
+        return match;
     }
-
-    //##########################################//
-    //  Generate TTS Streaming or call Standard //
-    //##########################################//
 
     async generateTts(inputText, voiceId) {
         try {
             if (this.settings.at_generation_method === 'streaming_enabled') {
-                // Construct the streaming URL
                 const streamingUrl = `${this.settings.provider_endpoint}/api/tts-generate-streaming?text=${encodeURIComponent(inputText)}&voice=${encodeURIComponent(voiceId)}&language=${encodeURIComponent(this.settings.language)}&output_file=stream_output.wav`;
 
-                // Return the streaming URL directly
                 return streamingUrl;
             } else {
-                // For standard method
                 const outputUrl = await this.fetchTtsGeneration(inputText, voiceId);
                 const audioResponse = await fetch(outputUrl);
                 if (!audioResponse.ok) {
                     throw new Error(`HTTP ${audioResponse.status}: Failed to fetch audio data`);
                 }
-                return audioResponse; // Return the fetch response directly
+                return audioResponse;
             }
         } catch (error) {
             console.error('Error in generateTts:', error);
             throw error;
         }
     }
-
-
-    //####################//
-    //  Generate Standard //
-    //####################//
 
     async fetchTtsGeneration(inputText, voiceId) {
         const requestBody = new URLSearchParams({
@@ -995,7 +874,6 @@ class AllTalkTtsProvider {
             'autoplay_volume': '0.8',
         });
 
-        // Add RVC parameters only for V2
         if (this.settings.server_version === 'v2') {
             if (this.settings.rvc_character_voice !== 'Disabled') {
                 requestBody.append('rvccharacter_voice_gen', this.settings.rvc_character_voice);
@@ -1030,10 +908,8 @@ class AllTalkTtsProvider {
 
             // V1 returns a complete URL, V2 returns a relative path
             if (this.settings.server_version === 'v1') {
-                // V1: Use the complete URL directly from the response
                 return data.output_file_url;
             } else {
-                // V2: Combine the endpoint with the relative path
                 return `${this.settings.provider_endpoint}${data.output_file_url}`;
             }
         } catch (error) {
@@ -1042,10 +918,6 @@ class AllTalkTtsProvider {
         }
     }
 }
-
-//#########################//
-//  Update Status Messages //
-//#########################//
 
 function updateStatus(message) {
     const statusElement = document.getElementById('status_info');

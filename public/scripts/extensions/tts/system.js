@@ -79,7 +79,6 @@ class SystemTtsProvider {
     // Config //
     //########//
 
-    // Static constants for the simulated default voice
     static BROWSER_DEFAULT_VOICE_ID = '__browser_default__';
     static BROWSER_DEFAULT_VOICE_NAME = 'System Default Voice';
 
@@ -149,7 +148,6 @@ class SystemTtsProvider {
         $('#system_tts_rate').val(this.settings.rate || this.defaultSettings.rate);
         $('#system_tts_pitch').val(this.settings.pitch || this.defaultSettings.pitch);
 
-        // Trigger updates
         $('#system_tts_rate').on('input', () => { this.onSettingsChange(); });
         $('#system_tts_pitch').on('input', () => { this.onSettingsChange(); });
 
@@ -158,7 +156,6 @@ class SystemTtsProvider {
         console.debug('SystemTTS: Settings loaded');
     }
 
-    // Perform a simple readiness check by trying to fetch voiceIds
     async checkReady() {
         await this.fetchTtsVoiceObjects();
     }

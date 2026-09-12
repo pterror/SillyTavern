@@ -612,8 +612,7 @@ export async function loadTextGenSettings(data, loadedSettings) {
  * @param {any[]} orderArray Sampler order array.
  */
 function sortKoboldItemsByOrder(orderArray) {
-    // Pass the array raw, not string-concatenated - `+` forces an eager toString() every call,
-    // same shape as the other unconditional-serialization fixes in this audit.
+    // Pass the array raw, not string-concatenated - `+` forces an eager toString() every call.
     console.debug('Preset samplers order:', orderArray);
     const $draggableItems = $('#koboldcpp_order');
 

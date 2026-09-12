@@ -1,9 +1,3 @@
-/* ─────────────────────────────────────────────────────────────────────────────
-   Streaming Display — floating toast panel for live LLM generation output.
-   Shows reasoning (thinking) and content as they stream in.
-   Used by extensions that leverage ConnectionManagerRequestService streaming.
-   ───────────────────────────────────────────────────────────────────────────── */
-
 .streaming-display {
     position: fixed;
     bottom: max(calc(var(--bottomFormBlockSize) + 5px), 20px);
@@ -31,7 +25,6 @@
     transform: translateY(0);
 }
 
-/* Header label with animated activity indicator */
 .streaming-display-label {
     font-weight: 600;
     font-size: 0.95em;
@@ -42,7 +35,6 @@
     user-select: none;
 }
 
-/* LED status indicator - pulsing while streaming */
 .streaming-display-led {
     display: inline-block;
     width: 8px;
@@ -53,7 +45,6 @@
     flex-shrink: 0;
 }
 
-/* Completed state: solid green LED */
 .streaming-display-complete .streaming-display-led {
     background: #4caf50;
     animation: none;
@@ -61,7 +52,6 @@
     box-shadow: 0 0 8px rgba(76, 175, 80, 0.6);
 }
 
-/* Stopped state: solid red LED */
 .streaming-display-stopped .streaming-display-led {
     background: #f44336;
     animation: none;
@@ -74,7 +64,6 @@
     50% { opacity: 1; transform: scale(1.1); }
 }
 
-/* Label text takes available space */
 .streaming-display-label-text {
     flex: 1;
     min-width: 0;
@@ -83,7 +72,6 @@
     white-space: nowrap;
 }
 
-/* Window control buttons container */
 .streaming-display-controls {
     display: flex;
     align-items: center;
@@ -92,7 +80,6 @@
     flex-shrink: 0;
 }
 
-/* Window control buttons */
 .streaming-display-btn {
     width: 22px;
     height: 22px;
@@ -128,7 +115,6 @@
     color: rgb(225, 138, 36);
 }
 
-/* Content container - collapsible for minimize */
 .streaming-display-content {
     display: flex;
     flex-direction: column;
@@ -137,7 +123,6 @@
     transition: max-height var(--animation-duration, 125ms) ease, opacity var(--animation-duration, 125ms) ease;
 }
 
-/* Minimized state - hide content sections */
 .streaming-display-minimized .streaming-display-content {
     max-height: 0;
     opacity: 0;
@@ -147,19 +132,16 @@
     gap: 0;
 }
 
-/* Model/API icon in the label */
 .streaming-display-icon {
     width: 1.1em;
     height: 1.1em;
     flex-shrink: 0;
 }
 
-/* Minimized state adjustments */
 .streaming-display-minimized.streaming-display {
     padding: 10px 14px;
 }
 
-/* Reasoning (thinking) section */
 .streaming-display-reasoning {
     background: color-mix(in srgb, var(--SmartThemeBodyColor) 5%, transparent);
     border-radius: 6px;
@@ -198,7 +180,6 @@
     margin-bottom: 0;
 }
 
-/* Main content section */
 .streaming-display-text {
     border-top: 1px solid color-mix(in srgb, var(--SmartThemeBorderColor) 50%, transparent);
     padding-top: 8px;

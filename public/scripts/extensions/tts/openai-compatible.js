@@ -91,7 +91,6 @@ class OpenAICompatibleTtsProvider {
     }
 
     onSettingsChange() {
-        // Update dynamically
         this.settings.provider_endpoint = String($('#openai_compatible_tts_endpoint').val());
         this.settings.model = String($('#openai_compatible_model').val());
         this.settings.available_voices = String($('#openai_compatible_tts_voices').val()).split(',');

@@ -3,20 +3,13 @@ import { getCharacters, getPreviewString } from './index.js';
 
 export { GptSoVITSAdapterProvider };
 
-/*
-    This file is adapted from gpt-sovits-v2.js. It was created because the original file is no longer maintained.
-    Some logic has been optimized and more functionality has been added.
-*/
-
 class GptSoVITSAdapterProvider {
     settings;
     ready = false;
     voices = [];
     separator = '. ';
     audioElement = document.createElement('audio');
-    /*
-        do not modify the text, adapter will handle it
-    */
+    // Text is sent as-is; the adapter server handles splitting/normalization.
     processText(text) {
         return text;
     }
@@ -85,7 +78,6 @@ class GptSoVITSAdapterProvider {
     }
 
     onSettingsChange() {
-        // Used when provider settings are updated from UI
         this.settings.provider_endpoint = $('#gpt_sovits_adapter_tts_endpoint').val();
         this.settings.text_lang = $('#text_lang').val();
         this.settings.media_type = $('#media_type').val();
@@ -95,12 +87,10 @@ class GptSoVITSAdapterProvider {
     }
 
     async loadSettings(settings) {
-        // Populate Provider UI given input settings
         if (Object.keys(settings).length == 0) {
             console.info('Using default TTS Provider settings');
         }
 
-        // Only accept keys defined in defaultSettings
         this.settings = this.defaultSettings;
 
         for (const key in settings) {
@@ -111,7 +101,6 @@ class GptSoVITSAdapterProvider {
             }
         }
 
-        // Set initial values from the settings
         $('#tts_endpoint').val(this.settings.provider_endpoint).on('change', this.onSettingsChange.bind(this));
         $('#text_lang').val(this.settings.text_lang).on('change', this.onSettingsChange.bind(this));
         $('#media_type').val(this.settings.media_type).on('change', this.onSettingsChange.bind(this));
@@ -119,7 +108,6 @@ class GptSoVITSAdapterProvider {
         console.info('ITS: Settings loaded');
     }
 
-    // Perform a simple readiness check by trying to fetch voiceIds
     async checkReady() {
         await Promise.allSettled([this.fetchTtsVoiceObjects(), this.changeTTSSettings()]);
     }
@@ -127,10 +115,6 @@ class GptSoVITSAdapterProvider {
     async onRefreshClick() {
         return await this.checkReady();
     }
-
-    //#################//
-    //  TTS Interfaces //
-    //#################//
 
     async getVoice(voiceName) {
         if (this.voices.length == 0) {
@@ -151,9 +135,6 @@ class GptSoVITSAdapterProvider {
         return response;
     }
 
-    //###########//
-    // API CALLS //
-    //###########//
     async fetchTtsVoiceObjects() {
         const response = await fetch(`${this.settings.provider_endpoint}/speakers`);
 
@@ -165,7 +146,6 @@ class GptSoVITSAdapterProvider {
         return responseJson;
     }
 
-    // Each time a parameter is changed, we change the configuration
     async changeTTSSettings() {
     }
 

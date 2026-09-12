@@ -1,11 +1,4 @@
-/**
- * Macro Execution Flags - modifiers that change how macros are resolved at runtime.
- *
- * Flags are special symbols placed between the opening braces `{{` and the macro identifier.
- * Example: `{{!user}}` - the `!` is an "immediate resolve" flag.
- *
- * Multiple flags can be combined: `{{!?myMacro}}` or `{{ ! ? myMacro }}`
- */
+/** Modifiers placed between `{{` and the macro identifier, e.g. `{{!user}}`. Combinable: `{{!?myMacro}}`. */
 
 /**
  * @typedef {Object} MacroFlags
@@ -25,55 +18,25 @@
  * @enum {string}
  */
 export const MacroFlagType = Object.freeze({
-    /**
-     * Immediate resolve flag (`!`).
-     * This macro will be resolved first (in order of appearance) before "normal" macros.
-     * @status TBD - Not implemented in v1
-     */
+    /** Not implemented in v1. */
     IMMEDIATE: '!',
 
-    /**
-     * Delayed resolve flag (`?`).
-     * This macro will be resolved last (in order of appearance) after "normal" macros.
-     * @status TBD - Not implemented in v1
-     */
+    /** Not implemented in v1. */
     DELAYED: '?',
 
-    /**
-     * Re-evaluate flag (`~`).
-     * Marks a macro for potential re-evaluation.
-     * @status TBD - Not implemented in v1
-     */
+    /** Not implemented in v1. */
     REEVALUATE: '~',
 
-    /**
-     * Filter/pipe flag (`>`).
-     * Indicates that this macro should resolve `|` characters as output filters.
-     * @status Parsed - Filter feature not yet implemented
-     */
+    /** Parsed but the filter feature itself isn't implemented yet. */
     FILTER: '>',
 
-    /**
-     * Closing block flag (`/`).
-     * Marks this macro as the closing block of a scoped macro with the same identifier.
-     * A closing block macro does not support arguments itself.
-     * Example: `{{setvar::myvar}}long text{{/setvar}}`
-     * @status Implemented - Content between opening and closing tags becomes the last unnamed argument
-     */
+    /** Closes a scoped macro, e.g. `{{setvar::myvar}}long text{{/setvar}}`; content becomes the last unnamed argument. */
     CLOSING_BLOCK: '/',
 
-    /**
-     * Preserve whitespace flag (`#`).
-     * Prevents automatic trimming of scoped content.
-     * By default, scoped macro content is trimmed. Use this flag to preserve leading/trailing whitespace.
-     * Also provides backwards compatibility with legacy handlebars-style syntax like `{{#if ...}}`.
-     * Example: `{{#setvar::myvar}}  content with spaces  {{/setvar}}`
-     * @status Implemented - Prevents auto-trim on scoped content
-     */
+    /** Skips auto-trimming of scoped content; also backs legacy handlebars-style `{{#if ...}}` syntax. */
     PRESERVE_WHITESPACE: '#',
 
-    // Note: Variable shorthand (. and $) are NOT flags - they are special prefixes
-    // that trigger the variable expression parsing branch. See MacroLexer.js Var tokens.
+    // Variable shorthand (. and $) are not flags — they trigger the separate variableExpr parse branch.
 });
 
 /**

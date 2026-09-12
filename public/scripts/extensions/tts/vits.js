@@ -3,21 +3,12 @@ import { getPreviewString, saveTtsProviderSettings } from './index.js';
 export { VITSTtsProvider };
 
 class VITSTtsProvider {
-    //########//
-    // Config //
-    //########//
-
     settings;
     ready = false;
     voices = [];
     separator = '. ';
     audioElement = document.createElement('audio');
 
-    /**
-     * Perform any text processing before passing to TTS engine.
-     * @param {string} text Input text
-     * @returns {string} Processed text
-     */
     processText(text) {
         return text;
     }
@@ -137,7 +128,6 @@ class VITSTtsProvider {
     }
 
     onSettingsChange() {
-        // Used when provider settings are updated from UI
         this.settings.provider_endpoint = $('#vits_endpoint').val();
         this.settings.lang = $('#vits_lang').val();
         this.settings.format = $('#vits_format').val();
@@ -145,7 +135,6 @@ class VITSTtsProvider {
         this.settings.text_prompt = $('#vits_text_prompt').val();
         this.settings.style_text = $('#vits_style_text').val();
 
-        // Update the default TTS settings based on input fields
         this.settings.length = $('#vits_length').val();
         this.settings.noise = $('#vits_noise').val();
         this.settings.noisew = $('#vits_noisew').val();
@@ -155,7 +144,6 @@ class VITSTtsProvider {
         this.settings.emotion = $('#vits_emotion').val();
         this.settings.style_weight = $('#vits_style_weight').val();
 
-        // Update the UI to reflect changes
         $('#vits_length_output').text(this.settings.length);
         $('#vits_noise_output').text(this.settings.noise);
         $('#vits_noisew_output').text(this.settings.noisew);
@@ -169,7 +157,6 @@ class VITSTtsProvider {
     }
 
     async loadSettings(settings) {
-        // Only accept keys defined in defaultSettings
         this.settings = this.defaultSettings;
 
         for (const key in settings) {
@@ -180,7 +167,6 @@ class VITSTtsProvider {
             }
         }
 
-        // Set initial values from the settings
         $('#vits_endpoint').val(this.settings.provider_endpoint);
         $('#vits_lang').val(this.settings.lang);
         $('#vits_format').val(this.settings.format);
@@ -196,7 +182,6 @@ class VITSTtsProvider {
         $('#vits_style_text').val(this.settings.style_text);
         $('#vits_style_weight').val(this.settings.style_weight);
 
-        // Update the UI to reflect changes
         $('#vits_length_output').text(this.settings.length);
         $('#vits_noise_output').text(this.settings.noise);
         $('#vits_noisew_output').text(this.settings.noisew);
@@ -205,7 +190,6 @@ class VITSTtsProvider {
         $('#vits_emotion_output').text(this.settings.emotion);
         $('#vits_style_weight_output').text(this.settings.style_weight);
 
-        // Register input/change event listeners to update settings on user interaction
         $('#vits_endpoint').on('input', () => { this.onSettingsChange(); });
         $('#vits_lang').on('change', () => { this.onSettingsChange(); });
         $('#vits_format').on('change', () => { this.onSettingsChange(); });
@@ -224,7 +208,6 @@ class VITSTtsProvider {
         await this.checkReady();
     }
 
-    // Perform a simple readiness check by trying to fetch voiceIds
     async checkReady() {
         await Promise.allSettled([this.fetchTtsVoiceObjects(), this.changeTTSSettings()]);
     }
@@ -232,10 +215,6 @@ class VITSTtsProvider {
     async onRefreshClick() {
         return;
     }
-
-    //#################//
-    //  TTS Interfaces //
-    //#################//
 
     async getVoice(voiceName) {
         if (this.voices.length == 0) {
@@ -268,9 +247,6 @@ class VITSTtsProvider {
         return response;
     }
 
-    //###########//
-    // API CALLS //
-    //###########//
     async fetchTtsVoiceObjects() {
         const response = await fetch(`${this.settings.provider_endpoint}/voice/speakers`);
         if (!response.ok) {
@@ -293,20 +269,13 @@ class VITSTtsProvider {
             addVoices(this.modelTypes[key]);
         }
 
-        this.voices = voices; // Assign to the class property
-        return voices; // Also return this list
+        this.voices = voices;
+        return voices;
     }
 
-    // Each time a parameter is changed, we change the configuration
     async changeTTSSettings() {
     }
 
-    /**
-     * Fetch TTS generation from the API.
-     * @param {string} inputText Text to generate TTS for
-     * @param {string} voiceId Voice ID to use (model_type&speaker_id))
-     * @returns {Promise<Response|string>} Fetch response
-     */
     async fetchTtsGeneration(inputText, voiceId, lang = null, forceNoStreaming = false) {
         const streaming = !forceNoStreaming && this.settings.streaming;
         const [model_type, speaker_id] = voiceId.split('&');
@@ -362,10 +331,6 @@ class VITSTtsProvider {
         return response;
     }
 
-    /**
-     * Preview TTS for a given voice ID.
-     * @param {string} id Voice ID
-     */
     async previewTtsVoice(id) {
         this.audioElement.pause();
         this.audioElement.currentTime = 0;
@@ -386,7 +351,6 @@ class VITSTtsProvider {
         }
     }
 
-    // Interface not used
     async fetchTtsFromHistory(history_item_id) {
         return Promise.resolve(history_item_id);
     }

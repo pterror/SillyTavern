@@ -3,21 +3,12 @@ import { saveTtsProviderSettings } from './index.js';
 export { CosyVoiceProvider };
 
 class CosyVoiceProvider {
-    //########//
-    // Config //
-    //########//
-
     settings;
     ready = false;
     voices = [];
     separator = '. ';
     audioElement = document.createElement('audio');
 
-    /**
-     * Perform any text processing before passing to TTS engine.
-     * @param {string} text Input text
-     * @returns {string} Processed text
-     */
     processText(text) {
         return text;
     }
@@ -62,7 +53,6 @@ class CosyVoiceProvider {
     }
 
     onSettingsChange() {
-        // Used when provider settings are updated from UI
         this.settings.provider_endpoint = $('#tts_endpoint').val();
 
 
@@ -71,7 +61,6 @@ class CosyVoiceProvider {
     }
 
     async loadSettings(settings) {
-        // Pupulate Provider UI given input settings
         if (Object.keys(settings).length == 0) {
             console.info('Using default TTS Provider settings');
         }
@@ -87,7 +76,6 @@ class CosyVoiceProvider {
             }
         }
 
-        // Set initial values from the settings
         $('#tts_endpoint').val(this.settings.provider_endpoint).on('change', this.onSettingsChange.bind(this));
 
 
@@ -96,7 +84,6 @@ class CosyVoiceProvider {
         console.info('ITS: Settings loaded');
     }
 
-    // Perform a simple readiness check by trying to fetch voiceIds
     async checkReady() {
         await Promise.allSettled([this.fetchTtsVoiceObjects(), this.changeTTSSettings()]);
     }
@@ -104,10 +91,6 @@ class CosyVoiceProvider {
     async onRefreshClick() {
         return await this.checkReady();
     }
-
-    //#################//
-    //  TTS Interfaces //
-    //#################//
 
     async getVoice(voiceName) {
         if (this.voices.length == 0) {
@@ -130,9 +113,6 @@ class CosyVoiceProvider {
         return response;
     }
 
-    //###########//
-    // API CALLS //
-    //###########//
     async fetchTtsVoiceObjects() {
         const response = await fetch(`${this.settings.provider_endpoint}/speakers`);
 
@@ -179,7 +159,7 @@ class CosyVoiceProvider {
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify(params), // Convert parameter objects to JSON strings
+                body: JSON.stringify(params),
             },
         );
         if (!response.ok) {

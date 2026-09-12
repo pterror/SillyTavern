@@ -191,10 +191,7 @@ class MacroCstWalker {
         const flagTokens = /** @type {IToken[]} */ (children.flags || []);
         let isClosing = flagTokens.some(token => token.image === MacroFlagType.CLOSING_BLOCK);
 
-        // Special case for the comment macro (//):
-        // The lexer always greedily tokenizes '//' before a single '/', so {{///}} is parsed as
-        // {{// /}} (comment with arg '/') rather than {{/ //}} (closing block for //).
-        // We detect this by checking if the '//' macro's positionally-first argument token starts with '/'.
+        // Lexer greedily tokenizes '//' first, so {{///}} parses as {{// /}} (comment, arg '/') not {{/ //}}; detect via the leading '/' in the first arg.
         if (!isClosing && name === '//') {
             const firstArgNode = /** @type {CstNode?} */ ((argumentNodes || [])[0]);
             if (firstArgNode) {
@@ -1113,10 +1110,7 @@ class MacroCstWalker {
     }
 
     /**
-     * Returns the positionally-first leaf token (by startOffset) across all children of a CST node.
-     * Chevrotain groups tokens by type in the children object, so we must scan all type arrays
-     * and pick the token with the smallest startOffset rather than assuming any one array is ordered first.
-     *
+     * Chevrotain groups children by token type, not document order, so every group must be scanned for the smallest startOffset.
      * @param {CstNode} node
      * @returns {IToken|null}
      */
@@ -1127,7 +1121,6 @@ class MacroCstWalker {
 
         for (const key of Object.keys(children)) {
             for (const element of children[key] || []) {
-                // Skip CST nodes (nested rules) — we only want leaf tokens
                 if (this.#isCstNode(element)) continue;
                 const token = /** @type {IToken} */ (element);
                 if (typeof token.startOffset !== 'number' || isNaN(token.startOffset)) continue;

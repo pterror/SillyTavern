@@ -112,16 +112,8 @@ export {
 
 let parserInstance;
 /**
- * Returns the shared SlashCommandParser singleton, constructing it on first use instead of at
- * module load. This file sits in a wide import cycle back into SlashCommandParser.js (e.g.
- * SlashCommandParser.js -> SlashCommandCommonEnumsProvider.js -> world-info.js -> authors-note.js
- * -> macros.js -> variables.js -> slash-commands.js, plus other paths through extensions.js /
- * st-context.js), so slash-commands.js can start evaluating while SlashCommandParser.js is still
- * mid-evaluation and its class binding is still in its temporal dead zone. Constructing eagerly
- * at the top level (`new SlashCommandParser()`) threw "Cannot access 'SlashCommandParser' before
- * initialization" depending on which path first pulled this module in. Deferring construction
- * until something actually needs the parser sidesteps the load-order dependency entirely, since
- * by the time any command runs the whole module graph has finished loading.
+ * Constructed lazily: a circular import back from SlashCommandParser.js means this module can
+ * start evaluating while that class is still in its temporal dead zone, so `new` at module scope throws.
  * @returns {SlashCommandParser}
  */
 function getParser() {
@@ -140,11 +132,6 @@ function getSlashCommandsHelp(...args) {
     return getParser().getHelpString(...args);
 }
 
-/**
- * Converts a SlashCommandClosure to a filter function that returns a boolean.
- * @param {SlashCommandClosure} closure
- * @returns {() => Promise<boolean>}
- */
 function closureToFilter(closure) {
     return async () => {
         try {
@@ -176,7 +163,6 @@ export const UNIQUE_APIS = [];
 function setupConnectAPIMap() {
     /** @type {Record<string, ConnectAPIMap>} */
     const result = {
-        // Default APIs not contained inside text gen / chat gen
         'kobold': {
             selected: 'kobold',
             button: '#api_button',
@@ -193,7 +179,6 @@ function setupConnectAPIMap() {
             button: '#api_button_textgenerationwebui',
             type: textgen_types.KOBOLDCPP,
         },
-        // KoboldCpp alias
         'kcpp': {
             selected: 'textgenerationwebui',
             button: '#api_button_textgenerationwebui',
@@ -204,19 +189,17 @@ function setupConnectAPIMap() {
             button: '#api_button_openai',
             source: chat_completion_sources.OPENAI,
         },
-        // OpenAI alias
         'oai': {
             selected: 'openai',
             button: '#api_button_openai',
             source: chat_completion_sources.OPENAI,
         },
-        // Google alias
         'google': {
             selected: 'openai',
             button: '#api_button_openai',
             source: chat_completion_sources.MAKERSUITE,
         },
-        // OpenRouter special naming, to differentiate between chat comp and text comp
+        // OpenRouter needs chat comp and text comp differentiated
         'openrouter': {
             selected: 'openai',
             button: '#api_button_openai',
@@ -229,7 +212,6 @@ function setupConnectAPIMap() {
         },
     };
 
-    // Fill connections map from textgen_types and chat_completion_sources
     for (const textGenType of Object.values(textgen_types)) {
         if (result[textGenType]) continue;
         result[textGenType] = {
@@ -517,8 +499,7 @@ export function initDefaultSlashCommands() {
                     return resolve('');
                 };
                 eventSource.once(event_types.CHAT_CHANGED, eventCallback);
-                // Not awaited: the resolution comes from the CHAT_CHANGED listener above, and this
-                // executor is not async. Same fire-and-forget as the menu click this replaces.
+                // Not awaited: resolution comes from the CHAT_CHANGED listener above.
                 void closeCurrentChat();
                 setTimeout(() => {
                     reject(t`Failed to open temporary chat`);
@@ -800,7 +781,6 @@ export function initDefaultSlashCommands() {
         `,
     }));
 
-    // Shared character field definitions for char CRUD commands
     const getCharacterFieldArgs = ({ requiredFields = [] } = {}) => [
         SlashCommandNamedArgument.fromProps({
             name: 'name',
@@ -3488,7 +3468,6 @@ export function initDefaultSlashCommands() {
                 return '';
             }
 
-            // Load more messages if needed
             const firstDisplayedMessageId = getFirstDisplayedMessageId();
             if (isFinite(firstDisplayedMessageId) && messageIndex < firstDisplayedMessageId) {
                 const needToLoadCount = firstDisplayedMessageId - messageIndex;
@@ -3699,36 +3678,29 @@ export function initDefaultSlashCommands() {
             }),
         ],
         callback: (args, value) => {
-            // Closures are not supported
             if (value instanceof SlashCommandClosure) {
                 throw new SlashCommandExecutionError(t`Closures are not supported as unnamed arguments for /array-wrap. Did you forget to call the closure with parentheses?`);
             }
 
-            // Multiple unnamed arguments are not supported since acceptsMultiple is false, but check just in case
             if (Array.isArray(value)) {
                 throw new SlashCommandExecutionError(t`/array-wrap does not support multiple unnamed arguments.`);
             }
 
-            // Empty string - empty arrays
             if (value === '') {
                 return JSON.stringify([]);
             }
 
             try {
-                // If the value is a valid JSON string, parse it
                 const parsedValue = JSON.parse(value);
 
-                // Already an array - return as-is
                 if (Array.isArray(parsedValue)) {
                     return value;
                 }
 
-                // If it's an object, wrap it into an array and stringify
                 if (typeof parsedValue === 'object' && parsedValue !== null) {
                     return JSON.stringify([parsedValue]);
                 }
 
-                // For primitive values, check if we should take the parsed or original value based on the stringify argument
                 const isJsonPrimitive = parsedValue === null || ['string', 'number', 'boolean'].includes(typeof parsedValue);
                 if (isJsonPrimitive && isFalseBoolean(String(args?.stringify?.toString()))) {
                     return JSON.stringify([parsedValue]);
@@ -3737,7 +3709,6 @@ export function initDefaultSlashCommands() {
                 // Wrap the original value (string, number, boolean) into an array, preserving quotes for strings
                 return JSON.stringify([value]);
             } catch {
-                // Not a valid JSON string - wrap the original value
                 return JSON.stringify([value]);
             }
         },
@@ -3756,39 +3727,32 @@ export function initDefaultSlashCommands() {
             }),
         ],
         callback: (_args, value) => {
-            // Closures are not supported
             if (value instanceof SlashCommandClosure) {
                 throw new SlashCommandExecutionError(t`Closures are not supported as unnamed arguments for /array-unwrap. Did you forget to call the closure with parentheses?`);
             }
 
-            // Multiple unnamed arguments are not supported since acceptsMultiple is false, but check just in case
             if (Array.isArray(value)) {
                 throw new SlashCommandExecutionError(t`/array-unwrap does not support multiple unnamed arguments.`);
             }
 
             try {
-                // If the value is a JSON array, get the first element
                 const parsed = JSON.parse(value);
 
                 if (Array.isArray(parsed)) {
                     const unwrappedValue = parsed?.[0] ?? '';
 
-                    // If the first element is null or undefined, return an empty string
                     if (unwrappedValue === null || unwrappedValue === undefined) {
                         return '';
                     }
 
-                    // If the first element is an object, stringify it.
                     if (typeof unwrappedValue === 'object') {
                         return JSON.stringify(unwrappedValue);
                     }
 
-                    // Otherwise, return it as a string.
                     return String(unwrappedValue);
                 }
                 return value;
             } catch {
-                // Not a valid JSON - return as-is
                 return value;
             }
         },
@@ -3803,11 +3767,6 @@ const NARRATOR_NAME_DEFAULT = 'System';
 export const COMMENT_NAME_DEFAULT = 'Note';
 const SCRIPT_PROMPT_KEY = 'script_inject_';
 
-/**
- * Adds a new script injection to the chat.
- * @param {import('./slash-commands/SlashCommand.js').NamedArguments} args Named arguments
- * @param {import('./slash-commands/SlashCommand.js').UnnamedArguments} value Unnamed argument
- */
 function injectCallback(args, value) {
     const positions = {
         'before': extension_prompt_types.BEFORE_PROMPT,
@@ -3879,7 +3838,6 @@ async function listInjectsCallback(args) {
     /** @type {import('./slash-commands/SlashCommandReturnHelper.js').SlashCommandReturnType} */
     let returnType = args.return;
 
-    // Now the actual new return type handling
     const buildTextValue = (injects) => {
         const injectsStr = Object.entries(injects)
             .map(([id, inject]) => {
@@ -3895,9 +3853,6 @@ async function listInjectsCallback(args) {
 }
 
 /**
- * Flushes script injections for the current chat.
- * @param {import('./slash-commands/SlashCommand.js').NamedArguments} _ Named arguments
- * @param {string} value Unnamed argument
  * @returns {string} Empty string
  */
 function flushInjectsCallback(_, value) {
@@ -4004,7 +3959,6 @@ async function trimTokensCallback(arg, value) {
     const direction = arg.direction || 'end';
     const tokenCount = await getTokenCountAsync(value);
 
-    // Token count is less than the limit, do nothing
     if (tokenCount <= limit) {
         return value;
     }
@@ -4059,7 +4013,6 @@ async function buttonsCallback(args, text) {
             return '';
         }
 
-        // Normalize buttons to ButtonLabel format for consistent handling
         /** @type {ButtonLabel[]} */
         const buttons = rawButtons.map(btn => typeof btn === 'string' ? { text: btn } : btn);
 
@@ -4073,7 +4026,7 @@ async function buttonsCallback(args, text) {
         const multipleToggledState = new Set();
         const multiple = isTrueBoolean(args?.multiple);
 
-        // Map custom buttons to results. Start at 2 because 1 and 0 are reserved for ok and cancel
+        // Custom buttons start at 2; 1 and 0 are reserved for ok and cancel
         /** @type {Map<number, ButtonLabel>} */
         const resultToButtonMap = new Map(buttons.map((button, index) => [index + 2, button]));
 
@@ -4109,7 +4062,6 @@ async function buttonsCallback(args, text) {
                     buttonElement.dataset.result = String(result);
                 }
 
-                // Add icon if provided
                 if (button.icon) {
                     const icon = document.createElement('i');
                     icon.className = `fa-solid ${button.icon}`;
@@ -4122,7 +4074,6 @@ async function buttonsCallback(args, text) {
                     buttonElement.innerText = button.text;
                 }
 
-                // Add tooltip if provided
                 if (button.tooltip) {
                     buttonElement.title = button.tooltip;
                     buttonElement.dataset.i18n = '[title]' + button.tooltip;
@@ -4137,10 +4088,9 @@ async function buttonsCallback(args, text) {
             popupContainer.innerHTML = safeValue;
             popupContainer.appendChild(scrollableContainer);
 
-            // Ensure the popup uses flex layout
             popupContainer.style.display = 'flex';
             popupContainer.style.flexDirection = 'column';
-            popupContainer.style.maxHeight = '80vh'; // Limit the overall height of the popup
+            popupContainer.style.maxHeight = '80vh';
 
             popup = new Popup(popupContainer, POPUP_TYPE.TEXT, '', { okButton: multiple ? t`Ok` : t`Cancel`, allowVerticalScrolling: true });
             popup.show()
@@ -4332,14 +4282,13 @@ async function inputCallback(args, prompt) {
         placeholder: args?.placeholder !== undefined && typeof args?.placeholder === 'string' ? args.placeholder : null,
         tooltip: args?.tooltip !== undefined && typeof args?.tooltip === 'string' ? args.tooltip : null,
     };
-    // Do not remove this delay, otherwise the prompt will not show up
+    // Do not remove this delay: the prompt will not show up without it
     await delay(1);
     const result = await callGenericPopup(safeValue, POPUP_TYPE.INPUT, defaultInput, popupOptions);
     await delay(1);
 
     // Input will return null on nothing entered, and false on cancel clicked
     if (result === null || result === false) {
-        // Veryify if a cancel handler exists and it is valid
         if (args?.onCancel) {
             if (!(args.onCancel instanceof SlashCommandClosure)) {
                 throw new Error(t`argument 'onCancel' must be a closure for command /input`);
@@ -4347,7 +4296,6 @@ async function inputCallback(args, prompt) {
             await args.onCancel.execute();
         }
     } else {
-        // Verify if an ok handler exists and it is valid
         if (args?.onSuccess) {
             if (!(args.onSuccess instanceof SlashCommandClosure)) {
                 throw new Error(t`argument 'onSuccess' must be a closure for command /input`);
@@ -4392,7 +4340,7 @@ function fuzzyCallback(args, searchInValue) {
             ignoreLocation: true,
             threshold: 0.4,
         };
-        // threshold determines how strict is the match, low threshold value is very strict, at 1 (nearly?) everything matches
+        // Low threshold is strict; near 1, almost everything matches
         if ('threshold' in args) {
             params.threshold = parseFloat(args.threshold);
             if (isNaN(params.threshold)) {
@@ -4409,7 +4357,6 @@ function fuzzyCallback(args, searchInValue) {
 
         function getFirstMatch() {
             const fuse = new Fuse([searchInValue], params);
-            // each item in the "list" is searched within "search_item", if any matches it returns the matched "item"
             for (const searchItem of list) {
                 const result = fuse.search(searchItem);
                 if (result.length > 0) {
@@ -4456,7 +4403,6 @@ function setEphemeralStopStrings(value) {
                 stopStrings.forEach(stopString => addEphemeralStoppingString(stopString));
             }
         } catch {
-            // Do nothing
         }
     }
 }
@@ -4508,9 +4454,6 @@ async function generateRawCallback(args, value) {
 }
 
 /**
- * Callback for the /gen command
- * @param {object} args Named arguments
- * @param {string} value Unnamed argument
  * @returns {Promise<string>} The generated text
  */
 async function generateCallback(args, value) {
@@ -4560,7 +4503,7 @@ async function generateCallback(args, value) {
  * @returns {Promise<string>} The text that was echoed
  */
 async function echoCallback(args, value) {
-    // Note: We don't need to sanitize input, as toastr is set up by default to escape HTML via toastr options
+    // toastr escapes HTML by default, so input doesn't need sanitizing here
     if (value === '') {
         console.warn('WARN: No argument provided for /echo command');
         return '';
@@ -4571,7 +4514,6 @@ async function echoCallback(args, value) {
         args.severity = null;
     }
 
-    // Make sure that the value is a string
     value = String(value);
 
     let title = args.title ? args.title : undefined;
@@ -4585,7 +4527,6 @@ async function echoCallback(args, value) {
     if (args.cssClass) options.toastClass = [options.toastClass, args.cssClass].filter(Boolean).join(' ');
     options.escapeHtml = args.escapeHtml !== undefined ? isTrueBoolean(args.escapeHtml) : true;
 
-    // Prepare possible await handling
     let awaitDismissal = isTrueBoolean(args.awaitDismissal);
     let resolveToastDismissal;
 
@@ -4604,7 +4545,7 @@ async function echoCallback(args, value) {
         }
     }
 
-    // If we allow HTML, we need to sanitize it to prevent security risks
+    // HTML must be sanitized when allowed, to prevent XSS
     if (!options.escapeHtml) {
         if (title) title = DOMPurify.sanitize(title, { FORBID_TAGS: ['style'] });
         value = DOMPurify.sanitize(value, { FORBID_TAGS: ['style'] });
@@ -4668,10 +4609,8 @@ async function addSwipeCallback(args, value) {
         return '';
     }
 
-    // Built as new arrays and handed to updateMessage(), rather than assigned and pushed onto the
-    // message in place. A message is deep-frozen, so writing to one is a TypeError, not a silent
-    // no-op: this command threw "object is not extensible" on any tree-backed chat and added nothing
-    // at all. updateMessage() is the only way a message changes.
+    // Messages are deep-frozen; mutating in place throws "object is not extensible", so build new
+    // arrays and hand them to updateMessage() instead.
     const hadSlots = Array.isArray(lastMessage.swipes);
     const swipes = hadSlots ? [...lastMessage.swipes] : [lastMessage.mes];
     const swipeInfo = Array.isArray(lastMessage.swipe_info)
@@ -4699,9 +4638,7 @@ async function addSwipeCallback(args, value) {
 
     const newSwipeId = swipes.length - 1;
 
-    // A new alternative sibling is exactly what /addswipe does. Recorded before the switch/no-switch
-    // branch below, since selecting onto it (the switch:true path) has to name a row that already
-    // knows its own node_id.
+    // Recorded before the switch check below, since selecting onto it needs the row's node_id already set.
     if (chat_metadata?._tree_stored) {
         const createdId = await chatOpAddAlternative(lastMessageId, value).catch(error => {
             console.error('Could not save the new swipe as an alternative:', error);
@@ -4717,8 +4654,7 @@ async function addSwipeCallback(args, value) {
     if (isTrueBoolean(args.switch)) {
         await swipe(null, SWIPE_DIRECTION.RIGHT, { source: SWIPE_SOURCE.SLASH_COMMAND, repeated: false, forceMesId: lastMessageId, forceSwipeId: newSwipeId });
     } else {
-        // Re-read: updateMessage() above replaced the message, so the one captured at the top is the
-        // pre-update copy and its slot count is one short.
+        // Re-read: updateMessage() above replaced the message, so the copy captured earlier is stale.
         await updateSwipeCounter(lastMessageId, { message: chat[lastMessageId] });
         refreshSwipeButtons();
     }
@@ -4744,7 +4680,6 @@ async function askCharacter(args, text) {
     $('#send_textarea').val('')[0].dispatchEvent(new Event('input', { bubbles: true }));
 
     // Not supported in group chats
-    // TODO: Maybe support group chats?
     if (selected_group) {
         toastr.warning(t`Cannot run /ask command in a group chat!`);
         return '';
@@ -4759,7 +4694,6 @@ async function askCharacter(args, text) {
     // restoreCharacter runs, since it's only called back after the async Generate() below.
     const prevAvatar = getCurrentCharacter()?.avatar;
 
-    // Find the character
     const character = findChar({ name: args?.name });
     if (!character) {
         toastr.error(t`Character not found.`);
@@ -4768,12 +4702,10 @@ async function askCharacter(args, text) {
 
     if (text) {
         const mesText = getRegexedString(text.trim(), regex_placement.SLASH_COMMAND);
-        // Sending a message implicitly saves the chat, so this needs to be done before changing the character
-        // Otherwise, a corruption will occur
+        // Sending implicitly saves the chat, so this must happen before changing the character
         await sendMessageAsUser(mesText, '');
     }
 
-    // Override character and send a user message
     setCharacterId(character);
 
     const { name, force_avatar, original_avatar } = getNameAndAvatarForMessage(character, args?.name);
@@ -4793,8 +4725,7 @@ async function askCharacter(args, text) {
             setCharacterName(neutralCharacterName);
         }
 
-        // Only force the new avatar if the character name is the same
-        // This skips if an error was fired
+        // Only force the new avatar if the character name matches
         const lastMessage = chat[chat.length - 1];
         if (lastMessage && lastMessage?.name === name) {
             lastMessage.force_avatar = force_avatar;
@@ -4804,7 +4735,6 @@ async function askCharacter(args, text) {
 
     let askResult = '';
 
-    // Run generate and restore previous character
     try {
         eventSource.once(event_types.MESSAGE_RECEIVED, restoreCharacter);
         toastr.info(t`Asking ${name} something...`);
@@ -5031,9 +4961,7 @@ async function addGroupMemberCallback(_, name) {
     }
 
     group.members.push(avatar);
-    // group.members is already mutated in place above - this call is purely to report the change via
-    // groupsStore (same pattern as modifyGroupMember() in group-chats.js), so the member-list subscriber
-    // reprints #rm_group_candidates/#rm_group_members without us having to do it manually here.
+    // group.members is already mutated above; this just notifies groupsStore subscribers to reprint.
     groupsStore.update(selected_group, { members: group.members });
     await saveGroupChat(selected_group, true);
     return character.name;
@@ -5082,9 +5010,8 @@ async function sendUserMessageCallback(args, text) {
 
     let insertAt = Number(args?.at);
 
-    // Convert possible depth parameter to index
     if (!isNaN(insertAt) && (insertAt < 0 || Object.is(insertAt, -0))) {
-        // Negative value means going back from current chat length. (E.g.: 8 messages, Depth 1 means insert at index 7)
+        // Negative depth counts back from chat length (e.g. 8 messages, depth 1 = index 7)
         insertAt = chat.length + insertAt;
     }
 
@@ -5106,7 +5033,6 @@ async function deleteMessagesByNameCallback(_, name) {
         return;
     }
 
-    // Search for a matching character to get the real name, or take the name provided
     const character = findChar({ name: name });
     name = character?.name || name;
 
@@ -5169,7 +5095,6 @@ async function openChat(avatar) {
 }
 
 /**
- * Uploads an avatar image to a character.
  * @param {string} avatarKey - The character's avatar filename (e.g., "name.png")
  * @param {string} base64Data - Base64 data URL of the image
  * @param {object} [options={}] - Options
@@ -5183,7 +5108,6 @@ async function uploadCharacterAvatar(avatarKey, base64Data, { resizePrompt = fal
 
     let finalImageData = base64Data;
 
-    // Handle resize prompt
     if (resizePrompt) {
         if (power_user.never_resize_avatars) {
             toastr.warning(t`Avatar resizing is disabled in settings. The image will be uploaded as-is.`);
@@ -5191,7 +5115,6 @@ async function uploadCharacterAvatar(avatarKey, base64Data, { resizePrompt = fal
             const dlg = new Popup(t`Set the crop position of the avatar image`, POPUP_TYPE.CROP, '', { cropImage: base64Data });
             const croppedImage = await dlg.show();
             if (!croppedImage) {
-                // User cancelled the crop dialog
                 return false;
             }
             // The dialog returns the already-cropped image
@@ -5200,11 +5123,9 @@ async function uploadCharacterAvatar(avatarKey, base64Data, { resizePrompt = fal
     }
 
     try {
-        // Convert base64 to blob
         const response = await fetch(finalImageData);
         const blob = await response.blob();
 
-        // Create form data for upload
         const formData = new FormData();
         formData.append('avatar', blob, 'avatar.png');
         formData.append('avatar_url', avatarKey);
@@ -5220,7 +5141,6 @@ async function uploadCharacterAvatar(avatarKey, base64Data, { resizePrompt = fal
             throw new Error(errorText); // Will be caught and logged below
         }
 
-        // Bust cache for the avatar thumbnail and character image
         const thumbnailUrl = getThumbnailUrl('avatar', avatarKey);
         await fetch(thumbnailUrl, { method: 'GET', cache: 'reload' });
         await fetch(`/characters/${avatarKey}`, { method: 'GET', cache: 'reload' });
@@ -5246,8 +5166,6 @@ async function uploadCharacterAvatar(avatarKey, base64Data, { resizePrompt = fal
 }
 
 /**
- * Creates a new character via the API.
- * @param {object} args Named arguments
  * @returns {Promise<string>} The avatar key of the created character
  */
 async function createCharacterCallback(args) {
@@ -5260,7 +5178,6 @@ async function createCharacterCallback(args) {
         return '';
     }
 
-    // Build the character data object matching the server's expected format
     const characterData = {
         ch_name: name.trim(),
         description: description,
@@ -5284,7 +5201,6 @@ async function createCharacterCallback(args) {
         extensions: '{}',
     };
 
-    // Handle avatar if provided (URL or base64)
     const avatarData = args.avatar ? await resolveAvatarData(args.avatar) : null;
 
     try {
@@ -5301,7 +5217,6 @@ async function createCharacterCallback(args) {
 
         const avatarKey = await response.text();
 
-        // Upload avatar if provided
         if (avatarData) {
             const resizePrompt = !isFalseBoolean(args.avatarPromptResize);
             const uploaded = await uploadCharacterAvatar(avatarKey, avatarData, { resizePrompt });
@@ -5311,10 +5226,8 @@ async function createCharacterCallback(args) {
             }
         }
 
-        // Refresh the character list
         await getCharacters();
 
-        // Select the character if requested (default: true)
         const shouldSelect = !isFalseBoolean(args.select);
         if (shouldSelect) {
             const newCharacter = charactersStore.get(avatarKey);
@@ -5334,12 +5247,9 @@ async function createCharacterCallback(args) {
 }
 
 /**
- * Updates an existing character via the merge-attributes API.
- * @param {object} args Named arguments
  * @returns {Promise<string>} The avatar key of the updated character
  */
 async function updateCharacterCallback(args) {
-    // Find the target character
     let character;
     if (args.char) {
         character = findChar({ name: args.char });
@@ -5348,7 +5258,6 @@ async function updateCharacterCallback(args) {
             return '';
         }
     } else {
-        // Use currently selected character
         if (!getCurrentCharacter()) {
             toastr.warning(t`No character selected and no char argument provided`);
             return '';
@@ -5356,12 +5265,10 @@ async function updateCharacterCallback(args) {
         character = getCurrentCharacter();
     }
 
-    // Build the update object with only provided fields
     const updateData = {
         avatar: character.avatar,
     };
 
-    // Map argument names to character data field names
     const fieldMappings = {
         name: 'name',
         description: 'description',
@@ -5377,12 +5284,10 @@ async function updateCharacterCallback(args) {
         tags: 'tags',
     };
 
-    // Add provided fields to update data
     let hasUpdates = false;
     for (const [argName, fieldName] of Object.entries(fieldMappings)) {
         if (args[argName] !== undefined) {
             let value = args[argName];
-            // Handle tags as comma-separated array
             if (fieldName === 'tags' && typeof value === 'string') {
                 value = value.split(',').map(t => t.trim()).filter(t => t);
             }
@@ -5407,7 +5312,6 @@ async function updateCharacterCallback(args) {
         hasUpdates = true;
     }
 
-    // Handle talkativeness (stored in extensions)
     if (args.talkativeness !== undefined) {
         const talkValue = parseFloat(args.talkativeness);
         if (!isNaN(talkValue)) {
@@ -5419,7 +5323,6 @@ async function updateCharacterCallback(args) {
         }
     }
 
-    // Handle favorite
     if (args.favorite !== undefined) {
         const favValue = isTrueBoolean(args.favorite);
         updateData.fav = favValue;
@@ -5435,7 +5338,6 @@ async function updateCharacterCallback(args) {
         hasUpdates = true;
     }
 
-    // Handle depth prompt fields
     if (args.depthPrompt !== undefined || args.depthPromptDepth !== undefined || args.depthPromptRole !== undefined) {
         if (!updateData.data) updateData.data = {};
         if (!updateData.data.extensions) updateData.data.extensions = {};
@@ -5472,24 +5374,20 @@ async function updateCharacterCallback(args) {
             throw new Error(errorData.message || `Server returned ${response.status}`); // Will be caught and logged below
         }
 
-        // Upload avatar if provided
         if (avatarData) {
             const resizePrompt = !isFalseBoolean(args.avatarPromptResize);
             const uploaded = await uploadCharacterAvatar(character.avatar, avatarData, { resizePrompt });
             if (!uploaded && resizePrompt) {
-                // User cancelled the resize dialog
                 toastr.warning(t`Avatar update cancelled`);
             }
         }
 
-        // Refresh the character data
         await getOneCharacter(character.avatar);
 
-        // The character itself is looked up fresh by avatar (stable identity), since it can be a different
-        // reference across the awaits above (avatar upload, getOneCharacter refresh).
+        // The character is looked up fresh by avatar (stable identity), since the reference
+        // can change across the awaits above (avatar upload, getOneCharacter refresh)
         await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character: charactersStore.get(character.avatar) } });
 
-        // Update the side panel if this is the currently selected character
         if (character.avatar === getCurrentCharacter()?.avatar) {
             select_selected_character(character.avatar, { switchMenu: false });
         }
@@ -5504,12 +5402,9 @@ async function updateCharacterCallback(args) {
 }
 
 /**
- * Duplicates a character via the slash command.
- * @param {object} args Named arguments
  * @returns {Promise<string>} The avatar key of the duplicated character
  */
 async function duplicateCharacterCallback(args) {
-    // Find the target character if specified
     let targetAvatar = null;
     if (args.char) {
         const character = findChar({ name: args.char });
@@ -5520,14 +5415,12 @@ async function duplicateCharacterCallback(args) {
         targetAvatar = character.avatar;
     }
 
-    // Call the duplicateCharacter utility with silent mode (no popup)
     const newAvatarKey = await duplicateCharacter({ avatar: targetAvatar, silent: true });
     if (!newAvatarKey) {
         toastr.error(t`Failed to duplicate character`);
         return '';
     }
 
-    // Select the character if requested (default: false)
     const shouldSelect = isTrueBoolean(args.select);
     if (shouldSelect) {
         const newCharacter = charactersStore.get(newAvatarKey);
@@ -5540,12 +5433,9 @@ async function duplicateCharacterCallback(args) {
 }
 
 /**
- * Gets character data or a specific field.
- * @param {object} args Named arguments
  * @returns {Promise<string>} Character data or field value
  */
 async function getCharacterDataCallback(args) {
-    // Find the target character
     let character;
     if (args.char) {
         character = findChar({ name: args.char });
@@ -5554,7 +5444,6 @@ async function getCharacterDataCallback(args) {
             return '';
         }
     } else {
-        // Use currently selected character
         if (!getCurrentCharacter()) {
             toastr.warning(t`No character selected and no char argument provided`);
             return '';
@@ -5562,14 +5451,12 @@ async function getCharacterDataCallback(args) {
         character = getCurrentCharacter();
     }
 
-    // If a specific field is requested
     if (args.field) {
         const fieldName = args.field;
 
         // Try to get from data object first (V2 spec), then fall back to root
         let value = character.data?.[fieldName] ?? character[fieldName];
 
-        // Handle special cases for nested fields
         if (fieldName === 'talkativeness') {
             value = character.data?.extensions?.talkativeness ?? character.talkativeness ?? 0.5;
         }
@@ -5587,7 +5474,6 @@ async function getCharacterDataCallback(args) {
         return await slashCommandReturnHelper.doReturn(args.return ?? 'pipe', value, { objectToStringFunc: x => String(x) });
     }
 
-    // Return entire character data
     const charData = {
         avatar: character.avatar,
         name: character.name,
@@ -5612,12 +5498,9 @@ async function getCharacterDataCallback(args) {
 }
 
 /**
- * Deletes a character using the core deleteCharacter function.
- * @param {object} args Named arguments
  * @returns {Promise<string>} 'true' if deleted, 'false' otherwise
  */
 async function deleteCharacterCallback(args) {
-    // Find the target character
     let character;
     if (args.char) {
         character = findChar({ name: args.char });
@@ -5626,7 +5509,6 @@ async function deleteCharacterCallback(args) {
             return 'false';
         }
     } else {
-        // Use currently selected character
         if (!getCurrentCharacter()) {
             toastr.warning(t`No character selected and no char argument provided`);
             return 'false';
@@ -5637,7 +5519,6 @@ async function deleteCharacterCallback(args) {
     const deleteChats = isTrueBoolean(args.deleteChats);
     const silent = isTrueBoolean(args.silent);
 
-    // Show confirmation popup unless silent mode
     if (!silent) {
         const confirmMessage = deleteChats
             ? t`Are you sure you want to delete "${character.name}" and all associated chats? This action cannot be undone.`
@@ -5650,7 +5531,6 @@ async function deleteCharacterCallback(args) {
     }
 
     try {
-        // Use the core deleteCharacter function which handles all cleanup and events
         const success = await deleteCharacter(character.avatar, { deleteChats });
         return success ? 'true' : 'false';
     } catch (error) {
@@ -5762,7 +5642,6 @@ export async function generateSystemMessage(args, prompt) {
 
     const trim = isTrueBoolean(args?.trim?.toString());
 
-    // Generate and regex the output if applicable
     const toast = toastr.info(t`Please wait`, t`Generating...`);
     const message = await generateQuietPrompt({ quietPrompt: prompt, trimToSentence: trim });
     toastr.clear(toast);
@@ -5848,7 +5727,7 @@ export function getNameAndAvatarForMessage(character, name = null) {
 
     let force_avatar, original_avatar;
     if (character?.avatar === currentChar?.avatar || isNeutralCharacter) {
-        // If the targeted character is the currently selected one in a solo chat, we don't need to force any avatars
+        // Skip forcing an avatar when the target is already the selected character in a solo chat
     } else if (character && character.avatar !== 'none') {
         force_avatar = getThumbnailUrl('avatar', character.avatar);
         original_avatar = character.avatar;
@@ -5865,17 +5744,14 @@ export function getNameAndAvatarForMessage(character, name = null) {
 }
 
 /**
- * Changes the character role on a message at a given index.
- * @param {object?} args - Named arguments
  * @param {string} role - Role to change to.
  *
  * @returns {Promise<string>} The updated message role.
  */
 async function messageRoleCallback(args, role) {
     let modifyAt = Number(args?.at ?? (chat.length - 1));
-    // Convert possible depth parameter to index
     if (!isNaN(modifyAt) && (modifyAt < 0 || Object.is(modifyAt, -0))) {
-        // Negative value means going back from current chat length. (E.g.: 8 messages, Depth 1 means insert at index 7)
+        // Negative depth counts back from chat length (e.g. 8 messages, depth 1 = index 7)
         modifyAt = chat.length + modifyAt;
     }
 
@@ -5919,17 +5795,14 @@ async function messageRoleCallback(args, role) {
 }
 
 /**
- * Changes the character name on a message at a given index.
- * @param {object?} args - Named arguments
  * @param {string} name - Name to change to.
  *
  * @returns {Promise<string>} The updated message name.
  */
 async function messageNameCallback(args, name) {
     let modifyAt = Number(args?.at ?? (chat.length - 1));
-    // Convert possible depth parameter to index
     if (!isNaN(modifyAt) && (modifyAt < 0 || Object.is(modifyAt, -0))) {
-        // Negative value means going back from current chat length. (E.g.: 8 messages, Depth 1 means insert at index 7)
+        // Negative depth counts back from chat length (e.g. 8 messages, depth 1 = index 7)
         modifyAt = chat.length + modifyAt;
     }
 
@@ -6057,9 +5930,8 @@ export async function sendMessageAs(args, text) {
 
     let insertAt = Number(args.at);
 
-    // Convert possible depth parameter to index
     if (!isNaN(insertAt) && (insertAt < 0 || Object.is(insertAt, -0))) {
-        // Negative value means going back from current chat length. (E.g.: 8 messages, Depth 1 means insert at index 7)
+        // Negative depth counts back from chat length (e.g. 8 messages, depth 1 = index 7)
         insertAt = chat.length + insertAt;
     }
 
@@ -6115,9 +5987,8 @@ export async function sendNarratorMessage(args, text) {
 
     let insertAt = Number(args.at);
 
-    // Convert possible depth parameter to index
     if (!isNaN(insertAt) && (insertAt < 0 || Object.is(insertAt, -0))) {
-        // Negative value means going back from current chat length. (E.g.: 8 messages, Depth 1 means insert at index 7)
+        // Negative depth counts back from chat length (e.g. 8 messages, depth 1 = index 7)
         insertAt = chat.length + insertAt;
     }
 
@@ -6147,10 +6018,7 @@ export async function sendNarratorMessage(args, text) {
 }
 
 export async function promptQuietForLoudResponse(who, text) {
-    // Captured once, by avatar, before the generateQuietPrompt() await below - same intent as the old
-    // character_id snapshot (this_chid could go stale across an await; an avatar can't go stale the same
-    // way, but it can still point at a character that's no longer selected, which is exactly what "captured
-    // once at entry" is meant to preserve here).
+    // Captured once by avatar before the generateQuietPrompt() await, so a later selection change can't affect it.
     const character = getCurrentCharacter();
     if (who === 'sys') {
         text = 'System: ' + text;
@@ -6159,7 +6027,6 @@ export async function promptQuietForLoudResponse(who, text) {
     } else if (who === 'char') {
         text = character.name + ': ' + text;
     } else if (who === 'raw') {
-        // We don't need to modify the text
     }
 
     //text = `${text}${power_user.instruct.enabled ? '' : '\n'}${(power_user.always_force_name2 && who != 'raw') ? character.name + ":" : ""}`
@@ -6217,9 +6084,8 @@ async function sendCommentMessage(args, text) {
 
     let insertAt = Number(args.at);
 
-    // Convert possible depth parameter to index
     if (!isNaN(insertAt) && (insertAt < 0 || Object.is(insertAt, -0))) {
-        // Negative value means going back from current chat length. (E.g.: 8 messages, Depth 1 means insert at index 7)
+        // Negative depth counts back from chat length (e.g. 8 messages, depth 1 = index 7)
         insertAt = chat.length + insertAt;
     }
 
@@ -6249,7 +6115,6 @@ async function sendCommentMessage(args, text) {
 }
 
 /**
- * Displays a help message from the slash command
  * @param {any} _ Unused
  * @param {string} type Type of help to display
  */
@@ -6295,8 +6160,7 @@ $(document).on('click', '[data-displayHelp]', function (e) {
 
 function setBackgroundCallback(_, bg) {
     if (!bg) {
-        // allow reporting of the background name if called without args
-        // for use in ST Scripts via pipe
+        // Report the background name when called without args
         return background_settings.name;
     }
 
@@ -6422,8 +6286,6 @@ function getModelOptions(quiet) {
 }
 
 /**
- * Sets a model for the current API.
- * @param {object} args Named arguments
  * @param {string} model New model name
  * @returns {string} New or existing model name
  */
@@ -6431,7 +6293,7 @@ function modelCallback(args, model) {
     const quiet = isTrueBoolean(args?.quiet);
     const { control: modelSelectControl, options } = getModelOptions(quiet);
 
-    // If no model was found, the reason was already logged, we just return here
+    // Reason for no model found was already logged
     if (options === null) {
         return '';
     }
@@ -6496,17 +6358,14 @@ function getPromptEntryCallback(args) {
     let returnType = args.return ?? 'simple';
 
     function parseArgs(arg) {
-        // Arg is already an array
         if (Array.isArray(arg)) {
             return arg;
         }
         const list = [];
         try {
-            // Arg is a JSON-stringified array
             const parsedArg = JSON.parse(arg);
             list.push(...Array.isArray(parsedArg) ? parsedArg : [arg]);
         } catch {
-            // Arg is a string
             list.push(arg);
         }
         return list;
@@ -6515,7 +6374,6 @@ function getPromptEntryCallback(args) {
     let identifiersList = parseArgs(args.identifier);
     let nameList = parseArgs(args.name);
 
-    // Check if identifiers exists in prompt, else remove from list
     if (identifiersList.length !== 0) {
         identifiersList = identifiersList.filter(identifier => prompts.some(prompt => prompt.identifier === identifier));
     }
@@ -6529,7 +6387,6 @@ function getPromptEntryCallback(args) {
         });
     }
 
-    // Get the state for each prompt entry
     let promptStates = new Map();
     identifiersList.forEach(identifier => {
         const promptOrderEntry = promptManager.getPromptOrderEntry(promptManager.activeCharacter, identifier);
@@ -6565,17 +6422,14 @@ function setPromptEntryCallback(args, targetState) {
     const prompts = promptManager.serviceSettings.prompts;
 
     function parseArgs(arg) {
-        // Arg is already an array
         if (Array.isArray(arg)) {
             return arg;
         }
         const list = [];
         try {
-            // Arg is a JSON-stringified array
             const parsedArg = JSON.parse(arg);
             list.push(...Array.isArray(parsedArg) ? parsedArg : [arg]);
         } catch {
-            // Arg is a string
             list.push(arg);
         }
         return list;
@@ -6584,14 +6438,13 @@ function setPromptEntryCallback(args, targetState) {
     let identifiersList = parseArgs(args.identifier);
     let nameList = parseArgs(args.name);
 
-    // Check if identifiers exists in prompt, else remove from list
     if (identifiersList.length !== 0) {
         identifiersList = identifiersList.filter(identifier => prompts.some(prompt => prompt.identifier === identifier));
     }
 
     if (nameList.length !== 0) {
         nameList.forEach(name => {
-            // one name could potentially have multiple entries, find all identifiers that match given name
+            // A name can match multiple entries; find all matching identifiers
             let identifiers = [];
             prompts.forEach(entry => {
                 if (entry.name === name) {
@@ -6606,7 +6459,6 @@ function setPromptEntryCallback(args, targetState) {
     identifiersList = [...new Set(identifiersList)];
     if (identifiersList.length === 0) return '';
 
-    // logic adapted from PromptManager.js, handleToggle
     const getPromptOrderEntryState = (promptOrderEntry) => {
         if (['toggle', 't', ''].includes(targetState.trim().toLowerCase())) {
             return !promptOrderEntry.enabled;
@@ -6651,7 +6503,7 @@ async function setApiUrlCallback({ api = null, connect = 'true', quiet = 'false'
     const isQuiet = isTrueBoolean(quiet);
     const autoConnect = isTrueBoolean(connect);
 
-    // Special handling for Chat Completion Custom OpenAI compatible, that one can also support API url handling
+    // Chat Completion Custom (OpenAI-compatible) also supports API URL handling
     const isCurrentlyCustomOpenai = main_api === 'openai' && oai_settings.chat_completion_source === chat_completion_sources.CUSTOM;
     if (api === chat_completion_sources.CUSTOM || (!api && isCurrentlyCustomOpenai)) {
         if (!url) {
@@ -6829,7 +6681,6 @@ async function setApiUrlCallback({ api = null, connect = 'true', quiet = 'false'
         return kai_settings.api_server ?? '';
     }
 
-    // Do some checks and get the api type we are targeting with this command
     if (api && !Object.values(textgen_types).includes(api)) {
         !isQuiet && toastr.warning(t`API '${api}' is not a valid text_gen API.`);
         return '';
@@ -6854,22 +6705,19 @@ async function setApiUrlCallback({ api = null, connect = 'true', quiet = 'false'
         return '';
     }
 
-    // If no url was provided, return the current one
     if (!url) {
         return textgenerationwebui_settings.server_urls[type] ?? '';
     }
 
-    // else, we want to actually set the url
     $(inputSelector).val(url).trigger('input');
     // trigger blur debounced, so we hide the autocomplete menu
     setTimeout(() => $(inputSelector).trigger('blur'), 1);
 
-    // Trigger the auto connect via connect button, if requested
     if (autoConnect) {
         $('#api_button_textgenerationwebui').trigger('click');
     }
 
-    // We still re-acquire the value, as it might have been modified by the validation on connect
+    // Re-acquire the value since validation on connect may have modified it
     return textgenerationwebui_settings.server_urls[type] ?? '';
 }
 
@@ -6955,9 +6803,6 @@ async function clearCommandProgress() {
     await delay(1);
     ta.style.transition = null;
 }
-/**
- * Debounced version of clearCommandProgress.
- */
 const clearCommandProgressDebounced = debounce(clearCommandProgress);
 
 /**

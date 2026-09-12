@@ -213,15 +213,13 @@ async function onVectorizeAllClick() {
             return;
         }
 
-        // Clear all cached summaries to ensure that new ones are created
-        // upon request of a full vectorise
         cachedSummaries.clear();
         skippedHashes.clear();
 
         const batchSize = getBatchSize();
         const elapsedLog = [];
         let finished = false;
-        let initialPending = null; // total items pending at the start of this run — set on first sync return
+        let initialPending = null;
         $('#vectorize_progress').show();
         $('#vectorize_progress_percent').text('0');
         $('#vectorize_progress_eta').text('...');
@@ -252,9 +250,9 @@ async function onVectorizeAllClick() {
             const processedPercent = initialPending > 0
                 ? Math.min(100, Math.round((processed / initialPending) * 100))
                 : 100;
-            const lastElapsed = elapsedLog.slice(-5); // last 5 elapsed times
-            const averageElapsed = lastElapsed.reduce((a, b) => a + b, 0) / lastElapsed.length; // average time needed to process one item
-            const pace = averageElapsed / batchSize; // time needed to process one item
+            const lastElapsed = elapsedLog.slice(-5);
+            const averageElapsed = lastElapsed.reduce((a, b) => a + b, 0) / lastElapsed.length;
+            const pace = averageElapsed / batchSize; // time per item, for the ETA estimate
             const remainingTime = Math.round(pace * pending / 1000);
 
             $('#vectorize_progress_percent').text(processedPercent);
@@ -554,15 +552,11 @@ const hashCache = new Map();
  * @returns {number} Hash value
  */
 function getStringHash(str) {
-    // Check if the hash is already in the cache
     if (hashCache.has(str)) {
         return hashCache.get(str);
     }
 
-    // Calculate the hash value
     const hash = calculateHash(str);
-
-    // Store the hash in the cache
     hashCache.set(str, hash);
 
     return hash;
@@ -587,18 +581,14 @@ async function processFiles(chat) {
         }
 
         for (const message of chat) {
-            // Message has no files
             if (!Array.isArray(message?.extra?.files) || !message.extra.files.length) {
                 continue;
             }
 
-            // Trim file inserted by the script
             const allFileText = String(message.mes || '').substring(0, message.extra.fileLength).trim();
 
-            // Convert kilobytes to string length
             const thresholdLength = settings.size_threshold * 1024;
 
-            // File is too small
             if (allFileText.length < thresholdLength) {
                 continue;
             }
@@ -614,7 +604,6 @@ async function processFiles(chat) {
                 const collectionId = getFileCollectionId(fileUrl);
                 const hashesInCollection = await getSavedHashes(collectionId);
 
-                // File is not vectorized yet
                 if (!hashesInCollection.length) {
                     const fileText = file.text || (await getFileAttachment(fileUrl));
                     if (!fileText) {
@@ -642,7 +631,6 @@ async function processFiles(chat) {
  * @returns {Promise<string[]>} Collection IDs
  */
 async function ingestDataBankAttachments(source) {
-    // Exclude disabled files
     const dataBank = source ? getDataBankAttachmentsForSource(source, false) : getDataBankAttachments(false);
     const dataBankCollectionIds = [];
 
@@ -651,17 +639,13 @@ async function ingestDataBankAttachments(source) {
         const hashesInCollection = await getSavedHashes(collectionId);
         dataBankCollectionIds.push(collectionId);
 
-        // File is already in the collection
         if (hashesInCollection.length) {
             continue;
         }
 
-        // Download and process the file
         const fileText = await getFileAttachment(file.url);
         console.log(`Vectors: Retrieved file ${file.name} from Data Bank`);
-        // Convert kilobytes to string length
         const thresholdLength = settings.size_threshold_db * 1024;
-        // Use chunk size from settings if file is larger than threshold
         const chunkSize = file.size > thresholdLength ? settings.chunk_size_db : -1;
         await vectorizeFile(fileText, file.name, collectionId, chunkSize, settings.overlap_percent_db);
     }
@@ -780,7 +764,6 @@ async function rearrangeChat(chat, _contextSize, _abort, type) {
             return;
         }
 
-        // Clear the extension prompt
         setExtensionPrompt(EXTENSION_PROMPT_TAG, '', settings.position, settings.depth, settings.include_wi);
         setExtensionPrompt(EXTENSION_PROMPT_TAG_DB, '', settings.file_position_db, settings.file_depth_db, settings.include_wi, settings.file_depth_role_db);
 
@@ -815,7 +798,6 @@ async function rearrangeChat(chat, _contextSize, _abort, type) {
             return;
         }
 
-        // Get the most relevant messages, excluding the last few
         const queryResults = await queryCollection(chatId, queryText, settings.insert);
         const queryHashes = queryResults.hashes.filter(onlyUnique);
         const queriedMessages = [];
@@ -833,11 +815,9 @@ async function rearrangeChat(chat, _contextSize, _abort, type) {
             }
         }
 
-        // Rearrange queried messages to match query order
-        // Order is reversed because more relevant are at the lower indices
+        // Reversed because more relevant messages are at the lower indices of queryHashes.
         queriedMessages.sort((a, b) => queryHashes.indexOf(getStringHash(substituteParams(b.mes))) - queryHashes.indexOf(getStringHash(substituteParams(a.mes))));
 
-        // Remove queried messages from the original chat array
         for (const message of chat) {
             if (queriedMessages.includes(message)) {
                 chat.splice(chat.indexOf(message), 1);
@@ -849,7 +829,6 @@ async function rearrangeChat(chat, _contextSize, _abort, type) {
             return;
         }
 
-        // Format queried messages into a single string
         const insertedText = getPromptText(queriedMessages);
         setExtensionPrompt(EXTENSION_PROMPT_TAG, insertedText, settings.position, settings.depth, settings.include_wi);
     } catch (error) {
@@ -1547,7 +1526,6 @@ async function onVectorizeAllFilesClick() {
             if (dataBank.includes(file)) {
                 // Convert kilobytes to string length
                 const thresholdLength = settings.size_threshold_db * 1024;
-                // Use chunk size from settings if file is larger than threshold
                 return file.size > thresholdLength ? settings.chunk_size_db : -1;
             }
 
@@ -1633,29 +1611,24 @@ async function activateWorldInfo(chat) {
         return;
     }
 
-    // Group entries by "world" field
     const groupedEntries = {};
 
     for (const entry of entries) {
-        // Skip orphaned entries. Is it even possible?
         if (!entry.world) {
             console.debug('Vectors: Skipped orphaned WI entry', entry);
             continue;
         }
 
-        // Skip disabled entries
         if (entry.disable) {
             console.debug('Vectors: Skipped disabled WI entry', entry);
             continue;
         }
 
-        // Skip entries without content
         if (!entry.content) {
             console.debug('Vectors: Skipped WI entry without content', entry);
             continue;
         }
 
-        // Skip non-vectorized entries
         if (!entry.vectorized && !settings.enabled_for_all) {
             console.debug('Vectors: Skipped non-vectorized WI entry', entry);
             continue;
@@ -1675,7 +1648,6 @@ async function activateWorldInfo(chat) {
         return;
     }
 
-    // Synchronize collections
     for (const world in groupedEntries) {
         const collectionId = `world_${getStringHash(world)}`;
         const hashesInCollection = await getSavedHashes(collectionId);
@@ -1695,7 +1667,6 @@ async function activateWorldInfo(chat) {
         collectionIds.push(collectionId);
     }
 
-    // Perform a multi-query
     const queryText = await getQueryText(chat, 'world-info');
 
     if (queryText.length === 0) {
@@ -1707,7 +1678,6 @@ async function activateWorldInfo(chat) {
     const activatedHashes = Object.values(queryResults).flatMap(x => x.hashes).filter(onlyUnique);
     const activatedEntries = [];
 
-    // Activate entries found in the query results
     for (const entry of entries) {
         const hash = getStringHash(entry.content);
 
@@ -2134,14 +2104,12 @@ export async function init() {
             const collectionIds = await ingestDataBankAttachments(String(source));
             const queryResults = await queryMultipleCollections(collectionIds, String(query), count, threshold);
 
-            // Get URLs
             const urls = Object
                 .keys(queryResults)
                 .map(x => attachments.find(y => getFileCollectionId(y.url) === x))
                 .filter(x => x)
                 .map(x => x.url);
 
-            // Gets the actual text content of chunks
             const getChunksText = () => {
                 let textResult = '';
                 for (const collectionId in queryResults) {

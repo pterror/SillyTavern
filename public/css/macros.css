@@ -1,11 +1,5 @@
-/**
- * Macro System Styles
- * Styles for the macro browser, documentation, and related UI components.
- */
-
 /* =============================================================================
    MACRO BROWSER
-   Dynamic documentation browser for macros, similar to SlashCommandBrowser.
    ============================================================================= */
 
 .macroBrowser {
@@ -112,7 +106,6 @@
 
 /* -----------------------------------------------------------------------------
    Macro List Items
-   Layout: [signature] [description (shrinks)] [source icon]
    ----------------------------------------------------------------------------- */
 
 .macroBrowser .macro-item {
@@ -123,7 +116,7 @@
     border-radius: 4px;
     cursor: pointer;
     transition: background-color 0.15s;
-    min-width: 0; /* Allow children to shrink */
+    min-width: 0;
 }
 
 .macroBrowser .macro-item:hover {
@@ -143,25 +136,25 @@
     font-family: var(--monoFontFamily);
     font-size: 0.9em;
     color: var(--SmartThemeQuoteColor);
-    flex: 0 1 auto; /* Can shrink, but prefers not to */
+    flex: 0 1 auto;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    min-width: 3em; /* Minimum before fully hidden */
+    min-width: 3em;
 }
 
 .macroBrowser .macro-desc-preview {
-    flex: 1 1 0; /* Shrinks first, starts at 0 basis */
+    flex: 1 1 0;
     opacity: 0.7;
     font-size: 0.9em;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    min-width: 0; /* Allow shrinking to nothing */
+    min-width: 0;
 }
 
 .macroBrowser .macro-source {
-    flex: 0 0 auto; /* Never shrinks */
+    flex: 0 0 auto;
     font-size: 0.8em;
     opacity: 0.7;
 }
@@ -198,13 +191,13 @@
     padding: 0.15em 0.4em 0.3em;
     border-radius: 4px;
     word-break: break-all;
-    display: inline-block; /* Shrink-wrap to content */
+    display: inline-block;
 }
 
 .macro-details .macro-details-header > .macro-source {
     flex: 0 0 auto;
     font-size: 1em;
-    margin-top: 0.15em; /* Align with name top padding */
+    margin-top: 0.15em;
 }
 
 .macro-details .macro-category-badge {
@@ -317,7 +310,6 @@
     border-radius: 3px;
 }
 
-/* Alias indicator icon in list items */
 .macro-details .macro-alias-indicator {
     flex: 0 0 auto;
     font-size: 0.8em;
@@ -330,7 +322,6 @@
     opacity: 0.85;
 }
 
-/* Alias of indicator in details panel */
 .macro-details .macro-alias-of {
     display: flex;
     align-items: center;
@@ -356,7 +347,6 @@
     border-radius: 3px;
 }
 
-/* Aliases list in details panel */
 .macro-details .macro-alias-list {
     list-style: none;
     padding: 0;
@@ -398,7 +388,7 @@
    Enhanced Macro Autocomplete Styles
    ============================================ */
 
-/* Fix macro items in autocomplete list - override the grid display: contents */
+/* Overrides the autocomplete list's grid display: contents */
 .autoComplete > .item.macro-ac-item {
     display: flex !important;
     flex-wrap: nowrap;
@@ -444,7 +434,6 @@
     display: block;
 }
 
-/* Indicator icons (alias and source) at the end */
 .autoComplete > .item.macro-ac-item > .macro-ac-indicator {
     flex: 0 0 auto;
     font-size: 0.85em;
@@ -460,12 +449,10 @@
     margin-left: 0.25em;
 }
 
-/* Third-party source indicator */
 .autoComplete > .item.macro-ac-item > .macro-source.isThirdParty {
     color: #F89406;
 }
 
-/* Arity warning banner in details */
 .macro-ac-warning {
     display: flex;
     align-items: baseline;
@@ -483,7 +470,6 @@
     font-size: 0.9em;
 }
 
-/* Scoped content info banner in details */
 .macro-ac-scoped-info {
     display: flex;
     align-items: baseline;
@@ -507,7 +493,6 @@
     border-radius: 3px;
 }
 
-/* OPTIONAL badge for optional scoped content */
 .macro-ac-optional-badge {
     display: inline-block;
     background: linear-gradient(135deg, #f0ad4e, #ec971f);
@@ -521,7 +506,6 @@
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
 }
 
-/* Smaller variant for use in autocomplete list items */
 .macro-ac-optional-badge-small {
     font-size: 0.65em;
     padding: 0.1em 0.35em;
@@ -529,7 +513,6 @@
     color: #f0ad4e;
 }
 
-/* Closing tag autocomplete option */
 .autoComplete > .item.macro-closing-tag-item > .type {
     color: var(--ac-color-matchedText, var(--SmartThemeBorderColor));
 }
@@ -548,7 +531,6 @@
     opacity: 0.9;
 }
 
-/* Current argument hint banner in details */
 .macro-ac-arg-hint {
     display: flex;
     align-items: baseline;
@@ -589,12 +571,10 @@
     font-style: italic;
 }
 
-/* Details panel using MacroBrowser styles - just add autocomplete context adjustments */
 .autoComplete-details .macro-ac-details {
     padding: 0.5em;
 }
 
-/* Highlight current argument in arguments list */
 .autoComplete-details .macro-arg-item.current {
     background: var(--ac-color-selectedBackground, var(--SmartThemeQuoteColor));
     padding: 0.25em 0.5em;

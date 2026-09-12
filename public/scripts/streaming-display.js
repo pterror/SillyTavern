@@ -1,21 +1,6 @@
 /**
- * A floating toast-like display panel for showing streaming LLM generation progress.
- * Shows reasoning (thinking) and content as they stream in.
- * Designed to work with ConnectionManagerRequestService streaming responses.
- *
- * Appends itself inside the topmost open `<dialog>` element (same approach as
- * fixToastrForDialogs in popup.js) so it renders above modal overlays.
- *
- * @example
- * const display = new StreamingDisplay();
- * display.show({ label: 'Generating...' });
- *
- * for await (const chunk of streamGenerator) {
- *     display.updateReasoning(chunk.state?.reasoning)
- *         .updateContent(chunk.text);
- * }
- *
- * display.complete('Generated Something'); // Mark as done (green LED, auto-hide if configured)
+ * A floating toast-like panel showing streaming LLM generation progress (reasoning + content).
+ * Appends inside the topmost open `<dialog>` (like fixToastrForDialogs in popup.js) to render above modal overlays.
  */
 
 import { SVGInject } from '../lib.js';
@@ -84,16 +69,13 @@ export class StreamingDisplay {
         this.#element = document.createElement('div');
         this.#element.classList.add(CSS_PREFIX);
 
-        // Header label with LED indicator
         this.#labelElement = document.createElement('div');
         this.#labelElement.classList.add(`${CSS_PREFIX}-label`);
 
-        // LED status indicator (pulsing while streaming, green when complete)
         this.#ledIndicator = document.createElement('span');
         this.#ledIndicator.classList.add(`${CSS_PREFIX}-led`);
         this.#labelElement.appendChild(this.#ledIndicator);
 
-        // Insert model icon into the label (after the LED)
         if (icon instanceof HTMLImageElement) {
             icon.classList.add(`${CSS_PREFIX}-icon`);
             this.#labelElement.appendChild(icon);
@@ -107,11 +89,9 @@ export class StreamingDisplay {
         this.#labelText.textContent = label;
         this.#labelElement.appendChild(this.#labelText);
 
-        // Window control buttons container
         const controls = document.createElement('div');
         controls.classList.add(`${CSS_PREFIX}-controls`);
 
-        // Stop button (only shown when an onStop handler is provided)
         if (onStop) {
             this.#stopButton = document.createElement('button');
             this.#stopButton.classList.add(`${CSS_PREFIX}-btn`, `${CSS_PREFIX}-btn-stop`);
@@ -132,7 +112,6 @@ export class StreamingDisplay {
             controls.appendChild(this.#stopButton);
         }
 
-        // Minimize button
         this.#minimizeButton = document.createElement('button');
         this.#minimizeButton.classList.add(`${CSS_PREFIX}-btn`, `${CSS_PREFIX}-btn-minimize`);
         this.#minimizeButton.setAttribute('aria-label', t`Minimize`);
@@ -141,7 +120,6 @@ export class StreamingDisplay {
         this.#minimizeButton.addEventListener('click', () => this.toggleMinimize());
         controls.appendChild(this.#minimizeButton);
 
-        // Close button
         this.#closeButton = document.createElement('button');
         this.#closeButton.classList.add(`${CSS_PREFIX}-btn`, `${CSS_PREFIX}-btn-close`);
         this.#closeButton.setAttribute('aria-label', t`Close`);
@@ -153,11 +131,9 @@ export class StreamingDisplay {
         this.#labelElement.appendChild(controls);
         this.#element.appendChild(this.#labelElement);
 
-        // Content container (for minimize functionality)
         const contentContainer = document.createElement('div');
         contentContainer.classList.add(`${CSS_PREFIX}-content`);
 
-        // Reasoning section (hidden until content arrives)
         this.#reasoningSection = document.createElement('div');
         this.#reasoningSection.classList.add(`${CSS_PREFIX}-reasoning`);
         this.#reasoningSection.style.display = 'none';
@@ -173,24 +149,21 @@ export class StreamingDisplay {
 
         contentContainer.appendChild(this.#reasoningSection);
 
-        // Content section (hidden until content arrives)
         this.#textSection = document.createElement('div');
         this.#textSection.classList.add(`${CSS_PREFIX}-text`);
         this.#textSection.style.display = 'none';
 
         this.#textContent = document.createElement('div');
-        this.#textContent.classList.add(`${CSS_PREFIX}-text-content`, 'mes_text'); // Allow formatting based on how chat messages are formatted too
+        this.#textContent.classList.add(`${CSS_PREFIX}-text-content`, 'mes_text'); // reuses chat message formatting styles
         this.#textSection.appendChild(this.#textContent);
 
         contentContainer.appendChild(this.#textSection);
         this.#element.appendChild(contentContainer);
 
-        // Append inside the topmost open dialog (same pattern as fixToastrForDialogs in popup.js).
-        // Modal <dialog> elements live in the browser's top layer, so z-index alone won't work.
+        // Modal <dialog> elements live in the browser's top layer, so z-index alone can't render above them.
         const target = Array.from(document.querySelectorAll('dialog[open]:not([closing])')).pop() ?? document.body;
         target.appendChild(this.#element);
 
-        // Trigger entrance animation on next frame
         requestAnimationFrame(() => {
             this.#element?.classList.add(`${CSS_PREFIX}-visible`);
         });
@@ -209,7 +182,6 @@ export class StreamingDisplay {
         this.#isMinimized = !this.#isMinimized;
         this.#element.classList.toggle(`${CSS_PREFIX}-minimized`, this.#isMinimized);
 
-        // Update minimize button icon/appearance
         if (this.#minimizeButton) {
             this.#minimizeButton.innerHTML = this.#isMinimized ? '&#9633;' : '&#8211;'; // Square when minimized, dash when not
             this.#minimizeButton.setAttribute('title', this.#isMinimized ? t`Restore` : t`Minimize`);
@@ -289,11 +261,7 @@ export class StreamingDisplay {
     }
 
     /**
-     * Marks the generation as stopped by the user.
-     *
-     * Changes the LED indicator to solid red, removes the stop button, and keeps the display
-     * visible until the user manually closes it with the close button (no auto-hide).
-     *
+     * Marks the generation as stopped by the user (solid red LED). Stays visible until manually closed.
      * @param {Object} [options={}]
      * @param {string|null} [options.label=null] - Optional label override (e.g. `'Generating... [Stopped]'`).
      * @returns {StreamingDisplay} this instance for chaining
@@ -319,13 +287,7 @@ export class StreamingDisplay {
     }
 
     /**
-     * Marks the generation as complete and initiates cleanup. Optionally set a new label.
-     *
-     * This is the **preferred method** to call after streaming ends. It:
-     * - Changes the LED indicator from pulsing orange to solid green
-     * - Waits for the specified delay to let the user see the final result
-     * - Then hides the display with a fade-out animation
-     *
+     * Marks the generation as complete (solid green LED), then fades out after `delay`. Preferred over `hide()` when streaming ends normally.
      * @param {Object} [options={}]
      * @param {string|null} [options.label=null] - Set the label automatically to a new one to display the completed state.
      * @param {number|null} [options.delay=3000] - Delay in ms before hiding. Use `null` or negative value to keep displayed until user manually closes it.
@@ -359,12 +321,7 @@ export class StreamingDisplay {
     }
 
     /**
-     * Immediately hides and removes the streaming display.
-     *
-     * **Note:** This is for immediate cleanup (e.g., when canceling generation
-     * or closing the app). Prefer `complete()` when generation finishes normally,
-     * as it shows the green LED and gives the user time to see the final result.
-     *
+     * Immediately hides and removes the streaming display. Prefer `complete()` when generation finishes normally.
      * @param {Object} [options={}]
      * @param {boolean} [options.instant=false] - Skip the fade-out animation
      * @returns {StreamingDisplay} this instance for chaining
@@ -395,7 +352,6 @@ export class StreamingDisplay {
 
         const el = this.#element;
 
-        // Clear all private fields
         this.#element = null;
         this.#labelElement = null;
         this.#labelText = null;

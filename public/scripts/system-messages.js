@@ -111,13 +111,11 @@ export async function initSystemMessages() {
 
 
 /**
- * Gets a system message by type.
- * By default system messages are not swipeable.
- * This can be overridden by setting extra.swipeable to true.
- * @param {string} type Type of system message
- * @param {string} [text] Text to be sent
- * @param {ChatMessageExtra} [extra] Additional data to be added to the message
- * @returns {ChatMessage} System message object
+ * Not swipeable by default; override via extra.swipeable.
+ * @param {string} type
+ * @param {string} [text]
+ * @param {ChatMessageExtra} [extra]
+ * @returns {ChatMessage}
  */
 export function getSystemMessageByType(type, text, extra = {}) {
     const systemMessage = system_messages[type];
@@ -150,10 +148,9 @@ export function getSystemMessageByType(type, text, extra = {}) {
 }
 
 /**
- * Sends a system message to the chat.
- * @param {string} type Type of system message
- * @param {string} [text] Text to be sent
- * @param {ChatMessageExtra} [extra] Additional data to be added to the message
+ * @param {string} type
+ * @param {string} [text]
+ * @param {ChatMessageExtra} [extra]
  */
 export function sendSystemMessage(type, text, extra = {}) {
     const newMessage = getSystemMessageByType(type, text, extra);

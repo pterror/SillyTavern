@@ -1,21 +1,9 @@
-/**
- * Shared typedefs for the structured macro environment object (MacroEnv)
- * used by the macro engine, registry, env builder, and macro definition
- * modules. This file intentionally only contains JSDoc typedefs so that
- * it can be imported purely for type information from multiple modules
- * without creating runtime dependencies.
- */
+/** Typedefs only (no runtime code) so this can be imported for types without creating runtime dependencies. */
 
 /** @typedef {import('./MacroRegistry.js').MacroHandler} MacroHandler */
 /** @typedef {import('./MacroRegistry.js').MacroDefinitionOptions} MacroDefinitionOptions */
 
-/**
- * A dynamic macro value can be:
- * - A string (direct value)
- * - A MacroHandler function (resolved at runtime)
- * - A MacroDefinitionOptions object (full macro definition with handler, args, etc.)
- * @typedef {string | MacroHandler | MacroDefinitionOptions} DynamicMacroValue
- */
+/** @typedef {string | MacroHandler | MacroDefinitionOptions} DynamicMacroValue */
 
 /**
  * @typedef {Object} MacroEnvNames
@@ -55,8 +43,8 @@
 
 /**
  * @typedef {Object} MacroEnv
- * @property {string} content - The full original input string that is being processed by the macro engine. This is the same value as substituteParams "content" and is provided so macros can build deterministic behavior based on the whole prompt when needed.
- * @property {number} contentHash - A hash of the content string, used for caching and comparison.
+ * @property {string} content - Same value as substituteParams's "content" param.
+ * @property {number} contentHash - Hash of `content`, used for caching/comparison.
  * @property {MacroEnvNames} names
  * @property {MacroEnvCharacter} character
  * @property {MacroEnvSystem} system

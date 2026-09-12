@@ -14,9 +14,7 @@ import { selected_group } from '../../group-chats.js';
 export { debounceAsync };
 
 
-// Off by default - this gated every generation-cycle hook call (onBeforeGeneration, onUserMessage,
-// onWIActivation, onAiMessage, etc.), firing unconditionally on every message. warn is intentionally
-// NOT gated by this - real warnings should always be visible, same as every other extension here.
+// warn is never gated by this - warnings should always be visible.
 const _VERBOSE = false;
 export const debug = (...msg) => _VERBOSE ? console.debug('[QR2]', ...msg) : null;
 export const log = (...msg) => _VERBOSE ? console.log('[QR2]', ...msg) : null;
@@ -66,7 +64,6 @@ const loadSets = async () => {
         const setList = (await response.json()).quickReplyPresets ?? [];
         for (const set of setList) {
             if (set.version !== 2) {
-                // migrate old QR set
                 set.version = 2;
                 set.disableSend = set.quickActionEnabled ?? false;
                 set.placeBeforeInput = set.placeBeforeInputEnabled ?? false;
@@ -148,26 +145,21 @@ const handleCharChange = () => {
     const character = getCurrentCharacter();
     if (lastCharId === character?.avatar) return;
 
-    // Unload the old character's config and update the character avatar cache.
     settings.charConfig = null;
     lastCharId = character?.avatar;
 
-    // If no character is loaded, there's nothing more to do.
     if (!character || selected_group) {
         return;
     }
 
-    // Get the character-specific config from the local settings storage.
     let charConfig = settings.characterConfigs[character.avatar];
 
-    // If no config exists for this character, create a new one.
     if (!charConfig) {
         charConfig = QuickReplyConfig.from({ setList: [] });
         settings.characterConfigs[character.avatar] = charConfig;
     }
 
     charConfig.scope = 'character';
-    // The main settings save function will handle persistence.
     charConfig.onUpdate = () => settings.save();
     settings.charConfig = charConfig;
 };
@@ -236,7 +228,6 @@ const finalizeInit = async () => {
 
 
 const purgeCharacterQuickReplySets = ({ character }) => {
-    // Remove the character's Quick Reply Sets from the settings.
     const avatar = character?.avatar;
     if (avatar && avatar in settings.characterConfigs) {
         log(`Purging Quick Reply Sets for character: ${avatar}`);
@@ -246,7 +237,6 @@ const purgeCharacterQuickReplySets = ({ character }) => {
 };
 
 const updateCharacterQuickReplySets = (oldAvatar, newAvatar) => {
-    // Update the character's Quick Reply Sets in the settings.
     if (oldAvatar && newAvatar && oldAvatar !== newAvatar) {
         log(`Updating Quick Reply Sets for character: ${oldAvatar} -> ${newAvatar}`);
         if (settings.characterConfigs[oldAvatar]) {

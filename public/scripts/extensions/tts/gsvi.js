@@ -13,13 +13,8 @@ class GSVITtsProvider {
 
     characterList = {};
     voices = [];
-    /**
-     * Perform any text processing before passing to TTS engine.
-     * @param {string} text Input text
-     * @returns {string} Processed text
-     */
     processText(text) {
-        text = text.replace('<br>', '\n'); // Replace <br> with newline
+        text = text.replace('<br>', '\n');
         return text;
     }
 
@@ -50,7 +45,6 @@ class GSVITtsProvider {
         stream_chunk_size: 100,
     };
 
-    // Added new methods to obtain characters and emotions
     async fetchCharacterList() {
         const response = await fetch(this.settings.provider_endpoint + '/character_list');
         if (!response.ok) {
@@ -115,12 +109,9 @@ class GSVITtsProvider {
     }
 
     onSettingsChange() {
-        // Update provider settings based on input fields
         this.settings.provider_endpoint = $('#gsvi_tts_endpoint').val();
         this.settings.language = $('#gsvi_api_language').val();
 
-
-        // Update the rest of TTS settings based on input fields
         this.settings.speed = parseFloat($('#gsvi_speed').val());
         this.settings.temperature = parseFloat($('#gsvi_temperature').val());
         this.settings.top_k = parseInt($('#gsvi_top_k').val(), 10);
@@ -129,8 +120,6 @@ class GSVITtsProvider {
         this.settings.stream = $('#gsvi_tts_streaming').is(':checked');
         this.settings.stream_chunk_size = parseInt($('#gsvi_stream_chunk_size').val(), 10);
 
-        // Update UI to reflect changes
-
         $('#gsvi_tts_speed_output').text(this.settings.speed);
         $('#gsvi_tts_temperature_output').text(this.settings.temperature);
         $('#gsvi_top_k_output').text(this.settings.top_k);
@@ -138,17 +127,12 @@ class GSVITtsProvider {
         $('#gsvi_stream_chunk_size_output').text(this.settings.stream_chunk_size);
         $('#gsvi_batch_size_output').text(this.settings.batch_size);
 
-
-        // Persist settings changes
         saveTtsProviderSettings();
     }
 
     async loadSettings(settings) {
-        // Only accept keys defined in defaultSettings
         this.settings = { ...this.defaultSettings, ...settings };
 
-        // Fetch character and emotion list
-        // Set initial values from the settings
         $('#gsvi_tts_endpoint').val(this.settings.provider_endpoint);
         $('#gsvi_api_language').val(this.settings.language);
 
@@ -160,16 +144,12 @@ class GSVITtsProvider {
         $('#gsvi_tts_streaming').prop('checked', this.settings.stream);
         $('#gsvi_stream_chunk_size').val(this.settings.stream_chunk_size);
 
-        // Update UI to reflect initial settings
         $('#gsvi_tts_speed_output').text(this.settings.speed);
         $('#gsvi_tts_temperature_output').text(this.settings.temperature);
         $('#gsvi_top_k_output').text(this.settings.top_k);
         $('#gsvi_top_p_output').text(this.settings.top_p);
         $('#gsvi_stream_chunk_size_output').text(this.settings.stream_chunk_size);
 
-        // Register event listeners to update settings on user interaction
-        // (Similar to before, ensure event listeners for character and emotion selection are included)
-        // Register input/change event listeners to update settings on user interaction
         $('#gsvi_tts_endpoint').on('input', () => { this.onSettingsChange(); });
         $('#gsvi_api_language').on('change', () => { this.onSettingsChange(); });
 
@@ -185,7 +165,6 @@ class GSVITtsProvider {
     }
 
 
-    // Perform a simple readiness check by trying to fetch voiceIds
     async checkReady() {
         await Promise.allSettled([this.fetchCharacterList()]);
     }

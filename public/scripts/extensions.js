@@ -568,11 +568,7 @@ async function activateExtensions() {
     const extensions = Object.entries(manifests).sort((a, b) => sortManifestsByOrder(a[1], b[1]));
     const extensionNames = extensions.map(x => x[0]);
 
-    // Phase 1: Evaluate eligibility and start loading all extension resources in parallel.
-    // Scripts are <script type="module" async> tags (addExtensionScript), so the browser fetches
-    // and executes them concurrently regardless of insertion order. Styles and locales are also
-    // I/O-bound fetches. Launching all of these at once instead of one-extension-at-a-time
-    // collapses ~N sequential HTTP round-trips into one parallel batch.
+    // Load all extension resources in parallel rather than one at a time.
     const toActivate = [];
 
     for (const entry of extensions) {
@@ -646,15 +642,11 @@ async function activateExtensions() {
         }
     }
 
-    // Wait for all resource fetches to complete before activating any hooks.
     await Promise.allSettled(toActivate.map(e => e.loadPromise));
 
-    // Phase 2: Call activate hooks in the declared loading_order. Resource loading (script
-    // fetch + parse + module-level execution) already happened above; this is just the
-    // extension's own init function, which is typically fast.
     for (const { name, displayName, loadPromise } of toActivate) {
         try {
-            await loadPromise; // Re-await to propagate per-extension load errors
+            await loadPromise; // propagates per-extension load errors
             activeExtensions.add(name);
             await callExtensionHook(name, 'activate');
         } catch (err) {

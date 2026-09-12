@@ -8,11 +8,8 @@
     padding: 5px;
 }
 
-/* #right-nav-panel and #char-info-panel are both .fillRight, and pinning (the lock toggle) lets one stay open
-   while the other opens alongside it - see the pinnedOpen handling in ensureDrawerOpen/doNavbarIconClick in
-   script.js. With panel translucency enabled, two overlapping open .fillRight panels would blend into an
-   unreadable mess, so whichever one isn't the currently-active tab (tracked via .frontFillRight, set by
-   activateFillRightDrawer in script.js) stays logically open but is hidden here. */
+/* Pinning can leave both .fillRight panels open at once; hide whichever isn't the active tab so panel
+   translucency doesn't blend two overlapping open panels into an unreadable mess. */
 .fillRight.openDrawer:not(.frontFillRight) {
     visibility: hidden;
     transition: visibility 0s !important;
@@ -71,9 +68,7 @@ body.rounded-avatars .avatar img {
     border-radius: var(--avatar-base-border-radius-rounded) !important;
 }
 
-/*char list grid mode - used in sidebar (non-fullscreen) view. In fullscreen gallery mode, the gallery's
-  own grid/card rules override these at higher specificity (they include #right-nav-panel.galleryFullscreen
-  as an ancestor selector). */
+/* Sidebar-mode grid; the gallery's own grid rules override these at higher specificity in fullscreen mode. */
 
 body.charListGrid #rm_print_characters_block {
     display: flex;
@@ -96,7 +91,6 @@ body.charListGrid #rm_print_characters_block .group_select,
     max-width: 100px;
 }
 
-/* Save a bit of space here */
 body.charListGrid #rm_print_characters_block .character_name_block {
     gap: 0;
     margin-bottom: 0;
@@ -175,22 +169,9 @@ body.charListGrid #rm_print_characters_block .ch_additional_info {
     display: none;
 }
 
-/*
- * Character gallery view: the permanent browsing layout for the character list - a fullscreen, chub.ai-style
- * tile grid. body.charGalleryView is always set (loadCharListState in power-user.js), not a toggle. The
- * fullscreen panel rule is scoped to data-active-menu="rm_characters_block" so it only fires when the
- * character list (browsing view) is showing, not when the single-character edit view is active. Reuses the
- * exact same DOM the sidebar list already renders (#rm_print_characters_block, the .character_select/
- * .group_select rows from printCharacters()) - layout-only, not a second render path.
- */
-
-/* Fullscreen panel: only when the character list is the active sub-view (data-active-menu set by
-   selectRightMenuWithAnimation in script.js). When the user clicks a character to edit it, the panel
-   switches to rm_ch_create_block and this rule stops matching, so the panel drops back to its normal
-   sidebar size instead of keeping the edit form in a fullscreen layout that wasn't designed for it. */
-/* Fullscreen: requires both the browsing view being active (data-active-menu) AND the fullscreen toggle
-   being on (.galleryFullscreen, toggled by #galleryFullscreenToggle button). Defaults to fullscreen on
-   (class present in HTML), user can toggle to sidebar width for a narrower view. */
+/* Fullscreen chub.ai-style character grid, reusing the sidebar list's own DOM (layout-only, no second render
+   path). Scoped to data-active-menu="rm_characters_block" so switching to the single-character edit view
+   drops back to the normal sidebar layout instead of applying to a view it wasn't designed for. */
 body.charGalleryView #right-nav-panel.galleryFullscreen[data-active-menu="rm_characters_block"].fillRight.openDrawer {
     left: 0;
     right: 0;
@@ -204,26 +185,19 @@ body.charGalleryView #right-nav-panel.galleryFullscreen[data-active-menu="rm_cha
     max-height: calc(100dvh - var(--topBarBlockSize));
 }
 
-/* Favorites bar (#HotSwapWrapper): hidden in fullscreen gallery view since the tile grid already shows
-   every character with full card art. In sidebar mode, the hotswap bar stays visible as a useful shortcut. */
+/* Hidden in fullscreen gallery view since the tile grid already shows every character with full card art. */
 body.charGalleryView #right-nav-panel.galleryFullscreen[data-active-menu="rm_characters_block"] #HotSwapWrapper {
     display: none;
 }
 
-/* While the character list panel is fullscreen and actually the visible fillRight drawer (frontFillRight -
-   it now covers the full viewport, including where #sheld sits), hide #sheld rather than removing it from
-   the DOM. Same visibility:hidden approach as the two fillRight drawers already use on each other (see
-   .fillRight.openDrawer:not(.frontFillRight) above) and as the char-info fullscreen rule below uses too, so
-   only one of {right-nav-panel, #sheld} is visible at once here as well. */
+/* Same one-visible-at-a-time trick as .fillRight.openDrawer:not(.frontFillRight) above, extended to #sheld
+   once this panel covers the full viewport where #sheld normally sits. */
 body.charGalleryView:has(#right-nav-panel.galleryFullscreen.frontFillRight.openDrawer[data-active-menu="rm_characters_block"]) #sheld {
     visibility: hidden;
 }
 
-/* Character info/edit panel fullscreen: same pattern as the character list's fullscreen toggle above, but
-   scoped to #char-info-panel - a separate .fillRight drawer from #right-nav-panel (character-list and
-   character-info live in different drawers; data-active-menu="rm_ch_create_block" is set on #char-info-panel,
-   not #right-nav-panel, by selectRightMenuWithAnimation in script.js). Sized to match the center chat section
-   (#sheld, width: var(--sheldWidth)) rather than the full viewport - still a drawer, not full-viewport-width. */
+/* Same fullscreen pattern as the character list above, but for #char-info-panel (a separate .fillRight
+   drawer) - sized to match #sheld's width rather than the full viewport. */
 #char-info-panel.charInfoFullscreen[data-active-menu="rm_ch_create_block"].fillRight.openDrawer {
     left: 0;
     right: 0;
@@ -237,22 +211,24 @@ body.charGalleryView:has(#right-nav-panel.galleryFullscreen.frontFillRight.openD
     max-height: calc(100dvh - var(--topBarBlockSize));
 }
 
-/* While the character info panel is fullscreen and actually the visible fillRight drawer (frontFillRight -
-   it now sits where #sheld normally does), hide #sheld rather than removing it from the DOM, the same
-   visibility:hidden approach the two fillRight drawers already use to keep only one of themselves visible
-   (see .fillRight.openDrawer:not(.frontFillRight) above) - extended here so only one of
-   {char-info-panel, #sheld} is visible at once too. */
+/* Same one-visible-at-a-time trick as above, extended to #sheld while this panel is the fullscreen drawer. */
 body:has(#char-info-panel.charInfoFullscreen.frontFillRight.openDrawer[data-active-menu="rm_ch_create_block"]) #sheld {
     visibility: hidden;
 }
 
-/* Search bar: #form_character_search_form is already a row flexbox (style.css), but its main child
-   (#character_search_bar_wrapper, which wraps search pills + the text input) had no explicit no-wrap/basis
-   guard - once the input's search-pill row grew past a couple of tags, or the layout got squeezed, the row
-   would concede height rather than width. Pin it to a single row explicitly so this view never wastes vertical
-   space on that regardless of pill count. */
-/* Controls and search layout: only in fullscreen gallery mode. In sidebar mode, the default stacked
-   layout applies since there isn't enough horizontal room for side-by-side controls. */
+/* These drawers fully overlap #sheld already (same width/centering) - hide it behind them too. */
+body:has(#WorldInfo.openDrawer) #sheld,
+body:has(#PersonaManagement.openDrawer) #sheld,
+body:has(#rm_extensions_block.openDrawer) #sheld,
+body:has(#Backgrounds.openDrawer) #sheld,
+body:has(#user-settings-block.openDrawer) #sheld,
+body:has(#AdvancedFormatting.openDrawer) #sheld,
+body:has(#character_popup.open) #sheld {
+    visibility: hidden;
+}
+
+/* Pins the search row to nowrap so a growing search-pill row concedes width, not height, and wastes no
+   vertical space. Fullscreen gallery mode only - sidebar mode stays stacked for lack of horizontal room. */
 body.charGalleryView #right-nav-panel.galleryFullscreen #form_character_search_form {
     flex-wrap: nowrap;
     align-items: center;
@@ -295,10 +271,7 @@ body.charGalleryView #right-nav-panel.galleryFullscreen #rm_print_characters_pag
     padding: 0 15px 5px;
 }
 
-/* Gallery grid layout: only in fullscreen mode. In sidebar mode (galleryFullscreen toggled off, or panel
-   at sidebar width), the default flex-column layout applies so characters render as a standard list.
-   Without this guard, the 320px min-column-width produces zero columns in the ~300px sidebar, making
-   all characters invisible. */
+/* Fullscreen-only: at sidebar width, a 320px min column width would otherwise produce zero grid columns. */
 body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_block {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
@@ -307,9 +280,7 @@ body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_blo
     padding: 10px 15px 15px;
 }
 
-/* Cards: side-by-side (avatar thumbnail beside the text column), not avatar-on-top/text-below - the owner
-   flagged the stacked layout as both wasting space and making the avatar read as oversized relative to the
-   name/creator/description/tags next to it. Row layout with a fixed-width thumbnail column fixes both at once. */
+/* Side-by-side thumbnail + text column, not stacked - avoids the avatar reading oversized next to the text. */
 body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_block .bogus_folder_select,
 body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_block .character_select,
 body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_block .group_select {
@@ -328,9 +299,7 @@ body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_blo
     position: relative;
 }
 
-/* Hover: the base .character_select:hover { background-color: var(--white30a) } is outranked by the gallery
-   card's own background-color above (higher specificity via #rm_print_characters_block), so hover had no visible
-   effect. This rule restores it at matching specificity, using the same --white30a the upstream rule uses. */
+/* Matches the gallery card's own specificity - otherwise the base .character_select:hover rule is outranked. */
 body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_block .bogus_folder_select:hover,
 body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_block .character_select:hover,
 body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_block .group_select:hover {
@@ -353,15 +322,9 @@ body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_blo
     object-fit: cover;
 }
 
-/* .character_select_container/.group_select_container carry `position: relative` unconditionally (style.css -
-   it's what .character_name_block_sub_line's absolute positioning anchors to for group rows). That made it the
-   containing block for the favorite-badge icon nested inside it too, since CSS `position: absolute` always
-   resolves to the nearest positioned ancestor regardless of which element a rule "means" to anchor to - so the
-   badge's `top/right` below were being measured from the text column (which starts after the avatar in normal
-   flow), not from the card. Forcing this back to `position: static` in gallery view removes it from the
-   containing-block chain, so the badge (and .character_name_block_sub_line, for group rows) resolve against
-   the card itself (.character_select/.group_select, position: relative below) instead - which is what both were
-   actually meant to be positioned against here. */
+/* These containers are position:relative unconditionally (style.css), which wrongly anchors the favorite
+   badge's absolute positioning to the text column instead of the card - force static so it resolves
+   against .character_select/.group_select instead. */
 body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_block .character_select_container,
 body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_block .group_select_container {
     position: static;
@@ -387,11 +350,7 @@ body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_blo
     overflow-wrap: anywhere;
 }
 
-/* The "Char List Subheader" is the app's existing mechanism for showing a character's creator next to its name
-   (Settings > User Settings > "Char List Subheader" > "Created by", power_user.aux_field - script.js's
-   renderCharacterBlock() already reads it into this same .character_version element for every view). It's
-   opt-in and already renders in gallery view unmodified; the only thing gallery mode needs to do is stop
-   constraining it to the narrow-sidebar-row sizing (max-width: 50%, style.css) now that the card has room. */
+/* Already renders here unmodified; just drop the narrow-sidebar max-width now that the card has room. */
 body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_block .character_version,
 body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_block .ch_avatar_url {
     max-width: 100%;
@@ -421,10 +380,7 @@ body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_blo
     overflow-y: auto;
 }
 
-/* Favorite badge: the base template ships this hidden via an inline style (renderCharacterBlock in script.js)
-   and relies on the .is_fav avatar outline/gold name instead for list/grid view - gallery cards have enough
-   room to also show the star itself, top-left corner of the card (over the avatar thumbnail, now that the
-   avatar sits on the left rather than spanning the card's full width). */
+/* Base template hides this inline and relies on the .is_fav outline instead; gallery cards have room to show it. */
 body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_block .character_select.is_fav .ch_fav_icon,
 body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_block .group_select.is_fav .ch_fav_icon {
     display: inline-block !important;

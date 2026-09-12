@@ -72,7 +72,6 @@ class SileroTtsProvider {
         console.debug('SileroTTS: Settings loaded');
     }
 
-    // Perform a simple readiness check by trying to fetch voiceIds
     async checkReady() {
         await this.fetchTtsVoiceObjects();
     }

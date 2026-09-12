@@ -208,7 +208,6 @@ export class SlashCommand {
                             }
                         }
                         aliases.append(')');
-                        // li.append(aliases);
                     }
                 }
             }

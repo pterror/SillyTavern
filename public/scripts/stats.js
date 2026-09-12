@@ -189,14 +189,6 @@ async function getStats() {
     charStats = await response.json();
 }
 
-/**
- * Asynchronously recreates the stats file from chat files.
- *
- * Sends a POST request to the "/api/stats/recreate" endpoint. If the request fails,
- * it displays an error notification and throws an error.
- *
- * @throws {Error} If the request to recreate stats is unsuccessful.
- */
 async function recreateStats() {
     const response = await fetch('/api/stats/recreate', {
         method: 'POST',
@@ -325,7 +317,6 @@ export function initStats() {
     $('.rm_stats_button').on('click', function () {
         characterStatsHandler(getCurrentCharacter());
     });
-    // Wait for debug functions to load, then add the refresh stats function
     registerDebugFunction('refreshStats', 'Refresh Stat File', 'Recreates the stats file based on existing chat files', recreateStats);
 }
 

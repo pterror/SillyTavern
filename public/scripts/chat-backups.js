@@ -20,11 +20,6 @@ class BackupsBrowser {
         return this.#isOpen;
     }
 
-    /**
-     * View a backup file content.
-     * @param {string} name File name of the backup to view.
-     * @returns {Promise<void>}
-     */
     async viewBackup(name) {
         const response = await fetch('/api/backups/chat/download', {
             method: 'POST',
@@ -65,11 +60,6 @@ class BackupsBrowser {
         }
     }
 
-    /**
-     * Restore a backup by importing it.
-     * @param {string} name File name of the backup to restore.
-     * @returns {Promise<void>}
-     */
     async restoreBackup(name) {
         const response = await fetch('/api/backups/chat/download', {
             method: 'POST',
@@ -114,11 +104,6 @@ class BackupsBrowser {
         await displayPastChats(result);
     }
 
-    /**
-     * Delete a backup file.
-     * @param {string} name File name of the backup to delete.
-     * @returns {Promise<boolean>} True if deleted, false otherwise.
-     */
     async deleteBackup(name) {
         const confirm = await Popup.show.confirm(t`Are you sure?`);
         if (!confirm) {
@@ -141,11 +126,6 @@ class BackupsBrowser {
         return true;
     }
 
-    /**
-     * Load backups and populate the list element.
-     * @param {AbortSignal} signal Signal to abort loading.
-     * @returns {Promise<void>}
-     */
     async loadBackupsIntoList(signal) {
         if (!this.#backupsListElement) {
             return;
@@ -327,7 +307,6 @@ export function addChatBackupsBrowser() {
     backupsBrowser.renderButton();
     backupsBrowser.renderBackupsList();
 
-    // Refresh the backups list if it's already open
     if (backupsBrowser.isOpen) {
         backupsBrowser.closeBackups();
         backupsBrowser.openBackups();

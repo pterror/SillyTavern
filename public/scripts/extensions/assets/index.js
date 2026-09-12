@@ -1,8 +1,3 @@
-/*
-TODO:
-*/
-//const DEBUG_TONY_SAMA_FORK_MODE = true
-
 import { DOMPurify } from '../../../lib.js';
 import { getRequestHeaders, processDroppedFiles, eventSource, event_types } from '../../../script.js';
 import { deleteExtension, EMPTY_AUTHOR, extensionNames, getAuthorFromUrl, getContext, installExtension, renderExtensionTemplateAsync, isOfficialExtension } from '../../extensions.js';
@@ -19,9 +14,6 @@ let previewAudio = null;
 let ASSETS_JSON_URL = 'https://raw.githubusercontent.com/SillyTavern/SillyTavern-Content/main/index.json';
 
 
-// DBG
-//if (DEBUG_TONY_SAMA_FORK_MODE)
-//    ASSETS_JSON_URL = "https://raw.githubusercontent.com/Tony-sama/SillyTavern-Content/main/index.json"
 let availableAssets = {};
 let currentAssets = {};
 
@@ -60,13 +52,6 @@ const KNOWN_TYPES = {
     'blip': t`Blip sounds`,
 };
 
-/**
- * Creates the download/delete button element for a single asset, with all interaction handlers attached.
- * @param {object} asset The asset data object, containing at least id, name, description and url fields
- * @param {string} assetType Asset type, e.g. 'extension', 'character', 'ambient', 'bgm', 'blip'
- * @param {number} index Index of the asset in the list of available assets of the same type, used to create a unique element ID
- * @returns {JQuery} The button element
- */
 function createAssetButton(asset, assetType, index) {
     const elemId = `assets_install_${assetType}_${index}`;
     const element = $('<div />', { id: elemId, class: 'asset-download-button right_menu_button' });
@@ -137,13 +122,6 @@ function createAssetButton(asset, assetType, index) {
     return element;
 }
 
-/**
- * Creates the full visual block element for a single asset.
- * @param {object} asset The asset data object, containing at least id, name, description and url fields
- * @param {string} assetType Asset type, e.g. 'extension', 'character', 'ambient', 'bgm', 'blip'
- * @param {JQuery} element The button element from createAssetButton
- * @returns {JQuery} The asset block element
- */
 function createAssetBlock(asset, assetType, element) {
     const displayName = DOMPurify.sanitize(asset.name || asset.id);
     const description = DOMPurify.sanitize(asset.description || '');
@@ -197,11 +175,6 @@ function createAssetBlock(asset, assetType, element) {
     return assetBlock;
 }
 
-/**
- * Builds and appends the menu section for a single asset type.
- * @param {string} assetType Asset type, e.g. 'extension', 'character', 'ambient', 'bgm', 'blip'
- * @returns {Promise<void>}
- */
 async function buildAssetTypeSection(assetType) {
     const assetTypeMenu = $('<div />', { id: `assets_${assetType}_div`, class: 'assets-list-div' });
     assetTypeMenu.attr('data-type', assetType);
@@ -230,10 +203,6 @@ async function buildAssetTypeSection(assetType) {
     assetTypeMenu.on('click', 'a.asset_preview', previewAsset);
 }
 
-/**
- * Parses the fetched assets JSON and renders the full assets menu.
- * @param {object[]} json Array of asset objects, each containing at least id, name, description, url and type fields
- */
 async function populateAssetsMenu(json) {
     availableAssets = {};
     $('#assets_menu').empty();
@@ -275,10 +244,6 @@ async function populateAssetsMenu(json) {
     $('#assets_menu').show();
 }
 
-/**
- * Downloads the assets list from the given URL and populates the menu. Shows error message if something goes wrong.
- * @param {URL} url URL to fetch from
- */
 async function downloadAssetsList(url) {
     await updateCurrentAssets();
     try {
@@ -292,12 +257,11 @@ async function downloadAssetsList(url) {
         }
         await populateAssetsMenu(json);
     } catch (error) {
-        // Info hint if the user maybe... likely accidentally was trying to install an extension and we wanna help guide them? uwu :3
+        // In case they meant to install a custom extension instead
         const installButton = $('#third_party_extension_button');
         flashHighlight(installButton, 10_000);
         toastr.info('Click the flashing button at the top right corner of the menu.', 'Trying to install a custom extension?', { timeOut: 10_000 });
 
-        // Error logged after, to appear on top
         console.error(error);
         toastr.error('Problem with assets URL', 'Cannot get assets list');
         $('#assets-connect-button').addClass('fa-plug-circle-exclamation');
@@ -305,10 +269,6 @@ async function downloadAssetsList(url) {
     }
 }
 
-/**
- * Previews the asset by opening its URL. If it's an audio asset, it plays a preview sound. Otherwise, it opens the URL in a new tab.
- * @param {JQuery.Event} e Click event
- */
 function previewAsset(e) {
     const href = $(this).attr('href');
     const audioExtensions = ['.mp3', '.ogg', '.wav'];
@@ -331,15 +291,6 @@ function previewAsset(e) {
     }
 }
 
-/**
- * Checks if the asset is already installed.
- * For extensions, it checks if the extension name is in the list of installed extensions.
- * For characters, it checks if any character has the same avatar URL.
- * For other asset types, it checks if any installed asset of the same type has a URL that includes the filename.
- * @param {string} assetType Type of the asset, e.g. 'extension', 'character', 'ambient', 'bgm', 'blip'
- * @param {string} filename Name or ID of the asset
- * @returns {boolean} True if the asset is installed, false otherwise
- */
 function isAssetInstalled(assetType, filename) {
     let assetList = currentAssets[assetType];
 
@@ -353,7 +304,6 @@ function isAssetInstalled(assetType, filename) {
     }
 
     for (const i of assetList) {
-        //console.debug(DEBUG_PREFIX,i,filename)
         if (i.includes(filename))
             return true;
     }
@@ -361,13 +311,6 @@ function isAssetInstalled(assetType, filename) {
     return false;
 }
 
-/**
- * Installs the asset by sending a request to the server to download it. If it's an extension, it uses the existing installExtension function.
- * @param {string} url URL of the asset to download
- * @param {string} assetType Type of the asset, e.g. 'extension', 'character', 'ambient', 'bgm', 'blip'
- * @param {string} filename Name or ID of the asset
- * @returns {Promise<boolean>} True if the asset was successfully installed, false otherwise
- */
 async function installAsset(url, assetType, filename) {
     const category = assetType;
     try {
@@ -399,12 +342,6 @@ async function installAsset(url, assetType, filename) {
     }
 }
 
-/**
- * Deletes the asset by sending a request to the server to delete it. If it's an extension, it uses the existing deleteExtension function.
- * @param {string} assetType Type of the asset, e.g. 'extension', 'character', 'ambient', 'bgm', 'blip'
- * @param {string} filename Name or ID of the asset
- * @returns {Promise<boolean>} True if the asset was successfully deleted, false otherwise
- */
 async function deleteAsset(assetType, filename) {
     const category = assetType;
     try {
@@ -430,11 +367,6 @@ async function deleteAsset(assetType, filename) {
     }
 }
 
-/**
- * Opens the character browser popup, which shows all available characters and allows downloading them.
- * @param {boolean} forceDefault If true, it uses the default ASSETS_JSON_URL instead of the one from the input field.
- * @returns {Promise<void>}
- */
 async function openCharacterBrowser(forceDefault) {
     const url = forceDefault ? ASSETS_JSON_URL : String($('#assets-json-url-field').val());
     if (!isValidUrl(url)) {
@@ -510,9 +442,7 @@ async function updateCurrentAssets() {
 //  Extension load             //
 //#############################//
 
-// This function is called when the extension is loaded
 export async function init() {
-    // This is an example of loading HTML from a file
     const windowTemplate = await renderExtensionTemplateAsync(MODULE_NAME, 'window', {});
     const windowHtml = $(windowTemplate);
 

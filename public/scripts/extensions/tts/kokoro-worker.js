@@ -1,4 +1,3 @@
-// kokoro-worker.js
 /** @type {import('./lib/kokoro.web.js').KokoroTTS} */
 let tts = null;
 /** @type {boolean} */
@@ -6,7 +5,6 @@ let ready = false;
 /** @type {string[]} */
 let voices = [];
 
-// Handle messages from the main thread
 self.onmessage = async function (e) {
     const { action, data } = e.data;
 
@@ -54,7 +52,6 @@ self.onmessage = async function (e) {
     }
 };
 
-// Initialize the TTS engine
 async function initializeTts(settings) {
     try {
         const { KokoroTTS } = await import('./lib/kokoro.web.js');
@@ -65,16 +62,13 @@ async function initializeTts(settings) {
             device: settings.device,
         });
 
-        // Create TTS instance
         tts = await KokoroTTS.from_pretrained(settings.modelId, {
             dtype: settings.dtype,
             device: settings.device,
         });
 
-        // Get available voices
         voices = Object.keys(tts.voices);
 
-        // Check if generate method exists
         if (typeof tts.generate !== 'function') {
             throw new Error('TTS instance does not have generate method');
         }
@@ -89,7 +83,6 @@ async function initializeTts(settings) {
     }
 }
 
-// Generate TTS audio
 async function generateTts(text, voiceId, speakingRate) {
     if (!ready || !tts) {
         throw new Error('TTS engine not initialized');

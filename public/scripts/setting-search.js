@@ -2,11 +2,11 @@
  * Search for settings that match the search string and highlight them.
  */
 async function searchSettings() {
-    removeHighlighting(); // Remove previous highlights
+    removeHighlighting();
     const searchString = String($('#settingsSearch').val());
-    const searchableText = $('#user-settings-block-content'); // Get the HTML block
+    const searchableText = $('#user-settings-block-content');
     if (searchString.trim() !== '') {
-        highlightMatchingElements(searchableText[0], searchString); // Highlight matching elements
+        highlightMatchingElements(searchableText[0], searchString);
     }
 }
 
@@ -34,7 +34,7 @@ function highlightMatchingElements(element, searchString) {
             const elementText = this.nodeValue;
 
             if (elementText.toLowerCase().includes(searchString.toLowerCase())) {
-                parentElement.addClass('highlighted'); // Add CSS class to highlight matched elements
+                parentElement.addClass('highlighted');
             }
         } else if (isElementNode && !$(this).is('h4')) {
             highlightMatchingElements(this, searchString);
@@ -46,7 +46,7 @@ function highlightMatchingElements(element, searchString) {
  * Remove highlighting from previously highlighted elements.
  */
 function removeHighlighting() {
-    $('.highlighted').removeClass('highlighted');  // Remove CSS class from previously highlighted elements
+    $('.highlighted').removeClass('highlighted');
 }
 
 export function initSettingsSearch() {

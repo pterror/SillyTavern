@@ -43,8 +43,7 @@ export class MenuItem {
                 item.classList.add('list-group-item');
                 item.classList.add('ctx-item');
 
-                // if a title/tooltip is set, add it, otherwise use the QR content
-                // same as for the main QR list
+                // Falls back to the QR content, same as the main QR list.
                 item.title = this.title || this.value;
 
                 if (this.callback) {

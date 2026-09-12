@@ -1,8 +1,4 @@
-/**
- * Pure string-hashing helpers. Deliberately dependency-free (no jQuery/DOM, no other app modules) so this
- * stays importable in a plain Node test environment - see tests/hash-utils.test.js. Split out of utils.js,
- * which pulls in the full browser module graph and cannot be imported outside a real DOM.
- */
+/** Dependency-free string-hashing helpers - must stay importable outside a browser DOM (e.g. under Node tests). */
 
 /**
  * Calculates a hash code for a string.
@@ -69,56 +65,20 @@ export function setAtPath(obj, dottedPath, value) {
 }
 
 /**
- * Hashes each of the given top-level keys of a settings-shaped object independently (JSON.stringify(value, null,
- * 4) per key, then getStringHash), rather than hashing the whole object as one string. This is the shallow,
- * one-level "merkle" shape optimistic-concurrency checks need for partial/delta updates: comparing a *map* of
- * per-key hashes instead of one whole-object hash means two concurrent updates to genuinely disjoint keys can
- * both succeed - only a real overlap on the same key(s) needs to conflict. A whole-object hash can't make that
- * distinction; any concurrent change anywhere invalidates it, which defeats a chunk of the point of a partial-
- * update mechanism whose actual data model (see settings.js) is already a flat dict of independent subsystems.
- *
- * A key missing from `obj` hashes to 0 (JSON.stringify(undefined) is `undefined`, not a string, and
- * getStringHash's own non-string fallback returns 0) - so two sides that both lack some key agree on its hash
- * without either needing to special-case "key doesn't exist yet".
- * @param {Record<string, unknown>|null|undefined} obj Parsed settings-shaped object (or null/undefined, treated as empty)
- * @param {string[]} keys Top-level keys or dotted paths to hash
- * @returns {Record<string, number>} Map of key -> hash of that key's current value
- */
-/**
- * Recursively hashes every dotted path within a settings-shaped object - not just the top level, and not just
- * one level of nesting - writing hash(JSON.stringify(value, null, 4)) into `map` at each path. A
- * saveSettingsDebounced() call can mark an arbitrarily deep dotted path dirty (e.g.
- * 'power_user.reasoning.name', three levels), so a cache that only reaches one or two levels deep misses those
- * paths entirely. That miss must never be read as "the hash is 0" - 0 is a real hash value (it's what
- * hashSettingsKeys() computes for a path that genuinely doesn't exist), and conflating "not cached" with
- * "confirmed absent" is exactly the class of bug this exists to prevent. Callers should check whether a path
- * ended up in `map` before using it, rather than defaulting a miss to 0.
- *
- * Arrays are treated as opaque leaves (hashed as a whole at their own path, not recursed into by index) -
- * matching hashSettingsKeys()'s own object-vs-array handling.
- *
- * Cycle-safe two ways, since settings-shaped objects aren't guaranteed acyclic (an extension can stash a
- * back-reference in its own settings slice): (1) JSON.stringify() itself throws "cyclic object value" if the
- * subtree at a given path contains one anywhere below it - that's caught per-path and just leaves that one
- * path out of `map` rather than caching nothing at all or letting the error propagate. A path missing from
- * `map` already means "unknown" to every caller (see the expectedHashes-building call sites in script.js),
- * which is exactly the right meaning for "couldn't hash this". (2) independently of that, the recursive walk
- * itself would loop forever on a genuine cycle in the object graph (unrelated to whether JSON.stringify would
- * also choke on it) - an `ancestors` set of objects currently on the walk's own call stack stops descending
- * back into one of its own ancestors. A stringify failure at one path doesn't block recursing into that
- * object's own children - the cycle may only taint that one path, not every path under it.
- * @param {Record<string, number>} map Hash map to populate (mutated in place)
- * @param {*} obj The (sub)object to walk
- * @param {string} [prefix] Dotted path prefix for `obj` itself; omit/empty to seed only obj's own children as top-level paths
- * @param {Set<object>} [ancestors] Internal - objects currently on this walk's call stack, to detect real cycles
+ * Recursively hashes every dotted path in a settings-shaped object into `map`, for partial-update conflict checks.
+ * A path absent from `map` means "unknown", not "hash is 0" (0 is a real hash) - callers must check presence.
+ * Cycle-safe via an `ancestors` walk-stack; a stringify failure only taints that one path, not its children.
+ * @param {Record<string, number>} map Populated in place
+ * @param {*} obj Value to walk
+ * @param {string} [prefix] Dotted path prefix for `obj` itself
+ * @param {Set<object>} [ancestors] Internal cycle guard
  */
 export function seedKeyHashes(map, obj, prefix = '', ancestors = new Set()) {
     if (prefix) {
         try {
             map[prefix] = getStringHash(JSON.stringify(obj, null, 4));
         } catch (error) {
-            // Unstringifiable (cyclic) at this exact path - leave it out of the cache instead of caching a
-            // wrong value or throwing. Still fall through to recurse into its children below.
+            // Unstringifiable (cyclic) at this path - leave it out of the map rather than throwing.
         }
     }
     if (obj != null && typeof obj === 'object' && !Array.isArray(obj)) {
@@ -136,6 +96,7 @@ export function seedKeyHashes(map, obj, prefix = '', ancestors = new Set()) {
     }
 }
 
+/** Hashes each top-level (or dotted) key of a settings-shaped object independently, for partial-update conflict checks. */
 export function hashSettingsKeys(obj, keys) {
     /** @type {Record<string, number>} */
     const result = {};
@@ -147,17 +108,10 @@ export function hashSettingsKeys(obj, keys) {
 }
 
 /**
- * JSON.stringify with object keys sorted at every level, so two objects with the same key/value pairs in a
- * different insertion order always serialize identically - the same technique character-card-normalize.js's
- * (server-only) `canonicalStringify()` uses for `computeContentIdentityHash()`, duplicated here (rather than
- * imported from there) so it stays in this dependency-free, browser-safe module: character-card-normalize.js
- * pulls in `node:crypto` and other server-only modules this file must never depend on (see this module's own
- * header on why it's split out of utils.js). Deliberately does NOT strip any fields the way
- * computeContentIdentityHash()'s own canonicalization does (fav/chat/create_date) - that stripping exists for a
- * different job (cross-install duplicate identity, where install-local state must NOT affect the hash); the
- * state-digest use below needs the exact opposite property; anything that changes what a client would see
- * cached for this id, including fav/chat, MUST change the hash, or a real desync in exactly those fields would
- * go undetected.
+ * JSON.stringify with object keys sorted at every level, so equal objects serialize identically regardless of
+ * insertion order. Deliberately does NOT strip fields (fav/chat/create_date) the way the server-only
+ * canonicalStringify() in character-card-normalize.js does - this one must reflect everything the client would
+ * see, so a desync in those fields is not silently hidden.
  * @param {*} value
  * @returns {string}
  */
@@ -166,9 +120,7 @@ export function canonicalStringify(value) {
         return `[${value.map(canonicalStringify).join(',')}]`;
     }
     if (value !== null && typeof value === 'object') {
-        // Skips undefined-VALUED own keys (not just absent ones), matching JSON.stringify()'s own semantics -
-        // see character-card-normalize.js's canonicalStringify() for the full reasoning (same function, same
-        // footgun it guards against).
+        // Filters out undefined-VALUED keys too, matching JSON.stringify()'s own semantics.
         const keys = Object.keys(value).filter(k => value[k] !== undefined).sort();
         return `{${keys.map(k => `${JSON.stringify(k)}:${canonicalStringify(value[k])}`).join(',')}}`;
     }
@@ -176,63 +128,30 @@ export function canonicalStringify(value) {
 }
 
 /**
- * Anti-entropy/Merkle-style state-digest helpers for a large id-keyed replica (e.g. character-metadata-db.js's
- * `characters` table on the server, character-cache.js's IndexedDB mirror on the client): a cheap way to prove
- * two independently-maintained copies of the same {id -> content} set agree, and - only if they don't - to
- * narrow down which slice actually diverged, without either side ever transferring its full content list up
- * front. Same shape as MySQL's pt-table-checksum / Cassandra's anti-entropy repair / DynamoDB's replica
- * checksums: partition the id space into a fixed number of buckets, keep one small order-independent digest per
- * bucket, and only fetch (or re-fetch) the members of a bucket whose digest actually mismatches.
+ * Anti-entropy/Merkle-style state-digest helpers: partition an id-keyed replica into fixed buckets, keep one
+ * order-independent digest per bucket, and only re-fetch a bucket whose digest mismatches - same shape as
+ * MySQL pt-table-checksum / Cassandra anti-entropy repair.
  *
- * Digest input is a hash of each record's actual CONTENT (`contentHashOf()` below), never a locally-stored
- * revision counter or any other value a client would have to remember-and-trust between syncs. That's a
- * deliberate correction, not a style choice: an earlier version of this mechanism folded `{id, rev}` into the
- * digest, where `rev` was a number character-cache.js persisted per record alongside its cached copy. That
- * doesn't actually solve the problem this mechanism exists to catch (a client cache that's silently gone wrong)
- * - it just moves the SAME kind of single-point-of-trust failure from one global cursor down to N per-record
- * ones. If a per-record write ever silently fails, corrupts, or gets mismatched (the exact failure modes this
- * whole mechanism exists to catch), a stored `rev` sitting next to the bad data is just as capable of being
- * wrong as the data itself, and nothing independently re-derives it to notice. Hashing content directly has no
- * such gap: there is nothing separate to distrust, because the digest input isn't remembered as state at all -
- * it's recomputed fresh, every time, from whatever the record's actual current content is. If that content is
- * missing, stale, or corrupted, the hash reflects that honestly, by construction, instead of needing a second
- * value to have also gone wrong in a correlated way.
+ * Digest input is always a hash of each record's actual content (`contentHashOf()`), never a stored revision
+ * counter - a stored counter sitting next to corrupted data is just as capable of being wrong as the data
+ * itself, with nothing to independently catch it. `rev` (the change-log cursor) still answers "what changed
+ * since I last looked"; this answers "is what I already have still correct" - the two must not be conflated.
  *
- * `rev` (character-metadata-db.js's change-log revision, `/api/characters/changes`'s cursor) still exists and
- * still matters - it answers "what changed since I last looked", the incremental-fetch question. This module
- * answers a genuinely different question - "is what I already have still correct" - and deliberately does not
- * reuse `rev` to answer it, for the reason above. Conflating the two into one mechanism is exactly what went
- * wrong the first time.
- *
- * Deliberately NOT cryptographic and NOT collision-resistant against an adversary - `getStringHash` (cyrb53) is
- * a fast, good-enough-for-drift-detection string hash, not a security primitive. The threat model here is
- * accidental divergence (a dropped write, storage eviction, a client cache built against a stale/replaced
- * server database), not a hostile server or client.
+ * Not cryptographic or collision-resistant - the threat model is accidental divergence, not a hostile peer.
  */
 
-/** Default bucket count for state-digest partitioning - see `bucketOf()`. 256 buckets keeps both the digest
- * table response (256 small entries) and a single bucket's repair payload (library size / 256 ids) small at
- * any realistic character-library size, without needing to tune this per install. */
+/** Bucket count for state-digest partitioning - see `bucketOf()`. */
 export const DEFAULT_DIGEST_BUCKET_COUNT = 256;
 
-/** Default branching factor for the recursive tree-descent anti-entropy protocol (tree-descend). 64 balances
- * per-level response size against descent depth: at N=64, 10K corrupted records produce a ~14 MB children
- * response per intermediate level (vs 80 MB at N=256 or 10 MB at N=32), and the tree reaches depth 3 at 10M
- * records (vs 2 at N=256 or 5 at N=32), giving 3 descent RTs — a good tradeoff between bandwidth and latency
- * for the high-latency/low-bandwidth mobile-data scenario this protocol is designed for.
- *
- * leafThreshold is derived from branching: ceil(branching × 1.5) — the crossover point where returning
- * per-record hashes (~40 bytes/record in JSON) becomes cheaper than returning branching children hashes
- * (~60 bytes/child in JSON). This ensures the tree's leaf-level cost never exceeds an equivalent flat
- * per-record digest. */
+/**
+ * Branching factor for the recursive tree-descent anti-entropy protocol. leafThreshold = ceil(branching × 1.5),
+ * the point where returning per-record hashes becomes cheaper than returning `branching` children hashes.
+ */
 export const DEFAULT_TREE_BRANCHING = 64;
 
 /**
- * Deterministic bucket assignment for one id - the same on client and server (both import this module) is the
- * entire point: neither side ever needs to ask the other "which bucket is this id in", they just agree.
- * Keyed on `id` alone (not `id:rev`) so a given character always lands in the same bucket across every sync,
- * regardless of how many times it's been edited - that's what lets a bucket mismatch be resolved by re-fetching
- * only that bucket's members instead of re-partitioning everything.
+ * Deterministic bucket assignment for one id - client and server must agree without asking each other. Keyed
+ * on `id` alone (not `id:rev`) so a record always lands in the same bucket regardless of edits.
  * @param {string} id
  * @param {number} [bucketCount]
  * @returns {number}
@@ -242,22 +161,12 @@ export function bucketOf(id, bucketCount = DEFAULT_DIGEST_BUCKET_COUNT) {
 }
 
 /**
- * Hierarchical extension of `bucketOf()` - returns the tree-node index at a given level for an id, using
- * successive bit ranges of the same deterministic hash. Level 0 is exactly `bucketOf(id, branching)` (same low
- * bits, same assignment), so the flat-bucket scheme is literally level 0 of this tree; higher levels subdivide
- * each level-0 bucket into finer groups using the next bits of the hash.
- *
- * Stable by construction: adding/removing records never changes any other record's tree path, because the path
- * is derived purely from the id's own hash, with no dependence on the set of other ids present. Same hash →
- * same path, regardless of corpus size or composition.
- *
- * Uses division/modulo rather than bit shifts because `getStringHash()` returns a 53-bit number (not a 32-bit
- * int), and JavaScript's `>>>` operator truncates to 32 bits. Division stays in safe-integer range for all
- * levels up to floor(53 / log2(branching)) - at branching=256, that's 6 levels, covering up to 256^6 ≈ 281
- * trillion leaf nodes, well beyond any realistic corpus size.
+ * Hierarchical extension of `bucketOf()` - tree-node index at a given level, from successive bit ranges of the
+ * same hash. Level 0 equals `bucketOf(id, branching)`. Uses division/modulo, not bit shifts, because
+ * `getStringHash()` returns 53 bits and `>>>` would truncate to 32.
  * @param {string} id
  * @param {number} level 0-based tree level (0 = same as `bucketOf`)
- * @param {number} [branching] Must be a positive integer; powers of 2 recommended for clean bit extraction.
+ * @param {number} [branching] Powers of 2 recommended.
  * @returns {number} Node index at this level (0 to branching-1)
  */
 export function treeNodeAt(id, level, branching = DEFAULT_DIGEST_BUCKET_COUNT) {
@@ -266,11 +175,7 @@ export function treeNodeAt(id, level, branching = DEFAULT_DIGEST_BUCKET_COUNT) {
 }
 
 /**
- * The content-derived fingerprint this whole mechanism is built on (see this section's own header for why it's
- * content, not a stored counter) - a single hash of whatever object it's given, recomputed fresh every call,
- * never persisted anywhere as its own independently-trusted value. Generic on purpose (this module stays
- * dependency-free and domain-agnostic); WHICH fields of a character actually belong in that object is a
- * character-shaped decision, made by `characterDigestFingerprint()` below, not by this function.
+ * Recomputed fresh every call, never persisted as its own trusted value - see the anti-entropy section header.
  * @param {object} content
  * @returns {number}
  */
@@ -279,36 +184,13 @@ export function contentHashOf(content) {
 }
 
 /**
- * Picks the subset of a processed character object (character-shallow.js's `toShallow()` shape - what
- * `/api/characters/batch` returns, and what `shallow_json` stores server-side) that's safe to compare between
- * client and server for cache-integrity purposes - see `contentHashOf()`'s callers (getStateDigest()/
- * getBucketMembers() server-side, verifyCharacterCacheDigest() client-side).
- *
- * Deliberately narrower than "the whole character object", because several of `toShallow()`'s fields are NOT
- * stable, comparable content - they're either live-recomputed from volatile external state on every server read,
- * or synthesized client-side with no server equivalent, so including them would make this digest disagree with
- * itself constantly for values that were never actually wrong:
- *   - `chat`: script.js's finalizeFetchedCharacter() replaces a falsy client-side `chat` with a freshly
- *     synthesized, timestamped placeholder before caching - real for EVERY never-chatted character, with no
- *     server-side equivalent to compare against (server's `shallow_json.chat` is legitimately `null` there).
- *   - `chat_size`/`date_last_chat`: server-side, these are only refreshed in the metadata store when a
- *     character's own PNG is re-written (upsertCharacterFromWrite()'s hook) - NOT when new chat messages are
- *     saved, which is a separate write path this metadata store doesn't watch. `/api/characters/batch`'s live
- *     processCharacter() call recomputes both fresh from the actual chat file on every request. The two
- *     legitimately, routinely disagree for any character with chat activity since its last card edit - not a
- *     bug, just two different staleness windows for the same underlying (frequently-changing) fact.
- *   - `date_added`/`create_date`: frozen once in the metadata store (by design - see character-metadata-db.js's
- *     own module header on "date_added IS RECORDED ONCE"), but /batch's processCharacter() recomputes a
- *     fallback from the PNG file's current ctime on every call - stable in the overwhelmingly common case, but
- *     not something this check should stake a false-positive on for the rare case a file's ctime moves without
- *     its content changing (e.g. a filesystem-level operation outside the app).
- *
- * The accepted tradeoff: a genuine active-chat-POINTER desync, or `chat_size`/`date_added` drift specifically,
- * isn't caught by this check - narrower coverage, but zero false positives, which matters more for a mechanism
- * whose entire value is "stays quiet when nothing's actually wrong".
- * @param {object} character A `toShallow()`-shaped object (or the full character object - only these fields
- * are read, so a full processCharacter(..., {shallow: false}) object works too)
- * @returns {object} Just the stable subset, ready to pass to `contentHashOf()`.
+ * Picks the subset of a character object that's stable, comparable content between client and server. Excludes
+ * `chat`, `chat_size`/`date_last_chat`, and `date_added`/`create_date` - each is recomputed/synthesized from
+ * volatile state on one side with no stable equivalent on the other, so including them would make the digest
+ * disagree with itself for values that were never actually wrong. Tradeoff: drift specifically in those fields
+ * goes undetected, in exchange for zero false positives elsewhere.
+ * @param {object} character A `toShallow()`-shaped object, or the full character object
+ * @returns {object} The stable subset, ready for `contentHashOf()`
  */
 export function characterDigestFingerprint(character) {
     return {
@@ -331,30 +213,12 @@ export function characterDigestFingerprint(character) {
 }
 
 /**
- * Fixed-shape fast path for `contentHashOf(characterDigestFingerprint(character))` - produces byte-identical
- * output to that generic pipeline (verified in hash-utils.test.js against a wide range of inputs, including
- * missing/undefined fields), used at the two call sites that run this over an entire character library
- * (server's getStateDigest()/getBucketMembers() in character-metadata-db.js, client's
- * verifyCharacterCacheDigest() in script.js) rather than the generic pipeline itself.
- *
- * `canonicalStringify()` earns its recursive Object.keys()+filter()+sort() machinery when the shape of what
- * it's serializing is genuinely unknown at the call site - that's its actual job. `characterDigestFingerprint()`
- * doesn't have that problem: it always returns the exact same fixed key set (name/fav/tags/data{...}), in the
- * exact same nesting, no matter what character it's given - so re-discovering and re-sorting that key set at
- * runtime, on every single call, is pure repeated overhead for information already known once, statically, right
- * here. Measured on a real 326k-row character-metadata.sqlite (2026-08 state-digest perf investigation): the
- * generic path spent ~1.17s of a ~2.2s total in canonicalStringify() alone - about 3.6x the cost of a plain
- * `JSON.stringify()` on equivalent data - purely from that redundant per-call key discovery/sort/filter, not
- * from anything array/object-shape-genuinely-variable about this specific data. This function is that same
- * output, hand-unrolled once: ~340ms for the same 326k rows, matching plain `JSON.stringify()`'s own baseline
- * cost, because there is no longer any generic recursion left to pay for.
- *
- * Still has to replicate `canonicalStringify()`'s one real behavioral subtlety - an object key whose VALUE is
- * `undefined` is omitted entirely, matching `JSON.stringify()`'s own semantics (see that function's own doc
- * comment) - a character missing `data.creator_notes` entirely, for instance, must hash the same way whether it
- * went through this path or the generic one, or the two would silently disagree on the exact same content.
- * @param {object} character A `toShallow()`-shaped object (or the full character object) - passed straight
- * through, not pre-run through `characterDigestFingerprint()` (this function does that field selection itself).
+ * Hand-unrolled fast path for `contentHashOf(characterDigestFingerprint(character))` - byte-identical output
+ * (verified in tests), used where this runs over an entire character library. `canonicalStringify()`'s
+ * recursive key discovery/sort is redundant when the shape is fixed and known statically; skipping it took a
+ * 326k-row run from ~1.17s to ~340ms. Must still omit undefined-valued keys exactly like `canonicalStringify()`
+ * does, or the two paths would disagree on identical input.
+ * @param {object} character A `toShallow()`-shaped object (or the full character object)
  * @returns {number}
  */
 export function characterDigestContentHash(character) {
@@ -371,12 +235,7 @@ export function characterDigestContentHash(character) {
     const extFav = ext?.fav;
     const extWorld = ext?.world;
 
-    // Key order below matches exactly what canonicalStringify(characterDigestFingerprint(character)) would
-    // produce: keys sorted alphabetically at every level (data/fav/name/tags at the top; character_version/
-    // creator/creator_notes/extensions/name/tags inside `data`; fav/world inside `extensions`), undefined-valued
-    // keys omitted. `tags`/`dataTags` are arrays of primitive strings in this domain, for which plain
-    // `JSON.stringify()` already produces byte-identical output to canonicalStringify()'s own element-wise map
-    // (no key-sorting applies to arrays either way) - see canonicalStringify()'s own array branch.
+    // Keys below are alphabetically sorted to match canonicalStringify()'s own output exactly.
     let extParts = '';
     if (extFav !== undefined) extParts += `"fav":${JSON.stringify(extFav)}`;
     if (extWorld !== undefined) extParts += (extParts ? ',' : '') + `"world":${JSON.stringify(extWorld)}`;
@@ -389,8 +248,6 @@ export function characterDigestContentHash(character) {
     if (characterVersion !== undefined) appendData('character_version', JSON.stringify(characterVersion));
     if (creator !== undefined) appendData('creator', JSON.stringify(creator));
     if (creatorNotes !== undefined) appendData('creator_notes', JSON.stringify(creatorNotes));
-    // `extensions` itself is always a plain object here (characterDigestFingerprint() always constructs one,
-    // even if `character?.data?.extensions` is undefined), so this key is never omitted.
     appendData('extensions', `{${extParts}}`);
     if (dataName !== undefined) appendData('name', JSON.stringify(dataName));
     if (dataTags !== undefined) appendData('tags', JSON.stringify(dataTags));
@@ -404,12 +261,8 @@ export function characterDigestContentHash(character) {
 }
 
 /**
- * Picks the fav-group subset of a character's fingerprint: the two fields (`fav`, `data.extensions.fav`) that
- * change independently via the `setCharacterFav()` endpoint (a DB-only toggle that never touches the PNG),
- * making them the most common single-field drift vector. Paired with `characterContentFieldsFingerprint()`
- * below; the two together cover exactly the same fields as `characterDigestFingerprint()` above, just split
- * into independently-hashable groups so the bucket-digest mechanism can tell a fav-only mismatch apart from a
- * real content-field mismatch without needing a second round trip to diff individual records.
+ * The two fields that change independently via `setCharacterFav()` (a DB-only toggle, never touching the PNG) -
+ * split out so a fav-only mismatch can be told apart from a content-field mismatch without a second round trip.
  * @param {object} character
  * @returns {object}
  */
@@ -425,12 +278,8 @@ export function characterFavFingerprint(character) {
 }
 
 /**
- * Picks the content-fields-group subset of a character's fingerprint: everything `characterDigestFingerprint()`
- * covers EXCEPT the fav fields (which go in `characterFavFingerprint()` above). These fields all change
- * atomically together when the character's PNG card is written, so grouping them into one hash stream means a
- * mismatch in any of them is detected as "content fields drifted" - which field specifically can be determined
- * by the targeted-patch repair path without a separate per-field hash (the server returns the actual field
- * values and the client diffs against its cached copy).
+ * Everything `characterDigestFingerprint()` covers except the fav fields - grouped because these all change
+ * atomically together when the PNG card is written.
  * @param {object} character
  * @returns {object}
  */
@@ -452,10 +301,8 @@ export function characterContentFieldsFingerprint(character) {
 }
 
 /**
- * Picks the tag_ids subset of a character's fingerprint: the system tag assignments that change
- * independently via assignEntityTag/unassignEntityTag. Paired with characterFavFingerprint() and
- * characterContentFieldsFingerprint() to give three independently-hashable field groups.
- * tag_ids are sorted to ensure deterministic hashing regardless of SQL row order.
+ * tag_ids change independently via assignEntityTag/unassignEntityTag; sorted here for deterministic hashing
+ * regardless of SQL row order.
  * @param {object} character
  * @returns {object}
  */
@@ -465,11 +312,8 @@ export function characterTagIdsFingerprint(character) {
 }
 
 /**
- * Fixed-shape fast path for `contentHashOf(characterFavFingerprint(character))` - same rationale as
- * `characterDigestContentHash()` above: the generic `canonicalStringify()` pipeline is redundant overhead for a
- * shape that's known statically. Must stay byte-identical to the generic path (verified in tests).
- *
- * Canonical key order: top-level `data` < `fav`; inside `data` only `extensions`; inside `extensions` only `fav`.
+ * Fixed-shape fast path for `contentHashOf(characterFavFingerprint(character))` - must stay byte-identical to
+ * the generic path (verified in tests).
  * @param {object} character
  * @returns {number}
  */
@@ -489,13 +333,8 @@ export function characterDigestFavHash(character) {
 }
 
 /**
- * Fixed-shape fast path for `contentHashOf(characterContentFieldsFingerprint(character))` - the non-fav
- * fingerprint fields, same hand-unrolled approach as `characterDigestContentHash()` and
- * `characterDigestFavHash()`. Must stay byte-identical to the generic path (verified in tests).
- *
- * Canonical key order: top-level `data` < `name` < `tags`; inside `data`:
- * `character_version` < `creator` < `creator_notes` < `extensions` < `name` < `tags`;
- * inside `extensions` only `world`.
+ * Fixed-shape fast path for `contentHashOf(characterContentFieldsFingerprint(character))` - must stay
+ * byte-identical to the generic path (verified in tests).
  * @param {object} character
  * @returns {number}
  */
@@ -533,10 +372,8 @@ export function characterDigestFieldsHash(character) {
 }
 
 /**
- * Fixed-shape fast path for `contentHashOf(characterTagIdsFingerprint(character))`, truncated to
- * 32 bits for the per-field digest mechanism (4 bytes per field, per the field-granular sync design).
- * Must produce the same output as `contentHashOf(characterTagIdsFingerprint(character)) % 4294967296`
- * (verified in tests). tag_ids are sorted for deterministic hashing regardless of storage order.
+ * Fixed-shape fast path for `contentHashOf(characterTagIdsFingerprint(character)) % 4294967296` (verified in
+ * tests), truncated to 32 bits for the per-field digest mechanism.
  * @param {object} character
  * @returns {number} 32-bit unsigned integer
  */
@@ -550,28 +387,10 @@ export function characterDigestTagIdsHash(character) {
 }
 
 /**
- * Group equivalents of characterFavFingerprint()/characterTagIdsFingerprint()/characterContentFieldsFingerprint()
- * above (2026-09, extending /query's hash-only mode to `includeGroups: true` requests). Same three-way split -
- * fav changes independently (no `data.extensions.fav` duplicate for groups, so this one's simpler: a single
- * field), tag_ids changes independently via assignEntityTag()/unassignEntityTag() same as characters.
- *
- * `content` is deliberately NOT narrowed to list-display fields the way characterContentFieldsFingerprint() is
- * for characters - that narrowing is safe for characters because `/query` characters are already a `toShallow()`
- * projection (a real full-card fetch is a separate, unaffected path - `CharacterRepository.full()`). Groups have
- * no such split: `filter.includeGroups: true`'s existing JSON path (hydrateEntityRows()/getGroupsByIds(),
- * characters.js/groups.js) already returns the group's ENTIRE object as `item` - chat_id/chats/
- * activation_strategy/generation_mode/disabled_members/auto_mode_delay/generation_mode_join_prefix/suffix, not
- * just name/avatar_url/members. A narrower content fingerprint would silently miss a change to any of those
- * other fields and let hash-mode's cache go stale for them - found this while wiring the client resolver, before
- * it shipped, not after. So `content` here is "the whole group object minus `id` (identity, not content), `fav`
- * (its own digest), and `tag_ids` (its own digest)" - whatever fields a group object happens to carry, current or
- * future, all covered without this function needing to know their names.
- *
- * No hand-unrolled fast path the way the character digest functions above have one - those exist because
- * getStateDigest()/getBucketMembers() run them over the entire (326k-row) character library in a hot loop;
- * groups are "far fewer than characters" (design doc's own words) and nothing here runs at that scale, so the
- * generic contentHashOf(canonicalStringify(...)) path is simpler and just as correct without the
- * hand-rolled-JSON-string duplication risk a fast path would add for no measured benefit.
+ * Group equivalents of the character*Fingerprint() functions above, same three-way fav/tag_ids/content split.
+ * `content` is intentionally the whole group object minus `id`/`fav`/`tag_ids` rather than a narrowed field
+ * list - unlike characters, a group's `/query` projection already returns the full object, so narrowing here
+ * would silently miss changes to fields not explicitly named.
  * @param {object} group
  * @returns {object}
  */
@@ -608,11 +427,8 @@ export function groupDigestContentHash(group) {
 }
 
 /**
- * Picks the card-body subset of a character's data: the content fields that change when a user
- * edits the character through the form (description, personality, scenario, first_mes, mes_example,
- * system_prompt, post_history_instructions, alternate_greetings, talkativeness, depth_prompt).
- * Paired with `characterContentFieldsFingerprint()` (metadata fields) to give full coverage of
- * everything the character edit endpoint writes.
+ * The card-body fields that change when a user edits the character through the form. Paired with
+ * `characterContentFieldsFingerprint()` (metadata fields) for full coverage of the edit endpoint.
  * @param {object} character
  * @returns {object}
  */
@@ -639,15 +455,8 @@ export function characterCardBodyFingerprint(character) {
 }
 
 /**
- * Fixed-shape fast path for `contentHashOf(characterCardBodyFingerprint(character))` - the editable
- * card body fields, same hand-unrolled approach as `characterDigestFieldsHash()` and the other
- * digest hash functions. Must stay byte-identical to the generic path.
- *
- * Canonical key order: top-level only `data`; inside `data`:
- * `alternate_greetings` < `description` < `extensions` < `first_mes` < `mes_example` <
- * `personality` < `post_history_instructions` < `scenario` < `system_prompt`;
- * inside `extensions`: `depth_prompt` < `talkativeness`;
- * inside `depth_prompt`: `depth` < `prompt` < `role`.
+ * Fixed-shape fast path for `contentHashOf(characterCardBodyFingerprint(character))` - must stay byte-identical
+ * to the generic path.
  * @param {object} character
  * @returns {number}
  */
@@ -665,7 +474,6 @@ export function characterDigestCardBodyHash(character) {
     const depthPrompt = ext?.depth_prompt;
     const talkativeness = ext?.talkativeness;
 
-    // depth_prompt is an object with known keys - canonical key ordering (alphabetical: depth, prompt, role)
     let depthPromptStr;
     if (depthPrompt !== undefined) {
         if (depthPrompt !== null && typeof depthPrompt === 'object') {
@@ -714,15 +522,9 @@ export function emptyDigest() {
 }
 
 /**
- * Order-independent fold of one `{id, contentHash}` pair (see `contentHashOf()`) into a running bucket digest.
- * XOR across two 32-bit halves (rather than addition, or XOR-ing `getStringHash`'s raw 53-bit number directly)
- * so this only ever touches plain 32-bit-safe bitwise ops - no BigInt, no floating-point precision loss from
- * summing 53-bit numbers past 2^53. XOR is commutative and associative, so callers can fold rows in ANY order
- * (a SQL query's row order server-side, an IndexedDB cursor's order client-side) and still land on the same
- * digest for the same {id, contentHash} set - which is exactly what "the same replicated content, assembled two
- * different ways" needs. Self-inverting too (`combineDigest(combineDigest(d, x), x)` returns `d`), though
- * nothing here relies on that yet - noted for a future incremental-maintenance variant, not used by this pass's
- * on-demand computation.
+ * Order-independent fold of one `{id, contentHash}` pair into a running bucket digest. XOR (not addition) keeps
+ * this on plain 32-bit-safe bitwise ops with no BigInt, and lets callers fold rows in any order and still land
+ * on the same digest for the same set.
  * @param {{ hi: number, lo: number }} digest Accumulator so far (start from `emptyDigest()`)
  * @param {string} id
  * @param {number} contentHash From `contentHashOf()`
@@ -730,18 +532,14 @@ export function emptyDigest() {
  */
 export function combineDigest(digest, id, contentHash) {
     const h = getStringHash(`${id}:${contentHash}`);
-    // getStringHash returns a 53-bit non-negative number: `4294967296 * (2097151 & h2) + (h1 >>> 0)`. The low
-    // 32 bits are exactly `h1 >>> 0`; the high bits are whatever's left after dividing that back out. Both
-    // halves stay well within safe-integer/32-bit-bitwise-op range, so no BigInt is needed anywhere here.
     const lo = h % 4294967296;
     const hi = Math.floor(h / 4294967296);
     return { hi: (digest.hi ^ hi) >>> 0, lo: (digest.lo ^ lo) >>> 0 };
 }
 
 /**
- * Folds one bucket digest into another - used to derive the whole-library digest from a 256-entry bucket table
- * (both sides can do this locally; the wire format only ever needs to carry the per-bucket table, never a
- * separately-computed whole-library digest too).
+ * Folds one bucket digest into another - derives the whole-library digest from the per-bucket table locally, so
+ * the wire format never needs to carry a separately-computed whole-library digest too.
  * @param {{ hi: number, lo: number }} a
  * @param {{ hi: number, lo: number }} b
  * @returns {{ hi: number, lo: number }}
@@ -760,9 +558,8 @@ export function digestsEqual(a, b) {
 }
 
 // --- 128-bit wide digest functions for field-granular sync ---
-// Aggregate hashes use 128 bits (16 bytes) at the bucket and whole-collection level so a 32-bit
-// per-field collision can never survive undetected. Per-field hashes stay narrow (32 bits / 4 bytes)
-// for locating which field drifted; the wide aggregate catches any collision the narrow hashes miss.
+// Aggregates use 128 bits so a 32-bit per-field collision can't survive undetected; per-field hashes stay
+// narrow (32 bits) for locating which field drifted.
 
 /**
  * Starting value for a 128-bit bucket digest accumulator.
@@ -773,12 +570,8 @@ export function emptyDigest128() {
 }
 
 /**
- * Order-independent fold of one record's per-field hashes into a running 128-bit bucket digest.
- * Four independent cyrb53 hashes with different seeds, each truncated to 32 bits, XOR'd into the
- * accumulator. The input string encodes the record's identity (id) and all three per-field hashes,
- * so any single-field change on any record produces a completely different contribution across all
- * four 32-bit lanes - a per-field 32-bit collision that hides a real difference from the leaf-level
- * comparison is still caught at the aggregate level.
+ * Order-independent fold of one record's per-field hashes into a running 128-bit bucket digest, via four
+ * differently-seeded cyrb53 hashes so a per-field 32-bit collision is still caught at the aggregate level.
  * @param {{ a: number, b: number, c: number, d: number }} digest
  * @param {string} id
  * @param {number} favHash 32-bit per-field hash

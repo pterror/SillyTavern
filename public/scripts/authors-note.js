@@ -385,7 +385,6 @@ function onANMenuItemClick() {
         return;
     }
 
-    //show AN if it's hidden
     const $ANcontainer = $('#floatingPrompt');
     if ($ANcontainer.css('display') !== 'flex') {
         $ANcontainer.addClass('resizing');
@@ -399,7 +398,6 @@ function onANMenuItemClick() {
             $ANcontainer.removeClass('resizing');
         });
 
-        //auto-open the main AN inline drawer
         if ($('#ANBlockToggle')
             .siblings('.inline-drawer-content')
             .css('display') !== 'block') {
@@ -407,7 +405,6 @@ function onANMenuItemClick() {
             $('#ANBlockToggle').trigger('click');
         }
     } else {
-        //hide AN if it's already displayed
         $ANcontainer.addClass('resizing');
         $ANcontainer.transition({
             opacity: 0.0,
@@ -421,8 +418,7 @@ function onANMenuItemClick() {
         }, animation_duration);
     }
 
-    //duplicate options menu close handler from script.js
-    //because this listener takes priority
+    // Duplicates script.js's options-menu close handler: this listener must run first.
     $('#options').stop().fadeOut(animation_duration);
 }
 

@@ -694,7 +694,6 @@ class MiniMaxTtsProvider {
                 language = this.mapLanguageToMiniMaxFormat(voice.lang);
             }
         } catch (error) {
-            // Could not determine voice language, fall back to default
         }
 
         return await this.fetchTtsGeneration(text, voiceId, language);

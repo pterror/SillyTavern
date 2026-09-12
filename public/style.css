@@ -501,9 +501,7 @@ input[type='checkbox']:focus-visible {
     background-color: color-mix(in srgb, var(--SmartThemeQuoteColor) 33%, var(--SmartThemeBlurTintColor) 66%);
 }
 
-/** If hidden reasoning should not be shown, we hide all blocks that don't have content,
- * except the one currently being edited.
- */
+/* Hide reasoning blocks without content, except the one currently being edited. */
 #chat:not([data-show-hidden-reasoning="true"]) .mes_reasoning_details:not([data-has-content="true"]):not(:has(.reasoning_edit_textarea)) {
     display: none;
 }
@@ -1347,9 +1345,7 @@ body.swipeAllMessages .mes:not(.last_mes) .swipes-counter {
     }
 }
 
-/* The swipe counter on earlier messages stays behind the user's setting. The arrows themselves do
-   not: any message with more than one alternative can be navigated, so their visibility is driven by
-   .swipes_visible / .last_swipe below, same as the last message. */
+/* Unlike the swipe counter, the arrows are shown on any message with more than one alternative, not just the last. */
 body:not(.swipeAllMessages) .mes:not(.last_mes) .swipes-counter,
 /* Hide non-visible swipe_left. */
 .mes:not(.swipes_visible) .swipe_left,
@@ -1381,9 +1377,7 @@ body.hideAllSwipeButtons :is(.swipe_left, .swipe_right),
 
 .mes.has_branches .branch_nav {
     display: flex;
-    /* Dimly visible always, not hidden until hover - the rest of the message button row
-     * (.mes_buttons) doesn't hide on hover either, and a fork existing at this message is
-     * exactly the kind of thing that shouldn't require already knowing to look for it. */
+    /* Dimly visible rather than hover-only, so a fork isn't easy to miss. */
     opacity: 0.5;
     transition: opacity var(--animation-duration) ease;
 }
@@ -3216,7 +3210,6 @@ select option[disabled]:not(:checked) {
     display: block;
 }
 
-/* Fix font size difference in API Connections dropdowns - Issue #4599 */
 #custom_model_id {
     font-size: calc(var(--mainFontSize) * 0.95);
 }
@@ -3342,10 +3335,7 @@ select option[disabled]:not(:checked) {
     cursor: help;
 }
 
-/* Two distinct tones for the search-backend indicator (script.js's SEARCH_BACKEND_INDICATOR): 'warning' for the
-   slower-but-behaviorally-identical wasm engine, 'error' for the no-usable-backend-at-all state - deliberately
-   more alarming than .warning's existing (quite red) --warning color, since one is "fine, just slower" and the
-   other is "search doesn't work right now." */
+/* More alarming than .warning's --warning color: this is "search doesn't work", not "just slower". */
 #character_search_backend_indicator.error {
     color: #ff3b3b;
 }
@@ -6083,11 +6073,6 @@ body:not(.movingUI) .drawer-content.maximized {
     max-height: 90vh !important;
     align-items: start;
 }
-
-/*why were we force hiding the close button again..?*/
-/* .zoomed_avatar .dragClose {
-    display: none;
-} */
 
 .zoomed_avatar_container {
     width: 100%;

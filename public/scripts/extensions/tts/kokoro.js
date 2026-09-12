@@ -48,17 +48,11 @@ export class KokoroTtsProvider {
         this.pendingRequests = new Map();
         this.nextRequestId = 1;
 
-        // Update display values immediately but only reinitialize TTS after a delay
+        // debounced so rapid setting changes don't each restart the worker
         this.initTtsDebounced = debounceAsync(this.initializeWorker.bind(this), debounce_timeout.relaxed);
     }
 
-    /**
-     * Perform any text processing before passing to TTS engine.
-     * @param {string} text Input text
-     * @returns {string} Processed text
-     */
     processText(text) {
-        // TILDE!
         text = text.replace(/~/g, '.');
         return text;
     }
@@ -81,19 +75,14 @@ export class KokoroTtsProvider {
     initializeWorker() {
         return new Promise((resolve, reject) => {
             try {
-                // Terminate the existing worker if it exists
                 if (this.worker) {
                     this.worker.terminate();
                     $('#kokoro_status_text').text('Initializing...').removeAttr('style');
                 }
 
-                // Create a new worker
                 this.worker = new Worker(new URL('./kokoro-worker.js', import.meta.url), { type: 'module' });
-
-                // Set up message handling
                 this.worker.onmessage = this.handleWorkerMessage.bind(this);
 
-                // Initialize the worker with the current settings
                 this.worker.postMessage({
                     action: 'initialize',
                     data: {
@@ -103,11 +92,10 @@ export class KokoroTtsProvider {
                     },
                 });
 
-                // Create a promise that will resolve when initialization completes
                 const initPromise = new Promise((initResolve, initReject) => {
                     const timeoutId = setTimeout(() => {
                         initReject(new Error('Worker initialization timed out'));
-                    }, 600000); // 600 second timeout
+                    }, 600000);
 
                     this.pendingRequests.set('initialization', {
                         resolve: (result) => {
@@ -121,7 +109,6 @@ export class KokoroTtsProvider {
                     });
                 });
 
-                // Resolve the outer promise when initialization completes
                 initPromise.then(success => {
                     this.ready = success;
                     this.updateStatusDisplay();
@@ -161,7 +148,6 @@ export class KokoroTtsProvider {
                 if (request) {
                     if (success) {
                         fetch(blobUrl).then(response => response.blob()).then(audioBlob => {
-                            // Clean up the blob URL
                             URL.revokeObjectURL(blobUrl);
 
                             request.resolve(new Response(audioBlob, {
@@ -242,10 +228,8 @@ export class KokoroTtsProvider {
         this.settings.device = $('#kokoro_device').val().toString();
         this.settings.speakingRate = parseFloat($('#kokoro_speaking_rate').val().toString());
 
-        // Update UI display
         $('#kokoro_speaking_rate_output').text(this.settings.speakingRate + 'x');
 
-        // Reinitialize TTS engine with debounce
         this.initTtsDebounced();
         saveTtsProviderSettings();
     }
@@ -297,12 +281,6 @@ export class KokoroTtsProvider {
         };
     }
 
-    /**
-     * Generate TTS audio for the given text using the specified voice.
-     * @param {string} text Text to generate
-     * @param {string} voiceId Voice ID
-     * @returns {AsyncGenerator<Response>} Audio response generator
-     */
     async* generateTts(text, voiceId) {
         if (!this.ready || !this.worker) {
             console.log('TTS not ready, initializing...');
@@ -325,10 +303,8 @@ export class KokoroTtsProvider {
 
         for (const chunk of chunks) {
             yield await new Promise((resolve, reject) => {
-                // Store the promise callbacks
                 this.pendingRequests.set(requestId, { resolve, reject });
 
-                // Send the request to the worker
                 this.worker.postMessage({
                     action: 'generateTts',
                     data: {
@@ -343,7 +319,6 @@ export class KokoroTtsProvider {
     }
 
     dispose() {
-        // Clean up the worker when the provider is disposed
         if (this.worker) {
             this.worker.terminate();
             this.worker = null;

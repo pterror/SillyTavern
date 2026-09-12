@@ -196,22 +196,17 @@ class MacroRegistry {
      * @returns {MacroDefinition|null} The registered definition, or null if registration failed.
      */
     registerMacro(name, options) {
-        // Extract name early for error logging
         name = typeof name === 'string' ? name.trim() : String(name);
 
         try {
-            // Detect extension/third-party status from call stack
             const { isExtension, isThirdParty, source } = detectMacroSource();
 
-            // Build the definition using the shared helper
             const definition = this.buildMacroDefFromOptions(name, options, {
                 source: { name: source, isExtension, isThirdParty },
             });
 
-            // Register the primary macro
             this.#registerMacroEntry(name, definition);
 
-            // Register alias entries pointing to the same definition
             for (const { alias, visible } of definition.aliases) {
                 this.#registerMacroEntry(alias, definition, { primaryMacroName: name, aliasVisible: visible });
             }
@@ -239,43 +234,36 @@ class MacroRegistry {
      * @returns {boolean} True if the alias was registered successfully, false if registration failed.
      */
     registerMacroAlias(targetMacroName, aliasName, { visible = true } = {}) {
-        // Extract names early for error logging
         targetMacroName = typeof targetMacroName === 'string' ? targetMacroName.trim() : String(targetMacroName);
         aliasName = typeof aliasName === 'string' ? aliasName.trim() : String(aliasName);
 
         try {
-            // Validate alias name
             if (!isIdentifierValid(aliasName)) {
                 throw new Error(`Alias name "${aliasName}" is invalid. Must start with a letter, followed by alphanumeric characters or hyphens.`);
             }
 
-            // Check that alias is not the same as target (case insensitive)
             if (aliasName.toLowerCase() === targetMacroName.toLowerCase()) {
                 throw new Error(`Alias name "${aliasName}" cannot be the same as the target macro name (case insensitive).`);
             }
 
-            // Check that target macro exists
             const targetDefinition = this.getMacro(targetMacroName);
             if (!targetDefinition) {
                 throw new Error(`Target macro "${targetMacroName}" is not registered.`);
             }
 
-            // Get the primary definition (in case target is itself an alias)
+            // Resolve to the primary definition in case target is itself an alias.
             const primaryDefinition = targetDefinition.aliasOf ? this.getMacro(targetDefinition.aliasOf) : targetDefinition;
             if (!primaryDefinition) {
                 throw new Error(`Could not resolve primary definition for target macro "${targetMacroName}".`);
             }
 
-            // Detect extension/third-party status from call stack
             const { isExtension, isThirdParty, source } = detectMacroSource();
 
-            // Create alias definition with source detection
             const aliasDefinition = {
                 ...primaryDefinition,
                 source: { name: source, isExtension, isThirdParty },
             };
 
-            // Register the alias using the shared utility
             this.#registerMacroEntry(aliasName, aliasDefinition, { primaryMacroName: primaryDefinition.name, aliasVisible: visible });
 
             return true;
@@ -421,13 +409,10 @@ class MacroRegistry {
             logMacroRuntimeWarning({ message, call, def });
         }
 
-        // Compute unnamed args (required + optional, up to maxArgs)
         const unnamedArgsCount = Math.min(args.length, def.maxArgs);
         const unnamedArgsValues = args.slice(0, unnamedArgsCount);
         const listValues = !def.list ? null : args.length > def.maxArgs ? args.slice(def.maxArgs) : [];
 
-        // Perform best-effort type validation for documented positional arguments.
-        // This can throw an error if the arguments are invalid.
         validateArgTypes(call, def, unnamedArgsValues);
 
         const namedArgs = null;
@@ -461,18 +446,7 @@ class MacroRegistry {
     }
 
     /**
-     * Builds a MacroDefinition from MacroDefinitionOptions.
-     *
-     * This is the core logic building the actual registered macro from an options object
-     * that has nearly everything as optional args.
-     *
-     * The options object is highly flexible and allows defining all aspects of a macro
-     * through optional properties. This method processes and validates the options to
-     * create a proper MacroDefinition that can be registered with the engine.
-     *
-     * Validation includes checking for required fields, validating argument definitions,
-     * and ensuring the handler function is callable.
-     * It throws errors for invalid configurations.
+     * Builds and validates a MacroDefinition from MacroDefinitionOptions.
      *
      * @param {string} name - Macro name (identifier).
      * @param {MacroDefinitionOptions} options - Macro definition options.
@@ -707,16 +681,13 @@ function isIdentifierValid(name, { allowComment = true } = {}) {
 function isArgsValid(def, args) {
     const hasListArgs = def.list !== null;
 
-    // Without list: args must be between minArgs and maxArgs (inclusive)
     if (!hasListArgs) {
         return args.length >= def.minArgs && args.length <= def.maxArgs;
     }
 
-    // With list: args must be at least minArgs + list.min
     const minRequired = def.minArgs + def.list.min;
     if (args.length < minRequired) return false;
 
-    // List items are everything after maxArgs positional slots
     const listCount = Math.max(0, args.length - def.maxArgs);
     if (def.list.max !== null && listCount > def.list.max) return false;
 
@@ -783,7 +754,6 @@ function isValueOfType(value, type) {
         return isTrueBoolean(trimmed) || isFalseBoolean(trimmed);
     }
 
-    // Unknown type: treat it as invalid.
     return false;
 }
 
@@ -811,13 +781,11 @@ function detectMacroSource() {
             source = match.replace(/^.*?\/scripts\/extensions\/([^/]+)\/.*$/, '$1');
         }
     } else {
-        // Find the first meaningful caller outside MacroRegistry
         const callerIdx = stack.findIndex(line =>
             line.includes('registerMacro') && line.includes('MacroRegistry'),
         );
         if (callerIdx >= 0 && callerIdx + 1 < stack.length) {
             const callerLine = stack[callerIdx + 1];
-            // Extract script path from stack frame
             const scriptMatch = callerLine.match(/\/((?:scripts\/)?(?:macros\/)?[^/]+\.js)/);
             if (scriptMatch) {
                 source = scriptMatch[1];

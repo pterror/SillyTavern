@@ -14,26 +14,14 @@ export class AutoCompleteOption {
     /** @type {boolean} */ makeSelectable = false;
     /** @type {boolean} */ forceFullNameMatch = false;
 
-    /**
-     * Offset to adjust the replacement start position.
-     * Negative values start replacement earlier (e.g., -2 to include 2 chars before normal start).
-     * Used by closing tag autocomplete to replace leading whitespace.
-     * @type {number}
-     */
+    /** Negative values start replacement earlier than normal (e.g. -2 to include 2 preceding chars). @type {number} */
     replacementStartOffset = 0;
 
-    /**
-     * Priority for sorting. Lower values = higher priority (sorted first).
-     * Default is 100 (normal priority). Use lower values for items that should appear at the top.
-     * @type {number}
-     */
+    /** Lower values sort first. @type {number} */
     sortPriority = 100;
 
 
-    /**
-     * Used as a comparison value when removing duplicates (e.g., when a SlashCommand has aliases).
-     * @type {any}
-     * */
+    /** Used as a comparison value when removing duplicates. @type {any} */
     get value() {
         return this.name;
     }
@@ -43,9 +31,6 @@ export class AutoCompleteOption {
     }
 
 
-    /**
-     * @param {string} name
-     */
     constructor(name, typeIcon = ' ', type = '', matchProvider = null, valueProvider = null, makeSelectable = false) {
         this.name = name;
         this.typeIcon = typeIcon;
@@ -204,9 +189,6 @@ export class AutoCompleteOption {
     }
 
 
-    /**
-     * @returns {HTMLElement}
-     */
     renderItem() {
         // throw new Error(`${this.constructor.name}.renderItem() is not implemented`);
         let li;
@@ -217,9 +199,6 @@ export class AutoCompleteOption {
     }
 
 
-    /**
-     * @returns {DocumentFragment}
-     */
     renderDetails() {
         // throw new Error(`${this.constructor.name}.renderDetails() is not implemented`);
         const frag = document.createDocumentFragment();

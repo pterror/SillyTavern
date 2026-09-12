@@ -130,9 +130,7 @@ export function humanizeGenTime(total_gen_time) {
     return result;
 }
 
-/**
- * DON'T OPTIMIZE, don't change this to a const or let, it needs to be a var.
- */
+// Keep as `var` - do not change to const/let
 var parsedUA = null;
 
 export function getParsedUA() {
@@ -147,10 +145,6 @@ export function getParsedUA() {
     return parsedUA;
 }
 
-/**
- * Checks if the device is a mobile device.
- * @returns {boolean} - True if the device is a mobile device, false otherwise.
- */
 export function isMobile() {
     const mobileTypes = ['mobile', 'tablet'];
 
@@ -172,11 +166,7 @@ export function shouldSendOnEnter() {
     }
 }
 
-/**
- * Gets a humanized date time string from a given timestamp.
- * @param {number} timestamp Timestamp in milliseconds
- * @returns {string} Humanized date time string in the format `YYYY-MM-DD@HHhMMmSSsMSms`
- */
+// Format: YYYY-MM-DD@HHhMMmSSsMSms
 export function humanizedDateTime(timestamp = Date.now()) {
     const date = new Date(timestamp);
     const dt = {
@@ -195,11 +185,6 @@ export function humanizedDateTime(timestamp = Date.now()) {
     return `${dt.year}-${dt.month}-${dt.day}@${dt.hour}h${dt.minute}m${dt.second}s${dt.millisecond}ms`;
 }
 
-/**
- * Gets a timestamp for messages in ISO 8601 format.
- * @param {number} timestamp - optional timestamp in milliseconds
- * @returns {string} ISO 8601 formatted timestamp
- */
 export function getMessageTimeStamp(timestamp = Date.now()) {
     const date = new Date(timestamp);
     return date.toISOString();
@@ -249,7 +234,6 @@ export async function RA_CountCharTokens() {
             total_tokens += Number(counter.text());
             permanent_tokens += isPermanent ? Number(counter.text()) : 0;
         } else {
-            // We substitute macro for existing characters, but not for the character being created
             const valueToCount = menu_type === 'create' ? value : substituteParams(value);
             const tokens = await getTokenCountAsync(valueToCount);
 
@@ -264,7 +248,6 @@ export async function RA_CountCharTokens() {
         }
     }
 
-    // Warn if total tokens exceeds the limit of half the max context
     const tokenLimit = Math.max(((main_api !== 'openai' ? max_context : oai_settings.openai_max_context) / 2), 1024);
     const showWarning = (total_tokens > tokenLimit);
     $('#result_info_total_tokens').text(total_tokens);
@@ -272,26 +255,14 @@ export async function RA_CountCharTokens() {
     $('#result_info_text').toggleClass('neutral_warning', showWarning);
     $('#chartokenwarning').toggle(showWarning);
 }
-/**
- * Auto load chat with the last active character or group.
- * Fires when active_character is defined and auto_load_chat is true.
- * The function first tries to find a character with a specific ID from the global settings.
- * If it doesn't exist, it tries to find a group with a specific grid from the global settings.
- * If the character list hadn't been loaded yet, it calls itself again after 100ms delay.
- * The character or group is selected (clicked) if it is found.
- */
+// Auto-loads the last active character or group, if any.
 async function RA_autoloadchat() {
-    // active character is the name, we should look it up in the character list and get the id
     if (active_character !== null && active_character !== undefined) {
-        // active_character is stored as the character's avatar filename (see setActiveCharacter() callers),
-        // so this is equivalent to the old `characters.find(x => getTagKeyForEntity(x) === active_character)` -
-        // getTagKeyForEntity() resolves any character object in `characters` to its own `.avatar`.
+        // active_character is the character's avatar filename
         let activeCharacterEntity = charactersStore.get(active_character);
 
-        // If not in the store yet (boot-residency decoupling runs getCharacters() in the
-        // background), fetch this ONE character directly — a single request for one PNG file,
-        // not waiting for the full library load. This makes restore near-instant regardless
-        // of how many characters the user has.
+        // Not resident yet (background library load may still be in progress) - fetch this one
+        // character directly instead of waiting for the full list.
         if (!activeCharacterEntity) {
             try {
                 const resp = await fetch('/api/characters/get', {
@@ -341,45 +312,14 @@ async function RA_autoloadchat() {
 }
 
 /**
- * Fills the favorites hotswap strip. Design doc §4.4: "scans everything to fill a 25-slot strip. Becomes
- * `WHERE fav = 1 LIMIT 25`" - the character half of that is real here: `characterRepository.query()` asks the
- * server for the top `FAVS_LIMIT` favorited characters, already sorted the same way the main list is, instead
- * of building/filtering/sorting the whole resident list just to throw away everything past 25.
- *
- * Groups aren't in `/query`'s contract (characters-only, design doc §5), so favorited groups are pulled from the
- * small, always-resident `groups` array and merged in locally. That merge is still correct at the 25-item
- * boundary: the server's top-`FAVS_LIMIT` favorited characters is a superset of "characters that could appear in
- * the true combined top 25" - adding favorited groups into the mix can only displace characters further down,
- * never pull in a character ranked below what the server already returned. Sorting the merged (≤ FAVS_LIMIT
- * characters + all favorited groups) set with the same comparator the main list uses and re-slicing to
- * `FAVS_LIMIT` therefore reproduces exactly what scanning-then-filtering-then-slicing the old fully-local list
- * would have produced.
- *
- * Falls back to the pre-existing fully-local path (`getEntitiesList({ doFilter: false })`) when
- * `isServerQueryableSort()` (character-repository.js) rules the sort field out up front (`'search'` - not a
- * plain-column sort, see that function's doc comment), and also when the server query is attempted but rejects
- * with `400 invalid-sort-field` (`isInvalidSortFieldError()`) - the server's own rejection, not a client-side
- * field-name list, is what decides that case now. Same documented scope boundary as `getEntitiesList()`'s
- * server-query path (script.js), not a special case invented here.
- *
- * Mirrors the active search term (`FILTER_TYPES.SEARCH`, filters.js) into both branches, so at scale (a favorites
- * list too large to browse unfiltered - the owner's own real install has ~3,900 favorited characters) the strip
- * reads as "favorites matching the current search" rather than an unfiltered slice that ignores whatever the
- * user just typed into the main list's search box. The server-query branch passes `filter.search` straight
- * through to `/query` for the character half (same narrowed-then-sorted-then-limited query the main list itself
- * now issues for search - see `canUseServerQueryForEntitiesList()`, script.js); the local-groups half and the
- * fully-local fallback branch both narrow by search via `entitiesFilter.searchFilter()`, the same score-cache/
- * fuzzy-match mechanism the main list's own local fallback already uses, rather than re-deriving a second one
- * here.
+ * Fills the favorites hotswap strip. Queries the server for the top FAVS_LIMIT favorited characters (already
+ * sorted) instead of building/sorting the whole resident list, and merges in favorited groups locally (groups
+ * aren't part of the server query). Falls back to the fully-local path when the sort field can't be
+ * server-queried, or the server rejects it as an invalid sort field.
  */
 export async function favsToHotswap() {
-    // Refreshing the hotswap row is decorative, and five of the six call sites fire it without
-    // awaiting or catching, so anything it throws becomes an unhandled rejection rather than
-    // anybody's problem to handle. Reported on boot as an aborted DOMException, coming through
-    // printCharactersDebounced() while the residency load was still settling.
-    //
-    // Owning the failure here rather than at each caller. This does not explain the abort - it only
-    // stops a decorative refresh from surfacing as an uncaught error, and keeps it in the log.
+    // The refresh is decorative and most callers don't await/catch it, so an uncaught throw here becomes
+    // an unhandled rejection instead of being anyone's problem - swallow and just log it.
     try {
         return await favsToHotswapImpl();
     } catch (error) {
@@ -390,21 +330,14 @@ export async function favsToHotswap() {
 async function favsToHotswapImpl() {
     const container = $('#right-nav-panel .hotswap');
 
-    // Hard limit is required because even if all hotswaps don't fit the screen, their images would still be loaded
-    // 25 is roughly calculated as the maximum number of favs that can fit an ultrawide monitor with the default theme
+    // All hotswap images load regardless of whether they fit the screen, so a cap keeps unseen favorites
+    // from loading; 25 roughly fits an ultrawide monitor with the default theme.
     const FAVS_LIMIT = 25;
 
     const isRandom = power_user.sort_order === 'random';
     const sortField = isRandom ? 'random' : power_user.sort_field;
-    // Dynamic import, not a static top-level one: RossAscends-mods.js and filters.js already sit on a cycle
-    // through power-user.js (filters.js -> power-user.js -> script.js -> RossAscends-mods.js) - a *static*
-    // `import { FILTER_TYPES } from './filters.js'` here reorders when filters.js first gets pulled into the
-    // graph and reproduces the exact `FilterHelper`/`FILTER_TYPES` TDZ crash already fixed once for tags.js
-    // (commit f30735376) and character-repository.js's `charactersStore` (see that module's `store` getter
-    // doc comment) - confirmed via a real headless-browser load, not just reasoned about. By the time this
-    // function actually runs (a real UI interaction, well after every module has finished evaluating), the
-    // module is already resident in the loader's cache, so this resolves synchronously in practice; it just
-    // doesn't participate in the static import graph's evaluation-order dance.
+    // Dynamic import (not static): this module sits on an import cycle through power-user.js/script.js, and a
+    // static import of filters.js here would reorder that cycle and reproduce a FILTER_TYPES TDZ crash.
     const { FILTER_TYPES } = await import('./filters.js');
     const searchTerm = entitiesFilter.getFilterData(FILTER_TYPES.SEARCH) || '';
 
@@ -428,7 +361,7 @@ async function favsToHotswapImpl() {
             usedServerQuery = true;
         } catch (error) {
             if (!isInvalidSortFieldError(error)) throw error;
-            // Falls through to the fully-local path below, same as an `isServerQueryableSort()` "no" up front.
+            // Falls through to the fully-local path below.
         }
     }
     if (!usedServerQuery) {
@@ -441,7 +374,6 @@ async function favsToHotswapImpl() {
         favs = favs.slice(0, FAVS_LIMIT);
     }
 
-    //helpful instruction message if no characters are favorited
     if (favs.length == 0) {
         container.html(`<small><span><i class="fa-solid fa-star"></i>&nbsp;${DOMPurify.sanitize(container.attr('no_favs'))}</span></small>`);
         return;
@@ -454,18 +386,18 @@ async function favsToHotswapImpl() {
 function RA_checkOnlineStatus() {
     if (online_status == 'no_connection') {
         const send_textarea = $('#send_textarea');
-        send_textarea.attr('placeholder', send_textarea.attr('no_connection_text')); //Input bar placeholder tells users they are not connected
+        send_textarea.attr('placeholder', send_textarea.attr('no_connection_text'));
         $('#send_form').addClass('no-connection');
-        $('#send_but').addClass('displayNone'); //send button is hidden when not connected;
-        $('#mes_continue').addClass('displayNone'); //continue button is hidden when not connected;
-        $('#mes_impersonate').addClass('displayNone'); //continue button is hidden when not connected;
+        $('#send_but').addClass('displayNone');
+        $('#mes_continue').addClass('displayNone');
+        $('#mes_impersonate').addClass('displayNone');
         $('#API-status-top').removeClass('fa-plug');
         $('#API-status-top').addClass('fa-plug-circle-exclamation redOverlayGlow');
         connection_made = false;
     } else {
         if (online_status !== undefined && online_status !== 'no_connection') {
             const send_textarea = $('#send_textarea');
-            send_textarea.attr('placeholder', send_textarea.attr('connected_text')); //on connect, placeholder tells user to type message
+            send_textarea.attr('placeholder', send_textarea.attr('connected_text'));
             $('#send_form').removeClass('no-connection');
             $('#API-status-top').removeClass('fa-plug-circle-exclamation redOverlayGlow');
             $('#API-status-top').addClass('fa-plug');
@@ -473,9 +405,9 @@ function RA_checkOnlineStatus() {
             retry_delay = 100;
 
             if (!is_send_press && !(selected_group && is_group_generating)) {
-                $('#send_but').removeClass('displayNone'); //on connect, send button shows
-                $('#mes_continue').removeClass('displayNone'); //continue button is shown when connected
-                $('#mes_impersonate').removeClass('displayNone'); //continue button is shown when connected
+                $('#send_but').removeClass('displayNone');
+                $('#mes_continue').removeClass('displayNone');
+                $('#mes_impersonate').removeClass('displayNone');
             }
         }
     }
@@ -597,12 +529,6 @@ function saveUserInput() {
 }
 const saveUserInputDebounced = debounce(saveUserInput);
 
-// Make the DIV element draggable:
-
-/**
- * Make the given element draggable. This is used for Moving UI.
- * @param {JQuery} $elmnt - The element to make draggable.
- */
 export function dragElement($elmnt) {
     let actionType = null; // "drag" or "resize"
     let isMouseDown = false;
@@ -639,7 +565,6 @@ export function dragElement($elmnt) {
         else if (maxX >= winWidth) $elmnt.css('left', winWidth - maxX + left - 1 + 'px');
     }
 
-    // Observer for style changes (position/size)
     const observer = new MutationObserver((mutations) => {
         const $target = $(mutations[0].target);
         if (
@@ -668,7 +593,6 @@ export function dragElement($elmnt) {
         winWidth = window.innerWidth;
         winHeight = window.innerHeight;
 
-        // Prepare state object if missing
         if (!power_user.movingUIState[elmntName]) power_user.movingUIState[elmntName] = {};
 
         if (actionType === 'resize') {
@@ -694,9 +618,6 @@ export function dragElement($elmnt) {
                 if (top + $elmnt.height() >= winHeight) $elmnt.css('height', winHeight - top - 1 + 'px');
                 if (left + $elmnt.width() >= winWidth) $elmnt.css('width', winWidth - left - 1 + 'px');
             }
-            //if (top < topBarLastY && maxX >= topBarFirstX && left <= topBarFirstX) {
-            //    $elmnt.css('width', width - 1 + 'px');
-            // }
             $elmnt.css({ left, top });
             $elmnt.off('mouseup').on('mouseup', () => {
                 if (
@@ -710,11 +631,9 @@ export function dragElement($elmnt) {
             clampToViewport();
         }
 
-        // Always update position in state
         savePositionAndSize();
     });
 
-    // Mouse event handlers
     function dragMouseDown(e) {
         if (e) {
             actionType = 'drag';
@@ -752,7 +671,6 @@ export function dragElement($elmnt) {
         savePositionAndSize();
     }
 
-    // Setup event listeners
     if ($elmntHeader.length) {
         $elmntHeader.off('mousedown').on('mousedown', (e) => {
             if ($(e.target).hasClass('drag-grabber')) {
@@ -801,9 +719,7 @@ const sendTextArea = document.querySelector('#send_textarea');
 const chatBlock = document.getElementById('chat');
 const isFirefox = navigator.userAgent.toLowerCase().indexOf('firefox') > -1;
 
-/**
- * this makes the chat input text area resize vertically to match the text size (limited by CSS at 50% window height)
- */
+// Max height is capped by CSS at 50% of window height.
 function autoFitSendTextArea() {
     const originalScrollBottom = chatBlock.scrollHeight - (chatBlock.scrollTop + chatBlock.offsetHeight);
 
@@ -820,7 +736,6 @@ export const autoFitSendTextAreaDebounced = debounce(autoFitSendTextArea, deboun
 // ---------------------------------------------------
 
 export function initRossMods() {
-    // initial status check
     checkStatusDebounced();
 
     if (power_user.auto_load_chat) {
@@ -850,9 +765,7 @@ export function initRossMods() {
             $(RightNavPanel).removeClass('pinnedOpen');
             $(RightNavDrawerIcon).removeClass('drawerPinnedOpen');
 
-            // #char-info-panel coexists with #right-nav-panel independent of pinning (see ensureDrawerOpen/
-            // doNavbarIconClick in script.js), so it staying open isn't a leftover of this pin and shouldn't
-            // count toward "was this only open because something else pinned it" here.
+            // #char-info-panel can stay open independent of this pin, so it's excluded below.
             if ($(RightNavPanel).hasClass('openDrawer') && $('.openDrawer').not(CharInfoPanel).length > 1) {
                 const toggle = $('#unimportantYes');
                 doNavbarIconClick.call(toggle);
@@ -905,8 +818,7 @@ export function initRossMods() {
             $(CharInfoPanel).removeClass('pinnedOpen');
             $(CharInfoDrawerIcon).removeClass('drawerPinnedOpen');
 
-            // See the RightNavPanel pin handler above - #right-nav-panel coexisting is independent of this
-            // pin, not a leftover of it.
+            // #right-nav-panel can stay open independent of this pin, so it's excluded below.
             if ($(CharInfoPanel).hasClass('openDrawer') && $('.openDrawer').not(RightNavPanel).length > 1) {
                 const toggle = $('#charInfoHolder>.drawer-toggle');
                 doNavbarIconClick.call(toggle);
@@ -914,7 +826,7 @@ export function initRossMods() {
         }
     });
 
-    if (!isMobile()) { //only read/set pin states on non-mobile devices
+    if (!isMobile()) {
         // read the state of right Nav Lock and apply to rightnav classlist
         $(RPanelPin).prop('checked', accountStorage.getItem('NavLockOn') == 'true');
         if ($(RPanelPin).prop('checked')) {
@@ -955,11 +867,12 @@ export function initRossMods() {
             $(CharInfoDrawerIcon).addClass('drawerPinnedOpen openIcon').removeClass('closedIcon');
         }
 
-        // Restore which fillRight panel was last in front
+        // Restore which fillRight panel was last in front (also covers the mobile overlay front-tracking
+        // for that same panel - left-nav-panel/WorldInfo never auto-reopen on load, so they don't need this).
         const savedFront = accountStorage.getItem('FillRightFront');
         if (savedFront) {
             document.querySelectorAll('.fillRight').forEach(el => el.classList.remove('frontFillRight'));
-            document.getElementById(savedFront)?.classList.add('frontFillRight');
+            document.getElementById(savedFront)?.classList.add('frontFillRight', 'frontMobileOverlay');
         }
     }
 
@@ -1001,9 +914,6 @@ export function initRossMods() {
     $(SelectedCharacterTab).on('click', function () { accountStorage.setItem('SelectedNavTab', 'rm_button_selected_ch'); });
     $('#rm_button_characters').on('click', function () { accountStorage.setItem('SelectedNavTab', 'rm_button_characters'); });
 
-    // when a char is selected from the list, save them as the auto-load character for next page load
-
-    // when a char is selected from the list, save their name as the auto-load character for next page load
     $(document).on('click', '.character_select', function () {
         // Resolve by avatar (the stable id), the only identifier a character row carries.
         const characterId = $(this).attr('data-avatar');
@@ -1076,15 +986,11 @@ export function initRossMods() {
             return;
         }
         if ($('#curEditTextarea').length) {
-            // Don't swipe while in text edit mode
-            // the ios selection gestures get picked up
-            // as swipe gestures
+            // Don't swipe while in text edit mode - iOS selection gestures get picked up as swipes
             return;
         }
-        // Resolve against whichever message the gesture actually happened on, not always
-        // the last message - swipeAllMessages lets earlier messages be swiped too, and
-        // `.closest('.last_mes')` here was always truthy (a jQuery result is never `null`,
-        // even when empty), so this used to hit the last message's button unconditionally.
+        // Resolve against the message the gesture happened on, not always the last one - swipeAllMessages
+        // lets earlier messages be swiped too.
         var swipeTargetMes = $(e.target).closest('.mes');
         if (swipeTargetMes.length) {
             var SwipeButR = swipeTargetMes.find('.swipe_right');
@@ -1104,13 +1010,10 @@ export function initRossMods() {
             return;
         }
         if ($('#curEditTextarea').length) {
-            // Don't swipe while in text edit mode
-            // the ios selection gestures get picked up
-            // as swipe gestures
+            // Don't swipe while in text edit mode - iOS selection gestures get picked up as swipes
             return;
         }
-        // See the swiped-left handler above for why this resolves against the message
-        // under the gesture instead of always targeting the last message.
+        // See the swiped-left handler above for why this targets the gesture's message.
         var swipeTargetMes = $(e.target).closest('.mes');
         if (swipeTargetMes.length) {
             var SwipeButL = swipeTargetMes.find('.swipe_left');
@@ -1205,11 +1108,9 @@ export function initRossMods() {
             }
         }
 
-        // Ctrl+Enter for Regeneration Last Response. If editing, accept the edits instead.
-        // Unscoped is correct here: only one message can be in edit mode at a time (the .mes_edit
-        // click handler closes any prior edit via messageEditDone() before opening a new one), so
-        // this can only ever match the one message actually being edited, whichever one that is -
-        // scoping it to .last_mes (see 3a85bc6) broke accepting edits on any earlier message.
+        // Ctrl+Enter regenerates the last response, or accepts an in-progress edit instead.
+        // Deliberately unscoped: only one message can be in edit mode at a time, so this always
+        // matches the message actually being edited, not necessarily the last one.
         if (event.ctrlKey && event.key == 'Enter') {
             const editMesDone = $('.mes_edit_done:visible');
             const reasoningMesDone = $('.mes_reasoning_edit_done:visible');
@@ -1267,9 +1168,7 @@ export function initRossMods() {
             }
         }
 
-        // Helper function to check if nanogallery2's lightbox is active
         function isNanogallery2LightboxActive() {
-            // Check if the body has the 'nGY2On' class, adjust this based on actual behavior
             return document.body.classList.contains('nGY2_body_scrollbar');
         }
 
@@ -1280,7 +1179,7 @@ export function initRossMods() {
         if (event.key == 'ArrowLeft') {        //swipes left
             if (
                 isSwipingAllowed() &&
-                !isNanogallery2LightboxActive() &&  // Check if lightbox is NOT active
+                !isNanogallery2LightboxActive() &&
                 $('#send_textarea').val() === '' &&
                 $('#character_popup').css('display') === 'none' &&
                 $('#shadow_select_chat_popup').css('display') === 'none' &&
@@ -1301,7 +1200,7 @@ export function initRossMods() {
         if (event.key == 'ArrowRight') { //swipes right
             if (
                 isSwipingAllowed() &&
-                !isNanogallery2LightboxActive() &&  // Check if lightbox is NOT active
+                !isNanogallery2LightboxActive() &&
                 $('#send_textarea').val() === '' &&
                 $('#character_popup').css('display') === 'none' &&
                 $('#shadow_select_chat_popup').css('display') === 'none' &&
@@ -1451,7 +1350,6 @@ export function initRossMods() {
                 return;
             }
             if ($('.draggable').is(':visible')) {
-                // Remove the first matched element
                 $('.draggable:first').remove();
                 return;
             }

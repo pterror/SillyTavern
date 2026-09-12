@@ -163,7 +163,6 @@ function createThumbnailElement(imageData) {
     clipper.className = 'thumbnail-clipper lazy-load-background';
     clipper.style.backgroundImage = PLACEHOLDER_IMAGE;
 
-    // Apply dominant color and aspect ratio as placeholder if available
     const metadataKey = isCustom ? bg : `backgrounds/${bg}`;
     const metadata = METADATA_CACHE.get(metadataKey);
     if (metadata) {
@@ -335,12 +334,10 @@ function onLockBackgroundClick(event = null) {
         return;
     }
 
-    // Take the global background's URL and save it to the chat's metadata.
     const urlToLock = event ? $(event.target).closest('.bg_example').data('url') : background_settings.url;
     saveBackgroundMetadata(urlToLock);
     $('#bg1').css('background-image', urlToLock);
 
-    // Update UI states to reflect the new lock.
     highlightLockedBackground();
     highlightSelectedBackground();
 }
@@ -350,13 +347,10 @@ function onLockBackgroundClick(event = null) {
  * @param {Event|null} _event
  */
 function onUnlockBackgroundClick(_event = null) {
-    // Delete the lock from the chat's metadata.
     removeBackgroundMetadata();
 
-    // Revert the view to the current global background.
     $('#bg1').css('background-image', background_settings.url);
 
-    // Update UI states to reflect the removal of the lock.
     highlightLockedBackground();
     highlightSelectedBackground();
 }
@@ -391,15 +385,12 @@ function onSelectBackgroundClick(e) {
     const bypassGlobalLock = !isCustom && e.shiftKey;
 
     if ((isChatBackgroundLocked() || isCustom) && !bypassGlobalLock) {
-        // If a background is locked, update the locked background directly
         saveBackgroundMetadata(backgroundCssUrl);
         $('#bg1').css('background-image', backgroundCssUrl);
     } else {
-        // Otherwise, update the global background setting
         setBackground(bgFile, backgroundCssUrl);
     }
 
-    // Update UI highlights to reflect the changes.
     highlightLockedBackground();
     highlightSelectedBackground();
 }
@@ -559,7 +550,6 @@ async function onDeleteBackgroundClick(e) {
     const bg = bgToDelete.attr('bgfile');
 
     if (confirm) {
-        // If it's not custom, it's a built-in background. Delete it from the server
         if (!isCustom) {
             await delBackground(bg);
             // Remove from cache to prevent reappearing on sort change
@@ -597,7 +587,6 @@ async function onDeleteBackgroundClick(e) {
             if (cachedIdx !== -1) cachedSystemBackgrounds.splice(cachedIdx, 1);
             selectedSystemBackgroundFiles.delete(deletedBg);
 
-            // Update folder map and clear folder thumbnail if it referenced this image
             if (imageFolderMap[deletedBg]) {
                 delete imageFolderMap[deletedBg];
             }
@@ -742,7 +731,6 @@ export async function getBackgrounds() {
 
         await preloadImageMetadata();
 
-        // Render only filtered images if inside a folder, otherwise all
         renderSystemBackgrounds(getFilteredImages());
         highlightSelectedBackground();
     }
@@ -788,7 +776,6 @@ async function loadFolders() {
             folderList = data.folders || [];
             imageFolderMap = data.imageFolderMap || {};
 
-            // Auto-assign thumbnail for folders that don't have one, then persist
             const allImages = cachedSystemBackgrounds.map(img => img.filename);
             /** @type {{id: string, thumbnailFile: string}[]} */
             const thumbnailUpdates = [];
@@ -899,12 +886,10 @@ function onFolderDrillIn(folderId) {
     activeFolderId = folderId;
     $('#Backgrounds').addClass('in-folder-view');
 
-    // Hide folder grid, show breadcrumb
     $('#bg_folder_grid').hide();
     $('#bg_folder_breadcrumb').show();
     $('#bg_current_folder_name').text(folder.name);
 
-    // Render only this folder's images
     renderSystemBackgrounds(getFilteredImages());
     highlightSelectedBackground();
 }
@@ -917,12 +902,10 @@ function onBackToFolders() {
     activeFolderId = null;
     $('#Backgrounds').removeClass('in-folder-view');
 
-    // Show folder grid, hide breadcrumb
     $('#bg_folder_grid').show();
     $('#bg_folder_breadcrumb').hide();
     $('#bg_current_folder_name').text('');
 
-    // Show all images
     renderSystemBackgrounds(getFilteredImages());
     highlightSelectedBackground();
 }
@@ -958,7 +941,6 @@ function setBackgroundSelectionMode(enabled) {
     if (!enabled) {
         selectedSystemBackgroundFiles.clear();
     }
-    // Clear any open mobile menus
     $('#bg_menu_content .bg_example.mobile-menu-open').removeClass('mobile-menu-open');
     syncGroupSelectionUi();
 }
@@ -1244,12 +1226,10 @@ async function onDeleteFolder(folderId) {
         });
         if (response.ok) {
             folderList = folderList.filter(f => f.id !== folderId);
-            // Clean imageFolderMap
             for (const fids of Object.values(imageFolderMap)) {
                 const idx = fids.indexOf(folderId);
                 if (idx !== -1) fids.splice(idx, 1);
             }
-            // If we were inside this folder, go back
             if (activeFolderId === folderId) {
                 onBackToFolders();
             }
@@ -1303,7 +1283,6 @@ async function onAssignToFolder(bgFile) {
     const result = await callGenericPopup(content, POPUP_TYPE.CONFIRM, '', { okButton: t`Save`, cancelButton: t`Cancel` });
     if (!result) return;
 
-    // Determine which folders were toggled on/off
     const toAssign = [];
     const toUnassign = [];
     content.find('input[type="checkbox"]').each(function () {
@@ -1324,7 +1303,6 @@ async function onAssignToFolder(bgFile) {
 
         renderFolderGrid();
 
-        // Re-render filtered image list if currently inside a folder view
         if (activeFolderId) {
             renderSystemBackgrounds(getFilteredImages());
             highlightSelectedBackground();
@@ -1354,7 +1332,6 @@ async function onSetFolderCover(bgFile) {
             const folder = folderList.find(f => f.id === activeFolderId);
             if (folder) {
                 folder.thumbnailFile = bgFile;
-                // Update the DOM tile cover image
                 const coverUrl = await getFolderCoverUrl(folder);
                 if (coverUrl) {
                     $(`.bg_folder_tile[data-folder-id="${folder.id}"] .bg_folder_tile_cover`)
@@ -1662,7 +1639,6 @@ function highlightSelectedBackground() {
     const activeUrl = background_settings.url;
 
     if (activeUrl) {
-        // Find the thumbnail whose data-url attribute matches the active URL
         $('.bg_example').filter(function () {
             return $(this).data('url') === activeUrl;
         }).addClass('selected-background');
@@ -1678,7 +1654,6 @@ function onBackgroundFilterInput() {
         $bg.toggle(hasMatch);
     });
 
-    // Show/hide folder tiles based on whether folder name matches the filter
     if (!activeFolderId) {
         $('#bg_folder_grid .bg_folder_tile').each(function () {
             const $tile = $(this);
@@ -1739,7 +1714,6 @@ export function initBackgrounds() {
             e.stopPropagation();
             const $context = $(this).closest('.bg_folder_tile');
             const wasOpen = $context.hasClass('mobile-menu-open');
-            // Close all other open menus before opening a new one.
             $('.bg_folder_tile.mobile-menu-open').removeClass('mobile-menu-open');
             $('.bg_example.mobile-menu-open').removeClass('mobile-menu-open');
             if (!wasOpen) {
@@ -1753,7 +1727,6 @@ export function initBackgrounds() {
             e.stopPropagation();
             const $context = $(this).closest('.bg_example');
             const wasOpen = $context.hasClass('mobile-menu-open');
-            // Close all other open menus before opening a new one.
             $('.bg_example.mobile-menu-open').removeClass('mobile-menu-open');
             $('.bg_folder_tile.mobile-menu-open').removeClass('mobile-menu-open');
             if (!wasOpen) {
@@ -1820,12 +1793,10 @@ export function initBackgrounds() {
     $('#bg-sort').on('change', function () {
         background_settings.sortOrder = String($(this).val());
         saveSettingsDebounced('background');
-        // Re-render both galleries with new sort order (respecting active folder filter)
         renderSystemBackgrounds(getFilteredImages());
         renderChatBackgrounds();
         highlightSelectedBackground();
         highlightLockedBackground();
-        // Re-apply any active search filter
         onBackgroundFilterInput();
     });
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
@@ -1863,7 +1834,6 @@ export function initBackgrounds() {
         background_settings.animation = !!$(this).prop('checked');
         saveSettingsDebounced('background');
 
-        // Refresh background thumbnails
         await getBackgrounds();
         await onChatChanged();
     });

@@ -43,10 +43,6 @@ async function migrateSystemPromptFromInstructMode() {
     }
 }
 
-/**
- * Loads sysprompt settings from the given data object.
- * @param {object} data Settings data object.
- */
 export async function loadSystemPrompts(data) {
     if (data.sysprompt !== undefined) {
         system_prompts = data.sysprompt;
@@ -68,11 +64,6 @@ export async function loadSystemPrompts(data) {
     }
 }
 
-/**
- * Checks if the instruct template has a system prompt and prompts the user to save it as a system prompt.
- * @param {string} name Name of the instruct template
- * @param {object} template Instruct template object
- */
 export async function checkForSystemPromptInInstructTemplate(name, template) {
     if (!template || !name || typeof name !== 'string' || typeof template !== 'object') {
         return;
@@ -100,11 +91,6 @@ function toggleSystemPromptDisabledControls() {
     $contentBlock.toggleClass('disabled', !power_user.sysprompt.enabled);
 }
 
-/**
- * Sets the system prompt state.
- * @param {boolean} state System prompt state
- * @returns {string} Empty string
- */
 function setSystemPromptStateCallback(state) {
     power_user.sysprompt.enabled = state;
     $enabled.prop('checked', state);

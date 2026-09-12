@@ -114,9 +114,6 @@ class PresetManager {
         this._observeSelectChanges();
     }
 
-    /**
-     * Watches for childList changes on the select element and reapplies saved order.
-     */
     _observeSelectChanges() {
         this._applyingOrder = false;
         const applyDebounced = debounce(() => {
@@ -420,9 +417,7 @@ class PresetManager {
 
     /**
      * Selects a preset by option value.
-     * The returned promise resolves when the preset is fully applied. Chat Completion presets
-     * apply asynchronously after the change event, so callers that run follow-up commands
-     * (e.g. /preset followed by /api) must await it to avoid overriding their own changes.
+     * Chat Completion presets apply asynchronously after the change event; await the result to avoid a race with follow-up changes.
      * @param {string} value Preset option value
      * @returns {Promise<void>}
      */
@@ -885,9 +880,6 @@ class PresetManager {
         return value;
     }
 
-    /**
-     * Applies the saved preset order to the select element's options.
-     */
     applyOrder() {
         const order = power_user.preset_order?.[this.apiId];
         if (!Array.isArray(order) || order.length === 0) {
@@ -902,7 +894,6 @@ class PresetManager {
 
         const selectedValue = selectEl.value;
 
-        // Build a map from option text to the option element(s)
         /** @type {Map<string, HTMLOptionElement[]>} */
         const byName = new Map();
         for (const opt of options) {
@@ -919,27 +910,22 @@ class PresetManager {
                 byName.delete(name);
             }
         }
-        // Append any options not in the saved order at the end
         for (const list of byName.values()) {
             sorted.push(...list);
         }
 
-        // Detach and re-append in order (guarded to prevent MutationObserver re-entry)
+        // Guard against MutationObserver re-entry while re-appending options
         this._applyingOrder = true;
         try {
             for (const opt of sorted) {
                 selectEl.appendChild(opt);
             }
-            // Restore selection
             selectEl.value = selectedValue;
         } finally {
             this._applyingOrder = false;
         }
     }
 
-    /**
-     * Opens a popup to drag-and-drop reorder the preset options.
-     */
     async reorderPresets() {
         const options = $(this.select).find('option');
         if (options.length === 0) {
@@ -980,7 +966,6 @@ class PresetManager {
             return;
         }
 
-        // Read new order from the sorted list
         const newOrder = html.find('.preset-reorder-item').map((_, el) => $(el).data('preset-name')).toArray();
         if (!power_user.preset_order) {
             power_user.preset_order = {};
@@ -1140,11 +1125,10 @@ export async function initPresetManager() {
     }));
 
 
-    // Inject reorder buttons next to each preset select's button group
     $('select[data-preset-manager-for]').each((_, e) => {
         const apiIds = $(e).data('preset-manager-for').split(',');
         const apiId = apiIds[0];
-        // Find an anchor button to insert after: restore, or rename as fallback
+        // Fall back to the rename button as an anchor if no restore button exists
         const anchorBtn = $(`[data-preset-manager-restore="${apiId}"]`).add(`[data-preset-manager-rename="${apiId}"]`).last();
         if (anchorBtn.length) {
             const isIconStyle = anchorBtn.is('i');

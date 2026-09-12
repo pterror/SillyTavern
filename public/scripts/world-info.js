@@ -2855,9 +2855,6 @@ export function splitKeywordsAndRegexes(input) {
     /** @type {string[]} */
     let keywordsAndRegexes = [];
 
-    // We can make this easy. Instead of writing another function to find and parse regexes,
-    // we gonna utilize the custom tokenizer that also handles the input.
-    // No need for validation here
     const addFindCallback = (/** @type {Select2Option} */ item) => {
         keywordsAndRegexes.push(item.text);
     };
@@ -2884,36 +2881,26 @@ function customTokenizer(input, _selection, callback) {
 
     let insideRegex = false, regexClosed = false;
 
-    // Go over the input and check the current state, if we can get a token
     for (let i = 0; i < current.length; i++) {
         let char = current[i];
 
-        // If we find an unascaped slash, set the current regex state
         if (char === '/' && (i === 0 || current[i - 1] !== '\\')) {
             if (!insideRegex) insideRegex = true;
             else if (!regexClosed) regexClosed = true;
         }
 
-        // If a comma is typed, we tokenize the input.
-        // unless we are inside a possible regex, which would allow commas inside
+        // Commas inside an unclosed regex don't split the token
         if (char === ',') {
-            // We take everything up till now and consider this a token
             const token = current.slice(0, i).trim();
 
-            // Now how we test if this is a regex? And not a finished one, but a half-finished one?
-            // We use the state remembered from above to check whether the delimiter was opened but not closed yet.
-            // We don't check validity here if we are inside a regex, because it might only get valid after its finished. (Closing brackets, etc)
-            // Validity will be finally checked when the next comma is typed.
             if (insideRegex && !regexClosed) {
                 continue;
             }
 
-            // So now the comma really means the token is done.
-            // We take the token up till now, and insert it. Empty will be skipped.
             if (token) {
                 const isRegex = isValidRegex(token);
 
-                // Last chance to check for valid regex again. Because it might have been valid while typing, but now is not valid anymore and contains commas we need to split.
+                // Re-check validity: token may have been a valid regex mid-typing but not anymore
                 if (token.startsWith('/') && !isRegex) {
                     const tokens = token.split(',').map(x => x.trim());
                     tokens.forEach(x => callback({ id: getSelect2OptionId(x), text: x }));
@@ -2922,7 +2909,6 @@ function customTokenizer(input, _selection, callback) {
                 }
             }
 
-            // Now remove the token from the current input, and the comma too
             current = current.slice(i + 1);
             insideRegex = false;
             regexClosed = false;
@@ -2930,7 +2916,6 @@ function customTokenizer(input, _selection, callback) {
         }
     }
 
-    // At the end, just return the left-over input
     return { term: current };
 }
 
@@ -2956,25 +2941,20 @@ function isValidRegex(input) {
  * @returns {RegExp|null} The regex object, or null if not a valid regex
  */
 export function parseRegexFromString(input) {
-    // Extracting the regex pattern and flags
     let match = input.match(/^\/([\w\W]+?)\/([gimsuy]*)$/);
     if (!match) {
-        return null; // Not a valid regex format
+        return null;
     }
 
     let [, pattern, flags] = match;
 
-    // If we find any unescaped slash delimiter, we also exit out.
-    // JS doesn't care about delimiters inside regex patterns, but for this to be a valid regex outside of our implementation,
-    // we have to make sure that our delimiter is correctly escaped. Or every other engine would fail.
+    // Reject unescaped slash delimiters inside the pattern
     if (pattern.match(/(^|[^\\])\//)) {
         return null;
     }
 
-    // Now we need to actually unescape the slash delimiters, because JS doesn't care about delimiters
     pattern = pattern.replace('\\/', '/');
 
-    // Then we return the regex. If it fails, it was invalid syntax.
     try {
         return new RegExp(pattern, flags);
     } catch (e) {
@@ -3749,14 +3729,10 @@ export async function getWorldEntry(name, data, entry) {
                 Object.assign(data.entries[uid], { characterFilter: { isExclude: true, names: [], tags: [] } });
             }
             if (data.entries[uid]?.characterFilter?.names?.length > 0) {
-                // Names here are bare avatar ids (extension already stripped below) - design doc §4.2:
-                // converts the old `getContext().characters.find(...)` resident-array scan to the
-                // authoritative existence check, batched for every bound name in one call.
                 const namesToCheck = data.entries[uid].characterFilter.names;
                 const existence = await checkCharactersExistOrNull(namesToCheck);
                 if (existence === null) {
-                    // A failed/partial check must abort the mutation, never fall through to "treat it as
-                    // gone" - leave the bound names untouched rather than silently dropping them.
+                    // A failed/partial check must abort, not treat unresolved names as gone.
                     console.warn('World Info: skipping character-filter existence prune this run (check failed).');
                 } else {
                     data.entries[uid].characterFilter.names = namesToCheck.filter(name => existence[name]);
@@ -3993,7 +3969,6 @@ function buildAutocompleteCallback({ data, collectValues, includeExtras = () => 
     return function (control, input, output) {
         const uid = $(control).data('uid');
 
-        // Collect unique values from all *other* entries
         const values = new Set();
         for (const entry of Object.values(data.entries ?? {})) {
             if (entry?.uid == uid) continue;
@@ -4006,20 +3981,16 @@ function buildAutocompleteCallback({ data, collectValues, includeExtras = () => 
             }
         }
 
-        // Add optional global extras
         for (const v of includeExtras()) {
             const s = String(v).trim();
             if (s) values.add(s);
         }
 
-        // Sort stable & locale-aware
         const haystack = Array.from(values).sort((a, b) => a.localeCompare(b));
 
-        // Case-insensitive contains
         const needle = String(input.term ?? '').toLowerCase();
         let result = haystack.filter(x => x.toLowerCase().includes(needle));
 
-        // Optional final-pass semantics
         if (postFilter) {
             result = postFilter({ result, control: $(control), input, haystack });
         }
@@ -4382,8 +4353,6 @@ async function updateWorldInfoLinks(oldName, newName, { retargetPersonaLore } = 
         await saveMetadata();
     }
 
-    // find all characters using the old lorebook name as their primary world (design doc §4.3: reverse-index
-    // question, served by the `world` column's index via a query instead of a resident-array scan).
     const linkedCharacters = await characterRepository.queryAll({ world: oldName });
     const linkedAvatars = linkedCharacters.map(character => character.avatar);
 
@@ -4626,13 +4595,8 @@ async function getCharacterLore() {
         }
     }
 
-    // Activate the embedded character_book directly - no import needed - whenever there's no primary world
-    // actually backing this character's lore: either none is linked at all, or extensions.world names a World
-    // that doesn't exist (world_names is the authoritative "which World files actually exist" list, same check
-    // setWorldInfoButtonClass() already trusts elsewhere in this file). A dangling link like that is common on
-    // cards imported from character-sharing sites, which often set extensions.world to the embedded book's own
-    // name as a label without ever shipping a matching World file - without this check, that non-empty-but-
-    // unresolvable baseWorldName would silently block the fallback and the embedded book would never activate.
+    // Fall back to the embedded character_book when extensions.world names a World that doesn't exist
+    // (common on imported cards) - otherwise a dangling link silently blocks the fallback.
     const baseWorldResolves = !!baseWorldName && world_names.includes(baseWorldName);
     if (!baseWorldResolves && character?.data?.character_book?.entries?.length) {
         const converted = convertCharacterBook(character.data.character_book);
@@ -4910,9 +4874,7 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
             let headerLogged = false;
             function log(...args) {
                 if (!headerLogged) {
-                    // Identity only, not the full entry - `entry.content` can run to paragraphs of prose,
-                    // and this header fires for every entry on every scan regardless of whether the specific
-                    // branch below actually has anything worth logging (e.g. just "disabled").
+                    // Identity only, not the full entry - entry.content can run to paragraphs of prose.
                     if (isWorldInfoTracingEnabled()) console.debug(`[WI] Entry ${entry.uid}`, `from '${entry.world}' processing`, { uid: entry.uid, world: entry.world, comment: entry.comment });
                     headerLogged = true;
                 }
@@ -4925,9 +4887,7 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
             }
 
             if (entry.disable == true) {
-                // Not logged: this fires for every disabled entry on every single scan (every
-                // message), and conveys nothing beyond "the user turned this entry off in the UI" -
-                // it was the single largest source of WI console volume with zero diagnostic value.
+                // Not logged: fires for every disabled entry on every scan, zero diagnostic value.
                 continue;
             }
 
@@ -5078,7 +5038,6 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
                     if (hasSecondaryMatch) hasAnyMatch = true;
                     if (!hasSecondaryMatch) hasAllMatch = false;
 
-                    // Simplified AND ANY / NOT ALL if statement. (Proper fix for PR#1356 by Bronya)
                     // If AND ANY logic and the main checks pass OR if NOT ALL logic and the main checks do not pass
                     if (selectiveLogic === world_info_logic.AND_ANY && hasSecondaryMatch) {
                         log('activated. (AND ANY) Found match secondary keyword', secondarySubstituted);
@@ -5487,7 +5446,7 @@ function filterGroupsByTimedEffects(groups, timedEffects, removeEntry) {
             hasStickyMap.set(key, true);
         }
 
-        // It should not be possible for an entry on cooldown/delay to event get into the grouping phase but @Wolfsblvt told me to leave it here.
+        // Defensive: an entry on cooldown/delay shouldn't reach the grouping phase, but filter anyway.
         const cooldownEntries = group.filter(x => timedEffects.isEffectActive('cooldown', x));
         if (cooldownEntries.length) {
             if (isWorldInfoTracingEnabled()) console.debug(`[WI] Inclusion group '${key}' has entries on cooldown. They will be removed.`, cooldownEntries);
@@ -6354,10 +6313,7 @@ export async function charUpdatePrimaryWorld(name) {
         return;
     }
 
-    // Unlinking the primary world does NOT touch the character's embedded lorebook (character_book).
-    // getCharacterLore() activates the embedded book directly whenever no primary world is linked,
-    // so there is nothing to clean up here - deleting it on unlink would just destroy data with no
-    // way to bring it back.
+    // Unlinking doesn't touch character_book - getCharacterLore() falls back to it directly.
 
     await createOrEditCharacter();
 

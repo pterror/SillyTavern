@@ -346,7 +346,6 @@ class RegexPresetManager {
             return;
         }
 
-        // Only enable scripts that are in the preset
         targetList.forEach((script => {
             script.disabled = !presetList.some(p => p.id === script.id);
         }));
@@ -373,7 +372,6 @@ class RegexPresetManager {
             return;
         }
 
-        // Apply preset to all lists
         for (const scriptType of Object.values(SCRIPT_TYPES)) {
             await this.applyPresetList({
                 presetList: {
@@ -386,9 +384,7 @@ class RegexPresetManager {
             });
         }
 
-        // Render the changes to the UI
         await loadRegexScripts();
-        // Apply the changes to the current chat
         await reloadCurrentChat();
     }
 
@@ -510,10 +506,8 @@ function setMoveButtonsVisibility() {
  * @returns {Promise<void>}
  */
 async function saveRegexScript(regexScript, existingScriptIndex, scriptType, saveSettings = true) {
-    // If not editing
     const array = getScriptsByType(scriptType);
 
-    // Assign a UUID if it doesn't exist
     if (!regexScript.id) {
         regexScript.id = uuidv4();
     }
@@ -885,7 +879,6 @@ function buildReplacementHtml(match, pattern) {
 
     let reMatch;
     while ((reMatch = backrefRegex.exec(pattern)) !== null) {
-        // Part of the pattern before the back-reference is a literal.
         const literalPart = pattern.substring(lastIndex, reMatch.index);
         if (literalPart) {
             const mark = document.createElement('mark');
@@ -924,7 +917,6 @@ function buildReplacementHtml(match, pattern) {
         lastIndex = backrefRegex.lastIndex;
     }
 
-    // The final part of the pattern after the last back-reference.
     const finalLiteralPart = pattern.substring(lastIndex);
     if (finalLiteralPart) {
         const mark = document.createElement('mark');
@@ -933,7 +925,7 @@ function buildReplacementHtml(match, pattern) {
         container.appendChild(mark);
     }
 
-    // To get the HTML content, we need a temporary parent element.
+    // DocumentFragment has no innerHTML; wrap it in an element to serialize
     const tempDiv = document.createElement('div');
     tempDiv.appendChild(container);
     return tempDiv.innerHTML;
@@ -959,7 +951,7 @@ function executeRegexScriptForDebugging(script, text) {
     }
 
     let outputText = '';
-    let highlightedOutput = ''; // This will now be our "diff view"
+    let highlightedOutput = '';
     let lastIndex = 0;
     let totalCharsCaptured = 0;
     let totalCharsAdded = 0;
@@ -970,12 +962,10 @@ function executeRegexScriptForDebugging(script, text) {
             const originalMatchText = match[0];
             totalCharsCaptured += originalMatchText.length;
 
-            // Append text between matches (this part is unchanged)
             const precedingText = text.substring(lastIndex, match.index);
             outputText += precedingText;
             highlightedOutput += escapeHtml(precedingText);
 
-            // --- Start of new diff and statistics logic ---
             let charsAddedInMatch = 0;
             let charsKeptFromMatch = 0;
             const backrefRegex = /\$\$|\$&|\$`|\$'|\$(\d{1,2})/g;
@@ -983,7 +973,6 @@ function executeRegexScriptForDebugging(script, text) {
             let reMatch;
             let replacementForPlainText = '';
 
-            // This loop calculates the stats accurately
             while ((reMatch = backrefRegex.exec(script.replaceString)) !== null) {
                 const literalPart = script.replaceString.substring(lastPatternIndex, reMatch.index);
                 charsAddedInMatch += literalPart.length;
@@ -1014,20 +1003,14 @@ function executeRegexScriptForDebugging(script, text) {
             totalCharsRemoved += (originalMatchText.length - charsKeptFromMatch);
 
             outputText += replacementForPlainText;
-            // --- End of statistics logic ---
 
-            // --- Build the new Diff View HTML ---
-            // 1. Show the entire original match as "removed" (red strikethrough)
             highlightedOutput += `<mark class='red_hl'>${escapeHtml(originalMatchText)}</mark>`;
-            // 2. Add an arrow to signify transformation
             highlightedOutput += ' → ';
-            // 3. Build the replacement string with green (added) and yellow (kept) parts
             highlightedOutput += buildReplacementHtml(match, script.replaceString);
 
             lastIndex = match.index + originalMatchText.length;
         }
 
-        // Append text after the last match
         const trailingText = text.substring(lastIndex);
         outputText += trailingText;
         highlightedOutput += escapeHtml(trailingText);
@@ -1071,7 +1054,7 @@ function populateDebuggerRuleList(container) {
     const presetScripts = [];
 
     allScripts.forEach(script => {
-        const scriptCopy = structuredClone(script); // Use structuredClone for deep copy
+        const scriptCopy = structuredClone(script);
         if (globalScriptIds.has(script.id)) {
             // @ts-ignore
             scriptCopy.type = SCRIPT_TYPES.GLOBAL;
@@ -1121,15 +1104,13 @@ function populateDebuggerRuleList(container) {
             const container = $('#regex_debugger_steps_output');
 
             if (stepElement.length && container.length) {
-                // Replace scrollIntoView with scrollTop animation
                 const targetTop = stepElement.position().top;
                 const containerScrollTop = container.scrollTop();
                 const containerHeight = container.height();
 
-                // Center the element if possible
                 let scrollTo = containerScrollTop + targetTop - (containerHeight / 2) + (stepElement.height() / 2);
 
-                container.animate({ scrollTop: scrollTo }, 300); // 300ms smooth scroll
+                container.animate({ scrollTop: scrollTo }, 300);
 
                 stepElement.css('transition', 'background-color 0.5s').css('background-color', 'var(--highlight_color)');
                 setTimeout(() => stepElement.css('background-color', ''), 1000);
@@ -1218,7 +1199,6 @@ async function onRegexDebuggerOpenClick() {
                 totalCharsRemoved += result.charsRemoved;
 
                 const stepElement = $(stepTemplate.prop('content')).clone();
-                // Set the ID on the TOP-LEVEL element that is being appended.
                 stepElement.find('>:first-child').attr('id', `step-result-${script.id}`);
                 const stepHeader = stepElement.find('.step-header');
                 stepHeader.find('strong').text(t`After:` + ` ${script.scriptName}`);
@@ -1307,7 +1287,6 @@ async function onRegexDebuggerOpenClick() {
                 $(this).addClass('active');
 
                 const targetId = $(this).data('target-id');
-                // The selector is now correct for the structure.
                 const targetElement = contentPanel.find(`#${targetId}`);
 
                 if (targetElement.length) {
@@ -1624,7 +1603,6 @@ async function checkCharEmbeddedRegexScripts() {
         }
     }
 
-    // Clear cache and reload scripts
     RegexProvider.instance.clear();
     await loadRegexScripts();
 }

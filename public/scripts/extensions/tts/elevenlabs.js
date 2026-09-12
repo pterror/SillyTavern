@@ -90,7 +90,6 @@ class ElevenLabsTtsProvider {
     }
 
     shouldInvolveExtendedSettings() {
-        // Models that support extended settings (style_exaggeration, speaker_boost)
         const modelsWithExtendedSettings = [
             'eleven_v3',
             'eleven_ttv_v3',
@@ -178,7 +177,6 @@ class ElevenLabsTtsProvider {
         this.setupVoiceCloningMenu();
     }
 
-    // Perform a simple readiness check by trying to fetch voiceIds
     async checkReady() {
         await this.fetchTtsVoiceObjects();
     }
@@ -245,11 +243,6 @@ class ElevenLabsTtsProvider {
         updateCloneVoiceButtonVisibility();
     }
 
-    /**
-     * Get voice object by name
-     * @param {string} voiceName Voice name to look up
-     * @returns {Promise<Object>} Voice object
-     */
     async getVoice(voiceName) {
         if (this.voices.length == 0) {
             this.voices = await this.fetchTtsVoiceObjects();
@@ -263,12 +256,6 @@ class ElevenLabsTtsProvider {
         return match;
     }
 
-    /**
-     * Generate TTS audio
-     * @param {string} text Text to synthesize
-     * @param {string} voiceId Voice ID to use for synthesis
-     * @returns {Promise<Response>} Response object containing audio data
-     */
     async generateTts(text, voiceId) {
         const historyId = await this.findTtsGenerationInHistory(text, voiceId);
 
@@ -279,12 +266,6 @@ class ElevenLabsTtsProvider {
         }
     }
 
-    /**
-     * Find existing TTS generation in history
-     * @param {string} message Message text used for TTS generation
-     * @param {string} voiceId Voice ID used for TTS generation
-     * @returns {Promise<string>} History item ID if found, empty string otherwise
-     */
     async findTtsGenerationInHistory(message, voiceId) {
         const ttsHistory = await this.fetchTtsHistory();
         for (const history of ttsHistory) {
@@ -320,12 +301,6 @@ class ElevenLabsTtsProvider {
         return response.json();
     }
 
-    /**
-     * Fetch new TTS generation from ElevenLabs API
-     * @param {string} text Text to synthesize
-     * @param {string} voiceId Voice ID to use for synthesis
-     * @returns {Promise<Response>} Response object containing audio data
-     */
     async fetchTtsGeneration(text, voiceId) {
         let model = this.settings.model ?? 'eleven_monolingual_v1';
         const request = {
@@ -356,11 +331,6 @@ class ElevenLabsTtsProvider {
         return response;
     }
 
-    /**
-     * Fetch existing TTS audio from history
-     * @param {string} historyItemId History item ID to fetch audio for
-     * @returns {Promise<Response>} Response object containing audio data
-     */
     async fetchTtsFromHistory(historyItemId) {
         const response = await fetch('/api/speech/elevenlabs/history-audio', {
             method: 'POST',
@@ -375,10 +345,6 @@ class ElevenLabsTtsProvider {
         return response;
     }
 
-    /**
-     * Fetch TTS generation history
-     * @returns {Promise<Array>} Array of TTS history items
-     */
     async fetchTtsHistory() {
         const response = await fetch('/api/speech/elevenlabs/history', {
             method: 'POST',
@@ -391,13 +357,6 @@ class ElevenLabsTtsProvider {
         return responseJson.history;
     }
 
-    /**
-     * Add a new voice via ElevenLabs API
-     * @param {string} name Voice name
-     * @param {string} description Voice description
-     * @param {string} labels Voice labels
-     * @returns {Promise<Object>} Newly created voice object
-     */
     async addVoice(name, description, labels) {
         const audioFilesInput = /** @type {HTMLInputElement} */ (document.getElementById('elevenlabs_tts_audio_files'));
         if (!(audioFilesInput instanceof HTMLInputElement) || audioFilesInput.files.length === 0) {

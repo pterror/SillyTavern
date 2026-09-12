@@ -264,9 +264,6 @@ class ElectronHubTtsProvider {
         $('#electronhub_block_top_p').toggle(!!hasTopP);
     }
 
-    /**
-     * Build UI for additional model parameters dynamically
-     */
     renderDynamicParams() {
         const container = $('#electronhub_dynamic_params');
         container.empty();
@@ -421,7 +418,6 @@ class ElectronHubTtsProvider {
             body.top_p = Number(this.settings.top_p);
         }
 
-        // add dynamic params based on schema
         const modelObj = this.models.find(m => m.id === this.settings.model);
         const params = modelObj?.parameters || {};
         const modelHasVoices = Array.isArray(modelObj?.voices) && modelObj.voices.length > 0;

@@ -13,14 +13,8 @@ export class SimpleMutex {
     callback = () => {};
 
     /**
-     * Optional watchdog timeout (ms). If the callback never settles (e.g. a
-     * fetch call that hangs forever with no AbortController/timeout of its
-     * own, which can happen after a laptop sleep/wake or a dropped
-     * connection during a long-running tab), `isBusy` would otherwise stay
-     * `true` forever and every future `update()` call would silently no-op
-     * for the rest of the session. When set, a callback that outlives this
-     * timeout has the lock force-released (with a console warning) so
-     * subsequent updates can proceed again.
+     * Optional watchdog timeout (ms) - without it, a callback that never settles (e.g. a hung fetch with no
+     * timeout of its own) leaves `isBusy` stuck true forever, silently no-op'ing every future `update()`.
      * @type {number}
      */
     timeout = 0;
@@ -42,12 +36,10 @@ export class SimpleMutex {
      * @returns {Promise<void>}
      */
     async update(...args) {
-        // Don't touch me I'm busy...
         if (this.isBusy) {
             return;
         }
 
-        // I'm free. Let's update!
         this.isBusy = true;
 
         if (!(this.timeout > 0)) {
@@ -74,9 +66,7 @@ export class SimpleMutex {
         } finally {
             clearTimeout(timeoutId);
             this.isBusy = false;
-            // If the callback eventually settles (successfully or not) after the watchdog
-            // already fired, log it instead of letting it surface as a confusing,
-            // disconnected unhandled rejection.
+            // Avoid a disconnected unhandled-rejection if the callback settles after the watchdog already fired.
             if (!settled) {
                 callbackPromise.catch(error => console.warn('SimpleMutex: callback settled after watchdog timeout', error));
             }

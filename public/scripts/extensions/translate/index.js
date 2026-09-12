@@ -173,11 +173,6 @@ function loadSettings() {
     showKeysButton();
 }
 
-/**
- * Check if the swipe is being generated for a message.
- * @param {string|number} messageId Message ID
- * @returns {boolean} Whether the swipe is being generated
- */
 function isGeneratingSwipe(messageId) {
     return $(`#chat .mes[mesid="${messageId}"] .mes_text`).text() === '...';
 }
@@ -189,11 +184,6 @@ async function translateImpersonate() {
     sendTextArea.val(translatedText);
 }
 
-/**
- * Translates the contents of an incoming message.
- * @param {string | number} messageId Message ID
- * @returns {Promise<void>}
- */
 async function translateIncomingMessage(messageId) {
     const context = getContext();
     const message = context.chat[messageId];
@@ -213,11 +203,6 @@ async function translateIncomingMessage(messageId) {
     updateMessageBlock(Number(messageId), updated);
 }
 
-/**
- * Translates the reasoning of an incoming message.
- * @param {string | number} messageId
- * @returns {Promise<boolean>} translated or not
- */
 async function translateIncomingMessageReasoning(messageId) {
     const context = getContext();
     const message = context.chat[messageId];
@@ -257,12 +242,6 @@ async function translateProviderOneRing(text, lang) {
     throw new Error(response.statusText);
 }
 
-/**
- * Translates text using the LibreTranslate API
- * @param {string} text Text to translate
- * @param {string} lang Target language code
- * @returns {Promise<string>} Translated text
- */
 async function translateProviderLibre(text, lang) {
     const response = await fetch('/api/translate/libre', {
         method: 'POST',
@@ -278,12 +257,6 @@ async function translateProviderLibre(text, lang) {
     throw new Error(response.statusText);
 }
 
-/**
- * Translates text using the Google Translate API
- * @param {string} text Text to translate
- * @param {string} lang Target language code
- * @returns {Promise<string>} Translated text
- */
 async function translateProviderGoogle(text, lang) {
     const response = await fetch('/api/translate/google', {
         method: 'POST',
@@ -299,12 +272,6 @@ async function translateProviderGoogle(text, lang) {
     throw new Error(response.statusText);
 }
 
-/**
- * Translates text using an instance of the Lingva Translate
- * @param {string} text Text to translate
- * @param {string} lang Target language code
- * @returns {Promise<string>} Translated text
- */
 async function translateProviderLingva(text, lang) {
     const response = await fetch('/api/translate/lingva', {
         method: 'POST',
@@ -320,12 +287,6 @@ async function translateProviderLingva(text, lang) {
     throw new Error(response.statusText);
 }
 
-/**
- * Translates text using the DeepL API
- * @param {string} text Text to translate
- * @param {string} lang Target language code
- * @returns {Promise<string>} Translated text
- */
 async function translateProviderDeepl(text, lang) {
     if (!secret_state.deepl) {
         throw new Error('No DeepL API key');
@@ -346,12 +307,6 @@ async function translateProviderDeepl(text, lang) {
     throw new Error(response.statusText);
 }
 
-/**
- * Translates text using the DeepLX API
- * @param {string} text Text to translate
- * @param {string} lang Target language code
- * @returns {Promise<string>} Translated text
- */
 async function translateProviderDeepLX(text, lang) {
     const response = await fetch('/api/translate/deeplx', {
         method: 'POST',
@@ -367,12 +322,6 @@ async function translateProviderDeepLX(text, lang) {
     throw new Error(response.statusText);
 }
 
-/**
- * Translates text using the Bing API
- * @param {string} text Text to translate
- * @param {string} lang Target language code
- * @returns {Promise<string>} Translated text
- */
 async function translateProviderBing(text, lang) {
     const response = await fetch('/api/translate/bing', {
         method: 'POST',
@@ -388,12 +337,6 @@ async function translateProviderBing(text, lang) {
     throw new Error(response.statusText);
 }
 
-/**
- * Translates text using the Yandex Translate API
- * @param {string} text Text to translate
- * @param {string} lang Target language code
- * @returns {Promise<string>} Translated text
- */
 async function translateProviderYandex(text, lang) {
     let chunks = [];
     const chunkSize = 5000;
@@ -416,14 +359,6 @@ async function translateProviderYandex(text, lang) {
     throw new Error(response.statusText);
 }
 
-/**
- * Splits text into chunks and translates each chunk separately
- * @param {string} text Text to translate
- * @param {string} lang Target language code
- * @param {(text: string, lang: string) => Promise<string>} translateFn Function to translate a single chunk (must return a Promise)
- * @param {number} chunkSize Maximum chunk size
- * @returns {Promise<string>} Translated text
- */
 async function chunkedTranslate(text, lang, translateFn, chunkSize = 5000) {
     if (text.length <= chunkSize) {
         return await translateFn(text, lang);
@@ -438,13 +373,6 @@ async function chunkedTranslate(text, lang, translateFn, chunkSize = 5000) {
     return result;
 }
 
-/**
- * Translates text using the selected translation provider
- * @param {string} text Text to translate
- * @param {string} lang Target language code
- * @param {string} provider Translation provider to use
- * @returns {Promise<string>} Translated text
- */
 async function translate(text, lang, provider = null) {
     try {
         if (text == '') {
@@ -476,13 +404,6 @@ async function translate(text, lang, provider = null) {
     }
 }
 
-/**
- * Common translation function that handles the translation logic
- * @param {string} text Text to translate
- * @param {string} lang Target language code
- * @param {string} provider Translation provider to use
- * @returns {Promise<string>} Translated text
- */
 async function translateInner(text, lang, provider) {
     if (text == '') {
         return '';

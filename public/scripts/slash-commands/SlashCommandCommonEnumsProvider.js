@@ -206,13 +206,7 @@ export const commonEnumProviders = {
     /**
      * All group members of the given group, or default the current active one.
      *
-     * Uses `getGroupMembersResident()` rather than the authoritative async `getGroupMembers()` - this returned
-     * function is invoked synchronously by the autocomplete machinery (`SlashCommandAutoCompleteNameResult.js`),
-     * so it cannot await. See `getGroupMembersResident()`'s doc comment (group-chats.js) for the full
-     * resident-only-is-fine classification call (design doc §6) and why widening the autocomplete provider
-     * interface to async is out of scope here.
-     *
-     * @param {string?} groupId - The id of the group - pass in `undefined` to use the current active group
+     * Uses `getGroupMembersResident()` instead of the async `getGroupMembers()` since autocomplete invokes this synchronously and can't await.
      * @returns {() =>SlashCommandEnumValue[]}
      */
     groupMembers: (groupId = undefined) => () => getGroupMembersResident(groupId).map((character, index) => new SlashCommandEnumValue(String(index), character.name, enumTypes.enum, enumIcons.character)),
@@ -248,7 +242,6 @@ export const commonEnumProviders = {
      * @returns {(executor:SlashCommandExecutor, scope:SlashCommandScope) => SlashCommandEnumValue[]}
      */
     tagsForChar: (mode = 'all') => (executor, _scope) => {
-        // Try to see if we can find the char during execution to filter down the tags list some more. Otherwise take all tags.
         const charName = executor.namedArgumentList.find(it => it.name == 'name')?.value;
         if (charName instanceof SlashCommandClosure) throw new Error('Argument \'name\' does not support closures');
         const key = searchCharByName(substituteParams(charName), { suppressLogging: true });

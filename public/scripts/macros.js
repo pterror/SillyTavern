@@ -52,32 +52,11 @@ export class MacrosParser {
      */
     static #descriptions = new Map();
 
-    /**
-     * Logs a deprecation warning for MacrosParser APIs, pointing callers to
-     * the new macro engine registration surface.
-     *
-     * @param {string} method
-     * @param {string} replacement
-     * @param {IArguments} [methodArgs=null]
-     * @returns {void}
-     */
     static #logDeprecated(method, replacement, methodArgs = null) {
         console.warn(`[DEPRECATED] MacrosParser.${method} is deprecated and will be removed in a future version. Use ${replacement} instead. Arguments:`, (methodArgs ?? 'none'));
     }
 
-    /**
-     * Bridges a legacy MacrosParser macro registration into the new macro
-     * engine when the experimental macro engine flag is enabled.
-     *
-     * This mirrors the simple "{{key}}" replacement behavior by registering
-     * a 0-arg macro in MacroRegistry that does not take arguments and returns
-     * the sanitized value from the legacy registry.
-     *
-     * @param {string} key
-     * @param {string|MacroFunction} value
-     * @param {string} description
-     * @returns {void}
-     */
+    /** No-op unless the experimental macro engine is enabled. */
     static #registerMacroInNewEngine(key, value, description) {
         if (!power_user.experimental_macro_engine) {
             return;
@@ -116,13 +95,6 @@ export class MacrosParser {
         });
     }
 
-    /**
-     * Bridges a legacy MacrosParser macro unregistration into the new macro
-     * engine when the experimental macro engine flag is enabled.
-     *
-     * @param {string} key
-     * @returns {void}
-     */
     static #unregisterMacroInNewEngine(key) {
         if (!power_user.experimental_macro_engine) {
             return;

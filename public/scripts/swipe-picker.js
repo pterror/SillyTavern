@@ -49,8 +49,7 @@ export function canJumpToSwipeForMessage(messageId) {
  * @returns {Promise<void>}
  */
 async function openSwipePicker(messageId) {
-    // Re-read rather than captured: every write path replaces chat[messageId] with a new frozen
-    // object, so a reference taken once here goes stale the moment anything below awaits.
+    // Re-read rather than captured: every write path replaces chat[messageId] with a new frozen object, so a captured reference goes stale across awaits below.
     let message = chat[messageId];
 
     if (!canOpenSwipePickerForMessage(messageId)) {
@@ -58,8 +57,7 @@ async function openSwipePicker(messageId) {
         return;
     }
 
-    // The picker lists every alternative, so it is the one place that genuinely needs all of them.
-    // Pull the holes in before rendering rather than drawing a list of blanks.
+    // The picker lists every alternative, so hydrate all of them rather than rendering blanks.
     await hydrateSwipes(messageId, { all: true });
     message = chat[messageId];
 
@@ -223,7 +221,6 @@ async function openSwipePicker(messageId) {
                     await renderSwipeList();
                 });
 
-            // Add expand/collapse toggle
             const expandCheckboxId = `swipe_picker_expand_${messageId}_${index}`;
             const expandCheckbox = document.createElement('input');
             expandCheckbox.type = 'checkbox';
@@ -238,7 +235,6 @@ async function openSwipePicker(messageId) {
             expandLabel.setAttribute('data-i18n', '[title]Expand/Collapse');
             expandLabel.addEventListener('click', (event) => event.stopPropagation());
 
-            // Add copy button
             const copyButton = document.createElement('div');
             copyButton.classList.add('swipe_picker_copy', 'fa-solid', 'fa-fw', 'fa-copy');
             copyButton.title = t`Copy`;
@@ -250,7 +246,6 @@ async function openSwipePicker(messageId) {
                 toastr.info(t`Copied!`, '', { timeOut: 2000 });
             });
 
-            // Insert new buttons before the delete button
             deleteButton.before(expandLabel, copyButton);
 
             template.find('.select_chat_block_filename').text(`#${index + 1}${index === Number(message.swipe_id ?? 0) ? ` ${t`[Current]`}` : ''}`);

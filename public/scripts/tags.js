@@ -75,8 +75,6 @@ const FOLDER_TEMPLATE = $('#bogus_folder_template .bogus_folder_select');
 const VIEW_TAG_TEMPLATE = $('#tag_view_template .tag_view_item');
 
 /**
- * Gets the context information (selector and search input) for a filter helper.
- * Used to reduce code duplication when working with different filter contexts.
  * @param {FilterHelper} filterHelper - The filter helper instance
  * @returns {{selector: string, searchInput: string}|null} Context info or null if unknown
  */
@@ -108,17 +106,14 @@ function getFilterContext(filterHelper) {
 function getFilterHelper(listSelector) {
     const $element = typeof listSelector === 'string' ? $(listSelector) : listSelector;
 
-    // Check if this filter is in the group members section
     if ($element.closest('#currentGroupMembers').length > 0) {
         return groupMembersFilter;
     }
 
-    // Check if this filter is in the group candidates (add members) section
     if ($element.closest('#unaddedCharList').length > 0) {
         return groupCandidatesFilter;
     }
 
-    // Default to character list filter
     return entitiesFilter;
 }
 
@@ -163,15 +158,12 @@ function getVisibleAvatarsForGroupContext(type, currentGroup) {
  */
 function filterActionableTagsForGroupContext(actionTags) {
     return actionTags.filter(tag => {
-        // Always show Favorites
         if (tag.id === ACTIONABLE_TAGS.FAV.id) {
             return true;
         }
-        // Hide GROUP and FOLDER filters in group contexts (not relevant)
         if (tag.id === ACTIONABLE_TAGS.GROUP.id || tag.id === ACTIONABLE_TAGS.FOLDER.id) {
             return false;
         }
-        // Show utility buttons (VIEW, HINT, UNFILTER)
         return true;
     });
 }
@@ -290,13 +282,8 @@ const ACTIONABLE_TAGS = {
 };
 
 /**
- * Map of tag IDs to their corresponding filter types.
- * Used for actionable tags (Favorites, Groups, Folders).
- *
- * Built lazily on first use rather than at module-eval time: tags.js and filters.js
- * import each other (filters.js needs tag_map, tags.js needs FILTER_TYPES), so a
- * top-level `FILTER_TYPES.FAV` reference here can run while filters.js is still mid
- * import-resolution, before its `export const FILTER_TYPES` has initialized.
+ * Built lazily: tags.js and filters.js import each other, so a top-level reference here
+ * could run before filters.js's own exports have initialized.
  * @type {Map<string, string>|null}
  */
 let TAG_ID_TO_FILTER_TYPE = null;
@@ -391,12 +378,7 @@ let serverAssignedTagIds = new Set();
 let expanded_tags_cache = [];
 
 /**
- * The tags -> entity-store migration (see entity-store.js): these two stores back `tags`/`tag_map` internally.
- * They still wrap the *same* `tags` array / `tag_map` object in place, so every other read call site in this
- * file (and in every other file that imports `tags`/`tag_map` directly) keeps working completely unchanged.
- * Nearly every mutation site in this file now goes through these stores' own ops instead of touching `tags`/
- * `tag_map` directly (a few genuinely-bulk, rare operations - the manual tag drag-reorder, the tags-backup
- * restore flow - are deliberately still direct mutations followed by a bulk reindex, see their own comments).
+ * Wraps the same `tags` array in place, so other call sites reading `tags` directly keep working unchanged.
  * @type {EntityStore<Tag>}
  */
 let tagsStore = new EntityStore(tags, tag => tag.id);
@@ -405,48 +387,30 @@ let tagsStore = new EntityStore(tags, tag => tag.id);
 let tagMapStore = new RelationStore(tag_map);
 
 /**
- * Reconstructs `tagsStore`/`tagMapStore` to wrap the current `tags`/`tag_map` references, and (re)registers the
- * search-index-invalidation subscribers on them. Called from `loadTagsSettings` (which reassigns `tags`/
- * `tag_map` themselves, e.g. to `settings.tags`), since a store constructed against the *old* array/object
- * reference would otherwise keep indexing stale, orphaned data - and since a new store instance has no
- * listeners of its own, subscriptions on the previous instance don't carry over.
+ * Rebuilds `tagsStore`/`tagMapStore` to wrap the current `tags`/`tag_map` references and re-registers their
+ * subscribers - needed whenever those references are reassigned (e.g. `loadTagsSettings`), since a store built
+ * against the old reference would keep indexing stale data and a fresh instance carries no subscribers of its own.
  */
 function rebuildTagStores() {
     tagsStore = new EntityStore(tags, tag => tag.id);
     tagMapStore = new RelationStore(tag_map);
 
-    // A tag's own identity changing (create/delete/rename, or any other field edit) can affect what a text
-    // search over tags should match, and - since a character/group's `#tags` search field is built from tag
-    // *names* - can also affect character/group search matches. Slightly conservative on purpose (e.g. this
-    // also fires for a folder_type-only change, which doesn't actually affect any indexed text) rather than
-    // trying to special-case exactly which field changed: the cost of an unnecessary index rebuild on the next
-    // search after a rare tag-management action is a single ~80ms rebuild, not the "every keystroke" cost this
-    // was originally built to eliminate - so being precise here isn't worth the risk of under-invalidating and
-    // serving stale search results instead.
     tagsStore.onChange(() => {
         invalidateTagsFuseIndex();
         invalidateCharactersFuseIndex();
         invalidateGroupsFuseIndex();
     });
 
-    // Any tag_map change can affect a character/group's `#tags` search field content.
     tagMapStore.onChange(() => {
         invalidateCharactersFuseIndex();
         invalidateGroupsFuseIndex();
     });
 
-    // Debounced whole-array save of tag *definitions* (POST /api/tags/save) - every mutation site in this file
-    // keeps calling tagsStore's own ops exactly as before and doesn't know this save exists.
     tagsStore.onChange(saveTagsDebounced);
 
-    // Tag *assignments* are no longer a blob to save wholesale - phase 3 (character-data-residency redesign)
-    // moved them to per-user sqlite, mutated one row at a time via POST /api/tags/assign|unassign. Each
-    // tagMapStore op reports exactly what changed (RelationChange), so persistTagMapChange() below translates
-    // that directly into the matching network call(s) instead of re-uploading the whole tag_map on every change.
+    // Assignments are no longer saved as one blob - each op is persisted individually via /api/tags/assign|unassign.
     tagMapStore.onChange(persistTagMapChange);
 
-    // Keep serverAssignedTagIds in sync with in-session tag mutations so the filter sidebar
-    // stays correct without a full re-fetch.
     tagMapStore.onChange((change) => {
         if (change.op === 'unassigned' && change.wasLastUse) {
             serverAssignedTagIds.delete(change.relatedId);
@@ -456,13 +420,8 @@ function rebuildTagStores() {
         }
     });
 
-    // getTagsList() now reads a resident character's tags straight off its own tag_ids field instead of
-    // tag_map (see its doc comment) - mirror every tag_map key this store just touched back onto the matching
-    // character entity's tag_ids, so a tag toggle still shows up immediately instead of waiting on the next
-    // delta sync to pull the server's own tag_ids update back down. A no-op for group ids / any other key that
-    // doesn't resolve to a resident character (charactersStore.has() gates it). Key rename/copy ops
-    // ('keyRenamed'/'keyCopied') are deliberately not handled here - that's the character-identity-change case,
-    // out of scope for this mirror.
+    // getTagsList() reads a resident character's tags off its own tag_ids field (see its doc comment) - mirror
+    // tag_map changes back onto the matching character so a toggle shows up before the next delta sync.
     tagMapStore.onChange((change) => {
         const keys = change.op === 'relatedRemoved' ? (change.affectedKeys ?? []) : (change.key ? [change.key] : []);
         for (const key of keys) {
@@ -474,9 +433,7 @@ function rebuildTagStores() {
 }
 
 /**
- * POSTs the current tag *definitions* array to the server (POST /api/tags/save) - assignments are never part of
- * this payload anymore (see persistTagMapChange()). Shared by the debounced mutation-triggered save
- * (saveTagsDebounced) and the one-shot seed save in loadTagsSettings.
+ * POSTs the current tag *definitions* array to the server - assignments are persisted separately (see persistTagMapChange()).
  */
 async function saveTagsNow() {
     try {
@@ -491,10 +448,7 @@ async function saveTagsNow() {
             throw new Error(`Failed to save tags: ${response.statusText}`);
         }
 
-        // Keep the client's tags cache (tags-cache.js, consulted by loadTagsSettings() on the next boot) in sync
-        // with what the server now has. Re-fetch the revision rather than guess at it - and any drift here is
-        // correctness-safe either way (it would just cost one extra full /api/tags/get fetch next boot instead
-        // of a cache hit, not stale data).
+        // Refresh the client-side tags cache so the next boot's freshness check can hit it.
         const manifestResponse = await fetch('/api/tags/manifest', {
             method: 'POST',
             headers: getRequestHeaders(),
@@ -514,18 +468,11 @@ async function saveTagsNow() {
     }
 }
 
-/**
- * Debounced save of the tag *definitions* array (POST /api/tags/save). Registered as tagsStore's onChange
- * subscriber (rebuildTagStores()) - every definition mutation site in this file keeps calling its store op
- * exactly as before and doesn't know this save exists.
- */
 const saveTagsDebounced = debounce(saveTagsNow, debounce_timeout.relaxed);
 
 /**
- * Runs `worker` over `items` in fixed-size chunks, awaiting each chunk (via Promise.all) before starting the
- * next - bounded concurrency without either extreme (fully serial, or unbounded-parallel). Used by
- * persistTagMapChange() below for the bulk-fanout ops (relatedRemoved in particular can mean one network call
- * per affected character/group in a large library).
+ * Runs `worker` over `items` in fixed-size chunks, awaiting each chunk before starting the next - bounded
+ * concurrency for the bulk-fanout ops in persistTagMapChange() below.
  * @template T
  * @param {T[]} items
  * @param {(item: T) => Promise<any>} worker
@@ -540,22 +487,9 @@ async function runWithConcurrency(items, worker, chunkSize = 8) {
 }
 
 /**
- * Single-row POST /api/tags/assign. Fire-and-forget as far as retry/rollback goes - see persistTagMapChange()'s
- * doc comment for that failure tolerance (matches the old debounced-whole-file-save's: a failed fetch is
- * logged, never retried or rolled back, same gap as before just at finer grain now).
- *
- * NOT fire-and-forget for the *row's own display*, though: this call races a concurrently-issued
- * `/api/characters/query` (e.g. a `printCharactersDebounced()` full re-render that `redrawAfterTagChange()`
- * triggers immediately after this same tag_map mutation, before this fetch has resolved) - confirmed live
- * (2026-09, the "tags not loading after import" report): racing `/api/tags/assign` against `/api/characters/query`
- * for the same id reproducibly gets a `/query` response still carrying the pre-assignment `tag_ids`, even though
- * the assign itself lands correctly moments later. A non-resident row (the common case under
- * `lazyLoadCharacters`, and always true for a character freshly imported this session - see getTagsList()'s own
- * residency-fallback doc comment) renders its tags from exactly that /query snapshot with no other source of
- * truth to self-correct from, so a redraw that lands on the stale side of this race shows an untagged character
- * *permanently*, not just for one frame - nothing else ever re-prints that row once this fetch actually
- * completes. Patching the row here, once the assign is actually confirmed, closes that gap without giving up
- * the fire-and-forget retry/rollback semantics documented above.
+ * Fire-and-forget as far as retry/rollback goes. Patches the row on completion because this races a
+ * concurrent `/api/characters/query` re-render: a non-resident row (common under `lazyLoadCharacters`) has
+ * no other source of truth and would otherwise permanently show as untagged if the redraw wins the race.
  * @param {string} id Character avatar or group id (a tagMapStore key)
  * @param {string} tagId
  * @returns {Promise<void>}
@@ -578,12 +512,8 @@ async function assignTagOnServer(id, tagId) {
 }
 
 /**
- * Single-row POST /api/tags/unassign. Same fire-and-forget retry/rollback tolerance as assignTagOnServer() -
- * unassigning an unknown/already-untagged id is a harmless server-side no-op, so this is also safe to call
- * redundantly (e.g. when the underlying character/group is itself mid-deletion and the server's own delete
- * cascade already removed the row) - and the same post-completion row patch assignTagOnServer() does, for the
- * same reason (see its doc comment): closes the identical race against a concurrently-issued `/query` re-render
- * for a non-resident row.
+ * Same fire-and-forget/race-patching behavior as assignTagOnServer(). Unassigning an unknown/already-untagged
+ * id is a harmless server-side no-op, so this is also safe to call redundantly.
  * @param {string} id Character avatar or group id (a tagMapStore key)
  * @param {string} tagId
  * @returns {Promise<void>}
@@ -606,24 +536,10 @@ async function unassignTagOnServer(id, tagId) {
 }
 
 /**
- * Translates one tagMapStore RelationChange into the matching /api/tags/assign|unassign network call(s) - the
- * tagMapStore.onChange subscriber registered in rebuildTagStores(). Every tag_map mutation call site in this
- * file already funnels through tagMapStore's own ops (assign/unassign/setKey/copyKey/removeKey/
- * removeRelatedIdEverywhere/renameKey), so this one place persists all of them - a mutation site never talks to
- * the network directly.
- *
- * Fire-and-forget, no rollback on failure: matches the exact failure tolerance the old debounced-whole-tags.json
- * write already had (a failed save there was also just logged, never retried or rolled back) - this is the same
- * gap, just at finer (per-assignment) grain instead of per-batch.
- *
- * `keyRenamed` is deliberately a NO-OP here, unlike every other case: it only ever fires from renameTagKey(),
- * itself only ever called from script.js on a character rename - and the server's own `/characters/rename`
- * route already carries that character's tag assignments forward from the old id to the new one, atomically,
- * server-side, with no client action needed (character-metadata-db.js's renameCharacterRow() unions old-avatar's
- * tag rows into new-avatar's before deleting the old row). Firing assign/unassign calls here too would be
- * redundant work at best and a race against a rename that's already complete server-side at worst.
- * tagMapStore.renameKey() itself still runs in renameTagKey() (unconditionally, before this subscriber ever
- * sees the change) so the *local* cache's key is correct immediately, without waiting on a fresh /for fetch.
+ * Translates one tagMapStore RelationChange into the matching /api/tags/assign|unassign network call(s) -
+ * the tagMapStore.onChange subscriber registered in rebuildTagStores(). Fire-and-forget, no rollback on failure.
+ * `keyRenamed` is a no-op: the server's `/characters/rename` route already carries tag assignments forward
+ * atomically, so firing assign/unassign here too would be redundant at best and a race at worst.
  * @param {import('./entity-store.js').RelationChange} change
  */
 function persistTagMapChange(change) {
@@ -647,10 +563,7 @@ function persistTagMapChange(change) {
             runWithConcurrency(change.addedIds, tagId => assignTagOnServer(change.toKey, tagId));
             break;
         case 'keyRemoved':
-            // The character/group deletion path (deleteCharacterRow()/deleteGroupRow()) already cascades and
-            // removes these rows server-side, so these calls are typically redundant-but-harmless in that case -
-            // not worth detecting and skipping, per the design decision to just let them fire (unassign
-            // tolerates unknown ids).
+            // Usually redundant with the server's own deletion cascade, but harmless (unassign tolerates unknown ids).
             runWithConcurrency(change.removedIds, tagId => unassignTagOnServer(change.key, tagId));
             break;
         case 'relatedRemoved': {
@@ -665,17 +578,14 @@ function persistTagMapChange(change) {
             break;
         }
         case 'keyRenamed':
-            // Deliberately a no-op - see this function's doc comment above.
+            // No-op - see this function's doc comment above.
             break;
     }
 }
 
 /**
- * Forces `tagMapStore`'s usage-count index to be recomputed from the current contents of `tag_map`. Needed
- * because a few other modules (BulkEditOverlay.js, group-chats.js, script.js) still write into `tag_map`
- * directly rather than through `tagMapStore`'s own ops (that migration is still to come) - this is the bridge
- * that keeps the store's incremental bookkeeping correct in the meantime. Also invalidates the persistent
- * character/group search indexes (power-user.js), since their `#tags` field depends on tag_map content.
+ * Recomputes `tagMapStore`'s usage-count index from `tag_map` - a bridge for the modules that still write
+ * into `tag_map` directly instead of through `tagMapStore`'s own ops.
  */
 function invalidateAssignedTagIdsCache() {
     tagMapStore.reindex();
@@ -684,11 +594,8 @@ function invalidateAssignedTagIdsCache() {
 }
 
 /**
- * Gets a `.has(id)`-checkable collection of all tag ids that are currently assigned to at least one entity in
- * `tag_map`. Returns `tagMapStore`'s live usage-count Map directly (not a copy) - every current caller only
- * needs `.has()`, which a Map supports natively, so there's no need to materialize a fresh Set on every call
- * (that would turn an O(1) lookup back into an O(k) allocation each time this is called, which is often -
- * multiple times per printTagFilters(), which itself runs on every render).
+ * Returns a `.has(id)`-checkable collection of all currently-assigned tag ids. Returns the live Map directly
+ * (not a copy) - this is called multiple times per printTagFilters(), which itself runs on every render.
  * @returns {{ has(id: string): boolean }}
  */
 function getAssignedTagIds() {
@@ -891,7 +798,6 @@ function applyActionableTagFilter(filterHelper, tag, filterType, storageKey) {
         tag.filter_state = state;
     }
 
-    // Update the filter helper for the current context
     filterHelper.setFilterData(filterType, state);
 }
 
@@ -906,13 +812,11 @@ function applyActionableTagFilter(filterHelper, tag, filterType, storageKey) {
  */
 function determineTagFilterState(filterHelper, tag, isFilterActionable) {
     if (isFilterActionable) {
-        // For actionable tags: read from filter helper (which is loaded from storage)
         const filterType = getTagIdToFilterType().get(tag.id) || null;
         if (filterType) {
             return filterHelper.getFilterData(filterType) || DEFAULT_FILTER_STATE;
         }
     } else {
-        // For regular tags: read from the filter helper's TAG filter data
         const tagFilterData = filterHelper.getFilterData(FILTER_TYPES.TAG);
         if (tagFilterData.excluded.includes(tag.id)) {
             return 'EXCLUDED';
@@ -932,13 +836,8 @@ function determineTagFilterState(filterHelper, tag, isFilterActionable) {
 function filterByFav(filterHelper) {
     applyActionableTagFilter.call(this, filterHelper, ACTIONABLE_TAGS.FAV, FILTER_TYPES.FAV, ACTIONABLE_FILTER_STORAGE_KEYS.FAV);
 
-    // applyActionableTagFilter() above already triggered a render via setFilterData(), but for the main
-    // character list that render reused whatever server search results (fetchServerCharacterSearchResults(),
-    // script.js) were last fetched for the *previous* fav filter state - see FilterHelper.setServerSearchResults()'s
-    // doc comment (filters.js) for why a stale favOnly value there can't just be patched over client-side: the
-    // server's search index page is capped by relevance alone, so a favorited match can be missing from it
-    // entirely regardless of what the client's own favFilter() does afterward. If a search is currently active,
-    // re-fetch with the new fav state and re-render once the (now favorites-aware, if applicable) results land.
+    // The render above reused server search results fetched for the previous fav state - the server's relevance
+    // ranking can omit a favorited match entirely, so re-fetch when a search is active to pick it up.
     if (isMainCharacterList(filterHelper)) {
         const searchTerm = filterHelper.getFilterData(FILTER_TYPES.SEARCH);
         if (searchTerm) {
@@ -971,45 +870,14 @@ function filterByFolder(filterHelper) {
 }
 
 /**
- * Loads tag *definitions* (`tags` - name/color/folder_type/sort_order/...) from the server's per-user metadata
- * store (POST /api/tags/get).
- *
- * Two different "no tags from the server" cases are handled differently, because they mean different things:
- *   - The server responds but explicitly has none (`{ tags: null }` - the metadata store is unavailable, or a
- *     genuinely fresh install with nothing seeded yet) - falls back to DEFAULT_TAGS and unconditionally seeds/
- *     refreshes the server's definitions with it (see below), same as always.
- *   - The request itself failed (network error, non-2xx response) - the server might still have real
- *     definitions, we just don't know what they are right now. Falling back to DEFAULT_TAGS here and then
- *     seed-saving it (the old unconditional save-on-any-fallback did exactly this) would silently overwrite the
- *     user's actual tag definitions with the six built-in defaults via /api/tags/save's replace-all semantics -
- *     a real, silent data-loss path this function used to invite on any transient network hiccup, not a
- *     hypothetical. So a fetch failure instead reuses the last-known-good tags-cache.js entry (if any) for
- *     display purposes only, and never calls saveTagsNow() - nothing gets pushed back to the server without
- *     actually knowing what's there. (There used to also be a `settings.tags` fallback here, from before the
- *     tags.json split - settings.json has never carried tag data since that split finished, so it was always
- *     `undefined` and never actually reachable; removed rather than kept as dead scaffolding.)
- *
- * `tag_map` (assignments) is NOT loaded here anymore - phase 3 of the character-data-residency redesign moved
- * assignments off any single fetchable blob entirely, onto per-user sqlite rows keyed by character avatar/group
- * id. There is nothing to seed it *from* until `characters`/`groups` are actually populated (this runs during
- * settings load, before either of those exist yet) - `tag_map` is left empty here and gets its real content from
- * a single compact whole-library fetch, see seedTagMapFromRecords() below (called from script.js's boot sequence
- * right after `getCharacters()`).
+ * Loads tag *definitions* from the server (POST /api/tags/get). A fetch failure reuses the last-known-good
+ * cache instead of falling back to DEFAULT_TAGS, so a transient network error can't overwrite real definitions
+ * with the built-in defaults on next save. `tag_map` (assignments) is loaded separately, see seedTagMapFromRecords().
  */
 /**
- * Repairs a cached copy of the tag definitions against the server without refetching all of them.
- *
- * Asks for the server's bucket digest (~2.7KB at 62k definitions), recomputes the same buckets locally from
- * the cache, and only looks at the buckets that disagree. For each of those it fetches that bucket's
- * {id, hash} membership and works out which ids it is missing, holding a stale copy of, or holding something
- * the server no longer has - then fetches only those definitions. A deleted tag needs no tombstone: it is
- * simply absent from its bucket's membership.
- *
- * This verifies rather than replays. It compares content, so it repairs drift however the cache came to be
- * wrong - including from a bug on this side. A revision counter or a change log can only report what the
- * server believes changed recently, which cannot notice a cache that was already wrong before the window
- * started, and would happily keep layering deltas on top of it.
- *
+ * Repairs a cached copy of the tag definitions against the server's bucket digest instead of refetching all of
+ * them: only the buckets whose hash disagrees get fetched, and only the ids within them that actually differ.
+ * Verifies content rather than replaying a change log, so it also repairs drift from a bug on this side.
  * @param {object[]} cachedTags
  * @returns {Promise<object[]|null>} The repaired definitions, or null to fall back to a full fetch.
  */
@@ -1084,10 +952,7 @@ async function loadTagsSettings() {
     let fetchFailed = false;
     let manifestHash = null;
 
-    // Cheap freshness check before paying for the full (potentially very large) /api/tags/get response: if
-    // tags_rev matches what's cached, reuse the cached `tags` and skip the fetch (and the seed/normalize save
-    // below) entirely. A `null` revision means the metadata store is unavailable - nothing to be cache-fresh
-    // against, so that always falls through to the full path.
+    // Cheap freshness check before paying for the full (potentially very large) /api/tags/get response.
     try {
         const manifestResponse = await fetch('/api/tags/manifest', {
             method: 'POST',
@@ -1117,10 +982,7 @@ async function loadTagsSettings() {
         console.error('Error loading tags manifest:', error);
     }
 
-    // The manifest says the definitions moved, so the cached copy is not current - but "not current" is not
-    // "worthless". Repair it against the server's digest and fetch only what actually differs, instead of
-    // paying for all of them again. Falls through to the full path when there is no cache to repair, when the
-    // divergence is wide enough that repairing costs more than refetching, or on any error.
+    // Not current, but not worthless - repair the cache against the server's digest before falling back to a full fetch.
     if (manifestHash !== null && manifestHash !== undefined) {
         try {
             const cached = await getCachedTags();
@@ -1167,16 +1029,14 @@ async function loadTagsSettings() {
     if (tagsFile) {
         tags = tagsFile.tags;
     } else if (fetchFailed) {
-        // Don't know the server's actual state - reuse the last-known-good cache rather than guessing, and
-        // don't seed-save it back (see doc comment above).
+        // Don't know the server's actual state - reuse the cache rather than guessing, and never seed-save it back.
         const cached = await getCachedTags();
         tags = cached ? cached.tags : DEFAULT_TAGS;
         if (!cached) {
             console.warn('Could not load tag definitions and no cached copy exists - showing built-in defaults locally without saving them.');
         }
     } else {
-        // The server responded and explicitly has nothing (fresh install / metadata store unavailable) - this
-        // is the one case where seeding the built-in defaults back to the server is actually correct.
+        // Server explicitly has no definitions (fresh install) - seeding defaults back is correct here.
         tags = DEFAULT_TAGS;
         seedSave = true;
     }
@@ -1187,9 +1047,7 @@ async function loadTagsSettings() {
         serverAssignedTagIds = new Set(tagsFile.assignedTagIds);
     }
 
-    // Fill the cache the freshness check at the top reads. It was only ever written after a tag
-    // definition was saved, so a library nobody edits paid for the whole definitions payload on every
-    // boot - the check was there, it just never had anything to hit.
+    // Fill the cache the freshness check at the top reads.
     if (tagsFile && manifestHash !== null && manifestHash !== undefined) {
         await setCachedTags(manifestHash, tags, [...serverAssignedTagIds]);
     }
@@ -1198,26 +1056,17 @@ async function loadTagsSettings() {
     invalidateGroupsFuseIndex();
 
     if (seedSave) {
-        // Closes the gap between "the server has no definitions yet" and "the next definitions save happens":
-        // without this, a page load that fell back to DEFAULT_TAGS but never triggers a definition mutation
-        // could otherwise end up with the definitions living only in memory.
+        // Without this, defaults could end up living only in memory until some unrelated mutation saves them.
         await saveTagsNow();
     }
 }
 
 /**
- * Builds the local tag_map from character records (which now carry tag_ids in their shallow projection,
- * part of the field-granular sync migration) and a lightweight group-tag fetch. Replaces the old
- * seedTagMapCompact() which fetched ALL assignments (characters + groups) via /api/tags/for-all -
- * character tags now flow through the delta sync's field-level change path instead.
- *
- * Must run after both `characters` and `groups` are populated - called from script.js's boot sequence
- * right after `await getCharacters()`.
+ * Builds the local tag_map from character records' own tag_ids field plus a lightweight group-tag fetch.
+ * Must run after both `characters` and `groups` are populated.
  */
 async function seedTagMapFromRecords() {
     try {
-        // Build tag_map for characters from their tag_ids field (now part of shallow_json,
-        // synced via the field-granular delta path instead of a separate bulk fetch).
         tag_map = Object.create(null);
         for (const char of characters) {
             if (char.avatar && Array.isArray(char.tag_ids)) {
@@ -1225,9 +1074,7 @@ async function seedTagMapFromRecords() {
             }
         }
 
-        // Fetch group tag assignments separately - groups don't carry tag_ids in their records
-        // (they're a small user-curated set, not the 300k+ character corpus this optimization
-        // targets), so a single /api/tags/for call with all group ids is cheap.
+        // Groups don't carry tag_ids in their records, but they're a small set, so one bulk fetch is cheap.
         const groupIds = groups.map(g => g.id).filter(Boolean);
         if (groupIds.length > 0) {
             const response = await fetch('/api/tags/for', {
@@ -1250,9 +1097,7 @@ async function seedTagMapFromRecords() {
         invalidateCharactersFuseIndex();
         invalidateGroupsFuseIndex();
 
-        // The initial printCharacters(true) already ran with an empty tag_map (this seed runs after it,
-        // by construction) - redraw now that real assignments are known, so tag pills/filters aren't stuck
-        // empty until some unrelated re-render happens to fire.
+        // The initial render already ran with an empty tag_map - redraw now that real assignments are known.
         printCharactersDebounced();
         printTagFilters(tag_filter_type.character);
         printTagFilters(tag_filter_type.group_members_list);
@@ -1264,11 +1109,8 @@ async function seedTagMapFromRecords() {
 }
 
 /**
- * The sole caller is script.js on a character rename. Only updates the *local* tagMapStore key - deliberately
- * fires no network call of its own (persistTagMapChange()'s 'keyRenamed' case is a no-op; see its doc comment):
- * the server's own `/characters/rename` route already carries that character's tag assignments forward from the
- * old avatar to the new one atomically, server-side, before this ever runs. This just keeps the client's local
- * cache key in sync immediately, without waiting on a fresh /api/tags/for fetch.
+ * Called on a character rename. Only updates the local tagMapStore key - fires no network call, since the
+ * server's own rename route already carries tag assignments forward atomically.
  */
 function renameTagKey(oldKey, newKey) {
     // Fuse-index invalidation is handled by the tagMapStore.onChange subscriber (rebuildTagStores()).
@@ -1282,9 +1124,7 @@ function createTagMapFromList(listElement, key) {
 }
 
 /**
- * Resolves an array of tag ids straight to their tag objects, via `tagsStore` - the shared last step of both
- * `getTagsList()` branches (and the residency-bypass path below), factored out so both stay in exact agreement
- * on what "ids to tags" means (dedupe-via-Map lookup, drop unknown ids, sort).
+ * Resolves tag ids to tag objects via `tagsStore`, dropping unknown ids.
  * @param {string[]} tagIds
  * @param {boolean} sort
  * @returns {Tag[]}
@@ -1301,9 +1141,8 @@ function tagIdsToTagList(tagIds, sort) {
  *
  * @param {string} key - The key for which to get tags via the tag map
  * @param {boolean} [sort=true] - Whether the tag list should be sorted
- * @param {string[]} [residencyFallbackTagIds] - Tag ids to use when `key` doesn't resolve to a
- * `charactersStore`-resident character (see below) - the caller's own already-in-hand `tag_ids` for that entity,
- * if it has any. Only consulted on a residency miss; a resident character's own `tag_ids` always wins.
+ * @param {string[]} [residencyFallbackTagIds] - Tag ids to use when `key` isn't a `charactersStore`-resident
+ * character. Only consulted on a residency miss; a resident character's own `tag_ids` always wins.
  * @returns {Tag[]} A list of tags
  */
 function getTagsList(key, sort = true, residencyFallbackTagIds = undefined) {
@@ -1311,31 +1150,17 @@ function getTagsList(key, sort = true, residencyFallbackTagIds = undefined) {
         return [];
     }
 
-    // A character carries its own tag_ids straight off the (delta-synced) record it's already resident with -
-    // read that directly instead of tag_map[key], which is only ever populated in bulk once at boot
-    // (seedTagMapFromRecords(), script.js) and never rebuilt afterward. A character that starts existing
-    // client-side after that one seed (an SSE push, a fresh search page, anything reached post-boot) has a
-    // correct tag_ids on its own object the whole time, but no entry here - reading tag_map for it was the bug.
-    // Groups have no tag_ids field of their own (see seedTagMapFromRecords()'s doc comment), so they - and any
-    // other key that doesn't resolve to a resident character - keep going through tag_map exactly as before.
+    // A resident character carries its own live tag_ids; tag_map is only bulk-populated once at boot and
+    // never rebuilt, so it goes stale for anything that becomes resident afterward.
     const character = charactersStore.get(key);
     if (character) {
         const tagIds = Array.isArray(character.tag_ids) ? character.tag_ids : [];
         return tagIdsToTagList(tagIds, sort);
     }
 
-    // Not `charactersStore`-resident is NOT the same as "not a character" - under `lazyLoadCharacters` (the
-    // common case for a library too large to boot-load in full), most characters shown in the list/search view
-    // are rendered straight from a `CharacterRepository.query()`/`/query` row that's never written back into
-    // `charactersStore` (see that method's own doc comment on why not) and never seeded into `tag_map` either
-    // (`seedTagMapFromRecords()` only ever iterates the boot-resident `characters` array). Those rows still
-    // carry a correct, live `tag_ids` straight from the server (confirmed live: `/api/characters/query` returns
-    // it immediately after a `/api/tags/assign`) - a caller that's already holding one of these rows (e.g.
-    // `printTagList()`'s `entityTagIds` from `renderCharacterBlock()`'s own `item.tag_ids`) passes it here so it
-    // gets used instead of silently falling through to `tag_map[key]`, which was never populated for this key
-    // and would just render as "no tags". This was the actual remaining bug behind the tags-not-showing report:
-    // the earlier per-character `tag_ids`-based fix only covered the resident branch above, and this install's
-    // 328k-character library with `lazyLoadCharacters: true` hits the non-resident case for nearly every row.
+    // Under lazyLoadCharacters, most list/search rows are non-resident query rows with their own correct
+    // tag_ids but no tag_map entry - a caller already holding such a row's tag_ids passes it here so it's
+    // used instead of falling through to an empty tag_map[key].
     if (Array.isArray(residencyFallbackTagIds)) {
         return tagIdsToTagList(residencyFallbackTagIds, sort);
     }
@@ -1400,10 +1225,7 @@ export function getTagKeyForEntity(entityOrKey) {
         x = character.avatar;
     }
 
-    // Uninitialized character tag map. Guard against `character.avatar` itself being falsy (seen on at least one
-    // malformed/legacy character on this install) - `tag_map[undefined] = []` silently creates a real,
-    // permanent `"undefined"` string key (JS coerces object keys to strings), which then shows up as a bogus
-    // entry in every "which tag_map keys point to real entities" scan.
+    // Guard against a falsy avatar: `tag_map[undefined]` would coerce to a real "undefined" string key.
     if (character && x && !(x in tag_map)) {
         tag_map[x] = [];
         return x;
@@ -1502,21 +1324,15 @@ export function addTagsToEntity(tag, entityId, { tagListSelector = null, tagList
         });
     });
 
-    // Save and redraw. A tag toggle only needs a full list re-render (getEntitiesList + rebuild of up to
-    // hundreds of rows) if the current view could actually change as a result - otherwise just patch the
-    // affected row(s) and the tag filter buttons in place.
     redrawAfterTagChange(tags.map(t => t.id), affectedKeys, usageFlips);
-    // We should manually add the selected tag to the print tag function, so we cover places where the tag list did not automatically include it
     tagListOptions.addTag = tags;
 
     // add tag to the UI and internal map - we reprint so sorting and new markup is done correctly
     if (tagListSelector) printTagList(tagListSelector, tagListOptions);
     const inlineSelector = getInlineListSelector();
     if (inlineSelector) {
-        // The inline row lives in the list/search view, not the edit panel - reprint it with its own
-        // read-only tagOptions (isCharacterList, no removable) instead of reusing whatever tagOptions the
-        // caller wired up for their own (possibly editable) tag list, so an edit-panel affordance like the
-        // remove (x) doesn't leak onto the read-only list row.
+        // Reprint with its own read-only tagOptions so an edit-panel affordance (e.g. remove) doesn't leak
+        // onto the read-only list row.
         printTagList($(inlineSelector), { ...tagListOptions, tagOptions: { isCharacterList: true } });
     }
 
@@ -1672,11 +1488,9 @@ function removeTagFromMap(tagId, characterId = null) {
 }
 
 /**
- * Above this many matches, jquery-ui's stock autocomplete `_renderMenu` (no cap of its own, and this app doesn't
- * override it) builds one `<li>` per match - on this install, focusing the tag-add input triggers a search for
- * '' (minLength: 0 + onTagInputFocus), which matches nearly every one of the ~9700 tags, so an uncapped result
- * here means rendering thousands of DOM nodes on every single focus. The underlying filter itself isn't the slow
- * part (sub-few-ms even over the full list) - it's specifically how many list items get built from the result.
+ * Caps autocomplete matches - jquery-ui's stock renderer builds one `<li>` per match with no cap of its own,
+ * and focusing the tag input searches '' (matches nearly every tag), so an uncapped result renders thousands
+ * of DOM nodes on every focus.
  */
 const FIND_TAG_RESULT_LIMIT = 50;
 
@@ -1746,21 +1560,10 @@ function getExistingTags(newTags) {
 }
 
 /**
- * Merges tag definitions the server resolved on the client's behalf (the ALL/ONLY_EXISTING atomic import path,
- * `/api/characters/import`'s `tagDefinitions` response field - see that route's own doc comment) into the local
- * `tagsStore`, for any id this client doesn't already have a definition for. Needed because `tagIdsToTagList()`
- * (this file, the shared "resolve ids to pills" step both `getTagsList()` branches use) silently drops any id it
- * can't find a definition for - a server-minted-this-request new tag would otherwise be correctly assigned but
- * invisible in this same session's own UI until an unrelated future tag-definitions refetch happened to pull it
- * in.
- *
- * Deliberately does NOT go through `tagsStore.create()` - these definitions are already persisted server-side
- * (`seedCardTagsForSingleCharacter()`, character-metadata-db.js), so `create()`'s own `saveTagsDebounced` onChange
- * side effect (a full `POST /api/tags/save` of the entire tag-definitions array) would just be a redundant,
- * unnecessary write of a multi-tens-of-thousands-row array for a purely local cache-sync operation. Pushes
- * straight into the backing array and calls `EntityStore.reindex()` (no per-entity change emitted - see that
- * method's own doc comment), then invalidates the tags/characters search indexes once at the end if anything was
- * actually new, mirroring what `tagsStore.onChange`'s own subscriber would have done for a `created` op.
+ * Merges tag definitions the server resolved on the client's behalf into the local `tagsStore`, for any id
+ * this client doesn't already have a definition for - otherwise a server-minted tag would render invisible
+ * until some unrelated future refetch pulled it in. Bypasses `tagsStore.create()` since these are already
+ * persisted server-side, so its own `saveTagsDebounced` write would be redundant.
  * @param {object[]} tagDefinitions
  */
 function mergeServerTagDefinitions(tagDefinitions) {
@@ -2202,17 +2005,12 @@ function onTagFilterClick(listElement) {
 
     const filterHelper = getFilterHelper($(listElement));
 
-    // Update the tag's filter_state for the main character list (backward compatibility).
-    // Deliberately NOT calling saveSettingsDebounced() here: the actual (accountStorage-backed) persistence for
-    // this is done a few lines below, and settings.json on this install is 11MB+ (tags + tag_map), so forcing a
-    // full settings resave on every single tag filter click was the actual freeze - not just tag_map/tags being
-    // large in memory, but re-serializing and re-uploading the whole blob per click. This field will still get
-    // flushed to disk the next time something else triggers a real settings save.
+    // Deliberately not calling saveSettingsDebounced() here - persistence is via accountStorage below.
+    // A full settings resave on every tag filter click is a real perf cost once tags/tag_map are large.
     if (existingTag && isMainCharacterList(filterHelper)) {
         existingTag.filter_state = state;
     }
 
-    // Persist to storage for all contexts
     const storagePrefix = getFilterStorageKey(filterHelper);
     if (storagePrefix && existingTag) {
         const storageKey = `${storagePrefix}_tag_${tagId}`;
@@ -2333,21 +2131,14 @@ function runTagFilters(listElement) {
 }
 
 /**
- * Cache of the last-rendered tag-pill set per filter type, so printTagFilters() can skip rebuilding the
- * (potentially thousands of, on this install - almost every one of ~9700 tags is assigned to something)
- * tag filter pills via jQuery clone/append when the set of tags to display hasn't actually changed since the
- * last render, and *patch just the delta* (add/remove/re-mark-inactive individual pills) when it has changed
- * by a small amount - e.g. a single tag flipping from unused to used or vice versa. printTagFilters() runs on
- * *every* printCharacters() call - every search-bar keystroke, every tag filter chip click, every page nav - so
- * without this, that whole pill list gets torn down and rebuilt from scratch every single time.
+ * Cache of the last-rendered tag-pill set per filter type, so printTagFilters() - which runs on every render -
+ * can skip rebuilding the (potentially thousands of) pills when nothing changed, and diff-patch small deltas.
  * @type {Map<string, { ids: Set<string>, inactiveIds: Set<string> }>}
  */
 const tagFilterRenderCache = new Map();
 
 /**
- * Above this many changed pills (added + removed + re-marked-inactive), just do the normal full rebuild instead
- * of diff-patching - finding each new pill's sorted insertion point is a small linear scan per pill, fine for a
- * handful of tags but not worth it (and not necessary - see below) for a big batch of changes.
+ * Above this many changed pills, fall back to a full rebuild instead of diff-patching.
  */
 const TAG_FILTER_DIFF_PATCH_MAX_DELTA = 25;
 
@@ -2370,59 +2161,47 @@ function printTagFilters(type = tag_filter_type.character) {
             break;
     }
 
-    // Determine which character tags to display based on context. Done *before* touching the DOM, so we can bail
-    // out below without having already torn down the existing pills.
+    // Done before touching the DOM, so we can bail out below without having already torn down existing pills.
     let tagsToDisplay;
     let inactiveTags = [];
 
     if (isGroupContext(type)) {
-        // For group contexts, show all tags but mark ones without presence in current context as inactive
         // CAUTION: when called by openGroupById, the selected_group variable might not yet be updated
         const currentGroup = selected_group ? groupsStore.get(selected_group) : null;
         const visibleAvatars = getVisibleAvatarsForGroupContext(type, currentGroup);
 
         if (visibleAvatars.length > 0) {
-            // Get tags that are assigned to at least one visible character
             const activeCharacterTagIds = visibleAvatars
                 .map(avatar => tag_map[avatar] || [])
                 .flat()
                 .filter(onlyUnique);
 
-            // Show all tags that exist in the tag_map
             const allCharacterTagIds = getAssignedTagIds();
             const activeCharacterTagIdSet = new Set(activeCharacterTagIds);
             tagsToDisplay = tags.filter(x => allCharacterTagIds.has(x.id)).sort(compareTagsForSort);
 
-            // Mark tags that are not in the active set as inactive
             inactiveTags = tagsToDisplay
                 .filter(x => !activeCharacterTagIdSet.has(x.id))
                 .map(x => x.id);
         } else {
-            // No group selected, show no tags
             tagsToDisplay = [];
         }
     } else {
-        // For main character list, show all tags as before
         const characterTagIds = getAssignedTagIds();
         tagsToDisplay = tags.filter(x => characterTagIds.has(x.id)).sort(compareTagsForSort);
     }
 
-    // Print all action tags. (Rework 'Folder' button to some kind of onboarding if no folders are enabled yet)
     let actionTags = Object.values(ACTIONABLE_TAGS);
     actionTags.find(x => x == ACTIONABLE_TAGS.FOLDER).name = power_user.bogus_folders ? 'Show only folders' : 'Enable \'Tags as Folder\'\n\nAllows characters to be grouped in folders by their assigned tags.\nTags have to be explicitly chosen as folder to show up.\n\nClick here to start';
 
-    // For group contexts, filter actionable tags to only show relevant ones
     if (isGroupContext(type)) {
         actionTags = filterActionableTagsForGroupContext(actionTags);
     }
 
     const inListActionTags = Object.values(InListActionable);
 
-    // Remove just the action/inList-action pills from any previous render (by their known, fixed ids) instead
-    // of the old unconditional $(FILTER_SELECTOR).empty() - that would also wipe out the (potentially huge) real
-    // tag pill list below, which is exactly the rebuild we're trying to avoid doing on every render.
-    // Resolved once and reused for every $(FILTER_SELECTOR) use below instead of re-running the selector fresh
-    // per loop iteration (see the same fix, and its rationale, in printBigTagFilterList()).
+    // Remove just the action/inList pills by known id instead of $(FILTER_SELECTOR).empty(), which would also
+    // wipe the (potentially huge) real tag pill list this whole function exists to avoid rebuilding.
     const $filterContainer = $(FILTER_SELECTOR);
 
     const actionAndInListTags = [...actionTags, ...inListActionTags];
@@ -2430,21 +2209,18 @@ function printTagFilters(type = tag_filter_type.character) {
         $filterContainer.find(`.tag[id="${tag.id}"]`).remove();
     }
 
-    // Build them directly into the real (attached) container - appendTagToList/getFilterHelper resolve the
-    // correct FilterHelper (group members/candidates vs main list) by walking up from the element at build time,
-    // which only works if it's actually attached under its real ancestor when built, not a detached scratch div.
+    // Built into the real attached container, not a detached scratch div - getFilterHelper() resolves the
+    // correct FilterHelper by walking up from the element at build time, which needs a real ancestor.
     printTagList($filterContainer, { empty: false, sort: false, tags: actionTags, tagActionSelector: tag => tag.action, tagOptions: { isGeneralList: true } });
     printTagList($filterContainer, { empty: false, sort: false, tags: inListActionTags, tagActionSelector: tag => tag.action, tagOptions: { isGeneralList: true } });
 
-    // They just got appended at the end (after whatever real tag pills are still there) - move them back to the
-    // front as a block, preserving their relative order, same position as the old always-rebuilt version had.
+    // Move them from the end (where appending puts them) back to the front, preserving relative order.
     for (const tag of [...actionAndInListTags].reverse()) {
         $filterContainer.find(`.tag[id="${tag.id}"]`).prependTo($filterContainer);
     }
 
     printBigTagFilterList(type, FILTER_SELECTOR, tagsToDisplay, inactiveTags);
 
-    // Print bogus folder navigation
     const bogusDrilldown = $filterContainer.siblings('.rm_tag_bogus_drilldown');
     bogusDrilldown.empty();
     if (power_user.bogus_folders && bogusDrilldown.length > 0) {
@@ -2452,29 +2228,14 @@ function printTagFilters(type = tag_filter_type.character) {
         printTagList(bogusDrilldown, { tags: navigatedTags, tagOptions: { removable: true } });
     }
 
-    // Don't call runTagFilters here - it would overwrite the loaded filter states with the DOM state.
-    // The visual state (CSS classes) already matches the filter helper state set by loadFilterStatesForContext.
-    // runTagFilters is only needed when user clicks a tag (handled in onTagFilterClick).
-
+    // Not calling runTagFilters here: it would overwrite the loaded filter states with current DOM state,
+    // which already matches from loadFilterStatesForContext.
     updateTagFilterVisibility(type, FILTER_SELECTOR);
 }
 
 /**
- * Prints (or incrementally patches) the "big" block of real tag filter pills within a tag filter bar - the part
- * that's expensive at this install's scale (up to ~9700 pills once the "show more" cap has been expanded).
- *
- * Three cases:
- * 1. Nothing changed since last render for this filter type -> no DOM work at all.
- * 2. Something changed, but the container isn't currently expanded past the default 50-tag cap -> that cap means
- *    there's at most ~50-60 pills to draw anyway, so just let printTagList() do its normal full (cheap at that
- *    size) rebuild, including its own cap/placeholder/mandatory-tag logic.
- * 3. Something changed, the container *is* expanded (so printTagList would otherwise redraw everything, cap
- *    logic doesn't apply since it's disabled while expanded), and the change is small -> diff-patch just the
- *    pills that actually differ (add/remove/re-mark-inactive), preserving sort order via insertion, instead of
- *    tearing down and rebuilding the whole thing.
- * Falls back to the normal full rebuild for any case not covered above (first render, big batches of changes,
- * anything under bogus_folders since tag-as-folder pills interact with the drilldown in ways not modeled here).
- *
+ * Prints (or incrementally patches) the "big" block of real tag filter pills - full rebuild when nothing
+ * changed or the container is within the default cap, diff-patch only when expanded and the delta is small.
  * @param {tag_filter_type} type
  * @param {string} FILTER_SELECTOR
  * @param {Tag[]} tagsToDisplay - already sorted via compareTagsForSort
@@ -2485,18 +2246,11 @@ function printBigTagFilterList(type, FILTER_SELECTOR, tagsToDisplay, inactiveTag
     const newInactiveIds = new Set(inactiveTags);
     const cached = tagFilterRenderCache.get(type);
 
-    // Resolved once and reused everywhere below - re-running $(FILTER_SELECTOR) (a full document query) inside
-    // the per-tag loops here used to re-evaluate the whole '#rm_characters_block .rm_tag_filter' selector once
-    // per cached tag id (up to ~9700 of them) on every fullRebuild(), which is what actually shows up as an
-    // 18+ second single-selector cost in the profiler at this install's DOM size - not the selector itself being
-    // slow once, but the same selector re-run thousands of times in a tight loop.
+    // Resolved once and reused below, rather than re-run per pill in a loop of up to thousands.
     const $container = $(FILTER_SELECTOR);
 
     const fullRebuild = () => {
-        // There's no top-level $(FILTER_SELECTOR).empty() anymore (that would nuke the action tag pills too, see
-        // printTagFilters above), so any pills from a previous render need to be explicitly cleared here first -
-        // printTagList({empty: false, ...}) only appends, it never removes stale ones that dropped out of
-        // tagsToDisplay.
+        // printTagList({empty: false, ...}) only appends, so stale pills from tagsToDisplay must be cleared here.
         if (cached) {
             for (const id of cached.ids) {
                 $container.find(`.tag[id="${id}"]`).remove();
@@ -2719,18 +2473,11 @@ async function onViewTagsListClick() {
 
 function makeTagListDraggable(tagContainer) {
     const onTagsSort = () => {
-        // Still a direct field mutation per tag, not a tagsStore.update() per tag - this can touch every tag in
-        // the list (drag-reordering with ~9700 tags), and firing one store change event per tag here would be
-        // wasteful, and doesn't affect tagsStore's id index since neither ids nor array positions change, just
-        // the sort_order field value on each existing tag object. What was missing (the "later chunk" this
-        // comment used to point at) was any event firing at all - now emits a single tagsStore.reset() after
-        // the loop, so the existing tagsStore.onChange subscribers (fuse-index invalidation, saveTagsDebounced)
-        // fire exactly once for the whole drag instead of not knowing sort_order changed.
+        // Direct field mutation per tag (can touch every tag in the list), followed by one tagsStore.reset()
+        // so subscribers fire once for the whole drag instead of once per tag.
         tagContainer.find('.tag_view_item').each(function (i, tagElement) {
             const id = $(tagElement).attr('id');
             const tag = tagsStore.get(id);
-
-            // Update the sort order
             tag.sort_order = i;
         });
         tagsStore.reset();
@@ -2803,15 +2550,9 @@ function compareTagsForSort(a, b, counts = null) {
 }
 
 /**
- * Deliberately still direct `tags`/`tag_map` mutations (tags.push/removeFromArray, tag_map[key]=...) rather than
- * migrated to per-item tagsStore/tagMapStore ops, same reasoning as makeTagListDraggable's onTagsSort: this is a
- * bulk, rare (user explicitly restoring a tags backup file), all-or-nothing operation with its own id-remapping
- * logic (existing tags can get overwritten with a *different* id than the imported one, tracked via
- * idToActualTagIdMap) - forcing that through per-item store calls would mean either replicating the remapping
- * logic twice or risking getting it subtly wrong translating it, for an operation that already gets a single
- * `tagsStore.reindex()` + `invalidateAssignedTagIdsCache()` (which itself does `tagMapStore.reindex()`) right
- * after this whole function's mutations are done - the stores end up fully consistent either way, just via a
- * single bulk resync instead of many individual op calls with no current consumer for the events they'd fire.
+ * Deliberately still direct `tags`/`tag_map` mutations rather than per-item store ops: this bulk, rare,
+ * all-or-nothing operation has its own id-remapping logic (idToActualTagIdMap), and gets a single bulk
+ * reindex at the end instead.
  */
 async function onTagRestoreFileSelect(e) {
     const file = e.target.files[0];
@@ -2877,12 +2618,8 @@ async function onTagRestoreFileSelect(e) {
         tags.push(tag);
     }
 
-    // Import tag_map
     const tagMapKeys = Object.keys(data.tag_map);
-    // Batch every key's character-existence answer in one call rather than one `exists()` round-trip per key
-    // (design doc §4.2). `null` means the check itself failed - see checkCharactersExistOrNull()'s doc comment for
-    // why that must not be read as "none of these exist": this is a warn-and-skip flow, not a delete, so on a
-    // failed check we fail open (treat every key as possibly-a-character) rather than mass-warning below.
+    // A failed check (null) must not be read as "none exist" - fail open rather than mass-warning below.
     const characterKeyExistence = await checkCharactersExistOrNull(tagMapKeys);
     if (characterKeyExistence === null) {
         toastr.error(t`Could not verify character existence against the server. Tag map keys could not be validated this run.`, 'Tag Restore');
@@ -2933,7 +2670,6 @@ async function onTagRestoreFileSelect(e) {
 
     $('#tag_view_restore_input').val('');
     printCharactersDebounced();
-    // Reprint the tag management popup, without having it to be opened again
     const tagContainer = $('#tag_view_list .tag_view_list_tags');
     printViewTagList(tagContainer);
 }
@@ -2957,21 +2693,18 @@ function onTagsBackupClick() {
 }
 
 async function onTagsPruneClick() {
-    // Get tags which have zero tag map entries
     const allTagsInTagMaps = getAssignedTagIds();
     const tagsToPrune = tags.filter(tag => !allTagsInTagMaps.has(tag.id));
 
-    // Get tag maps referring to deleted entities. Group ids are always fully resident and cheap to check
-    // locally; character-shaped keys go through the authoritative `characterRepository.exists()` (design doc
-    // §4.2) instead of a resident-array scan, since this path actually deletes tag_map entries.
+    // Character-shaped keys go through an authoritative existence check rather than a resident-array scan,
+    // since this path actually deletes tag_map entries; group ids are always fully resident.
     const groupEntityIds = new Set(groups.map(g => String(g.id)));
     const candidateCharacterKeys = Object.keys(tag_map).filter(key => !groupEntityIds.has(key));
     const characterKeyExistence = await checkCharactersExistOrNull(candidateCharacterKeys);
 
     let tagMapsToPrune;
     if (characterKeyExistence === null) {
-        // §4.2: a failed/partial existence check must abort the prune for the affected keys, never fall
-        // through to "prune it". Only the character-shaped candidates are affected; nothing here deletes yet.
+        // A failed/partial check must abort the prune for the affected keys, never fall through to pruning them.
         toastr.error(t`Could not verify character existence against the server. Skipping pruning of stale character tag references this run.`, 'Prune Tags');
         tagMapsToPrune = [];
     } else {
@@ -3000,7 +2733,6 @@ async function onTagsPruneClick() {
     }
 
     printCharactersDebounced();
-    // Reprint the tag management popup, without having it to be opened again
     const tagContainer = $('#tag_view_list .tag_view_list_tags');
     printViewTagList(tagContainer);
 
@@ -3086,9 +2818,7 @@ function appendViewTagToList(list, tag, count) {
 
     list.append(template);
 
-    // We prevent the popup from auto-close on Escape press on the color pickups. If the user really wants to, he can hit it again
-    // Not the "cleanest" way, that would be actually using and observer, remembering whether the popup was open just before, but eh
-    // Not gonna invest too much time into this small control here
+    // Prevents Escape on the color pickers from also closing the popup, unless hit twice.
     let lastHit = 0;
     template.on('keydown', (evt) => {
         if (evt.key === 'Escape') {
@@ -3110,14 +2840,11 @@ function onTagAsFolderClick() {
     const id = element.attr('id');
     const tag = tagsStore.get(id);
 
-    // Cycle through folder types
     const types = Object.keys(TAG_FOLDER_TYPES);
     const currentTypeIndex = types.indexOf(tag.folder_type);
     tagsStore.update(id, { folder_type: types[(currentTypeIndex + 1) % types.length] });
 
     updateDrawTagFolder(element, tag);
-
-    // If folder display has changed, we have to redraw the character list, otherwise this folders state would not change
     printCharactersDebounced();
 }
 
@@ -3125,12 +2852,10 @@ function updateDrawTagFolder(element, tag) {
     const tagFolder = TAG_FOLDER_TYPES[tag.folder_type] || TAG_FOLDER_TYPES[TAG_FOLDER_DEFAULT_TYPE];
     const folderElement = element.find('.tag_as_folder');
 
-    // Update css class and remove all others
     Object.keys(TAG_FOLDER_TYPES).forEach(x => {
         folderElement.toggleClass(TAG_FOLDER_TYPES[x].class, TAG_FOLDER_TYPES[x] === tagFolder);
     });
 
-    // Draw/update css attributes for this class
     folderElement.attr('title', tagFolder.tooltip);
     folderElement.attr('data-i18n', '[title]' + tagFolder.tooltip);
     const indicator = folderElement.find('.tag_folder_indicator');
@@ -3148,9 +2873,7 @@ async function onTagDeleteClick() {
 
     appendTagToList(popupContent.find('#tag_to_delete'), tag);
 
-    // Make the select control more fancy on not mobile
     if (!isMobile()) {
-        // Delete the empty option in the dropdown, and make the select2 be empty by default
         popupContent.find('#merge_tag_select option[value=""]').remove();
         popupContent.find('#merge_tag_select').select2({
             width: '50%',
@@ -3166,7 +2889,6 @@ async function onTagDeleteClick() {
 
     const mergeTagId = $('#merge_tag_select').val() ? String($('#merge_tag_select').val()) : null;
 
-    // Remove the tag from all entities that use it. If we have a replacement tag, add that one instead.
     // Fuse-index invalidation is handled by the tagsStore/tagMapStore.onChange subscribers (rebuildTagStores()).
     tagMapStore.removeRelatedIdEverywhere(id, { replaceWithId: mergeTagId });
 
@@ -3197,14 +2919,6 @@ function onTagRenameInput() {
  * @param {*} evt - The custom colorize event object
  * @param {'color'|'color2'} colorField - Which field on the tag object this picker controls
  * @param {string} cssProperty - The CSS property to apply the color to
- *
- * Now routed through tagsStore.update() (previously a direct field mutation, since the old shared callback
- * mutated the tag object in place rather than returning a patch) - the two picker call sites now pass the
- * field name directly instead of a mutator function, so this can build a `{[colorField]: newColor}` patch and
- * go through the store like onTagRenameInput/onTagAsFolderClick already do. Picks up the existing
- * tagsStore.onChange subscribers (fuse-index invalidation, saveTagsDebounced) for free - color changes weren't
- * persisted to tags.json promptly before this, only via the manual saveSettingsDebounced() call below (which
- * saves settings.json, not tags.json).
  */
 function onTagColorize(evt, colorField, cssProperty) {
     const isDefaultColor = $(evt.target).data('default-color') === evt.detail.rgba;
@@ -3217,7 +2931,6 @@ function onTagColorize(evt, colorField, cssProperty) {
     $(evt.target).closest('.tag_view_item').find('.tag_view_name').css(cssProperty, newColor);
     tagsStore.update(id, { [colorField]: newColor });
 
-    // Debounce redrawing color of the tag in other elements
     debouncedTagColoring(id, cssProperty, newColor);
 }
 

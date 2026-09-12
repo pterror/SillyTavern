@@ -392,7 +392,6 @@ export class QuickReply {
             this.editorPopup = new Popup(dom, POPUP_TYPE.TEXT, undefined, { okButton: 'OK', wide: true, large: true, rows: 1 });
             const popupResult = this.editorPopup.show();
 
-            // basics
             /**@type {HTMLElement}*/
             const icon = dom.querySelector('#qr--modal-icon');
             if (this.icon) {
@@ -647,7 +646,6 @@ export class QuickReply {
             message.addEventListener('keydown', async (evt) => {
                 if (this.isExecuting) return;
                 if (evt.key == 'Tab' && !evt.shiftKey && !evt.ctrlKey && !evt.altKey) {
-                    // increase indent
                     evt.preventDefault();
                     const start = message.selectionStart;
                     const end = message.selectionEnd;
@@ -670,7 +668,6 @@ export class QuickReply {
                         message.dispatchEvent(new Event('input', { bubbles: true }));
                     }
                 } else if (evt.key == 'Tab' && evt.shiftKey && !evt.ctrlKey && !evt.altKey) {
-                    // decrease indent
                     evt.preventDefault();
                     evt.stopImmediatePropagation();
                     evt.stopPropagation();
@@ -695,7 +692,6 @@ export class QuickReply {
                         message.selectionStart = start;
                     }
                 } else if (evt.key == 'Enter' && !evt.ctrlKey && !evt.shiftKey && !evt.altKey && !(ac.isReplaceable && ac.isActive)) {
-                    // new line, keep indent
                     const start = message.selectionStart;
                     let lineStart = getLineStart();
                     const indent = /^([^\S\n]*)/.exec(message.value.slice(lineStart))[1] ?? '';
@@ -711,7 +707,6 @@ export class QuickReply {
                     }
                 } else if (evt.key == 'Enter' && evt.ctrlKey && !evt.shiftKey && !evt.altKey) {
                     if (executeShortcut.checked) {
-                        // execute QR
                         evt.stopImmediatePropagation();
                         evt.stopPropagation();
                         evt.preventDefault();
@@ -726,7 +721,6 @@ export class QuickReply {
                         }
                     }
                 } else if (evt.key == 'F9' && !evt.ctrlKey && !evt.shiftKey && !evt.altKey) {
-                    // toggle breakpoint
                     evt.stopImmediatePropagation();
                     evt.stopPropagation();
                     evt.preventDefault();
@@ -734,19 +728,16 @@ export class QuickReply {
                     preBreakPointEnd = message.selectionEnd;
                     toggleBreakpoint();
                 } else if (evt.code == 'Backslash' && evt.ctrlKey && !evt.shiftKey && !evt.altKey) {
-                    // toggle block comment
-                    // (evt.code will use the same physical key on the keyboard across different keyboard layouts)
+                    // evt.code (not evt.key) so this uses the same physical key across keyboard layouts
                     evt.stopImmediatePropagation();
                     evt.stopPropagation();
                     evt.preventDefault();
-                    // check if we are inside a comment -> uncomment
                     const parser = new SlashCommandParser();
                     parser.parse(message.value, false);
                     const start = message.selectionStart;
                     const end = message.selectionEnd;
                     const comment = parser.commandIndex.findLast(it => it.name == '*' && (it.start <= start && it.end >= start || it.start <= end && it.end >= end));
                     if (comment) {
-                        // uncomment
                         let content = message.value.slice(comment.start + 1, comment.end - 1);
                         let len = content.length;
                         content = content.replace(/^ /, '');
@@ -761,7 +752,6 @@ export class QuickReply {
                         message.selectionStart = start - (start >= comment.start ? 2 + offsetStart : 0);
                         message.selectionEnd = end - 2 - offsetStart - (end >= comment.end ? 2 + offsetEnd : 0);
                     } else {
-                        // comment
                         const lineStart = getLineStart();
                         const lineEnd = message.value.indexOf('\n', end);
                         message.selectionStart = lineStart;
@@ -790,7 +780,6 @@ export class QuickReply {
             const removeBreakpoint = (bp) => {
                 // start at -1 because "/" is not included in start-end
                 let start = bp.start - 1;
-                // step left until forward slash "/"
                 while (message.value[start] != '/') start--;
                 // step left while whitespace (except newline) before start
                 while (/[^\S\n]/.test(message.value[start - 1])) start--;
@@ -836,7 +825,6 @@ export class QuickReply {
                 // start at -1 because "/" is not included in start-end
                 let start = cmd.start - 1;
                 let indent = '';
-                // step left until forward slash "/"
                 while (message.value[start] != '/') start--;
                 // step left while whitespace (except newline) before start, collect the whitespace to help build indentation
                 while (/[^\S\n]/.test(message.value[start - 1])) {
@@ -919,7 +907,6 @@ export class QuickReply {
             let wasSyntax = null;
             const updateSyntaxLoop = () => {
                 const now = Date.now();
-                // fps limit
                 if (now - lastSyntaxUpdate < fpsTime) return requestAnimationFrame(updateSyntaxLoop);
                 // elements don't exist (yet?)
                 if (!messageSyntaxInner || !message)  return requestAnimationFrame(updateSyntaxLoop);
@@ -930,7 +917,6 @@ export class QuickReply {
                     lastMessageValue = null;
                     return requestAnimationFrame(updateSyntaxLoop);
                 }
-                // value hasn't changed
                 if (wasSyntax == syntax.checked && lastMessageValue == message.value) return requestAnimationFrame(updateSyntaxLoop);
                 wasSyntax = syntax.checked;
                 lastSyntaxUpdate = now;
@@ -943,7 +929,6 @@ export class QuickReply {
             updateWrap();
             updateTabSize();
 
-            // context menu
             /**@type {HTMLTemplateElement}*/
             const tpl = dom.querySelector('#qr--ctxItem');
             const linkList = dom.querySelector('#qr--ctxEditor');
@@ -1008,7 +993,6 @@ export class QuickReply {
                 stop: () => onContextSort(),
             });
 
-            // auto-exec
             /**@type {HTMLInputElement}*/
             const preventAutoExecute = dom.querySelector('#qr--preventAutoExecute');
             preventAutoExecute.checked = this.preventAutoExecute;
@@ -1246,7 +1230,6 @@ export class QuickReply {
             top: locatorRect.top - bodyRect.top,
             bottom: locatorRect.bottom - bodyRect.top,
         };
-        // this.clone.remove();
         return location;
     }
     async executeFromEditor() {
@@ -1498,7 +1481,6 @@ export class QuickReply {
                                 }
                             }
                         }
-                        // current scope
                         const title = document.createElement('div'); {
                             title.classList.add('qr--title');
                             title.textContent = isCurrent ? 'Current Scope' : 'Parent Scope';

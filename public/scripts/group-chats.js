@@ -119,38 +119,22 @@ let hideMutedSprites = false;
 /** @type {Group[]} */
 let groups = [];
 /**
- * The groups -> entity-store migration (see entity-store.js): backs `groups` internally, wrapping the same
- * array in place, so every read call site in this file (and every other file that imports `groups` directly)
- * keeps working completely unchanged.
- *
- * Unlike `characters`/`tags`, `groups` itself is reassigned to a brand-new array reference on every
- * getGroups() refetch (`groups = data.slice()`), rather than spliced in place - same situation tags.js has
- * with `tags` during settings load - so a store built against the old array reference would silently go
- * stale. `rebuildGroupsStore()` reconstructs it (and re-registers the fuse-index-invalidation subscriber,
- * since a fresh store instance has no listeners of its own) every time getGroups() reassigns `groups`.
- * Exported (unlike tagsStore/tagMapStore, which stay internal to tags.js) since call sites in other files
- * (script.js, tags.js, welcome-screen.js, ...) need O(1) id lookups against groups too. `let` rather than
- * `const` because rebuildGroupsStore() reassigns it to a fresh instance on every `groups` refetch - importers
- * still see the current value since ESM bindings for exported `let`s are live, not a one-time copy.
+ * `groups` is reassigned to a new array reference on every getGroups() refetch rather than spliced in place,
+ * so `groupsStore` has to be rebuilt (rebuildGroupsStore()) each time rather than just wrapping it once.
  * @type {EntityStore<Group>}
  */
 export let groupsStore = new EntityStore(groups, g => g.id);
 
 /**
- * Reconstructs `groupsStore` to wrap the current `groups` array reference, and (re)registers the
- * search-index-invalidation subscriber on it. See the comment on `groupsStore` above for why this is needed
- * (unlike charactersStore, `groups` is reassigned to a new array on every reload, not spliced in place).
+ * Rebuilds `groupsStore` to wrap the current `groups` array reference, since `groups` is reassigned (not
+ * spliced) on every reload.
  */
 function rebuildGroupsStore() {
     groupsStore = new EntityStore(groups, g => g.id);
     groupsStore.onChange(() => invalidateGroupsFuseIndex());
 
-    // The open group's member/candidate lists (`#rm_group_members`/`#rm_group_add_members`) are built from
-    // `group.members` (see getGroupCharacters()), so they only need to be reprinted when `members` itself
-    // changed - not on every groupsStore change (e.g. a name/fav/generation_mode edit), since a full reprint
-    // resets each list's pagination state. This replaces the printGroupCandidates()+printGroupMembers() pair
-    // that used to be called directly from modifyGroupMember()/reorderGroupMember() right after their own
-    // groupsStore.update({ members }) call.
+    // Member lists only need reprinting when `members` itself changed, not on every groupsStore change,
+    // since a full reprint resets pagination state.
     groupsStore.onChange(change => {
         if (change.op === 'updated' && change.patch && 'members' in change.patch) {
             printGroupCandidates();
@@ -239,11 +223,7 @@ async function regenerateGroup() {
 
 /**
  * Loads group chat messages from the server.
- *
- * The group's own id goes along with the chat's. A chat is stored under its group, and the group is the only
- * thing that can be looked up by - the server can work it out from the chat id alone (that reverse lookup has
- * to keep existing for the stock API, which carries no group id at all), but that means reading the whole
- * groups directory on a path that runs every time a chat is opened. Sending what we already know skips it.
+ * Passing groupId avoids the server having to scan the whole groups directory to reverse-look-up the group from the chat id.
  * @param {string} chatId Chat ID
  * @param {string} groupId The owning group's ID
  * @returns {Promise<ChatFile>} Array of chat messages
@@ -267,13 +247,9 @@ async function loadGroupChat(chatId, groupId) {
 }
 
 /**
- * Resolves a group member entry to its character, by avatar (the normal case, O(1) via charactersStore) or -
- * for legacy group data that stored members by display name instead of avatar - by name (O(n) fallback scan,
- * only hit when the avatar lookup misses).
- *
- * Resident-only: a miss here means "not currently resident", not "does not exist" (design doc §6/§4.2). It is
- * safe to use as a positive existence signal (a hit is a real character), but a miss must never by itself be
- * read as "deleted" - see `characterRepository.exists()` and its callers below for the authoritative check.
+ * Resolves a group member entry to its character, by avatar (O(1) via charactersStore) or, for legacy group
+ * data stored by display name, by name (O(n) fallback scan). Resident-only: a miss means "not currently
+ * resident", not "does not exist" - see `characterRepository.exists()` for the authoritative check.
  * @param {string} member Group member entry (usually an avatar, occasionally a legacy name)
  * @returns {Character|undefined}
  */
@@ -283,14 +259,9 @@ function findGroupMemberCharacter(member) {
 
 /**
  * Resolves a list of group member entries (avatars, or legacy display names) to characters, returning an
- * explicit resolved/unresolved split instead of holes (design doc §6). Order of `resolved` follows `members`,
- * skipping whatever didn't resolve.
- *
- * Resolution order: the resident/legacy-name lookup (`findGroupMemberCharacter`) first, since it's free and
- * covers the common case; whatever it misses on falls to `characterRepository.getMany()`, which is the
- * authoritative (server-backed) answer for ids that are valid but not currently resident. A legacy
- * display-name entry that doesn't resolve locally will also miss the repository lookup (it isn't a real avatar
- * id), which is correct - it lands in `unresolved`, not silently treated as valid.
+ * explicit resolved/unresolved split (order follows `members`) instead of `undefined` holes. Tries the
+ * resident/legacy-name lookup first; whatever misses falls to `characterRepository.getMany()` for ids that
+ * are valid but not currently resident.
  * @param {string[]} members
  * @returns {Promise<{resolved: Character[], unresolved: string[]}>}
  */
@@ -322,14 +293,10 @@ async function resolveGroupMembers(members) {
 
 /**
  * Validates a group by checking if all members exist and removing duplicates.
- *
- * Member existence is the destructive-if-wrong check design doc §4.2 flags: a member entry that doesn't
- * resolve gets deleted from the group and the group saved. Under bounded residency, "not resident" and "does
- * not exist" are different claims (§6), so the authoritative answer for whatever doesn't resolve locally comes
- * from `characterRepository.exists()`, never from treating a resident-array/legacy-name miss as conclusive. A
- * failed or partial existence check aborts the member-pruning mutation entirely - members are left untouched
- * rather than risking deleting ones that merely failed to answer (§4.2's rule). The unrelated duplicate-chat-id
- * cleanup below is not destructive-by-wrong-answer the same way, so it always runs regardless.
+ * "Not resident" and "does not exist" are different claims, so member pruning relies on
+ * `characterRepository.exists()` rather than treating a resident-array/legacy-name miss as conclusive; a failed
+ * or partial existence check aborts the pruning entirely rather than risking deleting members that merely
+ * failed to answer.
  * @param {Group} group Group to validate
  * @returns {Promise<void>}
  */
@@ -339,16 +306,11 @@ export async function validateGroup(group) {
     const membersArray = Array.isArray(group.members) ? group.members : [];
     const needsExistenceCheck = membersArray.filter(member => !findGroupMemberCharacter(member));
 
-    // checkCharactersExistOrNull() (character-existence-check.js) is the shared §4.2 wrapper every
-    // destructive-existence site in this codebase goes through (tags.js, world-info.js) - it returns `null`
-    // rather than throwing/an all-false map on failure, so "could not verify" can never be misread as "gone".
+    // checkCharactersExistOrNull() returns null rather than an all-false map on failure, so "could not verify" is never misread as "gone"
     /** @type {Record<string, boolean>|null} */
     let existsResult = await checkCharactersExistOrNull(needsExistenceCheck);
 
-    // Defensive on top of the shared helper's own contract: `characterRepository.exists()` promises every
-    // requested id back as a key (character-repository.js's own doc comment), but a response missing some is
-    // exactly as dangerous to read as "gone" as a failed check would be, so treat it the same way rather than
-    // trusting the promise blindly.
+    // A response missing a requested id is as dangerous to treat as "gone" as a failed check would be
     if (existsResult !== null && needsExistenceCheck.some(member => !(member in existsResult))) {
         console.warn('Group member existence check returned a partial answer; leaving group members unchanged', group.id);
         existsResult = null;
@@ -398,7 +360,6 @@ export async function getGroupChat(groupId, reload = false) {
         return;
     }
 
-    // Run validation before any loading
     await validateGroup(group);
     await unshallowGroupMembers(groupId);
 
@@ -459,10 +420,8 @@ export async function getGroupChat(groupId, reload = false) {
 }
 
 /**
- * Retrieves the members of a group, resolved and split explicitly (design doc §6): a non-resident member no
- * longer becomes an `undefined` hole in the returned array - it lands in `unresolved` instead, so callers have
- * to handle the distinction rather than tripping over holes.
- *
+ * Retrieves the members of a group, resolved and split explicitly: a non-resident member lands in
+ * `unresolved` rather than becoming an `undefined` hole in the returned array.
  * @param {string} [groupId=selected_group] - The ID of the group to retrieve members from. Defaults to the currently selected group.
  * @returns {Promise<{resolved: Character[], unresolved: string[]}>} Resolved characters (in member order) plus
  * the member entries that didn't resolve. Both are empty if the group isn't found.
@@ -474,31 +433,15 @@ export async function getGroupMembers(groupId = selected_group) {
 }
 
 /**
- * Synchronous, resident-only counterpart to `getGroupMembers()`, for the one caller that cannot await it:
- * `SlashCommandCommonEnumsProvider.js`'s `groupMembers` enum provider, whose returned function is invoked
- * synchronously by the slash-command autocomplete machinery (`SlashCommandAutoCompleteNameResult.js`, 3 call
- * sites, no `await` anywhere in that path). Making the whole autocomplete provider interface async to give that
- * one call site the authoritative answer instead is a much larger, riskier change - it touches every other enum
- * provider too, not just character-related ones - and was not scoped as part of this pass; out of scope here.
- *
- * Classification call (design doc §6: every `undefined`/miss site has to be classified as "resident-only is
- * fine here" or "needs the authoritative answer"): this is resident-only-is-fine, not an oversight. Full
- * shallow residency for the entire library is still in effect today (phase 5's staging note, §9), so a
- * `charactersStore`/`characterRepository.peek()` miss here is a true rarity, not the routine case bounded
- * residency would make it. The consequence of a miss is also only that one entry is silently absent from an
- * autocomplete suggestion list, not a write - so it doesn't belong to §4.2's destructive-existence cluster
- * either. If/when bounded residency lands (phase 6+) and this starts missing routinely, that's the trigger to
- * revisit the autocomplete interface question this function currently sidesteps.
+ * Synchronous, resident-only counterpart to `getGroupMembers()`, for the slash-command autocomplete enum
+ * provider which cannot await a lookup.
  * @param {string} [groupId=selected_group]
- * @returns {Character[]} Resolved members only, in member order - unresolved (non-resident, non-legacy-name)
- * entries are silently dropped rather than left as `undefined` holes, since a sync caller has no channel to
- * receive an explicit unresolved list the way `getGroupMembers()`'s async callers do.
+ * @returns {Character[]} Resolved members only, in member order - unresolved entries are silently dropped
+ * rather than left as `undefined` holes, since a sync caller has no channel for an explicit unresolved list.
  */
 export function getGroupMembersResident(groupId = selected_group) {
     const group = groupsStore.get(groupId);
     if (!group) return [];
-    // findGroupMemberCharacter() is exactly the resident/legacy-name lookup this needs - it's
-    // charactersStore.get() (equivalently characterRepository.peek()) with the legacy display-name fallback.
     return group.members.map(findGroupMemberCharacter).filter(Boolean);
 }
 
@@ -810,9 +753,7 @@ async function saveGroupChat(groupId, shouldSaveGroup, force = false) {
     const response = await fetch('/api/chats/group/save', saveGroupChatRequest);
 
     if (response.ok) {
-        // See saveChat()'s matching comment in script.js: the server mints a fresh integrity slug on every
-        // successful write and returns it here, and it has to land in chat_metadata so this tab's next save
-        // sends the current slug instead of the one it loaded with.
+        // The server mints a fresh integrity slug on every successful write; store it so the next save sends the current slug
         const data = await response.json().catch(() => null);
         if (data && typeof data.integrity === 'string') {
             chat_metadata.integrity = data.integrity;
@@ -932,11 +873,9 @@ export async function renameGroupMember(oldAvatar, newAvatar, newName) {
 /**
  * Fetches all groups from the server and processes them.
  * @param {object} [options]
- * @param {boolean} [options.silent=false] - If true, skips groupsStore's generic reset() notification - pass
- * this when the caller already knows the specific create/delete/rename that this reload happened for, and
- * will report it itself via groupsStore.reportCreated()/.reportRemoved()/.reportRenamed() once this returns
- * (which need the post-reload id index, so groupsStore is rebuilt either way - only the emitted change
- * differs). Leave false for reloads with no more specific intent than "resync" (initial load, manual refresh).
+ * @param {boolean} [options.silent=false] - If true, skips groupsStore's generic reset() notification; pass
+ * this when the caller will report the specific create/delete/rename itself via groupsStore.reportCreated()/
+ * .reportRemoved()/.reportRenamed() once this returns.
  */
 async function getGroups({ silent = false } = {}) {
     const response = await fetch('/api/groups/all', {
@@ -975,9 +914,6 @@ async function getGroups({ silent = false } = {}) {
 
         rebuildGroupsStore();
         if (!silent) {
-            // Caller has no more specific intent than "resync" - generic "the collection may have changed"
-            // notification. Callers with specific intent pass {silent: true} and report it themselves via
-            // groupsStore.reportCreated()/.reportRemoved()/.reportRenamed() once this returns.
             groupsStore.reset();
         }
     }
@@ -1013,21 +949,8 @@ export function getGroupBlock(group) {
     template.find('.group_select_counter').text(count + ' ' + (count != 1 ? t`characters` : t`character`));
     template.find('.group_select_block_list').text(namesList.join(', '));
 
-    // Display inline tags
-    //
-    // `tags: () => ...` resolves this row's own tag pills straight from `group.tag_ids` - the same fresh row
-    // every other field on this template reads from (name/fav/member list above) - instead of routing through
-    // printTagList()'s default getTagsList() lookup, matching what renderCharacterBlock() (script.js) now does
-    // for character rows and for the same reason: getTagsList() unconditionally checks a resident-entity lookup
-    // first (charactersStore for a character id) before falling back to whatever a caller passes in, and a list
-    // row has no business depending on lookup priority at all when it's already holding the row it wants to
-    // paint. For a group id that resident check was always going to miss (groups have no charactersStore-
-    // equivalent residency - see this file's own header on why), so it fell through to the `entityTagIds`
-    // fallback anyway in practice - but that's the same wrong shape by coincidence, not by design, and it still
-    // meant tag *resolution* nominally depended on getTagsList()'s priority order rather than being decided here.
-    // Bypassing it entirely removes that dependency outright, the same way it now does for characters. tag_map
-    // remains getTagsList()'s own fallback for callers that don't have a row in hand - unaffected, since this
-    // call site no longer goes through getTagsList() at all.
+    // Resolves this row's tag pills straight from `group.tag_ids` instead of printTagList()'s default
+    // getTagsList() lookup, which prioritizes a resident-entity lookup a group id can never satisfy.
     const tagsElement = template.find('.tags');
     const rowTags = Array.isArray(group.tag_ids)
         ? group.tag_ids.map(tagId => tagsStore.get(tagId)).filter(Boolean).sort(compareTagsForSort)
@@ -1077,13 +1000,10 @@ function isValidImageUrl(url) {
  * @returns {JQuery<HTMLElement>} Group avatar element
  */
 function getGroupAvatar(group) {
-    // loading="lazy" throughout this function - same request-storm risk as getCharacterBlock() in script.js
-    // (which has the full explanation): a broad search/list render can produce hundreds of group cards at
-    // once, each firing up to 4 avatar thumbnail requests immediately without this.
+    // loading="lazy" throughout: a broad list render can fire hundreds of avatar thumbnail requests at once otherwise
     if (!group) {
         return $(`<div class="avatar"><img src="${default_avatar}" loading="lazy"></div>`);
     }
-    // if isDataURL or if it's a valid local file url
     if (isValidImageUrl(group.avatar_url)) {
         return $(`<div class="avatar" title="[Group] ${group.name}"><img src="${group.avatar_url}" loading="lazy"></div>`);
     }
@@ -1760,18 +1680,9 @@ function isGroupMember(group, avatarId) {
 }
 
 /**
- * Whether `getGroupCharacters()`'s non-member candidate set should even ATTEMPT the server `/query` endpoint
- * (design doc §5/§6, §4.1's `getGroupCharacters` row) instead of going straight to scanning the resident
- * `characters` array - mirrors `canUseServerQueryForEntitiesList()` in script.js (see its doc comment for the
- * full reasoning, including why this is "attempt" rather than a guaranteed-safe pre-check now): an active
- * search term stays on the pre-existing local path, since group-candidate search runs through the same
- * fuzzy/score-cache pipeline (`groupCandidatesFilter`/`FilterHelper.searchFilter()`) the server's FTS/tantivy
- * backend does not necessarily agree with, and narrowing the candidate set by the "wrong" search engine before
- * that pass runs risks silently dropping a match - that's an actual client-side precondition, not a stand-in
- * for "does the server support this sort column", so it stays a pre-check. Group candidates carry no tag/fav
- * filter UI of their own (only search, via `groupCandidatesFilter.setFilterData(FILTER_TYPES.SEARCH, ...)`), so
- * unlike the main entities list this does not need to special-case those. `getGroupCharacters()` catches
- * `isInvalidSortFieldError()` from the actual attempt and falls back to the local scan for that case.
+ * Whether the non-member candidate set should attempt the server `/query` endpoint instead of scanning the
+ * resident `characters` array. An active search term stays on the local path, since group-candidate search
+ * runs through the same fuzzy/score-cache pipeline the server's search backend doesn't necessarily agree with.
  * @returns {boolean}
  */
 function canUseServerQueryForGroupCandidates() {
@@ -1782,9 +1693,7 @@ function canUseServerQueryForGroupCandidates() {
 }
 
 /**
- * Pure mapping from the current sort UI state (the shared `#character_sort_order` dropdown, same `power_user`
- * fields the main entities list reads) plus the current group's member set into the server `/query` wire
- * shape's `excludeIds` form (design doc §4.1: "not-in-member-set + ... predicates + sort -> page + count").
+ * Maps the current sort UI state plus the current group's member set into the server `/query` wire shape.
  * @param {string[]} excludeIds Current group's member list - excluded from the result.
  * @returns {{filter: import('./character-repository.js').CharacterQueryFilter, sort: import('./character-repository.js').CharacterQuerySort|undefined}}
  */
@@ -1802,18 +1711,11 @@ export function buildGroupCandidateQuery(excludeIds) {
 /**
  * Gets group characters based on filters.
  *
- * The non-member (candidate) path backs the "add member" picker over the entire non-member library (design
- * doc §4.1), so it attempts `characterRepository.queryAll()` with `excludeIds` set to the current members
- * instead of scanning the resident `characters` array whenever the current filter/sort state is a candidate for
- * it (see `canUseServerQueryForGroupCandidates()`); an active search term keeps the pre-existing fully-local
- * path, matching `getEntitiesList()`'s documented search carve-out in script.js. A `400 invalid-sort-field`
- * response from that attempt (`isInvalidSortFieldError()`) also falls back to the same local scan - the server's
- * own rejection is the only thing this checks for a column the client doesn't have a query answer for, not a
- * client-side field-name list (see `isServerQueryableSort()`'s doc comment, character-repository.js); any other
- * failure (network error, a 500, ...) propagates normally. The member path is bounded by the group's own member
- * count regardless (not the library), so it stays resolved through `resolveGroupMembers()` rather than a
- * resident-array scan - avoiding the same non-resident-member holes `getGroupMembers()` was fixed for (design
- * doc §6), without needing a server query of its own.
+ * The non-member (candidate) path backs the "add member" picker over the entire non-member library, so it
+ * attempts `characterRepository.queryAll()` with `excludeIds` set to the current members instead of scanning
+ * the resident `characters` array when eligible (see `canUseServerQueryForGroupCandidates()`), falling back to
+ * the local scan on an invalid-sort-field response. The member path is bounded by the group's own member count
+ * regardless, so it stays resolved through `resolveGroupMembers()` rather than a resident-array scan.
  * @param {object} param
  * @param {boolean} [param.doFilter=false] Whether to apply filters
  * @param {boolean} [param.onlyMembers=false] Whether to include only group members

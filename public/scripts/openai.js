@@ -571,7 +571,6 @@ function setOpenAIMessages(chat) {
     let j = 0;
     // clean openai msgs
     const messages = [];
-    // Get current API and model for thought signature validation
     const currentApi = oai_settings.chat_completion_source;
     const currentModel = getChatCompletionModel();
 
@@ -579,8 +578,7 @@ function setOpenAIMessages(chat) {
         let role = chat[j].is_user ? 'user' : 'assistant';
         let content = chat[j].mes;
 
-        // If this symbol flag is set, completely ignore the message.
-        // This can be used to hide messages without affecting the number of messages in the chat.
+        // Hides the message without affecting the chat's message count.
         if (chat[j].extra?.[IGNORE_SYMBOL]) {
             j++;
             continue;
@@ -1656,9 +1654,7 @@ export function tryParseStreamingError(response, decoded, { quiet = false } = {}
         checkQuotaError(data, { quiet });
         checkModerationError(data, { quiet });
 
-        // these do not throw correctly (equiv to Error("[object Object]"))
-        // if trying to fix "[object Object]" displayed to users, start here
-
+        // throw new Error(data) below stringifies to "[object Object]", not the actual message.
         if (data.error) {
             !quiet && toastr.error(getChatCompletionErrorMessage(data, response), 'Chat Completion API');
             throw new Error(data);
@@ -1694,8 +1690,7 @@ function checkQuotaError(data, { quiet = false } = {}) {
     if (data.quota_error) {
         !quiet && renderTemplateAsync('quotaError').then((html) => Popup.show.text('Quota Error', html));
 
-        // this does not throw correctly (equiv to Error("[object Object]"))
-        // if trying to fix "[object Object]" displayed to users, start here
+        // stringifies to "[object Object]", not the actual message.
         throw new Error(data);
     }
 }
@@ -3080,17 +3075,14 @@ export async function createGenerationParameters(settings, model, type, messages
         }
     }
 
-    // Claude Fable / Claude 5 models removed sampling parameters and reject them with HTTP 400,
-    // including via OpenAI-compatible proxies. Unanchored to also match prefixed ids
-    // like 'anthropic/claude-fable-5' or 'anthropic/claude-opus-5'.
+    // Claude Fable / Claude 5 models reject sampling parameters with HTTP 400, including via OpenAI-compatible proxies.
     if (/claude-(fable|opus-5|sonnet-5)/.test(model)) {
         delete generate_data.temperature;
         delete generate_data.top_p;
         delete generate_data.top_k;
         delete generate_data.frequency_penalty;
         delete generate_data.presence_penalty;
-        // Keep reasoning_effort for the native Claude source, where the backend maps it to
-        // adaptive thinking; proxies may translate it into a thinking budget that these models reject.
+        // Native Claude source maps reasoning_effort to adaptive thinking; proxies may reject it instead.
         if (settings.chat_completion_source !== chat_completion_sources.CLAUDE) {
             delete generate_data.reasoning_effort;
         }
@@ -5451,9 +5443,7 @@ async function onModelChange() {
     biasCache = undefined;
     let value = String($(this).val() || '');
 
-    // Re-applying already-saved settings at boot re-triggers this handler; don't persist a no-op.
-    // Snapshotted at object granularity (rather than per-field) because this function fans out
-    // across dozens of oai_settings fields depending on which source branch runs.
+    // Snapshotted whole-object (fields vary by source branch) so a later no-op change can skip the save.
     const oldSettingsJson = JSON.stringify(oai_settings);
 
     // Skip setting the context size for sources that get it from external APIs
@@ -6077,11 +6067,7 @@ async function onConnectButtonClick(e) {
         }
     }
 
-    // No save here on purpose. This function does not assign a single oai_settings field on any path -
-    // every reference to oai_settings above is a read. Its only real mutation is writeSecret(), which
-    // persists through /api/secrets/write and never touches oai_settings. Connecting is not a settings
-    // change, and reconnectOpenAi() reaches this from loadOpenAISettings() during boot, so the save this
-    // replaces fired on every page load for anyone on an OpenAI backend, auto-connect or not.
+    // No save here: nothing above mutates oai_settings, only writeSecret() does (via its own endpoint).
     startStatusLoading();
     await getStatusOpen();
 }
@@ -6632,15 +6618,12 @@ async function onVertexAIValidateServiceAccount() {
             return;
         }
 
-        // Save to backend secret storage
         const keyLabel = serviceAccount.client_email || '';
         await writeSecret(SECRET_KEYS.VERTEXAI_SERVICE_ACCOUNT, jsonContent, keyLabel);
 
-        // Show success status
         updateVertexAIServiceAccountStatus(true, `Project: ${serviceAccount.project_id}, Email: ${serviceAccount.client_email}`);
 
-        // No save: the JSON is persisted by writeSecret() above, through /api/secrets/write. This
-        // function assigns no oai_settings field on any path, so there was nothing for it to persist.
+        // No save: writeSecret() above already persists it, and no oai_settings field is touched.
         toastr.success(t`Service Account JSON is valid and saved securely`);
     } catch (error) {
         console.error('JSON validation error:', error);
@@ -6655,11 +6638,9 @@ async function onVertexAIValidateServiceAccount() {
 async function onVertexAIClearServiceAccount() {
     $('#vertexai_service_account_json').val('');
 
-    // Clear from backend secret storage
     await writeSecret(SECRET_KEYS.VERTEXAI_SERVICE_ACCOUNT, '');
 
-    // No save: the clear is persisted by writeSecret() above, through /api/secrets/write. This
-    // function assigns no oai_settings field, so there was nothing for it to persist.
+    // No save: writeSecret() above already persists it, and no oai_settings field is touched.
     updateVertexAIServiceAccountStatus(false);
     toastr.info(t`Service Account JSON cleared`);
 }
@@ -6970,8 +6951,6 @@ export function initOpenAI() {
         model_list = [];
         const newSource = String($(this).find(':selected').val());
         // Loading the page re-fires this with the already-saved source; only persist a real change.
-        // The rest of the side effects (reconnect, event emit, etc.) still run on load - they're
-        // what actually establishes the connection to the saved source.
         const sourceChanged = newSource !== oai_settings.chat_completion_source;
         oai_settings.chat_completion_source = newSource;
         toggleChatCompletionForms();
