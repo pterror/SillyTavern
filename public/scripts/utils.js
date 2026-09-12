@@ -15,7 +15,7 @@ import { SlashCommandClosure } from './slash-commands/SlashCommandClosure.js';
 import { getTagsList } from './tags.js';
 import { groupsStore, selected_group } from './group-chats.js';
 import { getCurrentLocale, t } from './i18n.js';
-import { importWorldInfo } from './world-info.js';
+import { importWorldInfo, updateWorldInfoList, charUpdateAddAuxWorld } from './world-info.js';
 import { getStringHash } from './hash-utils.js';
 
 export const shiftUpByOne = (e, i, a) => a[i] = e + 1;
@@ -2991,6 +2991,7 @@ export async function importFromExternalUrl(url, { preserveFileName = null } = {
         return;
     }
 
+    const relatedLorebookIdsHeader = request.headers.get('X-Related-Lorebook-Ids');
     const data = await request.blob();
     const customContentType = request.headers.get('X-Custom-Content-Type');
     let fileName = request.headers.get('Content-Disposition').split('filename=')[1].replace(/"/g, '');
@@ -3003,9 +3004,14 @@ export async function importFromExternalUrl(url, { preserveFileName = null } = {
     }
 
     switch (customContentType) {
-        case 'character':
-            await processDroppedFiles([file], extraData);
+        case 'character': {
+            const avatarFileNames = await processDroppedFiles([file], extraData);
+            const lastAvatar = avatarFileNames?.[avatarFileNames.length - 1];
+            if (lastAvatar && relatedLorebookIdsHeader) {
+                await importChubLinkedLorebooks(lastAvatar, relatedLorebookIdsHeader.split(',').filter(Boolean));
+            }
             break;
+        }
         case 'lorebook':
             await importWorldInfo(file);
             break;
@@ -3014,6 +3020,43 @@ export async function importFromExternalUrl(url, { preserveFileName = null } = {
             console.error('Unknown content type', customContentType);
             break;
     }
+}
+
+/**
+ * Imports the Chub lorebooks linked to a just-imported character (one request per id - see
+ * importChubLorebookById on the server) and binds each as an additional World for that
+ * character. Best-effort: an id that fails to resolve (unlisted/private/deleted/etc) is skipped,
+ * not fatal to the others or to the character import that already succeeded.
+ * @param {string} characterAvatar Avatar filename of the character to bind the Worlds to
+ * @param {string[]} relatedLorebookIds Chub numeric project ids
+ */
+async function importChubLinkedLorebooks(characterAvatar, relatedLorebookIds) {
+    const importedNames = [];
+    for (const id of relatedLorebookIds) {
+        try {
+            const request = await fetch('/api/content/importChubLorebookById', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ id }),
+            });
+            if (!request.ok) {
+                console.warn('Failed to import Chub linked lorebook', id, request.status);
+                continue;
+            }
+            const { name } = await request.json();
+            if (name) importedNames.push(name);
+        } catch (error) {
+            console.warn('Failed to import Chub linked lorebook', id, error);
+        }
+    }
+
+    if (importedNames.length === 0) {
+        return;
+    }
+
+    await updateWorldInfoList();
+    await charUpdateAddAuxWorld(characterAvatar, importedNames);
+    toastr.success(t`Imported ${importedNames.length} linked lorebook(s)`);
 }
 
 /**

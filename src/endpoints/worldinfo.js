@@ -197,6 +197,41 @@ router.post('/delete', (request, response) => {
     return response.sendStatus(200);
 });
 
+/**
+ * Writes a raw World Info JSON blob to disk under the given user's worlds directory, deriving
+ * the World's name from desiredName the same way the /import route does. Shared so other
+ * endpoints (e.g. content-manager's Chub linked-lorebook import) can persist a World server-side
+ * without a client round-trip through /import for bytes the server already fetched itself.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {string} desiredName Filename (with or without extension) to derive the World's name from
+ * @param {string} fileContents Raw World Info JSON text; must contain an `entries` key
+ * @returns {string} The written World's name
+ */
+export function importWorldInfoFromRaw(directories, desiredName, fileContents) {
+    const filename = `${path.parse(sanitize(desiredName)).name}.json`;
+
+    const worldContent = JSON.parse(fileContents);
+    if (!('entries' in worldContent)) {
+        throw new Error('File must contain a world info entries list');
+    }
+
+    const pathToNewFile = path.join(directories.worlds, filename);
+    const worldName = path.parse(pathToNewFile).name;
+
+    if (!worldName) {
+        throw new Error('World file must have a name');
+    }
+
+    // Legacy format written directly, so clear any orphaned sidecar directory from a prior migration.
+    const { entriesDir } = getWorldInfoPaths(directories, worldName);
+    if (fs.existsSync(entriesDir)) {
+        fs.rmSync(entriesDir, { recursive: true, force: true });
+    }
+
+    writeFileAtomicSync(pathToNewFile, fileContents);
+    return worldName;
+}
+
 router.post('/import', (request, response) => {
     if (!request.file) return response.sendStatus(400);
 
@@ -213,29 +248,11 @@ router.post('/import', (request, response) => {
     }
 
     try {
-        const worldContent = JSON.parse(fileContents);
-        if (!('entries' in worldContent)) {
-            throw new Error('File must contain a world info entries list');
-        }
+        const worldName = importWorldInfoFromRaw(request.user.directories, filename, fileContents);
+        return response.send({ name: worldName });
     } catch (err) {
-        return response.status(400).send('Is not a valid world info file');
+        return response.status(400).send(err instanceof Error ? err.message : 'Is not a valid world info file');
     }
-
-    const pathToNewFile = path.join(request.user.directories.worlds, filename);
-    const worldName = path.parse(pathToNewFile).name;
-
-    if (!worldName) {
-        return response.status(400).send('World file must have a name');
-    }
-
-    // Import writes the legacy format directly, so clear any orphaned sidecar directory from a prior migration.
-    const { entriesDir } = getWorldInfoPaths(request.user.directories, worldName);
-    if (fs.existsSync(entriesDir)) {
-        fs.rmSync(entriesDir, { recursive: true, force: true });
-    }
-
-    writeFileAtomicSync(pathToNewFile, fileContents);
-    return response.send({ name: worldName });
 });
 
 router.post('/edit', (request, response) => {
