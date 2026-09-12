@@ -299,7 +299,6 @@ body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_blo
     flex-wrap: nowrap;
     align-items: stretch;
     overflow: visible;
-    background-color: var(--SmartThemeBotMesBlurTintColor);
     border: 1px solid var(--SmartThemeBorderColor);
     border-radius: 10px;
     padding: 10px;
