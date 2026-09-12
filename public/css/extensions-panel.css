@@ -39,6 +39,70 @@ label[for="extensions_autoconnect"] {
     text-align: left;
 }
 
+#extensions_settings_tabs {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+#extensions_settings_tabs.ui-widget-content {
+    border: none !important;
+}
+
+#extensions_settings_tabs_list {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 5px;
+    background: none;
+    border: none;
+    margin: 5px 0;
+    padding: 0;
+}
+
+#extensions_settings_tabs_list::before,
+#extensions_settings_tabs_list::after {
+    display: none;
+}
+
+#extensions_settings_tabs_list .extensions_tab_button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    list-style: none;
+    color: var(--SmartThemeBodyColor);
+    background-color: var(--SmartThemeBlurTintColor);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 5px;
+    padding: 0;
+    cursor: pointer;
+    font-weight: 600;
+    margin: 0 !important;
+    filter: none;
+    opacity: 0.8;
+    transition: opacity var(--animation-duration-2x);
+}
+
+#extensions_settings_tabs_list .extensions_tab_button:hover {
+    opacity: 1;
+}
+
+#extensions_settings_tabs_list .extensions_tab_button.ui-tabs-active {
+    background-color: color-mix(in srgb, var(--SmartThemeQuoteColor) 33%, var(--SmartThemeBlurTintColor) 66%);
+    opacity: 1;
+}
+
+#extensions_settings_tabs_list .extensions_tab_button a {
+    padding: 3px 10px;
+    cursor: pointer;
+    color: var(--SmartThemeBodyColor);
+}
+
+.extensions_tab_panel {
+    padding: 10px 0;
+}
+
 .extensions_info h3:not(.margin0) {
     margin-bottom: 0.5em;
 }
