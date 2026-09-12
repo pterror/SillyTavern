@@ -598,11 +598,6 @@ async function moduleWorker({ newChat = false } = {}) {
         inApiCall = true;
         let expression = await getExpressionLabel(currentLastMessage.mes);
 
-        // If we're not already overriding the folder name, account for group chats.
-        if (spriteFolderName === currentLastMessage.name && !context.groupId) {
-            spriteFolderName = context.name2;
-        }
-
         const force = !!context.groupId;
 
         // Character won't be angry on you for swiping
@@ -623,9 +618,13 @@ async function moduleWorker({ newChat = false } = {}) {
 
 function getSpriteFolderName(characterMessage = null, characterName = null) {
     const context = getContext();
-    let spriteFolderName = characterName ?? context.name2;
     const message = characterMessage ?? getLastCharacterMessage();
     const avatarFileName = getFolderNameByMessage(message);
+    // Keyed by the character's stable avatar identity, not its display name - two different
+    // cards can share a display name (duplicates, two creators' takes on the same character),
+    // and resolving by name alone would make them silently share one sprite folder. Falls back
+    // to the name only when no character context resolved (avatarFileName came back empty).
+    let spriteFolderName = avatarFileName || characterName || context.name2;
     const expressionOverride = extension_settings.expressionOverrides.find(e => e.name == avatarFileName);
 
     if (expressionOverride && expressionOverride.path) {
