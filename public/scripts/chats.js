@@ -2284,6 +2284,24 @@ export function initChatUtilities() {
         await callGenericPopup(wrapper, POPUP_TYPE.TEXT, '', { wide: true, large: true });
     });
 
+    $(document).on('click', '.macro_preview_button', async function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+
+        const broId = $(this).attr('data-for');
+        const bro = $(`#${broId}`);
+
+        if (!bro.length) {
+            console.error('Could not find field to preview macros for', broId);
+            return;
+        }
+
+        const rawText = String(bro.val());
+        const previewText = substituteParams(rawText);
+        const pre = $('<pre class="justifyLeft"></pre>').text(previewText);
+        await callGenericPopup(pre, POPUP_TYPE.TEXT, '', { wide: true, large: true, allowVerticalScrolling: true });
+    });
+
     $(document).on('click', 'body .mes .mes_text, body .mes .mes_reasoning', function (event) {
         if (!power_user.click_to_edit) return;
         if (window.getSelection().toString()) return;
