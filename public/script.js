@@ -9695,6 +9695,8 @@ export function changeMainAPI(api = null) {
         $('#common-gen-settings-block').css('display', 'block');
     }
 
+    $('body').toggleClass('chat-completion-selected', selectedVal === 'openai');
+
     main_api = selectedVal;
     setOnlineStatus('no_connection');
 
@@ -14595,6 +14597,11 @@ jQuery(async function () {
         }
     });
 
+    function closeCharacterPopup() {
+        is_advanced_char_open = false;
+        $('#character_popup').css('display', 'none').removeClass('open');
+    }
+
     $('#advanced_div').on('click', function () {
         if (!is_advanced_char_open) {
             is_advanced_char_open = true;
@@ -14605,8 +14612,7 @@ jQuery(async function () {
                 easing: animation_easing,
             });
         } else {
-            is_advanced_char_open = false;
-            $('#character_popup').css('display', 'none').removeClass('open');
+            closeCharacterPopup();
         }
     });
 
@@ -14617,12 +14623,11 @@ jQuery(async function () {
             duration: animation_duration,
             easing: animation_easing,
         });
-        setTimeout(function () { $('#character_popup').css('display', 'none'); }, animation_duration);
+        setTimeout(closeCharacterPopup, animation_duration);
     });
 
     $('#character_popup_ok').on('click', function () {
-        is_advanced_char_open = false;
-        $('#character_popup').css('display', 'none');
+        closeCharacterPopup();
     });
 
     $('#dialogue_popup_ok').on('click', async function (_e) {

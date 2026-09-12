@@ -214,6 +214,7 @@ export const power_user = {
     expand_message_actions: false,
     enableZenSliders: false,
     enableLabMode: false,
+    advancedMode: false,
     prefer_character_prompt: true,
     prefer_character_jailbreak: true,
     quick_continue: false,
@@ -699,6 +700,11 @@ function switchMesIDDisplay() {
 function switchHideChatAvatars() {
     $('body').toggleClass('hideChatAvatars', power_user.hideChatAvatars_enabled);
     $('#hideChatAvatarsEnabled').prop('checked', power_user.hideChatAvatars_enabled);
+}
+
+function switchAdvancedMode() {
+    $('body').toggleClass('advancedMode', power_user.advancedMode);
+    $('#advancedModeEnabled').prop('checked', power_user.advancedMode);
 }
 
 function switchMessageActions() {
@@ -1705,6 +1711,7 @@ export function applyPowerUserSettings() {
     switchTokenCount();
     switchMessageActions();
     switchSwipeNumAllMessages();
+    switchAdvancedMode();
 }
 
 export function applyStylePins() {
@@ -1934,6 +1941,7 @@ export async function loadPowerUserSettings(settings, data) {
     $('#messageModelIconEnabled').prop('checked', power_user.timestamp_model_icon);
     $('#mesIDDisplayEnabled').prop('checked', power_user.mesIDDisplay_enabled);
     $('#hideChatAvatarsEnabled').prop('checked', power_user.hideChatAvatars_enabled);
+    $('#advancedModeEnabled').prop('checked', power_user.advancedMode);
     $('#prefer_character_prompt').prop('checked', power_user.prefer_character_prompt);
     $('#prefer_character_jailbreak').prop('checked', power_user.prefer_character_jailbreak);
     $('#enableZenSliders').prop('checked', power_user.enableZenSliders).trigger('input');
@@ -4152,6 +4160,13 @@ jQuery(() => {
         power_user.hideChatAvatars_enabled = value;
         switchHideChatAvatars();
         saveSettingsDebounced('power_user.hideChatAvatars_enabled');
+    });
+
+    $('#advancedModeEnabled').on('input', function () {
+        const value = !!$(this).prop('checked');
+        power_user.advancedMode = value;
+        switchAdvancedMode();
+        saveSettingsDebounced('power_user.advancedMode');
     });
 
     $('#hotswapEnabled').on('input', function () {

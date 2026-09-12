@@ -1082,6 +1082,12 @@
                                         <input class="neo-range-slider" type="range" id="rep_pen_slope" name="volume" min="0" max="10" step="0.01">
                                         <input class="neo-range-input" type="number" min="0" max="10" step="0.01" data-for="rep_pen_slope" id="rep_pen_slope_counter">
                                     </div>
+                                    <div class="inline-drawer wide100p">
+                                        <div class="inline-drawer-toggle inline-drawer-header">
+                                            <b data-i18n="Advanced Sampler Settings">Advanced Sampler Settings</b>
+                                            <div class="fa-solid fa-circle-chevron-down inline-drawer-icon down"></div>
+                                        </div>
+                                        <div class="inline-drawer-content wide100p">
                                     <div name="miroStatBlock-kobold" class="wide100p">
                                         <h4 class="wide100p textAlignCenter" data-i18n="Mirostat">Mirostat</h4>
                                         <div class="flex-container flexFlowRow gap10px flexShrink">
@@ -1112,6 +1118,19 @@
                                         </div>
                                         <hr class="wide100p">
                                     </div>
+                                    <div id="grammar_block" class="wide100p">
+                                        <hr class="wide100p">
+                                        <h4 class="wide100p textAlignCenter"><span data-i18n="GBNF Grammar">GBNF Grammar</span>
+                                            <a href="https://github.com/ggml-org/llama.cpp/blob/master/grammars/README.md" target="_blank">
+                                                <small>
+                                                    <div class="fa-solid fa-circle-question note-link-span"></div>
+                                                </small>
+                                            </a>
+                                        </h4>
+                                        <textarea id="grammar" rows="4" class="text_pole textarea_compact monospace" data-i18n="[placeholder]Type in the desired custom grammar" placeholder="Type in the desired custom grammar"></textarea>
+                                    </div>
+                                        </div>
+                                    </div>
                                     <div class="alignitemscenter justifyCenter flex-container flexFlowColumn flexBasis30p flexGrow flexShrink gap0">
                                         <label class="checkbox_label alignItemsBaseline" for="use_default_badwordsids">
                                             <input id="use_default_badwordsids" type="checkbox" />
@@ -1126,17 +1145,6 @@
                                         <small data-i18n="Seed">Seed</small>
                                         <!-- Max value is 2**64 - 1 -->
                                         <input type="number" id="seed_kobold" class="text_pole wideMax100px" min="-1" value="-1" max="18446744073709551615" />
-                                    </div>
-                                    <div id="grammar_block" class="wide100p">
-                                        <hr class="wide100p">
-                                        <h4 class="wide100p textAlignCenter"><span data-i18n="GBNF Grammar">GBNF Grammar</span>
-                                            <a href="https://github.com/ggml-org/llama.cpp/blob/master/grammars/README.md" target="_blank">
-                                                <small>
-                                                    <div class="fa-solid fa-circle-question note-link-span"></div>
-                                                </small>
-                                            </a>
-                                        </h4>
-                                        <textarea id="grammar" rows="4" class="text_pole textarea_compact monospace" data-i18n="[placeholder]Type in the desired custom grammar" placeholder="Type in the desired custom grammar"></textarea>
                                     </div>
                                     <div name="KoboldSamplerOrderBlock" class="range-block flexFlowColumn">
                                         <hr class="wide100p">
@@ -1424,6 +1432,12 @@
                                         </div>
                                     </div>
 
+                                    <div class="inline-drawer wide100p">
+                                        <div class="inline-drawer-toggle inline-drawer-header">
+                                            <b data-i18n="Advanced Sampler Settings">Advanced Sampler Settings</b>
+                                            <div class="fa-solid fa-circle-chevron-down inline-drawer-icon down"></div>
+                                        </div>
+                                        <div class="inline-drawer-content wide100p">
                                     <div data-tg-type="mancer, ooba, koboldcpp, aphrodite, tabby" data-tg-samplers="smoothing_factor" id="smoothingBlock" name="smoothingBlock" class="wide100p">
                                         <h4 class="wide100p textAlignCenter">
                                             <label data-i18n="Smooth Sampling">Smooth Sampling</label>
@@ -1442,7 +1456,6 @@
                                             </div>
                                         </div>
                                     </div>
-
                                     <div data-tg-type="koboldcpp, aphrodite, mancer, tabby, ooba, llamacpp" data-tg-samplers="xtc_probability" id="xtc_block" class="wide100p">
                                         <h4 class="wide100p textAlignCenter">
                                             <label data-i18n="Exclude Top Choices (XTC)">Exclude Top Choices (XTC)</label>
@@ -1463,7 +1476,6 @@
                                             </div>
                                         </div>
                                     </div>
-
                                     <div data-tg-type="aphrodite, mancer, ooba, koboldcpp, tabby, llamacpp, dreamgen" data-tg-samplers="dry_multiplier" id="dryBlock" class="wide100p">
                                         <h4 class="wide100p textAlignCenter" title="DRY penalizes tokens that would extend the end of the input into a sequence that has previously occurred in the input. Set multiplier to 0 to disable." data-i18n="[title]DRY_Repetition_Penalty_desc">
                                             <label data-i18n="DRY Repetition Penalty">DRY Repetition Penalty</label>
@@ -1551,6 +1563,38 @@
                                             </div>
                                         </div>
                                     </div>
+                                    <div id="grammar_block_ooba" data-tg-type="ooba,aphrodite,tabby" data-tg-samplers="grammar_string" class="wide100p">
+                                        <hr class="wide100p">
+                                        <h4 class="wide100p textAlignCenter">
+                                            <div class="flex-container justifyCenter alignitemscenter">
+                                                <span data-i18n="Grammar String">Grammar String</span>
+                                                <div class="margin5 fa-solid fa-circle-info opacity50p " data-i18n="[title]GBNF or EBNF, depends on the backend in use. If you're using this you should know which." title="GBNF or EBNF, depends on the backend in use. If you're using this you should know which."></div>
+                                                <a href="https://github.com/ggml-org/llama.cpp/blob/master/grammars/README.md" target="_blank">
+                                                    <div class="fa-solid fa-up-right-from-square note-link-span"></div>
+                                                </a>
+                                            </div>
+                                        </h4>
+                                        <textarea id="grammar_string_textgenerationwebui" rows="4" class="text_pole textarea_compact monospace" data-i18n="[placeholder]Type in the desired custom grammar" placeholder="Type in the desired custom grammar"></textarea>
+                                    </div>
+                                    <div id="json_schema_block" data-tg-type="tabby, llamacpp, aphrodite" data-tg-samplers="json_schema" class="wide100p">
+                                        <hr class="wide100p">
+                                        <h4 class="wide100p textAlignCenter"><span data-i18n="JSON Schema">JSON Schema</span>
+                                            <a href="https://json-schema.org/learn/getting-started-step-by-step" target="_blank">
+                                                <small>
+                                                    <div class="fa-solid fa-circle-question note-link-span"></div>
+                                                </small>
+                                            </a>
+                                        </h4>
+                                        <textarea id="tabby_json_schema" rows="4" class="text_pole textarea_compact monospace" data-i18n="[placeholder]Type in the desired JSON schema" placeholder="Type in the desired JSON schema"></textarea>
+                                        <label for="json_schema_allow_empty_textgenerationwebui" class="checkbox_label" title="Treat empty JSON object as a valid JSON schema." data-tg-type="all">
+                                            <input type="checkbox" id="json_schema_allow_empty_textgenerationwebui" />
+                                            <small data-i18n="Allow empty schema objects">Allow empty schema objects</small>
+                                        </label>
+                                    </div>
+                                        </div>
+                                    </div>
+
+
                                     <div data-tg-type="ooba" data-tg-samplers="num_beams" id="beamSearchBlock" name="beamSearchBlock" class="wide100p">
                                         <h4 class="wide100p textAlignCenter">
                                             <label>
@@ -1712,34 +1756,6 @@
                                             </div>
                                             <textarea id="negative_prompt_textgenerationwebui" class="wide100p text_pole textarea_compact" name="negative_prompt" rows="3" data-i18n="[placeholder]Add text here that would make the AI generate things you don't want in your outputs." placeholder="Add text here that would make the AI generate things you don't want in your outputs."></textarea>
                                         </div>
-                                    </div>
-                                    <div id="grammar_block_ooba" data-tg-type="ooba,aphrodite,tabby" data-tg-samplers="grammar_string" class="wide100p">
-                                        <hr class="wide100p">
-                                        <h4 class="wide100p textAlignCenter">
-                                            <div class="flex-container justifyCenter alignitemscenter">
-                                                <span data-i18n="Grammar String">Grammar String</span>
-                                                <div class="margin5 fa-solid fa-circle-info opacity50p " data-i18n="[title]GBNF or EBNF, depends on the backend in use. If you're using this you should know which." title="GBNF or EBNF, depends on the backend in use. If you're using this you should know which."></div>
-                                                <a href="https://github.com/ggml-org/llama.cpp/blob/master/grammars/README.md" target="_blank">
-                                                    <div class="fa-solid fa-up-right-from-square note-link-span"></div>
-                                                </a>
-                                            </div>
-                                        </h4>
-                                        <textarea id="grammar_string_textgenerationwebui" rows="4" class="text_pole textarea_compact monospace" data-i18n="[placeholder]Type in the desired custom grammar" placeholder="Type in the desired custom grammar"></textarea>
-                                    </div>
-                                    <div id="json_schema_block" data-tg-type="tabby, llamacpp, aphrodite" data-tg-samplers="json_schema" class="wide100p">
-                                        <hr class="wide100p">
-                                        <h4 class="wide100p textAlignCenter"><span data-i18n="JSON Schema">JSON Schema</span>
-                                            <a href="https://json-schema.org/learn/getting-started-step-by-step" target="_blank">
-                                                <small>
-                                                    <div class="fa-solid fa-circle-question note-link-span"></div>
-                                                </small>
-                                            </a>
-                                        </h4>
-                                        <textarea id="tabby_json_schema" rows="4" class="text_pole textarea_compact monospace" data-i18n="[placeholder]Type in the desired JSON schema" placeholder="Type in the desired JSON schema"></textarea>
-                                        <label for="json_schema_allow_empty_textgenerationwebui" class="checkbox_label" title="Treat empty JSON object as a valid JSON schema." data-tg-type="all">
-                                            <input type="checkbox" id="json_schema_allow_empty_textgenerationwebui" />
-                                            <small data-i18n="Allow empty schema objects">Allow empty schema objects</small>
-                                        </label>
                                     </div>
                                     <div id="sampler_order_block_kcpp" data-tg-type="koboldcpp" data-tg-samplers="sampler_order" class="range-block flexFlowColumn wide100p">
                                         <hr class="wide100p">
@@ -4084,7 +4100,7 @@
                 </div>
             </div>
         </div>
-        <div id="advanced-formatting-button" class="drawer">
+        <div id="advanced-formatting-button" class="drawer text-completion-only">
             <div class="drawer-toggle">
                 <div class="drawer-icon fa-solid fa-font fa-fw closedIcon" title="AI Response Formatting" data-i18n="[title]AI Response Formatting"></div>
             </div>
@@ -4898,6 +4914,13 @@
                         </div>
                         <small id="version_display"></small>
                     </div>
+                    <div class="flex-container alignitemscenter" style="border: 1px solid var(--SmartThemeBorderColor); border-radius: 5px; padding: 5px 10px; margin-bottom: 5px;">
+                        <label for="advancedModeEnabled" class="checkbox_label" title="Show advanced/rarely-used options across the app (exotic sampler settings, instruct template details, etc.)." data-i18n="[title]Show advanced/rarely-used options across the app (exotic sampler settings, instruct template details, etc.)">
+                            <input id="advancedModeEnabled" type="checkbox" />
+                            <b data-i18n="Advanced Mode">Advanced Mode</b>
+                            <small data-i18n="(reveals rarely-used options across the app)">(reveals rarely-used options across the app)</small>
+                        </label>
+                    </div>
                     <div name="UserSettingsRowTwo" class="flex-container flexFlowRow">
                         <div id="account_controls" class="flex-container">
                             <div id="account_button" class="margin0 menu_button_icon menu_button">
@@ -5336,7 +5359,7 @@
                         </div>
                     </div>
                     <div name="UserSettingsThirdColumn" id="power-user-options-block" class="flex-container wide100p flex1">
-                        <div id="power-user-option-checkboxes">
+                        <div id="power-user-option-checkboxes" class="advanced-setting">
 
                             <div name="ChatMessageHandlingToggles">
                                 <h4 data-i18n="Chat/Message Handling">Chat/Message Handling</h4>
