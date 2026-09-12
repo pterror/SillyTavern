@@ -8,9 +8,12 @@ export const BIAS_CACHE = new Map();
  * Displays the logit bias list in the specified container.
  * @param {object} logitBias Logit bias object
  * @param {string} containerSelector Container element selector
+ * @param {string} [settingsKey] Top-level settings key this logit bias array actually lives under
+ * (oai_settings/nai_settings/textgenerationwebui_settings) - saveSettingsDebounced() only flushes the
+ * keys it's told are dirty, so passing the wrong one here silently drops the edit on the next save.
  * @returns
  */
-export function displayLogitBias(logitBias, containerSelector) {
+export function displayLogitBias(logitBias, containerSelector, settingsKey = 'oai_settings') {
     if (!Array.isArray(logitBias)) {
         console.log('Logit bias set not found');
         return;
@@ -21,7 +24,7 @@ export function displayLogitBias(logitBias, containerSelector) {
 
     for (const entry of logitBias) {
         if (entry) {
-            createLogitBiasListItem(entry, logitBias, containerSelector);
+            createLogitBiasListItem(entry, logitBias, containerSelector, settingsKey);
         }
     }
 
@@ -42,7 +45,7 @@ export function displayLogitBias(logitBias, containerSelector) {
             });
             logitBias.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
             console.log('Logit bias reordered:', logitBias);
-            saveSettingsDebounced('oai_settings');
+            saveSettingsDebounced(settingsKey);
         },
     });
 
@@ -53,13 +56,14 @@ export function displayLogitBias(logitBias, containerSelector) {
  * Creates a new logit bias entry
  * @param {object[]} logitBias Array of logit bias objects
  * @param {string} containerSelector Container element ID
+ * @param {string} [settingsKey] Top-level settings key this logit bias array lives under - see displayLogitBias().
  */
-export function createNewLogitBiasEntry(logitBias, containerSelector) {
+export function createNewLogitBiasEntry(logitBias, containerSelector, settingsKey = 'oai_settings') {
     const entry = { id: uuidv4(), text: '', value: 0 };
     logitBias.push(entry);
     BIAS_CACHE.delete(containerSelector);
-    createLogitBiasListItem(entry, logitBias, containerSelector);
-    saveSettingsDebounced('oai_settings');
+    createLogitBiasListItem(entry, logitBias, containerSelector, settingsKey);
+    saveSettingsDebounced(settingsKey);
 }
 
 /**
@@ -67,20 +71,21 @@ export function createNewLogitBiasEntry(logitBias, containerSelector) {
  * @param {object} entry Logit bias entry
  * @param {object[]} logitBias Array of logit bias objects
  * @param {string} containerSelector Container element ID
+ * @param {string} [settingsKey] Top-level settings key this logit bias array lives under - see displayLogitBias().
  */
-function createLogitBiasListItem(entry, logitBias, containerSelector) {
+function createLogitBiasListItem(entry, logitBias, containerSelector, settingsKey = 'oai_settings') {
     const id = entry.id;
     const template = $('#logit_bias_template .logit_bias_form').clone();
     template.data('id', id);
     template.find('.logit_bias_text').val(entry.text).on('input', function () {
         entry.text = $(this).val();
         BIAS_CACHE.delete(containerSelector);
-        saveSettingsDebounced('oai_settings');
+        saveSettingsDebounced(settingsKey);
     });
     template.find('.logit_bias_value').val(entry.value).on('input', function () {
         entry.value = Number($(this).val());
         BIAS_CACHE.delete(containerSelector);
-        saveSettingsDebounced('oai_settings');
+        saveSettingsDebounced(settingsKey);
     });
     template.find('.logit_bias_remove').on('click', function () {
         $(this).closest('.logit_bias_form').remove();
@@ -89,7 +94,7 @@ function createLogitBiasListItem(entry, logitBias, containerSelector) {
             logitBias.splice(index, 1);
         }
         BIAS_CACHE.delete(containerSelector);
-        saveSettingsDebounced('oai_settings');
+        saveSettingsDebounced(settingsKey);
     });
     $(containerSelector).find('.logit_bias_list').prepend(template);
 }

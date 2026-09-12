@@ -383,7 +383,7 @@ async function selectPreset(name) {
     }
     setGenerationParamsFromPreset(preset);
     BIAS_CACHE.delete(BIAS_KEY);
-    displayLogitBias(preset.logit_bias, BIAS_KEY);
+    displayLogitBias(preset.logit_bias, BIAS_KEY, 'textgenerationwebui_settings');
     saveSettingsDebounced('textgenerationwebui_settings');
 }
 
@@ -595,7 +595,7 @@ export async function loadTextGenSettings(data, loadedSettings) {
     $('#openrouter_quantizations_text').val(textgenerationwebui_settings.openrouter_quantizations).trigger('change');
     showSamplerControls(textgenerationwebui_settings.type);
     BIAS_CACHE.delete(BIAS_KEY);
-    displayLogitBias(textgenerationwebui_settings.logit_bias, BIAS_KEY);
+    displayLogitBias(textgenerationwebui_settings.logit_bias, BIAS_KEY, 'textgenerationwebui_settings');
 
     registerDebugFunction('change-mancer-url', 'Change Mancer base URL', 'Change Mancer API server base URL', () => {
         const result = prompt(`Enter Mancer base URL\nDefault: ${MANCER_SERVER_DEFAULT}`, MANCER_SERVER);
@@ -1058,7 +1058,7 @@ export function initTextGenSettings() {
         });
     }
 
-    $('#textgen_logit_bias_new_entry').on('click', () => createNewLogitBiasEntry(textgenerationwebui_settings.logit_bias, BIAS_KEY));
+    $('#textgen_logit_bias_new_entry').on('click', () => createNewLogitBiasEntry(textgenerationwebui_settings.logit_bias, BIAS_KEY, 'textgenerationwebui_settings'));
 
     $('#openrouter_providers_text').on('change', function () {
         const selectedProviders = $(this).val();
