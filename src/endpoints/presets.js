@@ -14,7 +14,7 @@ import { getDefaultPresetFile, getDefaultPresets } from './content-manager.js';
  * @param {import('../users.js').UserDirectoryList} directories User directories
  * @returns {{folder: string?, extension: string?}} Object containing the folder and extension for the preset settings
  */
-function getPresetSettingsByAPI(apiId, directories) {
+export function getPresetSettingsByAPI(apiId, directories) {
     switch (apiId) {
         case 'kobold':
         case 'koboldhorde':
@@ -35,6 +35,26 @@ function getPresetSettingsByAPI(apiId, directories) {
             return { folder: directories.reasoning, extension: '.json' };
         default:
             return { folder: null, extension: null };
+    }
+}
+
+/**
+ * Reads a single named preset's raw content, addressed the same way /save and /delete address it
+ * (sanitized filename under the api-specific folder).
+ * @param {string} apiId API source ID (see getPresetSettingsByAPI)
+ * @param {string} name Preset name
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @returns {object|null} Parsed preset content, or null if not found/invalid
+ */
+export function readPresetByName(apiId, name, directories) {
+    const { folder, extension } = getPresetSettingsByAPI(apiId, directories);
+    if (!folder || !name) return null;
+    const filename = path.join(folder, sanitize(`${name}${extension}`));
+    if (!fs.existsSync(filename)) return null;
+    try {
+        return JSON.parse(fs.readFileSync(filename, 'utf-8'));
+    } catch {
+        return null;
     }
 }
 

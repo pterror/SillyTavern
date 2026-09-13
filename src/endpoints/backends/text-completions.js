@@ -17,7 +17,13 @@ import { forwardFetchResponse, trimV1, getConfigValue } from '../../util.js';
 import { setAdditionalHeaders } from '../../additional-headers.js';
 import { createHash } from 'node:crypto';
 import { pipeLlamaCppCompactStream, getLlamaCppStreamMeta } from './llamacpp-compact-stream.js';
-import { resolveTextGenBackend } from '../../textgen-backend-resolve.js';
+import { resolveTextGenBackend, resolveServerUrl } from '../../textgen-backend-resolve.js';
+import { resolveConnectionProfile } from '../../connection-profile-resolve.js';
+import { mergeTextGenPreset } from '../../textgen-preset-merge.js';
+import { createTextGenGenerationData } from '../../textgen-generation-data.js';
+import { constructPrompt, getInstructStoppingSequences } from '../../instruct-template-format.js';
+import { readSettingsAtPaths } from '../../settings-store.js';
+import { readPresetByName } from '../presets.js';
 
 export const router = express.Router();
 
@@ -275,6 +281,44 @@ router.post('/generate', async function (request, response) {
     if (!request.body) return response.sendStatus(400);
 
     try {
+        // "Generate using connection profile X" - the raw action is the profile id plus the raw
+        // messages/generation-type facts; the server resolves the profile's backend, preset, and
+        // instruct template itself instead of the client pre-resolving and asserting them.
+        if (request.body.connection_profile_id) {
+            const { profile, selectedApiMap } = resolveConnectionProfile(request.user.directories, request.body.connection_profile_id);
+            if (selectedApiMap.selected !== 'textgenerationwebui') {
+                return response.status(400).send({ error: true, message: `Profile does not target a text completion backend (targets: ${selectedApiMap.selected})` });
+            }
+
+            const { name1 = '', name2 = '', isGroup = false, messages, max_tokens: maxTokens, isImpersonate = false, isContinue = false, type = 'quiet' } = request.body;
+            if (!Array.isArray(messages)) {
+                return response.status(400).send({ error: true, message: 'messages must be an array' });
+            }
+
+            const instructPreset = profile.instruct ? readPresetByName('instruct', profile.instruct, request.user.directories) : null;
+            const contextPreset = profile.context ? readPresetByName('context', profile.context, request.user.directories) : null;
+            const finalPrompt = instructPreset
+                ? constructPrompt(messages, instructPreset, { name1, name2, isGroup })
+                : messages.map(m => m.content).join('\n\n');
+            const stoppingStrings = instructPreset
+                ? getInstructStoppingSequences(instructPreset, contextPreset ?? {}, { name1, name2 })
+                : [];
+
+            const { 'textgenerationwebui_settings': baseSettings } = readSettingsAtPaths(request.user.directories, ['textgenerationwebui_settings']);
+            const preset = profile.preset ? readPresetByName('textgenerationwebui', profile.preset, request.user.directories) : null;
+            const settings = mergeTextGenPreset({ ...baseSettings, type: selectedApiMap.type }, preset);
+
+            const params = createTextGenGenerationData(
+                settings, profile.model, finalPrompt, maxTokens, isImpersonate, isContinue, null, type,
+                { stoppingStrings, macroContext: { name1, name2 } },
+            );
+
+            // Replace the body entirely - none of the raw action fields (messages, name1/name2,
+            // connection_profile_id, etc.) are part of the actual backend request shape.
+            const stream = !!request.body.stream;
+            request.body = { ...params, stream, api_type: selectedApiMap.type, api_server: profile['api-url'] || resolveServerUrl(settings) };
+        }
+
         // No api_type means this is the main chat flow, which no longer sends one - resolve the
         // active backend from the server's own settings.json instead. A request that DOES specify
         // one is a legitimate per-request override (e.g. a Connection Manager profile targeting a

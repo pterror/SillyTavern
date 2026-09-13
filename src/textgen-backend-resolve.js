@@ -53,7 +53,7 @@ function resolveModel(settings) {
 }
 
 // Mirrors getTextGenServer() in public/scripts/textgen-settings.js.
-function resolveServerUrl(settings) {
+export function resolveServerUrl(settings) {
     if (settings.type in FIXED_SERVERS) {
         return FIXED_SERVERS[settings.type];
     }
