@@ -2,15 +2,16 @@ import { WorldInfoBuffer, matchesEntryKeys, scan_state } from './key-matching.js
 import { verifyProbability } from './probability.js';
 import { WorldInfoTimedEffects } from './timed-effects.js';
 import { filterByInclusionGroups } from './inclusion-groups.js';
+import { passesEntryFilters } from './entry-filters.js';
 import { substituteParams } from '../macro-substitution.js';
 
 /**
  * Server-side port of the CORE of public/scripts/world-info.js's checkWorldInfo() - primary/
  * secondary key matching, constant entries, probability, sticky/cooldown/delay timed effects,
- * inclusion groups, recursion via matched-entry content, and token-budget enforcement. Reduced
- * scope, explicitly NOT ported: delay-until-recursion levels, min-activations, character/tag/
- * generation-trigger filters, @@activate/@@dont_activate decorators, externally-forced activations.
- * Every entry is treated as always eligible on those axes - a caller needing those must pre-filter
+ * inclusion groups, character/tag/generation-trigger filters, recursion via matched-entry content,
+ * and token-budget enforcement. Reduced scope, explicitly NOT ported: delay-until-recursion levels,
+ * min-activations, @@activate/@@dont_activate decorators, externally-forced activations. Every
+ * entry is treated as always eligible on those axes - a caller needing those must pre-filter
  * `entries` or post-process the result themselves for now.
  *
  * @typedef {object} WIEntry
@@ -50,13 +51,14 @@ import { substituteParams } from '../macro-substitution.js';
  * @param {object} [options.chatMetadata] Mutable chat metadata - timedWorldInfo is read/written on it directly (see WorldInfoTimedEffects)
  * @param {boolean} [options.isDryRun] Skips sticky/cooldown state changes (delay is still evaluated) - same as checkWorldInfo's dry-run mode
  * @param {boolean} [options.useGroupScoring] world_info_use_group_scoring setting
+ * @param {{trigger?: string, characterFilename?: string, characterTags?: string[]}} [options.entryFilterContext] Generation-trigger and character/tag filter inputs (see entry-filters.js)
  * @returns {Promise<{activatedEntries: WIEntry[], content: string}>}
  */
 export async function activateWorldInfoEntries(entries, chatMessages, options) {
     const {
         maxContext, budgetPercent, budgetCap = 0, depth = 0, recursive = true,
         maxRecursionStepsSetting = 0, globalScanData = {}, macroContext = {}, countTokens, random = Math.random,
-        chatMetadata = {}, isDryRun = false, useGroupScoring = false,
+        chatMetadata = {}, isDryRun = false, useGroupScoring = false, entryFilterContext = {},
     } = options;
     const maxRecursionSteps = maxRecursionStepsSetting > 0 ? maxRecursionStepsSetting : 25;
 
@@ -86,6 +88,7 @@ export async function activateWorldInfoEntries(entries, chatMessages, options) {
             if (failedProbability.has(entry) || activated.has(`${entry.world}.${entry.uid}`)) continue;
 
             if (!isFirstPass && !recursive) break;
+            if (!passesEntryFilters(entry, entryFilterContext)) continue;
 
             const isSticky = timedEffects.isEffectActive('sticky', entry);
             const isCooldown = timedEffects.isEffectActive('cooldown', entry);

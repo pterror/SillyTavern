@@ -217,4 +217,28 @@ const countTokens = async (text) => Math.ceil(text.length / 4); // cheap determi
     assert.equal(activatedEntries[0].uid, '2', 'the groupOverride entry wins');
 }
 
+// Character filter: an entry restricted to a different character never activates for this one
+{
+    const entries = [{ uid: '1', world: 'w', key: ['dragon'], content: 'Dragon lore.', characterFilter: { names: ['other.png'], isExclude: false } }];
+    const { activatedEntries } = await activateWorldInfoEntries(entries, ['a dragon appears'], {
+        maxContext: 4000, budgetPercent: 100, depth: 1, countTokens,
+        entryFilterContext: { characterFilename: 'alice.png' },
+    });
+    assert.equal(activatedEntries.length, 0, 'entry restricted to a different character is filtered out');
+}
+
+// Generation-trigger filter: an entry restricted to specific trigger types is suppressed otherwise
+{
+    const entries = [{ uid: '1', world: 'w', key: ['dragon'], content: 'Dragon lore.', triggers: ['impersonate'] }];
+    const suppressed = await activateWorldInfoEntries(entries, ['a dragon appears'], {
+        maxContext: 4000, budgetPercent: 100, depth: 1, countTokens, entryFilterContext: { trigger: 'normal' },
+    });
+    assert.equal(suppressed.activatedEntries.length, 0);
+
+    const allowed = await activateWorldInfoEntries(entries, ['a dragon appears'], {
+        maxContext: 4000, budgetPercent: 100, depth: 1, countTokens, entryFilterContext: { trigger: 'impersonate' },
+    });
+    assert.equal(allowed.activatedEntries.length, 1);
+}
+
 console.log('activation.test.js: all assertions passed');
