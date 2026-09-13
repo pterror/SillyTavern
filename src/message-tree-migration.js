@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { color } from './util.js';
+import { getUserDirectoriesList } from './users.js';
+import { getGroupsData } from './endpoints/groups.js';
 import {
     getDbHandle, insertMessageSync, createBranchSync, hasBranchesSync, newId,
     ensureAnchorSync, setDefaultChildSync, alternativesFromMessage, nodeIdentityKey,
@@ -187,4 +189,37 @@ export async function migrateCharacterChats(directories, ownerId, chatDir, isGro
     console.log(color.green(`[message-tree] Migrated ${migrated} chats for ${ownerId} (${skipped} skipped, ${errors.length} errors)`));
 
     return { migrated, skipped, errors };
+}
+
+/**
+ * Migrates every group's JSONL chats into the tree for every user, synchronously at server startup.
+ * Next-touch migration (migrateOwnerOnTouch via touchGroupOwner) only fires when something actually
+ * opens a group, so a group nobody has opened since the tree DB shipped would otherwise stay
+ * JSONL-backed indefinitely - this closes that gap by forcing every group through migration once,
+ * up front, instead of waiting on a request that may never come.
+ */
+export async function migrateAllGroupChats() {
+    const directoriesList = await getUserDirectoriesList();
+
+    for (const directories of directoriesList) {
+        let groups;
+        try {
+            groups = getGroupsData(directories);
+        } catch (err) {
+            console.error(color.red(`[message-tree] Failed to read groups for ${directories.root}:`), err);
+            continue;
+        }
+
+        for (const group of groups) {
+            if (typeof group?.id !== 'string' || !Array.isArray(group.chats)) {
+                continue;
+            }
+            await migrateOwnerOnTouch(directories, {
+                ownerId: group.id,
+                chatDir: directories.groupChats,
+                isGroup: true,
+                fileNames: group.chats.map(c => `${c}.jsonl`),
+            });
+        }
+    }
 }
