@@ -304,6 +304,71 @@ router.get('/folders', function (request, response) {
     return response.send(folders);
 });
 
+/**
+ * Renames an entire sprite/expression-pack folder (as opposed to /delete, which removes one
+ * sprite by label). Refuses to clobber an existing folder at the destination - the caller must
+ * delete it first if that's really what they want.
+ */
+router.post('/rename-folder', (request, response) => {
+    const oldName = String(request.body.oldName || '');
+    const newName = String(request.body.newName || '');
+
+    if (!oldName || !newName) {
+        return response.sendStatus(400);
+    }
+
+    try {
+        const oldPath = getSpritesPath(request.user.directories, oldName, oldName.includes('/'));
+        const newPath = getSpritesPath(request.user.directories, newName, newName.includes('/'));
+
+        if (!oldPath || !newPath) {
+            return response.sendStatus(400);
+        }
+        if (!fs.existsSync(oldPath) || !fs.statSync(oldPath).isDirectory()) {
+            return response.sendStatus(404);
+        }
+        if (fs.existsSync(newPath)) {
+            return response.status(409).send('A folder already exists at the new name');
+        }
+
+        fs.mkdirSync(path.dirname(newPath), { recursive: true });
+        fs.renameSync(oldPath, newPath);
+        return response.sendStatus(204);
+    } catch (error) {
+        console.error(error);
+        return response.sendStatus(500);
+    }
+});
+
+/**
+ * Deletes an entire sprite/expression-pack folder (as opposed to /delete, which removes one
+ * sprite by label).
+ */
+router.post('/delete-folder', (request, response) => {
+    const name = String(request.body.name || '');
+
+    if (!name) {
+        return response.sendStatus(400);
+    }
+
+    try {
+        const spritesPath = getSpritesPath(request.user.directories, name, name.includes('/'));
+
+        if (!spritesPath) {
+            return response.sendStatus(400);
+        }
+        if (!fs.existsSync(spritesPath) || !fs.statSync(spritesPath).isDirectory()) {
+            return response.sendStatus(404);
+        }
+
+        fs.rmSync(spritesPath, { recursive: true, force: true });
+        return response.sendStatus(204);
+    } catch (error) {
+        console.error(error);
+        return response.sendStatus(500);
+    }
+});
+
 router.post('/delete', async (request, response) => {
     const label = request.body.label;
     const name = String(request.body.name);

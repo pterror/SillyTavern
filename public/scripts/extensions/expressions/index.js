@@ -1,4 +1,4 @@
-import { Fuse } from '../../../lib.js';
+import { DOMPurify, Fuse } from '../../../lib.js';
 
 import { charactersStore, eventSource, event_types, generateQuietPrompt, generateRaw, getCurrentCharacter, getRequestHeaders, online_status, saveSettingsDebounced, substituteParams, substituteParamsExtended, system_message_types } from '../../../script.js';
 import { dragElement, isMobile } from '../../RossAscends-mods.js';
@@ -15,7 +15,7 @@ import { SlashCommandEnumValue, enumTypes } from '../../slash-commands/SlashComm
 import { commonEnumProviders } from '../../slash-commands/SlashCommandCommonEnumsProvider.js';
 import { slashCommandReturnHelper } from '../../slash-commands/SlashCommandReturnHelper.js';
 import { generateWebLlmChatPrompt, isWebLlmSupported } from '../shared.js';
-import { Popup, POPUP_RESULT } from '../../popup.js';
+import { Popup, POPUP_RESULT, POPUP_TYPE } from '../../popup.js';
 import { t } from '../../i18n.js';
 import { removeReasoningFromString } from '../../reasoning.js';
 import { macros } from '../../macros/macro-system.js';
@@ -2132,6 +2132,129 @@ async function onClickExpressionUploadPackButton() {
         .trigger('click');
 }
 
+/**
+ * Fetches one thumbnail-worthy sprite for a folder, for the pack manager list - just enough to
+ * tell at a glance which character/pack a folder actually is, without opening it.
+ * @param {string} folder Folder name, possibly "parent/child"
+ * @returns {Promise<string|null>} Image src, or null if the folder has no images
+ */
+async function fetchPackThumbnail(folder) {
+    try {
+        const response = await fetch(`/api/sprites/get?name=${encodeURIComponent(folder)}`, { headers: getRequestHeaders() });
+        if (!response.ok) return null;
+        const sprites = await response.json();
+        return sprites[0]?.path ?? null;
+    } catch {
+        return null;
+    }
+}
+
+async function renderPackManagerList(container) {
+    container.html('<div class="expression_pack_manager_loading"><i class="fa-solid fa-spinner fa-spin"></i></div>');
+
+    let folders = [];
+    try {
+        const response = await fetch('/api/sprites/folders', { headers: getRequestHeaders() });
+        if (response.ok) folders = await response.json();
+    } catch (error) {
+        console.error('Failed to fetch sprite folders', error);
+    }
+
+    if (folders.length === 0) {
+        container.html(`<div class="expression_pack_manager_empty">${t`No sprite packs found.`}</div>`);
+        return;
+    }
+
+    folders.sort((a, b) => a.localeCompare(b));
+
+    container.html(folders.map(folder => `
+        <div class="expression_pack_manager_row" data-folder="${DOMPurify.sanitize(folder)}">
+            <div class="expression_pack_manager_thumb"><i class="fa-solid fa-spinner fa-spin"></i></div>
+            <div class="expression_pack_manager_name">${DOMPurify.sanitize(folder)}</div>
+            <div class="expression_pack_manager_actions">
+                <i class="menu_button fa-solid fa-pen-to-square" title="${t`Rename`}"></i>
+                <i class="menu_button fa-solid fa-trash-can" title="${t`Delete`}"></i>
+            </div>
+        </div>
+    `).join(''));
+
+    // Thumbnails fetched after the list renders, in parallel, so a slow/broken one doesn't block the rest.
+    for (const folder of folders) {
+        fetchPackThumbnail(folder).then(src => {
+            const thumb = container.find(`.expression_pack_manager_row[data-folder="${CSS.escape(folder)}"] .expression_pack_manager_thumb`);
+            if (src) {
+                thumb.html(`<img src="${src}" alt="">`);
+            } else {
+                thumb.html('<i class="fa-solid fa-image-slash"></i>');
+            }
+        });
+    }
+}
+
+async function onClickManagePacksButton() {
+    const content = $('<div class="expression_pack_manager"></div>');
+    const popup = new Popup(content, POPUP_TYPE.DISPLAY, '', { wide: true, large: true, allowVerticalScrolling: true });
+
+    content.on('click', '.fa-pen-to-square', async function () {
+        const row = $(this).closest('.expression_pack_manager_row');
+        const oldName = row.data('folder');
+        const newName = await Popup.show.input(t`Enter new pack name:`, null, oldName);
+        if (!newName || !newName.trim() || newName.trim() === oldName) {
+            return;
+        }
+
+        try {
+            const response = await fetch('/api/sprites/rename-folder', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ oldName, newName: newName.trim() }),
+            });
+            if (response.ok) {
+                toastr.success(t`Pack renamed`);
+                delete spriteCache[oldName];
+                await renderPackManagerList(content);
+            } else if (response.status === 409) {
+                toastr.error(t`A pack already exists with that name`);
+            } else {
+                toastr.error(t`Failed to rename pack`);
+            }
+        } catch (error) {
+            console.error('Failed to rename sprite pack', error);
+            toastr.error(t`Failed to rename pack`);
+        }
+    });
+
+    content.on('click', '.fa-trash-can', async function () {
+        const row = $(this).closest('.expression_pack_manager_row');
+        const name = row.data('folder');
+        const confirmation = await Popup.show.confirm(t`Delete pack "${name}"?`, t`This permanently deletes every image in this pack. This cannot be undone.`);
+        if (!confirmation) {
+            return;
+        }
+
+        try {
+            const response = await fetch('/api/sprites/delete-folder', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ name }),
+            });
+            if (response.ok) {
+                toastr.success(t`Pack deleted`);
+                delete spriteCache[name];
+                await renderPackManagerList(content);
+            } else {
+                toastr.error(t`Failed to delete pack`);
+            }
+        } catch (error) {
+            console.error('Failed to delete sprite pack', error);
+            toastr.error(t`Failed to delete pack`);
+        }
+    });
+
+    popup.show();
+    await renderPackManagerList(content);
+}
+
 async function onClickExpressionDelete(event) {
     // Prevents the expression from being set
     event.stopPropagation();
@@ -2276,6 +2399,7 @@ export async function init() {
         $('#expressions_container').append(template);
         $('#expression_override_button').on('click', onClickExpressionOverrideButton);
         $('#expression_upload_pack_button').on('click', onClickExpressionUploadPackButton);
+        $('#expression_manage_packs_button').on('click', onClickManagePacksButton);
         $('#expression_translate').prop('checked', extension_settings.expressions.translate).on('input', function () {
             extension_settings.expressions.translate = !!$(this).prop('checked');
             saveSettingsDebounced('extension_settings');
