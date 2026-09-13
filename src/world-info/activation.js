@@ -3,19 +3,28 @@ import { verifyProbability } from './probability.js';
 import { WorldInfoTimedEffects } from './timed-effects.js';
 import { filterByInclusionGroups } from './inclusion-groups.js';
 import { passesEntryFilters } from './entry-filters.js';
+import { getDecoratorActivation } from './decorators.js';
 import { substituteParams } from '../macro-substitution.js';
 
 /**
  * Server-side port of the CORE of public/scripts/world-info.js's checkWorldInfo() - primary/
  * secondary key matching, constant entries, probability, sticky/cooldown/delay timed effects,
- * inclusion groups, character/tag/generation-trigger filters, externally-forced activations,
- * recursion via matched-entry content, min-activations depth-advancing, and token-budget
- * enforcement. Uses the real scan_state machine (INITIAL/RECURSION/MIN_ACTIVATIONS/NONE), not a
- * simplified first-pass/later-pass boolean - that distinction matters for real behavior (e.g.
- * excludeRecursion is only honored during an actual RECURSION pass, not a MIN_ACTIVATIONS one).
- * Reduced scope, explicitly NOT ported: delay-until-recursion levels, @@activate/@@dont_activate
- * decorators. Every entry is treated as always eligible on those axes - a caller needing those
- * must pre-filter `entries` or post-process the result themselves for now.
+ * inclusion groups, character/tag/generation-trigger filters, @@activate/@@dont_activate
+ * decorators, externally-forced activations, recursion via matched-entry content, min-activations
+ * depth-advancing, and token-budget enforcement. Uses the real scan_state machine
+ * (INITIAL/RECURSION/MIN_ACTIVATIONS/NONE), not a simplified first-pass/later-pass boolean - that
+ * distinction matters for real behavior (e.g. excludeRecursion is only honored during an actual
+ * RECURSION pass, not a MIN_ACTIVATIONS one). Reduced scope, explicitly NOT ported:
+ * delay-until-recursion levels. Every entry is treated as always eligible on that axis - a caller
+ * needing it must pre-filter `entries` or post-process the result themselves for now.
+ *
+ * Decorators: unlike the other WIEntry fields below, `decorators` is NOT parsed here - the client's
+ * getSortedEntries() parses each entry's raw content with parseDecorators() (decorators.js) exactly
+ * once, before checkWorldInfo's main loop ever runs, and strips the decorator lines out of the
+ * content that gets scanned/activated. Callers of this module must do the same: call
+ * parseDecorators(entry.content) for each entry, then pass the parsed `entry.decorators` array and
+ * the decorator-stripped content in `entries` - this function only reads entry.decorators, it never
+ * derives it from entry.content itself.
  *
  * @typedef {object} WIEntry
  * @property {string} uid
@@ -27,6 +36,7 @@ import { substituteParams } from '../macro-substitution.js';
  * @property {boolean} [constant]
  * @property {boolean} [disable]
  * @property {string} content
+ * @property {string[]} [decorators] Pre-parsed via parseDecorators() - see module doc comment above
  * @property {boolean} [useProbability]
  * @property {number} [probability]
  * @property {boolean} [ignoreBudget]
@@ -102,6 +112,13 @@ export async function activateWorldInfoEntries(entries, chatMessages, options) {
             if (isCooldown && !isSticky) continue;
             // excludeRecursion only applies to an actual recursion pass, not a min-activations one.
             if (scanState === scan_state.RECURSION && recursive && entry.excludeRecursion && !isSticky) continue;
+
+            const decoratorActivation = getDecoratorActivation(entry.decorators);
+            if (decoratorActivation === 'activate') {
+                activatedNow.push(entry);
+                continue;
+            }
+            if (decoratorActivation === 'suppress') continue;
 
             const externallyActivated = buffer.getExternallyActivated(entry);
             if (externallyActivated) {
