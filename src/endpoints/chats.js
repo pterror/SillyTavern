@@ -881,13 +881,14 @@ router.post('/fork', validateAvatarUrlMiddleware, async function (request, respo
 /** Labels (pins/checkpoints) a message node - a checkpoint is just a label on an existing node in the tree model. */
 router.post('/label', validateAvatarUrlMiddleware, async function (request, response) {
     try {
-        const { node_id, label } = request.body;
+        const { avatar_url, node_id, label, unique } = request.body;
         if (!node_id) {
             return response.sendStatus(400);
         }
 
-        const ok = await labelNode(request.user.directories, String(node_id), label || null);
-        return response.send({ ok });
+        const ownerId = avatar_url ? String(avatar_url).replace('.png', '') : undefined;
+        const result = await labelNode(request.user.directories, String(node_id), label || null, { ownerId, unique: !!unique });
+        return response.send(result);
     } catch (error) {
         console.error('Error labeling node:', error);
         return response.status(500).send({ error: true });
