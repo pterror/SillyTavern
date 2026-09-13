@@ -467,3 +467,48 @@ router.post('/update', function (request, response) {
     setCharStats(request.user.profile.handle, request.body);
     return response.sendStatus(200);
 });
+
+/**
+ * Applies one character's per-message stat deltas in place, without the client needing to GET
+ * the whole stats blob first just to compute new running totals, or send every other character's
+ * stats back along with the one that actually changed. STATS is already in memory (no disk read
+ * either way), so this is one round trip instead of /get then /update.
+ */
+router.post('/increment', function (request, response) {
+    const { avatar, deltas, dates } = request.body ?? {};
+    if (typeof avatar !== 'string' || !avatar || typeof deltas !== 'object' || deltas === null) {
+        return response.sendStatus(400);
+    }
+
+    const handle = request.user.profile.handle;
+    const charStats = STATS.get(handle) || {};
+    const stat = charStats[avatar] || {
+        total_gen_time: 0,
+        user_word_count: 0,
+        non_user_word_count: 0,
+        user_msg_count: 0,
+        non_user_msg_count: 0,
+        total_swipe_count: 0,
+        chat_size: 0,
+        date_last_chat: 0,
+        date_first_chat: new Date('9999-12-31T23:59:59.999Z').getTime(),
+    };
+
+    for (const key of ['total_gen_time', 'user_word_count', 'non_user_word_count', 'user_msg_count', 'non_user_msg_count', 'total_swipe_count', 'chat_size']) {
+        if (typeof deltas[key] === 'number') {
+            stat[key] = (stat[key] || 0) + deltas[key];
+        }
+    }
+    if (dates && typeof dates === 'object') {
+        if (typeof dates.last_chat === 'number') {
+            stat.date_last_chat = dates.last_chat;
+        }
+        if (typeof dates.first_chat_candidate === 'number') {
+            stat.date_first_chat = Math.min(stat.date_first_chat ?? dates.first_chat_candidate, dates.first_chat_candidate);
+        }
+    }
+
+    charStats[avatar] = stat;
+    setCharStats(handle, charStats);
+    return response.send(stat);
+});

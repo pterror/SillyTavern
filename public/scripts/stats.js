@@ -258,59 +258,84 @@ function countWords(str) {
  * @param {Character} character - The character the message belongs to.
  * @param {string} oldMessage - The old message that's being processed.
  */
+/**
+ * @param {Object} line - Object containing message data.
+ * @param {string} type - The type of the message processing (e.g., 'append', 'continue', 'appendFinal', 'swipe').
+ * @param {Character} character - The character the message belongs to.
+ * @param {string} oldMessage - The old message that's being processed.
+ */
 async function statMesProcess(line, type, character, oldMessage) {
     if (character === undefined) {
         return;
     }
-    await getStats();
 
-    let stat = charStats[character.avatar];
+    // Deltas only - no GET-the-whole-blob-first needed, the server already holds the
+    // authoritative running totals in memory and applies these in place. Every path below adds
+    // to exactly one of these fields; only one of user_word_count/non_user_word_count and
+    // user_msg_count/non_user_msg_count/total_swipe_count actually moves per call.
+    const deltas = {
+        total_gen_time: calculateGenTime(line.gen_started, line.gen_finished),
+        user_word_count: 0,
+        non_user_word_count: 0,
+        user_msg_count: 0,
+        non_user_msg_count: 0,
+        total_swipe_count: 0,
+    };
 
-    if (!stat) {
-        stat = {
-            total_gen_time: 0,
-            user_word_count: 0,
-            non_user_msg_count: 0,
-            user_msg_count: 0,
-            total_swipe_count: 0,
-            date_first_chat: Date.now(),
-            date_last_chat: Date.now(),
-        };
-    }
+    const isEdit = type === 'append' || type === 'continue' || type === 'appendFinal';
+    const oldLen = isEdit ? oldMessage.split(' ').length : 0;
 
-    stat.total_gen_time += calculateGenTime(
-        line.gen_started,
-        line.gen_finished,
-    );
     if (line.is_user) {
-        if (type != 'append' && type != 'continue' && type != 'appendFinal') {
-            stat.user_msg_count++;
-            stat.user_word_count += countWords(line.mes);
+        if (!isEdit) {
+            deltas.user_msg_count++;
+            deltas.user_word_count += countWords(line.mes);
         } else {
-            let oldLen = oldMessage.split(' ').length;
-            stat.user_word_count += countWords(line.mes) - oldLen;
+            deltas.user_word_count += countWords(line.mes) - oldLen;
         }
     } else {
-        // if continue, don't add a message, get the last message and subtract it from the word count of
-        // the new message
-        if (type != 'append' && type != 'continue' && type != 'appendFinal') {
-            stat.non_user_msg_count++;
-            stat.non_user_word_count += countWords(line.mes);
+        if (!isEdit) {
+            deltas.non_user_msg_count++;
+            deltas.non_user_word_count += countWords(line.mes);
         } else {
-            let oldLen = oldMessage.split(' ').length;
-            stat.non_user_word_count += countWords(line.mes) - oldLen;
+            deltas.non_user_word_count += countWords(line.mes) - oldLen;
         }
     }
 
     if (type === 'swipe') {
-        stat.total_swipe_count++;
+        deltas.total_swipe_count++;
     }
-    stat.date_last_chat = Date.now();
-    stat.date_first_chat = Math.min(
-        stat.date_first_chat ?? new Date('9999-12-31T23:59:59.999Z').getTime(),
-        Date.now(),
-    );
-    updateStats();
+
+    const now = Date.now();
+    const stat = await incrementStats(character.avatar, deltas, { last_chat: now, first_chat_candidate: now });
+    if (stat) {
+        charStats[character.avatar] = stat;
+    }
+}
+
+/**
+ * Sends one character's stat deltas to the server in a single request and returns the
+ * server's own confirmed resulting stat object (or null on failure).
+ * @param {string} avatar
+ * @param {Object} deltas
+ * @param {{last_chat: number, first_chat_candidate: number}} dates
+ * @returns {Promise<Object|null>}
+ */
+async function incrementStats(avatar, deltas, dates) {
+    try {
+        const response = await fetch('/api/stats/increment', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ avatar, deltas, dates }),
+        });
+        if (!response.ok) {
+            console.error('Failed to increment stats', response.status);
+            return null;
+        }
+        return await response.json();
+    } catch (error) {
+        console.error('Failed to increment stats', error);
+        return null;
+    }
 }
 
 export function initStats() {
