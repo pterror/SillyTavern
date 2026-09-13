@@ -9,7 +9,7 @@ import bytes from 'bytes';
 import { getConfigValue, generateTimestamp, removeOldBackups } from '../util.js';
 import { getAllUserHandles, getUserDirectories } from '../users.js';
 import { getFileNameValidationFunction } from '../middleware/validateFileName.js';
-import { getStringHash } from '../../public/scripts/hash-utils.js';
+import { getStringHash, seedKeyHashes } from '../../public/scripts/hash-utils.js';
 import {
     readAllSettingsAsJson,
     readSettingsAtPaths,
@@ -369,8 +369,13 @@ router.post('/get', (request, response) => {
     const sysprompt = readAndParseFromDirectory(request.user.directories.sysprompt);
     const reasoning = readAndParseFromDirectory(request.user.directories.reasoning);
 
+    const keyHashes = {};
+    seedKeyHashes(keyHashes, JSON.parse(settings));
+
     response.send({
         settings,
+        settingsHash: getStringHash(settings),
+        keyHashes,
         koboldai_settings,
         koboldai_setting_names,
         world_names,

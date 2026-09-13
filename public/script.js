@@ -9840,11 +9840,9 @@ export async function getSettings(initLoaderHandle = null, onStageChange = null)
 
     const data = await response.json();
     if (data.result != 'file not find' && data.settings) {
-        // Hashed as-received (before parsing) so this matches what the server will hash on the next save.
-        knownServerSettingsHash = getStringHash(data.settings);
+        knownServerSettingsHash = data.settingsHash;
         settings = JSON.parse(data.settings);
-        // Recursive - a dirty key can be an arbitrarily deep dotted path (e.g. 'power_user.reasoning.name').
-        seedKeyHashes(serverKeyHashes, settings);
+        Object.assign(serverKeyHashes, data.keyHashes);
         if (settings.username !== undefined && settings.username !== '') {
             name1 = settings.username;
             $('#your_name').text(name1);
@@ -9967,7 +9965,6 @@ export async function getSettings(initLoaderHandle = null, onStageChange = null)
     // Seeds the dirty-check baseline so the first saveSettings() doesn't re-write the exact payload it just received.
     const bootPayload = JSON.stringify({
         firstRun: firstRun,
-        accountStorage: accountStorage.getState(),
         currentVersion: currentVersion,
         username: name1,
         active_character: active_character,
@@ -10041,7 +10038,6 @@ async function performSave() {
 
     const payload = {
         firstRun: firstRun,
-        accountStorage: accountStorage.getState(),
         currentVersion: currentVersion,
         username: name1,
         active_character: active_character,
