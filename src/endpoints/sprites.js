@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import express from 'express';
+import fetch from 'node-fetch';
 import mime from 'mime-types';
 import sanitize from 'sanitize-filename';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
@@ -108,6 +109,83 @@ export function importRisuSprites(directories, data) {
         // Remove additionalAssets and emotions from data (they are now in the sprites folder)
         delete data.data.extensions.risuai.additionalAssets;
         delete data.data.extensions.risuai.emotions;
+    } catch (error) {
+        console.error(error);
+    }
+}
+
+/**
+ * Imports a Chub expression pack (CCv2 extensions.chub.expressions - a map of emotion label to
+ * an individual image URL, per https://github.com/malfoyslastname/character-card-spec-v2) into
+ * the character's sprites folder. Detached/best-effort: this fires background network fetches
+ * (up to 28 images) and does not await them, so it never blocks or fails the character import
+ * itself - a character with no bundled pack, or one whose images fail to fetch, imports exactly
+ * as it would have without this. Doesn't distinguish extensions.chub.is_default (Chub's shared
+ * placeholder pack found on many otherwise-customless characters) from a bespoke one; whatever
+ * the card actually carries is what gets imported, same as any other card field.
+ *
+ * Same folder-naming caveat as importRisuSprites() above: keyed by the character's display name,
+ * not its avatar identity, so two different characters sharing a name would - at import time -
+ * write into the same sprites folder. Left consistent with the sibling function above rather
+ * than fixed here; fixing it needs the eventual avatar filename threaded into this pure,
+ * no-file-IO-yet transform, which none of its three call sites currently pass through.
+ *
+ * @param {import('../users.js').UserDirectoryList} directories User directories
+ * @param {object} data Character data (V2/V3 spec)
+ * @returns {void}
+ */
+export function importChubExpressions(directories, data) {
+    try {
+        const name = data?.data?.name;
+        const expressions = data?.data?.extensions?.chub?.expressions;
+
+        if (!name || !expressions || typeof expressions !== 'object') {
+            return;
+        }
+
+        const entries = Object.entries(expressions).filter(([, url]) => typeof url === 'string' && url);
+        if (entries.length === 0) {
+            return;
+        }
+
+        const spritesPath = getSpritesPath(directories, name, false);
+        if (!spritesPath) {
+            return;
+        }
+
+        if (!fs.existsSync(spritesPath)) {
+            fs.mkdirSync(spritesPath, { recursive: true });
+        }
+
+        if (!fs.statSync(spritesPath).isDirectory()) {
+            return;
+        }
+
+        const existingLabels = new Set(fs.readdirSync(spritesPath).map(f => path.parse(f).name));
+
+        console.info(`Chub: Found ${entries.length} expression(s) for ${name}. Fetching in the background.`);
+
+        // Detached on purpose - see doc comment above. Errors are logged, never thrown upward.
+        (async () => {
+            for (const [label, url] of entries) {
+                if (existingLabels.has(label)) {
+                    console.warn(`Chub: The sprite ${label} for ${name} already exists. Skipping.`);
+                    continue;
+                }
+                try {
+                    const result = await fetch(url);
+                    if (!result.ok) {
+                        console.warn(`Chub: Failed to download expression "${label}" for ${name}: HTTP ${result.status}`);
+                        continue;
+                    }
+                    const buffer = Buffer.from(await result.arrayBuffer());
+                    const pathToFile = path.join(spritesPath, sanitize(`${label}.png`));
+                    writeFileAtomicSync(pathToFile, buffer);
+                } catch (error) {
+                    console.warn(`Chub: Failed to download expression "${label}" for ${name}:`, error.message);
+                }
+            }
+        })();
     } catch (error) {
         console.error(error);
     }

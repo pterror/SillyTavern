@@ -22,7 +22,7 @@ import { getCharaCardV2, convertToV2, readFromV2, charaFormatData, unsetPrivateF
 import { calculateChatSize, calculateDataSize, toShallow } from '../character-shallow.js';
 import { touchBrowserPresence, PRESENCE_PING_INTERVAL_MS } from '../browser-presence.js';
 import { invalidateThumbnail, getThumbnailVersion } from './thumbnails.js';
-import { importRisuSprites } from './sprites.js';
+import { importRisuSprites, importChubExpressions } from './sprites.js';
 import { getChatInfo } from './chats.js';
 import { hasSavedChats, listBranches as listTreeBranches } from '../message-tree-db.js';
 import { ByafParser } from '../byaf.js';
@@ -742,6 +742,7 @@ export function buildJsonImportData(rawText, directories) {
 
     if (jsonData.spec !== undefined) {
         importRisuSprites(directories, jsonData);
+        importChubExpressions(directories, jsonData);
         const rawName = jsonData.data?.name || jsonData.name;
         if (jsonData.data?.name) {
             jsonData.data.name = sanitize(jsonData.data.name);
@@ -846,6 +847,7 @@ export function buildPngImportData(rawText, directories) {
 
     if (jsonData.spec !== undefined) {
         importRisuSprites(directories, jsonData);
+        importChubExpressions(directories, jsonData);
         jsonData = readFromV2(jsonData);
         jsonData.create_date = new Date().toISOString();
         omitInstallLocalFields(jsonData);
