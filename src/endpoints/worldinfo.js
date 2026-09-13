@@ -6,6 +6,7 @@ import sanitize from 'sanitize-filename';
 import _ from 'lodash';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
 import { tryParse } from '../util.js';
+import { readSettingsAtPaths, writeSettingsKeys } from '../settings-store.js';
 
 /** Marks a World Info file as migrated to the sidecar format; absent means entries live inline. */
 const WORLD_INFO_SIDECAR_FORMAT = 'sidecar-v1';
@@ -174,6 +175,57 @@ router.post('/get', (request, response) => {
     const file = readWorldInfoFile(request.user.directories, request.body.name, true);
 
     return response.send(file);
+});
+
+/**
+ * Adds, removes, or replaces a character's additional (auxiliary) World Info bindings, in one
+ * round trip: the client sends the action, not a client-computed next array, so it never needs
+ * a fresh copy of world_info_settings just to mutate one character's entry, and this endpoint's
+ * write scope is limited to exactly that one sub-path - not the whole settings key, let alone
+ * the whole settings store.
+ */
+router.post('/char-aux-books', (request, response) => {
+    const { characterAvatar, op, books } = request.body ?? {};
+    if (typeof characterAvatar !== 'string' || !characterAvatar) {
+        return response.status(400).send({ result: 'error', error: 'characterAvatar is required' });
+    }
+    if (!['add', 'remove', 'set'].includes(op)) {
+        return response.status(400).send({ result: 'error', error: 'op must be one of: add, remove, set' });
+    }
+    const requested = (Array.isArray(books) ? books : [books]).filter(b => typeof b === 'string' && b);
+    if (op !== 'remove' && requested.length === 0) {
+        return response.status(400).send({ result: 'error', error: 'books must be a non-empty string or array of strings' });
+    }
+
+    // Reject names that don't correspond to a real World file - the whole point of a dedicated
+    // endpoint is that the server decides what's a legal binding, not whatever the client asserts.
+    const unknownBooks = requested.filter(name => !fs.existsSync(getWorldInfoPaths(request.user.directories, name).pathToWorldInfo));
+    if (unknownBooks.length > 0) {
+        return response.status(404).send({ result: 'error', error: 'Unknown World(s)', unknownBooks });
+    }
+
+    const path_ = 'world_info_settings.charLore';
+    const current = readSettingsAtPaths(request.user.directories, [path_])[path_];
+    const charLore = Array.isArray(current) ? current : [];
+    const idx = charLore.findIndex(e => e?.name === characterAvatar);
+    const existingBooks = idx !== -1 && Array.isArray(charLore[idx].extraBooks) ? charLore[idx].extraBooks : [];
+
+    let nextBooks;
+    if (op === 'add') nextBooks = [...new Set([...existingBooks, ...requested])];
+    else if (op === 'remove') nextBooks = existingBooks.filter(b => !requested.includes(b));
+    else nextBooks = [...new Set(requested)];
+
+    const nextCharLore = [...charLore];
+    if (nextBooks.length === 0) {
+        if (idx !== -1) nextCharLore.splice(idx, 1);
+    } else if (idx === -1) {
+        nextCharLore.push({ name: characterAvatar, extraBooks: nextBooks });
+    } else {
+        nextCharLore[idx] = { ...nextCharLore[idx], extraBooks: nextBooks };
+    }
+
+    writeSettingsKeys(request.user.directories, { [path_]: nextCharLore });
+    return response.send({ result: 'ok', extraBooks: nextBooks });
 });
 
 router.post('/delete', (request, response) => {
