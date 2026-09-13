@@ -6349,10 +6349,36 @@ export async function charSetAuxWorlds(fileName, books) {
 }
 
 /**
+ * Applies { characterAvatar, op, books } to a charLore array, same semantics the server applies.
+ * Shared by the optimistic local update and (implicitly, by construction) the server's own logic.
+ * @param {Array} charLore
+ * @param {string} fileName
+ * @param {'add'|'set'} op
+ * @param {string[]} books
+ * @returns {Array} a new charLore array
+ */
+function applyAuxBooksOp(charLore, fileName, op, books) {
+    const idx = charLore.findIndex(e => e.name === fileName);
+    const existing = idx !== -1 && Array.isArray(charLore[idx].extraBooks) ? charLore[idx].extraBooks : [];
+    const next = op === 'add' ? [...new Set([...existing, ...books])] : [...new Set(books)];
+
+    const result = [...charLore];
+    if (next.length === 0) {
+        if (idx !== -1) result.splice(idx, 1);
+    } else if (idx === -1) {
+        result.push({ name: fileName, extraBooks: next });
+    } else {
+        result[idx] = { ...result[idx], extraBooks: next };
+    }
+    return result;
+}
+
+/**
  * Sends the add/set as a single action to the server (one round trip: server reads the
  * character's current extraBooks, applies the op, validates each name is a real World, and
- * writes back - the client never needs its own fresh copy of world_info.charLore just to
- * mutate one character's entry), then updates the local cache from the server's response.
+ * writes back). Updates the local cache optimistically first for instant UI feedback, then
+ * reconciles with the server's own confirmed result once the response lands, or rolls back
+ * and surfaces an error if the server rejects it (e.g. an unknown World name).
  * @param {string} fileName
  * @param {'add'|'set'} op
  * @param {string[]} books
@@ -6368,6 +6394,9 @@ async function updateAuxBooks(fileName, op, books) {
         return;
     }
 
+    const previousCharLore = world_info.charLore ?? [];
+    Object.assign(world_info, { charLore: applyAuxBooksOp(previousCharLore, fileName, op, books) });
+
     try {
         const response = await fetch('/api/worldinfo/additional-books', {
             method: 'POST',
@@ -6376,12 +6405,14 @@ async function updateAuxBooks(fileName, op, books) {
         });
         if (!response.ok) {
             const data = await response.json().catch(() => ({}));
+            Object.assign(world_info, { charLore: previousCharLore });
             toastr.error(data?.error || t`Failed to update additional lorebooks`);
             return;
         }
         const { extraBooks } = await response.json();
 
-        // Sync the local cache from the server's own confirmed result, not a locally-recomputed guess.
+        // Reconcile with the server's own confirmed result (should normally match the optimistic
+        // guess exactly, but this is the authoritative value, not a repeat of our own computation).
         const charLore = world_info.charLore ?? [];
         const idx = charLore.findIndex(e => e.name === fileName);
         if (extraBooks.length === 0) {
@@ -6393,6 +6424,7 @@ async function updateAuxBooks(fileName, op, books) {
         }
         Object.assign(world_info, { charLore });
     } catch (error) {
+        Object.assign(world_info, { charLore: previousCharLore });
         console.error('Failed to update additional lorebooks', error);
         toastr.error(t`Failed to update additional lorebooks`);
     }
