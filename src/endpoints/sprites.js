@@ -115,14 +115,81 @@ export function importRisuSprites(directories, data) {
 }
 
 /**
- * Imports a Chub expression pack (CCv2 extensions.chub.expressions - a map of emotion label to
- * an individual image URL, per https://github.com/malfoyslastname/character-card-spec-v2) into
- * the character's sprites folder. Detached/best-effort: this fires background network fetches
- * (up to 28 images) and does not await them, so it never blocks or fails the character import
- * itself - a character with no bundled pack, or one whose images fail to fetch, imports exactly
- * as it would have without this. Doesn't distinguish extensions.chub.is_default (Chub's shared
- * placeholder pack found on many otherwise-customless characters) from a bespoke one; whatever
- * the card actually carries is what gets imported, same as any other card field.
+ * Downloads one Chub expression pack's images into a sprites folder. Detached/best-effort - the
+ * caller doesn't await this, so a character with no pack, or one whose images fail to fetch,
+ * imports exactly as it would have otherwise.
+ * @param {string} spritesPath Resolved sprites folder (already confirmed to exist as a directory)
+ * @param {string} label Human-readable label for log lines (character name, optionally "name/altKey")
+ * @param {Record<string, unknown>} expressionsMap Emotion label -> value, per ChubExpressionPack.expressions
+ */
+async function downloadChubExpressionPack(spritesPath, label, expressionsMap) {
+    const existingLabels = new Set(fs.readdirSync(spritesPath).map(f => path.parse(f).name));
+
+    // Only a plain http(s) URL is fetchable directly. Some packs may carry a bare filename meant
+    // to be resolved against the pack's `compressed` zip instead (unconfirmed against a real
+    // sample so far) - those are skipped rather than guessed at.
+    const entries = Object.entries(expressionsMap)
+        .filter(([, value]) => typeof value === 'string' && /^https?:\/\//.test(value));
+
+    if (entries.length === 0) {
+        return;
+    }
+
+    console.info(`Chub: Found ${entries.length} expression(s) for ${label}. Fetching in the background.`);
+
+    for (const [emotion, url] of entries) {
+        if (existingLabels.has(emotion)) {
+            console.warn(`Chub: The sprite ${emotion} for ${label} already exists. Skipping.`);
+            continue;
+        }
+        try {
+            const result = await fetch(url);
+            if (!result.ok) {
+                console.warn(`Chub: Failed to download expression "${emotion}" for ${label}: HTTP ${result.status}`);
+                continue;
+            }
+            const buffer = Buffer.from(await result.arrayBuffer());
+            const pathToFile = path.join(spritesPath, sanitize(`${emotion}.png`));
+            writeFileAtomicSync(pathToFile, buffer);
+        } catch (error) {
+            console.warn(`Chub: Failed to download expression "${emotion}" for ${label}:`, error.message);
+        }
+    }
+}
+
+/**
+ * Ensures a sprites folder exists and is a directory, creating it if needed.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {string} name Character name, optionally "name/subfolder"
+ * @param {boolean} isSubfolder
+ * @returns {string | null} The resolved path, or null if invalid/not a directory
+ */
+function ensureSpritesPath(directories, name, isSubfolder) {
+    const spritesPath = getSpritesPath(directories, name, isSubfolder);
+    if (!spritesPath) {
+        return null;
+    }
+    if (!fs.existsSync(spritesPath)) {
+        fs.mkdirSync(spritesPath, { recursive: true });
+    }
+    if (!fs.statSync(spritesPath).isDirectory()) {
+        return null;
+    }
+    return spritesPath;
+}
+
+/**
+ * Imports Chub expression pack(s) - CCv2 extensions.chub.expressions (the primary/default pack)
+ * and extensions.chub.alt_expressions (a map of named alternate packs, each shaped the same way)
+ * - per https://github.com/malfoyslastname/character-card-spec-v2. Each pack is a map of emotion
+ * label to an individual image URL. Detached/best-effort: fires background network fetches and
+ * does not await them, so it never blocks or fails the character import itself. Doesn't
+ * distinguish a pack's is_default (confirmed unreliable as a "generic placeholder vs bespoke art"
+ * signal) - whatever the card actually carries is what gets imported, same as any other field.
+ *
+ * The primary pack goes into the character's own sprites folder; each alt pack goes into its own
+ * "name/altKey" subfolder (the same subfolder convention /spriteoverride and /uploadsprite's
+ * folder= already use), so multiple packs on one character don't collide.
  *
  * Same folder-naming caveat as importRisuSprites() above: keyed by the character's display name,
  * not its avatar identity, so two different characters sharing a name would - at import time -
@@ -137,53 +204,39 @@ export function importRisuSprites(directories, data) {
 export function importChubExpressions(directories, data) {
     try {
         const name = data?.data?.name;
-        const expressions = data?.data?.extensions?.chub?.expressions;
-
-        if (!name || !expressions || typeof expressions !== 'object') {
+        const chubExt = data?.data?.extensions?.chub;
+        if (!name || !chubExt) {
             return;
         }
 
-        const entries = Object.entries(expressions).filter(([, url]) => typeof url === 'string' && url);
-        if (entries.length === 0) {
+        /** @type {[string, string, Record<string, unknown>][]} [spritesPath, label, expressionsMap] jobs, resolved synchronously up front so any invalid path is caught before kicking off network work. */
+        const jobs = [];
+
+        const primaryExpressions = chubExt.expressions?.expressions;
+        if (primaryExpressions && typeof primaryExpressions === 'object') {
+            const spritesPath = ensureSpritesPath(directories, name, false);
+            if (spritesPath) jobs.push([spritesPath, name, primaryExpressions]);
+        }
+
+        if (chubExt.alt_expressions && typeof chubExt.alt_expressions === 'object') {
+            for (const [altKey, altPack] of Object.entries(chubExt.alt_expressions)) {
+                const altExpressions = altPack?.expressions;
+                if (!altExpressions || typeof altExpressions !== 'object') continue;
+                const label = `${name}/${altKey}`;
+                const spritesPath = ensureSpritesPath(directories, label, true);
+                if (spritesPath) jobs.push([spritesPath, label, altExpressions]);
+            }
+        }
+
+        if (jobs.length === 0) {
             return;
         }
-
-        const spritesPath = getSpritesPath(directories, name, false);
-        if (!spritesPath) {
-            return;
-        }
-
-        if (!fs.existsSync(spritesPath)) {
-            fs.mkdirSync(spritesPath, { recursive: true });
-        }
-
-        if (!fs.statSync(spritesPath).isDirectory()) {
-            return;
-        }
-
-        const existingLabels = new Set(fs.readdirSync(spritesPath).map(f => path.parse(f).name));
-
-        console.info(`Chub: Found ${entries.length} expression(s) for ${name}. Fetching in the background.`);
 
         // Detached on purpose - see doc comment above. Errors are logged, never thrown upward.
+        // Sequential across packs (not Promise.all) to keep concurrent outbound fetches bounded.
         (async () => {
-            for (const [label, url] of entries) {
-                if (existingLabels.has(label)) {
-                    console.warn(`Chub: The sprite ${label} for ${name} already exists. Skipping.`);
-                    continue;
-                }
-                try {
-                    const result = await fetch(url);
-                    if (!result.ok) {
-                        console.warn(`Chub: Failed to download expression "${label}" for ${name}: HTTP ${result.status}`);
-                        continue;
-                    }
-                    const buffer = Buffer.from(await result.arrayBuffer());
-                    const pathToFile = path.join(spritesPath, sanitize(`${label}.png`));
-                    writeFileAtomicSync(pathToFile, buffer);
-                } catch (error) {
-                    console.warn(`Chub: Failed to download expression "${label}" for ${name}:`, error.message);
-                }
+            for (const [spritesPath, label, expressionsMap] of jobs) {
+                await downloadChubExpressionPack(spritesPath, label, expressionsMap);
             }
         })();
     } catch (error) {
