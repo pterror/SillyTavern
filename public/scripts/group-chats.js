@@ -20,7 +20,7 @@ import {
     paginationDropdownChangeHandler,
     waitUntilCondition,
 } from './utils.js';
-import { RA_CountCharTokens, humanizedDateTime, dragElement, favsToHotswap, getMessageTimeStamp } from './RossAscends-mods.js';
+import { RA_CountCharTokens, dragElement, favsToHotswap, getMessageTimeStamp } from './RossAscends-mods.js';
 import { power_user, loadMovingUIState, sortEntitiesList, invalidateGroupsFuseIndex } from './power-user.js';
 import { debounce_timeout } from './constants.js';
 import { getRandomSortSeed } from './random-sort.js';
@@ -194,6 +194,20 @@ async function _save(group, reload = true, { silentGroups = false } = {}) {
     if (reload) {
         await getCharacters({ silentGroups });
     }
+}
+
+/**
+ * Saves a single group property without re-uploading the whole group object.
+ * @param {string} id Group ID
+ * @param {object} props Properties to merge into the stored group
+ * @returns {Promise<void>}
+ */
+async function saveGroupProperty(id, props) {
+    await fetch('/api/groups/save-partial', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ id, props }),
+    });
 }
 
 // Group chats
@@ -2091,9 +2105,7 @@ async function uploadGroupAvatar(event) {
     //remove data:image/whatever;base64
     thumbnail = thumbnail.replace(/^data:image\/[a-z]+;base64,/, '');
     let _thisGroup = groupsStore.get(openGroupId);
-    // filename should be group id + human readable timestamp
-    const filename = _thisGroup ? `${_thisGroup.id}_${humanizedDateTime()}` : humanizedDateTime();
-    let thumbnailUrl = await saveBase64AsFile(thumbnail, String(openGroupId ?? ''), filename, 'jpg');
+    let thumbnailUrl = await saveBase64AsFile(thumbnail, String(openGroupId ?? ''), undefined, 'jpg');
     if (!openGroupId) {
         $('#group_avatar_preview img').attr('src', thumbnailUrl);
         $('#rm_group_restore_avatar').show();
@@ -2145,7 +2157,7 @@ async function onGroupActionClick(event) {
         if (index !== -1) {
             _thisGroup.disabled_members.splice(index, 1);
             groupsStore.update(openGroupId, { disabled_members: _thisGroup.disabled_members });
-            await editGroup(openGroupId, false, false);
+            await saveGroupProperty(openGroupId, { disabled_members: _thisGroup.disabled_members });
         }
     }
 
@@ -2155,7 +2167,7 @@ async function onGroupActionClick(event) {
         if (!_thisGroup.disabled_members.includes(member.data('id'))) {
             _thisGroup.disabled_members.push(member.data('id'));
             groupsStore.update(openGroupId, { disabled_members: _thisGroup.disabled_members });
-            await editGroup(openGroupId, false, false);
+            await saveGroupProperty(openGroupId, { disabled_members: _thisGroup.disabled_members });
         }
     }
 
@@ -2275,10 +2287,8 @@ async function createGroup() {
     }
 
     const avatarUrl = $('#group_avatar_preview img').attr('src');
-    const chatName = humanizedDateTime();
-    const chats = [chatName];
 
-    /** @type {Omit<Group, 'id'>} */
+    /** @type {Omit<Group, 'id' | 'chat_id' | 'chats'>} */
     const groupCreateModel = {
         name: name,
         members: members,
@@ -2289,8 +2299,6 @@ async function createGroup() {
         generation_mode: generationMode,
         disabled_members: [],
         fav: fav_grp_checked,
-        chat_id: chatName,
-        chats: chats,
         auto_mode_delay: autoModeDelay,
     };
 
@@ -2325,16 +2333,21 @@ export async function createNewGroupChat(groupId) {
     }
 
     await clearChat({ clearData: true });
-    const newChatName = humanizedDateTime();
-    group.chats.push(newChatName);
-    group.chat_id = newChatName;
-    updateChatMetadata({}, true);
 
-    // group.chats/chat_id already mutated above in place - this is purely to report the change via
-    // groupsStore, not to change the value again (same reference-passthrough pattern as chunk D).
+    const response = await fetch('/api/groups/new-chat', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ id: group.id }),
+    });
+    if (!response.ok) {
+        return;
+    }
+    const { chat_id, chats } = await response.json();
+    group.chats = chats;
+    group.chat_id = chat_id;
+    updateChatMetadata({}, true);
     groupsStore.update(group.id, { chats: group.chats, chat_id: group.chat_id });
 
-    await editGroup(group.id, true, false);
     await getGroupChat(group.id);
 }
 
@@ -2453,13 +2466,26 @@ export async function deleteGroupChatByName(groupId, chatName) {
 
     // If the deleted chat was the current chat, switch to the last chat in the group
     if (group.chat_id === chatName) {
-        const newChatName = group.chats.length ? group.chats[group.chats.length - 1] : humanizedDateTime();
-        group.chat_id = newChatName;
+        if (group.chats.length) {
+            group.chat_id = group.chats[group.chats.length - 1];
+        } else {
+            const newChatResponse = await fetch('/api/groups/new-chat', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ id: group.id }),
+            });
+            if (newChatResponse.ok) {
+                const { chat_id, chats } = await newChatResponse.json();
+                group.chats = chats;
+                group.chat_id = chat_id;
+            }
+        }
     }
 
     groupsStore.update(group.id, { chats: group.chats, chat_id: group.chat_id });
 
-    await editGroup(groupId, true, true, { silentGroups: true });
+    await saveGroupProperty(groupId, { chats: group.chats, chat_id: group.chat_id });
+    await getCharacters({ silentGroups: true });
     await eventSource.emit(event_types.GROUP_CHAT_DELETED, chatName);
 }
 

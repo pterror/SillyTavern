@@ -272,6 +272,71 @@ router.post('/edit', getFileNameValidationFunction('id'), async (request, respon
     return response.send({ ok: true });
 });
 
+/**
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {string} id
+ * @returns {object|null}
+ */
+function readGroupFile(directories, id) {
+    const pathToFile = path.join(directories.groups, sanitize(`${id}.json`));
+    if (!fs.existsSync(pathToFile)) {
+        return null;
+    }
+    return JSON.parse(fs.readFileSync(pathToFile, 'utf8'));
+}
+
+/**
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {object} group
+ */
+async function writeGroupFile(directories, group) {
+    const pathToFile = path.join(directories.groups, sanitize(`${group.id}.json`));
+    writeFileAtomicSync(pathToFile, JSON.stringify(group, null, 4));
+    await upsertGroupRow(directories, group.id, group.name, { fav: group.fav, group }).catch(err =>
+        console.error(`Could not update group metadata store for ${group.id}:`, err));
+}
+
+// Field-level counterpart to /edit for single-property changes (e.g. toggling one member) - avoids
+// a whole-object last-write-wins save clobbering unrelated concurrent edits.
+router.post('/save-partial', getFileNameValidationFunction('id'), async (request, response) => {
+    const { id, props } = request.body ?? {};
+    if (!id || !props || typeof props !== 'object' || Array.isArray(props)) {
+        return response.sendStatus(400);
+    }
+
+    const group = readGroupFile(request.user.directories, id);
+    if (!group) {
+        return response.sendStatus(404);
+    }
+
+    warnOnGroupMetadata(props);
+    const { id: _id, ...safeProps } = props;
+    Object.assign(group, safeProps);
+
+    await writeGroupFile(request.user.directories, group);
+    return response.send({ ok: true });
+});
+
+// Mints a new chat id for an existing group, the same way /create mints one for a brand new group.
+router.post('/new-chat', getFileNameValidationFunction('id'), async (request, response) => {
+    const { id } = request.body ?? {};
+    if (!id) {
+        return response.sendStatus(400);
+    }
+
+    const group = readGroupFile(request.user.directories, id);
+    if (!group) {
+        return response.sendStatus(404);
+    }
+
+    const chatId = String(Date.now());
+    group.chats = Array.isArray(group.chats) ? [...group.chats, chatId] : [chatId];
+    group.chat_id = chatId;
+
+    await writeGroupFile(request.user.directories, group);
+    return response.send({ chat_id: chatId, chats: group.chats });
+});
+
 router.post('/delete', getFileNameValidationFunction('id'), async (request, response) => {
     if (!request.body || !request.body.id) {
         return response.sendStatus(400);
