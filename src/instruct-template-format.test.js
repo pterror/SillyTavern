@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { formatInstructModeChat, formatInstructModePrompt, formatInstructModeStoryString, force_output_sequence } from './instruct-template-format.js';
+import { formatInstructModeChat, formatInstructModePrompt, formatInstructModeStoryString, force_output_sequence, getInstructStoppingSequences, constructPrompt } from './instruct-template-format.js';
 
 // A representative preset, shaped like a real instruct preset (ChatML-style) on disk.
 const preset = {
@@ -110,5 +110,76 @@ assert.equal(
     formatInstructModeStoryString('Once upon a time.', preset, { story_string_position: 1, name2: 'Bob' }),
     'Once upon a time.',
 );
+
+// getInstructStoppingSequences: basic sequences + sequences_as_stop_strings + {{name}} substitution
+{
+    const stopPreset = {
+        ...preset, enabled: true, stop_sequence: '', sequences_as_stop_strings: true,
+        input_sequence: '<|im_start|>user\n', output_sequence: '<|im_start|>assistant\n',
+        first_output_sequence: '', last_output_sequence: '<|im_start|>assistant\n',
+        system_sequence: '<|im_start|>system\n', last_system_sequence: '',
+    };
+    const sequences = getInstructStoppingSequences(stopPreset, {}, { name1: 'Alice', name2: 'Bob' });
+    // combined_sequence is joined and re-split on '\n', so each sequence's own trailing newline is
+    // stripped off as a separate (empty, filtered-out) line - matches the client exactly.
+    assert.equal(sequences.includes('<|im_start|>user'), true);
+    assert.equal(sequences.includes('<|im_start|>assistant'), true);
+    assert.equal(sequences.includes('<|im_start|>system'), true);
+    // Deduped: output_sequence and last_output_sequence are identical strings here
+    assert.equal(sequences.filter(s => s === '<|im_start|>assistant').length, 1);
+}
+
+// getInstructStoppingSequences: context-template stop strings (chat_start/example_separator)
+{
+    const disabledPreset = { ...preset, enabled: false };
+    const sequences = getInstructStoppingSequences(disabledPreset, {
+        use_stop_strings: true, chat_start: '<START>', example_separator: '<EXAMPLE>',
+    }, { name1: 'Alice', name2: 'Bob' });
+    assert.deepEqual(sequences, ['\n<START>', '\n<EXAMPLE>']);
+}
+
+// constructPrompt: solo chat, names_behavior FORCE - no name prefix (not a group, no forced avatar)
+// Third message makes the assistant message non-last, so it's formatted via formatInstructModeChat
+// rather than treated as an assistant-prefill continuation (which uses a different code path/param).
+{
+    const forcePreset = { ...preset, names_behavior: 'force', enabled: true };
+    const result = constructPrompt(
+        [{ role: 'user', content: 'hi' }, { role: 'assistant', content: 'hello' }, { role: 'user', content: 'thanks' }],
+        forcePreset, { name1: 'Alice', name2: 'Bob', isGroup: false },
+    );
+    assert.equal(result.includes('Bob:'), false, 'solo chat with FORCE names_behavior should not prefix the character name');
+}
+
+// constructPrompt: group chat, names_behavior FORCE - name prefix IS included (the isGroup bug this session fixed)
+// Third message makes the group assistant message non-last, so it's formatted via formatInstructModeChat
+// rather than treated as an assistant-prefill continuation (which uses a different code path/param).
+{
+    const forcePreset = { ...preset, names_behavior: 'force', enabled: true };
+    const result = constructPrompt(
+        [{ role: 'user', content: 'hi' }, { role: 'assistant', name: 'Carol', content: 'hello' }, { role: 'user', content: 'thanks' }],
+        forcePreset, { name1: 'Alice', name2: 'Bob', isGroup: true },
+    );
+    assert.equal(result.includes('Carol: hello'), true, 'group chat with FORCE names_behavior must prefix the character name');
+}
+
+// constructPrompt: last message appends the assistant prompt line (no prefill). This continuation
+// line is always generated with isQuiet=true/isQuietToLoud=false, which per formatInstructModePrompt's
+// includeNames formula suppresses the name prefix regardless of names_behavior - by design, verified
+// against the actual client code path, not a gap in this port.
+{
+    const alwaysPreset = { ...preset, names_behavior: 'always', enabled: true };
+    const result = constructPrompt([{ role: 'user', content: 'hi' }], alwaysPreset, { name1: 'Alice', name2: 'Bob' });
+    assert.equal(result.endsWith('<|im_start|>assistant\n'), true);
+}
+
+// constructPrompt: assistant-prefill (last message is already role:assistant) formats as the prefill itself
+{
+    const simplePreset = { ...preset, names_behavior: 'none', enabled: true };
+    const result = constructPrompt(
+        [{ role: 'user', content: 'hi' }, { role: 'assistant', content: 'Well,' }],
+        simplePreset, { name1: 'Alice', name2: 'Bob' },
+    );
+    assert.equal(result.endsWith('Well,'), true);
+}
 
 console.log('instruct-template-format.test.js: all assertions passed');
