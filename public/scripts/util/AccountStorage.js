@@ -52,11 +52,6 @@ class AccountStorage {
 
         globalThis.localStorage.removeItem(key);
     }
-
-    // Kept for callers that still read a server-side snapshot; state now lives only in localStorage.
-    getState() {
-        return {};
-    }
 }
 
 export const accountStorage = new AccountStorage();
