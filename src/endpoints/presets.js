@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import express from 'express';
+import _ from 'lodash';
 import sanitize from 'sanitize-filename';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
 
@@ -78,6 +79,78 @@ router.post('/delete', function (request, response) {
     } else {
         return response.sendStatus(404);
     }
+});
+
+router.post('/rename', function (request, response) {
+    const oldName = sanitize(request.body.name);
+    const newName = sanitize(request.body.newName);
+    if (!oldName || !newName) {
+        return response.sendStatus(400);
+    }
+
+    const settings = getPresetSettingsByAPI(request.body.apiId, request.user.directories);
+    if (!settings.folder) {
+        return response.sendStatus(400);
+    }
+
+    const oldPath = path.join(settings.folder, oldName + settings.extension);
+    const newPath = path.join(settings.folder, newName + settings.extension);
+
+    if (!fs.existsSync(oldPath)) {
+        return response.sendStatus(404);
+    }
+
+    if (fs.existsSync(newPath)) {
+        return response.status(400).send({ error: 'A preset with the new name already exists' });
+    }
+
+    fs.renameSync(oldPath, newPath);
+    return response.send({ name: newName });
+});
+
+/**
+ * Merges a value into a preset's `extensions` object at the given lodash path, without touching the rest
+ * of the preset. Mirrors the settings-store /save-partial pattern.
+ */
+router.post('/save-partial', function (request, response) {
+    const name = sanitize(request.body.name);
+    if (!name) {
+        return response.sendStatus(400);
+    }
+
+    const settings = getPresetSettingsByAPI(request.body.apiId, request.user.directories);
+    if (!settings.folder) {
+        return response.sendStatus(400);
+    }
+
+    const fullpath = path.join(settings.folder, name + settings.extension);
+    if (!fs.existsSync(fullpath)) {
+        return response.sendStatus(404);
+    }
+
+    let preset;
+    try {
+        preset = JSON.parse(fs.readFileSync(fullpath, 'utf-8'));
+    } catch (err) {
+        console.error('Could not read preset for partial update', err);
+        return response.status(500).send({ error: 'Preset file is not valid JSON' });
+    }
+
+    const fieldPath = request.body.path;
+    const value = request.body.value;
+
+    if (!_.isPlainObject(preset.extensions)) {
+        preset.extensions = {};
+    }
+
+    if (fieldPath) {
+        _.set(preset.extensions, fieldPath, value);
+    } else {
+        preset.extensions = value;
+    }
+
+    writeFileAtomicSync(fullpath, JSON.stringify(preset, null, 4), 'utf-8');
+    return response.send({ ok: true });
 });
 
 router.post('/restore', function (request, response) {
