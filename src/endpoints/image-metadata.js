@@ -616,6 +616,30 @@ export async function unassignImagesFromFolder(userDataRoot, folderId, relativeP
     }
 }
 
+/**
+ * Sets the complete folder membership for a single image, replacing whatever it had before.
+ * @param {string} userDataRoot
+ * @param {string} relativePath
+ * @param {string[]} folderIds
+ * @returns {Promise<void>}
+ */
+export async function setImageFolderMembership(userDataRoot, relativePath, folderIds) {
+    await ensureMigrated(userDataRoot);
+    const folders = await readFolders(userDataRoot);
+    const validIds = folderIds.filter(id => folders.some(f => f.id === id));
+
+    const posixPath = relativePath.replaceAll(path.sep, path.posix.sep);
+    const normalized = path.posix.normalize(posixPath);
+    if (!normalized.startsWith('backgrounds/') || normalized.split('/').some(seg => seg === '..')) {
+        throw new Error(`Invalid background path: '${posixPath}'`);
+    }
+
+    let meta = await readImageMeta(userDataRoot, posixPath);
+    if (!meta) meta = { folderIds: [] };
+    meta.folderIds = validIds;
+    await writeImageMeta(userDataRoot, posixPath, meta);
+}
+
 export const router = express.Router();
 
 /**
@@ -730,6 +754,27 @@ router.post('/folders/assign', async function (request, response) {
             return response.status(404).json({ error: error.message });
         }
         console.error('[ImageMetadata] Folder assign error:', error);
+        return response.status(500).json({ error: 'Internal server error.' });
+    }
+});
+
+/**
+ * POST /api/image-metadata/folders/set-membership
+ * Set the complete folder membership for a single image. Body: { path: string, folderIds: string[] }
+ */
+router.post('/folders/set-membership', async function (request, response) {
+    try {
+        const { path: relativePath, folderIds } = request.body;
+        if (!relativePath || typeof relativePath !== 'string') {
+            return response.status(400).json({ error: '"path" is required.' });
+        }
+        if (!Array.isArray(folderIds)) {
+            return response.status(400).json({ error: '"folderIds" array is required.' });
+        }
+        await setImageFolderMembership(request.user.directories.root, relativePath, folderIds);
+        return response.json({ ok: true });
+    } catch (error) {
+        console.error('[ImageMetadata] Folder set-membership error:', error);
         return response.status(500).json({ error: 'Internal server error.' });
     }
 });

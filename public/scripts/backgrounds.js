@@ -776,29 +776,6 @@ async function loadFolders() {
             folderList = data.folders || [];
             imageFolderMap = data.imageFolderMap || {};
 
-            const allImages = cachedSystemBackgrounds.map(img => img.filename);
-            /** @type {{id: string, thumbnailFile: string}[]} */
-            const thumbnailUpdates = [];
-            for (const folder of folderList) {
-                if (!folder.thumbnailFile) {
-                    const firstImage = allImages.find(img => {
-                        const fids = imageFolderMap[img];
-                        return fids && fids.includes(folder.id);
-                    });
-                    if (firstImage) {
-                        folder.thumbnailFile = firstImage;
-                        thumbnailUpdates.push({ id: folder.id, thumbnailFile: firstImage });
-                    }
-                }
-            }
-            if (thumbnailUpdates.length > 0) {
-                await fetch('/api/image-metadata/folders/set-thumbnails', {
-                    method: 'POST',
-                    headers: getRequestHeaders(),
-                    body: JSON.stringify({ updates: thumbnailUpdates }),
-                }).catch(err => console.debug('Auto-thumbnail save failed:', err));
-            }
-
             renderFolderGrid();
         }
     } catch (error) {
@@ -1283,22 +1260,25 @@ async function onAssignToFolder(bgFile) {
     const result = await callGenericPopup(content, POPUP_TYPE.CONFIRM, '', { okButton: t`Save`, cancelButton: t`Cancel` });
     if (!result) return;
 
-    const toAssign = [];
-    const toUnassign = [];
-    content.find('input[type="checkbox"]').each(function () {
-        const fid = $(this).data('folder-id');
-        const isChecked = $(this).prop('checked');
-        const wasChecked = currentFolderIds.includes(fid);
-        if (isChecked && !wasChecked) toAssign.push(fid);
-        if (!isChecked && wasChecked) toUnassign.push(fid);
+    const folderIds = [];
+    content.find('input[type="checkbox"]:checked').each(function () {
+        folderIds.push($(this).data('folder-id'));
     });
 
     try {
-        for (const fid of toAssign) {
-            await updateFolderAssignments([bgFile], fid, false);
+        const response = await fetch('/api/image-metadata/folders/set-membership', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ path: getBackgroundRelativePath(bgFile), folderIds }),
+        });
+        if (!response.ok) {
+            throw new Error(`Folder set-membership failed: ${response.status}`);
         }
-        for (const fid of toUnassign) {
-            await updateFolderAssignments([bgFile], fid, true);
+
+        if (folderIds.length > 0) {
+            imageFolderMap[bgFile] = folderIds;
+        } else {
+            delete imageFolderMap[bgFile];
         }
 
         renderFolderGrid();

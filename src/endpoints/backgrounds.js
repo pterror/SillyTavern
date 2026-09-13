@@ -5,7 +5,7 @@ import express from 'express';
 import sanitize from 'sanitize-filename';
 
 import { invalidateThumbnail, getThumbnailVersion } from './thumbnails.js';
-import { thumbnailDimensions, readMetadataIndex, renameMetadata, removeMetadata, getOrGenerateMetadataBatch } from './image-metadata.js';
+import { thumbnailDimensions, readMetadataIndex, renameMetadata, removeMetadata, getOrGenerateMetadataBatch, setFolderThumbnailsBatch } from './image-metadata.js';
 import { getImages } from '../util.js';
 import { getFileNameValidationFunction } from '../middleware/validateFileName.js';
 
@@ -59,6 +59,20 @@ router.post('/folders', async function (request, response) {
                 const filename = relativePath.split('/').pop() || relativePath;
                 imageFolderMap[filename] = meta.folderIds;
             }
+        }
+
+        const thumbnailUpdates = [];
+        for (const folder of folders) {
+            if (!folder.thumbnailFile) {
+                const firstImage = Object.keys(imageFolderMap).find(filename => imageFolderMap[filename].includes(folder.id));
+                if (firstImage) {
+                    folder.thumbnailFile = firstImage;
+                    thumbnailUpdates.push({ id: folder.id, thumbnailFile: firstImage });
+                }
+            }
+        }
+        if (thumbnailUpdates.length > 0) {
+            await setFolderThumbnailsBatch(request.user.directories.root, thumbnailUpdates);
         }
 
         response.json({ folders, imageFolderMap });
