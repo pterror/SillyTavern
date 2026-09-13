@@ -313,6 +313,14 @@ router.post('/generate', async function (request, response) {
                 { stoppingStrings, macroContext: { name1, name2 } },
             );
 
+            // Optional sampler-field overrides for this one call (e.g. a caller that wants a
+            // specific temperature without a whole separate profile/preset). Deliberately excludes
+            // routing (api_type/api_server/model) and the just-built prompt/stop-strings - those
+            // stay server-resolved, never client-asserted.
+            if (request.body.overrides && typeof request.body.overrides === 'object' && !Array.isArray(request.body.overrides)) {
+                Object.assign(params, _.omit(request.body.overrides, ['api_type', 'api_server', 'model', 'prompt', 'stop', 'stopping_strings']));
+            }
+
             // Replace the body entirely - none of the raw action fields (messages, name1/name2,
             // connection_profile_id, etc.) are part of the actual backend request shape.
             const stream = !!request.body.stream;
