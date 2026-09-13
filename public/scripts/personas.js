@@ -402,8 +402,9 @@ export async function getUserAvatars(doRender = true, openPageAt = '') {
 /**
  * Uploads an avatar file to the server
  * @param {string} url URL for the avatar file
- * @param {string} [name] Optional name for the avatar file
- * @returns {Promise} Promise that resolves when the avatar is uploaded
+ * @param {string} [name] Optional name of an existing avatar file to overwrite. Omit when creating
+ * a brand new persona - the server mints the filename and returns it.
+ * @returns {Promise<string>} The avatar filename the server stored the upload under
  */
 async function uploadUserAvatar(url, name) {
     const fetchResult = await fetch(url);
@@ -429,7 +430,9 @@ async function uploadUserAvatar(url, name) {
 
     // Get the actual path from the response
     const data = await response.json();
-    await getUserAvatars(true, data?.path || name);
+    const resolvedName = data?.path || name;
+    await getUserAvatars(true, resolvedName);
+    return resolvedName;
 }
 
 async function changeUserAvatar(e) {
@@ -541,10 +544,8 @@ async function createDummyPersona() {
         return;
     }
 
-    // Date + name (only ASCII) to make it unique
-    const avatarId = `${Date.now()}-${personaName.replace(/[^a-zA-Z0-9]/g, '')}.png`;
+    const avatarId = await uploadUserAvatar(default_user_avatar);
     await initPersona(avatarId, personaName, '', personaTitle);
-    await uploadUserAvatar(default_user_avatar, avatarId);
 }
 
 /**
@@ -1982,8 +1983,8 @@ async function duplicatePersona(avatarId, { silent = false, select = false } = {
         }
     }
 
-    const newAvatarId = `${Date.now()}-${personaName.replace(/[^a-zA-Z0-9]/g, '')}.png`;
     const descriptor = personaStore.get(avatarId);
+    const newAvatarId = await uploadUserAvatar(getUserAvatar(avatarId));
 
     personaStore.create(newAvatarId, {
         name: personaName,
@@ -1998,8 +1999,6 @@ async function duplicatePersona(avatarId, { silent = false, select = false } = {
         // object literal here never included a connections field either).
         connections: [],
     });
-
-    await uploadUserAvatar(getUserAvatar(avatarId), newAvatarId);
 
     const eventData = {
         avatarId: newAvatarId,
@@ -2178,7 +2177,7 @@ async function createPersonaCallback(args) {
     }
 
     const trimmedName = name.trim();
-    const avatarId = `${Date.now()}-${trimmedName.replace(/[^a-zA-Z0-9]/g, '')}.png`;
+    const avatarId = await uploadUserAvatar(default_user_avatar);
 
     const description = args.description ?? '';
     const title = args.title ?? '';
@@ -2197,17 +2196,12 @@ async function createPersonaCallback(args) {
         position, depth, role, lorebook,
     });
 
-    // Handle avatar upload
+    // Handle avatar upload - the default avatar was already stored above under avatarId, so this
+    // only needs to overwrite it when the user actually supplied image data.
     const avatarData = args.avatar ? await resolveAvatarData(args.avatar) : null;
     if (avatarData) {
         const resizePrompt = !isFalseBoolean(args.avatarPromptResize ?? 'true');
-        const uploaded = await uploadPersonaAvatar(avatarId, avatarData, { resizePrompt });
-        if (!uploaded) {
-            // Crop was cancelled or upload failed — use default avatar
-            await uploadUserAvatar(default_user_avatar, avatarId);
-        }
-    } else {
-        await uploadUserAvatar(default_user_avatar, avatarId);
+        await uploadPersonaAvatar(avatarId, avatarData, { resizePrompt });
     }
 
     saveSettingsDebounced('power_user.persona_data');

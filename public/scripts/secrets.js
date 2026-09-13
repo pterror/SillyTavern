@@ -191,8 +191,6 @@ const INPUT_MAP = {
     [SECRET_KEYS.WORKERS_AI]: '#api_key_workers_ai',
 };
 
-const getLabel = () => moment().format('L LT');
-
 /**
  * Resolves the secret key based on the selected API, chat completion source, and text completion type.
  * @returns {string|null} The secret key corresponding to the selected API, or null if no key is found.
@@ -341,7 +339,7 @@ export let secret_state = {};
  * Write a secret value to the server.
  * @param {string} key Secret key
  * @param {string} value Secret value to write
- * @param {string} [label] (Optional) Label for the key. If not provided, generated automatically.
+ * @param {string} [label] (Optional) Label for the key. If not provided, the server assigns a default.
  * @param {Object} [options] Additional options
  * @param {boolean} [options.allowEmpty] Whether to allow writing empty values. If false and value is empty, the secret will be deleted.
  * @return {Promise<string?>} The ID of the newly created secret key, or null if no value is provided.
@@ -352,10 +350,6 @@ export async function writeSecret(key, value, label, { allowEmpty } = {}) {
             console.warn(`No value provided for ${key} in writeSecret, redirecting to deleteSecret`);
             await deleteSecret(key);
             return null;
-        }
-
-        if (!label) {
-            label = getLabel();
         }
 
         const response = await fetch('/api/secrets/write', {
@@ -714,7 +708,7 @@ async function openKeyManagerDialog(key) {
                 toastr.info(t`Secret value copied to clipboard.`);
             });
             itemTemplate.find('button[data-action="rename-secret"]').on('click', async function () {
-                const label = await Popup.show.input(t`Rename Secret`, t`Enter new label for the secret:`, secret?.label || getLabel());
+                const label = await Popup.show.input(t`Rename Secret`, t`Enter new label for the secret:`, secret?.label || '');
                 if (!label) {
                     return;
                 }
@@ -968,7 +962,7 @@ function registerSecretSlashCommands() {
                 return '';
             }
 
-            const label = args?.label?.toString()?.trim() || getLabel();
+            const label = args?.label?.toString()?.trim();
             const id = await writeSecret(key, valueStr, label, { allowEmpty });
 
             if (!quiet) {
