@@ -2295,6 +2295,46 @@ export async function saveTagDefinitions(directories, tagsArray) {
     return 'ok';
 }
 
+/** Creates or replaces a single tag definition by id, for a single create/rename/recolor edit. */
+export async function upsertTagDefinition(directories, tag) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    if (!tag || typeof tag.id !== 'string' || !tag.id) return null;
+
+    entry.db.transaction(() => {
+        const oldRow = entry.db.get('SELECT data FROM tags WHERE id = @id', { id: tag.id });
+        let oldName = null;
+        if (oldRow) {
+            try { oldName = JSON.parse(oldRow.data)?.name ?? ''; } catch { /* an unparseable old row has no name to compare against */ }
+        }
+
+        entry.db.run(
+            'INSERT INTO tags (id, data) VALUES (@id, @data) ON CONFLICT(id) DO UPDATE SET data = @data',
+            { id: tag.id, data: JSON.stringify(tag) },
+        );
+        if (oldRow && oldName !== (tag.name ?? '')) {
+            entry.db.run('INSERT INTO tag_name_changes (tag_id) VALUES (@tagId)', { tagId: tag.id });
+        }
+        updateTagsHashSync(entry.db);
+    });
+    entry.tagCache = null;
+    return 'ok';
+}
+
+/** Deletes a single tag definition by id. */
+export async function deleteTagDefinition(directories, tagId) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    if (typeof tagId !== 'string' || !tagId) return null;
+
+    entry.db.transaction(() => {
+        entry.db.run('DELETE FROM tags WHERE id = @id', { id: tagId });
+        updateTagsHashSync(entry.db);
+    });
+    entry.tagCache = null;
+    return 'ok';
+}
+
 // One-time migration off tags.json (removed entirely, not just drained). Must run after bootstrapIfNeeded()
 // AND bootstrapGroupsIfNeeded() since it classifies tag_map keys against those tables; an unmatched key is
 // dropped with a warning. On success tags.json is renamed to `tags.json.migrated`, not deleted. Gated by a meta

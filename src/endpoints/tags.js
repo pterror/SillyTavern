@@ -9,6 +9,8 @@ import {
     getAllTagUsage,
     getTagDefinitions,
     saveTagDefinitions,
+    upsertTagDefinition,
+    deleteTagDefinition,
     getTagsHash,
     getTagsDigest,
     getTagsBucketMembers,
@@ -34,6 +36,46 @@ router.post('/save', async function (request, response) {
     } catch (err) {
         console.error('Could not save tag definitions', err);
         response.status(500).send({ error: 'Could not save tag definitions' });
+    }
+});
+
+/** Creates or edits one tag definition (create/rename/recolor), instead of replacing the whole set via `/save`. */
+router.post('/upsert', async (request, response) => {
+    try {
+        const tag = request.body?.tag;
+        if (!tag || typeof tag.id !== 'string' || !tag.id) {
+            return response.status(400).send({ error: 'tag with a non-empty id is required' });
+        }
+
+        const result = await upsertTagDefinition(request.user.directories, tag);
+        if (result === null) {
+            return response.status(503).send({ error: 'Character metadata store is unavailable' });
+        }
+
+        response.send({ result: 'ok' });
+    } catch (err) {
+        console.error('Could not upsert tag definition', err);
+        response.status(500).send({ error: 'Could not upsert tag definition' });
+    }
+});
+
+/** Deletes one tag definition by id, instead of replacing the whole set via `/save`. */
+router.post('/delete', async (request, response) => {
+    try {
+        const id = request.body?.id;
+        if (typeof id !== 'string' || !id) {
+            return response.status(400).send({ error: 'id is required' });
+        }
+
+        const result = await deleteTagDefinition(request.user.directories, id);
+        if (result === null) {
+            return response.status(503).send({ error: 'Character metadata store is unavailable' });
+        }
+
+        response.send({ result: 'ok' });
+    } catch (err) {
+        console.error('Could not delete tag definition', err);
+        response.status(500).send({ error: 'Could not delete tag definition' });
     }
 });
 

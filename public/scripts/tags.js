@@ -406,7 +406,7 @@ function rebuildTagStores() {
         invalidateGroupsFuseIndex();
     });
 
-    tagsStore.onChange(saveTagsDebounced);
+    tagsStore.onChange(persistTagChange);
 
     // Assignments are no longer saved as one blob - each op is persisted individually via /api/tags/assign|unassign.
     tagMapStore.onChange(persistTagMapChange);
@@ -432,8 +432,27 @@ function rebuildTagStores() {
     });
 }
 
+/** Refreshes the client-side tags cache so the next boot's freshness check can hit it. */
+async function refreshTagsManifestCache() {
+    const manifestResponse = await fetch('/api/tags/manifest', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({}),
+        cache: 'no-cache',
+    });
+    if (manifestResponse.ok) {
+        const { hash } = await manifestResponse.json();
+        if (hash !== null && hash !== undefined) {
+            await setCachedTags(hash, tags, [...serverAssignedTagIds]);
+        }
+    } else {
+        console.error(`Failed to refresh tags manifest: ${manifestResponse.statusText}`);
+    }
+}
+
 /**
- * POSTs the current tag *definitions* array to the server - assignments are persisted separately (see persistTagMapChange()).
+ * POSTs the whole tag *definitions* array to the server, for a real bulk edit (e.g. a manual reorder that
+ * touches every tag's sort_order). Assignments are persisted separately (see persistTagMapChange()).
  */
 async function saveTagsNow() {
     try {
@@ -448,27 +467,74 @@ async function saveTagsNow() {
             throw new Error(`Failed to save tags: ${response.statusText}`);
         }
 
-        // Refresh the client-side tags cache so the next boot's freshness check can hit it.
-        const manifestResponse = await fetch('/api/tags/manifest', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({}),
-            cache: 'no-cache',
-        });
-        if (manifestResponse.ok) {
-            const { hash } = await manifestResponse.json();
-            if (hash !== null && hash !== undefined) {
-                await setCachedTags(hash, tags, [...serverAssignedTagIds]);
-            }
-        } else {
-            console.error(`Failed to refresh tags manifest after save: ${manifestResponse.statusText}`);
-        }
+        await refreshTagsManifestCache();
     } catch (error) {
         console.error('Error saving tags:', error);
     }
 }
 
 const saveTagsDebounced = debounce(saveTagsNow, debounce_timeout.relaxed);
+
+/** Creates or edits one tag definition on the server, for a single create/rename/recolor edit. */
+async function upsertTagOnServer(tag) {
+    try {
+        const response = await fetch('/api/tags/upsert', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ tag }),
+            cache: 'no-cache',
+        });
+
+        if (!response.ok) {
+            throw new Error(`Failed to save tag: ${response.statusText}`);
+        }
+
+        await refreshTagsManifestCache();
+    } catch (error) {
+        console.error(`Error saving tag ${tag?.id}:`, error);
+    }
+}
+
+/** Deletes one tag definition on the server by id. */
+async function deleteTagOnServer(id) {
+    try {
+        const response = await fetch('/api/tags/delete', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ id }),
+            cache: 'no-cache',
+        });
+
+        if (!response.ok) {
+            throw new Error(`Failed to delete tag: ${response.statusText}`);
+        }
+
+        await refreshTagsManifestCache();
+    } catch (error) {
+        console.error(`Error deleting tag ${id}:`, error);
+    }
+}
+
+/**
+ * Translates one tagsStore EntityChange into the matching /api/tags/upsert|delete|save network call - the
+ * tagsStore.onChange subscriber registered in rebuildTagStores(). `reset` covers real bulk edits (e.g. a
+ * manual drag reorder that touches every tag's sort_order), where a whole-array save is the actual operation.
+ * @param {import('./entity-store.js').EntityChange} change
+ */
+function persistTagChange(change) {
+    switch (change.op) {
+        case 'created':
+        case 'updated':
+            upsertTagOnServer(change.entity);
+            break;
+        case 'removed':
+            deleteTagOnServer(change.id);
+            break;
+        case 'reset':
+            saveTagsDebounced();
+            break;
+    }
+}
 
 /**
  * Runs `worker` over `items` in fixed-size chunks, awaiting each chunk before starting the next - bounded
