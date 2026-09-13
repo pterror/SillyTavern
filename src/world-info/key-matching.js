@@ -49,6 +49,9 @@ export function matchKeys(haystack, needle, entry, globalDefaults = {}) {
 
 const MAX_SCAN_DEPTH = 1000;
 
+// Mirrors public/scripts/world-info.js's scan_state enum.
+export const scan_state = { NONE: 0, INITIAL: 1, RECURSION: 2, MIN_ACTIVATIONS: 3 };
+
 /**
  * Server-side port of public/scripts/world-info.js's WorldInfoBuffer. Builds the depth-limited
  * chat text buffer an entry's keys get matched against.
@@ -78,7 +81,7 @@ export class WorldInfoBuffer {
         this.#globalScanData = globalScanData ?? {};
     }
 
-    get(entry, scanState, minActivationsState) {
+    get(entry, scanState) {
         let depth = entry.scanDepth ?? this.getDepth();
         if (depth <= this.#startDepth) return '';
         if (depth < 0) return '';
@@ -97,9 +100,45 @@ export class WorldInfoBuffer {
         if (entry.matchCreatorNotes && g.creatorNotes) result += JOINER + g.creatorNotes;
 
         if (this.#injectBuffer.length > 0) result += JOINER + this.#injectBuffer.join(JOINER);
-        if (this.#recurseBuffer.length > 0 && scanState !== minActivationsState) result += JOINER + this.#recurseBuffer.join(JOINER);
+        if (this.#recurseBuffer.length > 0 && scanState !== scan_state.MIN_ACTIVATIONS) result += JOINER + this.#recurseBuffer.join(JOINER);
 
         return result;
+    }
+
+    /** Mirrors WorldInfoBuffer#getScore(): counts how many of an entry's keys matched, for inclusion-group scoring. */
+    getScore(entry, scanState) {
+        const bufferState = this.get(entry, scanState);
+        let numberOfPrimaryKeys = 0;
+        let numberOfSecondaryKeys = 0;
+        let primaryScore = 0;
+        let secondaryScore = 0;
+
+        if (Array.isArray(entry.key)) {
+            numberOfPrimaryKeys = entry.key.length;
+            for (const key of entry.key) {
+                if (this.matchKeys(bufferState, key, entry)) primaryScore++;
+            }
+        }
+
+        if (Array.isArray(entry.keysecondary)) {
+            numberOfSecondaryKeys = entry.keysecondary.length;
+            for (const key of entry.keysecondary) {
+                if (this.matchKeys(bufferState, key, entry)) secondaryScore++;
+            }
+        }
+
+        if (!numberOfPrimaryKeys) return 0;
+
+        if (numberOfSecondaryKeys > 0) {
+            switch (entry.selectiveLogic) {
+                case world_info_logic.AND_ANY:
+                    return primaryScore + secondaryScore;
+                case world_info_logic.AND_ALL:
+                    return secondaryScore === numberOfSecondaryKeys ? primaryScore + secondaryScore : primaryScore;
+            }
+        }
+
+        return primaryScore;
     }
 
     matchKeys(haystack, needle, entry) {
