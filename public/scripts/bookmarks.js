@@ -20,7 +20,6 @@ import {
     ensureOpeningRow,
     switchToNode,
 } from '../script.js';
-import { humanizedDateTime } from './RossAscends-mods.js';
 import {
     DEFAULT_AUTO_MODE_DELAY,
     group_activation_strategy,
@@ -220,19 +219,6 @@ export async function createBranch(mesId, { swipeId = null } = {}) {
 
     const resolvedSwipeId = selectedSwipeId ?? Number(lastMes.swipe_id ?? 0);
 
-    function buildBranchName(name, i) {
-        let cleanName = name.replace(/ - Branch #\d+$/, '');
-        cleanName = cleanName.replace(/^Branch #\d+ - /, '');
-        return `${cleanName} - Branch #${i}`;
-    }
-    const existingChats = await getExistingChatNames();
-    const name = getUniqueName(mainChatName, (x) => existingChats.includes(x), { nameBuilder: buildBranchName, startIndex: 1 });
-    if (!name) {
-        console.error('Could not generate a unique branch name.');
-        toastr.error('Could not generate a unique branch name.', 'Branch creation failed');
-        return;
-    }
-
     // A card-only greeting has no node yet - being branched at is what earns it one.
     const branchNodeId = await ensureOpeningRow(mesId);
 
@@ -254,11 +240,18 @@ export async function createBranch(mesId, { swipeId = null } = {}) {
             body: JSON.stringify({
                 avatar_url: character?.avatar,
                 node_id: branchNodeId,
-                label: name,
+                label: mainChatName,
+                unique: true,
             }),
         });
 
         if (!response.ok) {
+            toastr.error('Could not name that point.', 'Branch creation failed');
+            return;
+        }
+
+        const { ok, label: name } = await response.json();
+        if (!ok || !name) {
             toastr.error('Could not name that point.', 'Branch creation failed');
             return;
         }
@@ -273,6 +266,19 @@ export async function createBranch(mesId, { swipeId = null } = {}) {
     }
 
     // Legacy JSONL path: copy the chat prefix into a new file
+    function buildBranchName(name, i) {
+        let cleanName = name.replace(/ - Branch #\d+$/, '');
+        cleanName = cleanName.replace(/^Branch #\d+ - /, '');
+        return `${cleanName} - Branch #${i}`;
+    }
+    const existingChats = await getExistingChatNames();
+    const name = getUniqueName(mainChatName, (x) => existingChats.includes(x), { nameBuilder: buildBranchName, startIndex: 1 });
+    if (!name) {
+        console.error('Could not generate a unique branch name.');
+        toastr.error('Could not generate a unique branch name.', 'Branch creation failed');
+        return;
+    }
+
     const newMetadata = { main_chat: mainChatName, integrity: uuidv4(), fork_point: { mesId: Number(mesId), swipeId: resolvedSwipeId } };
 
     const branchChatSnapshot = await getBranchChatSnapshot(mesId, { swipeId: selectedSwipeId });
@@ -582,8 +588,6 @@ export async function convertSoloToGroupChat() {
     // Populate group required fields
     const name = getUniqueName(`Group: ${character.name}`, y => groups.findIndex(x => x.name === y) !== -1);
     const avatar = getThumbnailUrl('avatar', character.avatar);
-    const chatName = humanizedDateTime();
-    const chats = [chatName];
     const members = [character.avatar];
     const favChecked = character.fav || character.fav == 'true';
     /** @type {ChatMetadata} */
@@ -595,7 +599,7 @@ export async function convertSoloToGroupChat() {
         user_name: 'unused',
         character_name: 'unused',
     };
-    /** @type {Omit<Group, 'id'>} */
+    /** @type {Omit<Group, 'id' | 'chat_id' | 'chats'>} */
     const groupCreateModel = {
         name: name,
         members: members,
@@ -604,8 +608,6 @@ export async function convertSoloToGroupChat() {
         activation_strategy: group_activation_strategy.NATURAL,
         disabled_members: [],
         fav: favChecked,
-        chat_id: chatName,
-        chats: chats,
         hideMutedSprites: false,
         generation_mode: group_generation_mode.SWAP,
         auto_mode_delay: DEFAULT_AUTO_MODE_DELAY,
@@ -659,7 +661,7 @@ export async function convertSoloToGroupChat() {
     const createChatRequest = await compressRequest({
         method: 'POST',
         headers: getRequestHeaders(),
-        body: JSON.stringify({ id: chatName, chat: [chatHeader, ...groupChat] }),
+        body: JSON.stringify({ id: group.chat_id, chat: [chatHeader, ...groupChat] }),
     });
     const createChatResponse = await fetch('/api/chats/group/save', createChatRequest);
 

@@ -910,14 +910,33 @@ export async function renameBranch(directories, ownerId, oldName, newName) {
     return true;
 }
 
-/** Labels (pins/checkpoints) any node. Pass null to clear. */
-export async function labelNode(directories, nodeId, label) {
+/**
+ * Labels (pins/checkpoints) any node. Pass null to clear.
+ * @param {object} [options]
+ * @param {string} [options.ownerId] Required when `unique` is true - scopes the collision check.
+ * @param {boolean} [options.unique] If the label collides with an existing one for this owner,
+ * suffix it " - Branch #N" (incrementing N) until it doesn't, instead of failing.
+ * @returns {Promise<{ok: boolean, label?: string}>}
+ */
+export async function labelNode(directories, nodeId, label, { ownerId, unique = false } = {}) {
     const entry = await getEntry(directories);
-    if (!entry) return false;
+    if (!entry) return { ok: false };
     const msg = entry.db.get('SELECT id FROM messages WHERE id = @id', { id: nodeId });
-    if (!msg) return false;
-    labelMessageSync(entry.db, nodeId, label);
-    return true;
+    if (!msg) return { ok: false };
+
+    let resolvedLabel = label;
+    if (unique && label && ownerId) {
+        const existingLabels = new Set(listLabeledNodesSync(entry.db, ownerId).map(n => n.label));
+        if (existingLabels.has(resolvedLabel)) {
+            const baseLabel = String(label).replace(/ - Branch #\d+$/, '');
+            let i = 1;
+            while (existingLabels.has(`${baseLabel} - Branch #${i}`)) i++;
+            resolvedLabel = `${baseLabel} - Branch #${i}`;
+        }
+    }
+
+    labelMessageSync(entry.db, nodeId, resolvedLabel);
+    return { ok: true, label: resolvedLabel };
 }
 
 /**
