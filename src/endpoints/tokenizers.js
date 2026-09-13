@@ -734,6 +734,65 @@ function createWebTokenizerDecodingHandler(tokenizer) {
     };
 }
 
+/**
+ * Maps a local tokenizer type string (matching the route paths registered below, e.g.
+ * '/llama/encode' -> 'llama') to the already-instantiated tokenizer instance backing it. Reuses
+ * the same module-private instances the Express routes use below - never instantiate new
+ * tokenizer objects here, that would double-load the underlying model files.
+ * @type {{[key: string]: SentencePieceTokenizer | Tokenizer}}
+ */
+const LOCAL_TOKENIZER_INSTANCES = {
+    llama: spp_llama,
+    nerdstash: spp_nerd,
+    nerdstash_v2: spp_nerd_v2,
+    mistral: spp_mistral,
+    yi: spp_yi,
+    gemma: spp_gemma,
+    jamba: spp_jamba,
+    claude: claude_tokenizer,
+    llama3: llama3_tokenizer,
+    qwen2: qwen2Tokenizer,
+    'command-r': commandRTokenizer,
+    'command-a': commandATokenizer,
+    nemo: nemoTokenizer,
+    deepseek: deepseekTokenizer,
+};
+
+const SENTENCEPIECE_TOKENIZER_TYPES = new Set(['llama', 'nerdstash', 'nerdstash_v2', 'mistral', 'yi', 'gemma', 'jamba']);
+const WEB_TOKENIZER_TYPES = new Set(['claude', 'llama3', 'qwen2', 'command-r', 'command-a', 'nemo', 'deepseek']);
+
+/**
+ * Encodes text to token ids using an already-instantiated local tokenizer, keyed by the same
+ * type string used for the '/api/tokenizers/<type>/encode' routes below. Factors out the
+ * per-type encode step that createSentencepieceEncodingHandler/createWebTokenizerEncodingHandler/
+ * createTiktokenEncodingHandler wire up per-route, so callers that need raw token ids (not an
+ * Express response) don't have to duplicate the dispatch-by-type logic.
+ * @param {string} tokenizerType One of: llama, nerdstash, nerdstash_v2, mistral, yi, gemma, jamba,
+ * claude, llama3, qwen2, command-r, command-a, nemo, deepseek, gpt2.
+ * @param {string} text Text to encode.
+ * @returns {Promise<number[]>} Array of token ids. Throws for an unrecognized tokenizer type.
+ */
+export async function encodeTextByLocalTokenizerType(tokenizerType, text) {
+    if (tokenizerType === 'gpt2') {
+        const tokenizer = getTiktokenTokenizer('gpt2');
+        return Object.values(tokenizer.encode(text ?? ''));
+    }
+
+    if (SENTENCEPIECE_TOKENIZER_TYPES.has(tokenizerType)) {
+        const { ids } = await countSentencepieceTokens(LOCAL_TOKENIZER_INSTANCES[tokenizerType], text ?? '');
+        return ids;
+    }
+
+    if (WEB_TOKENIZER_TYPES.has(tokenizerType)) {
+        const tokenizer = LOCAL_TOKENIZER_INSTANCES[tokenizerType];
+        const instance = await tokenizer?.get();
+        if (!instance) throw new Error(`Failed to load the Web tokenizer for type: ${tokenizerType}`);
+        return Array.from(instance.encode(text ?? ''));
+    }
+
+    throw new Error(`Unrecognized local tokenizer type: ${tokenizerType}`);
+}
+
 export const router = express.Router();
 
 router.post('/llama/encode', createSentencepieceEncodingHandler(spp_llama));
