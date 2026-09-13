@@ -624,28 +624,24 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
             return response.status(400).send({ error: 'The request\'s body.chat is not an array.' });
         }
 
-        // Whole-array save, kept for extensions/stock-API callers; our own frontend uses the named
-        // per-row operations instead, so it never sends unfilled slots that would clobber stored data.
-        const useTree = await isTreeAvailable(request.user.directories);
-        if (useTree) {
-            await migrateOwnerOnTouch(request.user.directories, {
-                ownerId: cardName,
-                chatDir: path.join(request.user.directories.chats, cardName),
+        // Whole-array save: our own frontend uses this on the normal path too (a fresh chat's first
+        // save, and tree-chat snapshots), alongside the named per-row operations for everything else.
+        await migrateOwnerOnTouch(request.user.directories, {
+            ownerId: cardName,
+            chatDir: path.join(request.user.directories.chats, cardName),
+        });
+        const result = await saveChatToTree(request.user.directories, cardName, chatName, chatData, false);
+        if (result) {
+            await bumpCharacterDateLastChat(request.user.directories, String(request.body.avatar_url)).catch(err =>
+                console.error(`Could not bump date_last_chat for ${cardName}:`, err));
+            return response.send({
+                ok: true,
+                integrity: result.integrity,
+                assigned_node_ids: result.assignedNodeIds,
             });
-            const result = await saveChatToTree(request.user.directories, cardName, chatName, chatData, false);
-            if (result) {
-                await bumpCharacterDateLastChat(request.user.directories, String(request.body.avatar_url)).catch(err =>
-                    console.error(`Could not bump date_last_chat for ${cardName}:`, err));
-                return response.send({
-                    ok: true,
-                    integrity: result.integrity,
-                    assigned_node_ids: result.assignedNodeIds,
-                });
-            }
-            // If saveChatToTree returned null (DB unavailable), fall through to JSONL
         }
 
-        // JSONL fallback path (non-migrated or tree DB unavailable)
+        // saveChatToTree only returns null for an empty chatData array; everything else lands above.
         const chatFileName = `${sanitize(chatName)}.jsonl`;
         const chatFilePath = path.join(request.user.directories.chats, cardName, sanitize(chatFileName));
         if (!isPathUnderParent(request.user.directories.chats, chatFilePath)) {
@@ -691,8 +687,7 @@ router.post('/get', validateAvatarUrlMiddleware, async function (request, respon
         const dirName = String(request.body.avatar_url).replace('.png', '');
         const chatName = String(request.body.file_name || '');
 
-        const useTree = await isTreeAvailable(request.user.directories);
-        if (useTree && chatName) {
+        if (chatName) {
             // Opening a chat is a touch too, or a never-migrated character renders blank on first read.
             await migrateOwnerOnTouch(request.user.directories, {
                 ownerId: dirName,
@@ -1506,8 +1501,7 @@ router.post('/group/get', async (request, response) => {
         }
 
         const id = String(request.body.id);
-        const useTree = await isTreeAvailable(request.user.directories);
-        const group = useTree ? await touchGroupOwner(request.user.directories, { chatId: id, groupId: request.body.group_id }) : null;
+        const group = await touchGroupOwner(request.user.directories, { chatId: id, groupId: request.body.group_id });
 
         if (group) {
             const result = await loadAtNode(request.user.directories, group.id, id)
@@ -1572,8 +1566,7 @@ router.post('/group/info', async (request, response) => {
         }
 
         const id = String(request.body.id);
-        const useTree = await isTreeAvailable(request.user.directories);
-        const group = useTree ? await touchGroupOwner(request.user.directories, { chatId: id, groupId: request.body.group_id }) : null;
+        const group = await touchGroupOwner(request.user.directories, { chatId: id, groupId: request.body.group_id });
 
         if (group) {
             const branch = (await listBranches(request.user.directories, group.id)).find(b => b.name === id);
@@ -1606,10 +1599,9 @@ router.post('/group/delete', async (request, response) => {
         }
 
         const id = String(request.body.id);
-        const useTree = await isTreeAvailable(request.user.directories);
         // The client already dropped this chat from the group's `chats` array, so a chat-id scan can no
         // longer find the owner - group_id is sent explicitly instead.
-        const group = useTree ? await touchGroupOwner(request.user.directories, { chatId: id, groupId: request.body.group_id }) : null;
+        const group = await touchGroupOwner(request.user.directories, { chatId: id, groupId: request.body.group_id });
 
         if (group && await deleteBranch(request.user.directories, group.id, id)) {
             return response.send({ ok: true });
@@ -1644,30 +1636,28 @@ router.post('/group/save', async function (request, response) {
             return response.status(400).send({ error: 'The request\'s body.chat is not an array.' });
         }
 
-        const useTree = await isTreeAvailable(request.user.directories);
-        if (useTree) {
-            const group = await touchGroupOwner(request.user.directories, { chatId: id, groupId: request.body.group_id });
-            if (!group) {
-                // Refused rather than silently written to a file nothing reads once the group is tree-backed.
-                console.error(`Refusing to save group chat "${id}": no group claims it.`);
-                return response.status(400).send({ error: 'unknown_group' });
-            }
-
-            const result = await saveChatToTree(request.user.directories, group.id, id, chatData, true);
-            if (result) {
-                await bumpGroupChatStats(request.user.directories, id, {
-                    groupId: group.id,
-                    stats: { dateLastChat: Date.now(), chatSize: Buffer.byteLength(JSON.stringify(chatData), 'utf8') },
-                }).catch(err => console.error(`Could not update group chat stats for ${id}:`, err));
-
-                return response.send({
-                    ok: true,
-                    integrity: result.integrity,
-                    assigned_node_ids: result.assignedNodeIds,
-                });
-            }
+        const group = await touchGroupOwner(request.user.directories, { chatId: id, groupId: request.body.group_id });
+        if (!group) {
+            // Refused rather than silently written to a file nothing reads once the group is tree-backed.
+            console.error(`Refusing to save group chat "${id}": no group claims it.`);
+            return response.status(400).send({ error: 'unknown_group' });
         }
 
+        const result = await saveChatToTree(request.user.directories, group.id, id, chatData, true);
+        if (result) {
+            await bumpGroupChatStats(request.user.directories, id, {
+                groupId: group.id,
+                stats: { dateLastChat: Date.now(), chatSize: Buffer.byteLength(JSON.stringify(chatData), 'utf8') },
+            }).catch(err => console.error(`Could not update group chat stats for ${id}:`, err));
+
+            return response.send({
+                ok: true,
+                integrity: result.integrity,
+                assigned_node_ids: result.assignedNodeIds,
+            });
+        }
+
+        // saveChatToTree only returns null for an empty chatData array.
         const chatFilePath = path.join(request.user.directories.groupChats, sanitize(`${id}.jsonl`));
         const integrity = await trySaveChat(chatData, chatFilePath, request.body.force, handle, id, request.user.directories.backups, request.user.directories);
         await bumpGroupChatStats(request.user.directories, id, { groupId: request.body.group_id }).catch(err =>

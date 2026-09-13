@@ -639,9 +639,8 @@ export async function loadBranch(directories, ownerId, branchName) {
 }
 
 /**
- * Saves a whole chat array into the tree. Kept for /api/chats/save parity with upstream and extensions;
- * our own frontend writes via the named operations instead (editMessage/appendMessages/etc), each of
- * which states the row it acts on.
+ * Saves a whole chat array into the tree. Backs /api/chats/save and /api/chats/group/save, which the
+ * first-party frontend still calls directly for a chat's first save and for tree-chat snapshots.
  *
  * Existing rows are matched by `node_id`; anything without one becomes new rows chained off the last
  * resolved node. Alternatives are written as sibling rows, and the chosen one is pointed at via the
