@@ -143,4 +143,65 @@ const countTokens = async (text) => Math.ceil(text.length / 4); // cheap determi
     assert.equal(calls, 4, `expected 4 countTokens calls (1 shared + 1 per entry), got ${calls}`);
 }
 
+// Sticky: an entry activated once stays active (bypassing key matching) for its sticky duration,
+// tracked in chatMetadata across calls - simulating two separate generations against the same chat.
+{
+    const entries = [{ uid: '1', world: 'w', key: ['dragon'], content: 'Dragon lore.', sticky: 3 }];
+    const chatMetadata = {};
+
+    // First call: matches on "dragon", becomes sticky for the next 3 messages.
+    const first = await activateWorldInfoEntries(entries, ['a dragon appears'], {
+        maxContext: 4000, budgetPercent: 100, depth: 1, countTokens, chatMetadata,
+    });
+    assert.equal(first.activatedEntries.length, 1);
+
+    // Second call: the new incoming message (most recent = index 0) has no key match, but the entry
+    // is still within its sticky window (chat grew by 1, sticky lasts 3) - should still activate
+    // via isSticky, bypassing key matching entirely.
+    const second = await activateWorldInfoEntries(entries, ['something unrelated', 'a dragon appears'], {
+        maxContext: 4000, budgetPercent: 100, depth: 1, countTokens, chatMetadata,
+    });
+    assert.equal(second.activatedEntries.length, 1, 'sticky keeps the entry active without a new key match');
+}
+
+// Cooldown: once a sticky entry's window ends, it goes on cooldown and is suppressed even if its key matches again
+{
+    const entries = [{ uid: '1', world: 'w', key: ['dragon'], content: 'Dragon lore.', sticky: 1, cooldown: 5 }];
+    const chatMetadata = {};
+
+    await activateWorldInfoEntries(entries, ['a dragon appears'], {
+        maxContext: 4000, budgetPercent: 100, depth: 1, countTokens, chatMetadata,
+    });
+    // Chat advances past the sticky window (sticky=1 -> ends when chat.length >= start+1 = 2).
+    // "dragon again" is the new incoming message (most recent = index 0) - it WOULD match the key
+    // directly if cooldown weren't suppressing the entry.
+    const afterSticky = await activateWorldInfoEntries(entries, ['dragon again', 'a dragon appears'], {
+        maxContext: 4000, budgetPercent: 100, depth: 1, countTokens, chatMetadata,
+    });
+    assert.equal(afterSticky.activatedEntries.length, 0, 'entry is on cooldown, suppressed despite matching key');
+    assert.ok(chatMetadata.timedWorldInfo.cooldown['w.1'], 'cooldown recorded on sticky expiry');
+}
+
+// Delay: an entry with a delay longer than the current chat length never activates, even on key match
+{
+    const entries = [{ uid: '1', world: 'w', key: ['dragon'], content: 'Dragon lore.', delay: 10 }];
+    const { activatedEntries } = await activateWorldInfoEntries(entries, ['a dragon appears'], {
+        maxContext: 4000, budgetPercent: 100, depth: 1, countTokens, chatMetadata: {},
+    });
+    assert.equal(activatedEntries.length, 0, 'suppressed by delay regardless of key match');
+}
+
+// isDryRun: sticky state is never written, so a second dry-run call doesn't see it as sticky
+{
+    const entries = [{ uid: '1', world: 'w', key: ['dragon'], content: 'Dragon lore.', sticky: 3 }];
+    const chatMetadata = {};
+    await activateWorldInfoEntries(entries, ['a dragon appears'], {
+        maxContext: 4000, budgetPercent: 100, depth: 1, countTokens, chatMetadata, isDryRun: true,
+    });
+    const second = await activateWorldInfoEntries(entries, ['unrelated', 'a dragon appears'], {
+        maxContext: 4000, budgetPercent: 100, depth: 1, countTokens, chatMetadata, isDryRun: true,
+    });
+    assert.equal(second.activatedEntries.length, 0, 'dry run never persists sticky, so no carryover (depth:1 only scans the most recent message, "unrelated")');
+}
+
 console.log('activation.test.js: all assertions passed');
