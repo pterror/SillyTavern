@@ -42,6 +42,7 @@ import {
     migratePublicOverrides,
 } from './users.js';
 
+import { migrateAllGroupChats } from './message-tree-migration.js';
 import getWebpackServeMiddleware from './middleware/webpack-serve.js';
 import basicAuthMiddleware from './middleware/basicAuth.js';
 import getWhitelistMiddleware from './middleware/whitelist.js';
@@ -530,6 +531,7 @@ initUserStorage(globalThis.DATA_ROOT)
     .then(migrateUserData)
     .then(migrateSystemPrompts)
     .then(migratePublicOverrides)
+    .then(migrateAllGroupChats)
     .then(verifySecuritySettings)
     .then(preSetupTasks)
     .then(apply404Middleware)
