@@ -149,7 +149,12 @@ async function downloadChubExpressionPack(spritesPath, label, expressionsMap) {
                 continue;
             }
             const buffer = Buffer.from(await result.arrayBuffer());
-            const pathToFile = path.join(spritesPath, sanitize(`${emotion}.png`));
+            // Real Chub data mixes .png/.webp/etc within the same pack - keep the source
+            // extension (default .png only if the URL's own path has none) so the file's
+            // extension matches its actual bytes, matching how /get's mime.lookup(file) later
+            // identifies it as an image by that same extension.
+            const sourceExt = path.extname(new URL(url).pathname) || '.png';
+            const pathToFile = path.join(spritesPath, sanitize(`${emotion}${sourceExt}`));
             writeFileAtomicSync(pathToFile, buffer);
         } catch (error) {
             console.warn(`Chub: Failed to download expression "${emotion}" for ${label}:`, error.message);
