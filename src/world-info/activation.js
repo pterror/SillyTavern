@@ -8,13 +8,13 @@ import { substituteParams } from '../macro-substitution.js';
 /**
  * Server-side port of the CORE of public/scripts/world-info.js's checkWorldInfo() - primary/
  * secondary key matching, constant entries, probability, sticky/cooldown/delay timed effects,
- * inclusion groups, character/tag/generation-trigger filters, recursion via matched-entry content,
- * min-activations depth-advancing, and token-budget enforcement. Uses the real scan_state machine
- * (INITIAL/RECURSION/MIN_ACTIVATIONS/NONE), not a simplified first-pass/later-pass boolean - that
- * distinction matters for real behavior (e.g. excludeRecursion is only honored during an actual
- * RECURSION pass, not a MIN_ACTIVATIONS one). Reduced scope, explicitly NOT ported:
- * delay-until-recursion levels, @@activate/@@dont_activate decorators, externally-forced
- * activations. Every entry is treated as always eligible on those axes - a caller needing those
+ * inclusion groups, character/tag/generation-trigger filters, externally-forced activations,
+ * recursion via matched-entry content, min-activations depth-advancing, and token-budget
+ * enforcement. Uses the real scan_state machine (INITIAL/RECURSION/MIN_ACTIVATIONS/NONE), not a
+ * simplified first-pass/later-pass boolean - that distinction matters for real behavior (e.g.
+ * excludeRecursion is only honored during an actual RECURSION pass, not a MIN_ACTIVATIONS one).
+ * Reduced scope, explicitly NOT ported: delay-until-recursion levels, @@activate/@@dont_activate
+ * decorators. Every entry is treated as always eligible on those axes - a caller needing those
  * must pre-filter `entries` or post-process the result themselves for now.
  *
  * @typedef {object} WIEntry
@@ -57,6 +57,7 @@ import { substituteParams } from '../macro-substitution.js';
  * @param {{trigger?: string, characterFilename?: string, characterTags?: string[]}} [options.entryFilterContext] Generation-trigger and character/tag filter inputs (see entry-filters.js)
  * @param {number} [options.minActivations] world_info_min_activations setting (0 = disabled) - keep scanning deeper into chat history until at least this many entries have activated
  * @param {number} [options.minActivationsDepthMax] world_info_min_activations_depth_max setting (0 = no extra cap beyond chat length)
+ * @param {Map<string, WIEntry>} [options.externalActivations] Entries to force-activate regardless of key matching, keyed by `${world}.${uid}` - mirrors the client's WORLDINFO_FORCE_ACTIVATE event; no event system here, the caller resolves and passes these in directly
  * @returns {Promise<{activatedEntries: WIEntry[], content: string}>}
  */
 export async function activateWorldInfoEntries(entries, chatMessages, options) {
@@ -64,7 +65,7 @@ export async function activateWorldInfoEntries(entries, chatMessages, options) {
         maxContext, budgetPercent, budgetCap = 0, depth = 0, recursive = true,
         maxRecursionStepsSetting = 0, globalScanData = {}, macroContext = {}, countTokens, random = Math.random,
         chatMetadata = {}, isDryRun = false, useGroupScoring = false, entryFilterContext = {},
-        minActivations = 0, minActivationsDepthMax = 0,
+        minActivations = 0, minActivationsDepthMax = 0, externalActivations = new Map(),
     } = options;
     const maxRecursionSteps = maxRecursionStepsSetting > 0 ? maxRecursionStepsSetting : 25;
 
@@ -74,7 +75,7 @@ export async function activateWorldInfoEntries(entries, chatMessages, options) {
     const candidateEntries = entries.filter(e => !e.disable);
     if (candidateEntries.length === 0) return { activatedEntries: [], content: '' };
 
-    const buffer = new WorldInfoBuffer(chatMessages, globalScanData, { depth });
+    const buffer = new WorldInfoBuffer(chatMessages, globalScanData, { depth }, externalActivations);
     const timedEffects = new WorldInfoTimedEffects(chatMessages, candidateEntries, chatMetadata, isDryRun);
     timedEffects.checkTimedEffects();
 
@@ -101,6 +102,12 @@ export async function activateWorldInfoEntries(entries, chatMessages, options) {
             if (isCooldown && !isSticky) continue;
             // excludeRecursion only applies to an actual recursion pass, not a min-activations one.
             if (scanState === scan_state.RECURSION && recursive && entry.excludeRecursion && !isSticky) continue;
+
+            const externallyActivated = buffer.getExternallyActivated(entry);
+            if (externallyActivated) {
+                activatedNow.push(externallyActivated);
+                continue;
+            }
 
             if (entry.constant) {
                 activatedNow.push(entry);
