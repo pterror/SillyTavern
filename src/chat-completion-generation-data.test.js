@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { createGenerationParameters, ZAI_ENDPOINT, POLLINATIONS_ENDPOINT, MINIMAX_ENDPOINT } from './chat-completion-generation-data.js';
+import { createGenerationParameters } from './chat-completion-generation-data.js';
+import { ZAI_ENDPOINT, POLLINATIONS_ENDPOINT, MINIMAX_ENDPOINT } from './constants.js';
 
 function baseSettings(overrides = {}) {
     return {
