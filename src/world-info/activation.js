@@ -144,6 +144,11 @@ export async function activateWorldInfoEntries(entries, chatMessages, options) {
             activated.set(`${entry.world}.${entry.uid}`, entry);
         }
 
+        // Once budget overflows, the client stops recursing entirely for the rest of the scan - not
+        // just skipping the entries that no longer fit, but never feeding this pass's successful
+        // entries into the recursion buffer either, and never starting another pass.
+        if (tokenBudgetOverflowed) break;
+
         const successfulForRecursion = activatedNow.filter(e => activated.has(`${e.world}.${e.uid}`) && !e.preventRecursion);
         if (successfulForRecursion.length === 0) break;
 
