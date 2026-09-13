@@ -2627,7 +2627,7 @@ export async function deleteCharacterChatByName(avatar, fileName) {
         // Guards against { error: true } (not an array) on a real read failure.
         const chats = Array.isArray(chatsData) ? chatsData : [];
         chats.sort((a, b) => sortMoments(timestampToMoment(a.last_mes), timestampToMoment(b.last_mes)));
-        const newChatName = chats.length && typeof chats[0] === 'object' ? chats[0].file_name.replace('.jsonl', '') : `${character.name} - ${humanizedDateTime()}`;
+        const newChatName = chats.length && typeof chats[0] === 'object' ? chats[0].file_name.replace('.jsonl', '') : '';
         await updateRemoteChatName(character.avatar, newChatName);
     }
 
