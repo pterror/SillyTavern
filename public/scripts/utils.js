@@ -1618,7 +1618,7 @@ export async function getSanitizedFilename(fileName) {
  *
  * @param {string} base64Data - The base64 encoded image data.
  * @param {string} subFolder - The character name to determine the sub-directory for saving.
- * @param {string} fileName - The name of the file to save the image as (without extension).
+ * @param {string} [fileName] - The name of the file to save the image as (without extension). Omit to let the server mint one.
  * @param {string} extension - The file extension for the image (e.g., 'jpg', 'png', 'webp').
  *
  * @returns {Promise<string>} - Resolves to the saved image's path on the server.
@@ -1630,7 +1630,7 @@ export async function saveBase64AsFile(base64Data, subFolder, fileName, extensio
         image: base64Data,
         format: extension,
         ch_name: subFolder,
-        filename: String(fileName).replace(/\./g, '_'),
+        filename: fileName ? String(fileName).replace(/\./g, '_') : undefined,
     };
 
     // Send the data URL to your backend using fetch
