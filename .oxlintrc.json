@@ -5,6 +5,7 @@
         "**/node_modules/**",
         "**/dist/**",
         "**/.git/**",
+        ".claude/**",
         "public/lib/**",
         "public/scripts/extensions/third-party/**",
         "backups/**",
