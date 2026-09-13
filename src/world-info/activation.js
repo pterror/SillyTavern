@@ -14,9 +14,15 @@ import { substituteParams } from '../macro-substitution.js';
  * depth-advancing, and token-budget enforcement. Uses the real scan_state machine
  * (INITIAL/RECURSION/MIN_ACTIVATIONS/NONE), not a simplified first-pass/later-pass boolean - that
  * distinction matters for real behavior (e.g. excludeRecursion is only honored during an actual
- * RECURSION pass, not a MIN_ACTIVATIONS one). Reduced scope, explicitly NOT ported:
- * delay-until-recursion levels. Every entry is treated as always eligible on that axis - a caller
- * needing it must pre-filter `entries` or post-process the result themselves for now.
+ * RECURSION pass, not a MIN_ACTIVATIONS one), and delay-until-recursion levels
+ * (`entry.delayUntilRecursion`, `availableRecursionDelayLevels`/`currentRecursionDelayLevel`) - an
+ * entry delayed to a given level is suppressed until a RECURSION pass reaches that level, and if the
+ * scan would otherwise stop while levels remain, one more RECURSION pass is forced to unlock the
+ * next level (this continuation is NOT gated on the `recursive` setting - see client
+ * public/scripts/world-info.js:5213-5216). Explicitly NOT ported: the WORLDINFO_SCAN_DONE
+ * event-hook mechanism (public/scripts/world-info.js:~5230-5271) - a client-only extensibility point
+ * that lets extensions listen after each scan pass and mutate scan state/budget/etc. It has no
+ * server equivalent (no event bus here) and is unrelated to delay-until-recursion's own logic.
  *
  * Decorators: unlike the other WIEntry fields below, `decorators` is NOT parsed here - the client's
  * getSortedEntries() parses each entry's raw content with parseDecorators() (decorators.js) exactly
@@ -42,6 +48,7 @@ import { substituteParams } from '../macro-substitution.js';
  * @property {boolean} [ignoreBudget]
  * @property {boolean} [preventRecursion]
  * @property {boolean} [excludeRecursion]
+ * @property {boolean|number} [delayUntilRecursion] `true` counts as level 1; a number is that exact level
  * @property {number} [scanDepth]
  * @property {boolean} [caseSensitive]
  * @property {boolean} [matchWholeWords]
@@ -89,6 +96,15 @@ export async function activateWorldInfoEntries(entries, chatMessages, options) {
     const timedEffects = new WorldInfoTimedEffects(chatMessages, candidateEntries, chatMetadata, isDryRun);
     timedEffects.checkTimedEffects();
 
+    // Mirrors public/scripts/world-info.js:4835-4840 - the distinct delay levels requested by any
+    // candidate entry, ascending. `true` counts as level 1. currentRecursionDelayLevel starts at the
+    // lowest requested level (0 if none requested it), and later levels only unlock on later passes.
+    const availableRecursionDelayLevels = [...new Set(candidateEntries
+        .filter(entry => entry.delayUntilRecursion)
+        .map(entry => entry.delayUntilRecursion === true ? 1 : entry.delayUntilRecursion),
+    )].sort((a, b) => a - b);
+    let currentRecursionDelayLevel = availableRecursionDelayLevels.shift() ?? 0;
+
     const activated = new Map();
     const failedProbability = new Set();
     let tokenBudgetOverflowed = false;
@@ -110,6 +126,10 @@ export async function activateWorldInfoEntries(entries, chatMessages, options) {
 
             if (isDelay) continue;
             if (isCooldown && !isSticky) continue;
+            // delayUntilRecursion: suppressed on any non-RECURSION pass, and on a RECURSION pass
+            // suppressed until the scan has reached its required level (client lines 4941-4950).
+            if (scanState !== scan_state.RECURSION && entry.delayUntilRecursion && !isSticky) continue;
+            if (scanState === scan_state.RECURSION && entry.delayUntilRecursion && entry.delayUntilRecursion > currentRecursionDelayLevel && !isSticky) continue;
             // excludeRecursion only applies to an actual recursion pass, not a min-activations one.
             if (scanState === scan_state.RECURSION && recursive && entry.excludeRecursion && !isSticky) continue;
 
@@ -195,6 +215,14 @@ export async function activateWorldInfoEntries(entries, chatMessages, options) {
                 nextScanState = scan_state.MIN_ACTIVATIONS;
                 buffer.advanceScan();
             }
+        }
+
+        // If the scan is otherwise done but delay levels remain unlocked, force one more RECURSION
+        // pass to unlock the next level - independent of the `recursive` setting (client lines
+        // 5213-5216: this check has no `world_info_recursive` guard at all).
+        if (!nextScanState && availableRecursionDelayLevels.length) {
+            nextScanState = scan_state.RECURSION;
+            currentRecursionDelayLevel = availableRecursionDelayLevels.shift();
         }
 
         scanState = nextScanState;
