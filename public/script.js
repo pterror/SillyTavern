@@ -11659,10 +11659,10 @@ export async function saveMetadata() {
     const avatar = getCurrentCharacter()?.avatar;
     if (!selected_group && avatar && metadata?._tree_stored) {
         const position = getCurrentCharacter()?.chat;
-        const opening = chat[0]?.node_id;
-        const target = chat.some(m => m.node_id === position) ? position
-            : (isStoredNodeId(opening) ? opening : null);
-        if (target) {
+        const target = chat.some(m => m.node_id === position) ? position : null;
+        if (!target) {
+            console.warn('[saveMetadata] Current chat pointer not found among loaded messages, falling back to the whole-chat save');
+        } else {
             try {
                 const response = await fetch('/api/chats/metadata', {
                     method: 'POST',
