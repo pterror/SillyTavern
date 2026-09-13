@@ -521,14 +521,39 @@ class PresetManager {
         if (equalsIgnoreCaseAndAccents(oldName, newName)) {
             throw new Error('New name must be different from old name');
         }
-        try {
-            await this.savePreset(newName);
-            await this.deletePreset(oldName);
-        } catch (error) {
+
+        const response = await fetch('/api/presets/rename', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ name: oldName, newName, apiId: this.apiId }),
+        });
+
+        if (!response.ok) {
             toastr.error(t`Check the server connection and reload the page to prevent data loss.`, t`Preset could not be renamed`);
-            console.error('Preset could not be renamed', error);
+            console.error('Preset could not be renamed', response);
             throw new Error('Preset could not be renamed');
         }
+
+        const data = await response.json();
+        const { preset_names, presets } = this.getPresetList();
+        const oldIndex = this.isKeyedApi() ? preset_names.indexOf(oldName) : preset_names[oldName];
+        const preset = presets[oldIndex];
+
+        if (this.isKeyedApi()) {
+            $(this.select).find(`option[value="${oldName}"]`).remove();
+            preset_names.splice(oldIndex, 1);
+            presets.splice(oldIndex, 1);
+        } else {
+            $(this.select).find(`option[value="${oldIndex}"]`).remove();
+            delete preset_names[oldName];
+        }
+
+        // context/instruct/sysprompt/reasoning presets derive preset_names from their own .name field.
+        if (preset && typeof preset === 'object' && 'name' in preset) {
+            preset.name = data.name;
+        }
+
+        this.updateList(data.name, preset);
     }
 
     /**
@@ -1007,8 +1032,16 @@ class PresetManager {
         preset.extensions = ensurePlainObject(preset.extensions || {});
         path ? lodash.set(preset.extensions, path, value) : (preset.extensions = value);
 
-        // Save the updated preset
-        await this.savePreset(presetName, preset, { skipUpdate: true });
+        const response = await fetch('/api/presets/save-partial', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ name: presetName, apiId: this.apiId, path, value }),
+        });
+
+        if (!response.ok) {
+            toastr.error(t`Check the server connection and reload the page to prevent data loss.`, t`Preset could not be saved`);
+            console.error('Preset extension field could not be saved', response);
+        }
     }
 }
 
