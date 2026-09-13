@@ -438,9 +438,25 @@ export class ConnectionManagerRequestService {
                         throw new Error(`API type ${selectedApiMap.selected} does not support chat completions`);
                     }
 
+                    const messages = Array.isArray(prompt) ? prompt : [{ role: 'user', content: prompt }];
+
+                    // The server resolves the profile's source/preset/secret/proxy itself from
+                    // connection_profile_id - only applies when using the profile's own preset as-is
+                    // (includePreset:false has no server-side equivalent yet).
+                    if (includePreset) {
+                        return await context.ChatCompletionService.sendRequest({
+                            connection_profile_id: profileId,
+                            messages,
+                            max_tokens: maxTokens,
+                            name1: context.name1,
+                            name2: context.name2,
+                            stream,
+                            ...(Object.keys(overridePayload).length ? { overrides: overridePayload } : {}),
+                        }, extractData, signal);
+                    }
+
                     const proxyPreset = proxies.find((p) => p.name === profile.proxy);
 
-                    const messages = Array.isArray(prompt) ? prompt : [{ role: 'user', content: prompt }];
                     return await context.ChatCompletionService.processRequest({
                         stream,
                         messages,
