@@ -175,7 +175,6 @@ import {
     copyText,
     escapeHtml,
     saveBase64AsFile,
-    uuidv4,
     equalsIgnoreCaseAndAccents,
     localizePagination,
     renderPaginationDropdown,
@@ -9431,9 +9430,6 @@ export async function getChat({ isNewChat = false } = {}) {
             // An empty/corrupted chat file
             chat.splice(0, chat.length);
             chat_metadata = {};
-        }
-        if (!chat_metadata.integrity) {
-            chat_metadata.integrity = uuidv4();
         }
         await getChatResult();
 
