@@ -275,13 +275,17 @@ router.post('/generate', async function (request, response) {
     if (!request.body) return response.sendStatus(400);
 
     try {
-        // The backend to talk to (type, URL, model) is the server's own configuration, not a fact
-        // the client gets to assert - resolve it from settings.json, overriding whatever the client sent.
-        const backend = resolveTextGenBackend(request.user.directories);
-        request.body.api_type = backend.type;
-        request.body.api_server = backend.serverUrl;
-        if (backend.model !== undefined) {
-            request.body.model = backend.model;
+        // No api_type means this is the main chat flow, which no longer sends one - resolve the
+        // active backend from the server's own settings.json instead. A request that DOES specify
+        // one is a legitimate per-request override (e.g. a Connection Manager profile targeting a
+        // different backend than the user's main one) and is left exactly as it arrives.
+        if (!request.body.api_type) {
+            const backend = resolveTextGenBackend(request.user.directories);
+            request.body.api_type = backend.type;
+            request.body.api_server = backend.serverUrl;
+            if (backend.model !== undefined) {
+                request.body.model = backend.model;
+            }
         }
 
         if (request.body.api_server.indexOf('localhost') !== -1) {
