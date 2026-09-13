@@ -1137,7 +1137,7 @@ router.post('/remote/kobold/count', async function (request, response) {
  * @param {string} apiType One of TEXTGEN_TYPES
  * @returns {Promise<{count: number, ids: number[]}|{error: true}>}
  */
-async function encodeViaTextgenAPI(request, text, baseUrl, model, apiType) {
+export async function encodeViaTextgenAPI(request, text, baseUrl, model, apiType) {
     try {
         const args = {
             method: 'POST',
