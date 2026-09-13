@@ -6336,8 +6336,7 @@ export async function charUpdatePrimaryWorld(name) {
  */
 export async function charUpdateAddAuxWorld(characterKey, nameOrNames) {
     const fileName = getCharaFilename(null, { manualAvatarKey: characterKey });
-    const toAdd = Array.isArray(nameOrNames) ? nameOrNames : [nameOrNames];
-    updateAuxBooks(fileName, curr => [...curr, ...toAdd]);
+    await updateAuxBooks(fileName, 'add', Array.isArray(nameOrNames) ? nameOrNames : [nameOrNames]);
 }
 
 /**
@@ -6345,34 +6344,58 @@ export async function charUpdateAddAuxWorld(characterKey, nameOrNames) {
  * @param {string} fileName - The filename of the character to update
  * @param {string[]} books - The new list of auxiliary world books to replace the existing list with
  */
-export function charSetAuxWorlds(fileName, books) {
-    updateAuxBooks(fileName, _ => Array.isArray(books) ? books : []);
+export async function charSetAuxWorlds(fileName, books) {
+    await updateAuxBooks(fileName, 'set', Array.isArray(books) ? books : []);
 }
 
-function updateAuxBooks(fileName, computeNext) {
+/**
+ * Sends the add/set as a single action to the server (one round trip: server reads the
+ * character's current extraBooks, applies the op, validates each name is a real World, and
+ * writes back - the client never needs its own fresh copy of world_info.charLore just to
+ * mutate one character's entry), then updates the local cache from the server's response.
+ * @param {string} fileName
+ * @param {'add'|'set'} op
+ * @param {string[]} books
+ */
+async function updateAuxBooks(fileName, op, books) {
     if (!fileName) return;
 
     if (menu_type === 'create') {
+        // Character doesn't exist server-side yet - stage locally, applied on actual creation.
         const current = create_save.extra_books ?? [];
-        create_save.extra_books = normalizeArray(computeNext(current));
-        return; // no debounced save in create flow
+        const next = op === 'add' ? [...current, ...books] : books;
+        create_save.extra_books = normalizeArray(next);
+        return;
     }
 
-    const charLore = world_info.charLore ?? [];
-    const idx = charLore.findIndex(e => e.name === fileName);
-    const current = idx !== -1 ? (charLore[idx].extraBooks ?? []) : [];
-    const next = normalizeArray(computeNext(current));
+    try {
+        const response = await fetch('/api/worldinfo/char-aux-books', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ characterAvatar: fileName, op, books }),
+        });
+        if (!response.ok) {
+            const data = await response.json().catch(() => ({}));
+            toastr.error(data?.error || t`Failed to update additional lorebooks`);
+            return;
+        }
+        const { extraBooks } = await response.json();
 
-    if (next.length === 0) {
-        if (idx !== -1) charLore.splice(idx, 1);
-    } else if (idx === -1) {
-        charLore.push({ name: fileName, extraBooks: next });
-    } else {
-        charLore[idx] = { ...charLore[idx], extraBooks: next };
+        // Sync the local cache from the server's own confirmed result, not a locally-recomputed guess.
+        const charLore = world_info.charLore ?? [];
+        const idx = charLore.findIndex(e => e.name === fileName);
+        if (extraBooks.length === 0) {
+            if (idx !== -1) charLore.splice(idx, 1);
+        } else if (idx === -1) {
+            charLore.push({ name: fileName, extraBooks });
+        } else {
+            charLore[idx] = { ...charLore[idx], extraBooks };
+        }
+        Object.assign(world_info, { charLore });
+    } catch (error) {
+        console.error('Failed to update additional lorebooks', error);
+        toastr.error(t`Failed to update additional lorebooks`);
     }
-
-    Object.assign(world_info, { charLore });
-    saveSettingsDebounced('world_info_settings');
 }
 
 export function initWorldInfo() {
