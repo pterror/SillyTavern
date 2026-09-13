@@ -182,6 +182,11 @@ export class QuickReplyApi {
     /**
      * Creates a new quick reply in an existing quick reply set.
      *
+     * Its id is picked client-side and only asserted to the server, never confirmed - a concurrent
+     * edit to the same set can in theory collide. createQuickReplyRemoteAsync() avoids this by
+     * waiting for the server to mint the id instead, at the cost of an extra network round trip;
+     * prefer it in new code unless you specifically need a synchronous return value.
+     *
      * @param {string} setName name of the quick reply set to insert the new quick reply into
      * @param {string} label label for the new quick reply (text on the button)
      * @param {object} [props]
@@ -234,6 +239,39 @@ export class QuickReplyApi {
         qr.executeOnNewChat = executeOnNewChat ?? false;
         qr.executeBeforeGeneration = executeBeforeGeneration ?? false;
         qr.automationId = automationId ?? '';
+        qr.onUpdate();
+        return qr;
+    }
+
+    /**
+     * Same as createQuickReply(), but lets the server mint the new quick reply's id instead of
+     * picking one client-side. Prefer this over createQuickReply() in new code.
+     *
+     * @param {string} setName name of the quick reply set to insert the new quick reply into
+     * @param {string} label label for the new quick reply (text on the button)
+     * @param {object} [props] see createQuickReply() for the full list of supported properties
+     * @returns {Promise<QuickReply>} the new quick reply
+     */
+    async createQuickReplyRemoteAsync(setName, label, props = {}) {
+        const set = this.getSetByName(setName);
+        if (!set) {
+            throw new Error(`No quick reply set with named "${setName}" found.`);
+        }
+        const qr = await set.addQuickReplyRemote();
+        qr.label = label ?? '';
+        qr.icon = props.icon ?? '';
+        qr.showLabel = props.showLabel ?? false;
+        qr.message = props.message ?? '';
+        qr.title = props.title ?? '';
+        qr.isHidden = props.isHidden ?? false;
+        qr.executeOnStartup = props.executeOnStartup ?? false;
+        qr.executeOnUser = props.executeOnUser ?? false;
+        qr.executeOnAi = props.executeOnAi ?? false;
+        qr.executeOnChatChange = props.executeOnChatChange ?? false;
+        qr.executeOnGroupMemberDraft = props.executeOnGroupMemberDraft ?? false;
+        qr.executeOnNewChat = props.executeOnNewChat ?? false;
+        qr.executeBeforeGeneration = props.executeBeforeGeneration ?? false;
+        qr.automationId = props.automationId ?? '';
         qr.onUpdate();
         return qr;
     }

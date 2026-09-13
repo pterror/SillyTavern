@@ -132,11 +132,11 @@ export class SettingsUi {
         this.dom.querySelector('#qr--set-duplicate').addEventListener('click', async () => this.duplicateQrSet());
         this.dom.querySelector('#qr--set-delete').addEventListener('click', async () => this.deleteQrSet());
         this.dom.querySelector('#qr--set-add').addEventListener('click', async () => {
-            this.currentQrSet.addQuickReply();
+            await this.currentQrSet.addQuickReplyRemote();
         });
         this.dom.querySelector('#qr--set-paste').addEventListener('click', async () => {
             const text = await navigator.clipboard.readText();
-            this.currentQrSet.addQuickReplyFromText(text);
+            await this.currentQrSet.addQuickReplyFromText(text, { remote: true });
         });
         this.dom.querySelector('#qr--set-importQr').addEventListener('click', async () => {
             const inp = document.createElement('input'); {
@@ -146,7 +146,7 @@ export class SettingsUi {
                     if (inp.files.length > 0) {
                         for (const file of inp.files) {
                             const text = await file.text();
-                            this.currentQrSet.addQuickReply(JSON.parse(text));
+                            await this.currentQrSet.addQuickReplyRemote(JSON.parse(text));
                         }
                     }
                 });
