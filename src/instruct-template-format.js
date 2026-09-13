@@ -181,3 +181,103 @@ export function formatInstructModeStoryString(storyString, instructPreset, conte
 
     return storyString;
 }
+
+const onlyUnique = (value, index, array) => array.indexOf(value) === index;
+
+/**
+ * Port of public/scripts/instruct-mode.js's getInstructStoppingSequences().
+ * @param {InstructSettings} instructPreset
+ * @param {{use_stop_strings?: boolean, chat_start?: string, example_separator?: string}} contextSettings
+ * @param {{name1?: string, name2?: string}} [names]
+ * @returns {string[]}
+ */
+export function getInstructStoppingSequences(instructPreset, contextSettings, { name1 = '', name2 = '' } = {}) {
+    const instruct = structuredClone(instructPreset);
+    const result = [];
+
+    const addInstructSequence = (sequence) => {
+        if (typeof sequence !== 'string' || sequence.length === 0) return;
+        if (sequence.trim().length === 0) return;
+        const wrap = (s) => instruct.wrap ? '\n' + s : s;
+        const wrappedSequence = wrap(sequence);
+        const stopString = instruct.macro ? substituteParams(wrappedSequence, { name1, name2 }) : wrappedSequence;
+        result.push(stopString);
+    };
+
+    if (instruct.enabled) {
+        const stop_sequence = instruct.stop_sequence || '';
+        const input_sequence = instruct.input_sequence?.replace(/{{name}}/gi, name1) || '';
+        const output_sequence = instruct.output_sequence?.replace(/{{name}}/gi, name2) || '';
+        const first_output_sequence = instruct.first_output_sequence?.replace(/{{name}}/gi, name2) || '';
+        const last_output_sequence = instruct.last_output_sequence?.replace(/{{name}}/gi, name2) || '';
+        const system_sequence = instruct.system_sequence?.replace(/{{name}}/gi, 'System') || '';
+        const last_system_sequence = instruct.last_system_sequence?.replace(/{{name}}/gi, 'System') || '';
+
+        const combined_sequence = [stop_sequence];
+        if (instruct.sequences_as_stop_strings) {
+            combined_sequence.push(input_sequence, output_sequence, first_output_sequence, last_output_sequence, system_sequence, last_system_sequence);
+        }
+        combined_sequence.join('\n').split('\n').filter(onlyUnique).forEach(addInstructSequence);
+    }
+
+    if (contextSettings?.use_stop_strings) {
+        if (contextSettings.chat_start) {
+            result.push(`\n${substituteParams(contextSettings.chat_start, { name1, name2 })}`);
+        }
+        if (contextSettings.example_separator) {
+            result.push(`\n${substituteParams(contextSettings.example_separator, { name1, name2 })}`);
+        }
+    }
+
+    return result;
+}
+
+/**
+ * Port of TextCompletionService.constructPrompt() (public/scripts/custom-request.js): converts a
+ * chat-completion-style messages array into a raw instruct-formatted prompt string.
+ * @param {{role: string, content: string, name?: string, ignoreInstruct?: boolean}[]} prompt
+ * @param {InstructSettings} instructPreset
+ * @param {{name1?: string, name2?: string, isGroup?: boolean}} [options] `isGroup` mirrors the
+ * client's ambient `selected_group` check (affects FORCE names_behavior), since this port has no
+ * such global - pass true when this generation is for a group chat.
+ * @returns {string}
+ */
+export function constructPrompt(prompt, instructPreset, { name1 = '', name2 = '', isGroup = false } = {}) {
+    const instruct = structuredClone(instructPreset);
+    const formattedMessages = [];
+    const prefillActive = prompt.length > 0 ? prompt[prompt.length - 1].role === 'assistant' : false;
+
+    for (const message of prompt) {
+        let messageContent = message.content;
+        if (!message.ignoreInstruct) {
+            const isLastMessage = message === prompt[prompt.length - 1];
+
+            if (!isLastMessage || !prefillActive) {
+                messageContent = formatInstructModeChat(
+                    message.name ?? message.role, message.content,
+                    message.role === 'user', message.role === 'system',
+                    isGroup, undefined, name1, name2, undefined, instruct,
+                );
+            }
+
+            if (isLastMessage) {
+                let last_line = formatInstructModePrompt(
+                    'assistant', false, prefillActive ? message.content : undefined,
+                    name1, name2, true, false, isGroup, instruct,
+                );
+
+                if (prefillActive) {
+                    if (last_line.endsWith('\n') && !message.content.endsWith('\n')) {
+                        last_line = last_line.slice(0, -1);
+                    }
+                    messageContent = last_line;
+                } else {
+                    messageContent += last_line;
+                }
+            }
+        }
+        formattedMessages.push(messageContent);
+    }
+
+    return formattedMessages.join('');
+}
