@@ -19,7 +19,6 @@ import {
     renderPaginationDropdown,
     paginationDropdownChangeHandler,
     waitUntilCondition,
-    uuidv4,
 } from './utils.js';
 import { RA_CountCharTokens, humanizedDateTime, dragElement, favsToHotswap, getMessageTimeStamp } from './RossAscends-mods.js';
 import { power_user, loadMovingUIState, sortEntitiesList, invalidateGroupsFuseIndex } from './power-user.js';
@@ -371,11 +370,6 @@ export async function getGroupChat(groupId, reload = false) {
     // Remove chat file header if present
     if (Array.isArray(data) && data.length && Object.hasOwn(data[0], 'chat_metadata')) {
         data.shift();
-    }
-
-    // Add integrity slug if missing
-    if (!metadata.integrity) {
-        metadata.integrity = uuidv4();
     }
 
     await loadItemizedPrompts(getCurrentChatId());

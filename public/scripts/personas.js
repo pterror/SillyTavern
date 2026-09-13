@@ -2196,8 +2196,6 @@ async function createPersonaCallback(args) {
         position, depth, role, lorebook,
     });
 
-    // Handle avatar upload - the default avatar was already stored above under avatarId, so this
-    // only needs to overwrite it when the user actually supplied image data.
     const avatarData = args.avatar ? await resolveAvatarData(args.avatar) : null;
     if (avatarData) {
         const resizePrompt = !isFalseBoolean(args.avatarPromptResize ?? 'true');
