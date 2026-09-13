@@ -43,7 +43,7 @@ import {
 } from './secrets.js';
 import { debounce, getStringHash, isValidUrl } from './utils.js';
 import { chat_completion_sources, oai_settings, POLLINATIONS_ENDPOINT } from './chat-completion-settings.js';
-import { getTokenCountAsync } from './tokenizers.js';
+import { getTokenCountsAsyncBatch } from './tokenizers.js';
 import { textgen_types, textgenerationwebui_settings as textgen_settings, getTextGenServer } from './textgen-settings.js';
 import { debounce_timeout, SWIPE_SOURCE } from './constants.js';
 
@@ -207,11 +207,13 @@ export async function RA_CountCharTokens() {
     let permanent_tokens = 0;
 
     const tokenCounters = document.querySelectorAll('[data-token-counter]');
-    for (const tokenCounter of tokenCounters) {
-        if (counterNonceLocal !== counterNonce) {
-            return;
-        }
 
+    // First pass: resolve everything already cached (or empty) synchronously, and collect
+    // the distinct uncached values that actually need a token count. Every network-bound
+    // field is queued here and sent as ONE batched request below, instead of one request
+    // per counter.
+    const pending = [];
+    for (const tokenCounter of tokenCounters) {
         const counter = $(tokenCounter);
         const input = $(document.getElementById(counter.data('token-counter')));
         const isPermanent = counter.data('token-permanent') === true;
@@ -235,17 +237,24 @@ export async function RA_CountCharTokens() {
             permanent_tokens += isPermanent ? Number(counter.text()) : 0;
         } else {
             const valueToCount = menu_type === 'create' ? value : substituteParams(value);
-            const tokens = await getTokenCountAsync(valueToCount);
-
-            if (counterNonceLocal !== counterNonce) {
-                return;
-            }
-
-            counter.text(tokens);
-            total_tokens += tokens;
-            permanent_tokens += isPermanent ? tokens : 0;
-            input.data('last-value-hash', valueHash);
+            pending.push({ counter, input, isPermanent, valueHash, valueToCount });
         }
+    }
+
+    if (pending.length > 0) {
+        const counted = await getTokenCountsAsyncBatch(pending.map(p => p.valueToCount));
+
+        if (counterNonceLocal !== counterNonce) {
+            return;
+        }
+
+        pending.forEach((p, i) => {
+            const tokens = counted[i];
+            p.counter.text(tokens);
+            total_tokens += tokens;
+            permanent_tokens += p.isPermanent ? tokens : 0;
+            p.input.data('last-value-hash', p.valueHash);
+        });
     }
 
     const tokenLimit = Math.max(((main_api !== 'openai' ? max_context : oai_settings.openai_max_context) / 2), 1024);
