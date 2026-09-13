@@ -1,4 +1,4 @@
-import { CHAT_COMPLETION_SOURCES } from './constants.js';
+import { CHAT_COMPLETION_SOURCES, ZAI_ENDPOINT, POLLINATIONS_ENDPOINT, SILICONFLOW_ENDPOINT, MINIMAX_ENDPOINT } from './constants.js';
 import { substituteParams } from './macro-substitution.js';
 
 /**
@@ -88,10 +88,6 @@ const reasoningEffortSources = [
 
 const reasoning_effort_types = { auto: 'auto', low: 'low', medium: 'medium', high: 'high', min: 'min', max: 'max' };
 export const verbosity_levels = { auto: 'auto', low: 'low', medium: 'medium', high: 'high' };
-export const ZAI_ENDPOINT = { COMMON: 'common', CODING: 'coding' };
-export const POLLINATIONS_ENDPOINT = { AUTHENTICATED: 'authenticated', ANONYMOUS: 'anonymous' };
-export const SILICONFLOW_ENDPOINT = { GLOBAL: 'global', CN: 'cn' };
-export const MINIMAX_ENDPOINT = { GLOBAL: 'global', CN: 'cn' };
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
 
