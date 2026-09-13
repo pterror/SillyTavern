@@ -102,6 +102,23 @@ let spriteCache = {};
 let inApiCall = false;
 let lastServerResponseTime = 0;
 
+/** @type {string[]} All existing sprite/expression-pack folder names, for folder=/name= autocomplete. Stale-while-revalidate: enumProviders can't be async, so this is refreshed in the background and read synchronously. */
+let cachedSpriteFolders = [];
+let spriteFoldersFetchInFlight = false;
+
+/** Kicks off a background refresh of cachedSpriteFolders if one isn't already in flight. Fire-and-forget by design - callers read the (possibly stale) cache synchronously. */
+function refreshSpriteFoldersCache() {
+    if (spriteFoldersFetchInFlight) {
+        return;
+    }
+    spriteFoldersFetchInFlight = true;
+    fetch('/api/sprites/folders', { headers: getRequestHeaders() })
+        .then(response => response.ok ? response.json() : [])
+        .then(folders => { if (Array.isArray(folders)) cachedSpriteFolders = folders; })
+        .catch(error => console.debug('Failed to refresh sprite folders cache', error))
+        .finally(() => { spriteFoldersFetchInFlight = false; });
+}
+
 /** @type {{[characterName: string]: string}} */
 export let lastExpression = {};
 
@@ -2377,6 +2394,12 @@ export async function init() {
                     x.isCustom ? 'C' : 'D');
             });
         },
+        // Stale-while-revalidate: returns whatever's cached right now and kicks off a background
+        // refresh, since enumProviders must be synchronous.
+        spriteFolders: () => {
+            refreshSpriteFoldersCache();
+            return cachedSpriteFolders.map(folder => new SlashCommandEnumValue(folder, null, enumTypes.enum, 'F'));
+        },
     };
 
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
@@ -2463,9 +2486,12 @@ export async function init() {
             }),
         ],
         unnamedArgumentList: [
-            new SlashCommandArgument(
-                'optional folder', [ARGUMENT_TYPE.STRING], false,
-            ),
+            SlashCommandArgument.fromProps({
+                description: 'optional folder',
+                typeList: [ARGUMENT_TYPE.STRING],
+                isRequired: false,
+                enumProvider: localEnumProviders.spriteFolders,
+            }),
         ],
         helpString: `
             <div>
@@ -2598,6 +2624,7 @@ export async function init() {
                 name: 'name',
                 description: 'Character name or avatar key (default is current character)',
                 typeList: [ARGUMENT_TYPE.STRING],
+                enumProvider: commonEnumProviders.characters('character'),
                 isRequired: false,
             }),
             SlashCommandNamedArgument.fromProps({
@@ -2611,6 +2638,7 @@ export async function init() {
                 name: 'folder',
                 description: 'Override folder to upload into',
                 typeList: [ARGUMENT_TYPE.STRING],
+                enumProvider: localEnumProviders.spriteFolders,
                 isRequired: false,
             }),
             SlashCommandNamedArgument.fromProps({

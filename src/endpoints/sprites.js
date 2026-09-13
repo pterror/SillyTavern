@@ -227,6 +227,30 @@ router.get('/get', function (request, response) {
     return response.send(sprites);
 });
 
+/**
+ * Lists every existing sprite/expression-pack folder name, for autocomplete on the folder=/name=
+ * arguments of the sprite-related slash commands. Every subdirectory of directories.characters
+ * is a sprite folder (character files themselves are flat .png/.json, never subdirectories), so
+ * this is a plain directory listing - one level of subfolder overrides included as "parent/child".
+ */
+router.get('/folders', function (request, response) {
+    const folders = [];
+    try {
+        const root = request.user.directories.characters;
+        for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+            if (!entry.isDirectory()) continue;
+            folders.push(entry.name);
+            const subRoot = path.join(root, entry.name);
+            for (const subEntry of fs.readdirSync(subRoot, { withFileTypes: true })) {
+                if (subEntry.isDirectory()) folders.push(`${entry.name}/${subEntry.name}`);
+            }
+        }
+    } catch (err) {
+        console.error(err);
+    }
+    return response.send(folders);
+});
+
 router.post('/delete', async (request, response) => {
     const label = request.body.label;
     const name = String(request.body.name);
