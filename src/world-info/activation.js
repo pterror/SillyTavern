@@ -1,16 +1,17 @@
 import { WorldInfoBuffer, matchesEntryKeys } from './key-matching.js';
 import { verifyProbability } from './probability.js';
+import { WorldInfoTimedEffects } from './timed-effects.js';
 import { substituteParams } from '../macro-substitution.js';
 
 /**
  * Server-side port of the CORE of public/scripts/world-info.js's checkWorldInfo() - primary/
- * secondary key matching, constant entries, probability, recursion via matched-entry content, and
- * token-budget enforcement. Reduced scope, explicitly NOT ported:
- * sticky/cooldown/delay timed effects, delay-until-recursion levels, inclusion groups,
- * min-activations, character/tag/generation-trigger filters, @@activate/@@dont_activate
- * decorators, externally-forced activations. Every entry is treated as always eligible on those
- * axes (never sticky/cooldown/delayed, no inclusion-group exclusivity, no decorators) - a caller
- * needing those must pre-filter `entries` or post-process the result themselves for now.
+ * secondary key matching, constant entries, probability, sticky/cooldown/delay timed effects,
+ * recursion via matched-entry content, and token-budget enforcement. Reduced scope, explicitly NOT
+ * ported: delay-until-recursion levels, inclusion groups, min-activations, character/tag/
+ * generation-trigger filters, @@activate/@@dont_activate decorators, externally-forced activations.
+ * Every entry is treated as always eligible on those axes (no inclusion-group exclusivity, no
+ * decorators) - a caller needing those must pre-filter `entries` or post-process the result
+ * themselves for now.
  *
  * @typedef {object} WIEntry
  * @property {string} uid
@@ -46,12 +47,15 @@ import { substituteParams } from '../macro-substitution.js';
  * @param {{name1?: string, name2?: string}} [options.macroContext]
  * @param {(text: string) => Promise<number>} options.countTokens Injected tokenizer - no server tokenizer access is assumed here
  * @param {() => number} [options.random] Injectable RNG for tests
+ * @param {object} [options.chatMetadata] Mutable chat metadata - timedWorldInfo is read/written on it directly (see WorldInfoTimedEffects)
+ * @param {boolean} [options.isDryRun] Skips sticky/cooldown state changes (delay is still evaluated) - same as checkWorldInfo's dry-run mode
  * @returns {Promise<{activatedEntries: WIEntry[], content: string}>}
  */
 export async function activateWorldInfoEntries(entries, chatMessages, options) {
     const {
         maxContext, budgetPercent, budgetCap = 0, depth = 0, recursive = true,
         maxRecursionStepsSetting = 0, globalScanData = {}, macroContext = {}, countTokens, random = Math.random,
+        chatMetadata = {}, isDryRun = false,
     } = options;
     const maxRecursionSteps = maxRecursionStepsSetting > 0 ? maxRecursionStepsSetting : 25;
 
@@ -62,6 +66,8 @@ export async function activateWorldInfoEntries(entries, chatMessages, options) {
     if (candidateEntries.length === 0) return { activatedEntries: [], content: '' };
 
     const buffer = new WorldInfoBuffer(chatMessages, globalScanData, { depth });
+    const timedEffects = new WorldInfoTimedEffects(chatMessages, candidateEntries, chatMetadata, isDryRun);
+    timedEffects.checkTimedEffects();
 
     const activated = new Map();
     const failedProbability = new Set();
@@ -78,9 +84,21 @@ export async function activateWorldInfoEntries(entries, chatMessages, options) {
             if (failedProbability.has(entry) || activated.has(`${entry.world}.${entry.uid}`)) continue;
 
             if (!isFirstPass && !recursive) break;
-            if (!isFirstPass && entry.excludeRecursion) continue;
+
+            const isSticky = timedEffects.isEffectActive('sticky', entry);
+            const isCooldown = timedEffects.isEffectActive('cooldown', entry);
+            const isDelay = timedEffects.isEffectActive('delay', entry);
+
+            if (isDelay) continue;
+            if (isCooldown && !isSticky) continue;
+            if (!isFirstPass && entry.excludeRecursion && !isSticky) continue;
 
             if (entry.constant) {
+                activatedNow.push(entry);
+                continue;
+            }
+
+            if (isSticky) {
                 activatedNow.push(entry);
                 continue;
             }
@@ -100,7 +118,7 @@ export async function activateWorldInfoEntries(entries, chatMessages, options) {
         for (const entry of activatedNow) {
             if (tokenBudgetOverflowed && !entry.ignoreBudget) continue;
 
-            const isSticky = false; // timed effects not ported - see module doc comment
+            const isSticky = timedEffects.isEffectActive('sticky', entry);
             if (!verifyProbability(entry, isSticky, random)) {
                 failedProbability.add(entry);
                 continue;
@@ -133,6 +151,9 @@ export async function activateWorldInfoEntries(entries, chatMessages, options) {
     }
 
     const activatedEntries = [...activated.values()];
+    timedEffects.setTimedEffects(activatedEntries);
+    timedEffects.cleanUp();
+
     const content = activatedEntries.map(e => e.content).join('\n');
     return { activatedEntries, content };
 }
