@@ -463,15 +463,42 @@ async function callExtensionHook(name, hookName) {
 }
 
 /**
+ * Toggles an extension's enabled state on the server, which owns and merges disabledExtensions.
+ * @param {string} name Extension name
+ * @param {boolean} enabled Desired enabled state
+ * @returns {Promise<string[]?>} The server's resulting disabledExtensions array, or null on failure
+ */
+async function setExtensionEnabled(name, enabled) {
+    try {
+        const response = await fetch('/api/settings/toggle-extension', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ name, enabled }),
+        });
+        if (!response.ok) {
+            console.error('Failed to toggle extension', name, response.statusText);
+            return null;
+        }
+        const data = await response.json();
+        return Array.isArray(data?.disabledExtensions) ? data.disabledExtensions : null;
+    } catch (error) {
+        console.error('Failed to toggle extension', name, error);
+        return null;
+    }
+}
+
+/**
  * Enables an extension by name.
  * @param {string} name Extension name
  * @param {boolean} [reload=true] If true, reload the page after enabling the extension
  */
 export async function enableExtension(name, reload = true) {
     await callExtensionHook(name, 'enable');
-    extension_settings.disabledExtensions = extension_settings.disabledExtensions.filter(x => x !== name);
+    const disabledExtensions = await setExtensionEnabled(name, true);
+    if (disabledExtensions) {
+        extension_settings.disabledExtensions = disabledExtensions;
+    }
     stateChanged = true;
-    await saveSettings('extension_settings');
     if (reload) {
         location.reload();
     } else {
@@ -486,9 +513,11 @@ export async function enableExtension(name, reload = true) {
  */
 export async function disableExtension(name, reload = true) {
     await callExtensionHook(name, 'disable');
-    extension_settings.disabledExtensions.push(name);
+    const disabledExtensions = await setExtensionEnabled(name, false);
+    if (disabledExtensions) {
+        extension_settings.disabledExtensions = disabledExtensions;
+    }
     stateChanged = true;
-    await saveSettings('extension_settings');
     if (reload) {
         location.reload();
     } else {

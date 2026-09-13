@@ -285,6 +285,41 @@ router.post('/save-partial', function (request, response) {
     }
 });
 
+/**
+ * Toggles one extension's membership in extension_settings.disabledExtensions. The server owns the
+ * merge so the client only ever asserts the raw fact (which extension, enabled or not).
+ */
+router.post('/toggle-extension', function (request, response) {
+    try {
+        const directories = request.user.directories;
+        const { name, enabled } = request.body ?? {};
+        if (typeof name !== 'string' || !name) {
+            return response.status(400).send({ result: 'error', error: 'Body must include a non-empty string "name".' });
+        }
+        if (typeof enabled !== 'boolean') {
+            return response.status(400).send({ result: 'error', error: 'Body must include a boolean "enabled".' });
+        }
+
+        const path = 'extension_settings.disabledExtensions';
+        const current = readSettingsAtPaths(directories, [path])[path];
+        const disabledExtensions = Array.isArray(current) ? current : [];
+        const nextDisabledExtensions = enabled
+            ? disabledExtensions.filter(x => x !== name)
+            : disabledExtensions.includes(name) ? disabledExtensions : [...disabledExtensions, name];
+
+        writeSettingsKeys(directories, { [path]: nextDisabledExtensions });
+        triggerAutoSave(request.user.profile.handle);
+        response.send({
+            result: 'ok',
+            disabledExtensions: nextDisabledExtensions,
+            settingsHash: getStringHash(readAllSettingsAsJson(directories)),
+        });
+    } catch (err) {
+        console.error(err);
+        response.send(err);
+    }
+});
+
 // Wintermute's code
 router.post('/get', (request, response) => {
     let settings;
