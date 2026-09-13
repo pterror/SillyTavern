@@ -65,13 +65,18 @@ export class WorldInfoBuffer {
     #startDepth = 0;
     #worldInfoDepth;
     #globalDefaults;
+    #externalActivations;
 
     /**
      * @param {string[]} messages Chat messages, most recent first (same order the client scans in)
      * @param {object} globalScanData {personaDescription, characterDescription, characterPersonality, characterDepthPrompt, scenario, creatorNotes}
      * @param {{depth?: number, caseSensitive?: boolean, matchWholeWords?: boolean}} [globalDefaults]
+     * @param {Map<string, object>} [externalActivations] Entries to force-activate regardless of key
+     * matching, keyed by `${world}.${uid}` - mirrors the client's WORLDINFO_FORCE_ACTIVATE event
+     * (extensions/slash-commands forcing a specific entry active). No event system server-side; the
+     * caller resolves which entries to force and passes them in directly.
      */
-    constructor(messages, globalScanData, globalDefaults = {}) {
+    constructor(messages, globalScanData, globalDefaults = {}, externalActivations = new Map()) {
         this.#globalDefaults = globalDefaults;
         this.#worldInfoDepth = globalDefaults.depth ?? 0;
         for (let depth = 0; depth < MAX_SCAN_DEPTH; depth++) {
@@ -79,6 +84,12 @@ export class WorldInfoBuffer {
             if (depth === messages.length - 1) break;
         }
         this.#globalScanData = globalScanData ?? {};
+        this.#externalActivations = externalActivations;
+    }
+
+    /** Mirrors WorldInfoBuffer#getExternallyActivated(). */
+    getExternallyActivated(entry) {
+        return this.#externalActivations.get(`${entry.world}.${entry.uid}`);
     }
 
     get(entry, scanState) {
