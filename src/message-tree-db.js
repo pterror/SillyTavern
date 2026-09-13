@@ -1411,6 +1411,41 @@ export async function renameCharacterInMessages(directories, ownerId, newName) {
     return updated;
 }
 
+/** Renames one member's messages inside a group's tree, matched by their original_avatar. */
+export async function renameGroupMemberInMessages(directories, groupOwnerId, oldAvatar, newAvatar, newName) {
+    const entry = await getEntry(directories);
+    if (!entry) return 0;
+
+    const rows = entry.db.all(
+        `SELECT id, content FROM messages
+         WHERE owner_id = @groupOwnerId
+           AND parent_id IS NOT NULL
+           AND json_extract(content, '$.original_avatar') = @oldAvatar`,
+        { groupOwnerId, oldAvatar },
+    );
+    if (rows.length === 0) return 0;
+
+    const oldEncoded = encodeURIComponent(oldAvatar);
+    const newEncoded = encodeURIComponent(newAvatar);
+
+    let updated = 0;
+    entry.db.transaction(() => {
+        for (const row of rows) {
+            try {
+                const msg = JSON.parse(row.content);
+                msg.name = newName;
+                msg.original_avatar = newAvatar;
+                if (typeof msg.force_avatar === 'string') {
+                    msg.force_avatar = msg.force_avatar.replace(oldEncoded, newEncoded);
+                }
+                updateMessageContentSync(entry.db, row.id, JSON.stringify(msg));
+                updated++;
+            } catch { /* skip malformed */ }
+        }
+    });
+    return updated;
+}
+
 export {
     insertMessageSync, createBranchSync, getPathSync, getBranchByNameSync, hasBranchesSync,
     newId, sanitizeForStorage, extractLastMes,

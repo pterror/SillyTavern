@@ -35,7 +35,7 @@ import {
     isAvailable as isTreeAvailable, hasSavedChats,
     saveChatToTree, loadBranch, forkBranch, labelNode,
     deleteBranch, renameBranch as renameBranchInTree, listBranches, listRecentBranches, searchBranchesByContent,
-    renameCharacterInMessages, getAlternatives, getContinuation, getAncestorPath, editMessage, editMessages, appendMessages, addAlternatives, setChatMetadata, getOpeningAlternatives, addOpeningAlternatives, loadAtNode, listLabels, setNodeMetadata, selectDefaultChild, endPathAt,
+    renameCharacterInMessages, renameGroupMemberInMessages, getAlternatives, getContinuation, getAncestorPath, editMessage, editMessages, appendMessages, addAlternatives, setChatMetadata, getOpeningAlternatives, addOpeningAlternatives, loadAtNode, listLabels, setNodeMetadata, selectDefaultChild, endPathAt,
 } from '../message-tree-db.js';
 
 const isBackupEnabled = !!getConfigValue('backups.chat.enabled', true, 'boolean');
@@ -909,6 +909,22 @@ router.post('/tree/rename-in-content', validateAvatarUrlMiddleware, async functi
         return response.send({ ok: true, updated, noSavedChats: false });
     } catch (error) {
         console.error('Error renaming character in messages:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/** Renames one member's messages inside a group's tree, directly in the DB. */
+router.post('/tree/rename-group-member', async function (request, response) {
+    try {
+        const { group_id, old_avatar, new_avatar, new_name } = request.body;
+        if (!group_id || !old_avatar || !new_avatar || !new_name) {
+            return response.sendStatus(400);
+        }
+
+        const updated = await renameGroupMemberInMessages(request.user.directories, String(group_id), String(old_avatar), String(new_avatar), String(new_name));
+        return response.send({ ok: true, updated });
+    } catch (error) {
+        console.error('Error renaming group member in messages:', error);
         return response.status(500).send({ error: true });
     }
 });
