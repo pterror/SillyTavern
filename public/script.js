@@ -582,6 +582,20 @@ const FORM_TO_CARD = {
 /** @type {Set<string>} */
 const _dirtyCharacterFields = new Set();
 
+// Per-field hash of the value as it stood when the editor was populated, keyed by v2 path. Captured
+// once at load time so a later change-feed sync of the character store can't mask a real conflict.
+/** @type {Map<string, number>} */
+const _loadedCharacterFieldHashes = new Map();
+
+/** @param {object} character */
+function snapshotLoadedCharacterFieldHashes(character) {
+    _loadedCharacterFieldHashes.clear();
+    for (const mapping of Object.values(FORM_TO_CARD)) {
+        const loadedValue = lodash.get(character, mapping.v2);
+        _loadedCharacterFieldHashes.set(mapping.v2, getStringHash(JSON.stringify(loadedValue !== undefined ? loadedValue : null)));
+    }
+}
+
 $(document).on('input change', Object.keys(FORM_TO_CARD).join(', '), function () {
     _dirtyCharacterFields.add(`#${this.id}`);
 });
@@ -11040,6 +11054,7 @@ export function select_selected_character(avatar, { switchMenu = true } = {}) {
 
     // Fields were just populated programmatically (.val(), no .trigger()), so none of that counts as a real edit.
     _dirtyCharacterFields.clear();
+    snapshotLoadedCharacterFieldHashes(character);
     $('.form_create_bottom_buttons_block .chat_lorebook_button').show();
 
     const externalMediaState = isExternalMediaAllowed();
@@ -11122,6 +11137,7 @@ function select_rm_create({ switchMenu = true } = {}) {
 
     $('#form_create').attr('actiontype', 'createcharacter');
     _dirtyCharacterFields.clear(); // No dirty-tracking in create mode - the whole form is sent on create.
+    _loadedCharacterFieldHashes.clear();
     $('.form_create_bottom_buttons_block .chat_lorebook_button').hide();
     $('#character_open_media_overrides').hide();
 }
@@ -12670,7 +12686,6 @@ export async function createOrEditCharacter(e) {
                 return;
             }
 
-            const editCharacter = getCurrentCharacter();
             const avatarUrl = String(formData.get('avatar_url'));
 
             // Sent first, fields second: an explicitly picked avatar isn't part of the merge-attributes conflict below, so it shouldn't risk not landing depending on how that's resolved.
@@ -12733,9 +12748,9 @@ export async function createOrEditCharacter(e) {
                 if (mapping.v1) lodash.set(mergeData, mapping.v1, cardValue);
                 if (mapping.v2) lodash.set(mergeData, mapping.v2, cardValue);
 
-                // Hash the loaded value for per-field conflict detection
-                const loadedValue = lodash.get(editCharacter, mapping.v2);
-                loadedFieldHashes[mapping.v2] = getStringHash(JSON.stringify(loadedValue !== undefined ? loadedValue : null));
+                if (_loadedCharacterFieldHashes.has(mapping.v2)) {
+                    loadedFieldHashes[mapping.v2] = _loadedCharacterFieldHashes.get(mapping.v2);
+                }
             }
 
             mergeData._loadedFieldHashes = loadedFieldHashes;
@@ -12794,6 +12809,7 @@ export async function createOrEditCharacter(e) {
             await getOneCharacter(avatarUrl);
 
             _dirtyCharacterFields.clear();
+            snapshotLoadedCharacterFieldHashes(charactersStore.get(avatarUrl));
 
             if (Boolean(previousFav) !== Boolean(fav_ch_checked)) {
                 favsToHotswap();
