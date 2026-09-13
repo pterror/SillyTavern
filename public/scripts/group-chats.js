@@ -823,54 +823,20 @@ export async function renameGroupMember(oldAvatar, newAvatar, newName) {
             await editGroup(group.id, true, false);
             console.log(`Renamed character ${newName} in group: ${group.name}`);
 
-            // Load all chats from this group
-            for (const chatId of group.chats) {
-                const messages = await loadGroupChat(chatId);
+            // Every group is tree-stored (forced-migrated at server startup) - one server-side
+            // statement renames the member across every chat under this group's anchor.
+            const response = await fetch('/api/chats/tree/rename-group-member', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ group_id: group.id, old_avatar: oldAvatar, new_avatar: newAvatar, new_name: newName }),
+            });
 
-                // Only save the chat if there were any changes to the chat content
-                let hadChanges = false;
-                // Chat shouldn't be empty
-                if (Array.isArray(messages) && messages.length) {
-                    // Iterate over every chat message
-                    for (const message of messages) {
-                        // Skip the chat header
-                        if (Object.hasOwn(message, 'chat_metadata')) {
-                            continue;
-                        }
-
-                        // Only look at character messages
-                        if (message.is_user || message.is_system) {
-                            continue;
-                        }
-
-                        // Message belonged to the old-named character:
-                        // Update name, avatar thumbnail URL and original avatar link
-                        if (message.force_avatar && message.force_avatar.indexOf(encodeURIComponent(oldAvatar)) !== -1) {
-                            message.name = newName;
-                            message.force_avatar = message.force_avatar.replace(encodeURIComponent(oldAvatar), encodeURIComponent(newAvatar));
-                            message.original_avatar = newAvatar;
-                            hadChanges = true;
-                        }
-                    }
-
-                    if (hadChanges) {
-                        await eventSource.emit(event_types.CHARACTER_RENAMED_IN_PAST_CHAT, messages, oldAvatar, newAvatar);
-
-                        const saveChatRequest = await compressRequest({
-                            method: 'POST',
-                            headers: getRequestHeaders(),
-                            body: JSON.stringify({ id: chatId, chat: [...messages] }),
-                        });
-                        const saveChatResponse = await fetch('/api/chats/group/save', saveChatRequest);
-
-                        if (!saveChatResponse.ok) {
-                            throw new Error('Group member could not be renamed');
-                        }
-
-                        console.log(`Renamed character ${newName} in group chat: ${chatId}`);
-                    }
-                }
+            if (!response.ok) {
+                throw new Error('Group member could not be renamed');
             }
+
+            const data = await response.json();
+            console.log(`Renamed character ${newName} in ${data.updated} messages of group: ${group.name}`);
         } catch (error) {
             console.log(`An error during renaming the character ${newName} in group: ${group.name}`);
             console.error(error);
