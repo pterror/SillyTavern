@@ -1716,8 +1716,6 @@ export function createTextGenGenerationData(settings, model, finalPrompt = null,
             toIntArray(banned_tokens) :
             banned_tokens,
         'banned_strings': banned_strings,
-        'api_type': settings.type,
-        'api_server': getTextGenServer(settings.type),
         'sampler_order': settings.type === textgen_types.KOBOLDCPP ? settings.sampler_order : undefined,
         'xtc_threshold': settings.xtc_threshold,
         'xtc_probability': settings.xtc_probability,

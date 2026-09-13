@@ -17,6 +17,7 @@ import { forwardFetchResponse, trimV1, getConfigValue } from '../../util.js';
 import { setAdditionalHeaders } from '../../additional-headers.js';
 import { createHash } from 'node:crypto';
 import { pipeLlamaCppCompactStream, getLlamaCppStreamMeta } from './llamacpp-compact-stream.js';
+import { resolveTextGenBackend } from '../../textgen-backend-resolve.js';
 
 export const router = express.Router();
 
@@ -274,6 +275,15 @@ router.post('/generate', async function (request, response) {
     if (!request.body) return response.sendStatus(400);
 
     try {
+        // The backend to talk to (type, URL, model) is the server's own configuration, not a fact
+        // the client gets to assert - resolve it from settings.json, overriding whatever the client sent.
+        const backend = resolveTextGenBackend(request.user.directories);
+        request.body.api_type = backend.type;
+        request.body.api_server = backend.serverUrl;
+        if (backend.model !== undefined) {
+            request.body.model = backend.model;
+        }
+
         if (request.body.api_server.indexOf('localhost') !== -1) {
             request.body.api_server = request.body.api_server.replace('localhost', '127.0.0.1');
         }
