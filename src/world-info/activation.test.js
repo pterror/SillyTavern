@@ -138,9 +138,11 @@ const countTokens = async (text) => Math.ceil(text.length / 4); // cheap determi
     await activateWorldInfoEntries(entries, ['a dragon appears'], {
         maxContext: 4000, budgetPercent: 100, depth: 1, countTokens: countingCountTokens,
     });
-    // 1 call for the shared "scanned so far" total (once per pass) + 1 call per entry for its own
-    // accumulated newContent = 1 + 3 = 4, not 3 entries x 2 calls each = 6.
-    assert.equal(calls, 4, `expected 4 countTokens calls (1 shared + 1 per entry), got ${calls}`);
+    // Pass 1: 1 shared call + 1 per entry = 4. All 3 entries succeed with no preventRecursion, so a
+    // second (recursion) pass runs - matching the client, which has no early-exit for an empty
+    // activatedNow and computes its shared token count unconditionally every pass; that pass finds
+    // no new matches but still costs 1 more shared call = 5 total, not 3 entries x 2 calls each (6).
+    assert.equal(calls, 5, `expected 5 countTokens calls (4 from pass 1 + 1 shared call in the empty follow-up pass), got ${calls}`);
 }
 
 // Sticky: an entry activated once stays active (bypassing key matching) for its sticky duration,

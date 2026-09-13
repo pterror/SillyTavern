@@ -9,10 +9,13 @@ import { substituteParams } from '../macro-substitution.js';
  * Server-side port of the CORE of public/scripts/world-info.js's checkWorldInfo() - primary/
  * secondary key matching, constant entries, probability, sticky/cooldown/delay timed effects,
  * inclusion groups, character/tag/generation-trigger filters, recursion via matched-entry content,
- * and token-budget enforcement. Reduced scope, explicitly NOT ported: delay-until-recursion levels,
- * min-activations, @@activate/@@dont_activate decorators, externally-forced activations. Every
- * entry is treated as always eligible on those axes - a caller needing those must pre-filter
- * `entries` or post-process the result themselves for now.
+ * min-activations depth-advancing, and token-budget enforcement. Uses the real scan_state machine
+ * (INITIAL/RECURSION/MIN_ACTIVATIONS/NONE), not a simplified first-pass/later-pass boolean - that
+ * distinction matters for real behavior (e.g. excludeRecursion is only honored during an actual
+ * RECURSION pass, not a MIN_ACTIVATIONS one). Reduced scope, explicitly NOT ported:
+ * delay-until-recursion levels, @@activate/@@dont_activate decorators, externally-forced
+ * activations. Every entry is treated as always eligible on those axes - a caller needing those
+ * must pre-filter `entries` or post-process the result themselves for now.
  *
  * @typedef {object} WIEntry
  * @property {string} uid
@@ -52,6 +55,8 @@ import { substituteParams } from '../macro-substitution.js';
  * @param {boolean} [options.isDryRun] Skips sticky/cooldown state changes (delay is still evaluated) - same as checkWorldInfo's dry-run mode
  * @param {boolean} [options.useGroupScoring] world_info_use_group_scoring setting
  * @param {{trigger?: string, characterFilename?: string, characterTags?: string[]}} [options.entryFilterContext] Generation-trigger and character/tag filter inputs (see entry-filters.js)
+ * @param {number} [options.minActivations] world_info_min_activations setting (0 = disabled) - keep scanning deeper into chat history until at least this many entries have activated
+ * @param {number} [options.minActivationsDepthMax] world_info_min_activations_depth_max setting (0 = no extra cap beyond chat length)
  * @returns {Promise<{activatedEntries: WIEntry[], content: string}>}
  */
 export async function activateWorldInfoEntries(entries, chatMessages, options) {
@@ -59,6 +64,7 @@ export async function activateWorldInfoEntries(entries, chatMessages, options) {
         maxContext, budgetPercent, budgetCap = 0, depth = 0, recursive = true,
         maxRecursionStepsSetting = 0, globalScanData = {}, macroContext = {}, countTokens, random = Math.random,
         chatMetadata = {}, isDryRun = false, useGroupScoring = false, entryFilterContext = {},
+        minActivations = 0, minActivationsDepthMax = 0,
     } = options;
     const maxRecursionSteps = maxRecursionStepsSetting > 0 ? maxRecursionStepsSetting : 25;
 
@@ -76,18 +82,15 @@ export async function activateWorldInfoEntries(entries, chatMessages, options) {
     const failedProbability = new Set();
     let tokenBudgetOverflowed = false;
     let activatedText = '';
-    let isFirstPass = true;
+    let scanState = scan_state.INITIAL;
     let step = 0;
 
-    while (step < maxRecursionSteps) {
+    while (scanState && step < maxRecursionSteps) {
         step++;
         const activatedNow = [];
-        const currentScanState = isFirstPass ? scan_state.INITIAL : scan_state.RECURSION;
 
         for (const entry of candidateEntries) {
             if (failedProbability.has(entry) || activated.has(`${entry.world}.${entry.uid}`)) continue;
-
-            if (!isFirstPass && !recursive) break;
             if (!passesEntryFilters(entry, entryFilterContext)) continue;
 
             const isSticky = timedEffects.isEffectActive('sticky', entry);
@@ -96,7 +99,8 @@ export async function activateWorldInfoEntries(entries, chatMessages, options) {
 
             if (isDelay) continue;
             if (isCooldown && !isSticky) continue;
-            if (!isFirstPass && entry.excludeRecursion && !isSticky) continue;
+            // excludeRecursion only applies to an actual recursion pass, not a min-activations one.
+            if (scanState === scan_state.RECURSION && recursive && entry.excludeRecursion && !isSticky) continue;
 
             if (entry.constant) {
                 activatedNow.push(entry);
@@ -108,19 +112,17 @@ export async function activateWorldInfoEntries(entries, chatMessages, options) {
                 continue;
             }
 
-            const textToScan = buffer.get(entry, currentScanState);
+            const textToScan = buffer.get(entry, scanState);
             if (matchesEntryKeys(textToScan, entry, buffer, macroContext)) {
                 activatedNow.push(entry);
             }
         }
 
-        if (activatedNow.length === 0) break;
-
         let newContent = '';
         // Computed once per pass, not per entry - activatedText doesn't change within a pass, so
         // recomputing this per entry would be N redundant tokenizer calls for the same answer.
         const scanTokens = await countTokens(activatedText);
-        filterByInclusionGroups(activatedNow, activated, buffer, currentScanState, timedEffects, { useGroupScoring, random });
+        filterByInclusionGroups(activatedNow, activated, buffer, scanState, timedEffects, { useGroupScoring, random });
         for (const entry of activatedNow) {
             if (tokenBudgetOverflowed && !entry.ignoreBudget) continue;
 
@@ -144,21 +146,41 @@ export async function activateWorldInfoEntries(entries, chatMessages, options) {
             activated.set(`${entry.world}.${entry.uid}`, entry);
         }
 
-        // Once budget overflows, the client stops recursing entirely for the rest of the scan - not
-        // just skipping the entries that no longer fit, but never feeding this pass's successful
-        // entries into the recursion buffer either, and never starting another pass.
-        if (tokenBudgetOverflowed) break;
-
         const successfulForRecursion = activatedNow.filter(e => activated.has(`${e.world}.${e.uid}`) && !e.preventRecursion);
-        if (successfulForRecursion.length === 0) break;
 
-        for (const entry of successfulForRecursion) {
-            buffer.addRecurse(entry.content);
-            activatedText += entry.content + '\n';
+        let nextScanState = scan_state.NONE;
+
+        if (recursive && !tokenBudgetOverflowed && successfulForRecursion.length) {
+            nextScanState = scan_state.RECURSION;
         }
 
-        isFirstPass = false;
-        if (!recursive) break;
+        // A min-activations pass that turned up recursable content needs one recursion pass before
+        // advancing depth again - there might be recursion-triggerable entries matching what was
+        // just added to the buffer.
+        if (recursive && !tokenBudgetOverflowed && scanState === scan_state.MIN_ACTIVATIONS && buffer.hasRecurse()) {
+            nextScanState = scan_state.RECURSION;
+        }
+
+        // If nothing else wants to continue the scan, but min-activations isn't satisfied yet, keep
+        // advancing depth (independent of the `recursive` setting - min-activations is about scanning
+        // further back in chat history, not about recursing through matched content).
+        const minActivationsNotSatisfied = minActivations > 0 && activated.size < minActivations;
+        if (!nextScanState && !tokenBudgetOverflowed && minActivationsNotSatisfied) {
+            const overMax = (minActivationsDepthMax > 0 && buffer.getDepth() > minActivationsDepthMax) || (buffer.getDepth() > chatMessages.length);
+            if (!overMax) {
+                nextScanState = scan_state.MIN_ACTIVATIONS;
+                buffer.advanceScan();
+            }
+        }
+
+        scanState = nextScanState;
+        if (scanState) {
+            const text = successfulForRecursion.map(x => x.content).join('\n');
+            if (text) {
+                buffer.addRecurse(text);
+                activatedText = text + '\n' + activatedText;
+            }
+        }
     }
 
     const activatedEntries = [...activated.values()];
