@@ -6,7 +6,7 @@ import { Popup, POPUP_TYPE } from './popup.js';
 import { power_user, registerDebugFunction } from './power-user.js';
 import { isMobile } from './RossAscends-mods.js';
 import { renderTemplateAsync } from './templates.js';
-import { getFriendlyTokenizerName, getTokenCountAsync } from './tokenizers.js';
+import { getFriendlyTokenizerName, getTokenCountsAsyncBatch } from './tokenizers.js';
 import { copyText } from './utils.js';
 
 let PromptArrayItemForRawPromptDisplay;
@@ -358,32 +358,58 @@ export async function clearItemizedPrompts() {
 }
 
 export async function itemizedParams(itemizedPrompts, thisPromptSet, incomingMesId) {
+    const set = itemizedPrompts[thisPromptSet];
+    const isOpenAi = set.main_api === 'openai';
+
+    // Every field that needs a real token count, gathered up front so they can all go out in one
+    // batched request instead of one request per field - the non-OpenAI-only fields are included
+    // here too (rather than a second batch later) whenever this prompt set needs them, since we
+    // already know this_main_api at this point.
+    /** @type {[string, string][]} */
+    const tokenFields = [
+        ['charDescriptionTokens', set.charDescription],
+        ['charPersonalityTokens', set.charPersonality],
+        ['scenarioTextTokens', set.scenarioText],
+        ['userPersonaStringTokens', set.userPersona],
+        ['worldInfoStringTokens', set.worldInfoString],
+        ['allAnchorsTokens', set.allAnchors],
+        ['summarizeStringTokens', set.summarizeString],
+        ['authorsNoteStringTokens', set.authorsNoteString],
+        ['smartContextStringTokens', set.smartContextString],
+        ['beforeScenarioAnchorTokens', set.beforeScenarioAnchor],
+        ['afterScenarioAnchorTokens', set.afterScenarioAnchor],
+        ['zeroDepthAnchorTokens', set.zeroDepthAnchor], // TODO: unused
+        ['chatInjects', set.chatInjects],
+        ['chatVectorsStringTokens', set.chatVectorsString],
+        ['dataBankVectorsStringTokens', set.dataBankVectorsString],
+    ];
+    if (!isOpenAi) {
+        tokenFields.push(
+            ['finalPromptTokens', set.finalPrompt],
+            ['storyStringTokens', set.storyString],
+            ['examplesStringTokens', set.examplesString],
+            ['mesSendStringTokens', set.mesSendString],
+            ['instructionTokens', set.instruction],
+            ['promptBiasTokens', set.promptBias],
+        );
+    }
+
+    const tokenCounts = await getTokenCountsAsyncBatch(tokenFields.map(([, text]) => text));
+    /** @type {Record<string, number>} */
+    const tokens = Object.fromEntries(tokenFields.map(([key], i) => [key, tokenCounts[i]]));
+
     const params = {
-        charDescriptionTokens: await getTokenCountAsync(itemizedPrompts[thisPromptSet].charDescription),
-        charPersonalityTokens: await getTokenCountAsync(itemizedPrompts[thisPromptSet].charPersonality),
-        scenarioTextTokens: await getTokenCountAsync(itemizedPrompts[thisPromptSet].scenarioText),
-        userPersonaStringTokens: await getTokenCountAsync(itemizedPrompts[thisPromptSet].userPersona),
-        worldInfoStringTokens: await getTokenCountAsync(itemizedPrompts[thisPromptSet].worldInfoString),
-        allAnchorsTokens: await getTokenCountAsync(itemizedPrompts[thisPromptSet].allAnchors),
-        summarizeStringTokens: await getTokenCountAsync(itemizedPrompts[thisPromptSet].summarizeString),
-        authorsNoteStringTokens: await getTokenCountAsync(itemizedPrompts[thisPromptSet].authorsNoteString),
-        smartContextStringTokens: await getTokenCountAsync(itemizedPrompts[thisPromptSet].smartContextString),
-        beforeScenarioAnchorTokens: await getTokenCountAsync(itemizedPrompts[thisPromptSet].beforeScenarioAnchor),
-        afterScenarioAnchorTokens: await getTokenCountAsync(itemizedPrompts[thisPromptSet].afterScenarioAnchor),
-        zeroDepthAnchorTokens: await getTokenCountAsync(itemizedPrompts[thisPromptSet].zeroDepthAnchor), // TODO: unused
-        thisPrompt_padding: itemizedPrompts[thisPromptSet].padding,
-        this_main_api: itemizedPrompts[thisPromptSet].main_api,
-        chatInjects: await getTokenCountAsync(itemizedPrompts[thisPromptSet].chatInjects),
-        chatVectorsStringTokens: await getTokenCountAsync(itemizedPrompts[thisPromptSet].chatVectorsString),
-        dataBankVectorsStringTokens: await getTokenCountAsync(itemizedPrompts[thisPromptSet].dataBankVectorsString),
+        ...tokens,
+        thisPrompt_padding: set.padding,
+        this_main_api: set.main_api,
         modelUsed: chat[incomingMesId]?.extra?.model,
         apiUsed: chat[incomingMesId]?.extra?.api,
-        presetName: itemizedPrompts[thisPromptSet].presetName || t`(Unknown)`,
-        messagesCount: String(itemizedPrompts[thisPromptSet].messagesCount ?? ''),
-        examplesCount: String(itemizedPrompts[thisPromptSet].examplesCount ?? ''),
+        presetName: set.presetName || t`(Unknown)`,
+        messagesCount: String(set.messagesCount ?? ''),
+        examplesCount: String(set.examplesCount ?? ''),
         samplerConfig: (() => {
             try {
-                return JSON.stringify(JSON.parse(itemizedPrompts[thisPromptSet].samplerConfigJson || '{}'), null, 2);
+                return JSON.stringify(JSON.parse(set.samplerConfigJson || '{}'), null, 2);
             } catch {
                 return '';
             }
@@ -451,13 +477,11 @@ export async function itemizedParams(itemizedPrompts, thisPromptSet, incomingMes
     } else {
         //for non-OAI APIs
         //console.log('-- Counting non-OAI Tokens');
-        params.finalPromptTokens = await getTokenCountAsync(itemizedPrompts[thisPromptSet].finalPrompt);
-        params.storyStringTokens = await getTokenCountAsync(itemizedPrompts[thisPromptSet].storyString) - params.worldInfoStringTokens;
-        params.examplesStringTokens = await getTokenCountAsync(itemizedPrompts[thisPromptSet].examplesString);
-        params.mesSendStringTokens = await getTokenCountAsync(itemizedPrompts[thisPromptSet].mesSendString);
+        // finalPromptTokens/storyStringTokens/examplesStringTokens/mesSendStringTokens/instructionTokens/
+        // promptBiasTokens already came back with the batch above (tokenFields includes them when !isOpenAi) -
+        // storyStringTokens just needs the same worldInfoStringTokens subtraction it always did.
+        params.storyStringTokens -= params.worldInfoStringTokens;
         params.ActualChatHistoryTokens = params.mesSendStringTokens - (params.allAnchorsTokens - (params.beforeScenarioAnchorTokens + params.afterScenarioAnchorTokens)) + power_user.token_padding;
-        params.instructionTokens = await getTokenCountAsync(itemizedPrompts[thisPromptSet].instruction);
-        params.promptBiasTokens = await getTokenCountAsync(itemizedPrompts[thisPromptSet].promptBias);
 
         params.totalTokensInPrompt =
             params.storyStringTokens +     //chardefs total

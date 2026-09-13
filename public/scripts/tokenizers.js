@@ -1,5 +1,5 @@
 import { localforage } from '../lib.js';
-import { event_types, eventSource, getCurrentCharacter, getSelectionState, main_api, nai_settings, online_status } from '../script.js';
+import { event_types, eventSource, getCurrentCharacter, getRequestHeaders, getSelectionState, main_api, nai_settings, online_status } from '../script.js';
 import { power_user, registerDebugFunction } from './power-user.js';
 import { chat_completion_sources, model_list, oai_settings } from './chat-completion-settings.js';
 import { groupsStore } from './group-chats.js';
@@ -439,6 +439,94 @@ function callTokenizerAsync(type, str) {
  * @param {number | undefined} padding Optional padding tokens. Defaults to 0.
  * @returns {Promise<number>} Token count.
  */
+/**
+ * Same resolution as getTokenCountAsync(), but for many strings in one call. When the resolved
+ * tokenizer is the remote textgen API, every string that isn't already cached is sent in a
+ * single batched request instead of one request per string - the client<->server hop is the one
+ * that can be slow (VPN, mobile), and the server fans batched requests out to the actual backend
+ * itself (normally localhost/LAN) rather than the client doing it one round trip at a time. Every
+ * other tokenizer type falls back to running the per-string calls in parallel (still strictly
+ * better than sequential, just not collapsed into one HTTP request).
+ * @param {string[]} strings Strings to tokenize, in order
+ * @param {number} [padding=0] Padding tokens added to each non-empty result
+ * @returns {Promise<number[]>} Token counts, same order/length as `strings`
+ */
+export async function getTokenCountsAsyncBatch(strings, padding = 0) {
+    if (main_api === 'openai') {
+        // Shadow-prompt building and extension/WI counting take different, incompatible paths per string
+        // (see getTokenCountAsync) - not worth special-casing for a batch here, just parallelize.
+        return Promise.all(strings.map(str => getTokenCountAsync(str, padding)));
+    }
+
+    let tokenizerType = power_user.tokenizer;
+    if (tokenizerType === tokenizers.BEST_MATCH) {
+        tokenizerType = getTokenizerBestMatch(main_api);
+    }
+
+    if (tokenizerType !== tokenizers.API_TEXTGENERATIONWEBUI) {
+        return Promise.all(strings.map(str => getTokenCountAsync(str, padding)));
+    }
+
+    const modelHash = getStringHash(getTextGenModel() || online_status).toString();
+    const cacheObject = getTokenCacheObject();
+    const results = new Array(strings.length).fill(0);
+    /** @type {number[]} */
+    const pendingIndices = [];
+
+    for (let i = 0; i < strings.length; i++) {
+        const str = strings[i];
+        if (typeof str !== 'string' || !str.length) {
+            continue; // stays 0, matches getTokenCountAsync's empty-string short-circuit
+        }
+        const cacheKey = `${tokenizerType}-${getStringHash(str)}${modelHash}+${padding}`;
+        if (typeof cacheObject[cacheKey] === 'number') {
+            results[i] = cacheObject[cacheKey];
+        } else {
+            pendingIndices.push(i);
+        }
+    }
+
+    if (pendingIndices.length === 0) {
+        return results;
+    }
+
+    try {
+        const response = await fetch('/api/tokenizers/remote/textgenerationwebui/encode-batch', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({
+                texts: pendingIndices.map(i => strings[i]),
+                api_type: textgen_settings.type,
+                url: getTextGenServer(),
+                model: getTextGenModel(),
+            }),
+        });
+
+        if (!response.ok) {
+            throw new Error(`Batch encode request failed: ${response.status}`);
+        }
+
+        /** @type {{ results: Array<{count?: number, error?: true}> }} */
+        const data = await response.json();
+
+        pendingIndices.forEach((i, j) => {
+            const entry = data.results[j];
+            const count = (!entry || entry.error || isNaN(entry.count)) ? apiFailureTokenCount(strings[i]) : entry.count;
+            const value = count + padding;
+            const cacheKey = `${tokenizerType}-${getStringHash(strings[i])}${modelHash}+${padding}`;
+            cacheObject[cacheKey] = value;
+            results[i] = value;
+        });
+    } catch (error) {
+        console.error('Batch token count request failed, falling back to per-string requests', error);
+        await Promise.all(pendingIndices.map(async i => {
+            results[i] = await getTokenCountAsync(strings[i], padding);
+        }));
+    }
+
+    return results;
+}
+
 export async function getTokenCountAsync(str, padding = undefined) {
     if (typeof str !== 'string' || !str?.length) {
         return 0;

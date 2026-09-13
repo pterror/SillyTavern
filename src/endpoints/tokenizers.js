@@ -1069,14 +1069,16 @@ router.post('/remote/kobold/count', async function (request, response) {
     }
 });
 
-router.post('/remote/textgenerationwebui/encode', async function (request, response) {
-    if (!request.body) {
-        return response.sendStatus(400);
-    }
-    const text = String(request.body.text) || '';
-    const baseUrl = String(request.body.url);
-    const model = String(request.body.model) || '';
-
+/**
+ * Encodes one string against a textgen backend's own tokenize endpoint.
+ * @param {import('express').Request} request Original request, for header forwarding via setAdditionalHeaders
+ * @param {string} text Text to encode
+ * @param {string} baseUrl Backend base URL
+ * @param {string} model Model name (only some backends need this)
+ * @param {string} apiType One of TEXTGEN_TYPES
+ * @returns {Promise<{count: number, ids: number[]}|{error: true}>}
+ */
+async function encodeViaTextgenAPI(request, text, baseUrl, model, apiType) {
     try {
         const args = {
             method: 'POST',
@@ -1088,7 +1090,7 @@ router.post('/remote/textgenerationwebui/encode', async function (request, respo
         // Convert to string + remove trailing slash + /v1 suffix
         let url = trimV1(baseUrl);
 
-        switch (request.body.api_type) {
+        switch (apiType) {
             case TEXTGEN_TYPES.TABBY:
                 url += '/v1/token/encode';
                 args.body = JSON.stringify({ 'text': text, 'add_bos_token': false, 'encode_special_tokens': false });
@@ -1114,14 +1116,14 @@ router.post('/remote/textgenerationwebui/encode', async function (request, respo
                 args.body = JSON.stringify({ 'text': text });
                 break;
             default:
-                return response.sendStatus(400);
+                return { error: true };
         }
 
         const result = await fetch(url, args);
 
         if (!result.ok) {
             console.warn(`API returned error: ${result.status} ${result.statusText}`);
-            return response.send({ error: true });
+            return { error: true };
         }
 
         /** @type {any} */
@@ -1129,9 +1131,41 @@ router.post('/remote/textgenerationwebui/encode', async function (request, respo
         const count = (data?.length ?? data?.count ?? data?.value ?? data?.tokens?.length);
         const ids = (data?.tokens ?? data?.ids ?? []);
 
-        return response.send({ count, ids });
+        return { count, ids };
     } catch (error) {
         console.error(error);
-        return response.send({ error: true });
+        return { error: true };
     }
+}
+
+router.post('/remote/textgenerationwebui/encode', async function (request, response) {
+    if (!request.body) {
+        return response.sendStatus(400);
+    }
+    const text = String(request.body.text) || '';
+    const baseUrl = String(request.body.url);
+    const model = String(request.body.model) || '';
+
+    const result = await encodeViaTextgenAPI(request, text, baseUrl, model, request.body.api_type);
+    return response.send(result);
+});
+
+/**
+ * Batch counterpart to /remote/textgenerationwebui/encode: encodes multiple texts in one round
+ * trip. The client<->server hop is the one that can be on a slow link (VPN, mobile); the
+ * server<->backend hop this fans out over is normally localhost/LAN, so batching here (not at
+ * the backend protocol level, which varies per api_type and mostly doesn't support batch input
+ * anyway) is what actually collapses N client round trips into 1.
+ */
+router.post('/remote/textgenerationwebui/encode-batch', async function (request, response) {
+    if (!request.body || !Array.isArray(request.body.texts)) {
+        return response.sendStatus(400);
+    }
+    const texts = request.body.texts.map(t => String(t ?? ''));
+    const baseUrl = String(request.body.url);
+    const model = String(request.body.model) || '';
+    const apiType = request.body.api_type;
+
+    const results = await Promise.all(texts.map(text => encodeViaTextgenAPI(request, text, baseUrl, model, apiType)));
+    return response.send({ results });
 });
