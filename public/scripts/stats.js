@@ -159,13 +159,11 @@ async function characterStatsHandler(character) {
             user_msg_count: 0,
             non_user_msg_count: 0,
             user_word_count: 0,
-            non_user_word_count: countWords(character.first_mes),
+            non_user_word_count: 0,
             total_swipe_count: 0,
             date_last_chat: 0,
             date_first_chat: new Date('9999-12-31T23:59:59.999Z').getTime(),
         };
-        charStats[character.avatar] = myStats;
-        updateStats();
     }
     // Create HTML with stats
     createHtml('Character', myStats);
@@ -220,22 +218,6 @@ function calculateGenTime(gen_started, gen_finished) {
     let startDate = new Date(gen_started);
     let endDate = new Date(gen_finished);
     return endDate.getTime() - startDate.getTime();
-}
-
-/**
- * Sends a POST request to the server to update the statistics.
- */
-async function updateStats() {
-    const response = await fetch('/api/stats/update', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify(charStats),
-    });
-
-    if (response.status !== 200) {
-        console.error('Failed to update stats');
-        console.log(response.status);
-    }
 }
 
 /**
