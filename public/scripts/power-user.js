@@ -19,7 +19,6 @@ import {
     chat,
     getFirstDisplayedMessageId,
     showMoreMessages,
-    saveSettings,
     saveChatConditional,
     setAnimationDuration,
     ANIMATION_DURATION_DEFAULT,
@@ -2838,7 +2837,7 @@ async function importTheme(file) {
     }
 
     themes.push(parsed);
-    await saveTheme(parsed.name, getNewTheme(parsed));
+    await saveThemeRaw(parsed.name, getNewTheme(parsed));
     const option = document.createElement('option');
     option.selected = false;
     option.value = parsed.name;
@@ -2847,39 +2846,7 @@ async function importTheme(file) {
     toastr.success(parsed.name, 'Theme imported');
 }
 
-/**
- * Saves the current theme to the server.
- * @param {string|undefined} name Theme name. If undefined, a popup will be shown to enter a name.
- * @param {object|undefined} theme Theme object. If undefined, the current theme will be saved.
- * @returns {Promise<object>} A promise that resolves when the theme is saved.
- */
-async function saveTheme(name = undefined, theme = undefined) {
-    if (typeof name !== 'string') {
-        const newName = await callGenericPopup('Enter a theme preset name:', POPUP_TYPE.INPUT, power_user.theme);
-
-        if (!newName) {
-            return;
-        }
-
-        name = await getSanitizedFilename(String(newName));
-    }
-
-    if (typeof theme !== 'object') {
-        theme = getThemeObject(name);
-    }
-
-    const response = await fetch('/api/themes/save', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify(theme),
-    });
-
-    if (!response.ok) {
-        toastr.error('Check the server connection and reload the page to prevent data loss.', 'Theme could not be saved');
-        console.error('Theme could not be saved', response);
-        throw new Error('Theme could not be saved');
-    }
-
+function registerSavedTheme(name, theme) {
     const themeIndex = themes.findIndex(x => x.name == name);
 
     if (themeIndex == -1) {
@@ -2896,6 +2863,65 @@ async function saveTheme(name = undefined, theme = undefined) {
 
     power_user.theme = name;
     saveSettingsDebounced('power_user.theme');
+}
+
+/**
+ * Saves the current theme to the server. The server composes the theme body from its own stored
+ * power_user settings; `overrides` is only for values that aren't a setting (e.g. a generated palette).
+ * @param {string|undefined} name Theme name. If undefined, a popup will be shown to enter a name.
+ * @param {object|undefined} overrides Extra fields to layer on top of the server-composed theme.
+ * @returns {Promise<object>} A promise that resolves when the theme is saved.
+ */
+async function saveTheme(name = undefined, overrides = undefined) {
+    if (typeof name !== 'string') {
+        const newName = await callGenericPopup('Enter a theme preset name:', POPUP_TYPE.INPUT, power_user.theme);
+
+        if (!newName) {
+            return;
+        }
+
+        name = await getSanitizedFilename(String(newName));
+    }
+
+    const response = await fetch('/api/themes/save-from-settings', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ name, overrides }),
+    });
+
+    if (!response.ok) {
+        toastr.error('Check the server connection and reload the page to prevent data loss.', 'Theme could not be saved');
+        console.error('Theme could not be saved', response);
+        throw new Error('Theme could not be saved');
+    }
+
+    const { theme } = await response.json();
+    registerSavedTheme(name, theme);
+
+    return theme;
+}
+
+/**
+ * Writes a theme object to the server as-is, without composing it from stored settings. Only for
+ * an already-complete theme the user supplied directly (e.g. an imported file).
+ * @param {string} name Theme name.
+ * @param {object} theme Complete theme object.
+ * @returns {Promise<object>} A promise that resolves when the theme is saved.
+ */
+async function saveThemeRaw(name, theme) {
+    const response = await fetch('/api/themes/save', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify(theme),
+    });
+
+    if (!response.ok) {
+        toastr.error('Check the server connection and reload the page to prevent data loss.', 'Theme could not be saved');
+        console.error('Theme could not be saved', response);
+        throw new Error('Theme could not be saved');
+    }
+
+    registerSavedTheme(name, theme);
 
     return theme;
 }
@@ -2974,19 +3000,14 @@ async function saveMovingUI() {
 
     const name = await getSanitizedFilename(String(popupResult));
 
-    const movingUIPreset = {
-        name,
-        movingUIState: power_user.movingUIState,
-    };
-    console.log(movingUIPreset);
-
-    const response = await fetch('/api/moving-ui/save', {
+    const response = await fetch('/api/moving-ui/save-from-settings', {
         method: 'POST',
         headers: getRequestHeaders(),
-        body: JSON.stringify(movingUIPreset),
+        body: JSON.stringify({ name }),
     });
 
     if (response.ok) {
+        const { preset: movingUIPreset } = await response.json();
         const movingUIPresetIndex = movingUIPresets.findIndex(x => x.name == name);
 
         if (movingUIPresetIndex == -1) {
@@ -3320,12 +3341,8 @@ async function setAvgBG(args) {
     // Generate a full theme palette from the dominant color
     const palette = generateThemePalette(dominantRgb);
 
-    // Create theme object from current settings, then override colors
-    const theme = getThemeObject(themeName);
-    Object.assign(theme, palette);
-
-    // Save as a new theme
-    await saveTheme(themeName, theme);
+    // Save as a new theme; the server composes the base from current settings, palette overrides the colors
+    await saveTheme(themeName, palette);
     applyTheme(themeName);
 
     toastr.success(`Theme "${themeName}" generated and applied.`);
@@ -4053,7 +4070,6 @@ jQuery(() => {
     $('#reload_chat').on('click', async function () {
         const currentChatId = getCurrentChatId();
         if (currentChatId !== undefined && currentChatId !== null) {
-            await saveSettings();
             await saveChatConditional();
             await reloadCurrentChat();
         }
