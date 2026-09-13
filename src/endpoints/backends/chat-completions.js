@@ -5,6 +5,7 @@ import util from 'node:util';
 import express from 'express';
 import fetch from 'node-fetch';
 import urlJoin from 'url-join';
+import _ from 'lodash';
 
 import {
     AIMLAPI_HEADERS,
@@ -57,6 +58,11 @@ import {
 } from '../../prompt-converters.js';
 
 import { readSecret, SECRET_KEYS } from '../secrets.js';
+import { resolveConnectionProfile } from '../../connection-profile-resolve.js';
+import { mergeChatCompletionPreset } from '../../chat-completion-preset-merge.js';
+import { createGenerationParameters } from '../../chat-completion-generation-data.js';
+import { readSettingsAtPaths } from '../../settings-store.js';
+import { readPresetByName } from '../presets.js';
 import {
     getTokenizerModel,
     getSentencepiceTokenizer,
@@ -2232,6 +2238,53 @@ router.post('/bias', async function (request, response) {
 router.post('/generate', async function (request, response) {
     try {
         if (!request.body) return response.status(400).send({ error: true });
+
+        // "Generate using connection profile X" - the raw action is the profile id plus the raw
+        // messages/generation-type facts; the server resolves the profile's source, preset, secret,
+        // and proxy itself instead of the client pre-resolving and asserting them.
+        if (request.body.connection_profile_id) {
+            const { profile, selectedApiMap } = resolveConnectionProfile(request.user.directories, request.body.connection_profile_id);
+            if (selectedApiMap.selected !== 'openai') {
+                return response.status(400).send({ error: true, message: `Profile does not target a chat completion backend (targets: ${selectedApiMap.selected})` });
+            }
+
+            const { messages, max_tokens: maxTokens, type = 'quiet', name1 = '', name2 = '', stream: requestedStream } = request.body;
+            if (!Array.isArray(messages)) {
+                return response.status(400).send({ error: true, message: 'messages must be an array' });
+            }
+
+            const { 'oai_settings': baseSettings, proxies } = readSettingsAtPaths(request.user.directories, ['oai_settings', 'proxies']);
+            const preset = profile.preset ? readPresetByName('openai', profile.preset, request.user.directories) : null;
+            const settings = mergeChatCompletionPreset({ ...baseSettings, chat_completion_source: selectedApiMap.source }, preset);
+
+            // Connection profile takes precedence over the preset/settings value for every
+            // URL-style override field, matching the client's own "profile => preset => settings" order.
+            if (profile['api-url']) {
+                for (const field of ['custom_url', 'vertexai_region', 'zai_endpoint', 'siliconflow_endpoint', 'minimax_endpoint', 'pollinations_endpoint']) {
+                    settings[field] = profile['api-url'];
+                }
+            }
+            const proxyPreset = Array.isArray(proxies) ? proxies.find(p => p.name === profile.proxy) : undefined;
+            if (proxyPreset) {
+                settings.reverse_proxy = proxyPreset.url;
+                settings.proxy_password = proxyPreset.password;
+            }
+
+            const { generate_data } = await createGenerationParameters(settings, profile.model, type, messages, { macroContext: { name1, name2 } });
+
+            if (request.body.overrides && typeof request.body.overrides === 'object' && !Array.isArray(request.body.overrides)) {
+                Object.assign(generate_data, _.omit(request.body.overrides, ['chat_completion_source', 'model', 'messages', 'custom_url', 'reverse_proxy', 'proxy_password', 'secret_id']));
+            }
+
+            request.body = {
+                ...generate_data,
+                max_tokens: maxTokens ?? generate_data.max_tokens,
+                stream: !!requestedStream,
+                chat_completion_source: selectedApiMap.source,
+                secret_id: profile['secret-id'],
+                custom_prompt_post_processing: profile['prompt-post-processing'],
+            };
+        }
 
         const postProcessingType = request.body.custom_prompt_post_processing;
         if (Array.isArray(request.body.messages) && postProcessingType) {
