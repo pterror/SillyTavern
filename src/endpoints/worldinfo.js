@@ -184,7 +184,7 @@ router.post('/get', (request, response) => {
  * write scope is limited to exactly that one sub-path - not the whole settings key, let alone
  * the whole settings store.
  */
-router.post('/char-aux-books', (request, response) => {
+router.post('/additional-books', (request, response) => {
     const { characterAvatar, op, books } = request.body ?? {};
     if (typeof characterAvatar !== 'string' || !characterAvatar) {
         return response.status(400).send({ result: 'error', error: 'characterAvatar is required' });

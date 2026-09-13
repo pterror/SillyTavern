@@ -6369,7 +6369,7 @@ async function updateAuxBooks(fileName, op, books) {
     }
 
     try {
-        const response = await fetch('/api/worldinfo/char-aux-books', {
+        const response = await fetch('/api/worldinfo/additional-books', {
             method: 'POST',
             headers: getRequestHeaders(),
             body: JSON.stringify({ characterAvatar: fileName, op, books }),
