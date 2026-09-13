@@ -241,4 +241,23 @@ const countTokens = async (text) => Math.ceil(text.length / 4); // cheap determi
     assert.equal(allowed.activatedEntries.length, 1);
 }
 
+// Once budget overflows, recursion stops entirely for the rest of the scan - verified against the
+// client source: nextScanState only ever becomes RECURSION/MIN_ACTIVATIONS when !token_budget_overflowed,
+// so a match that would only be reachable via a post-overflow recursion pass never activates, even
+// though the entry that overflowed the budget DOES contain the recursion trigger word in its content.
+{
+    let calls = 0;
+    const countingCountTokens = async (text) => { calls++; return Math.ceil(text.length / 4); };
+    const entries = [
+        { uid: '1', world: 'w', key: ['dragon'], content: 'x'.repeat(4000) + ' cave' }, // overflows the tiny budget below
+        { uid: '2', world: 'w', key: ['cave'], content: 'Cave lore.' }, // would only be reachable by recursing through entry 1's content
+    ];
+    const { activatedEntries } = await activateWorldInfoEntries(entries, ['a dragon appears'], {
+        maxContext: 4000, budgetPercent: 1, countTokens: countingCountTokens, depth: 1, recursive: true, // budget = 40 tokens, entry 1 alone overflows it
+    });
+    assert.equal(activatedEntries.length, 0, 'entry 1 is cut by budget, and entry 2 never gets a recursion pass to be found in');
+    assert.equal(calls, 2, 'exactly one pass ran (1 shared scanTokens call + 1 for entry 1'
+        + '\'s own content) - no second pass was attempted after overflow');
+}
+
 console.log('activation.test.js: all assertions passed');
