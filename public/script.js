@@ -1828,11 +1828,9 @@ const CHARACTER_BATCH_CHUNK_SIZE = 500;
 
 // Only meant for freshly-fetched data; a cache hit already has this applied.
 function finalizeFetchedCharacter(character) {
-    if (!character.chat) {
-        character.chat = `${character.name} - ${humanizedDateTime()}`;
-    }
-
-    character.chat = String(character.chat);
+    // Leave it unset for a character with no chat yet - inventing a name here guarantees a
+    // 404 the first time this character is opened, against a file that was never written.
+    character.chat = character.chat ? String(character.chat) : '';
 }
 
 // Syncs via the change-feed against the local cache instead of a full-library dump; no full-fetch fallback on failure since that dump can be multi-hundred-MB.
@@ -9383,6 +9381,13 @@ export async function unshallowCharacter(avatar) {
 export async function getChat({ isNewChat = false } = {}) {
     try {
         await unshallowCharacter(getCurrentCharacter()?.avatar);
+
+        if (!isNewChat && !getCurrentCharacter().chat) {
+            // No chat pointer at all yet - nothing on disk could possibly match, so don't burn
+            // a request finding that out. Go straight to the same resolution a 404 would trigger.
+            await replaceCurrentChat();
+            return;
+        }
 
         const response = await fetch('/api/chats/get', {
             method: 'POST',
