@@ -1276,7 +1276,9 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
                     /** @type {(character: object) => boolean} */
                     let shouldSkip = () => false;
 
-                    if (filter && typeof filter.path === 'string') {
+                    if (filter && typeof filter.path === 'string' && 'equals' in filter) {
+                        shouldSkip = (character) => _.get(character, filter.path) !== filter.equals;
+                    } else if (filter && typeof filter.path === 'string') {
                         shouldSkip = (character) => {
                             const value = _.get(character, filter.path);
                             return value === undefined;

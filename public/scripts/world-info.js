@@ -4367,42 +4367,36 @@ async function updateWorldInfoLinks(oldName, newName, { retargetPersonaLore } = 
     ) == POPUP_RESULT.AFFIRMATIVE;
 
     if (updatePastLinksConfirm) {
+        const response = await fetch('/api/characters/merge-attributes', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({
+                avatars: [],
+                filter: { path: 'data.extensions.world', equals: oldName },
+                data: { data: { extensions: { world: newName } } },
+            }),
+        });
+
+        if (!response.ok) {
+            toastr.error(t`Failed to update primary lorebook links.`);
+            return;
+        }
+
+        const { updated, failed } = await response.json();
+
+        for (const avatar of failed) {
+            toastr.error(`Failed to update link for ${charactersStore.get(avatar)?.name ?? avatar}.`);
+        }
+
+        if (updated.length > 0) {
+            toastr.success(t`Updated primary lorebook links for ${updated.length} character(s).`);
+        }
+
         let activeCharacterUpdated = false;
-
-        for (const avatar of linkedAvatars) {
-            const character = charactersStore.get(avatar);
-
-            try {
-                // /merge-attributes API call to update the file on the backend silently
-                const response = await fetch('/api/characters/merge-attributes', {
-                    method: 'POST',
-                    headers: getRequestHeaders(),
-                    body: JSON.stringify({
-                        avatar: character.avatar,
-                        data: {
-                            extensions: {
-                                world: newName,
-                            },
-                        },
-                    }),
-                });
-
-                if (!response.ok) {
-                    throw new Error(`Merge API returned ${response.status}`);
-                }
-
-                // used to update the data in the browser's memory
-                await getOneCharacter(character.avatar);
-
-                // Flag if the currently open character was affected
-                if (avatar === getCurrentCharacter()?.avatar) {
-                    activeCharacterUpdated = true;
-                }
-
-                toastr.success(`Successfully updated link for ${character.name}.`);
-            } catch (e) {
-                toastr.error(`Failed to update link for ${character.name}.`);
-                console.error(`Backend update for character ${character.name} failed:`, e);
+        for (const avatar of updated) {
+            await getOneCharacter(avatar);
+            if (avatar === getCurrentCharacter()?.avatar) {
+                activeCharacterUpdated = true;
             }
         }
 
