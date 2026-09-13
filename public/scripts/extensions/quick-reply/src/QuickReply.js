@@ -476,8 +476,8 @@ export class QuickReply {
                         }
                         const addItem = document.createElement('li'); {
                             addItem.classList.add('qr--modal-switcherItem');
-                            addItem.addEventListener('click', () => {
-                                const qr = quickReplyApi.getSetByQr(this).addQuickReply();
+                            addItem.addEventListener('click', async () => {
+                                const qr = await quickReplyApi.getSetByQr(this).addQuickReplyRemote();
                                 this.editorPopup.completeAffirmative();
                                 qr.showEditor();
                             });

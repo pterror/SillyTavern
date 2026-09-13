@@ -252,10 +252,7 @@ export class QuickReplySet {
         });
     }
 
-    addQuickReply(data = {}) {
-        const id = Math.max(this.idIndex, this.qrList.reduce((max, qr) => Math.max(max, qr.id), 0)) + 1;
-        data.id = this.idIndex = id + 1;
-        const qr = QuickReply.from(data);
+    registerNewQuickReply(qr) {
         this.qrList.push(qr);
         this.hookQuickReply(qr);
         if (this.settingsDom) {
@@ -264,11 +261,48 @@ export class QuickReplySet {
         if (this.dom) {
             this.dom.append(qr.render());
         }
+    }
+
+    /**
+     * Adds a quick reply with a client-picked id. Safe when the whole set is about to be saved
+     * atomically right after (e.g. a brand new set); otherwise prefer addQuickReplyRemote(), since
+     * this id is only ever asserted, never confirmed by the server.
+     */
+    addQuickReply(data = {}) {
+        const id = Math.max(this.idIndex, this.qrList.reduce((max, qr) => Math.max(max, qr.id), 0)) + 1;
+        data.id = this.idIndex = id + 1;
+        const qr = QuickReply.from(data);
+        this.registerNewQuickReply(qr);
         this.saveQrAdd(qr);
         return qr;
     }
 
-    addQuickReplyFromText(qrJson) {
+    /**
+     * Like addQuickReply(), but waits for the server to mint the id instead of computing one
+     * client-side. Blocks on a network round trip - the correct choice whenever a QR is being
+     * added to an already-persisted set on its own, outside of a brand new set's atomic save.
+     * @param {object} [data]
+     * @returns {Promise<QuickReply>}
+     */
+    async addQuickReplyRemote(data = {}) {
+        delete data.id;
+        const response = await fetch('/api/quick-replies/save-partial', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ name: this.name, qrAdds: [data] }),
+        });
+        if (!response.ok) {
+            throw new Error('Failed to create quick reply');
+        }
+        const result = await response.json();
+        data.id = result.assignedIds?.[0];
+        this.idIndex = Math.max(this.idIndex, data.id ?? 0);
+        const qr = QuickReply.from(data);
+        this.registerNewQuickReply(qr);
+        return qr;
+    }
+
+    async addQuickReplyFromText(qrJson, { remote = false } = {}) {
         let data;
         if (qrJson) {
             try {
@@ -288,7 +322,7 @@ export class QuickReplySet {
         } else {
             data = {};
         }
-        const newQr = this.addQuickReply(data);
+        const newQr = remote ? await this.addQuickReplyRemote(data) : this.addQuickReply(data);
         return newQr;
     }
 
@@ -388,7 +422,7 @@ export class QuickReplySet {
             await prom;
             if (dlg.result == POPUP_RESULT.AFFIRMATIVE) {
                 const qrs = QuickReplySet.list.find(it => it.name == sel.value);
-                qrs.addQuickReply(qr.toJSON());
+                await qrs.addQuickReplyRemote(qr.toJSON());
                 if (!isCopy) {
                     qr.delete();
                 }

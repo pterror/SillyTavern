@@ -54,10 +54,19 @@ router.post('/save-partial', (request, response) => {
         }
     }
 
-    // 3. Append new QR entries
+    // 3. Append new QR entries, minting an id for any entry that doesn't already have one
+    /** @type {number[]} */
+    const assignedIds = [];
     if (Array.isArray(qrAdds)) {
         current.qrList = current.qrList ?? [];
-        current.qrList.push(...qrAdds);
+        for (const add of qrAdds) {
+            if (add.id == null) {
+                const maxId = current.qrList.reduce((max, qr) => Math.max(max, qr.id ?? 0), 0);
+                add.id = maxId + 1;
+            }
+            assignedIds.push(add.id);
+            current.qrList.push(add);
+        }
     }
 
     // 4. Remove QR entries by stable id
@@ -74,7 +83,7 @@ router.post('/save-partial', (request, response) => {
     }
 
     writeFileAtomicSync(filename, JSON.stringify(current, null, 4), 'utf8');
-    return response.sendStatus(200);
+    return response.send({ ok: true, assignedIds });
 });
 
 router.post('/delete', (request, response) => {
