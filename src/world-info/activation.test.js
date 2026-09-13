@@ -204,4 +204,17 @@ const countTokens = async (text) => Math.ceil(text.length / 4); // cheap determi
     assert.equal(second.activatedEntries.length, 0, 'dry run never persists sticky, so no carryover (depth:1 only scans the most recent message, "unrelated")');
 }
 
+// Inclusion groups: two entries sharing a group tag are mutually exclusive - only one activates
+{
+    const entries = [
+        { uid: '1', world: 'w', key: ['dragon'], content: 'Version A.', group: 'lore', order: 1 },
+        { uid: '2', world: 'w', key: ['dragon'], content: 'Version B.', group: 'lore', order: 5, groupOverride: true },
+    ];
+    const { activatedEntries } = await activateWorldInfoEntries(entries, ['a dragon appears'], {
+        maxContext: 4000, budgetPercent: 100, depth: 1, countTokens,
+    });
+    assert.equal(activatedEntries.length, 1, 'only one entry from the group activates');
+    assert.equal(activatedEntries[0].uid, '2', 'the groupOverride entry wins');
+}
+
 console.log('activation.test.js: all assertions passed');

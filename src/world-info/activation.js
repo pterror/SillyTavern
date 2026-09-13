@@ -1,17 +1,17 @@
-import { WorldInfoBuffer, matchesEntryKeys } from './key-matching.js';
+import { WorldInfoBuffer, matchesEntryKeys, scan_state } from './key-matching.js';
 import { verifyProbability } from './probability.js';
 import { WorldInfoTimedEffects } from './timed-effects.js';
+import { filterByInclusionGroups } from './inclusion-groups.js';
 import { substituteParams } from '../macro-substitution.js';
 
 /**
  * Server-side port of the CORE of public/scripts/world-info.js's checkWorldInfo() - primary/
  * secondary key matching, constant entries, probability, sticky/cooldown/delay timed effects,
- * recursion via matched-entry content, and token-budget enforcement. Reduced scope, explicitly NOT
- * ported: delay-until-recursion levels, inclusion groups, min-activations, character/tag/
+ * inclusion groups, recursion via matched-entry content, and token-budget enforcement. Reduced
+ * scope, explicitly NOT ported: delay-until-recursion levels, min-activations, character/tag/
  * generation-trigger filters, @@activate/@@dont_activate decorators, externally-forced activations.
- * Every entry is treated as always eligible on those axes (no inclusion-group exclusivity, no
- * decorators) - a caller needing those must pre-filter `entries` or post-process the result
- * themselves for now.
+ * Every entry is treated as always eligible on those axes - a caller needing those must pre-filter
+ * `entries` or post-process the result themselves for now.
  *
  * @typedef {object} WIEntry
  * @property {string} uid
@@ -49,13 +49,14 @@ import { substituteParams } from '../macro-substitution.js';
  * @param {() => number} [options.random] Injectable RNG for tests
  * @param {object} [options.chatMetadata] Mutable chat metadata - timedWorldInfo is read/written on it directly (see WorldInfoTimedEffects)
  * @param {boolean} [options.isDryRun] Skips sticky/cooldown state changes (delay is still evaluated) - same as checkWorldInfo's dry-run mode
+ * @param {boolean} [options.useGroupScoring] world_info_use_group_scoring setting
  * @returns {Promise<{activatedEntries: WIEntry[], content: string}>}
  */
 export async function activateWorldInfoEntries(entries, chatMessages, options) {
     const {
         maxContext, budgetPercent, budgetCap = 0, depth = 0, recursive = true,
         maxRecursionStepsSetting = 0, globalScanData = {}, macroContext = {}, countTokens, random = Math.random,
-        chatMetadata = {}, isDryRun = false,
+        chatMetadata = {}, isDryRun = false, useGroupScoring = false,
     } = options;
     const maxRecursionSteps = maxRecursionStepsSetting > 0 ? maxRecursionStepsSetting : 25;
 
@@ -79,6 +80,7 @@ export async function activateWorldInfoEntries(entries, chatMessages, options) {
     while (step < maxRecursionSteps) {
         step++;
         const activatedNow = [];
+        const currentScanState = isFirstPass ? scan_state.INITIAL : scan_state.RECURSION;
 
         for (const entry of candidateEntries) {
             if (failedProbability.has(entry) || activated.has(`${entry.world}.${entry.uid}`)) continue;
@@ -103,7 +105,7 @@ export async function activateWorldInfoEntries(entries, chatMessages, options) {
                 continue;
             }
 
-            const textToScan = buffer.get(entry, isFirstPass ? 'initial' : 'recursion', 'min_activations');
+            const textToScan = buffer.get(entry, currentScanState);
             if (matchesEntryKeys(textToScan, entry, buffer, macroContext)) {
                 activatedNow.push(entry);
             }
@@ -115,6 +117,7 @@ export async function activateWorldInfoEntries(entries, chatMessages, options) {
         // Computed once per pass, not per entry - activatedText doesn't change within a pass, so
         // recomputing this per entry would be N redundant tokenizer calls for the same answer.
         const scanTokens = await countTokens(activatedText);
+        filterByInclusionGroups(activatedNow, activated, buffer, currentScanState, timedEffects, { useGroupScoring, random });
         for (const entry of activatedNow) {
             if (tokenBudgetOverflowed && !entry.ignoreBudget) continue;
 
