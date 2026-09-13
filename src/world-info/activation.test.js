@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { activateWorldInfoEntries } from './activation.js';
+import { parseDecorators } from './decorators.js';
 
 const countTokens = async (text) => Math.ceil(text.length / 4); // cheap deterministic stand-in
 
@@ -282,6 +283,46 @@ const countTokens = async (text) => Math.ceil(text.length / 4); // cheap determi
         maxContext: 4000, budgetPercent: 100, depth: 1, countTokens,
     });
     assert.equal(activatedEntries.length, 0);
+}
+
+// Decorators, full path: raw entry content is parsed via parseDecorators() (mirroring the client's
+// getSortedEntries() preprocessing step) before entries are handed to activateWorldInfoEntries.
+// @@activate forces activation bypassing key matching entirely.
+{
+    const [decorators, content] = parseDecorators('@@activate\nThis lore has no matching key.');
+    const entries = [{ uid: '1', world: 'w', key: ['nonexistent-keyword'], content, decorators }];
+    const { activatedEntries } = await activateWorldInfoEntries(entries, ['nothing relevant here'], {
+        maxContext: 4000, budgetPercent: 100, depth: 1, countTokens,
+    });
+    assert.equal(activatedEntries.length, 1, '@@activate forces activation despite no key match');
+    assert.equal(activatedEntries[0].content, 'This lore has no matching key.', 'decorator header stripped from content before scanning');
+}
+
+// @@dont_activate suppresses an entry that WOULD otherwise activate via a real key match.
+{
+    const [decorators, content] = parseDecorators('@@dont_activate\nDragon lore that would normally match.');
+    const entries = [{ uid: '1', world: 'w', key: ['dragon'], content, decorators }];
+    const { activatedEntries } = await activateWorldInfoEntries(entries, ['a dragon appears'], {
+        maxContext: 4000, budgetPercent: 100, depth: 1, countTokens,
+    });
+    assert.equal(activatedEntries.length, 0, '@@dont_activate suppresses the entry even though its key matches the chat');
+}
+
+// Control: the same entries without any decorators behave normally (key match required, and does
+// activate when present) - proves the decorator tests above are actually exercising the decorator
+// path, not some unrelated effect.
+{
+    const entries = [{ uid: '1', world: 'w', key: ['nonexistent-keyword'], content: 'No decorators here.' }];
+    const noMatch = await activateWorldInfoEntries(entries, ['nothing relevant here'], {
+        maxContext: 4000, budgetPercent: 100, depth: 1, countTokens,
+    });
+    assert.equal(noMatch.activatedEntries.length, 0, 'without @@activate, a non-matching key does not activate');
+
+    const matchingEntries = [{ uid: '1', world: 'w', key: ['dragon'], content: 'Dragon lore.' }];
+    const withMatch = await activateWorldInfoEntries(matchingEntries, ['a dragon appears'], {
+        maxContext: 4000, budgetPercent: 100, depth: 1, countTokens,
+    });
+    assert.equal(withMatch.activatedEntries.length, 1, 'without @@dont_activate, a matching key does activate');
 }
 
 console.log('activation.test.js: all assertions passed');
