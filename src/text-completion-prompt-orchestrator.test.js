@@ -203,6 +203,74 @@ test('assembleTextCompletionPrompt: instruct mode ON differs from instruct mode 
     assert.ok(!offResult.combinedPrompt.includes('### Instruction:'), 'non-instruct output should not contain instruct markers');
 });
 
+test('assembleTextCompletionPrompt: instruct mode wraps character-card example dialogue with input/output sequences (new in this task)', async () => {
+    const { charactersDir, root } = makeDirectories();
+    const avatar = 'aria2b.png';
+    const mesExample = '<START>\nUser: What is your favorite weapon?\nAria: The moonblade sword, of course.\n';
+    writeCharacterCard(charactersDir, avatar, {
+        spec: 'chara_card_v2',
+        spec_version: '2.0',
+        name: 'Aria',
+        description: 'Aria is a wandering ranger who guards the Whispering Woods.',
+        personality: 'brave and curious',
+        scenario: '',
+        first_mes: 'Hello there, traveler!',
+        mes_example: mesExample,
+        avatar,
+        data: {
+            name: 'Aria',
+            description: 'Aria is a wandering ranger who guards the Whispering Woods.',
+            personality: 'brave and curious',
+            scenario: '',
+            first_mes: 'Hello there, traveler!',
+            mes_example: mesExample,
+            system_prompt: '', post_history_instructions: '', character_version: '', creator_notes: '',
+            extensions: {}, alternate_greetings: [],
+        },
+    });
+    const directories = { characters: charactersDir, root };
+
+    const instructPreset = {
+        enabled: true,
+        wrap: true,
+        macro: true,
+        names_behavior: 'none',
+        skip_examples: false,
+        input_sequence: '### Instruction:',
+        output_sequence: '### Response:',
+        input_suffix: '',
+        output_suffix: '',
+        system_sequence: '### System:',
+        system_suffix: '',
+        system_same_as_user: false,
+        last_output_sequence: '### FinalResponse:',
+        story_string_prefix: '',
+        story_string_suffix: '',
+    };
+
+    const input = {
+        ...baseFixture(directories, avatar),
+        isInstruct: true,
+        instructPreset,
+        contextSettings: {},
+    };
+    const result = await assembleTextCompletionPrompt(input);
+
+    // Before this task, mesExamplesArray/mesExamplesRawArray were always identical (the local
+    // parseMesExamplesBlocks adapter never applied formatInstructModeExamples()'s instruct-mode
+    // reformatting) - so example dialogues were never wrapped with input_sequence/output_sequence
+    // even in instruct mode. Prove that gap is now closed:
+    assert.notDeepEqual(result.mesExamplesArray, result.mesExamplesRawArray, 'formatted example array should now diverge from the raw one in instruct mode');
+    assert.ok(result.mesExamplesArray.some(x => x.includes('### Instruction:')), 'formatted example array should contain the input_sequence marker');
+    assert.ok(result.mesExamplesArray.some(x => x.includes('### Response:')), 'formatted example array should contain the output_sequence marker');
+    assert.ok(!result.mesExamplesRawArray.some(x => x.includes('### Instruction:')), 'the raw example array should stay unwrapped');
+
+    // And the wrapped example dialogue actually reaches the final combined prompt.
+    assert.ok(result.combinedPrompt.includes('### Instruction:'), 'combinedPrompt should contain the wrapped example input_sequence marker');
+    assert.ok(result.combinedPrompt.includes('### Response:'), 'combinedPrompt should contain the wrapped example output_sequence marker');
+    assert.ok(result.combinedPrompt.includes('The moonblade sword, of course.'), 'combinedPrompt should still contain the example content itself');
+});
+
 test('assembleTextCompletionPrompt: tiny max context trims the prompt without crashing', async () => {
     const { charactersDir, root } = makeDirectories();
     const avatar = 'aria3.png';

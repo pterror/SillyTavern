@@ -17,6 +17,7 @@ import { getStoppingStrings } from './stopping-strings.js';
 import { getCustomTokenBans, calculateLogitBias } from './token-bans-and-bias.js';
 import { createTextGenGenerationData } from './textgen-generation-data.js';
 import { baseChatReplace } from './macro-substitution.js';
+import { formatInstructModeExamples } from './instruct-mode-examples.js';
 import { createExtensionPromptTable, setExtensionPrompt, doChatInject, extension_prompt_types } from './extension-prompt-table.js';
 
 /**
@@ -113,17 +114,22 @@ import { createExtensionPromptTable, setExtensionPrompt, doChatInject, extension
  *    `worldInfoCandidates` is a plain input array of already-resolved candidate entries, in
  *    priority order, exactly as activateWorldInfoEntries() itself expects.
  *
- * 7. `parseMesExamples()` / `formatInstructModeExamples()` (public/script.js /
- *    public/scripts/instruct-mode.js) are NOT among the 18 ported modules this task wires
- *    together, and are not ported by this file either - they are small enough that a minimal,
- *    clearly-marked local adapter (`parseMesExamplesBlocks` below) is used instead, so
- *    assembleStoryString() has a `mesExamplesArray`/`mesExamplesRawArray` to consume at all.
- *    Known limitation of that adapter: it does NOT apply `formatInstructModeExamples()`'s
- *    instruct-mode-specific reformatting (input/output sequence wrapping per example block) -
- *    `mesExamplesArray` and `mesExamplesRawArray` end up IDENTICAL even when `isInstruct` is true.
- *    This is a real accuracy gap for instruct-mode example-dialogue formatting specifically (the
- *    rest of instruct-mode formatting - message history, story string, stopping sequences - goes
- *    through the real ported modules and IS accurate).
+ * 7. `parseMesExamples()` (public/script.js) is still NOT among the 18 ported modules this task
+ *    wires together - it remains a minimal, clearly-marked local adapter (`parseMesExamplesBlocks`
+ *    below), used only to get assembleStoryString() a `mesExamplesArray`/raw array to consume at
+ *    all. `formatInstructModeExamples()` (public/scripts/instruct-mode.js) IS NOW a real, separately
+ *    ported module (see src/instruct-mode-examples.js) and IS wired in below: `mesExamplesRawArray`
+ *    is captured (as `[...mesExamplesArray]`) AFTER the WI-EM fold-in loop, exactly matching
+ *    public/script.js's own ordering (raw-capture at ~5733, immediately after its identical fold-in
+ *    loop at ~5715-5729, re-verified against that exact span for this task) - and
+ *    `formatInstructModeExamples()` is then applied to `mesExamplesArray` (not the raw array), only
+ *    when `isInstruct` is true, matching ~5735-5736. This closes the gap: `mesExamplesArray` and
+ *    `mesExamplesRawArray` are no longer identical in instruct mode, and instruct-mode example
+ *    dialogues are now correctly wrapped with `input_sequence`/`output_sequence`/suffixes/names per
+ *    `instructPreset`. One caveat worth flagging: `formatInstructModeExamples()` is a pure function
+ *    of `mesExamplesArray` (the already-folded-in array, including any WI-EM entries), same as the
+ *    client - there is no separate reformatting pass needed for the WI-EM fold-in specifically, since
+ *    it's folded in before either array is captured, so no further gap exists here.
  *
  * 8. `GENERATION_TYPE_TRIGGERS.includes(type)` (deciding whether world-info's `globalScanData.trigger`
  *    is the generation `type` or the literal string `'normal'`) is a small static list that isn't
@@ -138,9 +144,10 @@ import { createExtensionPromptTable, setExtensionPrompt, doChatInject, extension
  */
 
 /**
- * Mirrors public/script.js's parseMesExamples() (~line 4556), MINUS the main_api==='openai'/
- * isInstruct blockHeading branch's call into formatInstructModeExamples() - see gap (7) above.
- * A small local adapter, not one of the 18 ported modules.
+ * Mirrors public/script.js's parseMesExamples() (~line 4556) exactly (that function itself never
+ * calls formatInstructModeExamples() - see gap (7) above for where that separately-ported function
+ * is actually applied, downstream of this adapter). A small local adapter, not one of the 18 ported
+ * modules.
  * @param {string} examplesStr
  * @param {boolean} isInstruct
  * @param {string} [exampleSeparator] Equivalent of power_user.context.example_separator (already macro-substituted).
@@ -486,8 +493,8 @@ export async function assembleTextCompletionPrompt(input) {
     const authorsNote = resolveAuthorsNote({ chatMetadata, noteSettings, chat, avatar, hasCharacterOrGroup });
 
     // ---- Step 7: story-string assembly ----------------------------------------------------------
-    // mesExamplesArray/mesExamplesRawArray: see module doc comment gap (7) for the parseMesExamples
-    // adapter's known limitation (no formatInstructModeExamples() reformatting).
+    // mesExamplesArray/mesExamplesRawArray: see module doc comment gap (7) - the instruct-mode
+    // reformatting gap is now closed; see the comment at the formatInstructModeExamples() call below.
     const exampleSeparator = contextSettings.example_separator || '';
     let mesExamplesArray = parseMesExamplesBlocks(fields.mesExamples, isInstruct, exampleSeparator);
 
@@ -503,6 +510,18 @@ export async function assembleTextCompletionPrompt(input) {
         }
     }
     const mesExamplesRawArray = [...mesExamplesArray];
+
+    // Instruct-mode example-dialogue reformatting - NOW REAL (see module doc comment gap 7). The raw
+    // array above is captured AFTER the WI-EM fold-in loop, exactly like public/script.js (the client
+    // captures `mesExamplesRawArray = [...mesExamplesArray]` at line ~5733, AFTER its own identical
+    // fold-in loop at ~5715-5729, and only THEN applies `formatInstructModeExamples()` at ~5735-5736
+    // when `isInstruct` is true) - so this orchestrator's existing raw-capture line was already
+    // correctly positioned; only the missing reformatting call itself needed to be added.
+    if (isInstruct) {
+        mesExamplesArray = formatInstructModeExamples(mesExamplesArray, name1, name2, {
+            instructPreset, contextSettings, isGroup, macroContext,
+        });
+    }
 
     const storyStringResult = assembleStoryString({
         description: fields.description, personality: fields.personality, persona: fields.persona, scenario: fields.scenario,
