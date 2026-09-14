@@ -94,6 +94,9 @@ function buildSettingsFixture() {
             charLore: [],
         },
         world_info_character_strategy: 1, // world_info_insertion_strategy.character_first
+        // world_info_depth wide enough to reach every message in this test's short chat history, so
+        // the real keyword scan below can genuinely find 'traveler' regardless of which message it's in.
+        world_info_settings: { world_info_depth: 10 },
         oai_settings: {
             chat_completion_source: 'openai',
             openai_model: 'gpt-4o',
@@ -141,8 +144,12 @@ function buildSettingsFixture() {
 
 async function run() {
     writeAllSettings(directories, buildSettingsFixture());
+    // A REAL, non-constant, non-stubbed lorebook entry - its key ('traveler') genuinely appears in the
+    // chat history written below ('Hello there, traveler.'), so it only ends up in worldInfoBefore if
+    // activateWorldInfoEntries()'s real keyword scan actually matches it, not via a forced/constant
+    // activation.
     writeLorebook('TestLore', [
-        { uid: 'wi1', key: ['irrelevant-key'], keysecondary: [], comment: '', content: 'The ancient tower looms over the village.', constant: true, selective: false, order: 10, position: 0, disable: false },
+        { uid: 'wi1', key: ['traveler'], keysecondary: [], comment: '', content: 'The ancient tower looms over the village.', constant: false, selective: false, order: 10, position: 0, disable: false },
     ]);
     const avatar = writeCharacter('Rex.png', {
         name: 'Rex',
@@ -182,11 +189,19 @@ async function run() {
     assert.equal(input.charDescription, 'Rex is a Rex.', 'charDescription resolves via the real getCharacterCardFields(), including macro substitution');
     assert.equal(input.systemPromptOverride, '', 'systemPromptOverride resolves from fields.system (empty card system_prompt here, but the real preferCharacterPrompt-gated path)');
 
-    // --- world-info candidate resolution (real, via resolveWorldInfoCandidates()) - activation itself is a documented scope boundary ---
+    // --- world-info candidate resolution (real, via resolveWorldInfoCandidates()) ---
     assert.equal(input.worldInfoCandidates.length, 1, 'worldInfoCandidates is auto-resolved for real from the on-disk lorebook named in settings.world_info.globalSelect');
     assert.equal(input.worldInfoCandidates[0].content, 'The ancient tower looms over the village.');
-    assert.equal(input.worldInfoBefore, '', 'worldInfoBefore is an explicit MVP scope boundary (activation not run by this resolver) - see module doc comment');
-    assert.equal(input.worldInfoAfter, '');
+
+    // --- world-info ACTIVATION (real, via activateWorldInfoEntries()/bucketActivatedEntries()) - the
+    // 'TestLore' entry's key ('traveler') only appears in the real chat history, so this only ends up
+    // non-empty if the real keyword scan genuinely matched it (not a forced/constant activation). Its
+    // `position: 0` (world_info_position.before) puts it in worldInfoBefore, not worldInfoAfter. ---
+    assert.equal(input.worldInfoAfter, '', 'the test entry is position:before, so worldInfoAfter stays empty');
+    assert.ok(
+        input.worldInfoBefore.includes('The ancient tower looms over the village.'),
+        'worldInfoBefore contains the real entry content, genuinely activated via keyword scan against the real chat history',
+    );
 
     // An explicit override (including []) always wins over auto-resolution.
     const overriddenWI = await resolveChatCompletionGenerationInput(directories, {
@@ -245,6 +260,10 @@ async function run() {
     assert.ok(result.chat.length > 0, 'the assembled chat-completion payload is non-empty end to end');
     const flattened = JSON.stringify(result.chat);
     assert.ok(flattened.includes('Hello there, traveler.'), 'the real chat history made it into the final chat-completion payload');
+    assert.ok(
+        flattened.includes('The ancient tower looms over the village.'),
+        'the genuinely-activated world-info content (worldInfoBefore) made it all the way into the final assembled chat-completion payload, end to end',
+    );
     assert.equal(typeof result.canUseTools, 'boolean', 'canUseTools is resolved internally by prepareOpenAIMessages(), not by this resolver');
     assert.equal(result.canUseTools, false, 'function_calling is not set in the fixture, so tool calling resolves to false internally');
 
