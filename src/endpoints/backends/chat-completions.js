@@ -65,9 +65,10 @@ import { readSettingsAtPaths } from '../../settings-store.js';
 import { readPresetByName } from '../presets.js';
 import { resolveChatCompletionGenerationInput } from '../../chat-completion-generation-input.js';
 import { prepareOpenAIMessages } from '../../chat-completion-prepare-messages.js';
-import { loadBranch, getAncestorPath, appendMessages, addAlternatives, selectDefaultChild, editMessage } from '../../message-tree-db.js';
+import { loadBranch, getAncestorPath, appendMessages } from '../../message-tree-db.js';
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
+import { persistAssistantReply } from '../../assistant-reply-persist.js';
 import {
     TEXT_COMPLETION_MODELS,
     computeLogitBias,
@@ -2332,16 +2333,124 @@ export async function buildRawActionChatCompletionRequest(directories, {
     return { params: generate_data, settings, anchorNodeId, anchorContent, name1: orchestratorInput.macroContext.name1, name2: orchestratorInput.name2 };
 }
 
+/**
+ * Tees a fetch() response's live SSE byte stream so the generated text can be accumulated for
+ * raw-action persistence WHILE forwarding the exact same bytes to the client, unmodified, via the
+ * existing, untouched `forwardFetchResponse()`.
+ *
+ * This is the chat-completion equivalent of text-completions.js's own identically-named,
+ * identically-shaped helper (see `git show fa4dd1163`) - the mechanism is exactly the same and is
+ * NOT duplicated here by accident: a plain `.on('data', ...)` listener is attached to
+ * `fetchResponse.body` BEFORE `forwardFetchResponse()` runs (and internally calls `.pipe(to)` on
+ * that same stream). Node fans every `'data'` event out to EVERY registered listener - `.pipe()`
+ * itself is just another `'data'` listener under the hood - so this listener observes exactly the
+ * same chunks, in exactly the same order, with zero buffering/latency added to what
+ * `forwardFetchResponse()` forwards; it does not consume, delay, or alter the stream
+ * `forwardFetchResponse()` sees.
+ *
+ * JUDGMENT CALL: built as a local, file-scoped copy rather than importing text-completions.js's own
+ * (non-exported) version. Considered and rejected: exporting it from text-completions.js and
+ * importing it here. There is no import-cycle risk either way (text-completions.js imports nothing
+ * from chat-completions.js, and the only importer of chat-completions.js's router is
+ * server-startup.js, which text-completions.js never reaches) - but doing so would still pull one
+ * backend route file's entire module graph (its own `router`, KoboldCpp-abort plumbing, Ollama/
+ * llama.cpp stream parsers, etc) into the other merely to share ~25 lines of generic teeing logic,
+ * for two files that are otherwise fully independent siblings. This mirrors the precedent set by
+ * fa4dd1163 itself: it extracted `persistAssistantReply()` (the actual, real branching logic) into
+ * a shared module, but deliberately did NOT extract this same teeing helper anywhere shared even
+ * though it is equally generic - it stayed text-completions.js-local. Kept consistent here.
+ *
+ * Only ever called when `persist` (`pendingAssistantPersist`) is set (a raw-action request) - the
+ * caller is expected to fall through to a PLAIN, untouched `forwardFetchResponse()` call otherwise,
+ * so a non-raw-action stream never even attaches this listener.
+ *
+ * Each accumulated SSE `data:` line is parsed as JSON and passed to `extractText(json)` to pull out
+ * the real per-chunk text field. A line that isn't valid JSON (or isn't a `data:` line, or is the
+ * literal `[DONE]` sentinel) is skipped - logged, not thrown, matching this file's own "warn and
+ * keep going" convention for malformed stream chunks.
+ *
+ * Resolves only once the upstream stream has genuinely ended (or errored/closed) AND, if any text
+ * was accumulated, `persistAssistantReply()` has completed - unlike `forwardFetchResponse()` itself
+ * (which resolves as soon as the pipe is wired up, not when the stream finishes). This does not add
+ * latency to the client-visible byte stream (those bytes are already flushed via
+ * `forwardFetchResponse()`'s own `to.end()`, called from ITS OWN `'end'` listener, independent of
+ * this function's own await chain) - it only delays when the ROUTE HANDLER's own promise settles.
+ * @param {import('node-fetch').Response} fetchResponse
+ * @param {import('express').Response} response
+ * @param {object|null|undefined} persist `pendingAssistantPersist`, or a falsy value to skip
+ * teeing/persistence entirely and just forward the bytes untouched.
+ * @param {(json: any) => string|undefined} extractText Pulls the real per-chunk generated-text
+ * field out of one parsed SSE JSON payload.
+ * @returns {Promise<void>}
+ */
+async function forwardAndPersistSseText(fetchResponse, response, persist, extractText) {
+    if (!persist || !fetchResponse.ok || !fetchResponse.body) {
+        return forwardFetchResponse(fetchResponse, response);
+    }
+
+    let buffer = '';
+    let text = '';
+
+    fetchResponse.body.on('data', (chunk) => {
+        buffer += chunk.toString('utf-8');
+        let idx;
+        while ((idx = buffer.indexOf('\n')) !== -1) {
+            const line = buffer.slice(0, idx).trim();
+            buffer = buffer.slice(idx + 1);
+            if (!line.startsWith('data:')) continue;
+            const payload = line.slice(5).trim();
+            if (!payload || payload === '[DONE]') continue;
+            try {
+                text += extractText(JSON.parse(payload)) ?? '';
+            } catch (error) {
+                console.warn('Failed to parse streamed SSE event while accumulating text for persistence:', error);
+            }
+        }
+    });
+
+    const ended = new Promise((resolve) => {
+        fetchResponse.body.once('end', resolve);
+        fetchResponse.body.once('error', resolve);
+        fetchResponse.body.once('close', resolve);
+    });
+
+    await forwardFetchResponse(fetchResponse, response);
+    await ended;
+
+    if (text) {
+        await persistAssistantReply(persist, text);
+    }
+}
+
 router.post('/generate', async function (request, response) {
     // Set only by the raw-action branch below (and only for a type/mode where the reply is actually
     // meant to be persisted - see that branch's own comment for the `is_impersonate`/`type ===
-    // 'quiet'` exclusion), and read only by the single SHARED non-streaming response point in the
-    // default/legacy inline OpenAI/custom dispatch block further down (the ONLY response-handling
-    // code in this file with one shared point across every source it covers - see that block's own
-    // comment for why the many provider-`switch` functions above it (sendClaudeRequest/
-    // sendMakerSuiteRequest/etc, each its own file/function with its own response shape) are
-    // explicitly NOT wired up in this pass). Every other branch (connection-profile, default/legacy
-    // without a raw action) never touches this, so it stays a no-op for them.
+    // 'quiet'` exclusion). Read by BOTH the streaming and non-streaming response points inside the
+    // single shared default/legacy inline OpenAI/custom/other-source dispatch block further down
+    // (the ONLY response-handling code in this file with one shared point across every source it
+    // covers). Every other branch (connection-profile, default/legacy without a raw action) never
+    // sets this, so it stays a no-op for them - the byte stream those requests receive is completely
+    // unaffected by any of this.
+    //
+    // Streaming persistence status, precisely:
+    // - The shared default/legacy inline dispatch block (search `forwardAndPersistSseText` below):
+    //   PERSISTS FOR REAL, for both streaming and non-streaming. This block always builds a real
+    //   OpenAI-Chat-Completions-shaped request (`/chat/completions`, `messages: [...]`) for every
+    //   raw-action call (re-verified: the raw-action branch below always produces real chat
+    //   messages, never a plain string prompt, so `isTextCompletion` - see that block's own
+    //   derivation - is never true for a raw-action request) - its streamed SSE chunks are therefore
+    //   genuinely OpenAI-chat-completions-delta-shaped (`data: {"choices":[{"delta":{"content":
+    //   "..."}}]}`), and `forwardAndPersistSseText()` tees the untouched byte pipe to accumulate
+    //   `choices[0].delta.content` per chunk, persisting the full text via the shared
+    //   `persistAssistantReply()` (../../assistant-reply-persist.js) once the stream ends.
+    // - The ~12 provider-`switch` functions dispatched ABOVE this shared block (sendClaudeRequest/
+    //   sendAI21Request/sendMakerSuiteRequest/sendMistralAIRequest/sendCohereRequest/
+    //   sendDeepSeekRequest/sendAimlapiRequest/sendXaiRequest/sendChutesRequest/sendMinimaxRequest/
+    //   sendElectronHubRequest/sendAzureOpenAIRequest): DO NOT PERSIST, for EITHER streaming OR
+    //   non-streaming - each is its own function with its own response shape/streaming format and
+    //   would need individual review; each already `return`s from its own function (its own
+    //   `forwardFetchResponse()` call site, untouched by this change) before `pendingAssistantPersist`
+    //   is ever read. A real, separately-scoped follow-up, not attempted here.
     let pendingAssistantPersist = null;
 
     try {
@@ -2441,18 +2550,11 @@ router.post('/generate', async function (request, response) {
             // `is_impersonate`/`type: 'quiet'`, it is not committed.
             //
             // The ASSISTANT's reply (for every other, non-skipped type) is persisted further down, at
-            // the single shared non-streaming response point in the default/legacy inline dispatch
-            // block - see `pendingAssistantPersist`, set a few lines below. NOT COVERED (explicit,
-            // documented deferral - real, separate surface area, much larger than text-completion's
-            // single shared dispatch block):
-            //   - EVERY streaming raw-action generation (any chat_completion_source with
-            //     request.body.stream true) - would need teeing the live SSE byte stream into full
-            //     text per source's own delta-parsing format while still forwarding it unchanged.
-            //   - The provider-`switch` cases above (sendClaudeRequest/sendAI21Request/
-            //     sendMakerSuiteRequest/sendMistralAIRequest/sendCohereRequest/sendDeepSeekRequest/
-            //     sendAimlapiRequest/sendXaiRequest/sendChutesRequest/sendMinimaxRequest/
-            //     sendElectronHubRequest/sendAzureOpenAIRequest) - each is its own function with its
-            //     own response shape/streaming behavior and would need individual review.
+            // the single shared streaming AND non-streaming response points in the default/legacy
+            // inline dispatch block - see `pendingAssistantPersist`, set a few lines below, and that
+            // variable's own declaration comment above for exactly which paths persist for real
+            // (the shared block, both modes) versus which remain a documented, separately-scoped
+            // exclusion (the ~12 provider-`switch` functions above, for EITHER mode).
             // The reply, once persisted, must chain onto whatever node is actually the new leaf after
             // this block - the just-appended user message's node when one was appended, otherwise
             // `built.anchorNodeId` unchanged (continue/swipe/regenerate, which add no new message - a
@@ -2470,13 +2572,14 @@ router.post('/generate', async function (request, response) {
                 }
             }
 
-            // Stash what's needed to persist the ASSISTANT's reply once a (non-streaming, default/
-            // legacy-dispatch-block) response is known - read only there, guarded by
-            // `if (pendingAssistantPersist)`, so this has no effect on the provider-`switch` cases or
-            // either streaming path (see the comment on this variable's declaration above). Left
-            // `null` (its declared default) for `is_impersonate`/`type === 'quiet'`, so the reply is
-            // never appended to the tree for either - it still reaches the client unchanged via the
-            // normal response, it just never gets persisted.
+            // Stash what's needed to persist the ASSISTANT's reply once a (streaming or
+            // non-streaming, default/legacy-dispatch-block) response is known - read only there,
+            // guarded by `if (pendingAssistantPersist)`/the `forwardAndPersistSseText()` call, so
+            // this has no effect on the provider-`switch` cases (see the comment on this variable's
+            // declaration above for exactly which paths persist for real). Left `null` (its declared
+            // default) for `is_impersonate`/`type === 'quiet'`, so the reply is never appended to the
+            // tree for either - it still reaches the client unchanged via the normal response, it
+            // just never gets persisted.
             //
             // `isSwipe` is carried through identically to text-completions.js's own route wiring - see
             // that file's own comment on this same field for the full rationale (sibling-alternative
@@ -2960,7 +3063,13 @@ router.post('/generate', async function (request, response) {
         const fetchResponse = await fetch(endpointUrl, config);
 
         if (request.body.stream) {
-            return await forwardFetchResponse(fetchResponse, response);
+            // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
+            // accumulate the OpenAI Chat-Completions-shaped `choices[0].delta.content` field for
+            // raw-action persistence - see `forwardAndPersistSseText()`'s own doc comment above for
+            // the full teeing mechanism and the `choices[0].delta.content` shape verification. A
+            // no-op, byte-for-byte-identical-to-before pass-through whenever `pendingAssistantPersist`
+            // is `null` (every non-raw-action stream, i.e. connection_profile_id and legacy/default).
+            return await forwardAndPersistSseText(fetchResponse, response, pendingAssistantPersist, json => json?.choices?.[0]?.delta?.content);
         }
 
         if (fetchResponse.ok) {
@@ -2974,9 +3083,15 @@ router.post('/generate', async function (request, response) {
             // shared inline OpenAI/custom/other-source block, so nothing speculative ever gets
             // committed. A no-op when the raw-action branch didn't run, and never reached at all for
             // the provider-`switch` cases above (each `return`s from its own function before this
-            // point) or either streaming path (the `request.body.stream` branch above already
-            // returned) - see that variable's own declaration comment for the full list of what's
-            // NOT covered here.
+            // point) - see that variable's own declaration comment for the full list of what's NOT
+            // covered here (those ~12 functions, for either streaming or non-streaming).
+            //
+            // The actual plain/continue/swipe persistence branching lives in `persistAssistantReply()`
+            // (../../assistant-reply-persist.js), shared with the streaming branch above - see that
+            // module's own doc comment for the full continue/`editMessage()` and
+            // swipe/`addAlternatives()`+`selectDefaultChild()` rationale (unchanged from this route's
+            // own original design; also shared, verbatim, with text-completions.js's own identical
+            // persistence for its backend).
             if (pendingAssistantPersist) {
                 // This shared block only ever builds an OpenAI-Chat-Completions-shaped request
                 // (`/chat/completions`, `messages: [...]`) UNLESS `isTextCompletion` is true (a
@@ -2987,53 +3102,7 @@ router.post('/generate', async function (request, response) {
                 // `isTextCompletion` is never true for it - only the real chat-shaped
                 // `{choices: [{message: {content}}]}` response is ever extracted here.
                 const generatedText = json?.choices?.[0]?.message?.content ?? '';
-                if (generatedText) {
-                    const { directories, ownerId, anchorNodeId, name2, isSwipe, isContinue, anchorContent } = pendingAssistantPersist;
-                    const replyContent = { name: name2, is_user: false, mes: generatedText, extra: {}, send_date: Date.now() };
-
-                    if (isContinue) {
-                        // Continue: EDITS the existing leaf node's text in place to (old text + new
-                        // text) instead of appending/adding a sibling - see text-completions.js's own
-                        // identical branch for the full rationale (the `continue_mag`/
-                        // `promptReasoning.removePrefix()` round-trip proving a plain `oldText +
-                        // newText` concatenation is faithful for both the reasoning and non-reasoning
-                        // case, why the RAW un-cleaned-up backend text is consistent with every other
-                        // cut-over type's own already-accepted persistence, and why `editMessage()`
-                        // needs the anchor's FULL content object, not just its `.mes`), mirrored
-                        // verbatim for this backend.
-                        if (!anchorContent) {
-                            console.error('Failed to persist continue edit onto the tree: no anchor content resolved.');
-                        } else {
-                            const oldText = typeof anchorContent.mes === 'string' ? anchorContent.mes : '';
-                            const editResult = await editMessage(directories, ownerId, anchorNodeId, {
-                                ...anchorContent, mes: oldText + generatedText,
-                            });
-                            if (!editResult.ok) {
-                                console.error('Failed to persist continue edit onto the tree:', editResult.reason);
-                            }
-                        }
-                    } else if (isSwipe) {
-                        // Swipe/regenerate: a real ALTERNATIVE alongside the message being replaced, not
-                        // a child chained after it - see text-completions.js's own identical branch for
-                        // the full rationale (addAlternatives()'s internal parent-resolution, the "node
-                        // has no parent" edge case and why it's unreachable here, and the
-                        // selectDefaultChild() judgment call), mirrored verbatim for this backend.
-                        const addResult = await addAlternatives(directories, ownerId, anchorNodeId, [replyContent]);
-                        if (!addResult.ok) {
-                            console.error('Failed to persist swipe alternative onto the tree:', addResult.reason);
-                        } else if (addResult.node_ids?.length) {
-                            const selected = await selectDefaultChild(directories, addResult.node_ids[0]);
-                            if (!selected) {
-                                console.error('Failed to select the new swipe alternative as current.');
-                            }
-                        }
-                    } else {
-                        const appendResult = await appendMessages(directories, ownerId, anchorNodeId, [replyContent]);
-                        if (!appendResult.ok) {
-                            console.error('Failed to persist assistant reply onto the tree:', appendResult.reason);
-                        }
-                    }
-                }
+                await persistAssistantReply(pendingAssistantPersist, generatedText);
             }
 
             return response.send(json);
