@@ -247,6 +247,11 @@ async function run() {
             const data = await res.json();
             return { status: res.status, data };
         } finally {
+            // Without forcing idle keep-alive sockets closed, server.close() only resolves once the
+            // client's persistent HTTP/1.1 connection times out on its own (Node's default
+            // keepAliveTimeout) - which would otherwise stall every subsequent test in this same
+            // process for several seconds each, for no reason relevant to what's under test here.
+            server.closeAllConnections?.();
             await new Promise(resolve => server.close(resolve));
         }
     }
@@ -255,6 +260,66 @@ async function run() {
         const settings = buildSettingsFixture();
         settings.textgenerationwebui_settings.server_urls = { generic: url };
         writeAllSettings(directories, settings);
+    }
+
+    /** Same as pointBackendAt(), but resolves to the OLLAMA backend type/URL/model instead of GENERIC. */
+    function pointOllamaBackendAt(url) {
+        const settings = buildSettingsFixture();
+        settings.textgenerationwebui_settings.type = 'ollama';
+        settings.textgenerationwebui_settings.ollama_model = 'test-ollama-model';
+        settings.textgenerationwebui_settings.server_urls = { ollama: url };
+        writeAllSettings(directories, settings);
+    }
+
+    /** Same as pointBackendAt(), but resolves to the LLAMACPP backend type/URL instead of GENERIC. */
+    function pointLlamaCppBackendAt(url) {
+        const settings = buildSettingsFixture();
+        settings.textgenerationwebui_settings.type = 'llamacpp';
+        settings.textgenerationwebui_settings.server_urls = { llamacpp: url };
+        writeAllSettings(directories, settings);
+    }
+
+    /** Polls `check()` until it returns truthy or `timeoutMs` elapses - streaming persistence completes asynchronously, after the HTTP response to the client has already fully ended, so tests observe it by polling rather than assuming a fixed ordering. */
+    async function waitFor(check, { timeoutMs = 2000, intervalMs = 10 } = {}) {
+        const deadline = Date.now() + timeoutMs;
+        for (; ;) {
+            const result = await check();
+            if (result) return result;
+            if (Date.now() > deadline) {
+                throw new Error('waitFor() timed out waiting for condition to become true');
+            }
+            await new Promise(resolve => setTimeout(resolve, intervalMs));
+        }
+    }
+
+    /** Like postGenerate(), but for a streaming request: returns the raw response status/headers/body text, unparsed - so the test can assert on the literal bytes the client received. */
+    async function postGenerateStream(app, body) {
+        const server = app.listen(0, '127.0.0.1');
+        await new Promise(resolve => server.once('listening', resolve));
+        const port = server.address().port;
+        try {
+            const res = await fetch(`http://127.0.0.1:${port}/generate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            const bodyText = await res.text();
+            return { status: res.status, headers: res.headers, bodyText };
+        } finally {
+            // See postGenerate()'s own comment on this same call - avoids a several-second stall per
+            // streaming test waiting for the client's keep-alive connection to time out on its own.
+            server.closeAllConnections?.();
+            await new Promise(resolve => server.close(resolve));
+        }
+    }
+
+    /** Starts a fake backend that emits a real OpenAI-text-completions-shaped SSE stream, chunked exactly as given, ending with `data: [DONE]\n\n`. */
+    async function startFakeSseBackend(textChunks) {
+        const sseBody = textChunks.map(text => `data: ${JSON.stringify({ choices: [{ text }] })}\n\n`).join('') + 'data: [DONE]\n\n';
+        return { ...await startFakeBackend((_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+            res.end(sseBody);
+        }), expectedBody: sseBody };
     }
 
     // (a) a real non-streaming generation appends the assistant's reply onto the tree, chained
@@ -688,14 +753,265 @@ async function run() {
         assert.ok(rexBranchUnaffected.messages.every(m => m.mes !== 'All systems nominal, Captain.'), 'the group turn did not leak into an unrelated single-character owner namespace');
     }
 
-    // (i) the STREAMING raw-action case (request.body.stream: true) is intentionally NOT exercised
-    // here: proving the assistant reply is untouched for it is trivial (pendingAssistantPersist is
-    // simply never read by either streaming branch - see the code comment at its declaration in
-    // text-completions.js), but actually driving a real SSE/Ollama-stream/llama.cpp-compact-stream
-    // response through this harness and asserting the raw bytes reach the client unchanged would be
-    // exercising the EXISTING (unmodified) streaming plumbing, not anything this session touched -
-    // out of scope here. This session's change to the streaming branches is exactly zero lines; see
-    // the manual diff review noted in this session's own report instead.
+    // (i) STREAMING raw-action, plain reply: a real OpenAI-text-completions-shaped SSE stream
+    // (`data: {"choices":[{"text":"..."}]}`, ending `data: [DONE]`) is teed - the client-facing
+    // bytes must be byte-for-byte identical to what the fake backend sent, AND the full
+    // concatenated text must land on the tree afterward (persistence happens asynchronously, after
+    // the HTTP response to the client has already ended - see forwardAndPersistSseText()'s own doc
+    // comment in text-completions.js - so this polls via waitFor() rather than asserting
+    // immediately after the fetch resolves).
+    {
+        const streamBranch = 'stream-plain-chat';
+        await saveChatToTree(directories, ownerId, streamBranch, [
+            { chat_metadata: {} },
+            { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
+        ]);
+
+        const fakeBackend = await startFakeSseBackend(['Rex ', 'says ', 'hello ', 'back, ', 'streamed.']);
+        pointBackendAt(fakeBackend.url);
+
+        const branchBefore = await loadBranch(directories, ownerId, streamBranch);
+        const messageCountBefore = branchBefore.messages.length;
+
+        const app = buildTestApp();
+        const { status, bodyText } = await postGenerateStream(app, {
+            owner_id: ownerId, character_avatar: avatar, branch_name: streamBranch,
+            type: 'normal', user_message: 'Say hi, streamed.', stream: true,
+        });
+        fakeBackend.server.close();
+
+        assert.equal(status, 200);
+        assert.equal(bodyText, fakeBackend.expectedBody, 'the client-facing SSE bytes are byte-for-byte identical to what the fake backend sent - the teeing did not alter, buffer, or reorder anything');
+
+        const branchAfter = await waitFor(async () => {
+            const branch = await loadBranch(directories, ownerId, streamBranch);
+            return branch.messages.length === messageCountBefore + 2 ? branch : null;
+        });
+        const [userMsg, assistantMsg] = branchAfter.messages.slice(-2);
+        assert.equal(userMsg.mes, 'Say hi, streamed.');
+        assert.equal(userMsg.is_user, true);
+        assert.equal(assistantMsg.mes, 'Rex says hello back, streamed.', 'the full text, accumulated across every SSE chunk, was persisted - not just the last chunk');
+        assert.equal(assistantMsg.is_user, false);
+        assert.equal(assistantMsg.name, 'Rex');
+    }
+
+    // (i-2) STREAMING raw-action, is_swipe: true - same SSE teeing, but must land as a real
+    // SIBLING alternative (addAlternatives() + selectDefaultChild()), exactly like the
+    // non-streaming swipe case (e) above - proving persistAssistantReply() drives the streaming
+    // path through the exact same shared branching, not a re-implementation of it.
+    // Uses its own DISTINCT preceding message text (not reused from any other branch in this file) -
+    // message-tree-db.js structurally SHARES nodes across different branches for the same owner
+    // whenever their preceding content is byte-identical (a real, intentional git-like DAG feature),
+    // and `addAlternatives()`/`selectDefaultChild()` mutate a "which sibling is the default" pointer
+    // on the shared PARENT itself - so reusing another swipe test's exact text here would make this
+    // test observe (and mutate) that OTHER test's own tree state instead of a clean fixture (see
+    // test (f)'s own distinct text, for the exact same reason, predating this session).
+    {
+        const streamSwipeBranch = 'stream-swipe-chat';
+        await saveChatToTree(directories, ownerId, streamSwipeBranch, [
+            { chat_metadata: {} },
+            { name: 'Tester', is_user: true, mes: 'Hi Rex, streaming swipe test.', send_date: 1, extra: {} },
+            { name: 'Rex', is_user: false, mes: 'Hello there, streaming swipe test!', send_date: 2, extra: {} },
+        ]);
+
+        const branchBefore = await loadBranch(directories, ownerId, streamSwipeBranch);
+        const swipedNodeId = branchBefore.branch.leaf_id;
+
+        const fakeBackend = await startFakeSseBackend(['Greetings, ', 'traveler, ', 'streamed!']);
+        pointBackendAt(fakeBackend.url);
+
+        const app = buildTestApp();
+        const { status, bodyText } = await postGenerateStream(app, {
+            owner_id: ownerId, character_avatar: avatar, branch_name: streamSwipeBranch,
+            type: 'swipe', is_swipe: true, stream: true,
+        });
+        fakeBackend.server.close();
+
+        assert.equal(status, 200);
+        assert.equal(bodyText, fakeBackend.expectedBody, 'the client-facing SSE bytes are byte-for-byte identical to what the fake backend sent');
+
+        const branchAfter = await waitFor(async () => {
+            const branch = await loadBranch(directories, ownerId, streamSwipeBranch);
+            return branch.branch.leaf_id !== swipedNodeId ? branch : null;
+        });
+        assert.equal(branchAfter.messages[branchAfter.messages.length - 1].mes, 'Greetings, traveler, streamed!');
+        const alternatives = await getAlternatives(directories, swipedNodeId);
+        assert.equal(alternatives.total, 2, 'the streamed swipe produced a real sibling alternative, not a chained child');
+        assert.ok(alternatives.alternatives.some(a => a.mes === 'Hello there, streaming swipe test!'), 'the original swiped message is unchanged');
+    }
+
+    // (i-3) STREAMING raw-action, is_continue: true - same SSE teeing, but must EDIT the existing
+    // leaf in place (oldText + newText) via editMessage(), exactly like the non-streaming continue
+    // case (g) above. Uses its own DISTINCT preceding text - see (i-2)'s own comment above on why
+    // (continue's editMessage() mutates a potentially-SHARED leaf node in place, so reusing (g)/(h)'s
+    // exact text here would edit THEIR fixture's node instead of a clean one of this test's own).
+    {
+        const streamContinueBranch = 'stream-continue-chat';
+        await saveChatToTree(directories, ownerId, streamContinueBranch, [
+            { chat_metadata: {} },
+            { name: 'Tester', is_user: true, mes: 'Tell me a streaming story, Rex.', send_date: 1, extra: {} },
+            { name: 'Rex', is_user: false, mes: 'Once upon a streaming time,', send_date: 2, extra: {} },
+        ]);
+
+        const branchBefore = await loadBranch(directories, ownerId, streamContinueBranch);
+        const leafBefore = branchBefore.branch.leaf_id;
+        const messageCountBefore = branchBefore.messages.length;
+
+        const fakeBackend = await startFakeSseBackend([' there was ', 'a brave, ', 'streamed adventurer.']);
+        pointBackendAt(fakeBackend.url);
+
+        const app = buildTestApp();
+        const { status, bodyText } = await postGenerateStream(app, {
+            owner_id: ownerId, character_avatar: avatar, branch_name: streamContinueBranch,
+            type: 'continue', is_continue: true, stream: true,
+        });
+        fakeBackend.server.close();
+
+        assert.equal(status, 200);
+        assert.equal(bodyText, fakeBackend.expectedBody, 'the client-facing SSE bytes are byte-for-byte identical to what the fake backend sent');
+
+        const branchAfter = await waitFor(async () => {
+            const branch = await loadBranch(directories, ownerId, streamContinueBranch);
+            const leaf = branch.messages[branch.messages.length - 1];
+            return leaf.mes === 'Once upon a streaming time, there was a brave, streamed adventurer.' ? branch : null;
+        });
+        assert.equal(branchAfter.messages.length, messageCountBefore, 'no new node was created - the streamed continue only edited the existing leaf');
+        assert.equal(branchAfter.branch.leaf_id, leafBefore, 'the SAME node is still the leaf');
+    }
+
+    // (i-4) STREAMING raw-action via OLLAMA: real Ollama-shaped JSON-lines chunks (`{"response":
+    // "...","done":false}`, no SSE framing) through parseOllamaStream() - proves the per-chunk
+    // `json.response` text it already parses for its own SSE re-shaping is now also accumulated
+    // and persisted once the stream ends.
+    {
+        const ollamaBranch = 'stream-ollama-chat';
+        await saveChatToTree(directories, ownerId, ollamaBranch, [
+            { chat_metadata: {} },
+            { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
+        ]);
+
+        const ollamaChunks = ['Hello ', 'from ', 'Ollama, ', 'streamed.'];
+        const fakeBackend = await startFakeBackend((_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+            // parseOllamaStream() (this file's own pre-existing, unmodified parser) tries
+            // JSON.parse() on the WHOLE accumulated buffer rather than splitting on newlines - it
+            // relies on each real Ollama chunk arriving as its own separate 'data' event. A small
+            // delay between writes here forces that same separation over the real loopback socket,
+            // instead of racing to find out whether Node coalesces back-to-back synchronous writes
+            // into a single TCP segment.
+            (async () => {
+                for (const text of ollamaChunks) {
+                    res.write(JSON.stringify({ response: text, done: false }));
+                    await new Promise(resolve => setTimeout(resolve, 5));
+                }
+                res.end(JSON.stringify({ response: '', done: true }));
+            })();
+        });
+        pointOllamaBackendAt(fakeBackend.url);
+
+        const branchBefore = await loadBranch(directories, ownerId, ollamaBranch);
+        const messageCountBefore = branchBefore.messages.length;
+
+        const app = buildTestApp();
+        const { status, bodyText } = await postGenerateStream(app, {
+            owner_id: ownerId, character_avatar: avatar, branch_name: ollamaBranch,
+            type: 'normal', user_message: 'Say hi via Ollama.', stream: true,
+        });
+        fakeBackend.server.close();
+
+        assert.equal(status, 200);
+        // parseOllamaStream() re-shapes Ollama's own JSON-lines into OpenAI-completions-style SSE -
+        // this re-shaping is pre-existing/unmodified behavior, so the expected client body is built
+        // the same way it always was, independent of the persistence change under test.
+        // parseOllamaStream() re-shapes EVERY chunk it receives, including the final `done: true`
+        // sentinel (an empty-text event) - that's pre-existing, unmodified behavior, so the expected
+        // client body includes it too.
+        const expectedSse = [...ollamaChunks, ''].map(text => `data: ${JSON.stringify({ choices: [{ text, thinking: '' }] })}\n\n`).join('') + 'data: [DONE]\n\n';
+        assert.equal(bodyText, expectedSse, 'the client-facing re-shaped SSE bytes are unchanged by the persistence addition');
+
+        const branchAfter = await waitFor(async () => {
+            const branch = await loadBranch(directories, ownerId, ollamaBranch);
+            return branch.messages.length === messageCountBefore + 2 ? branch : null;
+        });
+        const [userMsg, assistantMsg] = branchAfter.messages.slice(-2);
+        assert.equal(userMsg.mes, 'Say hi via Ollama.');
+        assert.equal(assistantMsg.mes, 'Hello from Ollama, streamed.', 'the full text, accumulated across every Ollama JSON-lines chunk, was persisted');
+        assert.equal(assistantMsg.is_user, false);
+        assert.equal(assistantMsg.name, 'Rex');
+    }
+
+    // (i-5) STREAMING raw-action via LLAMACPP's own compact wire format: pipeLlamaCppCompactStream()
+    // already fully JSON-parses every upstream SSE event (to re-encode it into the compact format) -
+    // this proves `data.content` is now also accumulated and persisted, with the compact-format
+    // bytes reaching the client completely unchanged. With no embedded 0xFF bytes, no index changes
+    // (every event here implicitly has index 0, matching the initial `lastIndex`), and no
+    // `completion_probabilities`, the compact wire format degenerates to exactly the concatenated
+    // `content` strings, UTF-8 encoded - allowing a direct byte-for-byte comparison without needing
+    // a separate compact-format decoder.
+    {
+        const llamaCppBranch = 'stream-llamacpp-chat';
+        await saveChatToTree(directories, ownerId, llamaCppBranch, [
+            { chat_metadata: {} },
+            { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
+        ]);
+
+        const llamaCppChunks = ['Hello ', 'from ', 'llama.cpp, ', 'streamed.'];
+        const fakeBackend = await startFakeBackend((_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+            for (const content of llamaCppChunks) {
+                res.write(`data: ${JSON.stringify({ content, stop: false })}\n\n`);
+            }
+            res.end(`data: ${JSON.stringify({ content: '', stop: true })}\n\n`);
+        });
+        pointLlamaCppBackendAt(fakeBackend.url);
+
+        const branchBefore = await loadBranch(directories, ownerId, llamaCppBranch);
+        const messageCountBefore = branchBefore.messages.length;
+
+        const app = buildTestApp();
+        const { status, bodyText } = await postGenerateStream(app, {
+            owner_id: ownerId, character_avatar: avatar, branch_name: llamaCppBranch,
+            type: 'normal', user_message: 'Say hi via llama.cpp.', stream: true,
+        });
+        fakeBackend.server.close();
+
+        assert.equal(status, 200);
+        assert.equal(bodyText, llamaCppChunks.join(''), 'the compact-format bytes reaching the client are exactly the concatenated content, unaffected by the persistence addition');
+
+        const branchAfter = await waitFor(async () => {
+            const branch = await loadBranch(directories, ownerId, llamaCppBranch);
+            return branch.messages.length === messageCountBefore + 2 ? branch : null;
+        });
+        const [userMsg, assistantMsg] = branchAfter.messages.slice(-2);
+        assert.equal(userMsg.mes, 'Say hi via llama.cpp.');
+        assert.equal(assistantMsg.mes, 'Hello from llama.cpp, streamed.', 'the full text, accumulated across every compact-stream event, was persisted');
+        assert.equal(assistantMsg.name, 'Rex');
+    }
+
+    // (i-6) A NON-raw-action streaming request (no owner_id/character_avatar, so neither raw-action
+    // branch runs and pendingAssistantPersist stays null throughout) must be COMPLETELY unaffected
+    // by the teeing mechanism: forwardAndPersistSseText()'s own top-of-function guard
+    // (`if (!persist || ...)`) falls straight through to a plain, untouched forwardFetchResponse()
+    // call - no listener is even attached in this case. Verified here by asserting the client-facing
+    // bytes are still byte-for-byte identical to the fake backend's own SSE stream, exactly as they
+    // were before this session's change (this exact scenario - a stream with no raw-action fields -
+    // already exercised the SAME forwardFetchResponse() call prior to this session).
+    {
+        const fakeBackend = await startFakeSseBackend(['This ', 'is ', 'a ', 'plain ', 'legacy ', 'stream.']);
+        pointBackendAt(fakeBackend.url);
+
+        const app = buildTestApp();
+        const { status, bodyText } = await postGenerateStream(app, {
+            // No owner_id/character_avatar/group_id/connection_profile_id - falls through to the
+            // legacy/default branch, which only resolves api_type/api_server from settings and
+            // otherwise dispatches request.body completely unchanged.
+            prompt: 'Legacy raw prompt, no raw-action fields.', stream: true,
+        });
+        fakeBackend.server.close();
+
+        assert.equal(status, 200);
+        assert.equal(bodyText, fakeBackend.expectedBody, 'a non-raw-action stream is forwarded byte-for-byte unchanged - pendingAssistantPersist stays null, so no teeing/accumulation/persistence logic ever runs for it');
+    }
 
     // NOTE: a dedicated test for the "continue/swipe on an empty chat" guard (see
     // buildRawActionTextCompletionRequest()'s own `if ((isContinue || isSwipe) && ...chat.length

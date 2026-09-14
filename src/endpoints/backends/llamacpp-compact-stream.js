@@ -3,6 +3,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { randomUUID } from 'node:crypto';
 
 import { forwardFetchResponse } from '../../util.js';
+import { persistAssistantReply } from '../../assistant-reply-persist.js';
 
 /**
  * Compact wire protocol for the llama.cpp raw-completions streaming path.
@@ -157,8 +158,24 @@ function createBackpressureWriter(res) {
     };
 }
 
-/** Pipes a llama.cpp `/completion` streaming response using the compact wire format above, instead of forwarding the upstream SSE-JSON envelope byte-for-byte. */
-export async function pipeLlamaCppCompactStream(upstreamResponse, response) {
+/**
+ * Pipes a llama.cpp `/completion` streaming response using the compact wire format above, instead
+ * of forwarding the upstream SSE-JSON envelope byte-for-byte.
+ *
+ * `persist` (`pendingAssistantPersist` from text-completions.js's `/generate` route -
+ * `null`/`undefined` for every non-raw-action call) is OPTIONAL and purely additive: this function
+ * already fully JSON-parses every upstream SSE event into `data` (to re-encode it into the compact
+ * wire format below) - `data.content` is the exact same real per-chunk text llama.cpp itself sends.
+ * When `persist` is set, that text is accumulated into a running buffer and, once the stream ends
+ * (`data.stop`, the upstream body closing, an upstream error, or the client disconnecting - in
+ * which case whatever was generated so far is still persisted as a real, if partial, reply), handed
+ * to `persistAssistantReply()`. This adds one string concatenation per event and nothing else - the
+ * compact-format bytes actually written to `response` are completely unchanged either way.
+ * @param {import('node-fetch').Response} upstreamResponse
+ * @param {import('express').Response} response
+ * @param {object} [persist] `pendingAssistantPersist`, or omit/`null` to leave behavior unchanged.
+ */
+export async function pipeLlamaCppCompactStream(upstreamResponse, response, persist) {
     if (!upstreamResponse.ok || !upstreamResponse.body) {
         return forwardFetchResponse(upstreamResponse, response);
     }
@@ -173,16 +190,28 @@ export async function pipeLlamaCppCompactStream(upstreamResponse, response) {
         let sseBuffer = '';
         let lastIndex = 0;
         let settled = false;
+        let accumulatedText = '';
 
         function finish() {
             if (settled) return;
             settled = true;
             writer.end();
-            resolve();
+
+            if (persist && accumulatedText) {
+                persistAssistantReply(persist, accumulatedText)
+                    .catch(error => console.error('Failed to persist streamed llama.cpp assistant reply:', error))
+                    .finally(() => resolve());
+            } else {
+                resolve();
+            }
         }
 
         function handleEvent(/** @type {any} */ data) {
             if (!data) return;
+
+            if (persist && typeof data.content === 'string') {
+                accumulatedText += data.content;
+            }
 
             const { bytes, index } = encodeEvent(data, lastIndex);
             lastIndex = index;
