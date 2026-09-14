@@ -80,7 +80,16 @@ function extractMessageBias(message) {
  */
 
 /**
- * Port of public/script.js's getBiasStrings(textareaText, type).
+ * Port of public/script.js's getBiasStrings(textareaText, type). One deliberate divergence from a
+ * literal port: the client only ever checks `type === 'swipe'` here because by the time it calls this
+ * function for a `'regenerate'` turn, its own `chat` array has ALREADY had the message being
+ * regenerated spliced out (see Generate()'s own early "delete last message" branch, public/script.js -
+ * everything but `type === 'swipe'` itself hits that branch). Server-side, `chat` is always resolved
+ * fresh from the persisted tree (see text-completion-generation-input.js's/chat-completion-generation-
+ * input.js's own `resolveChatHistory()`), which is untouched by that client-only deletion - so for a
+ * server-resolved `'regenerate'` call, the message being regenerated is still really the last entry.
+ * Skipping it here for `'regenerate'` too (not just `'swipe'`) is required for the two callers to reach
+ * the same real bias result, not an accidental widening.
  * @param {GetBiasStringsParams} params
  * @returns {BiasStrings}
  */
@@ -96,7 +105,7 @@ export function getBiasStrings({ textareaText, type, chat = [], userPromptBias =
     if (!textareaText) {
         for (let i = chat.length - 1; i >= 0; i--) {
             const mes = chat[i];
-            if (type === 'swipe' && chat.length - 1 === i) {
+            if ((type === 'swipe' || type === 'regenerate') && chat.length - 1 === i) {
                 continue;
             }
             if (mes && (mes.is_user || mes.is_system || mes.extra?.type === system_message_types.NARRATOR)) {

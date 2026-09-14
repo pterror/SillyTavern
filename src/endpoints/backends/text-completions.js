@@ -27,7 +27,7 @@ import { readPresetByName } from '../presets.js';
 import { resolveTokenizerType, encodeWithTokenizerType } from '../../tokenizer-resolve.js';
 import { resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
 import { assembleTextCompletionPrompt } from '../../text-completion-prompt-orchestrator.js';
-import { loadBranch, getAncestorPath, appendMessages } from '../../message-tree-db.js';
+import { loadBranch, getAncestorPath, appendMessages, addAlternatives, selectDefaultChild } from '../../message-tree-db.js';
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
 
@@ -551,11 +551,12 @@ router.post('/generate', async function (request, response) {
             // covered yet (scoped out of this task on purpose): that would require buffering a live
             // SSE/streaming backend response into full text (while ALSO forwarding it live to the
             // client below, unchanged) and mapping it back through whichever api_type's own
-            // delta-parsing format was used, before appending it via appendMessages() - real,
-            // separate plumbing left as a follow-up task.
+            // delta-parsing format was used, before appending/adding it - real, separate plumbing
+            // left as a follow-up task.
             // The reply, once persisted, must chain onto whatever node is actually the new leaf
             // after this block - the just-appended user message's node when one was appended,
-            // otherwise `built.anchorNodeId` unchanged (continue/swipe, which add no new message).
+            // otherwise `built.anchorNodeId` unchanged (continue/swipe/regenerate, which add no new
+            // message - a swipe/regenerate REPLACES the anchor with a sibling instead, see below).
             const skipPersistence = isImpersonate || type === 'quiet';
             let replyAnchorNodeId = built.anchorNodeId;
             if (!skipPersistence && typeof userMessageText === 'string' && built.anchorNodeId) {
@@ -576,8 +577,16 @@ router.post('/generate', async function (request, response) {
             // for `is_impersonate`/`type === 'quiet'`, so the non-streaming branch never appends the
             // generated reply to the tree for either - the generated text still reaches the client
             // unchanged via the normal response below, it just never gets persisted.
+            //
+            // `isSwipe` is carried through so the non-streaming branch below knows to persist the
+            // reply as a SIBLING alternative under the anchor's PARENT (via `addAlternatives()`) -
+            // matching real swipe/regenerate tree semantics - instead of a CHILD after the anchor
+            // (via `appendMessages()`, correct only for a genuinely new turn). `is_swipe` is the
+            // client's own single flag for BOTH `type === 'swipe'` and `type === 'regenerate'` (see
+            // public/script.js's `isSwipe` local and this session's task write-up) - both need the
+            // identical tree operation here, so this route does not re-derive it from `type` itself.
             if (!skipPersistence) {
-                pendingAssistantPersist = { directories, ownerId, anchorNodeId: replyAnchorNodeId, name2: built.name2 };
+                pendingAssistantPersist = { directories, ownerId, anchorNodeId: replyAnchorNodeId, name2: built.name2, isSwipe };
             }
 
             // Replace the body entirely - mirrors the connection-profile branch's own final
@@ -765,12 +774,56 @@ router.post('/generate', async function (request, response) {
                         : (data?.choices?.[0]?.text ?? '');
 
                     if (generatedText) {
-                        const { directories, ownerId, anchorNodeId, name2 } = pendingAssistantPersist;
-                        const appendResult = await appendMessages(directories, ownerId, anchorNodeId, [
-                            { name: name2, is_user: false, mes: generatedText, extra: {}, send_date: Date.now() },
-                        ]);
-                        if (!appendResult.ok) {
-                            console.error('Failed to persist assistant reply onto the tree:', appendResult.reason);
+                        const { directories, ownerId, anchorNodeId, name2, isSwipe } = pendingAssistantPersist;
+                        const replyContent = { name: name2, is_user: false, mes: generatedText, extra: {}, send_date: Date.now() };
+
+                        if (isSwipe) {
+                            // Swipe/regenerate: a real, tested ALTERNATIVE alongside the message being
+                            // replaced, not a child chained after it - addAlternatives() resolves the
+                            // anchor's own real parent internally, so `anchorNodeId` here is still the
+                            // node being swiped itself (verified: buildRawActionTextCompletionRequest()'s
+                            // own anchor resolution above, unchanged for this case - "this anchor IS the
+                            // message being swiped itself").
+                            //
+                            // 'node has no parent' (the one failure addAlternatives() can report besides
+                            // 'unknown node') would mean `anchorNodeId` is a rootless/anchor row with no
+                            // real parent - i.e. swiping an EMPTY chat. That's already rejected earlier,
+                            // before ever reaching the backend: buildRawActionTextCompletionRequest()
+                            // throws "Cannot continue/swipe an empty chat" for `(isContinue || isSwipe)
+                            // && orchestratorInput.chat.length === 0`, which the outer try/catch above
+                            // turns into a 400 - so this branch is never reached in that state. Every
+                            // reachable swipe/regenerate target (including a chat's sole opening
+                            // greeting, whose real parent is the character's opening-alternatives anchor
+                            // row - see getOpeningAlternatives()/addOpeningAlternatives() in
+                            // message-tree-db.js) has a real parent by construction. Handled
+                            // defensively anyway (logged, not thrown) rather than assumed unreachable.
+                            const addResult = await addAlternatives(directories, ownerId, anchorNodeId, [replyContent]);
+                            if (!addResult.ok) {
+                                console.error('Failed to persist swipe alternative onto the tree:', addResult.reason);
+                            } else if (addResult.node_ids?.length) {
+                                // Makes the new alternative the active one. JUDGMENT CALL (verified, not
+                                // guessed): the client's OWN existing, already-working generic tree-save
+                                // path (public/script.js's whole-chat save routine, via
+                                // chatOpAddAlternative()+chatOpSelect() in public/scripts/chat-store.js)
+                                // does independently create-and-select a new swipe alternative too, for
+                                // ANY backend - so this call is technically redundant with that eventual
+                                // client-side sync. It's done here anyway, defensively: both operations
+                                // are cheap and idempotent (selectDefaultChild() just repoints one
+                                // `default_child_id`), and doing it immediately here means the tree is
+                                // correct without depending on that separate, later client save
+                                // succeeding - the same "server does its own authoritative persist"
+                                // precedent this whole cutover already established for the plain/
+                                // impersonate/quiet cases above.
+                                const selected = await selectDefaultChild(directories, addResult.node_ids[0]);
+                                if (!selected) {
+                                    console.error('Failed to select the new swipe alternative as current.');
+                                }
+                            }
+                        } else {
+                            const appendResult = await appendMessages(directories, ownerId, anchorNodeId, [replyContent]);
+                            if (!appendResult.ok) {
+                                console.error('Failed to persist assistant reply onto the tree:', appendResult.reason);
+                            }
                         }
                     }
                 }

@@ -65,7 +65,7 @@ import { readSettingsAtPaths } from '../../settings-store.js';
 import { readPresetByName } from '../presets.js';
 import { resolveChatCompletionGenerationInput } from '../../chat-completion-generation-input.js';
 import { prepareOpenAIMessages } from '../../chat-completion-prepare-messages.js';
-import { loadBranch, getAncestorPath, appendMessages } from '../../message-tree-db.js';
+import { loadBranch, getAncestorPath, appendMessages, addAlternatives, selectDefaultChild } from '../../message-tree-db.js';
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
 import {
@@ -2290,7 +2290,12 @@ export async function buildRawActionChatCompletionRequest(directories, {
         type, isImpersonate, isContinue, isSwipe, userMessageText,
     });
 
-    if ((isContinue || isSwipe) && orchestratorInput.macroContext.chat.length === 0) {
+    // Checked against the RAW (pre-drop) history length, not `orchestratorInput.macroContext.chat`
+    // (which, for a swipe/regenerate, has already had the message being replaced dropped - see
+    // resolveChatCompletionGenerationInput()'s own `promptChat`/`rawChatLength` doc comments). A chat
+    // with exactly one message (e.g. a fresh chat's opening greeting) being swiped legitimately ends
+    // up with zero remaining context - that's not the same as "there was nothing to swipe at all".
+    if ((isContinue || isSwipe) && orchestratorInput.rawChatLength === 0) {
         throw new Error('Cannot continue/swipe an empty chat.');
     }
 
@@ -2437,7 +2442,8 @@ router.post('/generate', async function (request, response) {
             //     own response shape/streaming behavior and would need individual review.
             // The reply, once persisted, must chain onto whatever node is actually the new leaf after
             // this block - the just-appended user message's node when one was appended, otherwise
-            // `built.anchorNodeId` unchanged (continue/swipe, which add no new message).
+            // `built.anchorNodeId` unchanged (continue/swipe/regenerate, which add no new message - a
+            // swipe/regenerate REPLACES the anchor with a sibling instead, see below).
             const skipPersistence = isImpersonate || type === 'quiet';
             let replyAnchorNodeId = built.anchorNodeId;
             if (!skipPersistence && typeof userMessageText === 'string' && built.anchorNodeId) {
@@ -2458,8 +2464,13 @@ router.post('/generate', async function (request, response) {
             // `null` (its declared default) for `is_impersonate`/`type === 'quiet'`, so the reply is
             // never appended to the tree for either - it still reaches the client unchanged via the
             // normal response, it just never gets persisted.
+            //
+            // `isSwipe` is carried through identically to text-completions.js's own route wiring - see
+            // that file's own comment on this same field for the full rationale (sibling-alternative
+            // persistence via `addAlternatives()`, shared by BOTH `type === 'swipe'` and `type ===
+            // 'regenerate'` via the client's single `is_swipe` flag).
             if (!skipPersistence) {
-                pendingAssistantPersist = { directories, ownerId, anchorNodeId: replyAnchorNodeId, name2: built.name2 };
+                pendingAssistantPersist = { directories, ownerId, anchorNodeId: replyAnchorNodeId, name2: built.name2, isSwipe };
             }
 
             // Replace the body entirely - mirrors the connection-profile branch's own final
@@ -2949,12 +2960,29 @@ router.post('/generate', async function (request, response) {
                 // `{choices: [{message: {content}}]}` response is ever extracted here.
                 const generatedText = json?.choices?.[0]?.message?.content ?? '';
                 if (generatedText) {
-                    const { directories, ownerId, anchorNodeId, name2 } = pendingAssistantPersist;
-                    const appendResult = await appendMessages(directories, ownerId, anchorNodeId, [
-                        { name: name2, is_user: false, mes: generatedText, extra: {}, send_date: Date.now() },
-                    ]);
-                    if (!appendResult.ok) {
-                        console.error('Failed to persist assistant reply onto the tree:', appendResult.reason);
+                    const { directories, ownerId, anchorNodeId, name2, isSwipe } = pendingAssistantPersist;
+                    const replyContent = { name: name2, is_user: false, mes: generatedText, extra: {}, send_date: Date.now() };
+
+                    if (isSwipe) {
+                        // Swipe/regenerate: a real ALTERNATIVE alongside the message being replaced, not
+                        // a child chained after it - see text-completions.js's own identical branch for
+                        // the full rationale (addAlternatives()'s internal parent-resolution, the "node
+                        // has no parent" edge case and why it's unreachable here, and the
+                        // selectDefaultChild() judgment call), mirrored verbatim for this backend.
+                        const addResult = await addAlternatives(directories, ownerId, anchorNodeId, [replyContent]);
+                        if (!addResult.ok) {
+                            console.error('Failed to persist swipe alternative onto the tree:', addResult.reason);
+                        } else if (addResult.node_ids?.length) {
+                            const selected = await selectDefaultChild(directories, addResult.node_ids[0]);
+                            if (!selected) {
+                                console.error('Failed to select the new swipe alternative as current.');
+                            }
+                        }
+                    } else {
+                        const appendResult = await appendMessages(directories, ownerId, anchorNodeId, [replyContent]);
+                        if (!appendResult.ok) {
+                            console.error('Failed to persist assistant reply onto the tree:', appendResult.reason);
+                        }
                     }
                 }
             }

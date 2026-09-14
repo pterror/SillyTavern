@@ -564,7 +564,13 @@ export async function resolveChatCompletionGenerationInput(directories, {
     macroExtras = {},
 } = {}) {
     void groupId; // Accepted for interface parity only - see doc comment (GROUPS scope boundary).
-    void isImpersonate; void isContinue; void isSwipe; // Folded into `type` by the caller; kept as documented params for parity with the task's signature, matching text-completion-generation-input.js's own equivalents (which are likewise not separately re-derived from `type` there either).
+    void isImpersonate; void isContinue; // Folded into `type` by the caller; kept as documented params for parity with the task's signature, matching text-completion-generation-input.js's own equivalents (which are likewise not separately re-derived from `type` there either).
+    // `isSwipe` IS read (see `promptChat` below) - unlike isImpersonate/isContinue, it drives real
+    // behavior here: dropping the message being swiped/regenerated from the context this resolver
+    // builds. Not folded into `type` alone because the caller's own `is_swipe` boolean already
+    // captures BOTH 'swipe' and 'regenerate' (see public/script.js's `isSwipe` local and the read-first
+    // analysis in this session's task write-up), and re-deriving that from `type` here would duplicate
+    // that decision in a second place.
 
     const {
         oai_settings: oaiSettings = {},
@@ -589,10 +595,25 @@ export async function resolveChatCompletionGenerationInput(directories, {
     // every other loaded message already uses (identical rationale/shape to
     // text-completion-generation-input.js's own UPDATE section) - BEFORE conversion via
     // buildChatCompletionMessages(), so it goes through the exact same role/content mapping as a real
-    // loaded message.
+    // loaded message. Kept RAW (the swiped/regenerated message, when there is one, still present as
+    // the last entry) - this is the shape getBiasStrings() below expects (it does its own
+    // last-entry skip for 'swipe'/'regenerate' - see that function's own doc comment for why).
     const chat = typeof userMessageText === 'string'
         ? [...loadedChat, { is_user: true, name: name1, mes: userMessageText, extra: {}, send_date: Date.now() }]
         : loadedChat;
+
+    // Drops the message currently being swiped/regenerated from the context actually used to BUILD
+    // the generation (the outgoing `messages` array, world-info scanning, and macro substitution) -
+    // this pipeline's analog of src/core-chat-build.js's `buildCoreChat({isSwipe})` pop (that helper is
+    // text-completion-orchestrator-specific; this resolver never builds a `coreChat` at all - see doc
+    // comment decision 2 - so the pop is done inline here instead). `chat` itself (above) stays RAW for
+    // getBiasStrings(), which needs the un-dropped array (see that function's own doc comment).
+    // Real, verified gap this closes: before this, `isSwipe` was accepted but never read (see the
+    // `void isSwipe` a few lines below in the original version of this function) - a swipe/regenerate
+    // routed through this pipeline would have fed the model its OWN about-to-be-replaced reply as the
+    // newest turn of its own context, instead of excluding it like the text-completion pipeline
+    // already correctly does.
+    const promptChat = isSwipe && chat.length ? chat.slice(0, -1) : chat;
 
     const fields = await getCharacterCardFields(directories, {
         avatar,
@@ -636,7 +657,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
     const namesBehavior = oaiSettings.names_behavior ?? DEFAULT_NAMES_BEHAVIOR;
     const imageQuality = oaiSettings.inline_image_quality ?? DEFAULT_INLINE_IMAGE_QUALITY;
 
-    const messages = buildChatCompletionMessages(chat, {
+    const messages = buildChatCompletionMessages(promptChat, {
         isGroup, name1, name2, namesBehavior,
         currentApi: oaiSettings.chat_completion_source,
         currentModel: model,
@@ -651,7 +672,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
     const macroContext = {
         name1, name2, isGroup, model,
         characterCard: fields,
-        chat, chatMetadata,
+        chat: promptChat, chatMetadata,
     };
 
     // Real bias-string resolution - see the `bias` FIELD-MAPPING NOTE above. `prepareOpenAIMessages()`
@@ -670,7 +691,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
     // text-completion-generation-input.js's own equivalent does NOT have (that pipeline defers
     // activation to a separate orchestrator; this pipeline has none, so this resolver is it).
     const worldInfoIncludeNames = Boolean(worldInfoSettings.world_info_include_names ?? false);
-    const chatForWI = chat.map(x => worldInfoIncludeNames ? `${x.name}: ${x.mes}` : x.mes).reverse();
+    const chatForWI = promptChat.map(x => worldInfoIncludeNames ? `${x.name}: ${x.mes}` : x.mes).reverse();
     const generationTrigger = GENERATION_TYPE_TRIGGERS.includes(type) ? type : 'normal';
     const globalScanData = {
         personaDescription: fields.persona,
@@ -751,6 +772,13 @@ export async function resolveChatCompletionGenerationInput(directories, {
 
         // --- Bias (real, resolved via getBiasStrings() - see doc comment FIELD-MAPPING NOTE) ---
         bias: promptBias,
+
+        // RAW (pre-swipe-drop) history length - NOT `macroContext.chat.length` (that's `promptChat`,
+        // which for a swipe/regenerate on a chat with exactly one message is correctly `0` once that
+        // one message is dropped from context - a legitimate case, e.g. regenerating a solo opening
+        // greeting, not an empty chat). A caller checking "is there really nothing to continue/swipe"
+        // (see buildRawActionChatCompletionRequest()'s own such check) needs THIS field instead.
+        rawChatLength: chat.length,
 
         // --- Generation identity/mode ---
         type, quietPrompt: undefined, quietImage: undefined,
