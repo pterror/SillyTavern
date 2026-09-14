@@ -7,6 +7,7 @@ import { parseDecorators } from './world-info/decorators.js';
 import { activateWorldInfoEntries } from './world-info/activation.js';
 import { bucketActivatedEntries, wi_anchor_position, world_info_position } from './world-info/result-bucketing.js';
 import { getRegexedString, regex_placement } from './regex-scripts-engine.js';
+import { appendFileAttachments } from './file-attachment-inline.js';
 import { resolveAuthorsNote } from './authors-note.js';
 import { assembleStoryString } from './story-string-assembly.js';
 import { injectJailbreak, buildChat2, fillContextBudget, estimateExampleBudget, buildMesSend } from './chat-history-budget.js';
@@ -91,11 +92,22 @@ import { createExtensionPromptTable, setExtensionPrompt, doChatInject, extension
  *    `worldInfoCandidates`) and a `regexExtensionEnabled` boolean (default `true`), forwarded to
  *    every `getRegexedString()` call this orchestrator makes.
  *
- * 3. File-attachment inlining (appendFileContent) - still a no-op: this remains folded into the same
- *    `resolvedMessage` param finalizeCoreChatMessage() takes (now populated with the real regex
- *    result from gap 2 above, but NOT file-attachment-inlined) - a real pipeline would run
- *    attachment-inlining there too, before core-chat-build ever sees the text. This gap is separate
- *    from (and not conflated with) the now-fixed regex gap above.
+ * 3. File-attachment inlining (appendFileContent) - NOW REAL, as of this task, via
+ *    src/file-attachment-inline.js's `appendFileAttachments()`. It runs AFTER the per-message
+ *    regex step (matching public/script.js ~5573-5582: `regexedMessage = getRegexedString(...); ...;
+ *    regexedMessage = await appendFileContent(chatItem, regexedMessage);`), on top of the
+ *    already-regexed message text, before `finalizeCoreChatMessage()` ever sees it - so the
+ *    `coreChat.map()` callback below is now async (`Promise.all`-wrapped), same shape as the
+ *    client's own `coreChat = await Promise.all(coreChat.map(async (chatItem, index) => {...}))`
+ *    at that exact line. `directories` (already an orchestrator input, used by
+ *    getCharacterCardFields()) is threaded through to resolve `extra.files[].url` entries via a
+ *    real filesystem read (see file-attachment-inline.js's module doc comment for the exact
+ *    `file.url` -> `directories.files` path mapping and how it was verified against the real
+ *    `/api/files/upload` server route). DELIBERATELY NOT ported: the client's `appendFileContent`
+ *    also deletes/recomputes `extra.fileLength` and commits it back into the chat message store as
+ *    a side effect of what should be a pure read - see file-attachment-inline.js's module doc
+ *    comment for why that write-on-read anti-pattern is intentionally dropped here, not merely
+ *    forgotten.
  *
  * 4. Tool-calling (ToolManager.isToolCallingSupported/canPerformToolCalls) - `canUseTools` is a
  *    plain boolean input, default `false`. No tool-calling subsystem is modeled.
@@ -398,20 +410,24 @@ export async function assembleTextCompletionPrompt(input) {
     // ---- Step 3: coreChat construction, message finalization, reasoning folding ------------------
     let coreChat = buildCoreChat(chat, { canUseTools, isSwipe });
 
-    // Per-message finalization: regex scripts are NOW REAL (see module doc comment gap 2) -
-    // `resolvedMessage` is the getRegexedString() result for the message's USER_INPUT/AI_OUTPUT
-    // placement, matching public/script.js ~5573-5577 exactly (including the depth formula). File-
-    // attachment inlining remains OUT OF SCOPE (gap 3) - a real pipeline would also run
-    // appendFileContent() here.
+    // Per-message finalization: regex scripts are REAL (see module doc comment gap 2) -
+    // `resolvedMessage` starts as the getRegexedString() result for the message's USER_INPUT/
+    // AI_OUTPUT placement, matching public/script.js ~5573-5577 exactly (including the depth
+    // formula). File-attachment inlining is NOW REAL too (see module doc comment gap 3) and runs
+    // AFTER regex, on top of the regexed text - matching public/script.js ~5578-5582 exactly. This
+    // needs real disk I/O (appendFileAttachments() -> readFileAttachment()), so the map callback is
+    // async and the whole step is Promise.all-wrapped, same shape as the client's own
+    // `coreChat = await Promise.all(coreChat.map(async (chatItem, index) => {...}))`.
     const coreChatLengthForRegex = coreChat.length;
-    coreChat = coreChat.map((chatItem, index) => {
+    coreChat = await Promise.all(coreChat.map(async (chatItem, index) => {
         const regexType = chatItem.is_user ? regex_placement.USER_INPUT : regex_placement.AI_OUTPUT;
         const depth = coreChatLengthForRegex - index - (isContinue ? 2 : 1);
         const regexedMessage = getRegexedString(chatItem.mes, regexType, regexScripts, {
             isPrompt: true, depth, macroContext, regexExtensionEnabled,
         });
-        return finalizeCoreChatMessage(chatItem, index, regexedMessage);
-    });
+        const resolvedMessage = await appendFileAttachments(chatItem.extra, regexedMessage, { directories });
+        return finalizeCoreChatMessage(chatItem, index, resolvedMessage);
+    }));
 
     // Reasoning folding: iterates NEWEST -> OLDEST (public/script.js ~5606: `for (i = coreChat.length
     // - 1; i >= 0; i--)`), threading ReasoningFoldState sequentially, breaking once the addition
