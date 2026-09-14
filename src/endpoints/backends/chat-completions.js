@@ -65,7 +65,7 @@ import { readSettingsAtPaths } from '../../settings-store.js';
 import { readPresetByName } from '../presets.js';
 import { resolveChatCompletionGenerationInput } from '../../chat-completion-generation-input.js';
 import { prepareOpenAIMessages } from '../../chat-completion-prepare-messages.js';
-import { loadBranch, getAncestorPath, appendMessages, addAlternatives, selectDefaultChild } from '../../message-tree-db.js';
+import { loadBranch, getAncestorPath, appendMessages, addAlternatives, selectDefaultChild, editMessage } from '../../message-tree-db.js';
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
 import {
@@ -2232,7 +2232,7 @@ router.post('/bias', async function (request, response) {
  * @param {boolean} [params.isSwipe]
  * @param {string} [params.userMessageText] The literal text the user typed this turn. Omit for
  * generation types that don't add a new message (continue/swipe).
- * @returns {Promise<{ params: object, settings: object, anchorNodeId: string|null, name1: string, name2: string }>}
+ * @returns {Promise<{ params: object, settings: object, anchorNodeId: string|null, anchorContent: object|null, name1: string, name2: string }>}
  */
 export async function buildRawActionChatCompletionRequest(directories, {
     characterAvatar, groupId, ownerId, branchName, nodeId,
@@ -2316,7 +2316,20 @@ export async function buildRawActionChatCompletionRequest(directories, {
     // on resolveTextCompletionGenerationInput()'s own return object), this resolver only exposes
     // `name1` inside `macroContext` (see that module's doc comment decision 2/FIELD-MAPPING NOTES -
     // `name1` itself is never a top-level field on its returned object) - read from there instead.
-    return { params: generate_data, settings, anchorNodeId, name1: orchestratorInput.macroContext.name1, name2: orchestratorInput.name2 };
+    //
+    // `anchorContent` (used only for `is_continue` persistence - see the route handler below): the
+    // CURRENT, on-disk content of the anchor node, read from `orchestratorInput.macroContext.chat`'s
+    // own last entry rather than a second DB read. Verified (not assumed) safe to reuse here:
+    // resolveChatCompletionGenerationInput()'s own `promptChat` (which becomes `macroContext.chat`)
+    // only drops the last entry when `isSwipe` (see that function's own `promptChat` doc comment) -
+    // never for `isContinue`, so for a continue call `macroContext.chat` is exactly `orchestratorInput`
+    // 's raw, undropped `chat` and its last entry is the anchor's real, current content. Only
+    // meaningful when that array is non-empty, which the `rawChatLength === 0` guard above already
+    // guarantees for `isContinue` - `null` otherwise.
+    const anchorChat = orchestratorInput.macroContext.chat;
+    const anchorContent = anchorChat.length > 0 ? anchorChat[anchorChat.length - 1] : null;
+
+    return { params: generate_data, settings, anchorNodeId, anchorContent, name1: orchestratorInput.macroContext.name1, name2: orchestratorInput.name2 };
 }
 
 router.post('/generate', async function (request, response) {
@@ -2469,8 +2482,23 @@ router.post('/generate', async function (request, response) {
             // that file's own comment on this same field for the full rationale (sibling-alternative
             // persistence via `addAlternatives()`, shared by BOTH `type === 'swipe'` and `type ===
             // 'regenerate'` via the client's single `is_swipe` flag).
-            if (!skipPersistence) {
-                pendingAssistantPersist = { directories, ownerId, anchorNodeId: replyAnchorNodeId, name2: built.name2, isSwipe };
+            //
+            // `isContinue`/`anchorContent` are carried through identically to text-completions.js's own
+            // route wiring too - see that file's own comment on these same fields for the full
+            // rationale (in-place `editMessage()` persistence for a continue, and why `anchorContent`'s
+            // full object - not just the anchor node id - is needed to build it), INCLUDING the same
+            // `continueUserTextConflict` guard against the real (not hypothetical) "leftover
+            // send-textarea text alongside a continue" edge case - see that file's own comment on this
+            // same computation for the full explanation of why it's needed, and why the fix is to skip
+            // the assistant reply's persistence ENTIRELY for that one combination (not fall back to a
+            // plain appendMessages(), which would misrepresent a continuation fragment as a complete
+            // new reply).
+            const continueUserTextConflict = isContinue && replyAnchorNodeId !== built.anchorNodeId;
+            if (!skipPersistence && !continueUserTextConflict) {
+                pendingAssistantPersist = {
+                    directories, ownerId, anchorNodeId: replyAnchorNodeId, name2: built.name2,
+                    isSwipe, isContinue, anchorContent: built.anchorContent,
+                };
             }
 
             // Replace the body entirely - mirrors the connection-profile branch's own final
@@ -2960,10 +2988,31 @@ router.post('/generate', async function (request, response) {
                 // `{choices: [{message: {content}}]}` response is ever extracted here.
                 const generatedText = json?.choices?.[0]?.message?.content ?? '';
                 if (generatedText) {
-                    const { directories, ownerId, anchorNodeId, name2, isSwipe } = pendingAssistantPersist;
+                    const { directories, ownerId, anchorNodeId, name2, isSwipe, isContinue, anchorContent } = pendingAssistantPersist;
                     const replyContent = { name: name2, is_user: false, mes: generatedText, extra: {}, send_date: Date.now() };
 
-                    if (isSwipe) {
+                    if (isContinue) {
+                        // Continue: EDITS the existing leaf node's text in place to (old text + new
+                        // text) instead of appending/adding a sibling - see text-completions.js's own
+                        // identical branch for the full rationale (the `continue_mag`/
+                        // `promptReasoning.removePrefix()` round-trip proving a plain `oldText +
+                        // newText` concatenation is faithful for both the reasoning and non-reasoning
+                        // case, why the RAW un-cleaned-up backend text is consistent with every other
+                        // cut-over type's own already-accepted persistence, and why `editMessage()`
+                        // needs the anchor's FULL content object, not just its `.mes`), mirrored
+                        // verbatim for this backend.
+                        if (!anchorContent) {
+                            console.error('Failed to persist continue edit onto the tree: no anchor content resolved.');
+                        } else {
+                            const oldText = typeof anchorContent.mes === 'string' ? anchorContent.mes : '';
+                            const editResult = await editMessage(directories, ownerId, anchorNodeId, {
+                                ...anchorContent, mes: oldText + generatedText,
+                            });
+                            if (!editResult.ok) {
+                                console.error('Failed to persist continue edit onto the tree:', editResult.reason);
+                            }
+                        }
+                    } else if (isSwipe) {
                         // Swipe/regenerate: a real ALTERNATIVE alongside the message being replaced, not
                         // a child chained after it - see text-completions.js's own identical branch for
                         // the full rationale (addAlternatives()'s internal parent-resolution, the "node

@@ -6349,23 +6349,62 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // branch_name/node_id/type/is_impersonate/is_continue/is_swipe/user_message).
     //
     // JUDGMENT CALL #1 (scope): `type === 'normal'`/undefined, `'impersonate'`, `'quiet'`, `'swipe'`,
-    // and `'regenerate'` on a single-character chat are cut over here - NOT continue, and NOT group
+    // `'regenerate'`, and now `'continue'` on a single-character chat are cut over here - NOT group
     // chats. This is narrower than a full cutover, because reading the server's own persistence logic
-    // (commits ac42ce8c9, 6eaa7897d) turned up a real correctness bug for the still-excluded case, not
-    // a hypothetical one:
-    //   - 'continue': the client's saveReply({type:'appendFinal'}) EDITS the existing last node's
-    //     text in place to (old text + new text) - see this file's saveReply(), the `mes: getMessage`
-    //     assignment in its 'appendFinal' branch, where getMessage was built a few hundred lines above
-    //     as `continue_mag + newlyGeneratedText`. The server instead always appends a brand-new CHILD
-    //     node containing only the raw continuation fragment (its appendMessages() call keyed off
-    //     `anchorNodeId`, unconditionally on ANY successful generation). These are two different
-    //     operations on two different nodes - they cannot dedupe via nodeIdentityKey() the way a plain
-    //     new-message/new-reply turn does, and would corrupt/duplicate the tree.
+    // (commits ac42ce8c9, 6eaa7897d) turned up a real correctness bug for each previously-excluded
+    // case, not a hypothetical one:
     //   - group chats: server-side speaker/character resolution for a group turn was not verified
     //     against generateGroupWrapper's own (activation-strategy-dependent) member selection within
     //     this task's time budget - excluded out of caution rather than assumed compatible.
-    // Covering these later requires extending the server's persistence logic further (in-place-edit
-    // for continue, verified group speaker resolution) - not attempted here.
+    // Covering that later requires verified group speaker resolution - not attempted here.
+    //
+    // 'continue' was EXCLUDED for the same kind of reason as 'swipe'/'regenerate' below (a real
+    // tree-shape mismatch, not a hypothetical one): the client's saveReply({type:'appendFinal'}) EDITS
+    // the existing leaf node's text in place to (old text + new text) - see this file's saveReply(),
+    // the `mes: getMessage` assignment in its 'appendFinal' branch, where getMessage was built a few
+    // hundred lines above as `continue_mag + newlyGeneratedText`. The server used to always append a
+    // brand-new CHILD node containing only the raw continuation fragment (its appendMessages() call
+    // keyed off `anchorNodeId`, unconditionally on ANY successful generation) - two different
+    // operations on two different nodes that cannot dedupe via nodeIdentityKey() the way a plain
+    // new-message/new-reply turn does, and would have corrupted/duplicated the tree.
+    // Now fixed server-side: both route handlers (text-completions.js and chat-completions.js) persist
+    // the reply via `editMessage()` (src/message-tree-db.js) when `is_continue` is set - splicing
+    // `oldText + newText` into a full copy of the anchor's own current content and replacing the whole
+    // stored node in place, never creating a new node. `oldText` is the anchor's real, current `.mes`
+    // (see those files' own `anchorContent` doc comments) - investigated and confirmed FAITHFUL to what
+    // this file's own `continue_mag` resolves to at the point of concatenation, in BOTH the reasoning
+    // and non-reasoning case: `continue_mag` (assigned a few hundred lines above, then
+    // `promptReasoning.removePrefix(continue_mag)`'d immediately before use) only ever differs from the
+    // raw stored `.mes` MOMENTARILY, when the leaf has non-empty `extra.reasoning` - see
+    // `PromptReasoning.addToMessage()`/`removePrefix()` in public/scripts/reasoning.js: `addToMessage()`
+    // (called with `isPrefix: true` for exactly the continued leaf) prepends a formatted reasoning
+    // prefix onto that message's `.mes` for PROMPT-BUILDING purposes and records its exact length as
+    // `prefixLength`; `removePrefix()` then slices off EXACTLY that many characters before the
+    // concatenation this file's own `getMessage = continue_mag + getMessage` performs. The two are an
+    // exact round trip - `continue_mag` at the point of concatenation is always the leaf's original,
+    // unmodified `.mes`, reasoning or not - so the server's plain `oldText + newText` needs no separate
+    // reasoning-stripping step to match it. `newText` (the raw backend output, not run through this
+    // file's own `cleanUpMessage()`) is likewise held to the SAME already-accepted standard every other
+    // cut-over type's server-side persistence already uses (see those files' own `anchorContent`/edit
+    // doc comments for the full reasoning-round-trip and raw-text writeup) - not a new or continue-
+    // specific gap, and not the last word on the stored text either way, since this file's own
+    // `saveReply({type: 'appendFinal'})` still runs afterward and its own eventual sync to the server
+    // supersedes this route's belt-and-suspenders edit.
+    // A REAL edge case was found and guarded server-side while wiring this (not hypothetical): this
+    // file's own textareaText-read condition a few hundred lines above (`type !== 'regenerate' && type
+    // !== 'swipe' && type !== 'quiet' && !isImpersonate && !dryRun && !depth`) does NOT exclude
+    // 'continue' - so leftover text in the send box at the moment Continue is clicked IS sent as a real
+    // new user message, same as a normal turn (JUDGMENT CALL #3 below's claim that this "was already
+    // like the continue/swipe case" undersold this: swipe/regenerate truly are always `''` here, but
+    // continue is not exempted by name at all). The server's route handlers guard against this
+    // corrupting the wrong node - see their own `continueUserTextConflict` computation - by skipping the
+    // in-place edit (not persisting anything for that one request) whenever a user message was actually
+    // appended in the same request, since the anchor for the edit would otherwise be the just-appended
+    // USER node instead of the real assistant leaf. This loses nothing new: that combination was already
+    // a pre-existing, independent client-side oddity before this task (this file's own
+    // `saveReply({type: 'appendFinal'})` reads `chat[chat.length - 1]`, which by then is that SAME
+    // just-sent user message, not the real assistant leaf - the legacy path was never coherent for this
+    // combination either).
     //
     // 'impersonate'/'quiet' were EXCLUDED in the original version of this cutover (commit 80bdf420c)
     // because the server's persistence was, at the time, unconditional: 'impersonate' generates what
@@ -6437,8 +6476,12 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // when `type !== 'regenerate' && type !== 'swipe' && type !== 'quiet' && !isImpersonate && !dryRun
     // && !depth` - for every 'impersonate'/'quiet' call, that condition is false, so `textareaText` is
     // unconditionally `''` for both. `userMessageText` below is therefore always `undefined` for these
-    // two types, exactly like the continue/swipe case already was - there is no new-user-text case to
-    // worry about. Confirmed against the real call sites too: there is no dedicated
+    // two types - there is no new-user-text case to worry about for them. CORRECTION to an earlier
+    // draft of this comment: 'continue' is NOT exempted by this same condition (only 'regenerate'/
+    // 'swipe'/'quiet' are named in it) - `textareaText`, and therefore `userMessageText`, CAN be
+    // non-empty for a continue call, if the user left text in the send box before clicking Continue.
+    // This is real, not hypothetical - see JUDGMENT CALL #1 above for the full investigation and the
+    // server-side `continueUserTextConflict` guard this required. Confirmed against the real call sites too: there is no dedicated
     // `generateImpersonate()`-style wrapper - `Generate('impersonate', ...)` is called directly from
     // the `option_impersonate` UI handler and from the `/impersonate` slash command
     // (public/scripts/slash-commands.js), and `Generate('quiet', ...)` is called from
@@ -6483,9 +6526,18 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // extra gate is needed on this path. (The chat-completion cutover below, where `jsonSchema` IS a
     // real per-call value the raw-action request shape cannot currently carry, gates on it explicitly -
     // see that block's own comment.)
+    //
+    // JUDGMENT CALL #6 ('continue' does reach this gate too, verified not assumed): the SAME
+    // early-return trace as JUDGMENT CALL #4/#5 above applies - none of `processCommands()`'s skip
+    // condition, the Kobold-streaming-unsupported/horde-not-allowed checks, `!hasBackendConnection`, or
+    // `selected_group` excludes 'continue' by name, and none but `processCommands()`'s depend on `type`
+    // at all (and that one doesn't exclude 'continue' either - only 'regenerate'/'swipe'/'quiet'/
+    // dryRun/depth are named there, so a continue's send-textarea content, if any, still runs through
+    // slash-command interception exactly like a normal turn's does - unrelated to this gate, and
+    // unchanged by this cutover). So a plain continue reaches this gate exactly like a normal turn does.
     let rawActionGenerateData = null;
     if (!dryRun && main_api === 'textgenerationwebui'
-        && [undefined, 'normal', 'impersonate', 'quiet', 'swipe', 'regenerate'].includes(type)
+        && [undefined, 'normal', 'impersonate', 'quiet', 'swipe', 'regenerate', 'continue'].includes(type)
         && !selected_group
         && !hasPendingFileAttachment()
         && !canPerformToolCalls
@@ -6509,6 +6561,11 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             // by name, so likewise unconditionally '' - see that condition a few hundred lines above:
             // `type !== 'regenerate' && type !== 'swipe' && type !== 'quiet' && !isImpersonate &&
             // !dryRun && !depth`), so userMessageText is always undefined for all four of these types.
+            // 'continue' is the ONE exception: it is NOT named in that same condition, so
+            // `userMessageText` CAN be a real, non-empty string for it (leftover send-box text at the
+            // moment Continue was clicked) - see JUDGMENT CALL #1/#3 above for the full investigation
+            // and the server-side `continueUserTextConflict` guard this required. Sent through unchanged
+            // either way (`user_message` below); the server decides what to do with it.
             const userMessageText = textareaText !== '' ? textareaText : undefined;
             rawActionGenerateData = {
                 character_avatar: characterAvatar,
@@ -6539,15 +6596,22 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     //
     // JUDGMENT CALL #1 (scope): IDENTICAL restriction to the text-completion cutover above, for the IDENTICAL
     // underlying reason - re-confirmed by reading the chat-completion side's OWN persistence code
-    // (buildRawActionChatCompletionRequest()'s appendMessages()/addAlternatives()/selectDefaultChild() calls in
-    // chat-completions.js), not copy-pasted blindly:
-    //   - 'continue': same problem as text-completion - the client's saveReply({type:'appendFinal'}) edits the
-    //     existing last node's text in place, but the server's appendMessages() call (keyed off `anchorNodeId`,
-    //     which for chat-completion's raw action is ALSO just the branch leaf - see
-    //     buildRawActionChatCompletionRequest()'s Step 2) always appends a brand-new CHILD node. Same tree-shape
-    //     mismatch, same exclusion.
+    // (buildRawActionChatCompletionRequest()'s appendMessages()/addAlternatives()/selectDefaultChild()/
+    // editMessage() calls in chat-completions.js), not copy-pasted blindly:
     //   - group chats: same exclusion, for the same reason (server-side speaker/character resolution for a group
     //     turn not verified against generateGroupWrapper()'s own activation-strategy-dependent member selection).
+    // 'continue' is now ALSO INCLUDED, same real tree-shape bug/fix as the text-completion cutover's own
+    // (identically-worded) JUDGMENT CALL #1 above: the client's saveReply({type:'appendFinal'}) edits the existing
+    // leaf node's text in place, but the server's appendMessages() call (keyed off `anchorNodeId`, which for
+    // chat-completion's raw action is ALSO just the branch leaf - see buildRawActionChatCompletionRequest()'s Step
+    // 2) used to always append a brand-new CHILD node instead. Now fixed identically: `editMessage()`
+    // (src/message-tree-db.js) splices `oldText + newText` into the anchor's own current content and replaces the
+    // whole stored node in place when `is_continue` is set - see that route handler's own comment on this branch,
+    // and the text-completion cutover's own JUDGMENT CALL #1 above for the full `continue_mag`/reasoning-round-trip/
+    // `continueUserTextConflict` investigation this is based on (identical for both backends - chat-completion's own
+    // `resolveChatCompletionGenerationInput()` never drops or alters the leaf's content for `isContinue` either,
+    // only for `isSwipe` - see that function's own `promptChat` doc comment - so `orchestratorInput.macroContext.chat`
+    // 's last entry is the real, current anchor content here too).
     // 'impersonate'/'quiet' are now INCLUDED (previously excluded in commit 9d3091f41 for the identical reason as
     // the text-completion cutover's own original exclusion - the server's persistence used to be unconditional).
     // That's now fixed server-side (see buildRawActionChatCompletionRequest()'s route handler in
@@ -6631,9 +6695,16 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // existing gate (`toolsPayload` <-> `canPerformToolCalls`, already excluded above) - `jsonSchema` was the one
     // real gap specific to this narrow scope, verified by reading every consumer of this function's own `jsonSchema`
     // parameter, not assumed absent.
+    // JUDGMENT CALL #4 ('continue' does reach this gate too, verified not assumed): identical trace to the
+    // text-completion cutover's own JUDGMENT CALL #6 above - none of this function's early returns between its
+    // start and here exclude 'continue' by name (only 'regenerate'/'swipe'/'quiet'/dryRun/depth are named in
+    // processCommands()'s own skip condition), so a plain continue reaches this gate exactly like a normal turn
+    // does. Same real edge case applies too (see the text-completion cutover's own JUDGMENT CALL #1 above): a
+    // continue's `userMessageText` CAN be non-empty (leftover send-box text), handled by the identical
+    // `continueUserTextConflict` guard in chat-completions.js's own route handler.
     let rawActionChatCompletionData = null;
     if (!dryRun && main_api === 'openai'
-        && [undefined, 'normal', 'impersonate', 'quiet', 'swipe', 'regenerate'].includes(type)
+        && [undefined, 'normal', 'impersonate', 'quiet', 'swipe', 'regenerate', 'continue'].includes(type)
         && !jsonSchema
         && !selected_group
         && !hasPendingFileAttachment()
@@ -6651,7 +6722,9 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             // adds no new user message), for 'impersonate'/'quiet' (where textareaText is unconditionally '' - see
             // the text-completion cutover's own JUDGMENT CALL #3 above), and for 'swipe'/'regenerate' (excluded from
             // that same textareaText-read condition by name - see the text-completion cutover's own JUDGMENT CALL
-            // #5 above), so userMessageText is always undefined for all four of these types.
+            // #5 above), so userMessageText is always undefined for all four of these types. 'continue' is the one
+            // exception (same as the text-completion cutover above): it CAN be non-empty - sent through unchanged
+            // regardless, handled server-side by `continueUserTextConflict`.
             const userMessageText = textareaText !== '' ? textareaText : undefined;
             rawActionChatCompletionData = {
                 character_avatar: characterAvatar,

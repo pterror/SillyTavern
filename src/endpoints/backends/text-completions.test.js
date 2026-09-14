@@ -169,6 +169,8 @@ async function run() {
         tokenizerOptions: fakeTokenizerOptions,
     });
     assert.ok(continued.params.prompt.includes('Likewise!'), 'continue resolves from the real existing history with no new message appended');
+    assert.equal(continued.anchorNodeId, branchAfterAppend.branch.leaf_id, 'the continue anchor is the real current leaf');
+    assert.equal(continued.anchorContent?.mes, 'What happens next, Rex?', 'anchorContent is the anchor\'s real, current, unmodified content (the real leaf at this point in the test, appended above) - exactly what the route\'s is_continue edit needs as "oldText"');
 
     // --- error handling: unknown character ---
     await assert.rejects(
@@ -470,7 +472,100 @@ async function run() {
         assert.equal(alternatives.total, 2, 'regenerate did not chain a child - the original message still has exactly one real sibling');
     }
 
-    // (g) the STREAMING raw-action case (request.body.stream: true) is intentionally NOT exercised
+    // (g) is_continue: true - the reply must EDIT the existing leaf node's text in place (oldText +
+    // newText), on the SAME node id, at the SAME position in the tree - never a new node - and no
+    // user-message node may be created.
+    {
+        const continueBranch = 'continue-chat';
+        await saveChatToTree(directories, ownerId, continueBranch, [
+            { chat_metadata: {} },
+            { name: 'Tester', is_user: true, mes: 'Tell me a story, Rex.', send_date: 1, extra: {} },
+            { name: 'Rex', is_user: false, mes: 'Once upon a time,', send_date: 2, extra: {} },
+        ]);
+
+        const branchBefore = await loadBranch(directories, ownerId, continueBranch);
+        const messageCountBefore = branchBefore.messages.length;
+        const leafBefore = branchBefore.branch.leaf_id;
+        assert.equal(branchBefore.messages[branchBefore.messages.length - 1].mes, 'Once upon a time,');
+
+        const fakeBackend = await startFakeBackend((_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ choices: [{ text: ' there was a brave adventurer.' }] }));
+        });
+        pointBackendAt(fakeBackend.url);
+
+        const app = buildTestApp();
+        const { status, data } = await postGenerate(app, {
+            owner_id: ownerId, character_avatar: avatar, branch_name: continueBranch,
+            type: 'continue', is_continue: true, stream: false,
+        });
+        fakeBackend.server.close();
+
+        assert.equal(status, 200, 'the (unchanged) response is forwarded to the client');
+        assert.deepEqual(data, { choices: [{ text: ' there was a brave adventurer.' }] }, 'the generated text still reaches the client unmodified');
+
+        const branchAfter = await loadBranch(directories, ownerId, continueBranch);
+        assert.equal(branchAfter.messages.length, messageCountBefore, 'no new node (user or assistant) was created - continue only edits the existing leaf');
+        assert.equal(branchAfter.branch.leaf_id, leafBefore, 'the SAME node is still the leaf - editMessage() edits in place, it does not reparent/replace the node');
+        assert.equal(branchAfter.messages[branchAfter.messages.length - 1].mes, 'Once upon a time, there was a brave adventurer.', 'the stored text is now oldText + newText, on the same node, at the same position');
+        assert.equal(branchAfter.messages[branchAfter.messages.length - 1].name, 'Rex', 'the edited node keeps its own original speaker, unchanged');
+        assert.equal(branchAfter.messages[branchAfter.messages.length - 1].is_user, false);
+    }
+
+    // (h) is_continue: true combined with a REAL (non-empty) user_message - the genuine, verified edge
+    // case from this session's investigation: public/script.js's own Generate() does NOT exclude
+    // 'continue' from its "read+clear the send textarea as user_message" condition, so leftover
+    // send-box text at the moment Continue is clicked really can reach this route as a real
+    // user_message. The route must still commit that real user message (exactly like any other type
+    // would), but must NOT then edit the ORIGINAL assistant leaf as if it were being continued - that
+    // node is no longer the request's real anchor once a new user node exists ahead of it. Proves the
+    // `continueUserTextConflict` guard: the user message lands as a real new node, but the original
+    // assistant message's own text is completely untouched (no in-place edit was attempted against it).
+    {
+        const continueWithUserTextBranch = 'continue-with-user-text-chat';
+        await saveChatToTree(directories, ownerId, continueWithUserTextBranch, [
+            { chat_metadata: {} },
+            { name: 'Tester', is_user: true, mes: 'Tell me a story, Rex.', send_date: 1, extra: {} },
+            { name: 'Rex', is_user: false, mes: 'Once upon a time,', send_date: 2, extra: {} },
+        ]);
+
+        const branchBefore = await loadBranch(directories, ownerId, continueWithUserTextBranch);
+        const messageCountBefore = branchBefore.messages.length;
+        const originalLeafId = branchBefore.branch.leaf_id;
+
+        const fakeBackend = await startFakeBackend((_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ choices: [{ text: ' this should NOT be spliced onto the old leaf.' }] }));
+        });
+        pointBackendAt(fakeBackend.url);
+
+        const app = buildTestApp();
+        const { status } = await postGenerate(app, {
+            owner_id: ownerId, character_avatar: avatar, branch_name: continueWithUserTextBranch,
+            type: 'continue', is_continue: true,
+            user_message: 'Wait, actually - tell me about dragons instead.',
+            stream: false,
+        });
+        fakeBackend.server.close();
+
+        assert.equal(status, 200);
+
+        const branchAfter = await loadBranch(directories, ownerId, continueWithUserTextBranch);
+        // A real new user node WAS committed (matching every other type's real-user_message behavior) -
+        // but the assistant reply was NOT spliced onto the original leaf: the count only grew by one
+        // (the user message), not two.
+        assert.equal(branchAfter.messages.length, messageCountBefore + 1, 'only the user message was added - the generated reply was NOT persisted anywhere in this guarded combination');
+        const newLeaf = branchAfter.messages[branchAfter.messages.length - 1];
+        assert.equal(newLeaf.mes, 'Wait, actually - tell me about dragons instead.', 'the real user message was committed, unrelated to the continue edit');
+        assert.equal(newLeaf.is_user, true);
+
+        // The ORIGINAL assistant leaf's own text is completely untouched - the in-place edit was
+        // correctly skipped rather than corrupting it.
+        const originalNode = (await getAlternatives(directories, originalLeafId)).alternatives.find(a => a.node_id === originalLeafId);
+        assert.equal(originalNode.mes, 'Once upon a time,', 'the original assistant leaf\'s text is byte-for-byte unchanged - continueUserTextConflict correctly skipped the in-place edit');
+    }
+
+    // (i) the STREAMING raw-action case (request.body.stream: true) is intentionally NOT exercised
     // here: proving the assistant reply is untouched for it is trivial (pendingAssistantPersist is
     // simply never read by either streaming branch - see the code comment at its declaration in
     // text-completions.js), but actually driving a real SSE/Ollama-stream/llama.cpp-compact-stream
