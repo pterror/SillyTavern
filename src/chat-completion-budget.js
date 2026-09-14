@@ -1,3 +1,10 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { imageSize } from 'image-size';
+import mime from 'mime-types';
+import { Jimp, JimpMime } from './jimp.js';
+import { ResizeStrategy } from '@jimp/plugin-resize';
+
 /**
  * Server-side port of a slice of public/scripts/chat-completion-settings.js: the
  * `TokenHandler`/`Message`/`MessageCollection`/`ChatCompletion` class family ("Candidate 2" of the
@@ -20,26 +27,51 @@
  *   `'InvalidCharacterName'` - only the *class* names carry the "Error" suffix, not the `.name`
  *   string values baked into instances. This looks like a client-side inconsistency, not a typo
  *   introduced here; preserved exactly since other code may pattern-match on `.name`.
- * - `Message` (~3494-3784), EXCLUDING `addImage`/`addVideo`/`addAudio` (and their private helpers
- *   `compressImage`/`getImageTokenCost`). See "NOT PORTED" below.
+ * - `Message` (~3494-3784), INCLUDING `addImage`/`addVideo`/`addAudio` and their private helpers
+ *   `compressImage`/`getImageTokenCost`. See "MULTIMODAL PORT" below for how the browser-only
+ *   pieces (Canvas thumbnailing, `fetch()` of attachment URLs, `HTMLVideoElement`/
+ *   `HTMLAudioElement` duration probing, `oai_settings`/`chat_completion_sources` globals) were
+ *   translated to server-side equivalents.
  * - `MessageCollection` (~3791-3888): ported in full, verbatim - it is entirely pure/synchronous.
  * - `ChatCompletion` (~3900-4251): ported in full. `squashSystemMessages()` needed a judgment call
  *   for its `tokenHandler` dependency - see below.
  *
- * NOT PORTED (explicit, permanent gap, not a TODO): `Message.addImage`/`addVideo`/`addAudio` and
- * their helpers `compressImage`/`getImageTokenCost` are OUT OF SCOPE for this port. They perform
- * real network fetches (`fetch()` of image/video/audio URLs), browser-only media decoding (Canvas
- * 2D context for thumbnailing, `HTMLVideoElement`/`HTMLAudioElement` for duration probing via
- * `getVideoDurationFromDataURL`/`getAudioDurationFromDataURL`), and reference client-only globals
- * (`oai_settings.inline_image_quality`, `chat_completion_sources`). None of that exists server-side
- * yet. A real server-side port would need an image/video/audio processing pipeline (e.g. `sharp` for
- * thumbnailing/resizing, `ffprobe`/similar for media duration) plus a settings-injection story for
- * `inline_image_quality`/`chat_completion_source` - this is flagged here as a genuine follow-up, not
- * attempted. `Message.tokensPerImage` (the static fallback constant those methods use) is likewise
- * omitted since nothing here reads it. Multimodal (`content` as an array of `{type, ...}` parts) is
- * otherwise still representable through this module - `ensureContentIsArray()` is ported, and
- * `Message.content`/`MessageCollection`/`ChatCompletion` never assume `content` is a plain string -
- * only the three media-attaching methods themselves are absent.
+ * MULTIMODAL PORT (`addImage`/`addVideo`/`addAudio`, `compressImage`, `getImageTokenCost`,
+ * `Message.tokensPerImage`): fully ported, using dependencies already present server-side -
+ * `image-size` (width/height extraction, replacing the client's `getImageSizeFromDataURL`'s
+ * `Image` element), `Jimp`/`JimpMime` from `./jimp.js` (resize + re-encode, replacing the client's
+ * Canvas-based `createThumbnail`), and `mime-types` + direct `fs.promises`/`fetch()` reads
+ * (replacing the client's `getBase64Async(blob)`). Every client-only global the original methods
+ * closed over (`oai_settings.inline_image_quality`, `oai_settings.chat_completion_source`) is
+ * instead an explicit parameter here (see "no ambient globals" convention below) - `addImage`
+ * takes `quality` and `chatCompletionSource` options, `addVideo`/`addAudio` take `quality`
+ * (`addAudio` doesn't use it - the client's own `addAudio` never reads `quality` either, it's
+ * dead code in the original too, so it's simply not accepted here).
+ *
+ * Non-data-URL input resolution (judgment call, confirmed by research - not re-derived here):
+ * client-side attachments passed to these methods are never true external URLs in practice - they
+ * are always local server-relative paths of the shape `user/images/<CharName>/<file>.<ext>`
+ * written by `src/endpoints/images.js`'s upload handler (`clientRelativePath(directories.root,
+ * pathToNewFile)`, which yields a `/user/images/...`-shaped path since
+ * `directories.userImages` sits under `directories.root`). So a non-data-URL input is resolved by
+ * reading the file directly off disk against `directories.userImages` (the exact config key
+ * `src/endpoints/images.js`'s upload/delete/list handlers all key off - NOT `directories.files`,
+ * which is the unrelated root used by `src/file-attachment-inline.js` for text-file attachments),
+ * with the same path-traversal guard convention `file-attachment-inline.js` established (resolve
+ * and verify the result still lies under the root) - except subdirectories (e.g. the per-character
+ * `<CharName>/` folder) are preserved rather than stripped to a basename, since real image paths
+ * are nested. A genuine `http(s)://` input (not a local relative path, not a `data:` URL) is
+ * handled by an actual `fetch()` - Node 22's global `fetch` - as a documented edge case that the
+ * research found no evidence of occurring in this pipeline today.
+ *
+ * Video/audio duration (explicitly scoped limitation, not a structural gap): no video/audio
+ * metadata-probing library is a server dependency today, so real per-second duration measurement
+ * (`getVideoDurationFromDataURL`/`getAudioDurationFromDataURL` on the client) is NOT attempted.
+ * Instead this port always applies the client's own fallback estimates - `263 tokens/sec * 40s`
+ * for video, `32 tokens/sec * 300s` for audio - unconditionally, since the client itself already
+ * treats those exact constants as an acceptable estimate whenever duration can't be determined.
+ * This is a precision-improvement opportunity for a future change (adding a metadata-probing
+ * dependency), not a capability the server structurally lacks.
  *
  * JUDGMENT CALL - `tokenHandler` injection (no ambient global): the client constructs one
  * module-level singleton, `const tokenHandler = new TokenHandler(countTokensOpenAIAsync);`, and every
@@ -193,6 +225,97 @@ export class InvalidCharacterNameError extends Error {
 }
 
 /**
+ * Ported verbatim from `isDataURL` (public/scripts/utils.js ~line 1176) - checks if a string is a
+ * valid `data:` URL.
+ * @param {string} str The string to check.
+ * @returns {boolean} True if `str` is a valid data URL.
+ */
+function isDataURL(str) {
+    const regex = /^data:([a-z]+\/[a-z0-9-+.]+(;[a-z-]+=[a-z0-9-]+)*;?)?(base64)?,([a-z0-9!$&',()*+;=\-_%.~:@/?#]+)?$/i;
+    return typeof str === 'string' && regex.test(str);
+}
+
+/**
+ * @typedef {object} AttachmentDirectories Minimal directories shape the multimodal-attachment
+ * resolution below needs.
+ * @property {string} userImages Absolute path to the user's `user/images` directory
+ *  (`req.user.directories.userImages` server-side - see the module doc comment's "Non-data-URL
+ *  input resolution" note for why this is the correct key, not `directories.files`).
+ */
+
+/**
+ * Resolves a `user/images/<CharName>/<file>`-shaped relative path (the shape produced by
+ * `clientRelativePath(directories.root, ...)` in `src/endpoints/images.js`'s upload handler)
+ * against `directories.userImages`, guarding against path traversal (the resolved path must still
+ * lie inside `directories.userImages`). Unlike `src/file-attachment-inline.js`'s
+ * `readFileAttachment` (which only trusts the URL's basename), subdirectories are preserved here
+ * since real image attachment paths are nested by character name.
+ * @param {string} inputPath The relative attachment path (e.g. `/user/images/Alice/pic.png`).
+ * @param {AttachmentDirectories} [directories]
+ * @returns {string|null} The resolved absolute path, or `null` if it can't be safely resolved.
+ */
+function resolveLocalImagePath(inputPath, directories) {
+    if (!directories?.userImages) {
+        return null;
+    }
+    let relativePath = inputPath.replace(/^\/+/, '');
+    const knownPrefix = 'user/images/';
+    if (relativePath.startsWith(knownPrefix)) {
+        relativePath = relativePath.slice(knownPrefix.length);
+    }
+    const resolvedRoot = path.resolve(directories.userImages);
+    const resolvedPath = path.resolve(resolvedRoot, relativePath);
+    if (resolvedPath !== resolvedRoot && !resolvedPath.startsWith(resolvedRoot + path.sep)) {
+        return null;
+    }
+    return resolvedPath;
+}
+
+/**
+ * Resolves an `addImage`/`addVideo`/`addAudio` input to a `data:` URL: passes a `data:` URL
+ * through verbatim, `fetch()`es a genuine `http(s)://` URL (Node 22's global `fetch` - a
+ * documented edge case, see the module doc comment), or otherwise reads a local
+ * `user/images/...`-shaped relative path directly off disk via `directories.userImages`.
+ * @param {string} input The attachment input (data URL, http(s) URL, or local relative path).
+ * @param {{directories?: AttachmentDirectories}} [options]
+ * @returns {Promise<string|null>} A `data:` URL, or `null` if the input couldn't be resolved
+ *  (logged via `console.error`, matching the client's catch-and-skip behavior).
+ */
+async function resolveAttachmentDataUrl(input, { directories } = {}) {
+    if (isDataURL(input)) {
+        return input;
+    }
+    if (/^https?:\/\//i.test(input)) {
+        try {
+            const response = await fetch(input, { method: 'GET' });
+            if (!response.ok) {
+                throw new Error(`Failed to fetch attachment: ${response.status}`);
+            }
+            const arrayBuffer = await response.arrayBuffer();
+            const buffer = Buffer.from(arrayBuffer);
+            const mimeType = response.headers.get('content-type')?.split(';')[0] || mime.lookup(input) || 'application/octet-stream';
+            return `data:${mimeType};base64,${buffer.toString('base64')}`;
+        } catch (error) {
+            console.error('Attachment adding skipped (fetch failed)', error);
+            return null;
+        }
+    }
+    try {
+        const resolvedPath = resolveLocalImagePath(input, directories);
+        if (!resolvedPath) {
+            console.error(`Attachment adding skipped: could not resolve local path (input=${input})`);
+            return null;
+        }
+        const buffer = await fs.readFile(resolvedPath);
+        const mimeType = mime.lookup(resolvedPath) || 'application/octet-stream';
+        return `data:${mimeType};base64,${buffer.toString('base64')}`;
+    } catch (error) {
+        console.error('Attachment adding skipped (local read failed)', error);
+        return null;
+    }
+}
+
+/**
  * Used for creating, managing, and interacting with a specific message object.
  *
  * Does NOT declare a `tool_call` (singular) field - see the module doc comment's
@@ -200,6 +323,14 @@ export class InvalidCharacterNameError extends Error {
  * `setToolCalls()` is called, matching real client runtime behavior.
  */
 export class Message {
+    /**
+     * Fallback token cost for an image (used for `quality === 'low'`, and whenever the real cost
+     * can't be computed). Ported verbatim from the client (public/scripts/chat-completion-settings.js
+     * ~line 3495).
+     * @type {number}
+     */
+    static tokensPerImage = 85;
+
     /** @type {number} */
     tokens;
     /** @type {string} */
@@ -325,6 +456,201 @@ export class Message {
      * @returns {number} Number of tokens in the message.
      */
     getTokens() { return this.tokens; }
+
+    /**
+     * Adds an inline image to the message content, converting `content` to an array if needed.
+     * Server-side port of `Message.prototype.addImage`
+     * (public/scripts/chat-completion-settings.js ~3602) - see the module doc comment's
+     * "MULTIMODAL PORT" note for how the client-only pieces (`fetch()`, `oai_settings`) were
+     * translated to explicit parameters here.
+     * @param {string} image A `data:` URL, an `http(s)://` URL, or a local
+     *  `user/images/<CharName>/<file>`-shaped relative path.
+     * @param {object} [options]
+     * @param {string} [options.quality] `'low'`, `'auto'`, or `'high'` - mirrors the client's
+     *  `oai_settings.inline_image_quality` (was an implicit global there, an explicit parameter
+     *  here). Defaults to `'auto'`, matching the client's `default_settings.inline_image_quality`.
+     * @param {string} [options.chatCompletionSource] Mirrors the client's
+     *  `oai_settings.chat_completion_source` (was an implicit global there) - only used to decide
+     *  whether `compressImage`'s size-threshold-based compression path applies.
+     * @param {{userImages?: string}} [options.directories] See `AttachmentDirectories` above -
+     *  needed only when `image` is a local relative path.
+     * @returns {Promise<void>}
+     */
+    async addImage(image, { quality = 'auto', chatCompletionSource, directories } = {}) {
+        this.content = this.ensureContentIsArray();
+        const resolved = await resolveAttachmentDataUrl(image, { directories });
+        if (!resolved) {
+            return;
+        }
+        image = await this.compressImage(resolved, { chatCompletionSource });
+        this.content.push({ type: 'image_url', image_url: { 'url': image, 'detail': quality } });
+        try {
+            const tokens = await this.getImageTokenCost(image, quality);
+            this.tokens += tokens;
+        } catch (error) {
+            this.tokens += Message.tokensPerImage;
+            console.error('Failed to get image token cost', error);
+        }
+    }
+
+    /**
+     * Adds an inline video to the message content, converting `content` to an array if needed.
+     * Server-side port of `Message.prototype.addVideo`
+     * (public/scripts/chat-completion-settings.js ~3634). No compression is applied (matches the
+     * client). Duration is NOT probed - see the module doc comment's "Video/audio duration" note -
+     * the client's own fallback estimate (`263 tokens/sec * 40s`) is applied unconditionally.
+     * @param {string} video A `data:` URL, an `http(s)://` URL, or a local relative path.
+     * @param {object} [options]
+     * @param {string} [options.quality] Mirrors `oai_settings.inline_image_quality`. Defaults to
+     *  `'auto'`.
+     * @param {{userImages?: string}} [options.directories]
+     * @returns {Promise<void>}
+     */
+    async addVideo(video, { quality = 'auto', directories } = {}) {
+        this.content = this.ensureContentIsArray();
+        const resolved = await resolveAttachmentDataUrl(video, { directories });
+        if (!resolved) {
+            return;
+        }
+        this.content.push({ type: 'video_url', video_url: { 'url': resolved, 'detail': quality } });
+        // No duration prober is a server dependency yet - always apply the client's own
+        // "duration unknown" fallback estimate (~40s of video). See module doc comment.
+        this.tokens += 263 * 40;
+    }
+
+    /**
+     * Adds an inline audio clip to the message content, converting `content` to an array if
+     * needed. Server-side port of `Message.prototype.addAudio`
+     * (public/scripts/chat-completion-settings.js ~3660). Duration is NOT probed - see the module
+     * doc comment's "Video/audio duration" note - the client's own fallback estimate
+     * (`32 tokens/sec * 300s`) is applied unconditionally.
+     * @param {string} audio A `data:` URL, an `http(s)://` URL, or a local relative path.
+     * @param {{directories?: {userImages?: string}}} [options]
+     * @returns {Promise<void>}
+     */
+    async addAudio(audio, { directories } = {}) {
+        this.content = this.ensureContentIsArray();
+        const resolved = await resolveAttachmentDataUrl(audio, { directories });
+        if (!resolved) {
+            return;
+        }
+        this.content.push({ type: 'audio_url', audio_url: { 'url': resolved } });
+        // No duration prober is a server dependency yet - always apply the client's own
+        // "duration unknown" fallback estimate (~5 minutes of audio). See module doc comment.
+        this.tokens += 32 * 300;
+    }
+
+    /**
+     * Compress an image if it exceeds the size threshold for the given chat completion source, or
+     * unconditionally re-encode it if its MIME type isn't one of the "safe" inline types. Server-side
+     * port of `Message.prototype.compressImage`
+     * (public/scripts/chat-completion-settings.js ~3710), using `createThumbnail` (Jimp-based, see
+     * below) in place of the client's Canvas-based `createThumbnail`.
+     * @param {string} image Data URL of the image.
+     * @param {object} [options]
+     * @param {string} [options.chatCompletionSource] Mirrors `oai_settings.chat_completion_source`.
+     * @returns {Promise<string>} Compressed image as a Data URL.
+     */
+    async compressImage(image, { chatCompletionSource } = {}) {
+        // Ported verbatim from the client's compressImageSources allowlist (values from
+        // `chat_completion_sources` in public/scripts/chat-completion-settings.js ~177).
+        const compressImageSources = ['openrouter', 'makersuite', 'mistralai', 'vertexai'];
+        const sizeThreshold = 2 * 1024 * 1024;
+        const dataSize = image.length * 0.75;
+        const safeMimeTypes = ['image/jpeg', 'image/png', 'image/webp'];
+        const mimeType = image?.split(';')?.[0]?.split(':')?.[1];
+        if (compressImageSources.includes(chatCompletionSource) && dataSize > sizeThreshold) {
+            const maxSide = 2048;
+            image = await createThumbnail(image, maxSide, maxSide);
+        } else if (!safeMimeTypes.includes(mimeType)) {
+            image = await createThumbnail(image, null, null);
+        }
+        return image;
+    }
+
+    /**
+     * Get the token cost of an image. Server-side port of `Message.prototype.getImageTokenCost`
+     * (public/scripts/chat-completion-settings.js ~3736), using `image-size` in place of the
+     * client's `getImageSizeFromDataURL` (an `Image` element).
+     * @param {string} dataUrl Data URL of the image.
+     * @param {string} quality `'low'`, `'auto'`, or `'high'`.
+     * @returns {Promise<number>} The token cost of the image.
+     */
+    async getImageTokenCost(dataUrl, quality) {
+        if (quality === 'low') {
+            return Message.tokensPerImage;
+        }
+        const base64 = dataUrl.split(',')[1] ?? '';
+        const buffer = Buffer.from(base64, 'base64');
+        const size = imageSize(buffer);
+        if (quality === 'auto' && size.width <= 512 && size.height <= 512) {
+            return Message.tokensPerImage;
+        }
+        const scale = 2048 / Math.min(size.width, size.height);
+        const scaledWidth = Math.round(size.width * scale);
+        const scaledHeight = Math.round(size.height * scale);
+        const finalScale = 768 / Math.min(scaledWidth, scaledHeight);
+        const finalWidth = Math.round(scaledWidth * finalScale);
+        const finalHeight = Math.round(scaledHeight * finalScale);
+        const squares = Math.ceil(finalWidth / 512) * Math.ceil(finalHeight / 512);
+        const tokens = squares * 170 + 85;
+        return tokens;
+    }
+}
+
+/**
+ * Server-side, Jimp-based re-implementation of the client's Canvas-based `createThumbnail`
+ * (public/scripts/utils.js ~1867) plus its `calculateThumbnailSize` helper (~1264): resizes a
+ * data-URL image to fit within `maxWidth`x`maxHeight` (preserving aspect ratio, never upscaling -
+ * ported verbatim from `calculateThumbnailSize`), then re-encodes it as JPEG.
+ *
+ * JUDGMENT CALL - JPEG quality: the client's `canvas.toDataURL('image/jpeg')` uses the browser's
+ * default JPEG quality (~0.92 in Chromium). There's no equivalent implicit default to inherit
+ * server-side, so this passes `quality: 92` (the `@jimp/wasm-jpeg` encoder's 0-100 scale) to Jimp's
+ * `getBuffer` explicitly, matching that same real-world default rather than the encoder's own
+ * default of 100 (lossless-ish, much larger output - not what the client actually produces).
+ * `jpegColorSpace: 'ycbcr'` is passed alongside it because the encoder requires the option (no
+ * default) - `'ycbcr'` matches the convention `src/endpoints/thumbnails.js` already uses for its
+ * own Jimp JPEG encoding.
+ * @param {string} dataUrl Data URL of the source image.
+ * @param {number|null} maxWidth Max width (`null` = no limit, matches the client).
+ * @param {number|null} maxHeight Max height (`null` = no limit, matches the client).
+ * @returns {Promise<string>} The resized/re-encoded image as a `data:image/jpeg;base64,...` URL.
+ */
+async function createThumbnail(dataUrl, maxWidth, maxHeight) {
+    const base64 = dataUrl.split(',')[1] ?? '';
+    const buffer = Buffer.from(base64, 'base64');
+    const image = await Jimp.read(buffer);
+    const { width, height } = image.bitmap;
+
+    // Ported verbatim from calculateThumbnailSize (public/scripts/utils.js ~1264).
+    const aspectRatio = width / height;
+    let thumbnailWidth = maxWidth;
+    let thumbnailHeight = maxHeight;
+    let effectiveMaxWidth = maxWidth;
+    let effectiveMaxHeight = maxHeight;
+    if (effectiveMaxWidth === null) {
+        thumbnailWidth = width;
+        effectiveMaxWidth = width;
+    }
+    if (effectiveMaxHeight === null) {
+        thumbnailHeight = height;
+        effectiveMaxHeight = height;
+    }
+    if (width <= effectiveMaxWidth && height <= effectiveMaxHeight) {
+        thumbnailWidth = width;
+        thumbnailHeight = height;
+    } else if (width > height) {
+        thumbnailHeight = effectiveMaxWidth / aspectRatio;
+    } else {
+        thumbnailWidth = effectiveMaxHeight * aspectRatio;
+    }
+    thumbnailWidth = Math.round(thumbnailWidth);
+    thumbnailHeight = Math.round(thumbnailHeight);
+
+    image.resize({ w: thumbnailWidth, h: thumbnailHeight, mode: ResizeStrategy.BILINEAR });
+    const outputBuffer = await image.getBuffer(JimpMime.jpeg, { quality: 92, jpegColorSpace: 'ycbcr' });
+    return `data:image/jpeg;base64,${outputBuffer.toString('base64')}`;
 }
 
 /**
