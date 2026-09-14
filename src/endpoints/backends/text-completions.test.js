@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import express from 'express';
 
 import { write as writeCard } from '../../character-card-parser.js';
 // text-completions.js -> text-completion-generation-input.js pulls in src/endpoints/characters.js
@@ -22,7 +25,16 @@ setConfigFilePath(path.join(__dirname, '..', '..', '..', 'config.yaml'));
 // Express-independent, directly-testable function - buildRawActionTextCompletionRequest() - and is
 // exercised here directly with real on-disk fixtures, the same way text-completion-generation-
 // input.test.js and text-completion-prompt-orchestrator.test.js test their own real logic.
-const { buildRawActionTextCompletionRequest } = await import('./text-completions.js');
+//
+// The assistant-reply-persistence follow-up (this session) DOES need a real route-level exercise -
+// there is no way to observe `pendingAssistantPersist` being read from outside the route handler
+// otherwise. Since this file still has no pre-existing route-integration harness to reuse, a
+// minimal one is built here: mount the real `router` on a real `express` app (with a tiny
+// middleware standing in for auth middleware's `request.user.directories`), listen on an ephemeral
+// port, and point a SECOND real `http` server (standing in for the text-completion backend) at it
+// via `server_urls.generic` in the settings fixture below - both real network I/O, no mocking
+// framework, matching this file's existing "real on-disk fixtures over mocks" convention.
+const { router, buildRawActionTextCompletionRequest } = await import('./text-completions.js');
 const { writeAllSettings } = await import('../../settings-store.js');
 const { saveChatToTree, loadBranch, appendMessages, disposeMessageTreeStores } = await import('../../message-tree-db.js');
 
@@ -193,6 +205,123 @@ async function run() {
         }),
         /character_avatar or group_id is required/,
     );
+
+    // --- route-level: non-streaming raw-action /generate persists the assistant reply for real ---
+    // A minimal, real (no mocking framework) harness: a real `http` server standing in for the
+    // text-completion backend, and the real `router` mounted on a real `express` app standing in
+    // for the actual server (with a tiny middleware substituting for auth middleware's
+    // `request.user.directories`).
+    async function startFakeBackend(handler) {
+        const server = http.createServer((req, res) => {
+            let body = '';
+            req.on('data', chunk => { body += chunk; });
+            req.on('end', () => handler(req, res, body));
+        });
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+        return { server, url: `http://127.0.0.1:${server.address().port}` };
+    }
+
+    function buildTestApp() {
+        const app = express();
+        app.use(express.json());
+        app.use((req, _res, next) => {
+            req.user = { directories };
+            next();
+        });
+        app.use('/', router);
+        return app;
+    }
+
+    async function postGenerate(app, body) {
+        const server = app.listen(0, '127.0.0.1');
+        await new Promise(resolve => server.once('listening', resolve));
+        const port = server.address().port;
+        try {
+            const res = await fetch(`http://127.0.0.1:${port}/generate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            const data = await res.json();
+            return { status: res.status, data };
+        } finally {
+            await new Promise(resolve => server.close(resolve));
+        }
+    }
+
+    function pointBackendAt(url) {
+        const settings = buildSettingsFixture();
+        settings.textgenerationwebui_settings.server_urls = { generic: url };
+        writeAllSettings(directories, settings);
+    }
+
+    // (a) a real non-streaming generation appends the assistant's reply onto the tree, chained
+    // after the just-persisted user message, with the correct name/is_user.
+    {
+        const fakeBackend = await startFakeBackend((_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ choices: [{ text: 'Rex says hello back.' }] }));
+        });
+        pointBackendAt(fakeBackend.url);
+
+        const branchBefore = await loadBranch(directories, ownerId, branchName);
+        const messageCountBefore = branchBefore.messages.length;
+
+        const app = buildTestApp();
+        const { status, data } = await postGenerate(app, {
+            owner_id: ownerId, character_avatar: avatar, branch_name: branchName,
+            type: 'normal', user_message: 'One more time, Rex?', stream: false,
+        });
+        fakeBackend.server.close();
+
+        assert.equal(status, 200, 'the (unchanged) response is forwarded to the client');
+        assert.deepEqual(data, { choices: [{ text: 'Rex says hello back.' }] }, 'response body reaches the client unmodified');
+
+        const branchAfter = await loadBranch(directories, ownerId, branchName);
+        assert.equal(branchAfter.messages.length, messageCountBefore + 2, 'both the user message and the assistant reply were appended');
+        const [userMsg, assistantMsg] = branchAfter.messages.slice(-2);
+        assert.equal(userMsg.mes, 'One more time, Rex?');
+        assert.equal(userMsg.is_user, true);
+        assert.equal(assistantMsg.mes, 'Rex says hello back.', 'the assistant reply text was extracted from data.choices[0].text and appended');
+        assert.equal(assistantMsg.is_user, false);
+        assert.equal(assistantMsg.name, 'Rex', 'the assistant message uses name2 (the character\'s display name), not name1');
+    }
+
+    // (b) a failed backend response (non-2xx) does NOT append an assistant reply (the user message,
+    // already committed as "the user really sent this" before dispatch, is unaffected either way).
+    {
+        const fakeBackend = await startFakeBackend((_req, res) => {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'backend exploded' }));
+        });
+        pointBackendAt(fakeBackend.url);
+
+        const branchBefore = await loadBranch(directories, ownerId, branchName);
+        const messageCountBefore = branchBefore.messages.length;
+
+        const app = buildTestApp();
+        const { status } = await postGenerate(app, {
+            owner_id: ownerId, character_avatar: avatar, branch_name: branchName,
+            type: 'normal', user_message: 'Are you there, Rex?', stream: false,
+        });
+        fakeBackend.server.close();
+
+        assert.equal(status, 200, 'the error branch still responds (with an error body), not a thrown exception');
+
+        const branchAfter = await loadBranch(directories, ownerId, branchName);
+        assert.equal(branchAfter.messages.length, messageCountBefore + 1, 'only the user message was appended - no assistant reply for a failed generation');
+        assert.equal(branchAfter.messages[branchAfter.messages.length - 1].mes, 'Are you there, Rex?');
+        assert.equal(branchAfter.messages[branchAfter.messages.length - 1].is_user, true);
+    }
+
+    // (c) the STREAMING raw-action case (request.body.stream: true) is intentionally NOT exercised
+    // here: proving the assistant reply is untouched for it is trivial (pendingAssistantPersist is
+    // simply never read by either streaming branch - see the code comment at its declaration in
+    // text-completions.js), but actually driving a real SSE/Ollama-stream/llama.cpp-compact-stream
+    // response through this harness and asserting the raw bytes reach the client unchanged would be
+    // exercising the EXISTING (unmodified) streaming plumbing, not anything this session touched -
+    // out of scope here. This session's change to the streaming branches is exactly zero lines; see
+    // the manual diff review noted in this session's own report instead.
 
     // NOTE: a dedicated test for the "continue/swipe on an empty chat" guard (see
     // buildRawActionTextCompletionRequest()'s own `if ((isContinue || isSwipe) && ...chat.length

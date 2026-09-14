@@ -422,11 +422,23 @@ export async function buildRawActionTextCompletionRequest(directories, {
     // Step 5-6
     const assembled = await assembleTextCompletionPrompt(orchestratorInput);
 
-    return { params: assembled.generate_data, backend, anchorNodeId, name1: orchestratorInput.name1 };
+    return { params: assembled.generate_data, backend, anchorNodeId, name1: orchestratorInput.name1, name2: orchestratorInput.name2 };
 }
 
 router.post('/generate', async function (request, response) {
     if (!request.body) return response.sendStatus(400);
+
+    // Set only by the raw-action branch below, and read only by the NON-STREAMING response branch
+    // further down - every other branch (connection-profile, default/legacy) never touches this, so
+    // it stays a no-op for them. The two streaming branches (`api_type === OLLAMA && stream`, and
+    // the generic `stream` branch with `pipeLlamaCppCompactStream`/`forwardFetchResponse`) also
+    // never check this variable - persisting the assistant's reply for a STREAMING raw-action
+    // generation is a real, separate follow-up (tee the live byte stream into full text, per
+    // api_type's own delta format, while still forwarding it unchanged to the client) and is
+    // intentionally NOT attempted here. A future implementer of that follow-up should read this
+    // object's shape (set below) and plug the equivalent persistence in at the end of each streaming
+    // branch once the full text is known there.
+    let pendingAssistantPersist = null;
 
     try {
         // "Generate using connection profile X" - the raw action is the profile id plus the raw
@@ -520,21 +532,34 @@ router.post('/generate', async function (request, response) {
             // backend. This is a real fact that should be committed regardless of whether
             // generation itself succeeds afterward, so it's done for real here, not deferred.
             //
-            // NOT IMPLEMENTED (scoped out of this task on purpose - see this session's task
-            // write-up's "Response persistence" section): persisting the ASSISTANT's reply once
-            // generation completes. That would require buffering a live SSE/streaming backend
+            // The ASSISTANT's reply is persisted further down, once a response is known - see
+            // `pendingAssistantPersist`, set a few lines below, and read in the non-streaming
+            // response branch. STREAMING raw-action generations are NOT covered yet (scoped out of
+            // this task on purpose): that would require buffering a live SSE/streaming backend
             // response into full text (while ALSO forwarding it live to the client below,
             // unchanged) and mapping it back through whichever api_type's own delta-parsing format
             // was used, before appending it via appendMessages() - real, separate plumbing left as
             // a follow-up task.
+            // The reply, once persisted, must chain onto whatever node is actually the new leaf
+            // after this block - the just-appended user message's node when one was appended,
+            // otherwise `built.anchorNodeId` unchanged (continue/swipe, which add no new message).
+            let replyAnchorNodeId = built.anchorNodeId;
             if (typeof userMessageText === 'string' && built.anchorNodeId) {
                 const appendResult = await appendMessages(directories, ownerId, built.anchorNodeId, [
                     { name: built.name1, is_user: true, mes: userMessageText, extra: {}, send_date: Date.now() },
                 ]);
                 if (!appendResult.ok) {
                     console.error('Failed to persist user message onto the tree:', appendResult.reason);
+                } else if (appendResult.node_ids?.length) {
+                    replyAnchorNodeId = appendResult.node_ids[appendResult.node_ids.length - 1];
                 }
             }
+
+            // Stash what's needed to persist the ASSISTANT's reply once the (non-streaming)
+            // response is known - read only by the non-streaming response branch below, guarded by
+            // `if (pendingAssistantPersist)`, so this has no effect on the streaming branches (see
+            // the comment on this variable's declaration above).
+            pendingAssistantPersist = { directories, ownerId, anchorNodeId: replyAnchorNodeId, name2: built.name2 };
 
             // Replace the body entirely - mirrors the connection-profile branch's own final
             // assignment shape exactly, so the existing downstream dispatch code below is
@@ -702,6 +727,33 @@ router.post('/generate', async function (request, response) {
                 // Map InfermaticAI response to OAI completions format
                 if (apiType === TEXTGEN_TYPES.INFERMATICAI) {
                     data.choices = (data?.choices || []).map(choice => ({ text: choice?.message?.content || choice.text, logprobs: choice?.logprobs, index: choice?.index }));
+                }
+
+                // Persist the ASSISTANT's reply for the raw-action branch (see
+                // `pendingAssistantPersist`'s declaration above) - only reached for a real,
+                // successful (completionsReply.ok) NON-STREAMING generation, so nothing speculative
+                // ever gets committed. Only set when the raw-action branch ran; a no-op otherwise.
+                if (pendingAssistantPersist) {
+                    // Most api_types funneled through the shared `/v1/completions`-style URL above
+                    // return an OpenAI-completions-shaped `{choices: [{text, ...}]}` body (already
+                    // true of `data` here, INFERMATICAI's own remap included). Ollama is the one
+                    // exception reachable in this non-streaming branch: its real `/api/generate`
+                    // endpoint (see the `api_type === TEXTGEN_TYPES.OLLAMA` request-body construction
+                    // above, `url += '/api/generate'`) replies `{response: "...", done: true, ...}`
+                    // when `stream` is false, NOT `{choices: [...]}`.
+                    const generatedText = apiType === TEXTGEN_TYPES.OLLAMA
+                        ? (data?.response ?? '')
+                        : (data?.choices?.[0]?.text ?? '');
+
+                    if (generatedText) {
+                        const { directories, ownerId, anchorNodeId, name2 } = pendingAssistantPersist;
+                        const appendResult = await appendMessages(directories, ownerId, anchorNodeId, [
+                            { name: name2, is_user: false, mes: generatedText, extra: {}, send_date: Date.now() },
+                        ]);
+                        if (!appendResult.ok) {
+                            console.error('Failed to persist assistant reply onto the tree:', appendResult.reason);
+                        }
+                    }
                 }
 
                 return response.send(data);
