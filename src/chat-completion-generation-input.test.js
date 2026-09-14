@@ -321,6 +321,36 @@ async function run() {
         'the new user message appended by userMessageText made it into the final assembled chat-completion payload',
     );
 
+    // --- bias: real resolution via getBiasStrings() (src/prompt-line-formatting.js), not stubbed.
+    // power_user.user_prompt_bias set to a real, non-empty string; type: 'normal' (NOT
+    // impersonate/continue, which short-circuit to empty per getBiasStrings()'s own real behavior);
+    // no textareaText override and no message-embedded {{bias "..."}} in the fixture chat history, so
+    // the returned bias falls all the way back to userPromptBias - substituteParams() has nothing to
+    // substitute in this plain string, so it comes back verbatim. ---
+    const biasFixture = buildSettingsFixture();
+    biasFixture.power_user.user_prompt_bias = 'always speak in riddles';
+    writeAllSettings(directories, biasFixture);
+    const withBias = await resolveChatCompletionGenerationInput(directories, {
+        avatar, ownerId, branchName,
+        type: 'normal',
+    });
+    assert.equal(
+        withBias.bias, 'always speak in riddles',
+        'bias resolves via the real getBiasStrings(), falling back to power_user.user_prompt_bias when no textareaText/message-embedded bias is present',
+    );
+
+    // type: 'continue' short-circuits getBiasStrings() to an all-empty result, per its own real,
+    // unstubbed behavior (verified directly in src/prompt-line-formatting.js) - proves this resolver
+    // genuinely reaches the real function rather than always returning the configured bias.
+    const withBiasContinue = await resolveChatCompletionGenerationInput(directories, {
+        avatar, ownerId, branchName,
+        type: 'continue',
+    });
+    assert.equal(withBiasContinue.bias, '', 'type: \'continue\' short-circuits getBiasStrings() to an empty bias, per its own real behavior');
+
+    // Restore the original fixture (writeAllSettings() is a full sharded-file replace, not a merge).
+    writeAllSettings(directories, buildSettingsFixture());
+
     console.log('chat-completion-generation-input.test.js: all assertions passed');
 }
 

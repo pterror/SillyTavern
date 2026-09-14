@@ -11,6 +11,7 @@ import { bucketActivatedEntries, world_info_position } from './world-info/result
 import { setExtensionPrompt, extension_prompt_types } from './extension-prompt-table.js';
 import { getRegexedString, regex_placement } from './regex-scripts-engine.js';
 import { getTokenizerModel, getTiktokenTokenizer } from './endpoints/tokenizers.js';
+import { getBiasStrings } from './prompt-line-formatting.js';
 
 /**
  * Adapter/resolver layer between REAL on-disk state (settings.json - via settings-store.js's
@@ -254,11 +255,31 @@ import { getTokenizerModel, getTiktokenTokenizer } from './endpoints/tokenizers.
  *   generation never reads `extension_settings.cfg` at all). `prepareOpenAIMessages()`'s own input
  *   typedef has no CFG-shaped parameter either. So this is a real, verified "no analog exists" case,
  *   not a silent omission - nothing CFG-related is read or forwarded by this resolver.
- * - `bias`: explicit MVP SCOPE BOUNDARY. `oai_settings.bias_presets`/`bias_preset_selected` (the
- *   user's configured logit-bias preset) need their own resolution into the single formatted `bias`
- *   string `preparePromptsForChatCompletion()`/`populateChatCompletion()` expect - a real, separate,
- *   not-yet-ported subsystem (the chat-completion analog of text-completion-generation-input.js's own
- *   documented `logitBiasEntries`-is-forwarded-raw gap) - `bias` defaults to `''`.
+ * - `bias`: REAL, now resolved for real via `getBiasStrings()` (src/prompt-line-formatting.js) - NOT
+ *   related to `oai_settings.bias_presets`/`bias_preset_selected` (that's the logit-bias token-map
+ *   mechanism, `generate_data.logit_bias`, computed by src/chat-completion-generation-data.js's
+ *   `computeLogitBias()` from `biasPresetEntries` - a genuinely separate mechanism, already fully
+ *   ported and unrelated to this field). `prepareOpenAIMessages()`'s `bias` param is the SAME shared
+ *   prompt-bias value the text-completion path calls `userPromptBias`/`promptBias` too - both derive
+ *   from the client's own `getBiasStrings(textareaText, type)` (public/script.js ~line 6926), the real
+ *   client call site (public/script.js ~line 6360-6376) passing `prepareOpenAIMessages({..., bias:
+ *   promptBias, ...})`. That helper is already ported server-side as this module's own imported
+ *   `getBiasStrings({textareaText, type, chat, userPromptBias, macroContext})` and is already
+ *   correctly used by text-completion-generation-input.js (forwarding `userPromptBias:
+ *   powerUser.user_prompt_bias` as a raw param for src/text-completion-prompt-orchestrator.js to call
+ *   internally) - re-verified: `prepareOpenAIMessages()` has NO internal `getBiasStrings()`/`promptBias`
+ *   call of its own (zero hits grepping `getBiasStrings`/`promptBias` across every
+ *   `src/chat-completion-*.js` file before this fix) - it only accepts an already-resolved, plain
+ *   `bias` string, with no downstream chat-completion function to defer resolution to. So, like world-
+ *   info activation (decision 4 above, for the identical "no separate orchestrator to defer to"
+ *   reason), THIS resolver is the one place that calls `getBiasStrings()` for the chat-completion
+ *   pipeline, using its own already-built `chat`/`macroContext` and `powerUser.user_prompt_bias`, and
+ *   sets `bias` to the resulting `promptBias`. The one genuinely remaining, narrower scope boundary is
+ *   `textareaText` itself (the CURRENT in-flight user-input textarea text, extracted for any inline
+ *   `{{bias "..."}}` message-embedded bias) - a per-call-only value with no settings.json source,
+ *   mirroring exactly how text-completion-generation-input.js's own doc comment already frames its
+ *   equivalent `textareaText` gap: it defaults to `''` (falling back to the chat-history-scan / the
+ *   configured `userPromptBias` per `getBiasStrings()`'s own real behavior) unless a caller supplies it.
  * - `quietPrompt`/`quietImage`/`cyclePrompt`/`extensionPrompts`: none of these have a real,
  *   single-valued settings.json/chat-metadata source of truth (they are per-generation-call options,
  *   exactly like text-completion-generation-input.js's own documented `quiet_prompt`/`generationTrigger`/
@@ -487,11 +508,10 @@ async function resolveChatHistory(directories, { ownerId, branchName, nodeId }) 
  * src/settings-store.js) and the real message-tree chat DB (via src/message-tree-db.js).
  *
  * See this module's doc comment above for the full list of field-mapping decisions and documented
- * MVP scope boundaries (groups, media inlining, world-info activation, bias-preset resolution,
- * `modelList`, `characterId`). `macroExtras`, when given, is shallow-merged OVER the resolved object
- * (caller overrides win) - use it to supply any of `prepareOpenAIMessages()`'s other optional fields
- * this resolver leaves at a default (e.g. `quietPrompt`, `bias`, `worldInfoBefore`/`worldInfoAfter`
- * once activated by a future caller, any of the tool-capability `*Override` escape hatches).
+ * MVP scope boundaries (groups, media inlining, `modelList`, `characterId`). `macroExtras`, when
+ * given, is shallow-merged OVER the resolved object (caller overrides win) - use it to supply any of
+ * `prepareOpenAIMessages()`'s other optional fields this resolver leaves at a default (e.g.
+ * `quietPrompt`, any of the tool-capability `*Override` escape hatches).
  *
  * `worldInfoCandidates` (the real, auto-resolved candidate list - see decision 4 above) is returned as
  * an EXTRA field on top of `prepareOpenAIMessages()`'s own documented input surface, for a future
@@ -511,6 +531,9 @@ async function resolveChatHistory(directories, { ownerId, branchName, nodeId }) 
  * @param {boolean} [params.dryRun] Accepted for interface-signature parity only - see doc comment.
  * @param {string} [params.cyclePrompt] In-flight user input for a `'continue'` generation - forwarded
  * into `historyOptions.cyclePrompt` and top-level `cyclePrompt`.
+ * @param {string} [params.textareaText] Current user input textarea text, for bias-string resolution
+ * (see the `bias` FIELD-MAPPING NOTE above) - mirrors text-completion-generation-input.js's own
+ * equivalent param name/default exactly.
  * @param {object} [params.chatMetadata] Overrides the loaded branch's own metadata when given.
  * @param {string} [params.userMessageText] The raw user action for this turn - see doc comment.
  * @param {import('./world-info/activation.js').WIEntry[]} [params.worldInfoCandidates] Explicit
@@ -533,7 +556,7 @@ async function resolveChatHistory(directories, { ownerId, branchName, nodeId }) 
 export async function resolveChatCompletionGenerationInput(directories, {
     avatar, groupId, ownerId, branchName, nodeId,
     type, isImpersonate = false, isContinue = false, isSwipe = false, dryRun,
-    cyclePrompt = '', chatMetadata: chatMetadataOverride, userMessageText,
+    cyclePrompt = '', textareaText = '', chatMetadata: chatMetadataOverride, userMessageText,
     worldInfoCandidates: worldInfoCandidatesOverride,
     regexScripts = [], regexExtensionEnabled = true,
     model: modelOverride, modelList, characterId = PROMPT_ORDER_DUMMY_ID,
@@ -631,6 +654,13 @@ export async function resolveChatCompletionGenerationInput(directories, {
         chat, chatMetadata,
     };
 
+    // Real bias-string resolution - see the `bias` FIELD-MAPPING NOTE above. `prepareOpenAIMessages()`
+    // has no internal getBiasStrings() call of its own, so (like world-info activation, decision 4
+    // above) this resolver calls it directly, reusing its own already-built `chat`/`macroContext`.
+    const { promptBias } = getBiasStrings({
+        textareaText, type, chat, userPromptBias: powerUser.user_prompt_bias, macroContext,
+    });
+
     // Real TokenHandler, wrapping a real OpenAI-family tiktoken-based counter (see doc comment
     // decision 3) unless a caller supplies its own.
     const tokenHandler = tokenHandlerOverride ?? new TokenHandler(countTokenAsyncFnOverride ?? createOpenAITokenCounter(model));
@@ -719,8 +749,8 @@ export async function resolveChatCompletionGenerationInput(directories, {
         worldInfoCandidates,
         wiFormat: oaiSettings.wi_format ?? '{0}',
 
-        // --- Bias (MVP scope boundary - see doc comment) ---
-        bias: '',
+        // --- Bias (real, resolved via getBiasStrings() - see doc comment FIELD-MAPPING NOTE) ---
+        bias: promptBias,
 
         // --- Generation identity/mode ---
         type, quietPrompt: undefined, quietImage: undefined,
