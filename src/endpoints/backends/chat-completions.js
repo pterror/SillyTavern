@@ -2315,13 +2315,15 @@ export async function buildRawActionChatCompletionRequest(directories, {
 }
 
 router.post('/generate', async function (request, response) {
-    // Set only by the raw-action branch below, and read only by the single SHARED non-streaming
-    // response point in the default/legacy inline OpenAI/custom dispatch block further down (the
-    // ONLY response-handling code in this file with one shared point across every source it covers -
-    // see that block's own comment for why the many provider-`switch` functions above it
-    // (sendClaudeRequest/sendMakerSuiteRequest/etc, each its own file/function with its own response
-    // shape) are explicitly NOT wired up in this pass). Every other branch (connection-profile,
-    // default/legacy without a raw action) never touches this, so it stays a no-op for them.
+    // Set only by the raw-action branch below (and only for a type/mode where the reply is actually
+    // meant to be persisted - see that branch's own comment for the `is_impersonate`/`type ===
+    // 'quiet'` exclusion), and read only by the single SHARED non-streaming response point in the
+    // default/legacy inline OpenAI/custom dispatch block further down (the ONLY response-handling
+    // code in this file with one shared point across every source it covers - see that block's own
+    // comment for why the many provider-`switch` functions above it (sendClaudeRequest/
+    // sendMakerSuiteRequest/etc, each its own file/function with its own response shape) are
+    // explicitly NOT wired up in this pass). Every other branch (connection-profile, default/legacy
+    // without a raw action) never touches this, so it stays a no-op for them.
     let pendingAssistantPersist = null;
 
     try {
@@ -2409,10 +2411,22 @@ router.post('/generate', async function (request, response) {
             // itself succeeds afterward, so it's done for real here, not deferred (identical
             // rationale to buildRawActionTextCompletionRequest()'s own route wiring).
             //
-            // The ASSISTANT's reply is persisted further down, at the single shared non-streaming
-            // response point in the default/legacy inline dispatch block - see `pendingAssistantPersist`,
-            // set a few lines below. NOT COVERED (explicit, documented deferral - real, separate
-            // surface area, much larger than text-completion's single shared dispatch block):
+            // NEITHER side of this turn is persisted for `is_impersonate`/`type === 'quiet'`
+            // (identical rationale/exclusion to text-completions.js's own route wiring):
+            // - impersonate generates what the user MIGHT say - it is never a real submitted user
+            //   message, and its output is written back into the client's send textarea, never the
+            //   chat, so it must never appear as a bogus assistant message either.
+            // - quiet generations are meta/background - they must never touch the visible tree on
+            //   either side.
+            // The user-message skip below is defensive: a real caller has no user text to send for
+            // either of these types in practice, but even if `user_message` were passed alongside
+            // `is_impersonate`/`type: 'quiet'`, it is not committed.
+            //
+            // The ASSISTANT's reply (for every other, non-skipped type) is persisted further down, at
+            // the single shared non-streaming response point in the default/legacy inline dispatch
+            // block - see `pendingAssistantPersist`, set a few lines below. NOT COVERED (explicit,
+            // documented deferral - real, separate surface area, much larger than text-completion's
+            // single shared dispatch block):
             //   - EVERY streaming raw-action generation (any chat_completion_source with
             //     request.body.stream true) - would need teeing the live SSE byte stream into full
             //     text per source's own delta-parsing format while still forwarding it unchanged.
@@ -2424,8 +2438,9 @@ router.post('/generate', async function (request, response) {
             // The reply, once persisted, must chain onto whatever node is actually the new leaf after
             // this block - the just-appended user message's node when one was appended, otherwise
             // `built.anchorNodeId` unchanged (continue/swipe, which add no new message).
+            const skipPersistence = isImpersonate || type === 'quiet';
             let replyAnchorNodeId = built.anchorNodeId;
-            if (typeof userMessageText === 'string' && built.anchorNodeId) {
+            if (!skipPersistence && typeof userMessageText === 'string' && built.anchorNodeId) {
                 const appendResult = await appendMessages(directories, ownerId, built.anchorNodeId, [
                     { name: built.name1, is_user: true, mes: userMessageText, extra: {}, send_date: Date.now() },
                 ]);
@@ -2439,8 +2454,13 @@ router.post('/generate', async function (request, response) {
             // Stash what's needed to persist the ASSISTANT's reply once a (non-streaming, default/
             // legacy-dispatch-block) response is known - read only there, guarded by
             // `if (pendingAssistantPersist)`, so this has no effect on the provider-`switch` cases or
-            // either streaming path (see the comment on this variable's declaration above).
-            pendingAssistantPersist = { directories, ownerId, anchorNodeId: replyAnchorNodeId, name2: built.name2 };
+            // either streaming path (see the comment on this variable's declaration above). Left
+            // `null` (its declared default) for `is_impersonate`/`type === 'quiet'`, so the reply is
+            // never appended to the tree for either - it still reaches the client unchanged via the
+            // normal response, it just never gets persisted.
+            if (!skipPersistence) {
+                pendingAssistantPersist = { directories, ownerId, anchorNodeId: replyAnchorNodeId, name2: built.name2 };
+            }
 
             // Replace the body entirely - mirrors the connection-profile branch's own final
             // assignment shape exactly, so the existing downstream dispatch code below is completely

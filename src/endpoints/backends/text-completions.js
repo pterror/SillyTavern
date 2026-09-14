@@ -428,16 +428,18 @@ export async function buildRawActionTextCompletionRequest(directories, {
 router.post('/generate', async function (request, response) {
     if (!request.body) return response.sendStatus(400);
 
-    // Set only by the raw-action branch below, and read only by the NON-STREAMING response branch
-    // further down - every other branch (connection-profile, default/legacy) never touches this, so
-    // it stays a no-op for them. The two streaming branches (`api_type === OLLAMA && stream`, and
-    // the generic `stream` branch with `pipeLlamaCppCompactStream`/`forwardFetchResponse`) also
-    // never check this variable - persisting the assistant's reply for a STREAMING raw-action
-    // generation is a real, separate follow-up (tee the live byte stream into full text, per
-    // api_type's own delta format, while still forwarding it unchanged to the client) and is
-    // intentionally NOT attempted here. A future implementer of that follow-up should read this
-    // object's shape (set below) and plug the equivalent persistence in at the end of each streaming
-    // branch once the full text is known there.
+    // Set only by the raw-action branch below (and only for a type/mode where the reply is actually
+    // meant to be persisted - see that branch's own comment for the `is_impersonate`/`type ===
+    // 'quiet'` exclusion), and read only by the NON-STREAMING response branch further down - every
+    // other branch (connection-profile, default/legacy) never touches this, so it stays a no-op for
+    // them. The two streaming branches (`api_type === OLLAMA && stream`, and the generic `stream`
+    // branch with `pipeLlamaCppCompactStream`/`forwardFetchResponse`) also never check this variable
+    // - persisting the assistant's reply for a STREAMING raw-action generation is a real, separate
+    // follow-up (tee the live byte stream into full text, per api_type's own delta format, while
+    // still forwarding it unchanged to the client) and is intentionally NOT attempted here. A future
+    // implementer of that follow-up should read this object's shape (set below) and plug the
+    // equivalent persistence in at the end of each streaming branch once the full text is known
+    // there - and must apply the same `is_impersonate`/`type === 'quiet'` exclusion.
     let pendingAssistantPersist = null;
 
     try {
@@ -532,19 +534,31 @@ router.post('/generate', async function (request, response) {
             // backend. This is a real fact that should be committed regardless of whether
             // generation itself succeeds afterward, so it's done for real here, not deferred.
             //
-            // The ASSISTANT's reply is persisted further down, once a response is known - see
-            // `pendingAssistantPersist`, set a few lines below, and read in the non-streaming
-            // response branch. STREAMING raw-action generations are NOT covered yet (scoped out of
-            // this task on purpose): that would require buffering a live SSE/streaming backend
-            // response into full text (while ALSO forwarding it live to the client below,
-            // unchanged) and mapping it back through whichever api_type's own delta-parsing format
-            // was used, before appending it via appendMessages() - real, separate plumbing left as
-            // a follow-up task.
+            // NEITHER side of this turn is persisted for `is_impersonate`/`type === 'quiet'`:
+            // - impersonate generates what the user MIGHT say - it is never a real submitted user
+            //   message, and its output is written back into the client's send textarea, never the
+            //   chat, so it must never appear as a bogus assistant message either.
+            // - quiet generations are meta/background - they must never touch the visible tree on
+            //   either side.
+            // In practice a caller has no real user text to send for either of these types anyway
+            // (`user_message` is only ever populated by the client for a genuine new chat turn), but
+            // the user-message skip below is defensive: even if a caller passed `user_message`
+            // alongside `is_impersonate`/`type: 'quiet'`, it is not committed.
+            //
+            // The ASSISTANT's reply (for every other, non-skipped type) is persisted further down,
+            // once a response is known - see `pendingAssistantPersist`, set a few lines below, and
+            // read in the non-streaming response branch. STREAMING raw-action generations are NOT
+            // covered yet (scoped out of this task on purpose): that would require buffering a live
+            // SSE/streaming backend response into full text (while ALSO forwarding it live to the
+            // client below, unchanged) and mapping it back through whichever api_type's own
+            // delta-parsing format was used, before appending it via appendMessages() - real,
+            // separate plumbing left as a follow-up task.
             // The reply, once persisted, must chain onto whatever node is actually the new leaf
             // after this block - the just-appended user message's node when one was appended,
             // otherwise `built.anchorNodeId` unchanged (continue/swipe, which add no new message).
+            const skipPersistence = isImpersonate || type === 'quiet';
             let replyAnchorNodeId = built.anchorNodeId;
-            if (typeof userMessageText === 'string' && built.anchorNodeId) {
+            if (!skipPersistence && typeof userMessageText === 'string' && built.anchorNodeId) {
                 const appendResult = await appendMessages(directories, ownerId, built.anchorNodeId, [
                     { name: built.name1, is_user: true, mes: userMessageText, extra: {}, send_date: Date.now() },
                 ]);
@@ -558,8 +572,13 @@ router.post('/generate', async function (request, response) {
             // Stash what's needed to persist the ASSISTANT's reply once the (non-streaming)
             // response is known - read only by the non-streaming response branch below, guarded by
             // `if (pendingAssistantPersist)`, so this has no effect on the streaming branches (see
-            // the comment on this variable's declaration above).
-            pendingAssistantPersist = { directories, ownerId, anchorNodeId: replyAnchorNodeId, name2: built.name2 };
+            // the comment on this variable's declaration above). Left `null` (its declared default)
+            // for `is_impersonate`/`type === 'quiet'`, so the non-streaming branch never appends the
+            // generated reply to the tree for either - the generated text still reaches the client
+            // unchanged via the normal response below, it just never gets persisted.
+            if (!skipPersistence) {
+                pendingAssistantPersist = { directories, ownerId, anchorNodeId: replyAnchorNodeId, name2: built.name2 };
+            }
 
             // Replace the body entirely - mirrors the connection-profile branch's own final
             // assignment shape exactly, so the existing downstream dispatch code below is

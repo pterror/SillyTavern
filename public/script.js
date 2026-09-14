@@ -6333,9 +6333,9 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // typed, matching that endpoint's real, tested contract (character_avatar/group_id/owner_id/
     // branch_name/node_id/type/is_impersonate/is_continue/is_swipe/user_message).
     //
-    // JUDGMENT CALL #1 (scope): only `type === 'normal'` (or undefined) on a single-character chat
-    // is cut over here - NOT impersonate/continue/swipe/regenerate/quiet, and NOT group chats. This
-    // is narrower than originally asked for, because reading the server's own persistence logic
+    // JUDGMENT CALL #1 (scope): `type === 'normal'`/undefined, `'impersonate'`, and `'quiet'` on a
+    // single-character chat are cut over here - NOT continue/swipe/regenerate, and NOT group chats.
+    // This is narrower than a full cutover, because reading the server's own persistence logic
     // (commits ac42ce8c9, 6eaa7897d) turned up real correctness bugs for the excluded cases, not
     // hypothetical ones:
     //   - 'continue': the client's saveReply({type:'appendFinal'}) EDITS the existing last node's
@@ -6350,17 +6350,25 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     //     swiped itself, so its appendMessages() call would chain the new alternative as a CHILD
     //     *after* that message, not as a SIBLING under its parent (an actual swipe is a sibling - see
     //     addAlternatives() in src/message-tree-db.js). Wrong tree shape if used here.
-    //   - 'impersonate': the generated text is what the user might say and is never added to the chat
-    //     at all client-side (it's written back into the send textarea a few hundred lines below via
-    //     `$('#send_textarea').val(getMessage)`) - but the server would unconditionally persist it as a
-    //     bogus ASSISTANT message (is_user: false, name: name2) in the tree.
-    //   - 'quiet': meta/background generations that must never land in the visible chat tree.
     //   - group chats: server-side speaker/character resolution for a group turn was not verified
     //     against generateGroupWrapper's own (activation-strategy-dependent) member selection within
     //     this task's time budget - excluded out of caution rather than assumed compatible.
     // Covering these later requires extending the server's persistence logic (sibling-alternative
-    // support for swipe/regenerate, in-place-edit for continue, no persistence at all for
-    // impersonate/quiet, verified group speaker resolution) - not attempted here.
+    // support for swipe/regenerate, in-place-edit for continue, verified group speaker resolution) -
+    // not attempted here.
+    //
+    // 'impersonate'/'quiet' were EXCLUDED in the original version of this cutover (commit 80bdf420c)
+    // because the server's persistence was, at the time, unconditional: 'impersonate' generates what
+    // the user MIGHT say (written back into the send textarea a few hundred lines below via
+    // `$('#send_textarea').val(getMessage)`, never added to the chat client-side) and 'quiet'
+    // generations are meta/background - the server used to unconditionally persist the reply (and,
+    // defensively, any `user_message`) as a real tree message for both, which would have been wrong.
+    // That server-side bug is now fixed (see buildRawActionTextCompletionRequest()'s route handler in
+    // src/endpoints/backends/text-completions.js: `isImpersonate`/`type === 'quiet'` now skip BOTH the
+    // user-message and assistant-reply appendMessages() calls), so both are now included here.
+    // `user_message` is verified to always resolve to `undefined` for both types regardless - see
+    // JUDGMENT CALL #3 below - so there is nothing new for the server to spuriously persist even
+    // without that fix, but the fix was required for these two types to be safe to widen to.
     //
     // JUDGMENT CALL #2 (assembly still runs): this does NOT skip the expensive client-side
     // prompt-assembly above (world info scan, author's note resolution, instruct formatting,
@@ -6389,9 +6397,46 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // assembly, not what was actually sent. Both are pre-existing UI-only surfaces, unchanged by this
     // patch either way; flagged here only because they are the two most user-visible instances of "the
     // client computed something for this request that the request no longer uses."
+    //
+    // JUDGMENT CALL #3 (user_message for impersonate/quiet, verified not assumed): `textareaText` (a
+    // few hundred lines above, at this function's very start) is only ever read from the send textarea
+    // when `type !== 'regenerate' && type !== 'swipe' && type !== 'quiet' && !isImpersonate && !dryRun
+    // && !depth` - for every 'impersonate'/'quiet' call, that condition is false, so `textareaText` is
+    // unconditionally `''` for both. `userMessageText` below is therefore always `undefined` for these
+    // two types, exactly like the continue/swipe case already was - there is no new-user-text case to
+    // worry about. Confirmed against the real call sites too: there is no dedicated
+    // `generateImpersonate()`-style wrapper - `Generate('impersonate', ...)` is called directly from
+    // the `option_impersonate` UI handler and from the `/impersonate` slash command
+    // (public/scripts/slash-commands.js), and `Generate('quiet', ...)` is called from
+    // generateQuietPrompt() (this file) - none of these three call sites writes new text into
+    // `#send_textarea` before calling Generate() (the slash command explicitly CLEARS it instead, to
+    // "prevent generate recursion"), so this isn't a coincidence of the current textarea state, it's
+    // guaranteed by type regardless.
+    //
+    // JUDGMENT CALL #4 (quiet does reach this gate, verified not assumed): a `type === 'quiet'` call
+    // does NOT short-circuit before this point for the ordinary (non-group, connected, non-dry-run)
+    // case - the only early `return`s between this function's start and here that could matter
+    // (`processCommands()`'s interrupt, the Kobold-streaming-unsupported/horde-not-allowed checks, the
+    // `!hasBackendConnection` bail, and the `selected_group` branch) are either explicitly skipped for
+    // `type == 'quiet'` already (the `processCommands()` call) or unrelated to `type` at all - verified
+    // by reading each one, not assumed. So a plain quiet generation (no pending group turn, a live
+    // backend connection) reaches this gate exactly like a normal turn does.
+    //
+    // ONE quiet-specific gap this scope restriction does NOT close (kept OUT of the raw-action path
+    // rather than silently breaking it): `generateQuietPrompt()` can pass a non-null `jsonSchema` (its
+    // own `jsonSchema` parameter, threaded through as `Generate()`'s own `jsonSchema` option) for
+    // structured/JSON-schema-constrained quiet generations. For 'textgenerationwebui' this is a real
+    // non-issue - `getTextGenGenerationData()` never reads a call-time `jsonSchema` argument at all
+    // (verified: its call below passes no such argument); the ONLY textgen json-schema knob is
+    // `textgenerationwebui_settings.json_schema`, a persisted preset setting `createTextGenGenerationData()`
+    // (used identically server-side inside `assembleTextCompletionPrompt()`) already reads from real,
+    // on-disk settings either way - nothing here depends on the per-call `jsonSchema` argument, so no
+    // extra gate is needed on this path. (The chat-completion cutover below, where `jsonSchema` IS a
+    // real per-call value the raw-action request shape cannot currently carry, gates on it explicitly -
+    // see that block's own comment.)
     let rawActionGenerateData = null;
     if (!dryRun && main_api === 'textgenerationwebui'
-        && (type === undefined || type === 'normal')
+        && [undefined, 'normal', 'impersonate', 'quiet'].includes(type)
         && !selected_group
         && !hasPendingFileAttachment()
         && !canPerformToolCalls
@@ -6407,10 +6452,11 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         const branchName = getCurrentChatId();
         if (ownerId && characterAvatar && branchName) {
             // Omitted (undefined) for any type that doesn't add a new message - matches the server's
-            // own documented contract. In practice, given the scope restriction above, this path is
-            // only ever reached for type 'normal'/undefined, where textareaText is the just-sent text
-            // (already handed to sendMessageAsUser() above) or '' for a depth>0 tool-call follow-up
-            // generation (which likewise adds no new user message).
+            // own documented contract. In practice, given the scope above, this path is reached for
+            // type 'normal'/undefined (where textareaText is the just-sent text, or '' for a depth>0
+            // tool-call follow-up generation, which likewise adds no new user message) and for
+            // 'impersonate'/'quiet' (where textareaText is unconditionally '' - see JUDGMENT CALL #3
+            // above), so userMessageText is always undefined for the latter two.
             const userMessageText = textareaText !== '' ? textareaText : undefined;
             rawActionGenerateData = {
                 character_avatar: characterAvatar,
@@ -6451,12 +6497,17 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     //   - 'swipe'/'regenerate': same problem - `anchorNodeId` is the branch leaf (the message being swiped), so
     //     appendMessages() would chain the alternative as a CHILD after it, not a SIBLING under its parent. Same
     //     exclusion.
-    //   - 'impersonate': same problem - the generated text is never added to the chat client-side (written to the
-    //     send textarea instead), but the server would unconditionally persist it as a bogus assistant message.
-    //   - 'quiet': same problem - meta/background generations must never land in the visible chat tree.
     //   - group chats: same exclusion, for the same reason (server-side speaker/character resolution for a group
     //     turn not verified against generateGroupWrapper()'s own activation-strategy-dependent member selection).
-    // No genuinely NEW chat-completion-specific correctness concern was found beyond these - specifically checked
+    // 'impersonate'/'quiet' are now INCLUDED (previously excluded in commit 9d3091f41 for the identical reason as
+    // the text-completion cutover's own original exclusion - the server's persistence used to be unconditional).
+    // That's now fixed server-side (see buildRawActionChatCompletionRequest()'s route handler in
+    // src/endpoints/backends/chat-completions.js: `isImpersonate`/`type === 'quiet'` skip BOTH the user-message and
+    // assistant-reply appendMessages() calls), and `user_message` is verified to always resolve to `undefined` for
+    // both (identical reasoning to the text-completion cutover's own JUDGMENT CALL #3 above - `textareaText` is
+    // unconditionally `''` for both types), so there's nothing new for the server to spuriously persist regardless.
+    // See JUDGMENT CALL #3 below, however, for a real chat-completion-SPECIFIC gap this widening does not close.
+    // No genuinely NEW chat-completion-specific correctness concern beyond THAT was found - specifically checked
     // and ruled out:
     //   - Claude's assistant-prefill continuation semantics (`oai_settings.continue_prefill`/`supportsAssistantPrefill`,
     //     threaded through src/chat-completion-history.js/src/chat-completion-prepare-messages.js) are used ONLY for
@@ -6493,9 +6544,30 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // `setInContextMessages()`) - also skipped here rather than fed a stale prior value, to avoid displaying a wrong
     // number; a pure UI cosmetic, not a correctness concern, in the same spirit as the text-completion cutover's own
     // documented "itemized-prompt token-breakdown UI still shows the client's discarded assembly" side effect.
+    //
+    // JUDGMENT CALL #3 (jsonSchema, chat-completion-SPECIFIC - real, verified, and deliberately gated on): unlike
+    // 'textgenerationwebui' (see the text-completion cutover's own JUDGMENT CALL #4 above), a per-call `jsonSchema`
+    // (this function's own `jsonSchema` parameter) is a REAL input to chat-completion generation -
+    // createGenerationParameters() (public/scripts/chat-completion-settings.js) turns it into `generate_data.json_schema`
+    // (src/chat-completion-generation-data.js, mirrored server-side) and even changes `stream`/`isWorkersAIJsonMode`
+    // for some sources. `generateQuietPrompt()` (this file) is a REAL caller that can pass a non-null `jsonSchema`
+    // through to `Generate('quiet', {..., jsonSchema})` - e.g. any extension/slash-command asking for a
+    // schema-constrained quiet generation. `buildRawActionChatCompletionRequest()` (src/endpoints/backends/
+    // chat-completions.js) does NOT accept or forward a `jsonSchema` at all - its own doc comment lists `jsonSchema`
+    // explicitly as one of the fields "NOT resolved here" (an explicit MVP scope boundary, not an oversight). Routing
+    // a schema-bearing quiet call through the raw-action path would silently drop the schema requirement server-side
+    // and return an unconstrained completion instead - a real, silent behavior change, not a hypothetical one. So
+    // this gate explicitly excludes any call with a `jsonSchema` set, falling through to the legacy
+    // `createGenerationParameters()` path (which still honors it) instead. Every OTHER excluded field on that same
+    // doc-comment list (getStoppingStrings/groupNames/electronHubReasoningEfforts/toolsPayload/reverseProxyValidated)
+    // is either not something `Generate()` itself ever threads through to this call, or is already covered by an
+    // existing gate (`toolsPayload` <-> `canPerformToolCalls`, already excluded above) - `jsonSchema` was the one
+    // real gap specific to this narrow scope, verified by reading every consumer of this function's own `jsonSchema`
+    // parameter, not assumed absent.
     let rawActionChatCompletionData = null;
     if (!dryRun && main_api === 'openai'
-        && (type === undefined || type === 'normal')
+        && [undefined, 'normal', 'impersonate', 'quiet'].includes(type)
+        && !jsonSchema
         && !selected_group
         && !hasPendingFileAttachment()
         && !canPerformToolCalls
@@ -6507,9 +6579,11 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         const branchName = getCurrentChatId();
         if (ownerId && characterAvatar && branchName) {
             // Same rationale as the text-completion cutover above: omitted (undefined) for any type that doesn't add
-            // a new message. Given the scope restriction above, this path is only ever reached for type
-            // 'normal'/undefined, where textareaText is the just-sent text or '' for a depth>0 tool-call follow-up
-            // generation (which likewise adds no new user message).
+            // a new message. Given the scope above, this path is reached for type 'normal'/undefined (where
+            // textareaText is the just-sent text, or '' for a depth>0 tool-call follow-up generation, which likewise
+            // adds no new user message) and for 'impersonate'/'quiet' (where textareaText is unconditionally '' -
+            // see the text-completion cutover's own JUDGMENT CALL #3 above), so userMessageText is always undefined
+            // for the latter two.
             const userMessageText = textareaText !== '' ? textareaText : undefined;
             rawActionChatCompletionData = {
                 character_avatar: characterAvatar,
