@@ -2674,6 +2674,32 @@ function getVerbosity(settings = null) {
     return settings.verbosity;
 }
 
+// Hoisted to module scope (out of createGenerationParameters() below) so the raw-action chat-completion cutover's
+// own `stream`/`canMultiSwipe` resolution in sendOpenAIRequest() can reuse the EXACT SAME arrays, instead of
+// maintaining a second, driftable copy of "OpenAI-like sources"/"sources that support multi-swipe"/"types that never
+// multi-swipe". createGenerationParameters() itself is unchanged in behavior - it just references these instead of
+// declaring its own local consts.
+
+// "OpenAI-like" sources
+const CHAT_COMPLETION_GPT_SOURCES = [
+    chat_completion_sources.OPENAI,
+    chat_completion_sources.AZURE_OPENAI,
+    chat_completion_sources.OPENROUTER,
+];
+
+// Sources that support "n" parameter for multi-swipe
+const CHAT_COMPLETION_MULTISWIPE_SOURCES = [
+    chat_completion_sources.OPENAI,
+    chat_completion_sources.AZURE_OPENAI,
+    chat_completion_sources.CUSTOM,
+    chat_completion_sources.XAI,
+    chat_completion_sources.AIMLAPI,
+    chat_completion_sources.MOONSHOT,
+];
+
+// Generation types that never multi-swipe, regardless of source/settings
+const CHAT_COMPLETION_NO_MULTISWIPE_TYPES = ['quiet', 'impersonate', 'continue'];
+
 /**
  * Build the generation parameter object for an OAI request.
  * @param {ChatCompletionSettings} settings Initial chat completion settings
@@ -2704,12 +2730,8 @@ export async function createGenerationParameters(settings, model, type, messages
         });
     }
 
-    // "OpenAI-like" sources
-    const gptSources = [
-        chat_completion_sources.OPENAI,
-        chat_completion_sources.AZURE_OPENAI,
-        chat_completion_sources.OPENROUTER,
-    ];
+    // "OpenAI-like" sources (hoisted to module scope - see CHAT_COMPLETION_GPT_SOURCES above)
+    const gptSources = CHAT_COMPLETION_GPT_SOURCES;
 
     // Sources that support the "seed" parameter
     const seedSupportedSources = [
@@ -2765,21 +2787,16 @@ export async function createGenerationParameters(settings, model, type, messages
         chat_completion_sources.CUSTOM,
     ];
 
-    // Sources that support "n" parameter for multi-swipe
-    const multiswipeSources = [
-        chat_completion_sources.OPENAI,
-        chat_completion_sources.AZURE_OPENAI,
-        chat_completion_sources.CUSTOM,
-        chat_completion_sources.XAI,
-        chat_completion_sources.AIMLAPI,
-        chat_completion_sources.MOONSHOT,
-    ];
+    // Sources that support "n" parameter for multi-swipe (hoisted to module scope - see
+    // CHAT_COMPLETION_MULTISWIPE_SOURCES above)
+    const multiswipeSources = CHAT_COMPLETION_MULTISWIPE_SOURCES;
 
     const isO1 = gptSources.includes(settings.chat_completion_source) && ['o1-2024-12-17', 'o1'].includes(model);
     const isWorkersAIJsonMode = settings.chat_completion_source === chat_completion_sources.WORKERS_AI && jsonSchema;
     const stream = settings.stream_openai && type !== 'quiet' && !isO1 && !isWorkersAIJsonMode;
 
-    const noMultiSwipeTypes = ['quiet', 'impersonate', 'continue'];
+    // Generation types that never multi-swipe (hoisted to module scope - see CHAT_COMPLETION_NO_MULTISWIPE_TYPES above)
+    const noMultiSwipeTypes = CHAT_COMPLETION_NO_MULTISWIPE_TYPES;
     const canMultiSwipe = settings.n > 1 && !noMultiSwipeTypes.includes(type) && multiswipeSources.includes(settings.chat_completion_source);
 
     let logit_bias = {};
@@ -3118,14 +3135,69 @@ export async function createGenerationParameters(settings, model, type, messages
  * @returns {Promise<unknown>}
  * @throws {Error}
  */
-async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null } = {}) {
+async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, rawAction = null } = {}) {
     // Provide default abort signal
     if (!signal) {
         signal = new AbortController().signal;
     }
 
-    const model = getChatCompletionModel(oai_settings);
-    const { generate_data, stream, canMultiSwipe } = await createGenerationParameters(oai_settings, model, type, messages, { jsonSchema });
+    /** @type {object} */
+    let generate_data;
+    /** @type {boolean} */
+    let stream;
+    /** @type {boolean} */
+    let canMultiSwipe;
+
+    if (rawAction) {
+        // === Raw-action chat-completion cutover ===
+        // Direct analog of the 'textgenerationwebui' raw-action cutover wired into Generate() (see that function's
+        // own "Raw-action text-completion cutover"/"Raw-action chat-completion cutover" comment blocks for the full
+        // scope rationale). `rawAction` is the already-built raw-action request object (character_avatar/owner_id/
+        // branch_name/type/is_impersonate/is_continue/is_swipe/user_message) - see Generate()'s `case 'openai':`
+        // block. `messages` (what `prepareOpenAIMessages()` would otherwise have assembled) is deliberately IGNORED
+        // here: the server resolves the ENTIRE chat-completion request itself (character, chat history, world info,
+        // bias, sampler settings, model) via resolveChatCompletionGenerationInput() + prepareOpenAIMessages() +
+        // createGenerationParameters() (src/chat-completion-*.js), from its own stored state - see
+        // buildRawActionChatCompletionRequest() in src/endpoints/backends/chat-completions.js (commits de3696095,
+        // 6bd95de8e). No pre-assembled messages, sampler settings, or API credentials are sent to the server on this
+        // path; `generate_data` below carries only the raw action plus the two dispatch-level decisions the server
+        // does NOT make for the client (see next paragraph).
+        //
+        // `stream`/`canMultiSwipe` are still resolved for REAL here (not stubbed/defaulted) - they are pure
+        // functions of the client's own live `oai_settings` (the exact same settings object the server reads back
+        // from disk for this same user via readSettingsAtPaths()) and the real `type`/`jsonSchema` this call was
+        // made with, using the IDENTICAL formulas createGenerationParameters() (this file, above) uses for the
+        // non-raw-action path - reusing its own hoisted CHAT_COMPLETION_GPT_SOURCES/CHAT_COMPLETION_MULTISWIPE_SOURCES/
+        // CHAT_COMPLETION_NO_MULTISWIPE_TYPES constants rather than re-typing them, so there is nothing here that can
+        // drift out of sync with that function's real behavior. Calling createGenerationParameters() itself instead
+        // was considered and rejected: it has real side effects unrelated to this dispatch decision (an async
+        // `validateReverseProxy()` network call, and unconditionally calling `ToolManager.registerFunctionToolsOpenAI()`
+        // whenever `ToolManager.canPerformToolCalls(type, settings, model)` is true - which does NOT account for the
+        // `depth < ToolManager.RECURSE_LIMIT`/`!dryRun` terms Generate()'s own `canPerformToolCalls` gate applies, so
+        // it could register tools even on a request this narrow scope's gate says must not use them) - reusing the
+        // three small constant arrays directly here avoids all of that.
+        //   - `stream`: real - `oai_settings.stream_openai && type !== 'quiet' && !isO1 && !isWorkersAIJsonMode`.
+        //     `jsonSchema` is always `null` for this path in practice (Generate() only ever passes a `jsonSchema` for
+        //     type 'quiet', via generateQuietPrompt() - already excluded from this narrow raw-action scope, which
+        //     only ever calls with type 'normal'/undefined - verified by reading every Generate() call site that
+        //     sets `jsonSchema`), but the real formula (not an assumed-false shortcut) is used regardless.
+        //   - `canMultiSwipe`: real - `oai_settings.n > 1 && !noMultiSwipeTypes.includes(type) && multiswipeSources.includes(oai_settings.chat_completion_source)`.
+        // This `stream` value IS sent back to the server as `generate_data.stream` below - the raw-action /generate
+        // route reads `request.body.stream` directly to decide dispatch (`const stream = !!request.body.stream;` in
+        // chat-completions.js, mirroring text-completions.js's own identical line), so it must be real, not a
+        // placeholder - a wrong value here would make the server stream/not-stream against the client's actual
+        // expectations.
+        const model = getChatCompletionModel(oai_settings);
+        const isO1 = CHAT_COMPLETION_GPT_SOURCES.includes(oai_settings.chat_completion_source) && ['o1-2024-12-17', 'o1'].includes(model);
+        const isWorkersAIJsonMode = oai_settings.chat_completion_source === chat_completion_sources.WORKERS_AI && jsonSchema;
+        stream = oai_settings.stream_openai && type !== 'quiet' && !isO1 && !isWorkersAIJsonMode;
+        canMultiSwipe = oai_settings.n > 1 && !CHAT_COMPLETION_NO_MULTISWIPE_TYPES.includes(type) && CHAT_COMPLETION_MULTISWIPE_SOURCES.includes(oai_settings.chat_completion_source);
+        generate_data = { ...rawAction, stream: stream };
+    } else {
+        const model = getChatCompletionModel(oai_settings);
+        ({ generate_data, stream, canMultiSwipe } = await createGenerationParameters(oai_settings, model, type, messages, { jsonSchema }));
+    }
+
     await eventSource.emit(event_types.CHAT_COMPLETION_SETTINGS_READY, generate_data);
 
     const generate_url = '/api/backends/chat-completions/generate';
