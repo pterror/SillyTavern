@@ -6659,16 +6659,16 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // underlying reason - re-confirmed by reading the chat-completion side's OWN persistence code
     // (buildRawActionChatCompletionRequest()'s appendMessages()/addAlternatives()/selectDefaultChild()/
     // editMessage() calls in chat-completions.js), not copy-pasted blindly:
-    //   - group chats: STILL excluded here, unlike the text-completion cutover above (see that block's own,
-    //     rewritten JUDGMENT CALL #1, which now supports groups for textgenerationwebui only). Group support was
-    //     investigated for THIS backend too and is NOT a client-side gap (the exact same getCurrentCharacter()/
-    //     setCharacterId() mechanism applies here as well) - the reason groups stay out of the chat-completion
-    //     cutover specifically is that resolveChatCompletionGenerationInput() (src/chat-completion-generation-
-    //     input.js) has its own, separate, pre-existing, documented MVP scope boundary: `groupId` is accepted for
-    //     interface parity only and has NO EFFECT (`isGroup` is hardcoded `false`, `groupMemberNames` is hardcoded
-    //     `[]` - see that file's own doc comment and its `void groupId` line) - a genuinely separate, larger task
-    //     (wiring real group support through THAT resolver, not attempted here) is required before this cutover can
-    //     be widened the same way, so it is deliberately left untouched by this pass.
+    //   - group chats: NOW INCLUDED (this follow-up task) - same client-side mechanism as the text-completion
+    //     cutover above (the exact same getCurrentCharacter()/setCharacterId() mechanism applies here too, since
+    //     both cutovers live in this same Generate() function and share the identical selected_group/
+    //     getCurrentCharacter() primitives - see that block's own JUDGMENT CALL #1 for the full investigation).
+    //     Previously excluded because resolveChatCompletionGenerationInput() (src/chat-completion-generation-
+    //     input.js) had its own, separate, pre-existing, documented MVP scope boundary (`isGroup` hardcoded
+    //     `false`, `groupMemberNames` hardcoded `[]`, `void groupId`) - that resolver now has real group support
+    //     (real `isGroup`/`groupMemberNames`/combined group-card resolution via `getCharacterCardFields()`'s own
+    //     already-real `groupId` support - see that file's own doc comment GROUPS section), so this cutover is
+    //     widened the same way the text-completion one already was.
     // 'continue' is now ALSO INCLUDED, same real tree-shape bug/fix as the text-completion cutover's own
     // (identically-worded) JUDGMENT CALL #1 above: the client's saveReply({type:'appendFinal'}) edits the existing
     // leaf node's text in place, but the server's appendMessages() call (keyed off `anchorNodeId`, which for
@@ -6775,15 +6775,32 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     if (!dryRun && main_api === 'openai'
         && [undefined, 'normal', 'impersonate', 'quiet', 'swipe', 'regenerate', 'continue'].includes(type)
         && !jsonSchema
-        && !selected_group
         && !hasPendingFileAttachment()
         && !canPerformToolCalls
     ) {
+        // `getCurrentCharacter()?.avatar`/`groupId`/`ownerId` derivation is IDENTICAL to the
+        // text-completion raw-action cutover's own (see that block's JUDGMENT CALL #1 above for the
+        // full investigation this is based on - same `Generate()` function, same
+        // `selected_group`/`getCurrentCharacter()`/`setCharacterId()` primitives, so the same
+        // reasoning applies verbatim here): `getCurrentCharacter()?.avatar` already resolves to the
+        // correct RESPONDING MEMBER inside a group turn too (generateGroupWrapper() calls
+        // setCharacterId(avatar) - this file's own this_avatar source of truth - synchronously before
+        // each per-member Generate() call), and `groupId` is `selected_group` itself, already the
+        // group's own real id.
         const characterAvatar = getCurrentCharacter()?.avatar;
-        const ownerId = characterAvatar ? String(characterAvatar).replace('.png', '') : undefined;
+        const groupId = selected_group || undefined;
+        // For a group turn, owner_id addresses the GROUP's own chat/branch storage (matching
+        // src/endpoints/chats.js's own `ownerId = group_id ? touchGroupOwner(...).id : avatar...`
+        // pattern) - a character avatar would be the WRONG owner here, even though characterAvatar
+        // itself is still resolved and sent (as `character_avatar`) for the responding member's own
+        // card/prompt resolution. Falls back to the plain per-character ownerId when not in a group,
+        // unchanged from before.
+        const ownerId = groupId ? String(groupId) : (characterAvatar ? String(characterAvatar).replace('.png', '') : undefined);
         // Same real precondition check as the text-completion cutover above (not assumed) - see that block's own
         // comment for why a "brand new, unlabeled chat" state should not be reachable here.
         const branchName = getCurrentChatId();
+        // `characterAvatar` is required unconditionally, group turn or not - see the text-completion
+        // cutover's own identical precondition/rationale above.
         if (ownerId && characterAvatar && branchName) {
             // Same rationale as the text-completion cutover above: omitted (undefined) for any type that doesn't add
             // a new message. Given the scope above, this path is reached for type 'normal'/undefined (where
@@ -6797,6 +6814,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             const userMessageText = textareaText !== '' ? textareaText : undefined;
             rawActionChatCompletionData = {
                 character_avatar: characterAvatar,
+                group_id: groupId,
                 owner_id: ownerId,
                 branch_name: branchName,
                 type: type ?? 'normal',

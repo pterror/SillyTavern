@@ -1,6 +1,7 @@
 import { readSettingsAtPaths } from './settings-store.js';
 import { loadBranch, getAncestorPath } from './message-tree-db.js';
 import { readCardContent } from './endpoints/characters.js';
+import { getGroupsByIds } from './endpoints/groups.js';
 import { getCharacterCardFields } from './character-card-fields.js';
 import { buildChatCompletionMessages, buildChatCompletionMessageExamples, character_names_behavior } from './chat-completion-messages.js';
 import { TokenHandler } from './chat-completion-budget.js';
@@ -227,15 +228,65 @@ import { getBiasStrings } from './prompt-line-formatting.js';
  *   single-character chat with no character-specific prompt-manager order override. A caller that
  *   knows the real numeric id (e.g. has already resolved it via `queryCharacters()` itself) may pass
  *   an explicit `characterId` override.
- * - GROUPS: explicit MVP SCOPE BOUNDARY (per the task's own allowed list) - `groupId` is accepted as a
- *   parameter for interface-signature parity with the task's documented deliverable, but has NO EFFECT
- *   this pass: card resolution is always single-avatar-only (not forwarded to
- *   `getCharacterCardFields()`'s own, already-real `groupId` combined-cards support), `isGroup` is
- *   always `false`, and `groupMemberNames` is always `[]`. Wiring real group support through requires
- *   also resolving real member display names (mirroring
- *   text-completion-generation-input.js's own `resolveName2AndGroupMemberNames()`) AND deciding how
- *   `historyOptions.newGroupChatPrompt`/`groupNudgePrompt` interact with a still-off `isGroup` - left
- *   for a future pass, not guessed at here.
+ * - GROUPS: NOW REAL, AS OF THIS FOLLOW-UP TASK (previously an explicit MVP scope boundary - `groupId`
+ *   accepted for interface parity only, `isGroup` hardcoded `false`, `groupMemberNames` hardcoded `[]`,
+ *   `void groupId`). Real wiring, mirroring text-completion-generation-input.js's own precedent
+ *   (`resolveName2AndGroupMemberNames()`/`isGroup = Boolean(groupId)`) as closely as the two
+ *   pipelines' real differences allow:
+ *     - `isGroup` is now `Boolean(groupId)`, real.
+ *     - `groupId` is now forwarded to `getCharacterCardFields()`'s own, already-real `groupId`
+ *       combined-cards support (`useGroupCards = Boolean(groupId) && Boolean(character)` -
+ *       src/character-card-fields.js) - `charDescription`/`charPersonality`/`scenario`/`messageExamples`
+ *       now reflect `computeGroupCards()`'s COMBINED multi-member string when both `avatar` (the
+ *       specific responding member, still required for a real `character` to exist - see that
+ *       module's own `useGroupCards` guard) and `groupId` are given together, exactly like the
+ *       text-completion path's own equivalent already did.
+ *     - `groupMemberNames` is now resolved for real by this module's own `resolveCharacterName2()`
+ *       (renamed in spirit, not in export, to also resolve group members - see that function's own
+ *       doc comment for the full read-and-filter rules, verified against, not guessed from,
+ *       text-completion-generation-input.js's `resolveName2AndGroupMemberNames()`: real
+ *       `getGroupsByIds()` + per-member `readCardContent()` reads, an unreadable member card is
+ *       silently skipped rather than failing the whole resolution, no disabled-member/self-exclusion
+ *       filtering is applied - `resolveName2AndGroupMemberNames()` itself applies none either, verified
+ *       by reading its body, not assumed - and `name2` falls back to the group's own `.name` when no
+ *       `avatar` is given). ONE real, verified shape difference from the text-completion version:
+ *       here `groupMemberNames` is a plain `string[]`, not an `{name}[]` array of records - dictated by
+ *       THIS pipeline's own real consumer shape (`chat-completion-prompt-collection.js`'s
+ *       `getPromptCollection()`/`preparePrompt()`, used for the `{{group}}` macro's
+ *       `groupMemberNames.join(', ')`, and that module's own `@param {string[]}` JSDoc) - re-verified
+ *       by reading that file directly before choosing this shape, not copied blindly from the
+ *       text-completion precedent.
+ *     - Real `isGroup`/`groupMemberNames` now flow into every place that used to hardcode `false`/`[]`:
+ *       `buildChatCompletionMessages()` (group name-prefixing per `namesBehavior`, and excluding other
+ *       members' reasoning/signatures from a responding member's own turn - see that function's own
+ *       `isOtherGroupMember` check, already real, just never fed a real `isGroup` before), the
+ *       `buildChatCompletionMessageExamples()` call, `macroContext` (so `{{group}}`/group-aware macros
+ *       resolve for real anywhere `macroContext` is consulted), and `historyOptions.isGroup` (already
+ *       forwarding this module's own `isGroup` local verbatim before this task - it simply received a
+ *       hardcoded `false`; now real, so `historyOptions.newGroupChatPrompt`/the real `groupNudgePrompt`
+ *       injection in src/chat-completion-history.js correctly activate for a group turn). Top-level
+ *       `groupMemberNames` (on the returned object, forwarded by prepareOpenAIMessages() into
+ *       `preparePromptsForChatCompletion()`) is the ONE place that needed a NEW real value threaded in
+ *       (previously hardcoded `[]`) - `historyOptions` itself has no separate `groupMemberNames` field
+ *       to also populate (re-verified against chat-completion-history.js's own doc comment: "
+ *       `groupMemberNames` is NOT threaded through here", by design, matching the client's own
+ *       `populateChatHistory()` call sites), so no further wiring was needed there.
+ *   The one genuinely NARROWER remaining gap, precisely re-scoped (not silently expanded into a new
+ *   subsystem): character-card `depth_prompt` CHAT INJECTION
+ *   (`character.data.extensions.depth_prompt`/`getGroupCharacterDepthPrompts()`, the mechanism
+ *   src/text-completion-prompt-orchestrator.js's own Step 3 wires per-group-member via
+ *   `setExtensionPrompt(extensionPromptTable, 'depth_prompt_${index}', ...)`) has NO analog anywhere in
+ *   the chat-completion pipeline - verified by grepping `depth_prompt`/`DepthPrompt`/
+ *   `getGroupCharacterDepthPrompts` across every `src/chat-completion-*.js` file: zero hits. This is
+ *   NOT a group-specific gap this task introduces or narrows: `getCharacterCardFields()`'s own
+ *   `charDepthPromptDepth`/`charDepthPromptRole` fields (resolved for the SINGLE-CHARACTER case too)
+ *   are already left completely unconsumed by this resolver (only the plain-string `charDepthPrompt`
+ *   macro value is read, for `globalScanData`/story-string-shaped uses, never as an
+ *   `injectionTable`/`extensionPromptTable` entry) - i.e. chat-completion has no character
+ *   depth-prompt-injection mechanism at all, for a single character OR a group. Wiring one in (for
+ *   either case) would be a genuinely separate, pre-existing subsystem gap, not a small extension of
+ *   this task's own group-support scope - left undone here, as a narrower, precisely-stated boundary
+ *   rather than silently expanded into.
  * - MEDIA INLINING: explicit MVP SCOPE BOUNDARY (per the task's own allowed list) -
  *   `imageInlining`/`videoInlining`/`audioInlining` all resolve to `false` (their own defaults), for
  *   the identical reason src/chat-completion-history.js's own doc comment already documents: the real
@@ -453,25 +504,66 @@ export function parseMesExamplesForChatCompletion(examplesStr) {
 }
 
 /**
- * Loads a character card's bare display name and raw parsed object - mirrors
- * text-completion-generation-input.js's own `resolveName2AndGroupMemberNames()` single-avatar path
- * exactly (same tolerate-a-missing/unreadable-card stance), trimmed down to what this resolver needs
- * on top of `getCharacterCardFields()` (see decision 1 above for why this small extra read exists).
+ * Loads a character card's bare display name/raw-existence signal (`name2`/`hasCharacter`), AND - AS
+ * OF THIS TASK - real group member display names, when `groupId` is given. This is the direct
+ * chat-completion analog of text-completion-generation-input.js's own
+ * `resolveName2AndGroupMemberNames()` - same real reads (`readCardContent`/`getGroupsByIds`), same
+ * tolerate-a-missing/unreadable-card stance, same "no `avatar` -> fall back to the group's own name
+ * for `name2`" rule, same "skip an unreadable member card, don't fail the whole resolution" rule, and
+ * deliberately NO disabled-member/self-exclusion filtering (verified directly against that function's
+ * own body - it applies neither), replicated here rather than invented.
+ *
+ * ONE real shape difference from the text-completion version, verified against this pipeline's own
+ * real consumers before writing this: `groupMemberNames` here is a plain `string[]` (bare display
+ * names), NOT an `{name}[]` array of records. text-completion's `groupMemberNames` shape is dictated
+ * by src/stopping-strings.js's `getStoppingStrings({groupMemberNames})`, which reads `.name` off each
+ * entry - but chat-completion's OWN real consumer of this field,
+ * src/chat-completion-prompt-collection.js's `getPromptCollection()`/`preparePrompt()` (used for the
+ * `{{group}}` macro's `groupMemberNames.join(', ')`), and its own JSDoc (`@param {string[]}
+ * [options.groupMemberNames]`), both expect bare strings - confirmed by reading both files' real
+ * signatures before choosing this shape, not guessed.
  * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} [avatar]
- * @returns {Promise<{ name2: string, hasCharacter: boolean }>}
+ * @param {object} params
+ * @param {string} [params.avatar]
+ * @param {string} [params.groupId]
+ * @returns {Promise<{ name2: string, groupMemberNames: string[], hasCharacter: boolean }>}
  */
-async function resolveCharacterName2(directories, avatar) {
-    if (!avatar) return { name2: '', hasCharacter: false };
-    try {
-        const raw = await readCardContent(directories, avatar);
-        if (raw === undefined) return { name2: '', hasCharacter: false };
-        const character = JSON.parse(raw);
-        const name2 = character?.name || character?.data?.name || '';
-        return { name2, hasCharacter: true };
-    } catch {
-        return { name2: '', hasCharacter: false };
+async function resolveCharacterName2(directories, { avatar, groupId } = {}) {
+    let name2 = '';
+    let hasCharacter = false;
+
+    if (avatar) {
+        try {
+            const raw = await readCardContent(directories, avatar);
+            if (raw !== undefined) {
+                const character = JSON.parse(raw);
+                name2 = character?.name || character?.data?.name || '';
+                hasCharacter = true;
+            }
+        } catch { /* leave name2 as '', hasCharacter false - matches text-completion's own fallback */ }
     }
+
+    let groupMemberNames = [];
+    if (groupId) {
+        const group = getGroupsByIds(directories, [groupId])[groupId];
+        if (group) {
+            if (!avatar) {
+                name2 = group.name || name2;
+            }
+            const members = Array.isArray(group.members) ? group.members : [];
+            for (const memberAvatar of members) {
+                try {
+                    const raw = await readCardContent(directories, memberAvatar);
+                    if (raw === undefined) continue;
+                    const card = JSON.parse(raw);
+                    const memberName = card?.name || card?.data?.name;
+                    if (memberName) groupMemberNames.push(memberName);
+                } catch { /* skip unreadable member card - matches text-completion's own stance */ }
+            }
+        }
+    }
+
+    return { name2, groupMemberNames, hasCharacter };
 }
 
 /**
@@ -520,7 +612,9 @@ async function resolveChatHistory(directories, { ownerId, branchName, nodeId }) 
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {object} [params]
  * @param {string} [params.avatar] Character avatar filename.
- * @param {string} [params.groupId] Accepted for interface parity only - NO EFFECT this pass, see doc comment.
+ * @param {string} [params.groupId] Group id - NOW REAL, see doc comment GROUPS section. Combined with
+ * `avatar` (the specific responding member), drives real combined-card resolution, `isGroup`, and
+ * `groupMemberNames`.
  * @param {string} [params.ownerId] message-tree-db.js owner id for chat resolution.
  * @param {string} [params.branchName] message-tree-db.js labeled chat name.
  * @param {string} [params.nodeId] Alternative to `branchName` - resolve history up to this tree node.
@@ -563,7 +657,6 @@ export async function resolveChatCompletionGenerationInput(directories, {
     countTokenAsyncFn: countTokenAsyncFnOverride, tokenHandler: tokenHandlerOverride,
     macroExtras = {},
 } = {}) {
-    void groupId; // Accepted for interface parity only - see doc comment (GROUPS scope boundary).
     void isImpersonate; void isContinue; // Folded into `type` by the caller; kept as documented params for parity with the task's signature, matching text-completion-generation-input.js's own equivalents (which are likewise not separately re-derived from `type` there either).
     // `isSwipe` IS read (see `promptChat` below) - unlike isImpersonate/isContinue, it drives real
     // behavior here: dropping the message being swiped/regenerated from the context this resolver
@@ -583,12 +676,12 @@ export async function resolveChatCompletionGenerationInput(directories, {
         'oai_settings', 'power_user', 'world_info', 'world_info_settings', 'world_info_character_strategy', 'username',
     ]);
 
-    const isGroup = false; // GROUPS MVP scope boundary - see doc comment.
+    const isGroup = Boolean(groupId);
 
     const { chat: loadedChat, metadata: loadedChatMetadata } = await resolveChatHistory(directories, { ownerId, branchName, nodeId });
     const chatMetadata = chatMetadataOverride ?? loadedChatMetadata ?? {};
 
-    const { name2, hasCharacter } = await resolveCharacterName2(directories, avatar);
+    const { name2, groupMemberNames, hasCharacter } = await resolveCharacterName2(directories, { avatar, groupId });
     const name1 = username || 'User';
 
     // Appends the pending user action onto the loaded history, in the exact tree-DB-native shape
@@ -617,6 +710,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
 
     const fields = await getCharacterCardFields(directories, {
         avatar,
+        groupId,
         preferCharacterPrompt: Boolean(powerUser.prefer_character_prompt),
         preferCharacterJailbreak: Boolean(powerUser.prefer_character_jailbreak),
         personaDescription: powerUser.persona_description,
@@ -786,7 +880,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
 
         // --- Chat history ---
         messages, messageExamples,
-        groupMemberNames: [],
+        groupMemberNames,
 
         // --- Token budget ---
         tokenHandler,
