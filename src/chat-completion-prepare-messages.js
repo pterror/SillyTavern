@@ -1,6 +1,14 @@
 import { ChatCompletion } from './chat-completion-budget.js';
 import { preparePromptsForChatCompletion } from './chat-completion-prepare-prompts.js';
 import { populateChatCompletion } from './chat-completion-populate.js';
+import { TOOL_REASONING_MODES } from './chat-completion-history.js';
+import {
+    isToolCallingSupported,
+    canPerformToolCalls,
+    getEffectiveToolReasoningMode,
+    isReasoningSignatureSupported,
+    isInterleavedReasoningProvider,
+} from './chat-completion-tool-capabilities.js';
 
 /**
  * Server-side port of public/scripts/chat-completion-settings.js's `prepareOpenAIMessages()` - the
@@ -110,6 +118,50 @@ import { populateChatCompletion } from './chat-completion-populate.js';
  *     silently dropped-and-forgotten, it is dropped-and-documented because there is nowhere real for
  *     it to go that isn't already covered by `macroContext`.
  *
+ * 14. TOOL-CALLING CAPABILITY RESOLUTION -> THIS FUNCTION NOW RESOLVES IT FOR REAL, NOT THE CALLER.
+ *     Previously (and still, as far as `src/chat-completion-history.js`'s and
+ *     `src/chat-completion-populate.js`'s own doc comments are concerned - those two leaf modules'
+ *     "caller resolves entities" contracts for `canUseTools`/`includeSignature`/`toolReasoningMode`/
+ *     `includeToolReasoning` are unchanged and still accurate for THEIR OWN param surface) this
+ *     orchestrator required ITS OWN caller to pre-resolve those four values from the client's real
+ *     settings-driven logic (`ToolManager.isToolCallingSupported()`, `isReasoningSignatureSupported()`,
+ *     `interleaved_reasoning_providers.includes(...)`, `getEffectiveToolReasoningMode()`) and pass them
+ *     in as plain booleans/enum values. That gap is now closed HERE: `prepareOpenAIMessages()` takes
+ *     `mainApi`/`settings`/`model`/`modelList` (mirroring the now-real, committed
+ *     `src/chat-completion-tool-capabilities.js` predicates' own param names) and computes all four
+ *     values itself, exactly matching the client's real derivation in
+ *     `public/scripts/chat-completion-settings.js`'s `populateChatHistory()`:
+ *       const canUseTools = isToolCallingSupported({ mainApi, settings, model, modelList });
+ *       const includeSignature = isReasoningSignatureSupported(settings);
+ *       const isToolReasoningProvider = isInterleavedReasoningProvider(settings?.chat_completion_source);
+ *       const toolReasoningMode = isToolReasoningProvider ? getEffectiveToolReasoningMode(settings) : TOOL_REASONING_MODES.DISABLED;
+ *       const includeToolReasoning = toolReasoningMode !== TOOL_REASONING_MODES.DISABLED;
+ *     A caller no longer needs to pre-resolve any of the four. For an ESCAPE HATCH (a caller that has
+ *     some reason to force a specific value, e.g. a test, or a future caller with settings shaped
+ *     differently than `ChatCompletionToolCapabilitySettings`), each of the four computed values can be
+ *     overridden directly via `canUseToolsOverride`/`includeSignatureOverride`/
+ *     `toolReasoningModeOverride`/`includeToolReasoningOverride` - when provided (not `undefined`),
+ *     the override wins over the computed value. These computed (or overridden) values are threaded
+ *     to BOTH `populateChatCompletion()`'s own direct options AND explicitly folded into the
+ *     `historyOptions` bag passed to it - re-verified by reading `src/chat-completion-populate.js`'s
+ *     real forwarding code: its auto-merge into `populateChatHistory`'s options is only
+ *     `{ type, cyclePrompt, continuePrefill, tokenHandler, macroContext, ...historyOptions }` - tool
+ *     capability fields are NOT part of that auto-merged set, so they must be (and are) explicitly
+ *     included in the `historyOptions` object this function builds before calling
+ *     `populateChatCompletion()`, since `populateChatHistory()` is what actually consumes them for the
+ *     tool-call-reconstruction branch.
+ *
+ *     `toolBudgetTokens` remains a plain, caller-supplied optional param (default `0`) - see its own
+ *     JSDoc entry below for exactly why: it is NARROWLY the tool-SCHEMA-registration/token-counting gap
+ *     (`ToolManager.registerFunctionToolsOpenAI(toolData)` building real OpenAI-format tool/function
+ *     definitions from whatever tools happen to be REGISTERED - slash commands, extensions, etc.), a
+ *     genuinely separate subsystem from the "can this provider/model do tool calls at all" capability
+ *     check this task wires in. That gap description is now much narrower than before this task,
+ *     because `canPerformToolCalls({ type, mainApi, settings, model, modelList })` - "does this
+ *     generation actually want tool calls attempted at all, for this specific type" - IS now resolved
+ *     for real here and exposed as an additional output/param, `canPerformToolCalls`, alongside
+ *     `canUseTools`.
+ *
  * Everything else - the full "caller resolves entities" parameter surface of
  * `preparePromptsForChatCompletion()` and `populateChatCompletion()` - is forwarded through
  * unmodified; see those two modules' own doc comments for what each option does.
@@ -157,7 +209,29 @@ import { populateChatCompletion } from './chat-completion-populate.js';
  * @property {string[]} [groupMemberNames] Forwarded to preparePromptsForChatCompletion() only (populateChatCompletion() has no direct use for it - see that module's own params).
  * @property {import('./macro-substitution.js').SubstituteParamsContext} [macroContext] Forwarded to preparePromptsForChatCompletion() and populateChatCompletion().
  *
- * @property {number} [toolBudgetTokens] Forwarded to populateChatCompletion(). Default `0`.
+ * @property {string} [mainApi] The current main API selection (`main_api` on the client) - forwarded
+ * to `isToolCallingSupported()`/`canPerformToolCalls()`. See judgment call 14.
+ * @property {import('./chat-completion-tool-capabilities.js').ChatCompletionToolCapabilitySettings} [settings]
+ * Settings object consulted by every tool-capability predicate (`isToolCallingSupported()`,
+ * `isReasoningSignatureSupported()`, `isInterleavedReasoningProvider()`, `getEffectiveToolReasoningMode()`).
+ * See judgment call 14. Default `{}` (i.e. no capability is supported by an empty settings object).
+ * @property {string} [model] The currently selected model id/slug for `settings`, forwarded to
+ * `isToolCallingSupported()`/`canPerformToolCalls()`'s model-specific override lookup. Optional,
+ * matching that function's own optional param.
+ * @property {import('./chat-completion-tool-capabilities.js').ChatCompletionToolCapabilityModel[]} [modelList]
+ * Forwarded to `isToolCallingSupported()`/`canPerformToolCalls()`'s model-specific override lookup.
+ * Optional, matching that function's own optional param.
+ * @property {boolean} [canUseToolsOverride] ESCAPE HATCH - see judgment call 14. When provided
+ * (not `undefined`), overrides the computed `canUseTools` value.
+ * @property {boolean} [includeSignatureOverride] ESCAPE HATCH - see judgment call 14. When provided
+ * (not `undefined`), overrides the computed `includeSignature` value.
+ * @property {string} [toolReasoningModeOverride] ESCAPE HATCH - see judgment call 14. When provided
+ * (not `undefined`), overrides the computed `toolReasoningMode` value.
+ * @property {boolean} [includeToolReasoningOverride] ESCAPE HATCH - see judgment call 14. When
+ * provided (not `undefined`), overrides the computed `includeToolReasoning` value.
+ *
+ * @property {number} [toolBudgetTokens] Forwarded to populateChatCompletion(). Default `0`. See
+ * judgment call 14's closing paragraph for the now-much-narrower gap this represents.
  * @property {boolean} [continuePrefill] Forwarded to populateChatCompletion(). Default `false`.
  * @property {boolean} [supportsAssistantPrefill] Forwarded to populateChatCompletion(). Default `false`.
  * @property {boolean} [namesInCompletion] Forwarded to populateChatCompletion(). Default `false`.
@@ -176,7 +250,12 @@ import { populateChatCompletion } from './chat-completion-populate.js';
  *
  * @param {PrepareOpenAIMessagesInput} input
  * @param {boolean} [dryRun] Equivalent of the client's own `dryRun` param.
- * @returns {Promise<{chat: object[]|null, counts: Record<string, number>|false}>}
+ * @returns {Promise<{chat: object[]|null, counts: Record<string, number>|false, canUseTools: boolean, canPerformToolCalls: boolean}>}
+ * `canUseTools`/`canPerformToolCalls` are the real, resolved tool-capability values computed
+ * internally (judgment call 14) - returned in addition to being threaded through to
+ * `populateChatCompletion()`/`populateChatHistory()`, so a caller can also inspect what was decided
+ * (e.g. to decide whether it's worth building a tool-definitions payload at all). On the early-return
+ * path (judgment call 1) both are `false` (no capability resolution happens before that guard).
  */
 export async function prepareOpenAIMessages({
     name2,
@@ -192,6 +271,14 @@ export async function prepareOpenAIMessages({
     personaDescription, personaDescriptionPosition, wiFormat,
     prompts, promptOrder, characterId, groupMemberNames = [],
     macroContext = {},
+    mainApi,
+    settings = {},
+    model,
+    modelList,
+    canUseToolsOverride,
+    includeSignatureOverride,
+    toolReasoningModeOverride,
+    includeToolReasoningOverride,
     toolBudgetTokens = 0,
     continuePrefill = false,
     supportsAssistantPrefill = false,
@@ -206,12 +293,24 @@ export async function prepareOpenAIMessages({
 
     // ---- Early-return guard (judgment call 1) --------------------------------------------------
     if (!hasActiveCharacter && dryRun) {
-        return { chat: null, counts: false };
+        return { chat: null, counts: false, canUseTools: false, canPerformToolCalls: false };
     }
 
     if (typeof tokenHandler === 'undefined' || tokenHandler === null) {
         throw new Error('prepareOpenAIMessages: tokenHandler is required');
     }
+
+    // ---- Tool-capability resolution (judgment call 14) -----------------------------------------
+    // Real, settings-driven resolution via src/chat-completion-tool-capabilities.js, replacing what
+    // used to be a caller-pre-resolved set of plain booleans/enum values. Matches the client's own
+    // derivation in public/scripts/chat-completion-settings.js's populateChatHistory() exactly, with
+    // an optional per-value override escape hatch for callers with a genuine reason to force one.
+    const canUseTools = canUseToolsOverride ?? isToolCallingSupported({ mainApi, settings, model, modelList });
+    const includeSignature = includeSignatureOverride ?? isReasoningSignatureSupported(settings);
+    const isToolReasoningProvider = isInterleavedReasoningProvider(settings?.chat_completion_source);
+    const toolReasoningMode = toolReasoningModeOverride ?? (isToolReasoningProvider ? getEffectiveToolReasoningMode(settings) : TOOL_REASONING_MODES.DISABLED);
+    const includeToolReasoning = includeToolReasoningOverride ?? (toolReasoningMode !== TOOL_REASONING_MODES.DISABLED);
+    const resolvedCanPerformToolCalls = canPerformToolCalls({ type, mainApi, settings, model, modelList });
 
     const chatCompletion = new ChatCompletion(tokenHandler);
     if (enableLogging) chatCompletion.enableLogging();
@@ -231,7 +330,19 @@ export async function prepareOpenAIMessages({
             promptOrder, characterId,
             toolBudgetTokens, continuePrefill, supportsAssistantPrefill, namesInCompletion,
             assistantPrefill, pinExamples, injectionTable, macroContext, tokenHandler,
-            historyOptions, dialogueExamplesOptions,
+            // `populateChatCompletion()` has no direct top-level use for `canUseTools`/
+            // `includeSignature`/`toolReasoningMode`/`includeToolReasoning` itself - it only forwards
+            // options through to `populateChatHistory()`, and (re-verified against
+            // src/chat-completion-populate.js's real forwarding code) its auto-merge into
+            // `populateChatHistory`'s options is only `{ type, cyclePrompt, continuePrefill,
+            // tokenHandler, macroContext, ...historyOptions }` - none of the four tool-capability
+            // values are part of that auto-merged set. So they must be (and are) explicitly folded
+            // into `historyOptions` here, since that's what `populateChatHistory()` actually consumes
+            // for its tool-call-reconstruction branch. A caller-supplied `historyOptions` still wins on
+            // conflict (spread last), matching populateChatCompletion()'s own "nested options win"
+            // convention for this bag.
+            historyOptions: { canUseTools, includeSignature, toolReasoningMode, includeToolReasoning, ...historyOptions },
+            dialogueExamplesOptions,
         });
     } finally {
         // promptManager.setChatCompletion(chatCompletion) - UI-only bookkeeping, skipped (judgment
@@ -249,5 +360,5 @@ export async function prepareOpenAIMessages({
     // openai_messages_count - not computed, see judgment call 11.
 
     const chat = chatCompletion.getChat();
-    return { chat, counts: tokenHandler.counts };
+    return { chat, counts: tokenHandler.counts, canUseTools, canPerformToolCalls: resolvedCanPerformToolCalls };
 }
