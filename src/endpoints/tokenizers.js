@@ -538,6 +538,107 @@ export function getTiktokenTokenizer(model) {
 }
 
 /**
+ * Gets tokenids for a given logit bias preset entry. Mirrors the getEntryTokens() helper that used
+ * to live inline in the /api/backends/chat-completions/bias route handler.
+ * @param {string} text Entry text
+ * @param {(string) => Uint32Array} encode Function to encode text to token ids
+ * @returns {Uint32Array} Array of token ids
+ */
+function getEntryTokens(text, encode) {
+    // Get raw token ids from JSON array
+    if (text.trim().startsWith('[') && text.trim().endsWith(']')) {
+        try {
+            const json = JSON.parse(text);
+            if (Array.isArray(json) && json.every(x => typeof x === 'number')) {
+                return new Uint32Array(json);
+            }
+        } catch {
+            // ignore
+        }
+    }
+
+    // Otherwise, get token ids from tokenizer
+    return encode(text);
+}
+
+/**
+ * Computes a token-id-keyed logit bias map from bias-preset entries, using the requested model's
+ * tokenizer. This is the core logic behind the `/api/backends/chat-completions/bias` route
+ * (src/endpoints/backends/chat-completions.js) - extracted here so server-side code that needs a
+ * logit bias (e.g. src/chat-completion-generation-data.js's createGenerationParameters()) can
+ * compute it directly, in-process, instead of only being reachable over HTTP from the client.
+ *
+ * Mirrors the route handler's behavior exactly, including:
+ * - returning {} for Claude models (no bias support)
+ * - returning {} if the selected tokenizer isn't initialized/available
+ * - skipping entries without a `text` field, and warning (not throwing) on encode failures
+ *
+ * @param {{text?: string, value?: number}[]} biasPresetEntries Raw bias-preset entries, e.g.
+ * oai_settings.bias_presets[oai_settings.bias_preset_selected] client-side - {id, text, value}[]
+ * shaped, though only `text`/`value` are used here.
+ * @param {string} requestModel Model name/id used to resolve which tokenizer to use, same as the
+ * route's `?model=` query param (passed through getTokenizerModel()).
+ * @returns {Promise<{[tokenId: number]: number}>} Token-id-keyed bias map
+ */
+export async function computeLogitBias(biasPresetEntries, requestModel) {
+    const result = {};
+
+    if (!Array.isArray(biasPresetEntries)) {
+        return result;
+    }
+
+    const model = getTokenizerModel(String(requestModel || ''));
+
+    // no bias for claude
+    if (model == 'claude') {
+        return result;
+    }
+
+    let encodeFunction;
+
+    if (sentencepieceTokenizers.includes(model)) {
+        const tokenizer = getSentencepiceTokenizer(model);
+        const instance = await tokenizer?.get();
+        if (!instance) {
+            console.error('Tokenizer not initialized:', model);
+            return {};
+        }
+        encodeFunction = (text) => new Uint32Array(instance.encodeIds(text));
+    } else if (webTokenizers.includes(model)) {
+        const tokenizer = getWebTokenizer(model);
+        const instance = await tokenizer?.get();
+        if (!instance) {
+            console.warn('Tokenizer not initialized:', model);
+            return {};
+        }
+        encodeFunction = (text) => new Uint32Array(instance.encode(text));
+    } else {
+        const tokenizer = getTiktokenTokenizer(model);
+        encodeFunction = (tokenizer.encode.bind(tokenizer));
+    }
+
+    for (const entry of biasPresetEntries) {
+        if (!entry || !entry.text) {
+            continue;
+        }
+
+        try {
+            const tokens = getEntryTokens(entry.text, encodeFunction);
+
+            for (const token of tokens) {
+                result[token] = entry.value;
+            }
+        } catch {
+            console.warn('Tokenizer failed to encode:', entry.text);
+        }
+    }
+
+    // not needed for cached tokenizers
+    //tokenizer.free();
+    return result;
+}
+
+/**
  * Counts the tokens for the given messages using the WebTokenizer and Claude prompt conversion.
  * @param {Tokenizer} tokenizer Web tokenizer
  * @param {object[]} messages Array of messages

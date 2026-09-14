@@ -1,6 +1,18 @@
 import assert from 'node:assert/strict';
-import { createGenerationParameters } from './chat-completion-generation-data.js';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { ZAI_ENDPOINT, POLLINATIONS_ENDPOINT, MINIMAX_ENDPOINT } from './constants.js';
+// chat-completion-generation-data.js now statically imports src/endpoints/tokenizers.js (for real
+// logit_bias computation), which pulls in code that reads process-wide config at MODULE IMPORT
+// time (e.g. src/endpoints/secrets.js) - the config path must be set before that import chain
+// runs, same approach as src/tokenizer-resolve.test.js and src/novel-generation-data.test.js.
+import { setConfigFilePath } from './util.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+setConfigFilePath(path.join(__dirname, '..', 'config.yaml'));
+
+const { createGenerationParameters } = await import('./chat-completion-generation-data.js');
 
 function baseSettings(overrides = {}) {
     return {
@@ -201,6 +213,34 @@ const messages = [{ role: 'user', content: 'hi' }];
 
     const nonEmpty = await createGenerationParameters(baseSettings(), 'gpt-4o', 'normal', messages, { logitBias: { 123: -100 } });
     assert.deepEqual(nonEmpty.generate_data.logit_bias, { 123: -100 });
+}
+
+// logit_bias: real computation from biasPresetEntries via computeLogitBias() (src/endpoints/
+// tokenizers.js) - not just forwarding a caller-pre-resolved value. openai is a logitBiasSources
+// member, so a non-empty entries array is actually tokenized and populates generate_data.logit_bias.
+{
+    const { generate_data } = await createGenerationParameters(baseSettings(), 'gpt-3.5-turbo', 'normal', messages, {
+        biasPresetEntries: [{ text: 'hello', value: -100 }],
+    });
+    assert.equal(typeof generate_data.logit_bias, 'object');
+    assert.deepEqual(Object.values(generate_data.logit_bias), [-100]);
+
+    // A logitBias override still takes priority over biasPresetEntries when both are given.
+    const { generate_data: overridden } = await createGenerationParameters(baseSettings(), 'gpt-3.5-turbo', 'normal', messages, {
+        logitBias: { 1: 1 },
+        biasPresetEntries: [{ text: 'hello', value: -100 }],
+    });
+    assert.deepEqual(overridden.logit_bias, { 1: 1 });
+
+    // Empty/missing biasPresetEntries -> no bias computed.
+    const { generate_data: none } = await createGenerationParameters(baseSettings(), 'gpt-3.5-turbo', 'normal', messages, {});
+    assert.equal(none.logit_bias, undefined);
+
+    // A source not in logitBiasSources (e.g. claude) never triggers computation, even with entries.
+    const { generate_data: claudeGen } = await createGenerationParameters(baseSettings({ chat_completion_source: 'claude' }), 'claude-3-opus', 'normal', messages, {
+        biasPresetEntries: [{ text: 'hello', value: -100 }],
+    });
+    assert.equal(claudeGen.logit_bias, undefined);
 }
 
 // messages must be an array
