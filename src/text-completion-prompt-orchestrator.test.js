@@ -292,3 +292,65 @@ test('assembleTextCompletionPrompt: a world-info @Depth entry is spliced into th
     );
     assert.ok(result.doChatInjectIndices.length > 0, 'doChatInjectIndices should report the injected message');
 });
+
+test('assembleTextCompletionPrompt: author\'s note combines with WI ANTop/ANBottom entries when due', async () => {
+    const { charactersDir, root } = makeDirectories();
+    const avatar = 'aria5.png';
+    writeCharacterCard(charactersDir, avatar, {
+        spec: 'chara_card_v2',
+        spec_version: '2.0',
+        name: 'Aria',
+        description: 'Aria is a wandering ranger who guards the Whispering Woods.',
+        personality: 'brave and curious',
+        scenario: '',
+        first_mes: 'Hello there, traveler!',
+        mes_example: '',
+        avatar,
+        data: {
+            name: 'Aria',
+            description: 'Aria is a wandering ranger who guards the Whispering Woods.',
+            personality: 'brave and curious',
+            scenario: '',
+            first_mes: 'Hello there, traveler!',
+            mes_example: '',
+            system_prompt: '', post_history_instructions: '', character_version: '', creator_notes: '',
+            extensions: {}, alternate_greetings: [],
+        },
+    });
+    const directories = { characters: charactersDir, root };
+
+    const input = {
+        ...baseFixture(directories, avatar),
+        hasCharacterOrGroup: true,
+        chatMetadata: {
+            note_prompt: 'Remember: it is raining.',
+            note_interval: 1, // always due
+            note_position: 1, // extension_prompt_types.IN_CHAT
+            note_depth: 0,
+            note_role: 0, // SYSTEM
+        },
+        worldInfoCandidates: [
+            ...baseFixture(directories, avatar).worldInfoCandidates,
+            {
+                uid: '4', world: 'test', key: ['sword'], content: 'Above the note: a chill wind blows.',
+                order: 200, position: 2, // world_info_position.ANTop
+            },
+            {
+                uid: '5', world: 'test', key: ['sword'], content: 'Below the note: the woods grow quiet.',
+                order: 200, position: 3, // world_info_position.ANBottom
+            },
+        ],
+    };
+
+    const result = await assembleTextCompletionPrompt(input);
+
+    assert.equal(result.authorsNote.disabled, false, 'sanity check: authors note should be active');
+    assert.equal(result.authorsNote.shouldAddPrompt, true, 'sanity check: note should be due this turn');
+    assert.ok(result.anBefore.includes('Above the note: a chill wind blows.'), 'sanity check: ANTop entry activated');
+    assert.ok(result.anAfter.includes('Below the note: the woods grow quiet.'), 'sanity check: ANBottom entry activated');
+
+    assert.ok(
+        result.combinedPrompt.includes('Above the note: a chill wind blows.\nRemember: it is raining.\nBelow the note: the woods grow quiet.'),
+        'combinedPrompt should contain the ANTop+note+ANBottom combined block, in that exact order',
+    );
+});
