@@ -6,6 +6,9 @@ import { buildChatCompletionMessages, buildChatCompletionMessageExamples, charac
 import { TokenHandler } from './chat-completion-budget.js';
 import { chat_completion_sources } from './chat-completion-tool-capabilities.js';
 import { resolveWorldInfoCandidates, world_info_insertion_strategy } from './world-info/candidate-resolution.js';
+import { activateWorldInfoEntries } from './world-info/activation.js';
+import { bucketActivatedEntries, world_info_position } from './world-info/result-bucketing.js';
+import { getRegexedString, regex_placement } from './regex-scripts-engine.js';
 import { getTokenizerModel, getTiktokenTokenizer } from './endpoints/tokenizers.js';
 
 /**
@@ -78,20 +81,82 @@ import { getTokenizerModel, getTiktokenTokenizer } from './endpoints/tokenizers.
  *    `worldInfoCandidates` for real via `resolveWorldInfoCandidates()` (identical field mapping - see
  *    that module's own doc comment for the full selectedWorldInfo/characterExtraBooks/chatWorldName/
  *    personaWorldLorebook/worldInfoCharacterStrategy derivation, reused here verbatim). UNLIKE the
- *    text-completion path, though, `prepareOpenAIMessages()` has NO internal world-info-activation
- *    step of its own - it takes already-activated, already-formatted `worldInfoBefore`/`worldInfoAfter`
- *    STRINGS as plain inputs (see src/text-completion-prompt-orchestrator.js's own internal
- *    `activateWorldInfoEntries()`+`bucketActivatedEntries()` calls, which have no chat-completion-side
- *    equivalent orchestrator wired up anywhere yet). Running that activation here would mean this
- *    resolver reimplementing a real generation-time orchestration step (decorator parsing, regex-script
- *    application, author's-note/extension-prompt scan injection, recursion) that the task's own
- *    numbered list only asked this module to do for candidate RESOLUTION, not activation - so this is
- *    an explicit, documented MVP SCOPE BOUNDARY, not a silent gap: `worldInfoBefore`/`worldInfoAfter`
- *    resolve to `''` by default, and the real, auto-resolved `worldInfoCandidates` array is returned as
- *    an EXTRA field on this resolver's output (not part of `prepareOpenAIMessages()`'s own documented
- *    input surface) for a future caller/endpoint to run through `activateWorldInfoEntries()`/
- *    `bucketActivatedEntries()` and fold the resulting strings back in via `macroExtras` before calling
- *    `prepareOpenAIMessages()`.
+ *    text-completion path, `prepareOpenAIMessages()` has NO internal world-info-activation step of its
+ *    own - it takes already-activated, already-formatted `worldInfoBefore`/`worldInfoAfter` STRINGS as
+ *    plain inputs. Because of that, this resolver (unlike text-completion-generation-input.js, which
+ *    leaves activation to src/text-completion-prompt-orchestrator.js) is now itself the one place that
+ *    calls `activateWorldInfoEntries()`/`bucketActivatedEntries()` for the chat-completion pipeline -
+ *    there is no separate chat-completion orchestrator step to defer to. AS OF THIS TASK, this is REAL:
+ *      - `resolveWorldInfoCandidates()`'s own returned entries are ALREADY decorator-parsed (see that
+ *        module's `resolveWorldInfoCandidates()` body: `const [decorators, content] =
+ *        parseDecorators(entry.content || ''); return { ...entry, decorators, content };` - re-verified
+ *        directly in src/world-info/candidate-resolution.js). A second `parseDecorators()` pass (like
+ *        the one src/text-completion-prompt-orchestrator.js runs on ITS OWN, still-raw
+ *        `worldInfoCandidates` input) would be redundant and is NOT duplicated here - JUDGMENT CALL,
+ *        verified by reading the source, not assumed.
+ *      - `chatForWI` is built from the same tree-DB-native `chat` array already resolved above (pre-
+ *        `buildChatCompletionMessages()`), reversed, one plain string per message
+ *        (`${name}: ${mes}` when `worldInfoIncludeNames`, else just `mes`) - identical shape/recipe to
+ *        the text-completion orchestrator's own `coreChat.map(...)`, minus `coreChat`'s own
+ *        continue/swipe/tool-message filtering (not part of this resolver's `chat` array to begin
+ *        with - see decision 2 above for why this module never builds a `coreChat`).
+ *      - `globalScanData` reuses already-resolved values from this same function (`fields.persona`/
+ *        `fields.description`/`fields.personality`/`fields.charDepthPrompt`/`fields.scenario`/
+ *        `fields.creatorNotes`), plus a real `trigger` derived from `type` via the same
+ *        `GENERATION_TYPE_TRIGGERS` mirror text-completion-generation-input.js's own orchestrator uses
+ *        (gap 8 in that file's doc comment) - not re-guessed here, copied verbatim.
+ *      - Every `activateWorldInfoEntries()` budget/depth/recursion option is read from the GLOBAL
+ *        `world_info_settings` top-level settings key (NOT `oai_settings`-specific - world info's own
+ *        budget/depth/recursion knobs are shared by both pipelines) using the EXACT SAME setting names
+ *        and defaults text-completion-generation-input.js already established:
+ *        `world_info_include_names`/`world_info_budget` (25)/`world_info_budget_cap` (0)/
+ *        `world_info_depth` (2)/`world_info_recursive` (true)/`world_info_max_recursion_steps` (0)/
+ *        `world_info_min_activations` (0)/`world_info_min_activations_depth_max` (0)/
+ *        `world_info_use_group_scoring` (false).
+ *      - `maxContext` reuses this resolver's own already-resolved `oai_settings.openai_max_context`
+ *        value (same one used for `maxTokens`'s sibling field below) - no separate CFG-adjusted
+ *        max-context step exists in this pipeline (CFG has no chat-completion analog - see the CFG
+ *        FIELD-MAPPING NOTE below), so the plain, unadjusted value is the real one to use here.
+ *      - `countTokens` (the plain `(text: string) => Promise<number>` shape `activateWorldInfoEntries()`
+ *        expects - NOT `TokenHandler`'s own `(messages, full) => Promise<number>` shape) wraps this
+ *        module's real, already-built `tokenHandler.countTokenAsyncFn` directly (bypassing
+ *        `tokenHandler.countAsync()`'s own running-`counts`-bucket bookkeeping, which has no bucket for
+ *        an ad-hoc world-info-scan text count and would otherwise pollute `counts[undefined]`) by
+ *        shaping the raw text as a single-field pseudo-message (`[{ content: text }]`) - the exact
+ *        shape `createOpenAITokenCounter()`'s per-message loop already knows how to walk (iterates
+ *        every string-valued key). JUDGMENT CALL, not a guessed shape - re-verified directly against
+ *        `createOpenAITokenCounter()`'s own loop body above.
+ *      - `entryFilterContext` is populated with the real `{ trigger, characterFilename }` this resolver
+ *        already has on hand (the same `charFilename` derived from `avatar` used for `characterExtraBooks`
+ *        lookup above) - `characterTags` has no resolvable source in this module (would need
+ *        src/character-metadata-db.js's `queryCharacters()`, the same heavier subsystem `characterId`'s
+ *        own FIELD-MAPPING NOTE above already declined to depend on) and is left at its own default
+ *        (`[]`, i.e. "no known tags").
+ *      - `isDryRun` reuses this resolver's own `dryRun` parameter - previously accepted for interface
+ *        parity only and unused (see the `dryRun` FIELD-MAPPING NOTE below, which still holds for
+ *        `prepareOpenAIMessages(input, dryRun)`'s OWN separate positional argument): world-info
+ *        activation's `isDryRun` option (skip sticky/cooldown/delay state mutation) is a genuine,
+ *        real semantic match for "don't commit state" that `dryRun` did not have a consumer for
+ *        before this task - JUDGMENT CALL: reusing the existing parameter for this new real use is more
+ *        honest than adding a second, near-duplicate boolean parameter, but it does mean a caller
+ *        passing `dryRun: true` now also skips real WI sticky/cooldown/delay bookkeeping, not just
+ *        `prepareOpenAIMessages()`'s own dry-run behavior - flagged explicitly, not silently coupled.
+ *      - Each activated entry's final content is resolved through `getRegexedString()` (regex_placement.WORLD_INFO)
+ *        exactly like the text-completion orchestrator's own `bucketActivatedEntries({ resolveContent })`
+ *        call - see the regex-scripts NOTE below for why this was real, straightforward reuse rather
+ *        than new scope.
+ *      - `worldInfoBefore`/`worldInfoAfter` on the returned object are now the REAL bucketed strings.
+ *    The NEW, NARROWER remaining gap (after this task): `bucketActivatedEntries()`'s other outputs -
+ *    `worldInfoDepth` (@Depth-positioned entries), `anBefore`/`anAfter` (WI ANTop/ANBottom, meant to be
+ *    combined with an Author's Note value), `outletEntries`, and `worldInfoExamples` (message-example
+ *    WI-EM entries) - have NO destination in `prepareOpenAIMessages()`'s documented input surface.
+ *    `worldInfoDepth` in particular is NOT folded into this pipeline's own, SEPARATE @Depth mechanism
+ *    (`populateInjectionPrompts()` in src/chat-completion-injection-prompts.js / the `injectionTable`
+ *    input) - wiring that would mean this resolver reimplementing a chunk of real orchestration
+ *    (building/merging extension-prompt-table entries the way src/text-completion-prompt-orchestrator.js's
+ *    own Step 7.5 does) beyond activation/bucketing alone, which is explicitly out of this task's scope.
+ *    These four fields are simply dropped on the floor for now - documented here as the precise
+ *    boundary, not silently lost.
  *
  * ============================================================================================
  * FIELD-MAPPING NOTES (verified against default/content/settings.json and
@@ -189,12 +254,39 @@ import { getTokenizerModel, getTiktokenTokenizer } from './endpoints/tokenizers.
  *   `{}`) unless a caller supplies an override via `macroExtras`. `cyclePrompt` IS accepted as an
  *   explicit resolver param (mirroring `textareaText` on the text-completion side), since
  *   `populateChatHistory()`'s continue-nudge branch needs it whenever `type === 'continue'`.
- * - `dryRun`: accepted as a parameter purely for interface-signature parity with the task's documented
- *   deliverable signature. It is NOT used anywhere in this resolver and has NO effect on the returned
- *   object - `prepareOpenAIMessages(input, dryRun)`'s `dryRun` is that function's OWN second, separate
- *   positional argument (governing its early-return guard and its `squashSystemMessages` timing), fully
- *   orthogonal to building its `input` object. A caller passes it directly to `prepareOpenAIMessages()`
- *   itself, not through this resolver.
+ * - `dryRun`: accepted as a parameter originally purely for interface-signature parity with the task's
+ *   documented deliverable signature; it now has ONE real effect, as of this task - it is forwarded as
+ *   `activateWorldInfoEntries()`'s own `isDryRun` option (see decision 4 above for the full rationale).
+ *   It still has NO effect on anything else in the returned object - `prepareOpenAIMessages(input,
+ *   dryRun)`'s `dryRun` is that function's OWN second, separate positional argument (governing its
+ *   early-return guard and its `squashSystemMessages` timing), fully orthogonal to building its `input`
+ *   object. A caller passes it directly to `prepareOpenAIMessages()` itself, not through this resolver's
+ *   return value - this resolver's own use of `dryRun` is limited to gating world-info's real sticky/
+ *   cooldown/delay state mutation.
+ * - REGEX SCRIPTS: real reuse, not new scope. `getRegexedString()` (src/regex-scripts-engine.js) is
+ *   already a fully-ported, pure function with no chat-completion-side call site anywhere yet (verified
+ *   by grepping `getRegexedString`/`regex_placement` across every `src/chat-completion-*.js` file before
+ *   this task - zero hits). Wiring it into this resolver's own `bucketActivatedEntries({ resolveContent })`
+ *   call (the ONE new call site this task's world-info activation work introduces) is exactly the same
+ *   `regex_placement.WORLD_INFO` call src/text-completion-prompt-orchestrator.js already makes at its
+ *   own equivalent call site - a straightforward additional call to an already-real function, not a new
+ *   subsystem. `regexScripts` (default `[]`) and `regexExtensionEnabled` (default `true`) are new,
+ *   optional resolver params added for exactly this purpose, matching
+ *   `assembleTextCompletionPrompt()`'s own identical parameters' identical defaults verbatim.
+ *
+ * - `additionalScanInjects`: CONFIRMED NONE, left empty. src/text-completion-prompt-orchestrator.js
+ *   folds the quiet-prompt text and an already-due Author's Note's value into this
+ *   `activateWorldInfoEntries()` option (mirroring the client's `checkWorldInfo()` scan-buffer
+ *   injection of any `scan: true` extension-prompt slot). This resolver has no real analog to fold in:
+ *   it does not itself resolve `quietPrompt` (left `undefined`, a documented per-generation-call-option
+ *   gap - see the `quietPrompt`/... FIELD-MAPPING NOTE above) or an Author's Note value (chat-completion's
+ *   own author's-note-equivalent handling lives in src/chat-completion-system-prompts.js's
+ *   `buildChatCompletionSystemPrompts()`, which reads it out of an `extensionPrompts` table entry
+ *   (`'2_floating_prompt'`) this resolver also never populates - `extensionPrompts` defaults to `{}`
+ *   here, per the same FIELD-MAPPING NOTE). Since neither source text is ever actually resolved BY THIS
+ *   MODULE, there is nothing real to pass - not a lazy skip, a verified "the two inputs
+ *   `additionalScanInjects` would need don't exist in this resolver's own scope" case, mirroring how
+ *   the CFG FIELD-MAPPING NOTE above is a confirmed "no analog exists," not a guess.
  *
  * `userMessageText` behaves identically to text-completion-generation-input.js's own documented
  * UPDATE section: appended onto the resolved chat history as the newest message, in the exact
@@ -215,6 +307,14 @@ const DEFAULT_PERSONALITY_FORMAT = '{{personality}}';
 const DEFAULT_GROUP_NUDGE_PROMPT = '[Write the next reply only as {{char}}.]';
 const DEFAULT_NAMES_BEHAVIOR = character_names_behavior.DEFAULT;
 const DEFAULT_INLINE_IMAGE_QUALITY = 'auto';
+
+// Mirrors public/scripts/constants.js's GENERATION_TYPE_TRIGGERS exactly - same mirror
+// src/text-completion-prompt-orchestrator.js's own local copy uses (see decision 4 above, "real trigger
+// derivation").
+const GENERATION_TYPE_TRIGGERS = ['normal', 'continue', 'impersonate', 'swipe', 'regenerate'];
+
+/** Mirrors result-bucketing.js's own (unexported) local DEFAULT_DEPTH constant - see decision 4 above. */
+const WI_DEFAULT_DEPTH = 4;
 
 // Non-tiktoken tokenizer families `getTokenizerModel()` (src/endpoints/tokenizers.js) can normalize a
 // model string to - see decision 3 above for why these are approximated via tiktoken's own
@@ -401,6 +501,12 @@ async function resolveChatHistory(directories, { ownerId, branchName, nodeId }) 
  * @param {import('./world-info/activation.js').WIEntry[]} [params.worldInfoCandidates] Explicit
  * override/bypass for the auto-resolved candidates - when omitted, this resolver calls
  * `resolveWorldInfoCandidates()` for real; passing an explicit array (including `[]`) always wins.
+ * Either way, this resolver now also ACTIVATES the resulting candidates for real - see doc comment
+ * decision 4.
+ * @param {import('./regex-scripts-engine.js').RegexScript[]} [params.regexScripts] Forwarded to every
+ * `getRegexedString()` call this resolver makes (currently just the world-info WORLD_INFO placement -
+ * see doc comment decision 4 / the REGEX SCRIPTS FIELD-MAPPING NOTE). Default `[]`.
+ * @param {boolean} [params.regexExtensionEnabled] Forwarded to the same `getRegexedString()` calls. Default `true`.
  * @param {string} [params.model] Overrides the real `getChatCompletionModel()` resolution when given.
  * @param {import('./chat-completion-tool-capabilities.js').ChatCompletionToolCapabilityModel[]} [params.modelList] See doc comment - not resolved here, caller-supplied only.
  * @param {string|number} [params.characterId] Overrides the PROMPT_ORDER_DUMMY_ID default - see doc comment.
@@ -414,22 +520,23 @@ export async function resolveChatCompletionGenerationInput(directories, {
     type, isImpersonate = false, isContinue = false, isSwipe = false, dryRun,
     cyclePrompt = '', chatMetadata: chatMetadataOverride, userMessageText,
     worldInfoCandidates: worldInfoCandidatesOverride,
+    regexScripts = [], regexExtensionEnabled = true,
     model: modelOverride, modelList, characterId = PROMPT_ORDER_DUMMY_ID,
     countTokenAsyncFn: countTokenAsyncFnOverride, tokenHandler: tokenHandlerOverride,
     macroExtras = {},
 } = {}) {
     void groupId; // Accepted for interface parity only - see doc comment (GROUPS scope boundary).
-    void dryRun; // Accepted for interface parity only - see doc comment (`dryRun` field-mapping note).
     void isImpersonate; void isContinue; void isSwipe; // Folded into `type` by the caller; kept as documented params for parity with the task's signature, matching text-completion-generation-input.js's own equivalents (which are likewise not separately re-derived from `type` there either).
 
     const {
         oai_settings: oaiSettings = {},
         power_user: powerUser = {},
         world_info: worldInfoSelection = {},
+        world_info_settings: worldInfoSettings = {},
         world_info_character_strategy: worldInfoCharacterStrategySetting,
         username,
     } = readSettingsAtPaths(directories, [
-        'oai_settings', 'power_user', 'world_info', 'world_info_character_strategy', 'username',
+        'oai_settings', 'power_user', 'world_info', 'world_info_settings', 'world_info_character_strategy', 'username',
     ]);
 
     const isGroup = false; // GROUPS MVP scope boundary - see doc comment.
@@ -457,13 +564,16 @@ export async function resolveChatCompletionGenerationInput(directories, {
         chatMetadata,
     });
 
-    // Real world-info CANDIDATE resolution only - see doc comment decision 4 for why activation
-    // (worldInfoBefore/worldInfoAfter strings) is an explicit MVP scope boundary, not attempted here.
+    // Real world-info CANDIDATE resolution - see doc comment decision 4 for the full real ACTIVATION
+    // (worldInfoBefore/worldInfoAfter strings) this resolver now also performs, further below, once
+    // `macroContext`/`tokenHandler` are available.
     // METADATA_KEY mirrored inline, same rationale as text-completion-generation-input.js's own copy.
     const WORLD_INFO_METADATA_KEY = 'world_info';
+    // Hoisted out of the `if` below so entryFilterContext (used by activation further down) can reuse
+    // the same real, already-derived value instead of recomputing it - see decision 4 above.
+    const charFilename = avatar ? avatar.replace(/\.[^/.]+$/, '') : null;
     let worldInfoCandidates = worldInfoCandidatesOverride;
     if (worldInfoCandidates === undefined) {
-        const charFilename = avatar ? avatar.replace(/\.[^/.]+$/, '') : null;
         const charLore = Array.isArray(worldInfoSelection.charLore) ? worldInfoSelection.charLore : [];
         const characterExtraBooks = charLore.find(e => e.name === charFilename)?.extraBooks ?? [];
         let character = null;
@@ -510,6 +620,54 @@ export async function resolveChatCompletionGenerationInput(directories, {
     // decision 3) unless a caller supplies its own.
     const tokenHandler = tokenHandlerOverride ?? new TokenHandler(countTokenAsyncFnOverride ?? createOpenAITokenCounter(model));
 
+    // Real world-info ACTIVATION - see doc comment decision 4 for the full rationale/settings-path
+    // mapping for every option below. This is the one call site this resolver adds that
+    // text-completion-generation-input.js's own equivalent does NOT have (that pipeline defers
+    // activation to a separate orchestrator; this pipeline has none, so this resolver is it).
+    const worldInfoIncludeNames = Boolean(worldInfoSettings.world_info_include_names ?? false);
+    const chatForWI = chat.map(x => worldInfoIncludeNames ? `${x.name}: ${x.mes}` : x.mes).reverse();
+    const generationTrigger = GENERATION_TYPE_TRIGGERS.includes(type) ? type : 'normal';
+    const globalScanData = {
+        personaDescription: fields.persona,
+        characterDescription: fields.description,
+        characterPersonality: fields.personality,
+        characterDepthPrompt: fields.charDepthPrompt,
+        scenario: fields.scenario,
+        creatorNotes: fields.creatorNotes,
+        trigger: generationTrigger,
+    };
+    // Wraps this module's own real, already-built tiktoken-based counter (tokenHandler.countTokenAsyncFn,
+    // the `(messages, full) => Promise<number>` shape) to match activateWorldInfoEntries()'s own
+    // `(text: string) => Promise<number>` countTokens shape - see decision 4 above for why a single-field
+    // pseudo-message (`[{ content: text }]`) is the right shape and why tokenHandler.countAsync() itself
+    // is deliberately bypassed here.
+    const countTokensForWorldInfo = async (text) => tokenHandler.countTokenAsyncFn([{ content: text }]);
+    const { activatedEntries } = await activateWorldInfoEntries(worldInfoCandidates, chatForWI, {
+        maxContext: oaiSettings.openai_max_context ?? 4095,
+        budgetPercent: worldInfoSettings.world_info_budget ?? 25,
+        budgetCap: worldInfoSettings.world_info_budget_cap ?? 0,
+        depth: worldInfoSettings.world_info_depth ?? 2,
+        recursive: Boolean(worldInfoSettings.world_info_recursive ?? true),
+        maxRecursionStepsSetting: worldInfoSettings.world_info_max_recursion_steps ?? 0,
+        globalScanData, macroContext, countTokens: countTokensForWorldInfo,
+        chatMetadata, isDryRun: Boolean(dryRun),
+        useGroupScoring: Boolean(worldInfoSettings.world_info_use_group_scoring ?? false),
+        entryFilterContext: { trigger: generationTrigger, characterFilename: charFilename ?? undefined },
+        minActivations: worldInfoSettings.world_info_min_activations ?? 0,
+        minActivationsDepthMax: worldInfoSettings.world_info_min_activations_depth_max ?? 0,
+    });
+    // WORLD_INFO placement regex, applied per activated entry - see the REGEX SCRIPTS FIELD-MAPPING
+    // NOTE above. Depth override only applies to atDepth-positioned entries, matching
+    // src/text-completion-prompt-orchestrator.js's own identical resolveContent callback.
+    const { worldInfoBefore, worldInfoAfter } = bucketActivatedEntries(activatedEntries, {
+        resolveContent: (entry) => {
+            const regexDepth = entry.position === world_info_position.atDepth ? (entry.depth ?? WI_DEFAULT_DEPTH) : null;
+            return getRegexedString(entry.content, regex_placement.WORLD_INFO, regexScripts, {
+                depth: regexDepth, isMarkdown: false, isPrompt: true, macroContext, regexExtensionEnabled,
+            });
+        },
+    });
+
     const resolved = {
         // --- Character/persona resolution (getCharacterCardFields() - see doc comment decision 1) ---
         name2, hasActiveCharacter: hasCharacter,
@@ -521,9 +679,10 @@ export async function resolveChatCompletionGenerationInput(directories, {
         personaDescription: powerUser.persona_description,
         personaDescriptionPosition: powerUser.persona_description_position ?? 0,
 
-        // --- World info (candidates only - see doc comment decision 4) ---
-        worldInfoBefore: '',
-        worldInfoAfter: '',
+        // --- World info (real candidates + real activation - see doc comment decision 4 for the
+        // narrower remaining gap: worldInfoDepth/anBefore/anAfter/outletEntries/worldInfoExamples) ---
+        worldInfoBefore,
+        worldInfoAfter,
         worldInfoCandidates,
         wiFormat: oaiSettings.wi_format ?? '{0}',
 
