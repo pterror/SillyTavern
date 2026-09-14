@@ -33,6 +33,41 @@ import { baseChatReplace } from './macro-substitution.js';
  * @typedef {import('./macro-substitution.js').CharacterCardFields} CharacterCardFields
  */
 
+// Mirrored from public/script.js (extension_prompt_roles) - only the subset this module needs,
+// for resolving `character.data.extensions.depth_prompt.role`. Same mirroring pattern as
+// src/authors-note.js's local `extension_prompt_roles` copy.
+const extension_prompt_roles = {
+    SYSTEM: 0,
+    USER: 1,
+    ASSISTANT: 2,
+};
+
+// Mirrors public/script.js's depth_prompt_depth_default constant (~line 749) - the raw numeric
+// value is mirrored directly rather than importing a client file for one number.
+const DEPTH_PROMPT_DEPTH_DEFAULT = 4;
+
+/**
+ * Mirrors public/script.js's getExtensionPromptRoleByName() exactly: a valid numeric role passes
+ * through as-is; the three known role-name strings map to their enum value; anything else
+ * (including undefined/garbage) falls back to SYSTEM ("Skill issue?" per the client's own comment).
+ * @param {string|number} [roleName]
+ * @returns {number}
+ */
+function getExtensionPromptRoleByName(roleName) {
+    if (typeof roleName === 'number' && Object.values(extension_prompt_roles).includes(roleName)) {
+        return roleName;
+    }
+    switch (roleName) {
+        case 'system':
+            return extension_prompt_roles.SYSTEM;
+        case 'user':
+            return extension_prompt_roles.USER;
+        case 'assistant':
+            return extension_prompt_roles.ASSISTANT;
+    }
+    return extension_prompt_roles.SYSTEM;
+}
+
 /**
  * Loads and JSON-parses a character card by avatar, tolerating a missing/unreadable card the same
  * way the client's `charactersStore.get(avatar)` tolerates a resident-store miss (returns null).
@@ -148,7 +183,18 @@ async function computeGroupCards(directories, group, characterAvatar, chatMetada
  * @param {boolean} [options.preferCharacterJailbreak] Mirrors `power_user.prefer_character_jailbreak`.
  * @param {string} [options.personaDescription] Mirrors `power_user.persona_description`.
  * @param {object} [options.chatMetadata] Mirrors the client's `chat_metadata` global.
- * @returns {Promise<CharacterCardFields>}
+ * @returns {Promise<CharacterCardFields & {charDepthPromptDepth: number, charDepthPromptRole: number}>}
+ * `charDepthPromptDepth`/`charDepthPromptRole` are resolved ADDITIVELY on top of the
+ * `CharacterCardFields` shape (they are NOT part of that shared typedef, since macro-substitution.js
+ * has no use for them): they're the raw depth/role sub-fields of
+ * `character.data.extensions.depth_prompt`, for the (separate, not-yet-wired-everywhere) depth-prompt
+ * CHAT INJECTION mechanism - distinct from `charDepthPrompt` (the plain macro-substituted prompt
+ * string), which remains unchanged and is still used for WI key-matching/story-string only.
+ * `charDepthPromptDepth` defaults to `4` (mirrors public/script.js's `depth_prompt_depth_default`)
+ * when the card has no explicit depth. `charDepthPromptRole` defaults to `0` (SYSTEM) and otherwise
+ * resolves `character.data.extensions.depth_prompt.role` through the same name-to-number mapping as
+ * the client's `getExtensionPromptRoleByName()` (a valid numeric role passes through; `'system'`/
+ * `'user'`/`'assistant'` map to `0`/`1`/`2`; anything else falls back to `0`/SYSTEM).
  */
 export async function getCharacterCardFields(directories, options = {}) {
     const {
@@ -183,6 +229,8 @@ export async function getCharacterCardFields(directories, options = {}) {
             jailbreak: '',
             version: '',
             charDepthPrompt: '',
+            charDepthPromptDepth: DEPTH_PROMPT_DEPTH_DEFAULT,
+            charDepthPromptRole: extension_prompt_roles.SYSTEM,
             creatorNotes: '',
             firstMessage: '',
             alternateGreetings: [],
@@ -198,6 +246,8 @@ export async function getCharacterCardFields(directories, options = {}) {
 
     const version = character?.data?.character_version ?? '';
     const charDepthPrompt = baseChatReplace(character.data?.extensions?.depth_prompt?.prompt?.trim(), names);
+    const charDepthPromptDepth = character.data?.extensions?.depth_prompt?.depth ?? DEPTH_PROMPT_DEPTH_DEFAULT;
+    const charDepthPromptRole = getExtensionPromptRoleByName(character.data?.extensions?.depth_prompt?.role ?? 'system');
     const creatorNotes = baseChatReplace(character.data?.creator_notes?.trim(), names);
 
     const description = groupCards ? groupCards.description : baseChatReplace(character.description?.trim(), names);
@@ -227,6 +277,8 @@ export async function getCharacterCardFields(directories, options = {}) {
         jailbreak,
         version,
         charDepthPrompt,
+        charDepthPromptDepth,
+        charDepthPromptRole,
         creatorNotes,
         firstMessage,
         alternateGreetings,

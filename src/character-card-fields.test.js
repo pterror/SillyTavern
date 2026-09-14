@@ -120,6 +120,9 @@ async function run() {
         assert.equal(fields.firstMessage, 'Hello, Alice here!');
         assert.equal(fields.version, '1.2');
         assert.equal(fields.charDepthPrompt, 'Depth note for Alice');
+        // depth_prompt has no explicit depth/role -> defaults (4 / SYSTEM=0).
+        assert.equal(fields.charDepthPromptDepth, 4);
+        assert.equal(fields.charDepthPromptRole, 0);
         assert.equal(fields.creatorNotes, 'Notes about Alice.');
         assert.equal(fields.persona, 'A curious ');
         assert.deepEqual(fields.alternateGreetings, ['Greeting one from Alice', 'Greeting two from Alice']);
@@ -176,6 +179,53 @@ async function run() {
         assert.equal(fields.version, '');
         assert.deepEqual(fields.alternateGreetings, []);
         assert.equal(fields.persona, 'Just a persona');
+        // No character at all -> depth-prompt sub-fields fall back to the same defaults too.
+        assert.equal(fields.charDepthPromptDepth, 4);
+        assert.equal(fields.charDepthPromptRole, 0);
+    }
+
+    // 4b. depth_prompt.depth/.role explicitly set - custom numeric depth, and role given by name.
+    {
+        const avatarUser = writeCharacter('Dave.png', {
+            data: {
+                name: 'Dave',
+                extensions: { depth_prompt: { prompt: 'Dave depth note', depth: 7, role: 'user' } },
+            },
+        });
+        const fieldsUser = await getCharacterCardFields(directories, { avatar: avatarUser });
+        assert.equal(fieldsUser.charDepthPrompt, 'Dave depth note');
+        assert.equal(fieldsUser.charDepthPromptDepth, 7);
+        assert.equal(fieldsUser.charDepthPromptRole, 1, 'role \'user\' resolves to extension_prompt_roles.USER (1)');
+
+        const avatarAssistant = writeCharacter('Eve.png', {
+            data: {
+                name: 'Eve',
+                extensions: { depth_prompt: { prompt: 'Eve depth note', depth: 0, role: 'assistant' } },
+            },
+        });
+        const fieldsAssistant = await getCharacterCardFields(directories, { avatar: avatarAssistant });
+        assert.equal(fieldsAssistant.charDepthPromptDepth, 0);
+        assert.equal(fieldsAssistant.charDepthPromptRole, 2, 'role \'assistant\' resolves to extension_prompt_roles.ASSISTANT (2)');
+
+        // A role already given as a valid number passes through as-is.
+        const avatarNumericRole = writeCharacter('Frank.png', {
+            data: {
+                name: 'Frank',
+                extensions: { depth_prompt: { prompt: 'Frank depth note', depth: 2, role: 1 } },
+            },
+        });
+        const fieldsNumericRole = await getCharacterCardFields(directories, { avatar: avatarNumericRole });
+        assert.equal(fieldsNumericRole.charDepthPromptRole, 1, 'a valid numeric role passes through unchanged');
+
+        // An unrecognized role string falls back to SYSTEM (0), matching the client's own fallback.
+        const avatarBadRole = writeCharacter('Grace.png', {
+            data: {
+                name: 'Grace',
+                extensions: { depth_prompt: { prompt: 'Grace depth note', role: 'not-a-role' } },
+            },
+        });
+        const fieldsBadRole = await getCharacterCardFields(directories, { avatar: avatarBadRole });
+        assert.equal(fieldsBadRole.charDepthPromptRole, 0, 'unrecognized role name falls back to SYSTEM (0)');
     }
 
     // 5. Group-combine path.

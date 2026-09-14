@@ -506,6 +506,55 @@ test('assembleTextCompletionPrompt: quiet-prompt and scannable author\'s-note te
     }
 });
 
+test('assembleTextCompletionPrompt: character card depth_prompt is now spliced into the chat as a real IN_CHAT injection, single-character case (new in this task)', async () => {
+    const { charactersDir, root } = makeDirectories();
+    const avatar = 'aria-depth-prompt.png';
+    writeCharacterCard(charactersDir, avatar, {
+        spec: 'chara_card_v2',
+        spec_version: '2.0',
+        name: 'Aria',
+        description: 'Aria is a wandering ranger who guards the Whispering Woods.',
+        personality: 'brave and curious',
+        scenario: '',
+        first_mes: 'Hello there, traveler!',
+        mes_example: '',
+        avatar,
+        data: {
+            name: 'Aria',
+            description: 'Aria is a wandering ranger who guards the Whispering Woods.',
+            personality: 'brave and curious',
+            scenario: '',
+            first_mes: 'Hello there, traveler!',
+            mes_example: '',
+            system_prompt: '', post_history_instructions: '', character_version: '', creator_notes: '',
+            alternate_greetings: [],
+            // depth 0 lands on the newest message (see doChatInject's depth convention) so the
+            // injected text is guaranteed to survive any token-budget trimming in this small fixture.
+            extensions: { depth_prompt: { prompt: 'Remember: the moonblade hums when danger is near.', depth: 0, role: 'user' } },
+        },
+    });
+    const directories = { characters: charactersDir, root };
+
+    const input = {
+        ...baseFixture(directories, avatar),
+        hasCharacterOrGroup: true,
+        isGroup: false,
+    };
+    const result = await assembleTextCompletionPrompt(input);
+
+    // Before this task, getCharacterCardFields() never resolved depth/role, and nothing wrote the
+    // character's depth_prompt into the extension-prompt table, so this text could never reach
+    // combinedPrompt/finalMesSend via doChatInject() - proving the single-character gap is now closed.
+    assert.ok(
+        result.combinedPrompt.includes('Remember: the moonblade hums when danger is near.'),
+        'character-card depth_prompt text should now appear in combinedPrompt via doChatInject()',
+    );
+    assert.ok(
+        result.finalMesSend.some(m => m.message.includes('Remember: the moonblade hums when danger is near.')),
+        'character-card depth_prompt text should appear as a spliced entry in finalMesSend',
+    );
+});
+
 test('assembleTextCompletionPrompt: an AI_OUTPUT regex script transforms a chat message (new in this task)', async () => {
     const { charactersDir, root } = makeDirectories();
     const avatar = 'aria6.png';
