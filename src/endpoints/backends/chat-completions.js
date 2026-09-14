@@ -63,6 +63,11 @@ import { mergeChatCompletionPreset } from '../../chat-completion-preset-merge.js
 import { createGenerationParameters } from '../../chat-completion-generation-data.js';
 import { readSettingsAtPaths } from '../../settings-store.js';
 import { readPresetByName } from '../presets.js';
+import { resolveChatCompletionGenerationInput } from '../../chat-completion-generation-input.js';
+import { prepareOpenAIMessages } from '../../chat-completion-prepare-messages.js';
+import { loadBranch, getAncestorPath, appendMessages } from '../../message-tree-db.js';
+import { readCardContent } from '../characters.js';
+import { getGroupsByIds } from '../groups.js';
 import {
     TEXT_COMPLETION_MODELS,
     computeLogitBias,
@@ -2159,7 +2164,166 @@ router.post('/bias', async function (request, response) {
     }
 });
 
+/**
+ * Builds the real backend-request-shaped payload for the raw-action `/generate` branch below - the
+ * direct chat-completion analog of `buildRawActionTextCompletionRequest()`
+ * (src/endpoints/backends/text-completions.js, commit ac42ce8c9). Mirrors that function's shape/
+ * naming/scoping discipline as closely as the real differences between the two pipelines allow - see
+ * this session's task write-up for the full read-first list.
+ *
+ * In order:
+ * 1. Real existence checks for the named character/group (identical pattern to
+ *    `buildRawActionTextCompletionRequest()` - `readCardContent`/`getGroupsByIds`, tolerating a
+ *    missing/unreadable card as "not found" rather than letting an ENOENT bubble up as an unrelated 500).
+ * 2. Real anchor-node resolution (`loadBranch()`'s `branch.leaf_id` for a `branchName`, or a given
+ *    `nodeId` verified via `getAncestorPath()`) - identical logic to the text-completion helper.
+ * 3. Read real `oai_settings`/`power_user` via `readSettingsAtPaths()` - JUDGMENT CALL: unlike
+ *    text-completion (which needs a separate `resolveTextGenBackend()` step - see
+ *    src/textgen-backend-resolve.js), chat completion has no separate "resolve the active backend
+ *    connection" concept: `oai_settings.chat_completion_source`/model selection IS the settings, and
+ *    `resolveChatCompletionGenerationInput()` already reads `oai_settings` internally to resolve
+ *    `model`. Confirmed by reading the `connection_profile_id` branch above (which resolves its own
+ *    `settings`/`selectedApiMap.source` from a connection profile + preset, a genuinely different,
+ *    profile-driven case) and the default/legacy inline dispatch further below (which reads
+ *    `request.body.chat_completion_source`/`request.body.secret_id` as given by the client - the
+ *    client is expected to have already put its own active `oai_settings`-derived values there). This
+ *    raw-action branch is the one case that resolves the user's OWN currently active `oai_settings`
+ *    server-side, for real, instead of trusting a client-supplied value.
+ * 4. Resolve the orchestrator's full input from real on-disk settings/character/chat state via
+ *    `resolveChatCompletionGenerationInput()`.
+ * 5. Assemble the real message array via `prepareOpenAIMessages(orchestratorInput, false)` (a real
+ *    generation, never a dry run here).
+ * 6. Build the real backend-request payload via `createGenerationParameters()`. Context fields are
+ *    resolved the SAME honest way `resolveChatCompletionGenerationInput()`'s own doc comment already
+ *    established for each of them (see that module's FIELD-MAPPING NOTES and
+ *    src/chat-completion-generation-data.js's own doc comment for the full per-field rationale):
+ *      - `biasPresetEntries`: real, resolved via `oai_settings.bias_preset_selected`/`.bias_presets`,
+ *        the exact same one-line derivation the `connection_profile_id` branch above already performs.
+ *      - `useLogprobs`: real, `Boolean(power_user.request_token_probabilities)` - verified against
+ *        public/scripts/chat-completion-settings.js's own `const useLogprobs =
+ *        !!power_user.request_token_probabilities` (~line 2851), a plain, simple settings-path
+ *        mapping this module's own doc comment explicitly says a caller may resolve directly.
+ *      - `chatId`: real, `branchName ?? nodeId` - chat-completion-generation-data.js's own doc comment
+ *        says this is only ever `getCurrentChatId()` because "the caller already knows which chat this
+ *        generation belongs to"; this raw action's caller-supplied `branchName`/`nodeId` IS that
+ *        knowledge, so it's forwarded for real rather than left `undefined`.
+ *      - `macroContext`: real, `orchestratorInput.macroContext` (already built by the resolver).
+ *      - `getStoppingStrings`/`groupNames`/`electronHubReasoningEfforts`/`toolsPayload`/
+ *        `reverseProxyValidated`/`jsonSchema`/`logitBias` override: NOT resolved here - explicit,
+ *        documented MVP scope boundaries per chat-completion-generation-data.js's own doc comment
+ *        (each needs a genuinely separate subsystem - live model lists, an extension tool registry, a
+ *        reverse-proxy confirmation UI, etc. - not guessed at here). Left at `createGenerationParameters()`'s
+ *        own defaults.
+ *
+ * Does NOT persist anything (the caller's job - see the route handler below) and does NOT set
+ * `stream`/`chat_completion_source`/`secret_id` on the returned `params` (also the caller's job,
+ * mirroring the `connection_profile_id` branch's own final-assignment shape).
+ *
+ * @param {import('../../users.js').UserDirectoryList} directories
+ * @param {object} params
+ * @param {string} [params.characterAvatar] Character avatar filename. One of this or `groupId` is required.
+ * @param {string} [params.groupId] Group id. One of this or `characterAvatar` is required.
+ * @param {string} params.ownerId message-tree-db.js owner id.
+ * @param {string} [params.branchName] message-tree-db.js labeled chat name. One of this or `nodeId` is required.
+ * @param {string} [params.nodeId] Alternative to `branchName` - generate from this existing tree node.
+ * @param {string} [params.type] Generation type ('normal'/'impersonate'/'continue'/'swipe'/...).
+ * @param {boolean} [params.isImpersonate]
+ * @param {boolean} [params.isContinue]
+ * @param {boolean} [params.isSwipe]
+ * @param {string} [params.userMessageText] The literal text the user typed this turn. Omit for
+ * generation types that don't add a new message (continue/swipe).
+ * @returns {Promise<{ params: object, settings: object, anchorNodeId: string|null, name1: string, name2: string }>}
+ */
+export async function buildRawActionChatCompletionRequest(directories, {
+    characterAvatar, groupId, ownerId, branchName, nodeId,
+    type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText,
+} = {}) {
+    if (!ownerId) {
+        throw new Error('owner_id is required');
+    }
+    if (!characterAvatar && !groupId) {
+        throw new Error('character_avatar or group_id is required');
+    }
+    if (!branchName && !nodeId) {
+        throw new Error('branch_name or node_id is required');
+    }
+
+    // Step 1 (existence checks) - identical convention to buildRawActionTextCompletionRequest().
+    if (characterAvatar) {
+        let raw;
+        try {
+            raw = await readCardContent(directories, characterAvatar);
+        } catch { /* treated as not-found below, matching buildRawActionTextCompletionRequest()'s convention */ }
+        if (raw === undefined) {
+            throw new Error(`Character not found: ${characterAvatar}`);
+        }
+    }
+    if (groupId) {
+        const group = getGroupsByIds(directories, [groupId])[groupId];
+        if (!group) {
+            throw new Error(`Group not found: ${groupId}`);
+        }
+    }
+
+    // Step 2 (anchor resolution) - identical logic to buildRawActionTextCompletionRequest().
+    let anchorNodeId = null;
+    if (branchName) {
+        const branch = await loadBranch(directories, ownerId, branchName);
+        if (!branch) {
+            throw new Error(`Chat branch not found: ${branchName}`);
+        }
+        anchorNodeId = branch.branch.leaf_id;
+    } else {
+        const ancestorPath = await getAncestorPath(directories, nodeId);
+        if (!ancestorPath) {
+            throw new Error(`Chat node not found: ${nodeId}`);
+        }
+        anchorNodeId = nodeId;
+    }
+
+    // Step 3
+    const { oai_settings: settings = {}, power_user: powerUser = {} } = readSettingsAtPaths(directories, ['oai_settings', 'power_user']);
+
+    // Step 4
+    const orchestratorInput = await resolveChatCompletionGenerationInput(directories, {
+        avatar: characterAvatar, groupId, ownerId, branchName, nodeId,
+        type, isImpersonate, isContinue, isSwipe, userMessageText,
+    });
+
+    if ((isContinue || isSwipe) && orchestratorInput.macroContext.chat.length === 0) {
+        throw new Error('Cannot continue/swipe an empty chat.');
+    }
+
+    // Step 5
+    const { chat: messages } = await prepareOpenAIMessages(orchestratorInput, false);
+
+    // Step 6
+    const biasPresetEntries = settings.bias_preset_selected ? settings.bias_presets?.[settings.bias_preset_selected] : undefined;
+    const useLogprobs = Boolean(powerUser.request_token_probabilities);
+    const { generate_data } = await createGenerationParameters(settings, orchestratorInput.model, type, messages, {
+        macroContext: orchestratorInput.macroContext,
+        biasPresetEntries,
+        useLogprobs,
+        chatId: branchName ?? nodeId,
+    });
+
+    // JUDGMENT CALL: unlike buildRawActionTextCompletionRequest() (which gets `name1` back directly
+    // on resolveTextCompletionGenerationInput()'s own return object), this resolver only exposes
+    // `name1` inside `macroContext` (see that module's doc comment decision 2/FIELD-MAPPING NOTES -
+    // `name1` itself is never a top-level field on its returned object) - read from there instead.
+    return { params: generate_data, settings, anchorNodeId, name1: orchestratorInput.macroContext.name1, name2: orchestratorInput.name2 };
+}
+
 router.post('/generate', async function (request, response) {
+    // Set only by the raw-action branch below, and read only by the single SHARED non-streaming
+    // response point in the default/legacy inline OpenAI/custom dispatch block further down (the
+    // ONLY response-handling code in this file with one shared point across every source it covers -
+    // see that block's own comment for why the many provider-`switch` functions above it
+    // (sendClaudeRequest/sendMakerSuiteRequest/etc, each its own file/function with its own response
+    // shape) are explicitly NOT wired up in this pass). Every other branch (connection-profile,
+    // default/legacy without a raw action) never touches this, so it stays a no-op for them.
+    let pendingAssistantPersist = null;
+
     try {
         if (!request.body) return response.status(400).send({ error: true });
 
@@ -2209,6 +2373,86 @@ router.post('/generate', async function (request, response) {
                 secret_id: profile['secret-id'],
                 custom_prompt_post_processing: profile['prompt-post-processing'],
             };
+        // "Generate for this character/group's chat" - the raw action is WHICH character/group,
+        // WHICH branch/node in that conversation tree to generate from, and the LITERAL text the
+        // user typed this turn (or nothing, for a continue/swipe) - the server resolves the user's
+        // OWN currently active oai_settings, character, chat history, and full prompt assembly
+        // entirely itself. See buildRawActionChatCompletionRequest() above for the full resolution
+        // pipeline - the direct chat-completion analog of buildRawActionTextCompletionRequest() in
+        // src/endpoints/backends/text-completions.js (commit ac42ce8c9). Field names deliberately
+        // match that precedent's raw-action field names verbatim (character_avatar/group_id/
+        // owner_id/branch_name/node_id/type/is_impersonate/is_continue/is_swipe/user_message).
+        } else if (request.body.owner_id && (request.body.character_avatar || request.body.group_id)) {
+            const {
+                character_avatar: characterAvatar, group_id: groupId, owner_id: ownerId,
+                branch_name: branchName, node_id: nodeId, type = 'normal',
+                is_impersonate: isImpersonate = false, is_continue: isContinue = false, is_swipe: isSwipe = false,
+                user_message: userMessageText,
+            } = request.body;
+
+            const directories = request.user.directories;
+
+            /** @type {Awaited<ReturnType<typeof buildRawActionChatCompletionRequest>>} */
+            let built;
+            try {
+                built = await buildRawActionChatCompletionRequest(directories, {
+                    characterAvatar, groupId, ownerId, branchName, nodeId,
+                    type, isImpersonate, isContinue, isSwipe, userMessageText,
+                });
+            } catch (error) {
+                console.error('Failed to build raw-action chat completion request:', error);
+                return response.status(400).send({ error: true, message: error?.message ?? 'Could not resolve this generation request' });
+            }
+
+            // Persist the NEW USER MESSAGE - "the user sent this" - BEFORE dispatching to the
+            // backend. This is a real fact that should be committed regardless of whether generation
+            // itself succeeds afterward, so it's done for real here, not deferred (identical
+            // rationale to buildRawActionTextCompletionRequest()'s own route wiring).
+            //
+            // The ASSISTANT's reply is persisted further down, at the single shared non-streaming
+            // response point in the default/legacy inline dispatch block - see `pendingAssistantPersist`,
+            // set a few lines below. NOT COVERED (explicit, documented deferral - real, separate
+            // surface area, much larger than text-completion's single shared dispatch block):
+            //   - EVERY streaming raw-action generation (any chat_completion_source with
+            //     request.body.stream true) - would need teeing the live SSE byte stream into full
+            //     text per source's own delta-parsing format while still forwarding it unchanged.
+            //   - The provider-`switch` cases above (sendClaudeRequest/sendAI21Request/
+            //     sendMakerSuiteRequest/sendMistralAIRequest/sendCohereRequest/sendDeepSeekRequest/
+            //     sendAimlapiRequest/sendXaiRequest/sendChutesRequest/sendMinimaxRequest/
+            //     sendElectronHubRequest/sendAzureOpenAIRequest) - each is its own function with its
+            //     own response shape/streaming behavior and would need individual review.
+            // The reply, once persisted, must chain onto whatever node is actually the new leaf after
+            // this block - the just-appended user message's node when one was appended, otherwise
+            // `built.anchorNodeId` unchanged (continue/swipe, which add no new message).
+            let replyAnchorNodeId = built.anchorNodeId;
+            if (typeof userMessageText === 'string' && built.anchorNodeId) {
+                const appendResult = await appendMessages(directories, ownerId, built.anchorNodeId, [
+                    { name: built.name1, is_user: true, mes: userMessageText, extra: {}, send_date: Date.now() },
+                ]);
+                if (!appendResult.ok) {
+                    console.error('Failed to persist user message onto the tree:', appendResult.reason);
+                } else if (appendResult.node_ids?.length) {
+                    replyAnchorNodeId = appendResult.node_ids[appendResult.node_ids.length - 1];
+                }
+            }
+
+            // Stash what's needed to persist the ASSISTANT's reply once a (non-streaming, default/
+            // legacy-dispatch-block) response is known - read only there, guarded by
+            // `if (pendingAssistantPersist)`, so this has no effect on the provider-`switch` cases or
+            // either streaming path (see the comment on this variable's declaration above).
+            pendingAssistantPersist = { directories, ownerId, anchorNodeId: replyAnchorNodeId, name2: built.name2 };
+
+            // Replace the body entirely - mirrors the connection-profile branch's own final
+            // assignment shape exactly, so the existing downstream dispatch code below is completely
+            // unaware of which branch produced request.body. No secret_id override: unlike the
+            // connection-profile branch (which resolves a PROFILE's own stored secret), this raw
+            // action uses the user's OWN currently active setup, so `secret_id` is left `undefined` -
+            // exactly like an ordinary client-driven request that doesn't name a specific stored
+            // secret - and every downstream `readSecret(..., request.body.secret_id)` call already
+            // treats `undefined` as "use the default secret for this key" (readSecret()'s own `id =
+            // null` default).
+            const stream = !!request.body.stream;
+            request.body = { ...built.params, stream, chat_completion_source: built.settings.chat_completion_source };
         }
 
         const postProcessingType = request.body.custom_prompt_post_processing;
@@ -2664,6 +2908,37 @@ router.post('/generate', async function (request, response) {
             /** @type {any} */
             const json = await fetchResponse.json();
             console.debug('Chat Completion response:', json);
+
+            // Persist the ASSISTANT's reply for the raw-action branch (see
+            // `pendingAssistantPersist`'s declaration near the top of this route) - only reached for
+            // a real, successful (fetchResponse.ok) NON-STREAMING generation dispatched through THIS
+            // shared inline OpenAI/custom/other-source block, so nothing speculative ever gets
+            // committed. A no-op when the raw-action branch didn't run, and never reached at all for
+            // the provider-`switch` cases above (each `return`s from its own function before this
+            // point) or either streaming path (the `request.body.stream` branch above already
+            // returned) - see that variable's own declaration comment for the full list of what's
+            // NOT covered here.
+            if (pendingAssistantPersist) {
+                // This shared block only ever builds an OpenAI-Chat-Completions-shaped request
+                // (`/chat/completions`, `messages: [...]`) UNLESS `isTextCompletion` is true (a
+                // `/completions`-style legacy text-completion model routed through this same chat-
+                // completion source) - re-verified above (`isTextCompletion` derivation, `endpointUrl`
+                // branch, `textPrompt`/`convertTextCompletionPrompt` construction). The raw-action
+                // branch above always builds real chat messages (never a plain string prompt), so
+                // `isTextCompletion` is never true for it - only the real chat-shaped
+                // `{choices: [{message: {content}}]}` response is ever extracted here.
+                const generatedText = json?.choices?.[0]?.message?.content ?? '';
+                if (generatedText) {
+                    const { directories, ownerId, anchorNodeId, name2 } = pendingAssistantPersist;
+                    const appendResult = await appendMessages(directories, ownerId, anchorNodeId, [
+                        { name: name2, is_user: false, mes: generatedText, extra: {}, send_date: Date.now() },
+                    ]);
+                    if (!appendResult.ok) {
+                        console.error('Failed to persist assistant reply onto the tree:', appendResult.reason);
+                    }
+                }
+            }
+
             return response.send(json);
         } else {
             const responseText = await fetchResponse.text();
