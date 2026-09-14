@@ -256,8 +256,54 @@ async function run() {
             const data = await res.json();
             return { status: res.status, data };
         } finally {
+            // Without forcing idle keep-alive sockets closed, server.close() only resolves once the
+            // client's persistent HTTP/1.1 connection times out on its own (Node's default
+            // keepAliveTimeout) - which would otherwise stall every subsequent test in this same
+            // process for several seconds each, for no reason relevant to what's under test here.
+            server.closeAllConnections?.();
             await new Promise(resolve => server.close(resolve));
         }
+    }
+
+    /** Like postGenerate(), but for a streaming request: returns the raw response status/body text, unparsed - so the test can assert on the literal bytes the client received. */
+    async function postGenerateStream(app, body) {
+        const server = app.listen(0, '127.0.0.1');
+        await new Promise(resolve => server.once('listening', resolve));
+        const port = server.address().port;
+        try {
+            const res = await fetch(`http://127.0.0.1:${port}/generate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            const bodyText = await res.text();
+            return { status: res.status, bodyText };
+        } finally {
+            server.closeAllConnections?.();
+            await new Promise(resolve => server.close(resolve));
+        }
+    }
+
+    /** Polls `check()` until it returns truthy or `timeoutMs` elapses - streaming persistence completes asynchronously, after the HTTP response to the client has already fully ended, so tests observe it by polling rather than assuming a fixed ordering. */
+    async function waitFor(check, { timeoutMs = 2000, intervalMs = 10 } = {}) {
+        const deadline = Date.now() + timeoutMs;
+        for (; ;) {
+            const result = await check();
+            if (result) return result;
+            if (Date.now() > deadline) {
+                throw new Error('waitFor() timed out waiting for condition to become true');
+            }
+            await new Promise(resolve => setTimeout(resolve, intervalMs));
+        }
+    }
+
+    /** Starts a fake backend that emits a real OpenAI-Chat-Completions-shaped SSE stream (`choices[0].delta.content` chunks), ending with `data: [DONE]\n\n`. */
+    async function startFakeSseBackend(textChunks) {
+        const sseBody = textChunks.map(text => `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`).join('') + 'data: [DONE]\n\n';
+        return { ...await startFakeBackend((_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+            res.end(sseBody);
+        }), expectedBody: sseBody };
     }
 
     function pointBackendAt(url) {
@@ -661,12 +707,165 @@ async function run() {
         assert.ok(rexBranchUnaffected.messages.every(m => m.mes !== 'All systems nominal, Captain.'), 'the group turn did not leak into an unrelated single-character owner namespace');
     }
 
-    // (i) STREAMING and the provider-`switch` cases (Claude/AI21/MakerSuite/etc) are intentionally NOT
-    // exercised here - see this session's report / the code comments at `pendingAssistantPersist`'s
-    // declaration in chat-completions.js for the full, explicit list of what remains deferred. Proving
-    // the assistant reply is untouched for them is trivial (pendingAssistantPersist is simply never
-    // read on those paths), but actually driving real streaming/provider-specific traffic through this
-    // harness would be exercising existing, unmodified plumbing - out of scope here.
+    // (i) STREAMING raw-action, plain reply: a real OpenAI-Chat-Completions-shaped SSE stream
+    // (`data: {"choices":[{"delta":{"content":"..."}}]}`, ending `data: [DONE]`) is teed - the
+    // client-facing bytes must be byte-for-byte identical to what the fake backend sent, AND the
+    // full concatenated text must land on the tree afterward (persistence happens asynchronously,
+    // after the HTTP response to the client has already ended - see forwardAndPersistSseText()'s own
+    // doc comment in chat-completions.js - so this polls via waitFor() rather than asserting
+    // immediately after the fetch resolves).
+    {
+        const streamBranch = 'stream-plain-chat';
+        await saveChatToTree(directories, ownerId, streamBranch, [
+            { chat_metadata: {} },
+            { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
+        ]);
+
+        const fakeBackend = await startFakeSseBackend(['Rex ', 'says ', 'hello ', 'back, ', 'streamed.']);
+        pointBackendAt(fakeBackend.url);
+
+        const branchBefore = await loadBranch(directories, ownerId, streamBranch);
+        const messageCountBefore = branchBefore.messages.length;
+
+        const app = buildTestApp();
+        const { status, bodyText } = await postGenerateStream(app, {
+            owner_id: ownerId, character_avatar: avatar, branch_name: streamBranch,
+            type: 'normal', user_message: 'Say hi, streamed.', stream: true,
+        });
+        fakeBackend.server.close();
+
+        assert.equal(status, 200);
+        assert.equal(bodyText, fakeBackend.expectedBody, 'the client-facing SSE bytes are byte-for-byte identical to what the fake backend sent - the teeing did not alter, buffer, or reorder anything');
+
+        const branchAfter = await waitFor(async () => {
+            const branch = await loadBranch(directories, ownerId, streamBranch);
+            return branch.messages.length === messageCountBefore + 2 ? branch : null;
+        });
+        const [userMsg, assistantMsg] = branchAfter.messages.slice(-2);
+        assert.equal(userMsg.mes, 'Say hi, streamed.');
+        assert.equal(userMsg.is_user, true);
+        assert.equal(assistantMsg.mes, 'Rex says hello back, streamed.', 'the full text, accumulated across every SSE chunk, was persisted - not just the last chunk');
+        assert.equal(assistantMsg.is_user, false);
+        assert.equal(assistantMsg.name, 'Rex');
+    }
+
+    // (i-2) STREAMING raw-action, is_swipe: true - same SSE teeing, but must land as a real SIBLING
+    // alternative (addAlternatives() + selectDefaultChild()), exactly like the non-streaming swipe
+    // case (e) above - proving persistAssistantReply() drives the streaming path through the exact
+    // same shared branching, not a re-implementation of it. Uses its own DISTINCT preceding message
+    // text - see (e)'s/(f)'s own reasoning for why (message-tree-db.js structurally shares nodes
+    // across branches for the same owner whenever their preceding content is byte-identical).
+    {
+        const streamSwipeBranch = 'stream-swipe-chat';
+        await saveChatToTree(directories, ownerId, streamSwipeBranch, [
+            { chat_metadata: {} },
+            { name: 'Tester', is_user: true, mes: 'Hi Rex, streaming swipe test.', send_date: 1, extra: {} },
+            { name: 'Rex', is_user: false, mes: 'Hello there, streaming swipe test!', send_date: 2, extra: {} },
+        ]);
+
+        const branchBefore = await loadBranch(directories, ownerId, streamSwipeBranch);
+        const swipedNodeId = branchBefore.branch.leaf_id;
+
+        const fakeBackend = await startFakeSseBackend(['Greetings, ', 'traveler, ', 'streamed!']);
+        pointBackendAt(fakeBackend.url);
+
+        const app = buildTestApp();
+        const { status, bodyText } = await postGenerateStream(app, {
+            owner_id: ownerId, character_avatar: avatar, branch_name: streamSwipeBranch,
+            type: 'swipe', is_swipe: true, stream: true,
+        });
+        fakeBackend.server.close();
+
+        assert.equal(status, 200);
+        assert.equal(bodyText, fakeBackend.expectedBody, 'the client-facing SSE bytes are byte-for-byte identical to what the fake backend sent');
+
+        const branchAfter = await waitFor(async () => {
+            const branch = await loadBranch(directories, ownerId, streamSwipeBranch);
+            return branch.branch.leaf_id !== swipedNodeId ? branch : null;
+        });
+        assert.equal(branchAfter.messages[branchAfter.messages.length - 1].mes, 'Greetings, traveler, streamed!');
+        const alternatives = await getAlternatives(directories, swipedNodeId);
+        assert.equal(alternatives.total, 2, 'the streamed swipe produced a real sibling alternative, not a chained child');
+        assert.ok(alternatives.alternatives.some(a => a.mes === 'Hello there, streaming swipe test!'), 'the original swiped message is unchanged');
+    }
+
+    // (i-3) STREAMING raw-action, is_continue: true - same SSE teeing, but must EDIT the existing
+    // leaf in place (oldText + newText) via editMessage(), exactly like the non-streaming continue
+    // case (g) above. Uses its own DISTINCT preceding text - continue's editMessage() mutates a
+    // potentially-SHARED leaf node in place, so reusing (g)/(h)'s exact text here would edit THEIR
+    // fixture's node instead of a clean one of this test's own.
+    {
+        const streamContinueBranch = 'stream-continue-chat';
+        await saveChatToTree(directories, ownerId, streamContinueBranch, [
+            { chat_metadata: {} },
+            { name: 'Tester', is_user: true, mes: 'Tell me a streaming story, Rex.', send_date: 1, extra: {} },
+            { name: 'Rex', is_user: false, mes: 'Once upon a streaming time,', send_date: 2, extra: {} },
+        ]);
+
+        const branchBefore = await loadBranch(directories, ownerId, streamContinueBranch);
+        const leafBefore = branchBefore.branch.leaf_id;
+        const messageCountBefore = branchBefore.messages.length;
+
+        const fakeBackend = await startFakeSseBackend([' there was ', 'a brave, ', 'streamed adventurer.']);
+        pointBackendAt(fakeBackend.url);
+
+        const app = buildTestApp();
+        const { status, bodyText } = await postGenerateStream(app, {
+            owner_id: ownerId, character_avatar: avatar, branch_name: streamContinueBranch,
+            type: 'continue', is_continue: true, stream: true,
+        });
+        fakeBackend.server.close();
+
+        assert.equal(status, 200);
+        assert.equal(bodyText, fakeBackend.expectedBody, 'the client-facing SSE bytes are byte-for-byte identical to what the fake backend sent');
+
+        const branchAfter = await waitFor(async () => {
+            const branch = await loadBranch(directories, ownerId, streamContinueBranch);
+            const leaf = branch.messages[branch.messages.length - 1];
+            return leaf.mes === 'Once upon a streaming time, there was a brave, streamed adventurer.' ? branch : null;
+        });
+        assert.equal(branchAfter.messages.length, messageCountBefore, 'no new node was created - the streamed continue only edited the existing leaf');
+        assert.equal(branchAfter.branch.leaf_id, leafBefore, 'the SAME node is still the leaf');
+    }
+
+    // (i-4) A NON-raw-action streaming request (a connection_profile_id-less, owner_id-less legacy
+    // request) must be COMPLETELY unaffected by the teeing mechanism: forwardAndPersistSseText()'s
+    // own top-of-function guard (`if (!persist || ...)`) falls straight through to a plain, untouched
+    // forwardFetchResponse() call - no listener is even attached in this case. Verified here by
+    // asserting the client-facing bytes are still byte-for-byte identical to the fake backend's own
+    // SSE stream, and that nothing was persisted anywhere.
+    {
+        const fakeBackend = await startFakeSseBackend(['This ', 'is ', 'a ', 'plain ', 'legacy ', 'stream.']);
+        pointBackendAt(fakeBackend.url);
+
+        const branchBefore = await loadBranch(directories, ownerId, branchName);
+        const messageCountBefore = branchBefore.messages.length;
+
+        const app = buildTestApp();
+        const { status, bodyText } = await postGenerateStream(app, {
+            // No owner_id/character_avatar/group_id/connection_profile_id - falls through to the
+            // legacy/default branch, which only dispatches request.body through the shared block
+            // completely unchanged.
+            messages: [{ role: 'user', content: 'Legacy raw prompt, no raw-action fields.' }],
+            model: 'test-model', chat_completion_source: 'custom', custom_url: fakeBackend.url, stream: true,
+        });
+        fakeBackend.server.close();
+
+        assert.equal(status, 200);
+        assert.equal(bodyText, fakeBackend.expectedBody, 'a non-raw-action stream is forwarded byte-for-byte unchanged - pendingAssistantPersist stays null, so no teeing/accumulation/persistence logic ever runs for it');
+
+        const branchAfter = await loadBranch(directories, ownerId, branchName);
+        assert.equal(branchAfter.messages.length, messageCountBefore, 'nothing was persisted onto any tree for a non-raw-action stream');
+    }
+
+    // The provider-`switch` cases (Claude/AI21/MakerSuite/etc) are intentionally NOT exercised here -
+    // see the code comments at `pendingAssistantPersist`'s declaration in chat-completions.js for the
+    // full, explicit, by-name list of what remains deferred (for BOTH streaming and non-streaming).
+    // Proving the assistant reply is untouched for them is trivial (pendingAssistantPersist is simply
+    // never read on those paths - each function returns from its own, completely untouched
+    // forwardFetchResponse() call site before reaching this route's shared dispatch code at all), but
+    // actually driving real provider-specific traffic through this harness would be exercising
+    // existing, unmodified plumbing - out of scope here.
 
     // --- error handling (route-level): missing owner_id falls through as an ordinary (non-raw-action)
     // request - it is NOT gated into the raw-action branch at all (the gate itself requires owner_id),
