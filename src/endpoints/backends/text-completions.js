@@ -308,9 +308,22 @@ router.post('/generate', async function (request, response) {
             const preset = profile.preset ? readPresetByName('textgenerationwebui', profile.preset, request.user.directories) : null;
             const settings = mergeTextGenPreset({ ...baseSettings, type: selectedApiMap.type }, preset);
 
-            const params = createTextGenGenerationData(
+            // Resolved early (normally computed after this call, at line ~327) so it can also be
+            // handed to computeTextgenLogitBias()'s remote-tokenize branches (src/endpoints/
+            // tokenizers.js) via logitBiasContext.remoteContext - without it, a connected textgen/
+            // kobold backend's OWN tokenizer would silently be skipped for any settings.logit_bias
+            // entry that needs it, even though the backend the request will hit is already known
+            // here.
+            const apiServerUrl = profile['api-url'] || resolveServerUrl(settings);
+
+            const params = await createTextGenGenerationData(
                 settings, profile.model, finalPrompt, maxTokens, isImpersonate, isContinue, null, type,
-                { stoppingStrings, macroContext: { name1, name2 } },
+                {
+                    stoppingStrings, macroContext: { name1, name2 },
+                    logitBiasContext: {
+                        remoteContext: { request, baseUrl: apiServerUrl, apiType: selectedApiMap.type, model: profile.model },
+                    },
+                },
             );
 
             // Optional sampler-field overrides for this one call (e.g. a caller that wants a
@@ -324,7 +337,7 @@ router.post('/generate', async function (request, response) {
             // Replace the body entirely - none of the raw action fields (messages, name1/name2,
             // connection_profile_id, etc.) are part of the actual backend request shape.
             const stream = !!request.body.stream;
-            request.body = { ...params, stream, api_type: selectedApiMap.type, api_server: profile['api-url'] || resolveServerUrl(settings) };
+            request.body = { ...params, stream, api_type: selectedApiMap.type, api_server: apiServerUrl };
         }
 
         // No api_type means this is the main chat flow, which no longer sends one - resolve the
