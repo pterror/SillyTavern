@@ -16,7 +16,7 @@ const fakeEncode = (text) => Array.from(text).map(c => c.charCodeAt(0));
 
 // Disabled when sendBannedTokens is false, even with ban sources present
 {
-    const result = getCustomTokenBans({
+    const result = await getCustomTokenBans({
         bannedTokensRaw: 'foo',
         globalBannedTokensRaw: 'bar',
         sendBannedTokens: false,
@@ -28,7 +28,7 @@ const fakeEncode = (text) => Array.from(text).map(c => c.charCodeAt(0));
 
 // Disabled when all three ban sources are empty
 {
-    const result = getCustomTokenBans({
+    const result = await getCustomTokenBans({
         bannedTokensRaw: '',
         globalBannedTokensRaw: '',
         sendBannedTokens: true,
@@ -40,7 +40,7 @@ const fakeEncode = (text) => Array.from(text).map(c => c.charCodeAt(0));
 
 // [1,2,3] raw token id lines
 {
-    const result = getCustomTokenBans({
+    const result = await getCustomTokenBans({
         bannedTokensRaw: '[1,2,3]',
         globalBannedTokensRaw: '',
         sendBannedTokens: true,
@@ -53,7 +53,7 @@ const fakeEncode = (text) => Array.from(text).map(c => c.charCodeAt(0));
 
 // "quoted" literal string lines -> banned_strings, not tokenized
 {
-    const result = getCustomTokenBans({
+    const result = await getCustomTokenBans({
         bannedTokensRaw: '"hello world"',
         globalBannedTokensRaw: '',
         sendBannedTokens: true,
@@ -66,7 +66,7 @@ const fakeEncode = (text) => Array.from(text).map(c => c.charCodeAt(0));
 
 // Plain text lines -> tokenized via encode
 {
-    const result = getCustomTokenBans({
+    const result = await getCustomTokenBans({
         bannedTokensRaw: 'ab',
         globalBannedTokensRaw: '',
         sendBannedTokens: true,
@@ -79,7 +79,7 @@ const fakeEncode = (text) => Array.from(text).map(c => c.charCodeAt(0));
 
 // Dedupe across all three sources, including duplicate lines and duplicate token ids
 {
-    const result = getCustomTokenBans({
+    const result = await getCustomTokenBans({
         bannedTokensRaw: '[1,2]\nab',
         globalBannedTokensRaw: '[2,3]\nab',
         sendBannedTokens: true,
@@ -95,8 +95,8 @@ const fakeEncode = (text) => Array.from(text).map(c => c.charCodeAt(0));
 // Malformed [...] JSON falls through gracefully (no throw, entry skipped)
 {
     let result;
-    assert.doesNotThrow(() => {
-        result = getCustomTokenBans({
+    await assert.doesNotReject(async () => {
+        result = await getCustomTokenBans({
             bannedTokensRaw: '[1,2,]',
             globalBannedTokensRaw: '',
             sendBannedTokens: true,
@@ -110,7 +110,7 @@ const fakeEncode = (text) => Array.from(text).map(c => c.charCodeAt(0));
 
 // Malformed [...] JSON that parses but isn't all integers also falls through gracefully
 {
-    const result = getCustomTokenBans({
+    const result = await getCustomTokenBans({
         bannedTokensRaw: '["a", "b"]',
         globalBannedTokensRaw: '',
         sendBannedTokens: true,
@@ -125,13 +125,13 @@ const fakeEncode = (text) => Array.from(text).map(c => c.charCodeAt(0));
 
 // Empty/missing logit_bias array returns {}
 {
-    assert.deepEqual(calculateLogitBias({ logitBiasEntries: undefined, encode: fakeEncode }), {});
-    assert.deepEqual(calculateLogitBias({ logitBiasEntries: [], encode: fakeEncode }), {});
+    assert.deepEqual(await calculateLogitBias({ logitBiasEntries: undefined, encode: fakeEncode }), {});
+    assert.deepEqual(await calculateLogitBias({ logitBiasEntries: [], encode: fakeEncode }), {});
 }
 
 // {verbatim text} -> braces stripped, tokenized as-is (no leading space added)
 {
-    const result = calculateLogitBias({
+    const result = await calculateLogitBias({
         logitBiasEntries: [{ text: '{ab}', value: 5 }],
         encode: fakeEncode,
     });
@@ -142,7 +142,7 @@ const fakeEncode = (text) => Array.from(text).map(c => c.charCodeAt(0));
 
 // [1,2,3] raw token ids
 {
-    const result = calculateLogitBias({
+    const result = await calculateLogitBias({
         logitBiasEntries: [{ text: '[1,2,3]', value: -2 }],
         encode: fakeEncode,
     });
@@ -151,7 +151,7 @@ const fakeEncode = (text) => Array.from(text).map(c => c.charCodeAt(0));
 
 // Plain text -> tokenized with a leading space prepended
 {
-    const result = calculateLogitBias({
+    const result = await calculateLogitBias({
         logitBiasEntries: [{ text: 'ab', value: 1 }],
         encode: fakeEncode,
     });

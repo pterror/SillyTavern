@@ -77,24 +77,20 @@ import { extension_prompt_types, extension_prompt_roles } from './extension-prom
  * FIELDS NOT RESOLVED HERE - LEFT TO THE CALLER (via `macroExtras`), AND WHY:
  * ============================================================================================
  *
- * - `countTokens`/`encodeTokens`: real resolution requires src/tokenizer-resolve.js's
- *   `resolveTokenizerType()` + `encodeWithTokenizerType()`, which is INHERENTLY ASYNC (it may probe
- *   a remote backend's own tokenizer endpoint, matching public/scripts/tokenizers.js's
- *   `getTokenizerBestMatch()`/`getTokenizerForTokenIds()`), while the orchestrator's own
- *   `encodeTokens` param type is a plain SYNCHRONOUS `(text: string) => number[]` function (used
- *   directly inside getCustomTokenBans()/calculateLogitBias(), which are themselves synchronous).
- *   There is no way to bridge a genuinely-async remote tokenizer call into that synchronous
- *   signature without either (a) pre-resolving every token-ban/logit-bias line's tokens before
- *   calling the orchestrator (a substantial restructuring of orchestrator-internal control flow
- *   this task's scope explicitly excludes touching), or (b) blocking synchronously on a promise
- *   (not viable in Node). This is a genuine architectural gap between the two already-committed
- *   modules, not something this resolver can "wire in for real" without guessing at a redesign -
- *   so both remain REQUIRED caller-supplied params, exactly as the orchestrator itself requires.
- *   `countTokens` (async, used everywhere else in the orchestrator) COULD technically be wired for
- *   real via `encodeWithTokenizerType(...).then(ids => ids.length)`, but doing that while
- *   `encodeTokens` stays a stub would give the two functions a different effective tokenizer,
- *   silently corrupting token-budget math relative to token-ban math - worse than leaving both as
- *   pass-throughs. So neither is wired; both are simply required inputs here too.
+ * - `countTokens`/`encodeTokens`: UPDATE - `src/token-bans-and-bias.js`'s `getCustomTokenBans()`/
+ *   `calculateLogitBias()` now `await` their `encode` param (previously synchronous-only), so the
+ *   original blocker recorded here - that a genuinely-async remote-backend tokenizer couldn't be
+ *   bridged into a synchronous `encodeTokens` without desyncing it from `countTokens` - no longer
+ *   applies at the type-signature level; both orchestrator params now accept an async function.
+ *   This resolver STILL leaves both as required caller-supplied params, though, for a different
+ *   reason: wiring `src/tokenizer-resolve.js`'s real `resolveTokenizerType()`/`encodeWithTokenizerType()`
+ *   by default here would mean simply calling this settings-resolution function can trigger a LIVE
+ *   NETWORK REQUEST to the user's configured backend server (the remote-tokenizer path) as a side
+ *   effect - a meaningfully different risk/behavior profile than every other field this resolver
+ *   computes (plain reads of local disk state). Whether/how to opt into that automatically is a
+ *   separate decision this task does not make silently - so both tokenizer functions remain
+ *   explicit, required inputs; a caller that wants the real local-tokenizer-only path can call
+ *   `resolveTokenizerType()`/`encodeWithTokenizerType()` itself and pass the result in.
  * - `quiet_prompt`/`quietToLoud`/`quietName`/`generationTrigger`/`isDryRun`/`canUseTools`/
  *   `forceName2Override`/`preferCharacterPrompt`/`preferCharacterJailbreak`/`worldInfoRandom`/
  *   `entryFilterContext`/`externalActivations`/`ephemeralStoppingStrings`/`injectedIndices`/
