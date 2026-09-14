@@ -171,6 +171,52 @@ async function computeGroupCards(directories, group, characterAvatar, chatMetada
 }
 
 /**
+ * Server-side port of public/scripts/group-chats.js's getGroupDepthPrompts(groupId, characterAvatar)
+ * (~line 551-589): resolves EACH group member's own `depth_prompt` field separately (unlike
+ * computeGroupCards()'s combined-cards path, which folds every member into one joined string per
+ * field), for the "one chat injection per group member" mechanism used by the orchestrator's
+ * group-chat depth-prompt wiring.
+ *
+ * JUDGMENT CALL / important difference from computeGroupCards() in this same module (do not conflate
+ * the two): this function's disabled-member exclusion has NO `group.generation_mode !==
+ * APPEND_DISABLED` carve-out - it excludes a disabled member whenever `disabled_members.includes(member)
+ * && characterAvatar !== member`, regardless of generation_mode, exactly matching the client. The
+ * whole group is excluded (returns `[]`) only when `group.generation_mode === SWAP` specifically -
+ * this is a distinct, simpler exclusion rule than computeGroupCards()'s, ported as-is per the task's
+ * read-first instructions, not reused/merged with it.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} groupId
+ * @param {string} characterAvatar Avatar of the "current" character (exempts it from disabled-member filtering)
+ * @returns {Promise<{text: string, depth: number, role: number}[]>}
+ */
+export async function getGroupCharacterDepthPrompts(directories, groupId, characterAvatar) {
+    if (!groupId) return [];
+    const group = getGroupsByIds(directories, [groupId])[groupId] ?? null;
+    if (!group || !Array.isArray(group.members) || !group.members.length) return [];
+
+    const SWAP = 0; // group_generation_mode.SWAP, public/scripts/group-chats.js
+    if (group.generation_mode === SWAP) return [];
+
+    const disabledMembers = Array.isArray(group.disabled_members) ? group.disabled_members : [];
+
+    const depthPrompts = [];
+    for (const member of group.members) {
+        const character = await loadCharacter(directories, member);
+        if (!character) continue;
+        if (disabledMembers.includes(member) && characterAvatar !== member) continue;
+
+        const depthPromptText = baseChatReplace(character.data?.extensions?.depth_prompt?.prompt?.trim(), { name2: character.name }) || '';
+        const depthPromptDepth = character.data?.extensions?.depth_prompt?.depth ?? DEPTH_PROMPT_DEPTH_DEFAULT;
+        const depthPromptRole = getExtensionPromptRoleByName(character.data?.extensions?.depth_prompt?.role ?? 'system');
+
+        if (depthPromptText) {
+            depthPrompts.push({ text: depthPromptText, depth: depthPromptDepth, role: depthPromptRole });
+        }
+    }
+    return depthPrompts;
+}
+
+/**
  * Returns the character card fields for a character (and, when applicable, its group), as a
  * plain object shaped for `SubstituteParamsContext.characterCard` (see
  * src/macro-substitution.js's `CharacterCardFields` JSDoc typedef).

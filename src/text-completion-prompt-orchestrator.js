@@ -1,5 +1,5 @@
 import { getBiasStrings } from './prompt-line-formatting.js';
-import { getCharacterCardFields } from './character-card-fields.js';
+import { getCharacterCardFields, getGroupCharacterDepthPrompts } from './character-card-fields.js';
 import { buildCoreChat, finalizeCoreChatMessage } from './core-chat-build.js';
 import { createReasoningFoldState, foldReasoningIntoMessage, isReasoningLimitReached } from './reasoning-fold.js';
 import { getGuidanceScale, adjustMaxContextForCfg } from './cfg-prompt-resolve.js';
@@ -77,25 +77,27 @@ import { createExtensionPromptTable, setExtensionPrompt, doChatInject, extension
  *        client itself clears that slot again immediately after the world-info call and never lets it
  *        reach doChatInject().)
  *      - The character card's own `depth_prompt` field
- *        (`character.data.extensions.depth_prompt.{prompt, depth, role}`) - SINGLE-CHARACTER case NOW
- *        CLOSED, as of this task. The client stashes this into `extension_prompts` as an ACTUAL
- *        IN-CHAT depth injection (public/script.js ~5552-5558: `setExtensionPrompt(inject_ids.
- *        DEPTH_PROMPT, depthPromptText, IN_CHAT, depthPromptDepth, extension_settings.note.
- *        allowWIScan, depthPromptRole)`), separately from the already-correct "characterDepthPrompt
- *        available for WI key-matching via globalScanData" mechanism (which
+ *        (`character.data.extensions.depth_prompt.{prompt, depth, role}`) - BOTH the single-character
+ *        AND group-chat cases are NOW CLOSED, as of this task (and the prior one). The client stashes
+ *        this into `extension_prompts` as an ACTUAL IN-CHAT depth injection (public/script.js
+ *        ~5545-5559: per-group-member via `getGroupDepthPrompts()`/`inject_ids.DEPTH_PROMPT_INDEX(index)`
+ *        when `selected_group` is set and produces at least one entry, else the single-character
+ *        `setExtensionPrompt(inject_ids.DEPTH_PROMPT, depthPromptText, IN_CHAT, depthPromptDepth,
+ *        extension_settings.note.allowWIScan, depthPromptRole)`), separately from the already-correct
+ *        "characterDepthPrompt available for WI key-matching via globalScanData" mechanism (which
  *        src/character-card-fields.js's `charDepthPrompt` field / src/world-info/key-matching.js's
  *        `entry.matchCharacterDepthPrompt` check already handle correctly - that part is fine, was
- *        not touched). `getCharacterCardFields()` now also resolves the `depth`/`role` sub-fields
- *        (`charDepthPromptDepth`/`charDepthPromptRole`), and this orchestrator writes them into the
- *        extension-prompt table (entry 4, alongside world-info/author's-note/story-string above) and
- *        therefore into `mesSend`/`combinedPrompt` via the same `doChatInject()` mechanism - but ONLY
- *        for the single-character (non-group) case, i.e. `hasCharacterOrGroup && !isGroup`.
- *        STILL OPEN, deliberately out of scope for this task: the GROUP-CHAT variant
- *        (`getGroupDepthPrompts()`, public/script.js's per-group-member depth-prompt resolution,
- *        used instead of the single-character branch whenever `selected_group` is set and produces
- *        one or more entries) - resolving each group member's own `depth_prompt` field and injecting
- *        one entry per member is a distinct, separate concern from the single-character wiring closed
- *        here, and remains unimplemented.
+ *        not touched). `getCharacterCardFields()` resolves the single-character `depth`/`role`
+ *        sub-fields (`charDepthPromptDepth`/`charDepthPromptRole`); `getGroupCharacterDepthPrompts()`
+ *        (also in src/character-card-fields.js, ported from group-chats.js's `getGroupDepthPrompts()`)
+ *        resolves one `{text, depth, role}` entry per group member with a non-empty depth_prompt, each
+ *        already resolved through the same role-name mapping. This orchestrator writes either the
+ *        group entries (one table key per entry, `depth_prompt_${index}`) or the single-character
+ *        entry (`depth_prompt`) into the extension-prompt table (entry 4, alongside world-info/
+ *        author's-note/story-string above) and therefore into `mesSend`/`combinedPrompt` via the same
+ *        `doChatInject()` mechanism - see the inline comment at the call site for the exact
+ *        group-vs-single branching (a group chat with zero resolved depth-prompt entries falls back to
+ *        the single-character entry, matching the client's real per-member-loop structure).
  *
  * 2. Regex-scripts engine (getRegexedString) - NOW REAL, as of this task. The three placements the
  *    client applies during text-completion prompt assembly are all wired into this orchestrator:
@@ -675,17 +677,43 @@ export async function assembleTextCompletionPrompt(input) {
         );
     }
 
-    // 4. Character card's own depth_prompt (public/script.js ~5552-5558), SINGLE-CHARACTER case only
-    // (matches this task's scope - the group-chat variant, per-member depth prompts via
-    // getGroupDepthPrompts(), is a separate, still-open sub-gap; see module doc comment gap 1). Only
-    // written when a character/group is actually selected and this ISN'T a group chat, and only when
-    // the resolved text is non-empty - matching the general "don't write empty entries" pattern the
-    // other three sources above already follow (world-info entries only exist when activated; the
-    // author's-note/story-string entries are behind their own truthiness/non-null guards). The `scan`
-    // argument reuses `noteSettings.allowWIScan` - the same input this orchestrator already threads
-    // through for the author's-note's OWN scan flag (see `additionalScanInjects` above) - matching the
-    // client's literal `extension_settings.note.allowWIScan` argument at this call site.
-    if (hasCharacterOrGroup && !isGroup && fields.charDepthPrompt) {
+    // 4. Character card's own depth_prompt (public/script.js ~5545-5559), now with the REAL
+    // group/single branching (this task closes the previously-documented group-chat sub-gap - see
+    // module doc comment gap 1). The `scan` argument reuses `noteSettings.allowWIScan` in BOTH
+    // branches - the same input this orchestrator already threads through for the author's-note's OWN
+    // scan flag (see `additionalScanInjects` above) - matching the client's literal
+    // `extension_settings.note.allowWIScan` argument at both of its call sites (single-character
+    // ~5558 and per-group-member ~5548).
+    //
+    // Group branch: getGroupCharacterDepthPrompts() (src/character-card-fields.js, ported from
+    // public/scripts/group-chats.js's getGroupDepthPrompts()) resolves ONE entry per group member that
+    // has a non-empty depth_prompt, each already carrying its OWN depth/role (resolved through
+    // getExtensionPromptRoleByName() inside that function - not re-resolved here). Each entry gets its
+    // own table key, mirroring the client's per-index `inject_ids.DEPTH_PROMPT_INDEX(index)` keying
+    // (public/script.js ~5546-5550) - `depth_prompt_${index}` is used here since nothing else reads
+    // these keys by exact string.
+    //
+    // Single-character fallback: used whenever this ISN'T a group chat, OR it is a group chat but
+    // getGroupCharacterDepthPrompts() resolved zero entries (e.g. no member has a depth_prompt set) -
+    // matching the client's real structure (public/script.js ~5545-5559: the group branch is only
+    // taken `if (selected_group)`, and INSIDE it the per-member loop is what actually decides whether
+    // anything gets injected; falling through to the single-character branch when a group produces no
+    // entries is this orchestrator's own necessary adaptation of that same intent, since `hasCharacterOrGroup`
+    // is the only single boolean this orchestrator has for "is a character/group selected at all").
+    // Unchanged from before this task: only written when a character/group is actually selected and
+    // the resolved text is non-empty, matching the general "don't write empty entries" pattern the
+    // other three sources above already follow.
+    const groupCharacterDepthPrompts = isGroup && hasCharacterOrGroup
+        ? await getGroupCharacterDepthPrompts(directories, groupId, avatar)
+        : [];
+    if (groupCharacterDepthPrompts.length > 0) {
+        groupCharacterDepthPrompts.forEach((depthPrompt, index) => {
+            setExtensionPrompt(
+                extensionPromptTable, `depth_prompt_${index}`, depthPrompt.text,
+                extension_prompt_types.IN_CHAT, depthPrompt.depth, noteSettings.allowWIScan, depthPrompt.role,
+            );
+        });
+    } else if (hasCharacterOrGroup && fields.charDepthPrompt) {
         setExtensionPrompt(
             extensionPromptTable, 'depth_prompt', fields.charDepthPrompt || '',
             extension_prompt_types.IN_CHAT, fields.charDepthPromptDepth, noteSettings.allowWIScan, fields.charDepthPromptRole,
@@ -833,7 +861,7 @@ export async function assembleTextCompletionPrompt(input) {
         doChatInjectIndices,
         // Documented gaps, echoed back so a caller can see what was NOT wired (see module doc comment).
         gaps: {
-            extensionPromptsSideTable: 'worldInfoDepth/authorsNote(IN_CHAT)/storyStringInjection/characterDepthPrompt(single-character only) ARE now spliced into the chat array via doChatInject() (see module doc comment gap 1). anBefore/anAfter (WI-combined-with-AN), outletEntries, and the GROUP-CHAT depth-prompt variant (getGroupDepthPrompts()) are still NOT wired into anything - still open.',
+            extensionPromptsSideTable: 'worldInfoDepth/authorsNote(IN_CHAT)/storyStringInjection/characterDepthPrompt(single-character AND group-chat, via getGroupCharacterDepthPrompts()) ARE now spliced into the chat array via doChatInject() (see module doc comment gap 1). anBefore/anAfter (WI-combined-with-AN) and outletEntries are still NOT wired into anything - still open.',
         },
     };
 }

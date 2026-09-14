@@ -12,7 +12,7 @@ import { setConfigFilePath } from './util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', 'config.yaml'));
-const { getCharacterCardFields } = await import('./character-card-fields.js');
+const { getCharacterCardFields, getGroupCharacterDepthPrompts } = await import('./character-card-fields.js');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-character-card-fields-test-'));
 const charactersDir = path.join(root, 'characters');
@@ -319,6 +319,67 @@ async function run() {
         writeGroup('group-swap', { generation_mode: 0, members: [memberA, memberB] });
         const fieldsSwap = await getCharacterCardFields(directories, { avatar: memberA, groupId: 'group-swap' });
         assert.equal(fieldsSwap.description, 'A description');
+    }
+
+    // 6. getGroupCharacterDepthPrompts() - per-member depth-prompt resolution (distinct from the
+    // combined-cards path above).
+    {
+        const memberNoPrompt = writeCharacter('DepthMemberNone.png', {
+            data: { name: 'DepthMemberNone' },
+        });
+        const memberWithPrompt = writeCharacter('DepthMemberWith.png', {
+            data: {
+                name: 'DepthMemberWith',
+                extensions: { depth_prompt: { prompt: 'Depth note for {{char}}', depth: 3, role: 'user' } },
+            },
+        });
+        const memberDisabledCurrent = writeCharacter('DepthMemberDisabledCurrent.png', {
+            data: {
+                name: 'DepthMemberDisabledCurrent',
+                extensions: { depth_prompt: { prompt: 'Disabled-but-current note' } },
+            },
+        });
+        const memberDisabledOther = writeCharacter('DepthMemberDisabledOther.png', {
+            data: {
+                name: 'DepthMemberDisabledOther',
+                extensions: { depth_prompt: { prompt: 'Disabled-and-not-current note' } },
+            },
+        });
+
+        // APPEND mode (1): disabled_members includes memberDisabledCurrent and memberDisabledOther.
+        // characterAvatar = memberDisabledCurrent -> that one IS included (exception), the other is not.
+        writeGroup('group-depth-prompts', {
+            generation_mode: 1,
+            members: [memberNoPrompt, memberWithPrompt, memberDisabledCurrent, memberDisabledOther],
+            disabled_members: [memberDisabledCurrent, memberDisabledOther],
+        });
+
+        const depthPrompts = await getGroupCharacterDepthPrompts(directories, 'group-depth-prompts', memberDisabledCurrent);
+        assert.equal(depthPrompts.length, 2, 'no-prompt member excluded, disabled-and-not-current member excluded');
+        const byText = depthPrompts.map(p => p.text);
+        assert.ok(byText.includes('Depth note for DepthMemberWith'), 'enabled member with a depth_prompt is included, macro-substituted');
+        assert.ok(byText.includes('Disabled-but-current note'), 'disabled member IS included when it is the current characterAvatar');
+        assert.ok(!byText.includes('Disabled-and-not-current note'), 'disabled member that is NOT the current characterAvatar is excluded');
+
+        const withPromptEntry = depthPrompts.find(p => p.text === 'Depth note for DepthMemberWith');
+        assert.equal(withPromptEntry.depth, 3);
+        assert.equal(withPromptEntry.role, 1, 'role \'user\' resolves to extension_prompt_roles.USER (1)');
+
+        const disabledCurrentEntry = depthPrompts.find(p => p.text === 'Disabled-but-current note');
+        assert.equal(disabledCurrentEntry.depth, 4, 'no explicit depth -> DEPTH_PROMPT_DEPTH_DEFAULT (4)');
+        assert.equal(disabledCurrentEntry.role, 0, 'no explicit role -> SYSTEM (0)');
+
+        // Whole-group SWAP-mode (0) exclusion - returns [] regardless of member depth_prompts.
+        writeGroup('group-depth-prompts-swap', {
+            generation_mode: 0,
+            members: [memberWithPrompt],
+        });
+        const swapPrompts = await getGroupCharacterDepthPrompts(directories, 'group-depth-prompts-swap', memberWithPrompt);
+        assert.deepEqual(swapPrompts, [], 'SWAP-mode group returns no depth prompts at all');
+
+        // No groupId / unknown groupId -> [].
+        assert.deepEqual(await getGroupCharacterDepthPrompts(directories, undefined, memberWithPrompt), []);
+        assert.deepEqual(await getGroupCharacterDepthPrompts(directories, 'no-such-group', memberWithPrompt), []);
     }
 
     console.log('character-card-fields.test.js: all assertions passed');
