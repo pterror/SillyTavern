@@ -555,6 +555,92 @@ test('assembleTextCompletionPrompt: character card depth_prompt is now spliced i
     );
 });
 
+test('assembleTextCompletionPrompt: group-chat member depth_prompt is spliced into the chat as a real IN_CHAT injection, one entry per member (new in this task)', async () => {
+    const { charactersDir, root } = makeDirectories();
+    const groupsDir = path.join(root, 'groups');
+    fs.mkdirSync(groupsDir, { recursive: true });
+
+    const avatarAria = 'aria-group.png';
+    writeCharacterCard(charactersDir, avatarAria, {
+        spec: 'chara_card_v2',
+        spec_version: '2.0',
+        name: 'Aria',
+        description: 'Aria is a wandering ranger who guards the Whispering Woods.',
+        personality: 'brave and curious',
+        scenario: '',
+        first_mes: 'Hello there, traveler!',
+        mes_example: '',
+        avatar: avatarAria,
+        data: {
+            name: 'Aria',
+            description: 'Aria is a wandering ranger who guards the Whispering Woods.',
+            personality: 'brave and curious',
+            scenario: '',
+            first_mes: 'Hello there, traveler!',
+            mes_example: '',
+            system_prompt: '', post_history_instructions: '', character_version: '', creator_notes: '',
+            alternate_greetings: [],
+            // Depth 0 lands on the newest message (same reasoning as the single-character test above)
+            // so the injected text is guaranteed to survive any token-budget trimming in this fixture.
+            extensions: { depth_prompt: { prompt: 'Aria whispers: the moonblade hums when danger is near.', depth: 0, role: 'user' } },
+        },
+    });
+
+    const avatarBran = 'bran-group.png';
+    writeCharacterCard(charactersDir, avatarBran, {
+        spec: 'chara_card_v2',
+        spec_version: '2.0',
+        name: 'Bran',
+        description: 'Bran is a gruff blacksmith.',
+        personality: 'gruff',
+        scenario: '',
+        first_mes: 'Need something forged?',
+        mes_example: '',
+        avatar: avatarBran,
+        data: {
+            name: 'Bran',
+            description: 'Bran is a gruff blacksmith.',
+            personality: 'gruff',
+            scenario: '',
+            first_mes: 'Need something forged?',
+            mes_example: '',
+            system_prompt: '', post_history_instructions: '', character_version: '', creator_notes: '',
+            alternate_greetings: [],
+            // No depth_prompt at all - should not contribute any injected entry.
+            extensions: {},
+        },
+    });
+
+    fs.writeFileSync(path.join(groupsDir, 'the-woods-group.json'), JSON.stringify({
+        id: 'the-woods-group',
+        generation_mode: 1, // group_generation_mode.APPEND
+        members: [avatarAria, avatarBran],
+        disabled_members: [],
+    }));
+
+    const directories = { characters: charactersDir, groups: groupsDir, root };
+
+    const input = {
+        ...baseFixture(directories, avatarAria),
+        hasCharacterOrGroup: true,
+        isGroup: true,
+        groupId: 'the-woods-group',
+    };
+    const result = await assembleTextCompletionPrompt(input);
+
+    // Before this task, only the single-character branch existed, so a group chat's per-member
+    // depth_prompt text could never reach combinedPrompt/finalMesSend - proving the group-chat gap
+    // (getGroupCharacterDepthPrompts()) is now closed.
+    assert.ok(
+        result.combinedPrompt.includes('Aria whispers: the moonblade hums when danger is near.'),
+        'the group member\'s own depth_prompt text should now appear in combinedPrompt via doChatInject()',
+    );
+    assert.ok(
+        result.finalMesSend.some(m => m.message.includes('Aria whispers: the moonblade hums when danger is near.')),
+        'the group member\'s depth_prompt text should appear as a spliced entry in finalMesSend',
+    );
+});
+
 test('assembleTextCompletionPrompt: an AI_OUTPUT regex script transforms a chat message (new in this task)', async () => {
     const { charactersDir, root } = makeDirectories();
     const avatar = 'aria6.png';
