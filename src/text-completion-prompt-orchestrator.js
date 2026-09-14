@@ -16,6 +16,7 @@ import { getStoppingStrings } from './stopping-strings.js';
 import { getCustomTokenBans, calculateLogitBias } from './token-bans-and-bias.js';
 import { createTextGenGenerationData } from './textgen-generation-data.js';
 import { baseChatReplace } from './macro-substitution.js';
+import { createExtensionPromptTable, setExtensionPrompt, doChatInject, extension_prompt_types } from './extension-prompt-table.js';
 
 /**
  * Server-side orchestrator that reproduces the TEXT-COMPLETION-ONLY prompt-assembly pipeline of
@@ -28,33 +29,43 @@ import { baseChatReplace } from './macro-substitution.js';
  * READ THIS BEFORE TRUSTING THE OUTPUT AS PRODUCTION-ACCURATE - remaining, DOCUMENTED gaps:
  * ============================================================================================
  *
- * 1. THE `extension_prompts` SIDE-TABLE (the single most significant remaining gap). The client
- *    keeps a live, depth-indexed table of injected content (world-info @Depth entries, the
- *    author's-note text combined with WI ANTop/ANBottom entries, the quiet-prompt, jailbreak/PHI
- *    injected via a different mechanism, the story-string-as-in-chat injection, CFG's own depth
- *    splice, etc.) via setExtensionPrompt()/getExtensionPrompt(), and *threads all of it into
- *    `mesSend[i].extensionPrompts` before the final combine step* (see public/script.js's
- *    `doChatInject()`, and the `chat2[i] = ... + extensionPrompt` wiring throughout Generate()).
- *    No such side-table exists server-side. This orchestrator computes every INPUT to that
- *    table as a separate, plain output value instead:
- *      - `worldInfoDepth` (from bucketActivatedEntries) - @Depth world-info entries, never spliced
- *        into `mesSend[i].extensionPrompts`.
- *      - `anBefore`/`anAfter` (from bucketActivatedEntries) plus `authorsNote.value` (from
- *        resolveAuthorsNote) - never combined into a single ANTop+note+ANBottom string, never
- *        injected at `authorsNote.depth`.
- *      - `outletEntries` (from bucketActivatedEntries) - never delivered to whatever "outlet"
- *        consumer would read it.
- *      - `beforeScenarioAnchor`/`afterScenarioAnchor` (BEFORE_PROMPT/IN_PROMPT anchors) - taken as
- *        plain caller-supplied inputs (default '') rather than resolved from a live table.
+ * 1. THE `extension_prompts` SIDE-TABLE - PARTIALLY CLOSED. The client keeps a live, depth-indexed
+ *    table of injected content (world-info @Depth entries, the author's-note text combined with WI
+ *    ANTop/ANBottom entries, the quiet-prompt, jailbreak/PHI injected via a different mechanism, the
+ *    story-string-as-in-chat injection, CFG's own depth splice, etc.) via
+ *    setExtensionPrompt()/getExtensionPrompt(), and *threads all of it into `mesSend[i]` via
+ *    `doChatInject()` splicing synthetic messages into the chat array before token-budget filling*.
+ *    A server-side equivalent of that table and of `doChatInject()` now exists (see
+ *    src/extension-prompt-table.js) and IS wired into this orchestrator, between the story-string
+ *    assembly and jailbreak-injection steps below. What is now REAL, as of this task:
+ *      - `worldInfoDepth` (from bucketActivatedEntries) - every @Depth world-info entry is written
+ *        into the table (keyed by depth+role) and IS now spliced into the chat array (and therefore
+ *        into `mesSend`/`combinedPrompt`) via doChatInject(), exactly like the client.
+ *      - `authorsNote.value` - written into the table (as an IN_CHAT depth injection) and spliced in
+ *        the same way, but ONLY when `authorsNote.position === extension_prompt_types.IN_CHAT` (see
+ *        the inline judgment-call comment at the call site) - `resolveAuthorsNote()`'s own doc
+ *        comment establishes that `position` already IS an extension_prompt_types value, so this is
+ *        the accurate behavior, not a simplification of an unclear mapping.
  *      - `storyStringInjection` (from assembleStoryString, when the story string is configured to
- *        inject in-chat instead of at the top) - returned as a separate value, never spliced back in.
- *      - `injectedIndices` fed into injectJailbreak/buildChat2/fillContextBudget/combineFinalPrompt
- *        is a plain input (default `[]`), NOT the result of the client's doChatInject() - which is
- *        itself unported (it resolves depth-indexed injections against the live extension_prompts
- *        table, a mechanism that doesn't exist here).
- *    Building a real extension_prompts model (and wiring these depth-indexed injections into
- *    `mesSend` for real, matching `chat2[i] += extensionPrompt` byte-for-byte) is real, nontrivial,
- *    NOT-YET-DONE future work - not merely a missing input value.
+ *        inject in-chat instead of at the top) - written into the table and spliced in the same way.
+ *      - `injectedIndices` fed into injectJailbreak/buildChat2/fillContextBudget/combineFinalPrompt is
+ *        now the REAL output of the doChatInject()-equivalent (`doChatInjectIndices`) whenever the
+ *        caller doesn't override it - `initialInjectedIndices` (the old plain input, default `[]`) is
+ *        kept only as a fallback/override for a caller with its own pre-computed indices.
+ *    What is STILL NOT wired (separate, still-open gaps, deliberately out of scope for this task):
+ *      - `anBefore`/`anAfter` (from bucketActivatedEntries) - the WI ANTop/ANBottom entries that the
+ *        client combines with the author's-note text into a single string before injecting it at
+ *        `authorsNote.depth`. This orchestrator still returns them as separate, unwired values; the
+ *        author's-note value alone (without that combination) is what gets injected instead.
+ *      - `outletEntries` (from bucketActivatedEntries) - still never delivered to whatever "outlet"
+ *        consumer would read it.
+ *      - `beforeScenarioAnchor`/`afterScenarioAnchor` (BEFORE_PROMPT/IN_PROMPT anchors) - still taken
+ *        as plain caller-supplied inputs (default '') rather than resolved from the live table (and,
+ *        per the author's-note judgment call above, an AN with position IN_PROMPT/BEFORE_PROMPT would
+ *        belong here too, but is not resolved into these anchors by this orchestrator).
+ *      - The quiet-prompt/CFG-depth-splice/PHI-via-extension-prompts mechanisms the client also
+ *        threads through this same table are not modeled here at all - only the three sources listed
+ *        above are written into the table by this orchestrator.
  *
  * 2. Regex-scripts engine (getRegexedString) - every message/world-info-entry/reasoning-block
  *    content that the client would run through the user's regex scripts is passed through
@@ -240,8 +251,9 @@ function parseMesExamplesBlocks(examplesStr, isInstruct, exampleSeparator = '') 
  *
  * --- Jailbreak / system prompt ----------------------------------------------------------------------
  * @property {string} [sysPromptPostHistory] Equivalent of power_user.sysprompt.post_history.
- * @property {number[]} [injectedIndices] See gap (1) above - plain input, default []. Equivalent of
- *   the client's doChatInject() result, which is not ported.
+ * @property {number[]} [injectedIndices] Fallback/override only - default []. When left at the
+ *   default, the orchestrator's own doChatInject()-equivalent result is used instead (see gap (1)
+ *   above); pass this only if the caller has pre-computed injection indices via some other means.
  *
  * --- Backend / API ---------------------------------------------------------------------------------
  * @property {string} mainApi Equivalent of main_api. Never 'openai' for this orchestrator.
@@ -443,9 +455,70 @@ export async function assembleTextCompletionPrompt(input) {
     const { system, combinedStoryString, storyStringInjection } = storyStringResult;
     mesExamplesArray = storyStringResult.mesExamplesArray;
 
+    // ---- Step 7.5: extension-prompts table + depth-indexed chat injection -------------------------
+    // Builds a FRESH, per-request extension_prompts table (see src/extension-prompt-table.js's module
+    // doc comment for why "fresh per request" is the correct server-side equivalent of the client's
+    // persistent-but-flushed global) and populates it with the three depth-indexed injection sources
+    // this task wires up (see module doc comment gap 1 below for what's still NOT included: anBefore/
+    // anAfter and outletEntries).
+    const extensionPromptTable = createExtensionPromptTable();
+
+    // 1. World-info @Depth entries (bucketActivatedEntries's worldInfoDepth output).
+    for (const depthEntry of worldInfoDepthEntries) {
+        setExtensionPrompt(
+            extensionPromptTable,
+            `wi_depth_${depthEntry.depth}_${depthEntry.role}`,
+            depthEntry.entries.join('\n'),
+            extension_prompt_types.IN_CHAT,
+            depthEntry.depth,
+            false,
+            depthEntry.role,
+        );
+    }
+
+    // 2. Author's note. JUDGMENT CALL: resolveAuthorsNote()'s own doc comment states `authorsNote.
+    // position` is "One of extension_prompt_types positions" - i.e. it is NOT an ambiguous value that
+    // needs guessing at, it already IS an extension_prompt_types member (public/scripts/authors-note.js
+    // stores whatever the client's AN position dropdown holds, which is an extension_prompt_types
+    // value). So rather than the "always treat as IN_CHAT" simplification this task's instructions
+    // allow for an unclear mapping, this wiring honors the real value: the note is only fed into THIS
+    // table (and therefore only reachable via doChatInject) when position === IN_CHAT. When position
+    // is IN_PROMPT or BEFORE_PROMPT, the note belongs to the beforeScenarioAnchor/afterScenarioAnchor
+    // mechanism instead - which is a SEPARATE, already-documented gap (module doc comment gap 1) that
+    // this task does not solve - so such notes remain unwired here, deliberately.
+    if (authorsNote.disabled === false && authorsNote.position === extension_prompt_types.IN_CHAT) {
+        setExtensionPrompt(
+            extensionPromptTable, 'authors_note', authorsNote.value,
+            extension_prompt_types.IN_CHAT, authorsNote.depth, false, authorsNote.role,
+        );
+    }
+
+    // 3. Story-string-in-chat injection (assembleStoryString's storyStringInjection output, non-null
+    // only when power_user.context.story_string_position === IN_CHAT on the client).
+    if (storyStringInjection) {
+        setExtensionPrompt(
+            extensionPromptTable, 'story_string', storyStringInjection.content,
+            extension_prompt_types.IN_CHAT, storyStringInjection.depth, false, storyStringInjection.role,
+        );
+    }
+
+    // doChatInject runs BEFORE jailbreak injection in the real client (public/script.js ~5820 vs
+    // ~5823) - `injectedIndices` it returns are already in the "reversed" (newest-first) index
+    // convention that injectJailbreak/buildChat2/fillContextBudget all expect (see
+    // extension-prompt-table.js's DoChatInjectResult doc comment for exactly why).
+    const { coreChat: coreChatAfterDepthInjection, injectedIndices: doChatInjectIndices } = doChatInject(coreChat, isContinue, {
+        name1, name2, table: extensionPromptTable, macroContext,
+    });
+
+    // `initialInjectedIndices` (a plain caller input, default []) is kept as a fallback/override -
+    // some caller might have pre-computed indices via some other mechanism - but when the caller
+    // doesn't override it (the default empty-array case), doChatInject's own real output is what
+    // actually flows through, instead of always being silently discarded like before this task.
+    const effectiveInjectedIndices = initialInjectedIndices.length > 0 ? initialInjectedIndices : doChatInjectIndices;
+
     // ---- Step 8: jailbreak injection -------------------------------------------------------------
     const { coreChat: coreChatWithJailbreak, injectedIndices: injectedIndicesAfterJailbreak, jailbreak } = injectJailbreak(
-        coreChat, initialInjectedIndices, {
+        coreChatAfterDepthInjection, effectiveInjectedIndices, {
             mainApi, sysPromptEnabled, jailbreak: fields.jailbreak, preferCharacterJailbreak, sysPromptPostHistory, isContinue, macroContext,
         },
     );
@@ -565,9 +638,12 @@ export async function assembleTextCompletionPrompt(input) {
         mesSend, mesExmString,
         finalMesSend, mesSendString,
         stoppingStrings, bannedTokens, bannedStrings, logitBias,
+        // doChatInject()-equivalent output, echoed back for sanity-checking/debugging - this is what
+        // fed `effectiveInjectedIndices` above whenever the caller didn't override it.
+        doChatInjectIndices,
         // Documented gaps, echoed back so a caller can see what was NOT wired (see module doc comment).
         gaps: {
-            extensionPromptsSideTable: 'worldInfoDepth/anBefore/anAfter/authorsNote/outletEntries/storyStringInjection are computed but NOT spliced into mesSend - see module doc comment gap 1.',
+            extensionPromptsSideTable: 'worldInfoDepth/authorsNote(IN_CHAT)/storyStringInjection ARE now spliced into the chat array via doChatInject() (see module doc comment gap 1). anBefore/anAfter (WI-combined-with-AN) and outletEntries are still computed but NOT wired into anything - still open.',
         },
     };
 }
