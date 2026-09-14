@@ -24,6 +24,12 @@ import { createTextGenGenerationData } from '../../textgen-generation-data.js';
 import { constructPrompt, getInstructStoppingSequences } from '../../instruct-template-format.js';
 import { readSettingsAtPaths } from '../../settings-store.js';
 import { readPresetByName } from '../presets.js';
+import { resolveTokenizerType, encodeWithTokenizerType } from '../../tokenizer-resolve.js';
+import { resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
+import { assembleTextCompletionPrompt } from '../../text-completion-prompt-orchestrator.js';
+import { loadBranch, getAncestorPath, appendMessages } from '../../message-tree-db.js';
+import { readCardContent } from '../characters.js';
+import { getGroupsByIds } from '../groups.js';
 
 export const router = express.Router();
 
@@ -277,6 +283,148 @@ router.post('/props', async function (request, response) {
     }
 });
 
+/**
+ * Builds the real backend-request-shaped payload for the raw-action `/generate` branch below,
+ * entirely server-side - the request-building steps (1-6 in this session's task write-up), pulled
+ * out into a standalone, Express-independent function so it can be unit-tested directly (this
+ * codebase has no existing route-level Express-integration-test convention to follow instead - see
+ * this file's own test file for the full explanation of that call).
+ *
+ * In order:
+ * 1. Resolve the real, currently-active text-completion backend (NOT a connection profile) via
+ *    `resolveTextGenBackend()`.
+ * 2. Verify the named character/group actually exists (a real 400-worthy failure, not a garbage
+ *    generation) and resolve which existing tree node any new user message must be appended after
+ *    (`anchorNodeId` - the leaf of the loaded branch when `branchName` is given, or the given
+ *    `nodeId` itself, verified to exist).
+ * 3. Build real `countTokens`/`encodeTokens` closures via `resolveTokenizerType()`/
+ *    `encodeWithTokenizerType()`, resolving the SAME tokenizer the resolved backend would actually
+ *    use (`power_user.tokenizer` is the user's manual override, exactly like
+ *    `getTokenizerForTokenIds()` reads client-side).
+ * 4. Resolve the orchestrator's full input from real on-disk settings/character/chat state via
+ *    `resolveTextCompletionGenerationInput()`.
+ * 5. Assemble the real prompt via `assembleTextCompletionPrompt()`.
+ * 6. JUDGMENT CALL: `assembleTextCompletionPrompt()` already calls `createTextGenGenerationData()`
+ *    internally (its own "Step 16") and returns the result as `generate_data` - calling
+ *    `createTextGenGenerationData()` a SECOND time here would just duplicate that exact call with
+ *    hand-reconstructed `stoppingStrings`/`bannedTokens`/`bannedStrings`/`logitBias`/`cfgValues`
+ *    the orchestrator already computed internally (and risk the two calls silently drifting apart).
+ *    So this uses the orchestrator's own returned `generate_data` directly as the backend-request
+ *    payload instead of re-deriving it.
+ *
+ * Does NOT persist anything (that's the caller's job - see the route handler below) and does NOT
+ * set `stream`/`api_type`/`api_server` on the returned `params` (also the caller's job, mirroring
+ * the existing `connection_profile_id` branch's own final-assignment shape).
+ *
+ * @param {import('../../users.js').UserDirectoryList} directories
+ * @param {object} params
+ * @param {import('express').Request} [params.request] Original request - forwarded only for the
+ * remote-tokenizer header-forwarding path (`encodeViaTextgenAPI`); safe to omit in tests.
+ * @param {string} [params.characterAvatar] Character avatar filename. One of this or `groupId` is required.
+ * @param {string} [params.groupId] Group id. One of this or `characterAvatar` is required.
+ * @param {string} params.ownerId message-tree-db.js owner id.
+ * @param {string} [params.branchName] message-tree-db.js labeled chat name. One of this or `nodeId` is required.
+ * @param {string} [params.nodeId] Alternative to `branchName` - generate from this existing tree node.
+ * @param {string} [params.type] Generation type ('normal'/'impersonate'/'continue'/'swipe'/...).
+ * @param {boolean} [params.isImpersonate]
+ * @param {boolean} [params.isContinue]
+ * @param {boolean} [params.isSwipe]
+ * @param {string} [params.userMessageText] The literal text the user typed this turn. Omit for
+ * generation types that don't add a new message (continue/swipe).
+ * @returns {Promise<{ params: object, backend: {type: string, serverUrl: string, model: string|undefined}, anchorNodeId: string|null, name1: string }>}
+ */
+export async function buildRawActionTextCompletionRequest(directories, {
+    request, characterAvatar, groupId, ownerId, branchName, nodeId,
+    type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText,
+    // Test-only injection point, forwarded straight through to encodeWithTokenizerType()'s own
+    // `encodeLocal`/`encodeTextgenRemote`/`fetchImpl` options (see that function's JSDoc) - lets a
+    // test exercise this function end-to-end without real tokenizer model files or a live backend
+    // to tokenize against. Never set by the /generate route itself.
+    tokenizerOptions = {},
+} = {}) {
+    if (!ownerId) {
+        throw new Error('owner_id is required');
+    }
+    if (!characterAvatar && !groupId) {
+        throw new Error('character_avatar or group_id is required');
+    }
+    if (!branchName && !nodeId) {
+        throw new Error('branch_name or node_id is required');
+    }
+
+    // Step 1
+    const backend = resolveTextGenBackend(directories);
+
+    // Step 2 (existence checks) - readCardContent() throws (rather than returning undefined) for a
+    // missing file (ENOENT); resolveName2AndGroupMemberNames() in text-completion-generation-
+    // input.js already treats any read failure as "no character" via its own try/catch, so this
+    // mirrors that same convention rather than letting the ENOENT bubble up as an unrelated 500.
+    if (characterAvatar) {
+        let raw;
+        try {
+            raw = await readCardContent(directories, characterAvatar);
+        } catch { /* treated as not-found below, matching resolveName2AndGroupMemberNames()'s convention */ }
+        if (raw === undefined) {
+            throw new Error(`Character not found: ${characterAvatar}`);
+        }
+    }
+    if (groupId) {
+        const group = getGroupsByIds(directories, [groupId])[groupId];
+        if (!group) {
+            throw new Error(`Group not found: ${groupId}`);
+        }
+    }
+
+    // Step 2 (anchor resolution) - real disk reads via message-tree-db.js, using the SAME
+    // resolution rule text-completion-generation-input.js's own (private) resolveChatHistory()
+    // uses: a labeled branch's leaf when `branchName` is given, else the given `nodeId` itself.
+    // Resolved independently of the orchestrator input's own `chat` array, since that array (once
+    // `userMessageText` is folded in) no longer carries a clean "last EXISTING node" marker.
+    let anchorNodeId = null;
+    if (branchName) {
+        const branch = await loadBranch(directories, ownerId, branchName);
+        if (!branch) {
+            throw new Error(`Chat branch not found: ${branchName}`);
+        }
+        anchorNodeId = branch.branch.leaf_id;
+    } else {
+        const ancestorPath = await getAncestorPath(directories, nodeId);
+        if (!ancestorPath) {
+            throw new Error(`Chat node not found: ${nodeId}`);
+        }
+        anchorNodeId = nodeId;
+    }
+
+    // Step 3
+    const { power_user: powerUser = {} } = readSettingsAtPaths(directories, ['power_user']);
+    const tokenizerType = resolveTokenizerType({
+        userTokenizerSetting: powerUser.tokenizer,
+        textgenType: backend.type,
+        textgenModel: backend.model,
+    });
+    const encodeTokens = (text) => encodeWithTokenizerType(tokenizerType, text, {
+        request, textgenBaseUrl: backend.serverUrl, textgenModel: backend.model, textgenApiType: backend.type,
+        ...tokenizerOptions,
+    });
+    const countTokens = async (text) => (await encodeTokens(text)).length;
+
+    // Step 4
+    const orchestratorInput = await resolveTextCompletionGenerationInput(directories, {
+        avatar: characterAvatar, groupId, ownerId, branchName, nodeId,
+        type, isImpersonate, isContinue, isSwipe, userMessageText,
+        countTokens, encodeTokens,
+    });
+
+    if ((isContinue || isSwipe) && orchestratorInput.chat.length === 0) {
+        throw new Error('Cannot continue/swipe an empty chat.');
+    }
+
+    // Step 5-6
+    const assembled = await assembleTextCompletionPrompt(orchestratorInput);
+
+    return { params: assembled.generate_data, backend, anchorNodeId, name1: orchestratorInput.name1 };
+}
+
 router.post('/generate', async function (request, response) {
     if (!request.body) return response.sendStatus(400);
 
@@ -338,6 +486,61 @@ router.post('/generate', async function (request, response) {
             // connection_profile_id, etc.) are part of the actual backend request shape.
             const stream = !!request.body.stream;
             request.body = { ...params, stream, api_type: selectedApiMap.type, api_server: apiServerUrl };
+        // "Generate for this character/group's chat" - the raw action is WHICH character/group,
+        // WHICH branch/node in that conversation tree to generate from, and the LITERAL text the
+        // user typed this turn (or nothing, for a continue/swipe) - the server resolves the active
+        // backend, tokenizer, prompt assembly, and final backend-request shape entirely itself. See
+        // buildRawActionTextCompletionRequest() above for the full resolution pipeline. Field names
+        // are deliberately NOT modeled on the connection-profile branch above (no profile/messages/
+        // name1/name2 here) - this is the first real instance of this effort's target shape, so
+        // names match what these fields literally are.
+        } else if (request.body.owner_id && (request.body.character_avatar || request.body.group_id)) {
+            const {
+                character_avatar: characterAvatar, group_id: groupId, owner_id: ownerId,
+                branch_name: branchName, node_id: nodeId, type = 'normal',
+                is_impersonate: isImpersonate = false, is_continue: isContinue = false, is_swipe: isSwipe = false,
+                user_message: userMessageText,
+            } = request.body;
+
+            const directories = request.user.directories;
+
+            /** @type {Awaited<ReturnType<typeof buildRawActionTextCompletionRequest>>} */
+            let built;
+            try {
+                built = await buildRawActionTextCompletionRequest(directories, {
+                    request, characterAvatar, groupId, ownerId, branchName, nodeId,
+                    type, isImpersonate, isContinue, isSwipe, userMessageText,
+                });
+            } catch (error) {
+                console.error('Failed to build raw-action text completion request:', error);
+                return response.status(400).send({ error: true, message: error?.message ?? 'Could not resolve this generation request' });
+            }
+
+            // Persist the NEW USER MESSAGE - "the user sent this" - BEFORE dispatching to the
+            // backend. This is a real fact that should be committed regardless of whether
+            // generation itself succeeds afterward, so it's done for real here, not deferred.
+            //
+            // NOT IMPLEMENTED (scoped out of this task on purpose - see this session's task
+            // write-up's "Response persistence" section): persisting the ASSISTANT's reply once
+            // generation completes. That would require buffering a live SSE/streaming backend
+            // response into full text (while ALSO forwarding it live to the client below,
+            // unchanged) and mapping it back through whichever api_type's own delta-parsing format
+            // was used, before appending it via appendMessages() - real, separate plumbing left as
+            // a follow-up task.
+            if (typeof userMessageText === 'string' && built.anchorNodeId) {
+                const appendResult = await appendMessages(directories, ownerId, built.anchorNodeId, [
+                    { name: built.name1, is_user: true, mes: userMessageText, extra: {}, send_date: Date.now() },
+                ]);
+                if (!appendResult.ok) {
+                    console.error('Failed to persist user message onto the tree:', appendResult.reason);
+                }
+            }
+
+            // Replace the body entirely - mirrors the connection-profile branch's own final
+            // assignment shape exactly, so the existing downstream dispatch code below is
+            // completely unaware of which branch produced request.body.
+            const stream = !!request.body.stream;
+            request.body = { ...built.params, stream, api_type: built.backend.type, api_server: built.backend.serverUrl };
         }
 
         // No api_type means this is the main chat flow, which no longer sends one - resolve the
