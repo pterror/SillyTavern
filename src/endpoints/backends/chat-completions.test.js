@@ -178,6 +178,8 @@ async function run() {
     });
     const continuedJoined = continued.params.messages.map(m => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content))).join('\n');
     assert.ok(continuedJoined.includes('Likewise!'), 'continue resolves from the real existing history with no new message appended');
+    assert.equal(continued.anchorNodeId, branchAfterAppend.branch.leaf_id, 'the continue anchor is the real current leaf');
+    assert.equal(continued.anchorContent?.mes, 'What happens next, Rex?', 'anchorContent is the anchor\'s real, current, unmodified content (the real leaf at this point in the test, appended above) - exactly what the route\'s is_continue edit needs as "oldText"');
 
     // --- error handling: missing owner_id ---
     await assert.rejects(
@@ -476,7 +478,89 @@ async function run() {
         assert.equal(alternatives.total, 2, 'regenerate did not chain a child - the original message still has exactly one real sibling');
     }
 
-    // (g) STREAMING and the provider-`switch` cases (Claude/AI21/MakerSuite/etc) are intentionally NOT
+    // (g) is_continue: true - the reply must EDIT the existing leaf node's text in place (oldText +
+    // newText), on the SAME node id, at the SAME position in the tree - never a new node.
+    {
+        const continueBranch = 'continue-chat';
+        await saveChatToTree(directories, ownerId, continueBranch, [
+            { chat_metadata: {} },
+            { name: 'Tester', is_user: true, mes: 'Tell me a story, Rex.', send_date: 1, extra: {} },
+            { name: 'Rex', is_user: false, mes: 'Once upon a time,', send_date: 2, extra: {} },
+        ]);
+
+        const branchBefore = await loadBranch(directories, ownerId, continueBranch);
+        const messageCountBefore = branchBefore.messages.length;
+        const leafBefore = branchBefore.branch.leaf_id;
+
+        const fakeBackend = await startFakeBackend((_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: ' there was a brave adventurer.' } }] }));
+        });
+        pointBackendAt(fakeBackend.url);
+
+        const app = buildTestApp();
+        const { status, data } = await postGenerate(app, {
+            owner_id: ownerId, character_avatar: avatar, branch_name: continueBranch,
+            type: 'continue', is_continue: true, stream: false,
+        });
+        fakeBackend.server.close();
+
+        assert.equal(status, 200, 'the (unchanged) response is forwarded to the client');
+        assert.deepEqual(data, { choices: [{ message: { role: 'assistant', content: ' there was a brave adventurer.' } }] }, 'the generated text still reaches the client unmodified');
+
+        const branchAfter = await loadBranch(directories, ownerId, continueBranch);
+        assert.equal(branchAfter.messages.length, messageCountBefore, 'no new node (user or assistant) was created - continue only edits the existing leaf');
+        assert.equal(branchAfter.branch.leaf_id, leafBefore, 'the SAME node is still the leaf - editMessage() edits in place, it does not reparent/replace the node');
+        assert.equal(branchAfter.messages[branchAfter.messages.length - 1].mes, 'Once upon a time, there was a brave adventurer.', 'the stored text is now oldText + newText, on the same node, at the same position');
+        assert.equal(branchAfter.messages[branchAfter.messages.length - 1].name, 'Rex');
+        assert.equal(branchAfter.messages[branchAfter.messages.length - 1].is_user, false);
+    }
+
+    // (h) is_continue: true combined with a REAL (non-empty) user_message - see text-completions.test.js's
+    // own identical case for the full rationale (public/script.js's own Generate() does not exempt
+    // 'continue' from its send-textarea-as-user_message condition). The real user message must still be
+    // committed, but the assistant reply must NOT be persisted anywhere (neither spliced onto the
+    // original leaf, nor appended as a plain new child) - `continueUserTextConflict` skips it entirely.
+    {
+        const continueWithUserTextBranch = 'continue-with-user-text-chat';
+        await saveChatToTree(directories, ownerId, continueWithUserTextBranch, [
+            { chat_metadata: {} },
+            { name: 'Tester', is_user: true, mes: 'Tell me a story, Rex.', send_date: 1, extra: {} },
+            { name: 'Rex', is_user: false, mes: 'Once upon a time,', send_date: 2, extra: {} },
+        ]);
+
+        const branchBefore = await loadBranch(directories, ownerId, continueWithUserTextBranch);
+        const messageCountBefore = branchBefore.messages.length;
+        const originalLeafId = branchBefore.branch.leaf_id;
+
+        const fakeBackend = await startFakeBackend((_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: ' this should NOT be persisted anywhere.' } }] }));
+        });
+        pointBackendAt(fakeBackend.url);
+
+        const app = buildTestApp();
+        const { status } = await postGenerate(app, {
+            owner_id: ownerId, character_avatar: avatar, branch_name: continueWithUserTextBranch,
+            type: 'continue', is_continue: true,
+            user_message: 'Wait, actually - tell me about dragons instead.',
+            stream: false,
+        });
+        fakeBackend.server.close();
+
+        assert.equal(status, 200);
+
+        const branchAfter = await loadBranch(directories, ownerId, continueWithUserTextBranch);
+        assert.equal(branchAfter.messages.length, messageCountBefore + 1, 'only the user message was added - the generated reply was NOT persisted anywhere in this guarded combination');
+        const newLeaf = branchAfter.messages[branchAfter.messages.length - 1];
+        assert.equal(newLeaf.mes, 'Wait, actually - tell me about dragons instead.');
+        assert.equal(newLeaf.is_user, true);
+
+        const originalNode = (await getAlternatives(directories, originalLeafId)).alternatives.find(a => a.node_id === originalLeafId);
+        assert.equal(originalNode.mes, 'Once upon a time,', 'the original assistant leaf\'s text is byte-for-byte unchanged - continueUserTextConflict correctly skipped persisting the reply');
+    }
+
+    // (i) STREAMING and the provider-`switch` cases (Claude/AI21/MakerSuite/etc) are intentionally NOT
     // exercised here - see this session's report / the code comments at `pendingAssistantPersist`'s
     // declaration in chat-completions.js for the full, explicit list of what remains deferred. Proving
     // the assistant reply is untouched for them is trivial (pendingAssistantPersist is simply never

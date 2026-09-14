@@ -27,7 +27,7 @@ import { readPresetByName } from '../presets.js';
 import { resolveTokenizerType, encodeWithTokenizerType } from '../../tokenizer-resolve.js';
 import { resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
 import { assembleTextCompletionPrompt } from '../../text-completion-prompt-orchestrator.js';
-import { loadBranch, getAncestorPath, appendMessages, addAlternatives, selectDefaultChild } from '../../message-tree-db.js';
+import { loadBranch, getAncestorPath, appendMessages, addAlternatives, selectDefaultChild, editMessage } from '../../message-tree-db.js';
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
 
@@ -331,7 +331,7 @@ router.post('/props', async function (request, response) {
  * @param {boolean} [params.isSwipe]
  * @param {string} [params.userMessageText] The literal text the user typed this turn. Omit for
  * generation types that don't add a new message (continue/swipe).
- * @returns {Promise<{ params: object, backend: {type: string, serverUrl: string, model: string|undefined}, anchorNodeId: string|null, name1: string }>}
+ * @returns {Promise<{ params: object, backend: {type: string, serverUrl: string, model: string|undefined}, anchorNodeId: string|null, anchorContent: object|null, name1: string, name2: string }>}
  */
 export async function buildRawActionTextCompletionRequest(directories, {
     request, characterAvatar, groupId, ownerId, branchName, nodeId,
@@ -422,7 +422,19 @@ export async function buildRawActionTextCompletionRequest(directories, {
     // Step 5-6
     const assembled = await assembleTextCompletionPrompt(orchestratorInput);
 
-    return { params: assembled.generate_data, backend, anchorNodeId, name1: orchestratorInput.name1, name2: orchestratorInput.name2 };
+    // `anchorContent` (used only for `is_continue` persistence - see the route handler below): the
+    // CURRENT, on-disk content of the anchor node itself, so the caller can build `oldText + newText`
+    // without a second DB read. Reused directly from `orchestratorInput.chat`'s own last entry rather
+    // than re-fetched - verified (not assumed) that this resolver never drops or alters that entry for
+    // `isContinue` the way it does for `isSwipe` (see resolveTextCompletionGenerationInput()'s own
+    // `chat` construction above: it's exactly `loadedChat` - straight from `loadBranch()`/
+    // `getAncestorPath()` - whenever `userMessageText` is omitted, which is always true for continue).
+    // Only meaningful when `orchestratorInput.chat.length > 0`, which the guard above already
+    // guarantees for `isContinue` (an empty-chat continue throws before reaching here) - `null` for
+    // every other, non-continue caller shape where `chat` could legitimately be empty.
+    const anchorContent = orchestratorInput.chat.length > 0 ? orchestratorInput.chat[orchestratorInput.chat.length - 1] : null;
+
+    return { params: assembled.generate_data, backend, anchorNodeId, anchorContent, name1: orchestratorInput.name1, name2: orchestratorInput.name2 };
 }
 
 router.post('/generate', async function (request, response) {
@@ -585,8 +597,47 @@ router.post('/generate', async function (request, response) {
             // client's own single flag for BOTH `type === 'swipe'` and `type === 'regenerate'` (see
             // public/script.js's `isSwipe` local and this session's task write-up) - both need the
             // identical tree operation here, so this route does not re-derive it from `type` itself.
-            if (!skipPersistence) {
-                pendingAssistantPersist = { directories, ownerId, anchorNodeId: replyAnchorNodeId, name2: built.name2, isSwipe };
+            //
+            // `isContinue`/`anchorContent` are carried through so the non-streaming branch below knows
+            // to persist the reply as an IN-PLACE EDIT of the anchor node's own text (via
+            // `editMessage()`) instead of appending/adding a sibling or child - a continue never
+            // introduces a new node, it lengthens the existing leaf's `mes`. `anchorContent` is the
+            // anchor's CURRENT full content (see `buildRawActionTextCompletionRequest()`'s own doc
+            // comment on this field) - needed here because `editMessage()` replaces the WHOLE stored
+            // content, not just `.mes` (see message-tree-db.js's `editMessageSync()`/
+            // `sanitizeForStorage()`), so the reply text must be spliced into a full copy of the
+            // existing message object, not sent alone.
+            //
+            // REAL EDGE CASE found and guarded against (not hypothetical): public/script.js's own
+            // `Generate()` does NOT exclude `type === 'continue'` from its "read+clear the send
+            // textarea as this turn's `user_message`" condition (only 'regenerate'/'swipe'/'quiet'/
+            // impersonate/dryRun/depth>0 are excluded there) - so a user who leaves text in the box and
+            // clicks Continue DOES send it as a genuine new user message, same as any other type. If
+            // that happened, `replyAnchorNodeId` above was just advanced to that BRAND NEW user node -
+            // editing it with the OLD assistant's content (`anchorContent`, resolved before that append
+            // ran) would corrupt the wrong node. This is bounded to CONTINUE-ONLY (swipe/regenerate/
+            // impersonate/quiet already can't reach here with a real `userMessageText`), so the guard
+            // needs to special-case it: skip persisting the ASSISTANT'S REPLY ENTIRELY (not just fall
+            // back to a plain appendMessages(), which would be its own new bug - the generated text for
+            // a continue is only a CONTINUATION FRAGMENT of the old leaf, not a complete reply, so
+            // appending it as a brand-new child after the just-added user message would read as
+            // incoherent, fragment-shaped nonsense) whenever a user message was actually appended
+            // alongside a continue - detected by `built.anchorNodeId` (the anchor BEFORE any append) no
+            // longer equaling `replyAnchorNodeId` in that case. Nothing NEW is lost by skipping: this
+            // combination was already a pre-existing, independent client-side oddity before this task
+            // (public/script.js's own `saveReply({type: 'appendFinal'})` reads `chat[chat.length - 1]`
+            // too, which by then is that SAME just-appended user message, not the real assistant leaf -
+            // so the legacy path was already not doing anything coherent for this combination either).
+            // The user message itself is still committed either way (matching every other type's real
+            // `user_message` handling) - only the reply's persistence is skipped; the raw generated text
+            // still reaches the client unchanged via the normal response, exactly like every other
+            // skipped-persistence case above.
+            const continueUserTextConflict = isContinue && replyAnchorNodeId !== built.anchorNodeId;
+            if (!skipPersistence && !continueUserTextConflict) {
+                pendingAssistantPersist = {
+                    directories, ownerId, anchorNodeId: replyAnchorNodeId, name2: built.name2,
+                    isSwipe, isContinue, anchorContent: built.anchorContent,
+                };
             }
 
             // Replace the body entirely - mirrors the connection-profile branch's own final
@@ -774,10 +825,75 @@ router.post('/generate', async function (request, response) {
                         : (data?.choices?.[0]?.text ?? '');
 
                     if (generatedText) {
-                        const { directories, ownerId, anchorNodeId, name2, isSwipe } = pendingAssistantPersist;
+                        const { directories, ownerId, anchorNodeId, name2, isSwipe, isContinue, anchorContent } = pendingAssistantPersist;
                         const replyContent = { name: name2, is_user: false, mes: generatedText, extra: {}, send_date: Date.now() };
 
-                        if (isSwipe) {
+                        if (isContinue) {
+                            // Continue: EDITS the existing leaf node's text in place to (old text + new
+                            // text) - never appends a new node, matching the client's own
+                            // saveReply({type: 'appendFinal'}) semantics (see this session's task
+                            // write-up for the full investigation of `continue_mag`/
+                            // `promptReasoning.removePrefix()`/`cleanUpMessage()` this is based on).
+                            //
+                            // `oldText` is `anchorContent.mes` - the anchor's own real, currently-stored
+                            // text, resolved by buildRawActionTextCompletionRequest() from
+                            // `orchestratorInput.chat`'s own last entry (verified: never dropped/altered
+                            // for `isContinue`, unlike `isSwipe` - see that function's own doc comment on
+                            // `anchorContent`). This is a FAITHFUL match for the client's own
+                            // `continue_mag`: reading public/scripts/reasoning.js's `PromptReasoning`
+                            // class shows `continue_mag` only ever LOOKS different from the raw stored
+                            // `.mes` transiently, when the leaf has non-empty `extra.reasoning` - the
+                            // client temporarily prepends a formatted reasoning prefix onto the last
+                            // message's `.mes` for PROMPT-BUILDING purposes
+                            // (`promptReasoning.addToMessage(..., isPrefix: true, ...)`), captures THAT
+                            // into `continue_mag`, but then unconditionally calls
+                            // `promptReasoning.removePrefix(continue_mag)` before ever concatenating it
+                            // with the new text - which slices off EXACTLY `prefixLength` characters,
+                            // i.e. exactly what `addToMessage()` had just prepended. The two are an exact
+                            // round trip: whether or not the leaf has reasoning, `continue_mag` at the
+                            // point of concatenation always equals the leaf's own original, unmodified
+                            // `.mes` - so no reasoning-prefix handling is needed here at all, for either
+                            // case.
+                            //
+                            // `newText` is the RAW backend output (`generatedText`, unprocessed) - not
+                            // run through the client's `cleanUpMessage()` (macro/regex substitution,
+                            // stop-string trimming, instruct-sequence stripping, markdown-fixing, etc).
+                            // This is NOT a new gap introduced here: every other cut-over type
+                            // (normal/impersonate/quiet/swipe/regenerate) already persists the RAW
+                            // backend text server-side too (see `replyContent.mes` above, built directly
+                            // from `generatedText` with no cleanup step) - continue is held to the exact
+                            // same, already-accepted standard, not a stricter or looser one. It's also
+                            // not the LAST word on the stored text either way: the client still runs its
+                            // own full response-handling pipeline unconditionally after this (this cutover
+                            // only swaps which request body is SENT - see public/script.js's own
+                            // JUDGMENT CALL #2), including its own `cleanUpMessage()` + `saveReply({type:
+                            // 'appendFinal'})`, which syncs back to the server afterward and overwrites
+                            // whatever this route just wrote - this server-side edit is a "belt and
+                            // suspenders" authoritative-persist-immediately step (identical precedent to
+                            // the swipe/regenerate `addAlternatives()`+`selectDefaultChild()` pair above),
+                            // not the sole source of truth.
+                            //
+                            // The full object (not just `.mes`) is required by `editMessage()` - it
+                            // REPLACES the whole stored content (see message-tree-db.js's
+                            // `editMessageSync()`), it doesn't patch one field. `anchorContent` already
+                            // carries the loaded-chat-message shape (name/is_user/extra/send_date, plus
+                            // load-time-only decorations like `node_id`/`swipes`/`extra.branches` that
+                            // `editMessageSync()`'s own `sanitizeForStorage()` strips right back out,
+                            // symmetric with how they were added by `buildPathMessages()`/`rowToMessage()`
+                            // on the way in) - spreading it and overriding only `mes` reconstructs a
+                            // faithful full replacement.
+                            if (!anchorContent) {
+                                console.error('Failed to persist continue edit onto the tree: no anchor content resolved.');
+                            } else {
+                                const oldText = typeof anchorContent.mes === 'string' ? anchorContent.mes : '';
+                                const editResult = await editMessage(directories, ownerId, anchorNodeId, {
+                                    ...anchorContent, mes: oldText + generatedText,
+                                });
+                                if (!editResult.ok) {
+                                    console.error('Failed to persist continue edit onto the tree:', editResult.reason);
+                                }
+                            }
+                        } else if (isSwipe) {
                             // Swipe/regenerate: a real, tested ALTERNATIVE alongside the message being
                             // replaced, not a child chained after it - addAlternatives() resolves the
                             // anchor's own real parent internally, so `anchorNodeId` here is still the
