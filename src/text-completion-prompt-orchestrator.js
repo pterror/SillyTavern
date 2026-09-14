@@ -143,10 +143,13 @@ import { createExtensionPromptTable, setExtensionPrompt, doChatInject, extension
  *    client - there is no separate reformatting pass needed for the WI-EM fold-in specifically, since
  *    it's folded in before either array is captured, so no further gap exists here.
  *
- * 8. `GENERATION_TYPE_TRIGGERS.includes(type)` (deciding whether world-info's `globalScanData.trigger`
- *    is the generation `type` or the literal string `'normal'`) is a small static list that isn't
- *    part of the 18 ported modules. This orchestrator takes `generationTrigger` as a plain optional
- *    input (defaulting to `'normal'`) instead of re-deriving it from `type`.
+ * 8. CLOSED. `GENERATION_TYPE_TRIGGERS.includes(type)` (public/scripts/constants.js:
+ *    `['normal', 'continue', 'impersonate', 'swipe', 'regenerate']`) decides whether world-info's
+ *    `globalScanData.trigger` is the generation `type` itself or the literal string `'normal'`.
+ *    This orchestrator now derives it from `type` the same way, via the mirrored
+ *    `GENERATION_TYPE_TRIGGERS` list below - `generationTrigger` remains available as an explicit
+ *    override input for a caller with its own reason to force a specific trigger value, but its
+ *    default is now the real derivation instead of always `'normal'`.
  *
  * Everything else - character-card resolution, reasoning folding, world-info key-matching/
  * activation/bucketing, author's-note interval math, story-string rendering, jailbreak injection,
@@ -165,6 +168,9 @@ import { createExtensionPromptTable, setExtensionPrompt, doChatInject, extension
  * @param {string} [exampleSeparator] Equivalent of power_user.context.example_separator (already macro-substituted).
  * @returns {string[]}
  */
+// Mirrors public/scripts/constants.js's GENERATION_TYPE_TRIGGERS exactly.
+const GENERATION_TYPE_TRIGGERS = ['normal', 'continue', 'impersonate', 'swipe', 'regenerate'];
+
 function parseMesExamplesBlocks(examplesStr, isInstruct, exampleSeparator = '') {
     if (!examplesStr || examplesStr.length === 0 || examplesStr === '<START>') {
         return [];
@@ -195,7 +201,9 @@ function parseMesExamplesBlocks(examplesStr, isInstruct, exampleSeparator = '') 
  * @property {string} [quiet_prompt] Quiet-generation prompt text, forwarded to modifyLastPromptLine.
  * @property {boolean} [quietToLoud]
  * @property {string} [quietName]
- * @property {string} [generationTrigger] See gap (8) above. Default 'normal'.
+ * @property {string} [generationTrigger] See gap (8) above. Defaults to `type` itself when `type` is
+ *   one of GENERATION_TYPE_TRIGGERS, else `'normal'` - matches the client's real derivation. Pass
+ *   explicitly only to override that derivation.
  *
  * --- Names -------------------------------------------------------------------------------------
  * @property {string} [name1] Persona display name ({{user}}).
@@ -338,7 +346,8 @@ function parseMesExamplesBlocks(examplesStr, isInstruct, exampleSeparator = '') 
 export async function assembleTextCompletionPrompt(input) {
     const {
         type, isImpersonate = false, isContinue = false, isSwipe = false, isGroup = false, isDryRun = false,
-        canUseTools = false, quiet_prompt, quietToLoud = false, quietName, generationTrigger = 'normal',
+        canUseTools = false, quiet_prompt, quietToLoud = false, quietName,
+        generationTrigger = GENERATION_TYPE_TRIGGERS.includes(type) ? type : 'normal',
         name1 = '', name2 = '',
         directories, avatar, groupId, preferCharacterPrompt = false, preferCharacterJailbreak = false,
         personaDescription, chatMetadata = {}, chat, textareaText = '', userPromptBias = '',
