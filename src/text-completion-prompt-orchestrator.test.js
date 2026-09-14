@@ -237,3 +237,58 @@ test('assembleTextCompletionPrompt: tiny max context trims the prompt without cr
     assert.equal(typeof tinyResult.combinedPrompt, 'string');
     assert.ok(tinyResult.combinedPrompt.length < normalResult.combinedPrompt.length, 'budget-constrained prompt should be smaller');
 });
+
+test('assembleTextCompletionPrompt: a world-info @Depth entry is spliced into the final output (new in this task)', async () => {
+    const { charactersDir, root } = makeDirectories();
+    const avatar = 'aria4.png';
+    writeCharacterCard(charactersDir, avatar, {
+        spec: 'chara_card_v2',
+        spec_version: '2.0',
+        name: 'Aria',
+        description: 'Aria is a wandering ranger who guards the Whispering Woods.',
+        personality: 'brave and curious',
+        scenario: '',
+        first_mes: 'Hello there, traveler!',
+        mes_example: '',
+        avatar,
+        data: {
+            name: 'Aria',
+            description: 'Aria is a wandering ranger who guards the Whispering Woods.',
+            personality: 'brave and curious',
+            scenario: '',
+            first_mes: 'Hello there, traveler!',
+            mes_example: '',
+            system_prompt: '', post_history_instructions: '', character_version: '', creator_notes: '',
+            extensions: {}, alternate_greetings: [],
+        },
+    });
+    const directories = { characters: charactersDir, root };
+
+    const input = {
+        ...baseFixture(directories, avatar),
+        worldInfoCandidates: [
+            ...baseFixture(directories, avatar).worldInfoCandidates,
+            {
+                uid: '3', world: 'test', key: ['sword'], content: 'The sword hums with a faint blue light whenever danger is near.',
+                order: 100, position: 4, // world_info_position.atDepth
+                depth: 1, role: 0, // extension_prompt_roles.SYSTEM
+            },
+        ],
+    };
+
+    const result = await assembleTextCompletionPrompt(input);
+
+    // Before this task, worldInfoDepth entries were computed but never spliced into anything (see
+    // the old gap (1) doc comment) - this proves the @Depth entry now actually reaches combinedPrompt/
+    // mesSend/finalMesSend via the new doChatInject()-equivalent wiring.
+    assert.ok(result.worldInfoDepth.length > 0, 'sanity check: bucketActivatedEntries should have produced an @Depth entry');
+    assert.ok(
+        result.combinedPrompt.includes('The sword hums with a faint blue light'),
+        'the @Depth world-info entry should now be spliced into combinedPrompt',
+    );
+    assert.ok(
+        result.finalMesSend.some((m) => m.message.includes('The sword hums with a faint blue light')),
+        'the @Depth world-info entry should now be spliced into finalMesSend as its own message',
+    );
+    assert.ok(result.doChatInjectIndices.length > 0, 'doChatInjectIndices should report the injected message');
+});
