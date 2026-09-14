@@ -193,8 +193,11 @@ function parseMesExamplesBlocks(examplesStr, isInstruct, exampleSeparator = '') 
  *   src/tokenizer-resolve.js's encodeWithTokenizerType() plus a resolved backend/model context -
  *   a separate resolution concern from this orchestrator. Callers must resolve a real tokenizer
  *   and inject it here (or, for tests, a simple deterministic fake).
- * @property {(text: string) => number[]} encodeTokens REQUIRED. Distinct from `countTokens` -
- *   returns token IDS (for getCustomTokenBans()/calculateLogitBias()), not a count.
+ * @property {(text: string) => number[] | Promise<number[]>} encodeTokens REQUIRED. Distinct from
+ *   `countTokens` - returns token IDS (for getCustomTokenBans()/calculateLogitBias()), not a count.
+ *   May be async (e.g. src/tokenizer-resolve.js's encodeWithTokenizerType(), which can probe a
+ *   remote backend) - both functions now await it, so a real async tokenizer can be wired in
+ *   directly.
  * @property {number} [amountGen] Equivalent of `amount_gen` - max new tokens to request, forwarded
  *   to createTextGenGenerationData() as `maxTokens`.
  * @property {boolean} [requestTokenProbabilities] Equivalent of power_user.request_token_probabilities.
@@ -619,11 +622,11 @@ export async function assembleTextCompletionPrompt(input) {
         singleLine, instructPreset, contextSettings, customStoppingStringsRaw, customStoppingStringsMacro,
         ephemeralStoppingStrings, macroContext,
     });
-    const { banned_tokens: bannedTokens, banned_strings: bannedStrings } = getCustomTokenBans({
+    const { banned_tokens: bannedTokens, banned_strings: bannedStrings } = await getCustomTokenBans({
         bannedTokensRaw, globalBannedTokensRaw, sendBannedTokens, bannedWordsFromMacros: bannedWordsSink,
         encode: encodeTokens, macroContext,
     });
-    const logitBias = calculateLogitBias({ logitBiasEntries, encode: encodeTokens });
+    const logitBias = await calculateLogitBias({ logitBiasEntries, encode: encodeTokens });
 
     // ---- Step 16: final generate_data wire payload ---------------------------------------------------
     const cfgValues = { guidanceScale: cfgGuidanceScale, negativePrompt: negativePrompt?.value };
