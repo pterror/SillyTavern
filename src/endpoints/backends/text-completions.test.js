@@ -36,7 +36,7 @@ setConfigFilePath(path.join(__dirname, '..', '..', '..', 'config.yaml'));
 // framework, matching this file's existing "real on-disk fixtures over mocks" convention.
 const { router, buildRawActionTextCompletionRequest } = await import('./text-completions.js');
 const { writeAllSettings } = await import('../../settings-store.js');
-const { saveChatToTree, loadBranch, appendMessages, disposeMessageTreeStores } = await import('../../message-tree-db.js');
+const { saveChatToTree, loadBranch, appendMessages, getAncestorPath, getAlternatives, disposeMessageTreeStores } = await import('../../message-tree-db.js');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-text-completions-raw-action-test-'));
 const charactersDir = path.join(root, 'characters');
@@ -379,7 +379,98 @@ async function run() {
         assert.equal(branchAfter.branch.leaf_id, leafBefore, 'the branch leaf/ancestor path is completely unchanged');
     }
 
-    // (e) the STREAMING raw-action case (request.body.stream: true) is intentionally NOT exercised
+    // (e) is_swipe: true - the reply must land as a real SIBLING alongside the swiped message (under
+    // ITS real parent), not a CHILD chained after it, and the new sibling must become the active path
+    // (selectDefaultChild()). Uses its own small, dedicated branch so it isn't coupled to the mutating
+    // shared `branchName` state above.
+    {
+        const swipeBranch = 'swipe-chat';
+        await saveChatToTree(directories, ownerId, swipeBranch, [
+            { chat_metadata: {} },
+            { name: 'Tester', is_user: true, mes: 'Hi Rex.', send_date: 1, extra: {} },
+            { name: 'Rex', is_user: false, mes: 'Hello there!', send_date: 2, extra: {} },
+        ]);
+
+        const branchBefore = await loadBranch(directories, ownerId, swipeBranch);
+        const messageCountBefore = branchBefore.messages.length;
+        const swipedNodeId = branchBefore.branch.leaf_id;
+        const swipedAncestry = await getAncestorPath(directories, swipedNodeId);
+        const parentNodeId = swipedAncestry[swipedAncestry.length - 2].node_id;
+
+        const fakeBackend = await startFakeBackend((_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ choices: [{ text: 'Greetings, traveler!' }] }));
+        });
+        pointBackendAt(fakeBackend.url);
+
+        const app = buildTestApp();
+        const { status, data } = await postGenerate(app, {
+            owner_id: ownerId, character_avatar: avatar, branch_name: swipeBranch,
+            type: 'swipe', is_swipe: true, stream: false,
+        });
+        fakeBackend.server.close();
+
+        assert.equal(status, 200, 'the (unchanged) response is forwarded to the client');
+        assert.deepEqual(data, { choices: [{ text: 'Greetings, traveler!' }] }, 'the generated text still reaches the client unmodified');
+
+        const branchAfter = await loadBranch(directories, ownerId, swipeBranch);
+        assert.equal(branchAfter.messages.length, messageCountBefore, 'a swipe replaces the leaf position - it does not add DEPTH to the default path');
+        assert.notEqual(branchAfter.branch.leaf_id, swipedNodeId, 'the branch is now positioned on a DIFFERENT node - the new alternative');
+        assert.equal(branchAfter.messages[branchAfter.messages.length - 1].mes, 'Greetings, traveler!', '(a) the new alternative is now the active/default path, showing the newly generated text');
+
+        // (a) a new SIBLING was added under the correct parent - not a child of the swiped message.
+        const newNodeId = branchAfter.branch.leaf_id;
+        const newAncestry = await getAncestorPath(directories, newNodeId);
+        assert.equal(newAncestry.length, swipedAncestry.length, 'the new alternative sits at the SAME depth as the swiped message (a sibling), not one deeper (a child)');
+        assert.equal(newAncestry[newAncestry.length - 2].node_id, parentNodeId, 'the new alternative shares the swiped message\'s real parent');
+
+        const alternatives = await getAlternatives(directories, swipedNodeId);
+        assert.equal(alternatives.total, 2, 'the swiped message and the new alternative are now real siblings under the same parent');
+        assert.ok(alternatives.alternatives.some(a => a.node_id === swipedNodeId && a.mes === 'Hello there!'), '(b) the swiped message\'s own original content is completely unchanged');
+        assert.ok(alternatives.alternatives.some(a => a.node_id === newNodeId && a.mes === 'Greetings, traveler!'));
+
+        // (c) selectDefaultChild() really was called - the parent's default_child_id now points at
+        // the new alternative, which is exactly what branchAfter.branch.leaf_id resolving to newNodeId
+        // (via descendDefaultSync, asserted above) already demonstrates; double-checked directly here.
+        const parentAlternatives = await getAlternatives(directories, newNodeId);
+        assert.equal(parentAlternatives.selected, parentAlternatives.alternatives.findIndex(a => a.node_id === newNodeId), 'the new alternative is the one getAlternatives() reports as currently selected');
+    }
+
+    // (f) type: 'regenerate' maps onto the SAME is_swipe-driven persistence as 'swipe' - a real
+    // client sends `is_swipe: true` for both (see public/script.js's own `isSwipe` local), so the
+    // route never distinguishes between the two literal `type` strings for persistence purposes.
+    {
+        const regenBranch = 'regenerate-chat';
+        await saveChatToTree(directories, ownerId, regenBranch, [
+            { chat_metadata: {} },
+            { name: 'Tester', is_user: true, mes: 'Hi Rex, regenerate test.', send_date: 101, extra: {} },
+            { name: 'Rex', is_user: false, mes: 'Hello there, regenerate test!', send_date: 102, extra: {} },
+        ]);
+
+        const branchBefore = await loadBranch(directories, ownerId, regenBranch);
+        const swipedNodeId = branchBefore.branch.leaf_id;
+
+        const fakeBackend = await startFakeBackend((_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ choices: [{ text: 'A completely new reply.' }] }));
+        });
+        pointBackendAt(fakeBackend.url);
+
+        const app = buildTestApp();
+        const { status } = await postGenerate(app, {
+            owner_id: ownerId, character_avatar: avatar, branch_name: regenBranch,
+            type: 'regenerate', is_swipe: true, stream: false,
+        });
+        fakeBackend.server.close();
+
+        assert.equal(status, 200);
+        const branchAfter = await loadBranch(directories, ownerId, regenBranch);
+        assert.notEqual(branchAfter.branch.leaf_id, swipedNodeId, 'regenerate also produced a sibling alternative, now selected as current');
+        const alternatives = await getAlternatives(directories, swipedNodeId);
+        assert.equal(alternatives.total, 2, 'regenerate did not chain a child - the original message still has exactly one real sibling');
+    }
+
+    // (g) the STREAMING raw-action case (request.body.stream: true) is intentionally NOT exercised
     // here: proving the assistant reply is untouched for it is trivial (pendingAssistantPersist is
     // simply never read by either streaming branch - see the code comment at its declaration in
     // text-completions.js), but actually driving a real SSE/Ollama-stream/llama.cpp-compact-stream

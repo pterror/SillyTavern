@@ -5487,8 +5487,23 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 
     const isContinue = type == 'continue';
     // No pre-existing named local for this (every other call site inlines `type === 'swipe'`) - added
-    // here so the raw-action text-completion cutover below can name it like isImpersonate/isContinue.
-    const isSwipe = type == 'swipe';
+    // here so the raw-action cutover below can name it like isImpersonate/isContinue. Deliberately
+    // covers `'regenerate'` too, NOT just `'swipe'` - verified (not assumed) that the two need
+    // IDENTICAL server-side treatment for this cutover's purposes: both target the same anchor (the
+    // branch leaf, i.e. the message being replaced - see getNextMessageId()'s own `type == 'swipe' ?
+    // chat.length - 1 : chat.length`, which resolves to the same real index for both once
+    // 'regenerate's own earlier "delete the last message" branch a few hundred lines above has run),
+    // and both need the server to persist the reply as a sibling ALTERNATIVE rather than a new child
+    // message (see the raw-action cutover's own JUDGMENT CALL #1 below). The two are NOT the same
+    // client-side in every respect (this variable's own two other real call sites - `coreChat.pop()` a
+    // few lines below and `getNextMessageId()` - intentionally still check `type === 'swipe'` alone,
+    // since 'regenerate' has already had its own message spliced out of `chat` by that earlier branch,
+    // making an ADDITIONAL pop wrong) - only for the raw-action payload's `is_swipe` field (which the
+    // server-side orchestrators use to decide whether to exclude the target message from ITS OWN
+    // freshly-loaded, never-locally-mutated copy of the chat - see prompt-line-formatting.js's
+    // getBiasStrings() and chat-completion-generation-input.js's `promptChat`, both of which now also
+    // treat 'swipe' and 'regenerate' identically for the identical reason) is the flag conflated.
+    const isSwipe = type == 'swipe' || type == 'regenerate';
 
     // Rewrite the generation timer to account for the time passed for all the continuations.
     if (isContinue && chat.length) {
@@ -6333,11 +6348,11 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // typed, matching that endpoint's real, tested contract (character_avatar/group_id/owner_id/
     // branch_name/node_id/type/is_impersonate/is_continue/is_swipe/user_message).
     //
-    // JUDGMENT CALL #1 (scope): `type === 'normal'`/undefined, `'impersonate'`, and `'quiet'` on a
-    // single-character chat are cut over here - NOT continue/swipe/regenerate, and NOT group chats.
-    // This is narrower than a full cutover, because reading the server's own persistence logic
-    // (commits ac42ce8c9, 6eaa7897d) turned up real correctness bugs for the excluded cases, not
-    // hypothetical ones:
+    // JUDGMENT CALL #1 (scope): `type === 'normal'`/undefined, `'impersonate'`, `'quiet'`, `'swipe'`,
+    // and `'regenerate'` on a single-character chat are cut over here - NOT continue, and NOT group
+    // chats. This is narrower than a full cutover, because reading the server's own persistence logic
+    // (commits ac42ce8c9, 6eaa7897d) turned up a real correctness bug for the still-excluded case, not
+    // a hypothetical one:
     //   - 'continue': the client's saveReply({type:'appendFinal'}) EDITS the existing last node's
     //     text in place to (old text + new text) - see this file's saveReply(), the `mes: getMessage`
     //     assignment in its 'appendFinal' branch, where getMessage was built a few hundred lines above
@@ -6346,16 +6361,11 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     //     `anchorNodeId`, unconditionally on ANY successful generation). These are two different
     //     operations on two different nodes - they cannot dedupe via nodeIdentityKey() the way a plain
     //     new-message/new-reply turn does, and would corrupt/duplicate the tree.
-    //   - 'swipe'/'regenerate': the server's `anchorNodeId` is the branch leaf, i.e. the message BEING
-    //     swiped itself, so its appendMessages() call would chain the new alternative as a CHILD
-    //     *after* that message, not as a SIBLING under its parent (an actual swipe is a sibling - see
-    //     addAlternatives() in src/message-tree-db.js). Wrong tree shape if used here.
     //   - group chats: server-side speaker/character resolution for a group turn was not verified
     //     against generateGroupWrapper's own (activation-strategy-dependent) member selection within
     //     this task's time budget - excluded out of caution rather than assumed compatible.
-    // Covering these later requires extending the server's persistence logic (sibling-alternative
-    // support for swipe/regenerate, in-place-edit for continue, verified group speaker resolution) -
-    // not attempted here.
+    // Covering these later requires extending the server's persistence logic further (in-place-edit
+    // for continue, verified group speaker resolution) - not attempted here.
     //
     // 'impersonate'/'quiet' were EXCLUDED in the original version of this cutover (commit 80bdf420c)
     // because the server's persistence was, at the time, unconditional: 'impersonate' generates what
@@ -6369,6 +6379,30 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // `user_message` is verified to always resolve to `undefined` for both types regardless - see
     // JUDGMENT CALL #3 below - so there is nothing new for the server to spuriously persist even
     // without that fix, but the fix was required for these two types to be safe to widen to.
+    //
+    // 'swipe'/'regenerate' were EXCLUDED for a DIFFERENT, genuinely-real correctness bug (not a
+    // persistence-unconditional-ness bug like impersonate/quiet's): the server's `anchorNodeId` for
+    // this raw action is always the branch leaf - i.e. the message BEING swiped/regenerated itself -
+    // so a plain `appendMessages()` call would have chained the new reply as a CHILD *after* that
+    // message, not as a SIBLING under its parent (an actual swipe/regenerate is a sibling
+    // alternative - see `addAlternatives()`/`selectDefaultChild()` in src/message-tree-db.js). That's
+    // now fixed server-side too: both route handlers (text-completions.js and chat-completions.js) now
+    // persist the reply via `addAlternatives()` (creating the sibling alongside the swiped/regenerated
+    // node under ITS real parent, resolved internally) followed by `selectDefaultChild()` (making the
+    // new alternative the active one) whenever `is_swipe` is set - see those files' own comments on
+    // this branch for the full rationale, including the "swipe with no parent" edge case (verified
+    // unreachable here: an empty-chat swipe/regenerate is already rejected with a 400 by
+    // buildRawActionTextCompletionRequest()'s own pre-existing `orchestratorInput.chat.length === 0`
+    // check, before persistence is ever attempted, and every OTHER reachable target - including a
+    // chat's sole opening greeting - has a real parent by construction: either a prior message, or the
+    // character's own opening-alternatives anchor row).
+    // `'regenerate'` maps onto this SAME `is_swipe` flag as `'swipe'` (see the `isSwipe` local's own
+    // declaration a few hundred lines above for why the two need identical server-side treatment, and
+    // src/prompt-line-formatting.js's `getBiasStrings()`/src/chat-completion-generation-input.js's
+    // `promptChat` for the prompt-assembly-side fix this widening also required for
+    // chat-completion - the server always sees the full, un-mutated tree state regardless of which of
+    // the two literal `type` strings the client sent, unlike the client's own local `chat` array,
+    // which is already shortened for 'regenerate' by the time it matters client-side).
     //
     // JUDGMENT CALL #2 (assembly still runs): this does NOT skip the expensive client-side
     // prompt-assembly above (world info scan, author's note resolution, instruct formatting,
@@ -6422,6 +6456,21 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // by reading each one, not assumed. So a plain quiet generation (no pending group turn, a live
     // backend connection) reaches this gate exactly like a normal turn does.
     //
+    // JUDGMENT CALL #5 ('swipe'/'regenerate' do reach this gate too, verified not assumed): the SAME
+    // early-return trace as JUDGMENT CALL #4 above applies - `processCommands()`'s own skip condition
+    // already explicitly includes `type == 'regenerate' || type == 'swipe'` (not just 'quiet'), and
+    // none of the other early returns (`Kobold-streaming-unsupported`/`horde-not-allowed`/
+    // `!hasBackendConnection`/`selected_group`) depend on `type` at all. The one type-specific branch
+    // between this function's start and here that DOES treat 'regenerate' differently from every other
+    // type - the "delete the last message from `chat`" branch (`type !== 'quiet' && type !== 'swipe' &&
+    // !isImpersonate && !dryRun && !depth && chat.length`, which fires for 'regenerate' since it's not
+    // itself in that exclusion list) - only mutates the CLIENT's local `chat` array (so the legacy,
+    // still-running prompt assembly builds the right context for 'regenerate' per its own existing,
+    // unchanged logic - see JUDGMENT CALL #2) and has no bearing on whether this gate is reached, nor
+    // on the raw-action payload itself (`branch_name`/`type`/`is_swipe` are unaffected by local `chat`
+    // array length - the server resolves its own chat state fresh from the persisted tree, independent
+    // of anything the client did to its own copy).
+    //
     // ONE quiet-specific gap this scope restriction does NOT close (kept OUT of the raw-action path
     // rather than silently breaking it): `generateQuietPrompt()` can pass a non-null `jsonSchema` (its
     // own `jsonSchema` parameter, threaded through as `Generate()`'s own `jsonSchema` option) for
@@ -6436,7 +6485,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // see that block's own comment.)
     let rawActionGenerateData = null;
     if (!dryRun && main_api === 'textgenerationwebui'
-        && [undefined, 'normal', 'impersonate', 'quiet'].includes(type)
+        && [undefined, 'normal', 'impersonate', 'quiet', 'swipe', 'regenerate'].includes(type)
         && !selected_group
         && !hasPendingFileAttachment()
         && !canPerformToolCalls
@@ -6454,9 +6503,12 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             // Omitted (undefined) for any type that doesn't add a new message - matches the server's
             // own documented contract. In practice, given the scope above, this path is reached for
             // type 'normal'/undefined (where textareaText is the just-sent text, or '' for a depth>0
-            // tool-call follow-up generation, which likewise adds no new user message) and for
+            // tool-call follow-up generation, which likewise adds no new user message), for
             // 'impersonate'/'quiet' (where textareaText is unconditionally '' - see JUDGMENT CALL #3
-            // above), so userMessageText is always undefined for the latter two.
+            // above), and for 'swipe'/'regenerate' (excluded from the same textareaText-read condition
+            // by name, so likewise unconditionally '' - see that condition a few hundred lines above:
+            // `type !== 'regenerate' && type !== 'swipe' && type !== 'quiet' && !isImpersonate &&
+            // !dryRun && !depth`), so userMessageText is always undefined for all four of these types.
             const userMessageText = textareaText !== '' ? textareaText : undefined;
             rawActionGenerateData = {
                 character_avatar: characterAvatar,
@@ -6487,16 +6539,13 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     //
     // JUDGMENT CALL #1 (scope): IDENTICAL restriction to the text-completion cutover above, for the IDENTICAL
     // underlying reason - re-confirmed by reading the chat-completion side's OWN persistence code
-    // (buildRawActionChatCompletionRequest()'s `appendMessages()` calls in chat-completions.js), not copy-pasted
-    // blindly:
+    // (buildRawActionChatCompletionRequest()'s appendMessages()/addAlternatives()/selectDefaultChild() calls in
+    // chat-completions.js), not copy-pasted blindly:
     //   - 'continue': same problem as text-completion - the client's saveReply({type:'appendFinal'}) edits the
     //     existing last node's text in place, but the server's appendMessages() call (keyed off `anchorNodeId`,
     //     which for chat-completion's raw action is ALSO just the branch leaf - see
     //     buildRawActionChatCompletionRequest()'s Step 2) always appends a brand-new CHILD node. Same tree-shape
     //     mismatch, same exclusion.
-    //   - 'swipe'/'regenerate': same problem - `anchorNodeId` is the branch leaf (the message being swiped), so
-    //     appendMessages() would chain the alternative as a CHILD after it, not a SIBLING under its parent. Same
-    //     exclusion.
     //   - group chats: same exclusion, for the same reason (server-side speaker/character resolution for a group
     //     turn not verified against generateGroupWrapper()'s own activation-strategy-dependent member selection).
     // 'impersonate'/'quiet' are now INCLUDED (previously excluded in commit 9d3091f41 for the identical reason as
@@ -6507,6 +6556,24 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // both (identical reasoning to the text-completion cutover's own JUDGMENT CALL #3 above - `textareaText` is
     // unconditionally `''` for both types), so there's nothing new for the server to spuriously persist regardless.
     // See JUDGMENT CALL #3 below, however, for a real chat-completion-SPECIFIC gap this widening does not close.
+    //
+    // 'swipe'/'regenerate' are ALSO now INCLUDED, same real tree-shape bug/fix as the text-completion cutover's own
+    // (identically-worded) JUDGMENT CALL #1 above - `anchorNodeId` here is likewise just the branch leaf (the
+    // message being swiped/regenerated), so a plain appendMessages() call would have chained the reply as a CHILD
+    // after it instead of a SIBLING alongside it. Now fixed identically: `addAlternatives()` +
+    // `selectDefaultChild()` when `is_swipe` is set (see that route handler's own comment on this branch). A REAL,
+    // chat-completion-SPECIFIC gap was found and fixed alongside this, though, that the text-completion pipeline did
+    // NOT have: `resolveChatCompletionGenerationInput()` (src/chat-completion-generation-input.js) previously never
+    // excluded the message being swiped/regenerated from the `chat` array it builds `messages`/world-info-scanning
+    // input/`macroContext` from at all (it accepted an `isSwipe` parameter but never read it - `void isSwipe`) -
+    // unlike src/text-completion-prompt-orchestrator.js's own `buildCoreChat({isSwipe})`, which already correctly
+    // popped that message. Left as-is, a chat-completion swipe/regenerate would have fed the model its OWN
+    // about-to-be-replaced reply as the newest turn of its own context. Fixed there (now a real `promptChat` that
+    // drops the last entry when `isSwipe`), plus a matching fix to the shared `getBiasStrings()` (src/prompt-line-
+    // formatting.js, used by BOTH pipelines) to skip that same last entry for `type === 'regenerate'` too, not just
+    // `'swipe'` (its one-line-literal port of the client's own check only handled `'swipe'`, because client-side the
+    // array is already shortened for 'regenerate' by the time that function runs there - not true server-side, where
+    // `chat` is always freshly resolved from the persisted tree regardless of which literal `type` string was sent).
     // No genuinely NEW chat-completion-specific correctness concern beyond THAT was found - specifically checked
     // and ruled out:
     //   - Claude's assistant-prefill continuation semantics (`oai_settings.continue_prefill`/`supportsAssistantPrefill`,
@@ -6566,7 +6633,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // parameter, not assumed absent.
     let rawActionChatCompletionData = null;
     if (!dryRun && main_api === 'openai'
-        && [undefined, 'normal', 'impersonate', 'quiet'].includes(type)
+        && [undefined, 'normal', 'impersonate', 'quiet', 'swipe', 'regenerate'].includes(type)
         && !jsonSchema
         && !selected_group
         && !hasPendingFileAttachment()
@@ -6581,9 +6648,10 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             // Same rationale as the text-completion cutover above: omitted (undefined) for any type that doesn't add
             // a new message. Given the scope above, this path is reached for type 'normal'/undefined (where
             // textareaText is the just-sent text, or '' for a depth>0 tool-call follow-up generation, which likewise
-            // adds no new user message) and for 'impersonate'/'quiet' (where textareaText is unconditionally '' -
-            // see the text-completion cutover's own JUDGMENT CALL #3 above), so userMessageText is always undefined
-            // for the latter two.
+            // adds no new user message), for 'impersonate'/'quiet' (where textareaText is unconditionally '' - see
+            // the text-completion cutover's own JUDGMENT CALL #3 above), and for 'swipe'/'regenerate' (excluded from
+            // that same textareaText-read condition by name - see the text-completion cutover's own JUDGMENT CALL
+            // #5 above), so userMessageText is always undefined for all four of these types.
             const userMessageText = textareaText !== '' ? textareaText : undefined;
             rawActionChatCompletionData = {
                 character_avatar: characterAvatar,
