@@ -67,8 +67,29 @@ import { createExtensionPromptTable, setExtensionPrompt, doChatInject, extension
  *        per the author's-note judgment call above, an AN with position IN_PROMPT/BEFORE_PROMPT would
  *        belong here too, but is not resolved into these anchors by this orchestrator).
  *      - The quiet-prompt/CFG-depth-splice/PHI-via-extension-prompts mechanisms the client also
- *        threads through this same table are not modeled here at all - only the three sources listed
- *        above are written into the table by this orchestrator.
+ *        threads through this same table are not modeled here at all as TABLE entries - only the
+ *        three sources listed above are written into the table by this orchestrator. (As of the
+ *        Author's-Note/World-Info ordering fix below, the quiet-prompt text IS now used for one
+ *        narrow purpose - feeding World-Info's scan buffer, matching the client's own transient
+ *        `setExtensionPrompt(inject_ids.QUIET_PROMPT, ..., scan=true)` / immediate-clear pattern at
+ *        public/script.js ~5698/~5711 - but it is still never written into THIS orchestrator's
+ *        extension-prompt table nor spliced into the chat array as an actual injection, since the
+ *        client itself clears that slot again immediately after the world-info call and never lets it
+ *        reach doChatInject().)
+ *      - The character card's own `depth_prompt` field
+ *        (`character.data.extensions.depth_prompt.{prompt, depth, role}`) - the client stashes this
+ *        into `extension_prompts` as an ACTUAL IN-CHAT depth injection (public/script.js ~5552-5558:
+ *        `setExtensionPrompt(inject_ids.DEPTH_PROMPT, depthPromptText, IN_CHAT, depthPromptDepth,
+ *        extension_settings.note.allowWIScan, depthPromptRole)`), separately from the already-correct
+ *        "characterDepthPrompt available for WI key-matching via globalScanData" mechanism (which
+ *        src/character-card-fields.js's `charDepthPrompt` field / src/world-info/key-matching.js's
+ *        `entry.matchCharacterDepthPrompt` check already handle correctly - that part is fine, do not
+ *        touch it). The chat-injection half of this (the character's own depth/role-configured
+ *        injection into `mesSend`) is NOT wired anywhere in this orchestrator, and
+ *        `getCharacterCardFields()` does not even resolve the `depth`/`role` sub-fields (only
+ *        `.prompt`, via `charDepthPrompt`). This is a real, separate, NOT-yet-closed gap, newly
+ *        discovered while investigating the Author's-Note/World-Info ordering fix - deliberately left
+ *        unimplemented here (scope discipline: that fix was ordering-only) for a future task to close.
  *
  * 2. Regex-scripts engine (getRegexedString) - NOW REAL, as of this task. The three placements the
  *    client applies during text-completion prompt assembly are all wired into this orchestrator:
@@ -476,7 +497,22 @@ export async function assembleTextCompletionPrompt(input) {
         chatMetadataPrompts, charaCfg, globalCfg, promptCombine, promptSeparator, promptInsertionDepth, macroContext,
     });
 
-    // ---- Step 5: world info -------------------------------------------------------------------
+    // ---- Step 5 (was 6): author's note -------------------------------------------------------------
+    // Moved to run BEFORE world-info activation (was previously step 6, after world info) - matching
+    // the real client, which resolves the Author's Note (setFloatingPrompt(), public/script.js
+    // ~5694) and stashes the quiet-prompt into extension_prompts (~5698, with scan: true) BEFORE
+    // calling getWorldInfoPrompt()/checkWorldInfo() (~5710). This ordering matters because
+    // checkWorldInfo() (~4800-4807) loops over every extension_prompts entry with `.scan === true`
+    // and feeds its text into the World-Info scan buffer via WorldInfoBuffer#addInject() - so the
+    // Author's Note's own text (when allowWIScan is on) and the quiet-prompt text can themselves
+    // trigger World-Info keyword matches. Nothing else in steps 5-7 (now 6-7) needs `authorsNote`
+    // before this point other than this new scan-injection use case - the extension-prompt-table
+    // wiring further below reads both `worldInfoDepthEntries` (from world-info activation) and
+    // `authorsNote`, but that happens AFTER both are resolved either way, so this reorder doesn't
+    // disturb it.
+    const authorsNote = resolveAuthorsNote({ chatMetadata, noteSettings, chat, avatar, hasCharacterOrGroup });
+
+    // ---- Step 6 (was 5): world info -------------------------------------------------------------
     const chatForWI = coreChat.map(x => worldInfoIncludeNames ? `${x.name}: ${x.mes}` : x.mes).reverse();
     const decoratedCandidates = worldInfoCandidates.map(entry => {
         const [decorators, content] = parseDecorators(entry.content || '');
@@ -491,13 +527,33 @@ export async function assembleTextCompletionPrompt(input) {
         creatorNotes: fields.creatorNotes,
         trigger: generationTrigger,
     };
+    // additionalScanInjects: mirrors the client's checkWorldInfo() loop over extension_prompts
+    // entries with scan === true (public/script.js ~4800-4807), resolved here by the orchestrator
+    // (activateWorldInfoEntries() only accepts the already-resolved list - "caller resolves
+    // entities", same pattern as externalActivations/worldInfoCandidates):
+    //   - the quiet-prompt text, matching the client's unconditional
+    //     `setExtensionPrompt(inject_ids.QUIET_PROMPT, quiet_prompt || '', ..., scan=true)`
+    //     (public/script.js ~5698 - the 4th positional arg, `true`, is the scan flag) - unconditional
+    //     on any noteSettings gate, only filtered for truthiness below.
+    //   - the Author's Note's resolved value, only when it isn't disabled and its own `scan` flag
+    //     (mirrors noteSettings.allowWIScan - re-verified against public/scripts/authors-note.js's
+    //     setFloatingPrompt(): `context.setExtensionPrompt(MODULE_NAME, String(prompt), ...,
+    //     extension_settings.note.allowWIScan, ...)`, confirming allowWIScan really is the `scan`
+    //     positional argument there) is truthy. `authorsNote.value` is already '' when the note isn't
+    //     due to insert this turn (shouldAddPrompt false), so the truthiness filter below also
+    //     naturally excludes a not-due note without needing to check shouldAddPrompt explicitly.
+    // Falsy/empty entries are filtered out, matching the client's `if (prompt) buffer.addInject(prompt)`.
+    const additionalScanInjects = [
+        quiet_prompt,
+        authorsNote.disabled === false && authorsNote.scan ? authorsNote.value : '',
+    ].filter(Boolean);
     const { activatedEntries } = await activateWorldInfoEntries(decoratedCandidates, chatForWI, {
         maxContext: thisMaxContext, budgetPercent: worldInfoBudgetPercent, budgetCap: worldInfoBudgetCap,
         depth: worldInfoDepth, recursive: worldInfoRecursive, maxRecursionStepsSetting: worldInfoMaxRecursionSteps,
         globalScanData, macroContext, countTokens, random: worldInfoRandom, chatMetadata, isDryRun,
         useGroupScoring: worldInfoUseGroupScoring, entryFilterContext,
         minActivations: worldInfoMinActivations, minActivationsDepthMax: worldInfoMinActivationsDepthMax,
-        externalActivations,
+        externalActivations, additionalScanInjects,
     });
     // WORLD_INFO placement regex, applied per activated entry (public/scripts/world-info.js ~5289) -
     // NOW REAL (see module doc comment gap 2). Depth override only applies to atDepth-positioned
@@ -513,9 +569,6 @@ export async function assembleTextCompletionPrompt(input) {
                 });
             },
         });
-
-    // ---- Step 6: author's note -----------------------------------------------------------------
-    const authorsNote = resolveAuthorsNote({ chatMetadata, noteSettings, chat, avatar, hasCharacterOrGroup });
 
     // ---- Step 7: story-string assembly ----------------------------------------------------------
     // mesExamplesArray/mesExamplesRawArray: see module doc comment gap (7) - the instruct-mode

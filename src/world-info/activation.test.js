@@ -325,4 +325,26 @@ const countTokens = async (text) => Math.ceil(text.length / 4); // cheap determi
     assert.equal(withMatch.activatedEntries.length, 1, 'without @@dont_activate, a matching key does activate');
 }
 
+// additionalScanInjects: an entry whose ONLY matching key appears in an injected string (not in
+// chatMessages or globalScanData) still activates - proves the option's wiring actually reaches the
+// scan buffer, not just that it's accepted.
+{
+    const entries = [{ uid: '1', world: 'w', key: ['unicorn'], content: 'Unicorns are rare.' }];
+    const { activatedEntries } = await activateWorldInfoEntries(entries, ['nothing relevant here'], {
+        maxContext: 4000, budgetPercent: 100, depth: 1, countTokens,
+        additionalScanInjects: ['a unicorn was mentioned in the quiet prompt'],
+    });
+    assert.equal(activatedEntries.length, 1, 'entry activates purely from additionalScanInjects text');
+}
+
+// additionalScanInjects: falsy/empty entries in the array are ignored (no crash, no spurious match).
+{
+    const entries = [{ uid: '1', world: 'w', key: ['unicorn'], content: 'Unicorns are rare.' }];
+    const { activatedEntries } = await activateWorldInfoEntries(entries, ['nothing relevant here'], {
+        maxContext: 4000, budgetPercent: 100, depth: 1, countTokens,
+        additionalScanInjects: ['', null, undefined],
+    });
+    assert.equal(activatedEntries.length, 0, 'empty/falsy injects contribute no scannable text');
+}
+
 console.log('activation.test.js: all assertions passed');

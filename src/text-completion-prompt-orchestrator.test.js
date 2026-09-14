@@ -426,6 +426,86 @@ test('assembleTextCompletionPrompt: author\'s note combines with WI ANTop/ANBott
     );
 });
 
+test('assembleTextCompletionPrompt: quiet-prompt and scannable author\'s-note text now feed World-Info scan injection (new in this task)', async () => {
+    const { charactersDir, root } = makeDirectories();
+    const avatar = 'aria5b.png';
+    writeCharacterCard(charactersDir, avatar, {
+        spec: 'chara_card_v2',
+        spec_version: '2.0',
+        name: 'Aria',
+        description: 'Aria is a wandering ranger who guards the Whispering Woods.',
+        personality: 'brave and curious',
+        scenario: '',
+        first_mes: 'Hello there, traveler!',
+        mes_example: '',
+        avatar,
+        data: {
+            name: 'Aria',
+            description: 'Aria is a wandering ranger who guards the Whispering Woods.',
+            personality: 'brave and curious',
+            scenario: '',
+            first_mes: 'Hello there, traveler!',
+            mes_example: '',
+            system_prompt: '', post_history_instructions: '', character_version: '', creator_notes: '',
+            extensions: {}, alternate_greetings: [],
+        },
+    });
+    const directories = { characters: charactersDir, root };
+
+    // Case 1: a world-info entry whose ONLY matching keyword appears in the quiet-prompt text - not
+    // in chat history, character card, or an author's note. Before this task's ordering fix, World
+    // Info activation ran before the quiet-prompt was ever resolvable as scannable input, so this
+    // entry could never activate purely from quiet_prompt text.
+    {
+        const input = {
+            ...baseFixture(directories, avatar),
+            quiet_prompt: 'Describe the glowing amulet in detail.',
+            worldInfoCandidates: [
+                {
+                    uid: 'qp-1', world: 'test', key: ['amulet'], content: 'The amulet was blessed by moonlight priests.',
+                    order: 100, position: 0,
+                },
+            ],
+        };
+        const result = await assembleTextCompletionPrompt(input);
+        assert.ok(
+            result.combinedPrompt.includes('The amulet was blessed by moonlight priests.'),
+            'a WI entry matching only quiet_prompt text should now activate and appear in combinedPrompt',
+        );
+    }
+
+    // Case 2: a world-info entry whose ONLY matching keyword appears in an author's-note value, with
+    // noteSettings.allowWIScan: true - not in chat history or character card. Before this task's
+    // ordering fix, the Author's Note wasn't even resolved yet when World Info ran, so this could
+    // never activate.
+    {
+        const input = {
+            ...baseFixture(directories, avatar),
+            hasCharacterOrGroup: true,
+            noteSettings: { allowWIScan: true },
+            chatMetadata: {
+                note_prompt: 'The griffin nests atop the northern cliffs.',
+                note_interval: 1, // always due
+                note_position: 1, // extension_prompt_types.IN_CHAT
+                note_depth: 0,
+                note_role: 0,
+            },
+            worldInfoCandidates: [
+                {
+                    uid: 'an-1', world: 'test', key: ['griffin'], content: 'Griffins are fiercely territorial.',
+                    order: 100, position: 0,
+                },
+            ],
+        };
+        const result = await assembleTextCompletionPrompt(input);
+        assert.equal(result.authorsNote.scan, true, 'sanity check: authors note scan flag reflects noteSettings.allowWIScan');
+        assert.ok(
+            result.combinedPrompt.includes('Griffins are fiercely territorial.'),
+            'a WI entry matching only the scannable author\'s-note text should now activate and appear in combinedPrompt',
+        );
+    }
+});
+
 test('assembleTextCompletionPrompt: an AI_OUTPUT regex script transforms a chat message (new in this task)', async () => {
     const { charactersDir, root } = makeDirectories();
     const avatar = 'aria6.png';
