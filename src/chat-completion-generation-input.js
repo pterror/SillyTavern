@@ -8,6 +8,7 @@ import { chat_completion_sources } from './chat-completion-tool-capabilities.js'
 import { resolveWorldInfoCandidates, world_info_insertion_strategy } from './world-info/candidate-resolution.js';
 import { activateWorldInfoEntries } from './world-info/activation.js';
 import { bucketActivatedEntries, world_info_position } from './world-info/result-bucketing.js';
+import { setExtensionPrompt, extension_prompt_types } from './extension-prompt-table.js';
 import { getRegexedString, regex_placement } from './regex-scripts-engine.js';
 import { getTokenizerModel, getTiktokenTokenizer } from './endpoints/tokenizers.js';
 
@@ -146,17 +147,28 @@ import { getTokenizerModel, getTiktokenTokenizer } from './endpoints/tokenizers.
  *        call - see the regex-scripts NOTE below for why this was real, straightforward reuse rather
  *        than new scope.
  *      - `worldInfoBefore`/`worldInfoAfter` on the returned object are now the REAL bucketed strings.
- *    The NEW, NARROWER remaining gap (after this task): `bucketActivatedEntries()`'s other outputs -
- *    `worldInfoDepth` (@Depth-positioned entries), `anBefore`/`anAfter` (WI ANTop/ANBottom, meant to be
- *    combined with an Author's Note value), `outletEntries`, and `worldInfoExamples` (message-example
- *    WI-EM entries) - have NO destination in `prepareOpenAIMessages()`'s documented input surface.
- *    `worldInfoDepth` in particular is NOT folded into this pipeline's own, SEPARATE @Depth mechanism
- *    (`populateInjectionPrompts()` in src/chat-completion-injection-prompts.js / the `injectionTable`
- *    input) - wiring that would mean this resolver reimplementing a chunk of real orchestration
- *    (building/merging extension-prompt-table entries the way src/text-completion-prompt-orchestrator.js's
- *    own Step 7.5 does) beyond activation/bucketing alone, which is explicitly out of this task's scope.
- *    These four fields are simply dropped on the floor for now - documented here as the precise
- *    boundary, not silently lost.
+ *      - `worldInfoDepth` (@Depth-positioned entries) is now ALSO real, AS OF THIS FOLLOW-UP TASK: this
+ *        resolver builds a real `injectionTable` (instead of a hardcoded `{}`) by calling
+ *        `setExtensionPrompt(injectionTable, \`wi_depth_${depth}_${role}\`, entries.join('\n'),
+ *        extension_prompt_types.IN_CHAT, depth, false, role)` once per `WIDepthEntry` returned by
+ *        `bucketActivatedEntries()` - a faithful, verified port of
+ *        src/text-completion-prompt-orchestrator.js's own Step 7.5 "1. World-info @Depth entries" loop
+ *        (identical key format/position/depth/scan/role), just writing into THIS pipeline's own
+ *        `injectionTable` instead of that orchestrator's separate `extensionPromptTable`. That table is
+ *        the real mechanism `prepareOpenAIMessages()` already has for depth-indexed chat injection -
+ *        it is forwarded, unchanged, through `src/chat-completion-populate.js`'s `populateChatCompletion()`
+ *        into `src/chat-completion-injection-prompts.js`'s `populateInjectionPrompts()` (its `table`
+ *        option), so no new orchestration was added here - only the missing write into an
+ *        already-consumed input.
+ *    The REMAINING, NARROWER gap (after this task): `bucketActivatedEntries()`'s other outputs -
+ *    `anBefore`/`anAfter` (WI ANTop/ANBottom, meant to be combined with an Author's Note value) and
+ *    `outletEntries`/`worldInfoExamples` (message-example WI-EM entries) - still have NO destination in
+ *    `prepareOpenAIMessages()`'s documented input surface. `anBefore`/`anAfter` have no analog here for
+ *    the same reason documented in the `additionalScanInjects` FIELD-MAPPING NOTE below (this resolver
+ *    never resolves an Author's Note value or an `extensionPrompts` table entry to combine them with).
+ *    `outletEntries`'s outlet-consumer mechanism and `worldInfoExamples`'s WI-EM mechanism have no home
+ *    anywhere in this pipeline yet. These three fields are simply dropped on the floor for now -
+ *    documented here as the precise boundary, not silently lost.
  *
  * ============================================================================================
  * FIELD-MAPPING NOTES (verified against default/content/settings.json and
@@ -247,13 +259,16 @@ import { getTokenizerModel, getTiktokenTokenizer } from './endpoints/tokenizers.
  *   string `preparePromptsForChatCompletion()`/`populateChatCompletion()` expect - a real, separate,
  *   not-yet-ported subsystem (the chat-completion analog of text-completion-generation-input.js's own
  *   documented `logitBiasEntries`-is-forwarded-raw gap) - `bias` defaults to `''`.
- * - `quietPrompt`/`quietImage`/`cyclePrompt`/`extensionPrompts`/`injectionTable`: none of these have a
- *   real, single-valued settings.json/chat-metadata source of truth (they are per-generation-call
- *   options, exactly like text-completion-generation-input.js's own documented
- *   `quiet_prompt`/`generationTrigger`/etc gap list) - left at their own defaults (`undefined`/`''`/
- *   `{}`) unless a caller supplies an override via `macroExtras`. `cyclePrompt` IS accepted as an
- *   explicit resolver param (mirroring `textareaText` on the text-completion side), since
- *   `populateChatHistory()`'s continue-nudge branch needs it whenever `type === 'continue'`.
+ * - `quietPrompt`/`quietImage`/`cyclePrompt`/`extensionPrompts`: none of these have a real,
+ *   single-valued settings.json/chat-metadata source of truth (they are per-generation-call options,
+ *   exactly like text-completion-generation-input.js's own documented `quiet_prompt`/`generationTrigger`/
+ *   etc gap list) - left at their own defaults (`undefined`/`''`/`{}`) unless a caller supplies an
+ *   override via `macroExtras`. `cyclePrompt` IS accepted as an explicit resolver param (mirroring
+ *   `textareaText` on the text-completion side), since `populateChatHistory()`'s continue-nudge branch
+ *   needs it whenever `type === 'continue'`. `injectionTable` is the ONE exception, AS OF THIS FOLLOW-UP
+ *   TASK: it is now genuinely populated with real `wi_depth_*` entries (see decision 4 above) - a
+ *   caller may still override it wholesale via `macroExtras` if it has other, non-world-info injection
+ *   sources to merge in.
  * - `dryRun`: accepted as a parameter originally purely for interface-signature parity with the task's
  *   documented deliverable signature; it now has ONE real effect, as of this task - it is forwarded as
  *   `activateWorldInfoEntries()`'s own `isDryRun` option (see decision 4 above for the full rationale).
@@ -659,7 +674,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
     // WORLD_INFO placement regex, applied per activated entry - see the REGEX SCRIPTS FIELD-MAPPING
     // NOTE above. Depth override only applies to atDepth-positioned entries, matching
     // src/text-completion-prompt-orchestrator.js's own identical resolveContent callback.
-    const { worldInfoBefore, worldInfoAfter } = bucketActivatedEntries(activatedEntries, {
+    const { worldInfoBefore, worldInfoAfter, worldInfoDepth: worldInfoDepthEntries } = bucketActivatedEntries(activatedEntries, {
         resolveContent: (entry) => {
             const regexDepth = entry.position === world_info_position.atDepth ? (entry.depth ?? WI_DEFAULT_DEPTH) : null;
             return getRegexedString(entry.content, regex_placement.WORLD_INFO, regexScripts, {
@@ -667,6 +682,24 @@ export async function resolveChatCompletionGenerationInput(directories, {
             });
         },
     });
+
+    // Real @Depth world-info injection - see doc comment decision 4. Faithful, verified port of
+    // src/text-completion-prompt-orchestrator.js's own Step 7.5 "1. World-info @Depth entries" loop
+    // (same key format/position/depth/scan/role), writing into THIS pipeline's own `injectionTable`
+    // (consumed by src/chat-completion-injection-prompts.js's `populateInjectionPrompts()` via
+    // src/chat-completion-populate.js) instead of that orchestrator's separate `extensionPromptTable`.
+    const injectionTable = {};
+    for (const depthEntry of worldInfoDepthEntries) {
+        setExtensionPrompt(
+            injectionTable,
+            `wi_depth_${depthEntry.depth}_${depthEntry.role}`,
+            depthEntry.entries.join('\n'),
+            extension_prompt_types.IN_CHAT,
+            depthEntry.depth,
+            false,
+            depthEntry.role,
+        );
+    }
 
     const resolved = {
         // --- Character/persona resolution (getCharacterCardFields() - see doc comment decision 1) ---
@@ -738,7 +771,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
         namesInCompletion: namesBehavior === character_names_behavior.COMPLETION,
         assistantPrefill: oaiSettings.assistant_prefill ?? '',
         pinExamples: Boolean(powerUser.pin_examples ?? false),
-        injectionTable: {},
+        injectionTable,
 
         historyOptions: {
             type, cyclePrompt, isGroup,

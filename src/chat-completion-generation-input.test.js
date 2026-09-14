@@ -19,6 +19,8 @@ const { resolveChatCompletionGenerationInput } = await import('./chat-completion
 const { writeAllSettings } = await import('./settings-store.js');
 const { saveChatToTree, disposeMessageTreeStores } = await import('./message-tree-db.js');
 const { prepareOpenAIMessages } = await import('./chat-completion-prepare-messages.js');
+const { world_info_position } = await import('./world-info/result-bucketing.js');
+const { extension_prompt_types, extension_prompt_roles } = await import('./extension-prompt-table.js');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-chat-completion-generation-input-test-'));
 const charactersDir = path.join(root, 'characters');
@@ -148,8 +150,23 @@ async function run() {
     // chat history written below ('Hello there, traveler.'), so it only ends up in worldInfoBefore if
     // activateWorldInfoEntries()'s real keyword scan actually matches it, not via a forced/constant
     // activation.
+    // wi2 is a real @Depth-positioned entry (position === world_info_position.atDepth, the raw
+    // on-disk lorebook-entry field read directly by readWorldInfoFile()/getGlobalLore() - NOT the
+    // extensions.position field that only applies to embedded V2/V3 character_book entries, per
+    // src/world-info/candidate-resolution.js's own convertCharacterBook() vs getGlobalLore() field
+    // mapping) whose key ('nice to meet') genuinely appears in the chat history written below ('Hi
+    // Rex, nice to meet you.') - same real-scan-activation standard as wi1, not a forced/stubbed
+    // activation.
+    const WI_DEPTH_TEST_DEPTH = 3;
+    const WI_DEPTH_TEST_ROLE = extension_prompt_roles.SYSTEM;
+    const WI_DEPTH_TEST_CONTENT = 'A secret passed down at this exact depth.';
     writeLorebook('TestLore', [
         { uid: 'wi1', key: ['traveler'], keysecondary: [], comment: '', content: 'The ancient tower looms over the village.', constant: false, selective: false, order: 10, position: 0, disable: false },
+        {
+            uid: 'wi2', key: ['nice to meet'], keysecondary: [], comment: '', content: WI_DEPTH_TEST_CONTENT,
+            constant: false, selective: false, order: 5, disable: false,
+            position: world_info_position.atDepth, depth: WI_DEPTH_TEST_DEPTH, role: WI_DEPTH_TEST_ROLE,
+        },
     ]);
     const avatar = writeCharacter('Rex.png', {
         name: 'Rex',
@@ -190,7 +207,7 @@ async function run() {
     assert.equal(input.systemPromptOverride, '', 'systemPromptOverride resolves from fields.system (empty card system_prompt here, but the real preferCharacterPrompt-gated path)');
 
     // --- world-info candidate resolution (real, via resolveWorldInfoCandidates()) ---
-    assert.equal(input.worldInfoCandidates.length, 1, 'worldInfoCandidates is auto-resolved for real from the on-disk lorebook named in settings.world_info.globalSelect');
+    assert.equal(input.worldInfoCandidates.length, 2, 'worldInfoCandidates is auto-resolved for real from the on-disk lorebook named in settings.world_info.globalSelect (wi1 + the new @Depth wi2)');
     assert.equal(input.worldInfoCandidates[0].content, 'The ancient tower looms over the village.');
 
     // --- world-info ACTIVATION (real, via activateWorldInfoEntries()/bucketActivatedEntries()) - the
@@ -202,6 +219,26 @@ async function run() {
         input.worldInfoBefore.includes('The ancient tower looms over the village.'),
         'worldInfoBefore contains the real entry content, genuinely activated via keyword scan against the real chat history',
     );
+
+    // --- world-info @Depth entries (real, via bucketActivatedEntries()'s worldInfoDepth output) are
+    // now written into the real `injectionTable` (setExtensionPrompt()), the same key format
+    // (`wi_depth_${depth}_${role}`)/position(IN_CHAT)/depth/scan(false)/role
+    // src/text-completion-prompt-orchestrator.js's own reference Step 7.5 loop uses. wi2's key ('nice
+    // to meet') only appears in the real chat history, so this only ends up populated if the real
+    // keyword scan genuinely matched it. ---
+    const wiDepthKey = `wi_depth_${WI_DEPTH_TEST_DEPTH}_${WI_DEPTH_TEST_ROLE}`;
+    assert.ok(input.injectionTable[wiDepthKey], `injectionTable has a real entry at the expected ${wiDepthKey} key`);
+    assert.equal(input.injectionTable[wiDepthKey].value, WI_DEPTH_TEST_CONTENT, 'the injectionTable entry carries the real, genuinely-activated @Depth entry content');
+    assert.equal(input.injectionTable[wiDepthKey].position, extension_prompt_types.IN_CHAT);
+    assert.equal(input.injectionTable[wiDepthKey].depth, WI_DEPTH_TEST_DEPTH);
+    assert.equal(input.injectionTable[wiDepthKey].scan, false);
+    assert.equal(input.injectionTable[wiDepthKey].role, WI_DEPTH_TEST_ROLE);
+    // atDepth entries are routed to ONLY the injection table, not also concatenated into
+    // worldInfoBefore/worldInfoAfter - verified against bucketActivatedEntries()'s own real behavior
+    // (its `switch (entry.position)` has separate, non-overlapping branches for `before`/`after` vs
+    // `atDepth`), not assumed.
+    assert.ok(!input.worldInfoBefore.includes(WI_DEPTH_TEST_CONTENT), 'the @Depth entry content is NOT duplicated into worldInfoBefore');
+    assert.ok(!input.worldInfoAfter.includes(WI_DEPTH_TEST_CONTENT), 'the @Depth entry content is NOT duplicated into worldInfoAfter');
 
     // An explicit override (including []) always wins over auto-resolution.
     const overriddenWI = await resolveChatCompletionGenerationInput(directories, {
@@ -266,6 +303,15 @@ async function run() {
     );
     assert.equal(typeof result.canUseTools, 'boolean', 'canUseTools is resolved internally by prepareOpenAIMessages(), not by this resolver');
     assert.equal(result.canUseTools, false, 'function_calling is not set in the fixture, so tool calling resolves to false internally');
+
+    // --- end-to-end #3: the @Depth entry's content, routed through the real injectionTable, actually
+    // appears in the final assembled chat output (via populateInjectionPrompts()'s real depth-indexed
+    // splicing), inserted somewhere into the message list (not over-asserting the exact index, per the
+    // task's own "roughly" standard) - and is present exactly once, i.e. genuinely NOT also duplicated
+    // via worldInfoBefore/worldInfoAfter. ---
+    const depthOccurrences = result.chat.filter(msg => JSON.stringify(msg).includes(WI_DEPTH_TEST_CONTENT)).length;
+    assert.ok(depthOccurrences > 0, 'the @Depth entry content made it into the final assembled chat-completion payload, end to end');
+    assert.equal(depthOccurrences, 1, 'the @Depth entry content appears exactly once - not duplicated into worldInfoBefore/worldInfoAfter as well');
 
     // --- end-to-end #2: the userMessageText-appended history flows all the way through the real orchestrator ---
     const resultWithUserMessage = await prepareOpenAIMessages(withUserMessage);
