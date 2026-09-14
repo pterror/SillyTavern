@@ -5,7 +5,8 @@ import { createReasoningFoldState, foldReasoningIntoMessage, isReasoningLimitRea
 import { getGuidanceScale, adjustMaxContextForCfg } from './cfg-prompt-resolve.js';
 import { parseDecorators } from './world-info/decorators.js';
 import { activateWorldInfoEntries } from './world-info/activation.js';
-import { bucketActivatedEntries, wi_anchor_position } from './world-info/result-bucketing.js';
+import { bucketActivatedEntries, wi_anchor_position, world_info_position } from './world-info/result-bucketing.js';
+import { getRegexedString, regex_placement } from './regex-scripts-engine.js';
 import { resolveAuthorsNote } from './authors-note.js';
 import { assembleStoryString } from './story-string-assembly.js';
 import { injectJailbreak, buildChat2, fillContextBudget, estimateExampleBudget, buildMesSend } from './chat-history-budget.js';
@@ -67,15 +68,33 @@ import { createExtensionPromptTable, setExtensionPrompt, doChatInject, extension
  *        threads through this same table are not modeled here at all - only the three sources listed
  *        above are written into the table by this orchestrator.
  *
- * 2. Regex-scripts engine (getRegexedString) - every message/world-info-entry/reasoning-block
- *    content that the client would run through the user's regex scripts is passed through
- *    UNCHANGED here. See finalizeCoreChatMessage's `resolvedMessage` param (this file passes
- *    `chatItem.mes` verbatim - a literal no-op "resolver", clearly marked below) and
- *    bucketActivatedEntries's `resolveContent` param (this file passes `(entry) => entry.content`).
+ * 2. Regex-scripts engine (getRegexedString) - NOW REAL, as of this task. The three placements the
+ *    client applies during text-completion prompt assembly are all wired into this orchestrator:
+ *      - `regex_placement.USER_INPUT`/`AI_OUTPUT` - applied per-message, before
+ *        `finalizeCoreChatMessage()` ever sees the text (the `resolvedMessage` param is now the real
+ *        `getRegexedString()` result, keyed on `chatItem.is_user`, with `depth = coreChat.length -
+ *        index - (isContinue ? 2 : 1)`, matching public/script.js ~5573-5577).
+ *      - `regex_placement.REASONING` - applied to each message's reasoning text, inside the existing
+ *        reasoning-folding loop, before `foldReasoningIntoMessage()` sees it (same depth formula,
+ *        reused per-iteration with that loop's own `i`, matching public/script.js ~5606-5627).
+ *      - `regex_placement.WORLD_INFO` - applied to each activated world-info entry's content, via
+ *        `bucketActivatedEntries`'s `resolveContent` param, with a depth override (the raw
+ *        `entry.depth`, defaulting to 4) only for `position === world_info_position.atDepth` entries
+ *        (matching public/scripts/world-info.js ~5289).
+ *    `regex_placement.SLASH_COMMAND` and `.MD_DISPLAY` are NOT used anywhere in this orchestrator -
+ *    matching the client, since neither placement applies to prompt assembly (SLASH_COMMAND fires
+ *    from the slash-command pipeline, MD_DISPLAY is a deprecated display-only transform). The caller
+ *    supplies the already-resolved, already allow-list-filtered flat `regexScripts` array (default
+ *    `[]`, matching src/regex-scripts-engine.js's own "caller resolves entities" contract - resolving
+ *    which scripts apply from character/extension-settings state remains out of scope, same as
+ *    `worldInfoCandidates`) and a `regexExtensionEnabled` boolean (default `true`), forwarded to
+ *    every `getRegexedString()` call this orchestrator makes.
  *
- * 3. File-attachment inlining (appendFileContent) - same no-op treatment, folded into the same
- *    "resolvedMessage" no-op as (2) above (a real pipeline would run regex AND attachment-inlining
- *    before core-chat-build ever sees the text).
+ * 3. File-attachment inlining (appendFileContent) - still a no-op: this remains folded into the same
+ *    `resolvedMessage` param finalizeCoreChatMessage() takes (now populated with the real regex
+ *    result from gap 2 above, but NOT file-attachment-inlined) - a real pipeline would run
+ *    attachment-inlining there too, before core-chat-build ever sees the text. This gap is separate
+ *    from (and not conflated with) the now-fixed regex gap above.
  *
  * 4. Tool-calling (ToolManager.isToolCallingSupported/canPerformToolCalls) - `canUseTools` is a
  *    plain boolean input, default `false`. No tool-calling subsystem is modeled.
@@ -184,6 +203,16 @@ function parseMesExamplesBlocks(examplesStr, isInstruct, exampleSeparator = '') 
  * @property {string} [reasoningPrefix]
  * @property {string} [reasoningSeparator]
  * @property {string} [reasoningSuffix]
+ *
+ * --- Regex scripts -------------------------------------------------------------------------------
+ * @property {import('./regex-scripts-engine.js').RegexScript[]} [regexScripts] Already-resolved,
+ *   already allow-list-filtered flat list of regex scripts to run via getRegexedString() at every
+ *   placement this orchestrator applies (USER_INPUT/AI_OUTPUT per-message, REASONING, WORLD_INFO).
+ *   Resolving which scripts apply from character/extension-settings state is out of scope (see
+ *   module doc comment gap 2). Default `[]` (no scripts = no-op).
+ * @property {boolean} [regexExtensionEnabled] Equivalent of the client's
+ *   `extension_settings.disabledExtensions.includes('regex')` kill-switch, forwarded to every
+ *   getRegexedString() call. Default `true`.
  *
  * --- Context/token budget -------------------------------------------------------------------------
  * @property {number} thisMaxContext Equivalent of getMaxPromptTokens() - the pre-CFG-adjustment max context.
@@ -296,6 +325,7 @@ export async function assembleTextCompletionPrompt(input) {
         personaDescription, chatMetadata = {}, chat, textareaText = '', userPromptBias = '',
         alwaysForceName2 = false, forceName2Override,
         reasoningAddToPrompts = false, reasoningMaxAdditions = 999999, reasoningPrefix = '', reasoningSeparator = '', reasoningSuffix = '',
+        regexScripts = [], regexExtensionEnabled = true,
         tokenPadding = 0, countTokens, encodeTokens, amountGen = 0, requestTokenProbabilities = false,
         chatGuidanceScale, groupchatIndividualChars = false, charaCfg, globalCfg, promptCombine = [], promptSeparator, promptInsertionDepth = 1, chatMetadataPrompts = {},
         worldInfoCandidates = [], worldInfoIncludeNames = false, worldInfoBudgetPercent = 25, worldInfoBudgetCap = 0,
@@ -361,10 +391,20 @@ export async function assembleTextCompletionPrompt(input) {
     // ---- Step 3: coreChat construction, message finalization, reasoning folding ------------------
     let coreChat = buildCoreChat(chat, { canUseTools, isSwipe });
 
-    // Per-message finalization: regex scripts / file-attachment inlining are OUT OF SCOPE (see
-    // module doc comment gaps 2-3) - `resolvedMessage` is a literal no-op pass-through of the raw
-    // message text. A real pipeline would run getRegexedString()/appendFileContent() here first.
-    coreChat = coreChat.map((chatItem, index) => finalizeCoreChatMessage(chatItem, index, chatItem.mes));
+    // Per-message finalization: regex scripts are NOW REAL (see module doc comment gap 2) -
+    // `resolvedMessage` is the getRegexedString() result for the message's USER_INPUT/AI_OUTPUT
+    // placement, matching public/script.js ~5573-5577 exactly (including the depth formula). File-
+    // attachment inlining remains OUT OF SCOPE (gap 3) - a real pipeline would also run
+    // appendFileContent() here.
+    const coreChatLengthForRegex = coreChat.length;
+    coreChat = coreChat.map((chatItem, index) => {
+        const regexType = chatItem.is_user ? regex_placement.USER_INPUT : regex_placement.AI_OUTPUT;
+        const depth = coreChatLengthForRegex - index - (isContinue ? 2 : 1);
+        const regexedMessage = getRegexedString(chatItem.mes, regexType, regexScripts, {
+            isPrompt: true, depth, macroContext, regexExtensionEnabled,
+        });
+        return finalizeCoreChatMessage(chatItem, index, regexedMessage);
+    });
 
     // Reasoning folding: iterates NEWEST -> OLDEST (public/script.js ~5606: `for (i = coreChat.length
     // - 1; i >= 0; i--)`), threading ReasoningFoldState sequentially, breaking once the addition
@@ -382,7 +422,13 @@ export async function assembleTextCompletionPrompt(input) {
         if (!isOtherGroupMember) {
             const reasoning = String(coreChat[i].extra?.reasoning ?? '');
             const duration = coreChat[i].extra?.reasoning_duration ?? null;
-            const { content, state } = foldReasoningIntoMessage(reasoningState, coreChat[i].mes, reasoning, isPrefix, duration, reasoningConfig);
+            // REASONING placement regex, applied before folding (public/script.js ~5606-5627) -
+            // SAME depth formula as the per-message pass above, reused here per this loop's own `i`.
+            const reasoningDepth = coreChat.length - i - (isContinue ? 2 : 1);
+            const regexedReasoning = getRegexedString(reasoning, regex_placement.REASONING, regexScripts, {
+                isPrompt: true, depth: reasoningDepth, macroContext, regexExtensionEnabled,
+            });
+            const { content, state } = foldReasoningIntoMessage(reasoningState, coreChat[i].mes, regexedReasoning, isPrefix, duration, reasoningConfig);
             reasoningState = state;
             coreChat[i] = { ...coreChat[i], mes: content };
         }
@@ -421,10 +467,20 @@ export async function assembleTextCompletionPrompt(input) {
         minActivations: worldInfoMinActivations, minActivationsDepthMax: worldInfoMinActivationsDepthMax,
         externalActivations,
     });
-    // Regex-scripts resolution is OUT OF SCOPE (see gap 2) - resolveContent is a literal identity
-    // pass-through of each activated entry's (already macro-substituted) content.
+    // WORLD_INFO placement regex, applied per activated entry (public/scripts/world-info.js ~5289) -
+    // NOW REAL (see module doc comment gap 2). Depth override only applies to atDepth-positioned
+    // entries; DEFAULT_DEPTH (4) mirrors result-bucketing.js's own (unexported) local constant of
+    // the same name/value.
+    const WI_DEFAULT_DEPTH = 4;
     const { worldInfoBefore, worldInfoAfter, worldInfoExamples, worldInfoDepth: worldInfoDepthEntries, anBefore, anAfter, outletEntries } =
-        bucketActivatedEntries(activatedEntries, { resolveContent: (entry) => entry.content });
+        bucketActivatedEntries(activatedEntries, {
+            resolveContent: (entry) => {
+                const regexDepth = entry.position === world_info_position.atDepth ? (entry.depth ?? WI_DEFAULT_DEPTH) : null;
+                return getRegexedString(entry.content, regex_placement.WORLD_INFO, regexScripts, {
+                    depth: regexDepth, isMarkdown: false, isPrompt: true, macroContext, regexExtensionEnabled,
+                });
+            },
+        });
 
     // ---- Step 6: author's note -----------------------------------------------------------------
     const authorsNote = resolveAuthorsNote({ chatMetadata, noteSettings, chat, avatar, hasCharacterOrGroup });
