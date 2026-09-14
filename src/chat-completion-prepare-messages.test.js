@@ -163,7 +163,11 @@ function makeTokenHandler() {
         maxTokens: 0,
     }, true);
 
-    assert.deepStrictEqual(result, { chat: null, counts: false }, 'early-return shape must match the documented {chat: null, counts: false}');
+    assert.deepStrictEqual(
+        result,
+        { chat: null, counts: false, canUseTools: false, canPerformToolCalls: false },
+        'early-return shape must match the documented {chat: null, counts: false, canUseTools: false, canPerformToolCalls: false}',
+    );
     // Nothing should have been counted - the early return must happen before any ChatCompletion
     // work, let alone tokenization.
     assert.strictEqual(tokenHandler.getTotal(), 0, 'no tokenization should have happened before the early return');
@@ -281,6 +285,111 @@ async function countSystemMessages(squashSystemMessages, dryRun) {
     assert.strictEqual(squashedDryRunTrue.length, 4, `expected squashing to be skipped when dryRun is true, got: ${JSON.stringify(squashedDryRunTrue)}`);
 
     console.log('PASS: squashSystemMessages runs only when squashSystemMessages=true AND dryRun==false');
+}
+
+// ---------------------------------------------------------------------------
+// 5. Tool-capability resolution (judgment call 14) genuinely flows end-to-end into
+//    populateChatHistory()'s tool-call-reconstruction branch - not just computed in isolation.
+// ---------------------------------------------------------------------------
+/**
+ * A fixture whose chat history's last turn carries `.invocations` (a tool call the assistant made),
+ * matching src/chat-completion-history.js's documented `canUseTools && Array.isArray(chatPrompt
+ * .invocations)` reconstruction-branch trigger.
+ */
+function toolCallFixture() {
+    return {
+        name2: 'Bob',
+        charDescription: '',
+        charPersonality: '',
+        scenario: '',
+        worldInfoBefore: '',
+        worldInfoAfter: '',
+        bias: '',
+        type: 'normal',
+        quietPrompt: '',
+        extensionPrompts: {},
+        cyclePrompt: null,
+        messages: [
+            // Newest-first, matching populateInjectionPrompts's documented input convention.
+            { role: 'assistant', content: '', invocations: [{ id: 'call_1', name: 'get_weather', parameters: '{"city":"NYC"}', result: 'sunny' }] },
+            { role: 'user', content: 'USER_TURN_1' },
+        ],
+        messageExamples: [],
+        prompts: [
+            { identifier: 'main', role: 'system', content: 'MAIN', system_prompt: true, forbid_overrides: false },
+            { identifier: 'chatHistory', role: 'system', content: '', system_prompt: true },
+        ],
+        promptOrder: [
+            { character_id: 1, order: [{ identifier: 'main', enabled: true }, { identifier: 'chatHistory', enabled: true }] },
+        ],
+        characterId: 1,
+        groupMemberNames: [],
+    };
+}
+
+{
+    const tokenHandler = makeTokenHandler();
+    const fixture = toolCallFixture();
+
+    const { chat, canUseTools, canPerformToolCalls } = await prepareOpenAIMessages({
+        ...fixture,
+        tokenHandler,
+        maxContext: 1_000_000,
+        maxTokens: 0,
+        mainApi: 'openai',
+        settings: { function_calling: true, chat_completion_source: 'openai', custom_prompt_post_processing: '' },
+    }, false);
+
+    assert.strictEqual(canUseTools, true, 'canUseTools must be resolved true for a genuinely tool-capable openai/function_calling settings combination');
+    assert.strictEqual(canPerformToolCalls, true, 'canPerformToolCalls must be true for type: normal');
+
+    const toolCallMessage = chat.find((m) => Array.isArray(m.tool_calls));
+    assert.ok(toolCallMessage, `expected a reconstructed tool-call message in the final chat, got: ${JSON.stringify(chat)}`);
+    assert.strictEqual(toolCallMessage.role, 'assistant');
+    assert.strictEqual(toolCallMessage.tool_calls[0].id, 'call_1');
+    assert.strictEqual(toolCallMessage.tool_calls[0].function.name, 'get_weather');
+
+    // The reconstructed tool RESULT message should also be present (role 'tool', matching invocation.id).
+    const toolResultMessage = chat.find((m) => m.role === 'tool' && m.tool_call_id === 'call_1');
+    assert.ok(toolResultMessage, `expected a reconstructed tool-result message in the final chat, got: ${JSON.stringify(chat)}`);
+    assert.strictEqual(toolResultMessage.content, 'sunny');
+
+    console.log('PASS: canUseTools resolved true really flows through to populateChatHistory’s tool-call-reconstruction branch');
+}
+
+// ---------------------------------------------------------------------------
+// 6. Same fixture, but mainApi !== 'openai' -> canUseTools resolves false -> the tool-call branch
+//    must NOT fire; the message is instead treated as plain text (dropped here since its content
+//    is empty, proving it did NOT go through reconstruction, which would have produced tool_calls).
+// ---------------------------------------------------------------------------
+{
+    const tokenHandler = makeTokenHandler();
+    const fixture = toolCallFixture();
+
+    const { chat, canUseTools, canPerformToolCalls } = await prepareOpenAIMessages({
+        ...fixture,
+        tokenHandler,
+        maxContext: 1_000_000,
+        maxTokens: 0,
+        mainApi: 'textgenerationwebui', // not 'openai'
+        settings: { function_calling: true, chat_completion_source: 'openai', custom_prompt_post_processing: '' },
+    }, false);
+
+    assert.strictEqual(canUseTools, false, 'canUseTools must resolve false when mainApi is not openai');
+    assert.strictEqual(canPerformToolCalls, false, 'canPerformToolCalls must also be false when the underlying capability is false');
+
+    const toolCallMessage = chat.find((m) => Array.isArray(m.tool_calls));
+    assert.ok(!toolCallMessage, `expected NO reconstructed tool-call message when canUseTools is false, got: ${JSON.stringify(chat)}`);
+    const toolResultMessage = chat.find((m) => m.role === 'tool');
+    assert.ok(!toolResultMessage, `expected NO reconstructed tool-result message when canUseTools is false, got: ${JSON.stringify(chat)}`);
+
+    // The turn's own (empty) content means it's dropped by getChat()'s content-truthiness filter,
+    // since it has no `.content` and (with canUseTools false) never gets `.tool_calls` set either -
+    // proving the plain-text fallback path ran instead of the tool-call-reconstruction branch.
+    const contents = chat.map((m) => m.content);
+    assert.ok(contents.includes('USER_TURN_1'), 'the other history turn must still be present as plain text');
+
+    console.log('PASS: canUseTools resolved false really prevents populateChatHistory’s tool-call-reconstruction branch from firing');
 }
 
 console.log('All chat-completion-prepare-messages tests passed.');
