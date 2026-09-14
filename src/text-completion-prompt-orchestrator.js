@@ -238,7 +238,13 @@ function parseMesExamplesBlocks(examplesStr, isInstruct, exampleSeparator = '') 
  * @property {boolean} [isSwipe] Whether this is a 'swipe' generation (drops the last surviving coreChat message).
  * @property {boolean} [isGroup] Whether this is a group chat.
  * @property {boolean} [isDryRun] Skips world-info sticky/cooldown state mutation.
- * @property {boolean} [canUseTools] Resolved result of ToolManager.isToolCallingSupported() (out of scope here). Default false.
+ * @property {boolean} [canUseTools] Resolved result of ToolManager.isToolCallingSupported() (now a
+ * real, ported predicate - src/chat-completion-tool-capabilities.js's isToolCallingSupported()).
+ * Not resolved by this orchestrator itself because the real function unconditionally returns
+ * `false` whenever `mainApi !== 'openai'` (verified directly in public/scripts/tool-calling.js),
+ * which is always true for this text-completion-only module - so the correct resolved value here
+ * is always `false`, matching this param's own default; there is no case where a caller of this
+ * orchestrator would ever need to pass `true`.
  * @property {string} [quiet_prompt] Quiet-generation prompt text, forwarded to modifyLastPromptLine.
  * @property {boolean} [quietToLoud]
  * @property {string} [quietName]
