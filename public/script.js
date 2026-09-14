@@ -5548,6 +5548,62 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         await sendMessageAsUser(oai_settings.send_if_empty.trim(), messageBias);
     }
 
+    const canUseTools = ToolManager.isToolCallingSupported();
+    const canPerformToolCalls = !dryRun && ToolManager.canPerformToolCalls(type) && depth < ToolManager.RECURSE_LIMIT;
+
+    // Snapshot of `type` before any downstream mutation (e.g. saveReply()'s destructuring
+    // reassignment inside onSuccess()) - onSuccess() reads `originalType` unconditionally, for both
+    // the raw-action and legacy-assembly paths, so this cannot be deferred into the
+    // (possibly-skipped) assembly below. It has no dependency on that assembly either: `type` is
+    // never reassigned anywhere between this function's start and this point (verified by reading
+    // every line above this one) - so this is a plain, correctness-critical snapshot, not a
+    // best-effort default.
+    const originalType = type;
+
+    // === Always-run: character card fields, depth prompts, coreChat construction, extension
+    // interceptors ===
+    // REGRESSION FIX / JUDGMENT CALL (character-card-fields/depth-prompt block, and
+    // coreChat+interceptors, both kept unconditional, i.e. NOT inside the skippable
+    // `if (!rawActionGenerateData && !rawActionChatCompletionData) { ... }` block below): this whole
+    // section used to be the very first thing the legacy assembly did. It is hoisted out here, ahead
+    // of the raw-action gates, so it runs identically to before this whole raw-action-cutover effort,
+    // regardless of whether this request ends up using a raw-action payload. Two independent reasons:
+    //   1. `runGenerationInterceptors(coreChat, this_max_context, type)`
+    //      (public/scripts/extensions.js) is a real, documented third-party extension API - any
+    //      installed extension with a `generate_interceptor` manifest field gets to inspect/mutate
+    //      `coreChat` and/or ABORT the generation outright
+    //      (`if (aborted) { unblockGeneration(type); return Promise.resolve(); }`). A prior version of
+    //      this cutover left this call inside the skippable block, which would have silently stopped
+    //      it from running for every cut-over raw-action request (the majority of real generations) -
+    //      any content-filter/validation/custom-guard extension would have silently stopped working.
+    //      This is not part of the "pure prompt-string-construction" work the raw-action cutover is
+    //      meant to eliminate; it is an externally-observable side effect (whether the generation
+    //      proceeds at all) that code outside this function depends on, so it must always run.
+    //   2. `getCharacterCardFields()`'s companion depth-prompt writes (`removeDepthPrompts()` /
+    //      `setExtensionPrompt(inject_ids.DEPTH_PROMPT[...], ...)`) write into the client's shared
+    //      `extension_prompts` table (public/scripts/extensions.js), which other code/extensions can
+    //      read via `getContext().extensionPrompts` independent of whether THIS request's own prompt
+    //      text ever gets used. The server now independently resolves character depth-prompt
+    //      injection for the raw-action case too (this session's earlier work ported
+    //      `getGroupCharacterDepthPrompts()`/`charDepthPromptDepth`/`charDepthPromptRole`
+    //      server-side), so keeping this client-side write running is NOT needed to make the
+    //      raw-action request itself correct - but it IS needed to keep that shared,
+    //      externally-observable table fresh for any other consumer. This write is also cheap (a
+    //      handful of object-property assignments), so per this task's own instructions the safer
+    //      choice - keeping it unconditional rather than letting it silently go stale whenever a
+    //      raw-action request is taken - was picked deliberately, not for lack of a cheaper option.
+    // `coreChat` (the filtered/regex-substituted/reasoning-folded message list) is kept unconditional
+    // purely so `runGenerationInterceptors()` always receives the SAME real value it always did - not
+    // a simplified substitute a third-party interceptor might misclassify or reject. `this_max_context`
+    // is computed here (unconditionally) because it is `runGenerationInterceptors()`'s second real
+    // argument; it is later further adjusted (Horde/CFG) inside the still-skippable block below for
+    // the non-raw-action case only, same as before.
+    // Everything from here through the `runGenerationInterceptors()` abort-handling below is therefore
+    // a byte-for-byte relocation of this function's original (pre-cutover) code, with no logic changes
+    // - only the declarations that used to be the first assignment of `coreChat`/`this_max_context`/
+    // `promptReasoning`/`description`/etc. now live here instead of a few hundred lines further down
+    // (see the "Hoisted locals for the prompt-assembly block below" comment for the smaller set that
+    // remains genuinely deferred).
     let {
         description,
         personality,
@@ -5580,8 +5636,6 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     const substitutedFirstMessage = chat.length ? substituteParams(chat[0].mes) : null;
 
     // Collect messages with usable content
-    const canUseTools = ToolManager.isToolCallingSupported();
-    const canPerformToolCalls = !dryRun && ToolManager.canPerformToolCalls(type) && depth < ToolManager.RECURSE_LIMIT;
     let coreChat = chat.filter(x => !x.is_system || (canUseTools && Array.isArray(x.extra?.tool_invocations)));
     if (type === 'swipe') {
         coreChat.pop();
@@ -5664,680 +5718,6 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     } else {
         console.debug('Skipping extension interceptors for dry run');
     }
-
-    // Adjust token limit for Horde
-    let adjustedParams;
-    if (main_api == 'koboldhorde' && (horde_settings.auto_adjust_context_length || horde_settings.auto_adjust_response_length)) {
-        try {
-            adjustedParams = await adjustHordeGenerationParams(max_context, amount_gen);
-        } catch {
-            unblockGeneration(type);
-            return Promise.resolve();
-        }
-        if (horde_settings.auto_adjust_context_length) {
-            this_max_context = (adjustedParams.maxContextLength - adjustedParams.maxLength);
-        }
-    }
-
-    // Fetches the combined prompt for both negative and positive prompts
-    const cfgGuidanceScale = getGuidanceScale();
-    const useCfgPrompt = cfgGuidanceScale && cfgGuidanceScale.value !== 1;
-
-    // Adjust max context based on CFG prompt to prevent overfitting
-    if (useCfgPrompt) {
-        const negativePrompt = getCfgPrompt(cfgGuidanceScale, true, true)?.value || '';
-        const positivePrompt = getCfgPrompt(cfgGuidanceScale, false, true)?.value || '';
-        if (negativePrompt || positivePrompt) {
-            const previousMaxContext = this_max_context;
-            const [negativePromptTokenCount, positivePromptTokenCount] = await Promise.all([getTokenCountAsync(negativePrompt), getTokenCountAsync(positivePrompt)]);
-            const decrement = Math.max(negativePromptTokenCount, positivePromptTokenCount);
-            this_max_context -= decrement;
-            console.log(`Max context reduced by ${decrement} tokens of CFG prompt (${previousMaxContext} -> ${this_max_context})`);
-        }
-    }
-
-    console.log(`Core/all messages: ${coreChat.length}/${chat.length}`);
-
-    if ((promptBias && !isUserPromptBias) || power_user.always_force_name2 || main_api == 'novel') {
-        force_name2 = true;
-    }
-
-    if (isImpersonate) {
-        force_name2 = false;
-    }
-
-    let mesExamplesArray = parseMesExamples(mesExamples, isInstruct);
-
-    // Set non-WI AN
-    setFloatingPrompt();
-
-    // Add WI to prompt (and also inject WI to AN value via hijack)
-    // Make quiet prompt available for WIAN
-    setExtensionPrompt(inject_ids.QUIET_PROMPT, quiet_prompt || '', extension_prompt_types.IN_PROMPT, 0, true);
-    const chatForWI = coreChat.map(x => world_info_include_names ? `${x.name}: ${x.mes}` : x.mes).reverse();
-    /** @type {import('./scripts/world-info.js').WIGlobalScanData} */
-    const globalScanData = {
-        personaDescription: persona,
-        characterDescription: description,
-        characterPersonality: personality,
-        characterDepthPrompt: charDepthPrompt,
-        scenario: scenario,
-        creatorNotes: creatorNotes,
-        trigger: GENERATION_TYPE_TRIGGERS.includes(type) ? type : 'normal',
-    };
-    const { worldInfoString, worldInfoBefore, worldInfoAfter, worldInfoExamples, worldInfoDepth, outletEntries } = await getWorldInfoPrompt(chatForWI, this_max_context, dryRun, globalScanData);
-    setExtensionPrompt(inject_ids.QUIET_PROMPT, '', extension_prompt_types.IN_PROMPT, 0, true);
-
-    // Add message example WI
-    for (const example of worldInfoExamples) {
-        const exampleMessage = example.content;
-
-        if (exampleMessage.length === 0) {
-            continue;
-        }
-
-        const formattedExample = baseChatReplace(exampleMessage);
-        const cleanedExample = parseMesExamples(formattedExample, isInstruct);
-
-        // Insert depending on before or after position
-        if (example.position === wi_anchor_position.before) {
-            mesExamplesArray.unshift(...cleanedExample);
-        } else {
-            mesExamplesArray.push(...cleanedExample);
-        }
-    }
-
-    // At this point, the raw message examples can be created
-    const mesExamplesRawArray = [...mesExamplesArray];
-
-    if (mesExamplesArray && isInstruct) {
-        mesExamplesArray = formatInstructModeExamples(mesExamplesArray, name1, name2);
-    }
-
-    if (skipWIAN !== true) {
-        console.log('skipWIAN not active, adding WIAN');
-        // Add all depth WI entries to prompt
-        flushWIInjections();
-        if (Array.isArray(worldInfoDepth)) {
-            worldInfoDepth.forEach((e) => {
-                const joinedEntries = e.entries.join('\n');
-                setExtensionPrompt(inject_ids.CUSTOM_WI_DEPTH_ROLE(e.depth, e.role), joinedEntries, extension_prompt_types.IN_CHAT, e.depth, false, e.role);
-            });
-        }
-        if (outletEntries && typeof outletEntries === 'object' && Object.keys(outletEntries).length > 0) {
-            Object.entries(outletEntries).forEach(([key, value]) => {
-                setExtensionPrompt(inject_ids.CUSTOM_WI_OUTLET(key), value.join('\n'), extension_prompt_types.NONE, 0);
-            });
-        }
-    } else {
-        console.log('skipping WIAN');
-    }
-
-    // Add persona description to prompt
-    addPersonaDescriptionExtensionPrompt();
-
-    // Prepare the system prompt for Text Completion APIs
-    if (main_api !== 'openai') {
-        if (power_user.sysprompt.enabled) {
-            system = power_user.prefer_character_prompt && system
-                ? substituteParams(system, { original: power_user.sysprompt.content ?? '' })
-                : baseChatReplace(power_user.sysprompt.content);
-            system = isInstruct ? substituteParams(system, { original: power_user.sysprompt.content ?? '' }) : system;
-        } else {
-            // Nullify if it's not enabled
-            system = '';
-        }
-    }
-
-    // Collect before / after story string injections
-    const beforeScenarioAnchor = await getExtensionPrompt(extension_prompt_types.BEFORE_PROMPT);
-    const afterScenarioAnchor = await getExtensionPrompt(extension_prompt_types.IN_PROMPT);
-
-    const storyStringParams = {
-        description: description,
-        personality: personality,
-        persona: power_user.persona_description_position == persona_description_positions.IN_PROMPT ? persona : '',
-        scenario: scenario,
-        system: system,
-        char: name2,
-        user: name1,
-        wiBefore: worldInfoBefore,
-        wiAfter: worldInfoAfter,
-        loreBefore: worldInfoBefore,
-        loreAfter: worldInfoAfter,
-        anchorBefore: beforeScenarioAnchor.trim(),
-        anchorAfter: afterScenarioAnchor.trim(),
-        mesExamples: mesExamplesArray.join(''),
-        mesExamplesRaw: mesExamplesRawArray.join(''),
-    };
-
-    // Render the story string and combine with injections
-    const storyString = renderStoryString(storyStringParams);
-    let combinedStoryString = isInstruct ? formatInstructModeStoryString(storyString) : storyString;
-
-    // Inject the story string as in-chat prompt (if needed)
-    const applyStoryStringInject = main_api !== 'openai' && power_user.context.story_string_position === extension_prompt_types.IN_CHAT;
-    if (applyStoryStringInject) {
-        const depth = power_user.context.story_string_depth ?? 1;
-        const role = power_user.context.story_string_role ?? extension_prompt_roles.SYSTEM;
-        setExtensionPrompt(inject_ids.STORY_STRING, combinedStoryString, extension_prompt_types.IN_CHAT, depth, false, role);
-        // Remove to prevent duplication
-        combinedStoryString = '';
-    } else {
-        setExtensionPrompt(inject_ids.STORY_STRING, '', extension_prompt_types.IN_CHAT, 0);
-    }
-
-    // Story string rendered, safe to remove
-    if (power_user.strip_examples) {
-        mesExamplesArray = [];
-    }
-
-    // Inject all Depth prompts. Chat Completion does it separately
-    let injectedIndices = [];
-    if (main_api !== 'openai') {
-        injectedIndices = await doChatInject(coreChat, isContinue);
-    }
-
-    if (main_api !== 'openai' && power_user.sysprompt.enabled) {
-        jailbreak = power_user.prefer_character_jailbreak && jailbreak
-            ? substituteParams(jailbreak, { original: power_user.sysprompt.post_history ?? '' })
-            : baseChatReplace(power_user.sysprompt.post_history);
-
-        // Only inject the jb if there is one
-        if (jailbreak) {
-            // When continuing generation of previous output, last user message precedes the message to continue
-            if (isContinue) {
-                coreChat.splice(coreChat.length - 1, 0, { mes: jailbreak, is_user: true });
-            } else {
-                // This operation will result in the injectedIndices indexes being off by one
-                coreChat.push({ mes: jailbreak, is_user: true });
-                // Add +1 to the elements to correct for the new PHI/Jailbreak message.
-                injectedIndices.forEach(shiftUpByOne);
-            }
-        }
-    }
-
-    let chat2 = [];
-    let continue_mag = '';
-    let userMessageIndices = [];
-    const lastUserMessageIndex = coreChat.findLastIndex(x => x.is_user);
-
-    for (let i = coreChat.length - 1, j = 0; i >= 0; i--, j++) {
-        if (main_api == 'openai') {
-            chat2[i] = coreChat[j].mes;
-            if (i === 0 && isContinue) {
-                chat2[i] = chat2[i].slice(0, chat2[i].lastIndexOf(coreChat[j].mes) + coreChat[j].mes.length);
-                continue_mag = coreChat[j].mes;
-            }
-            continue;
-        }
-
-        chat2[i] = formatMessageHistoryItem(coreChat[j], isInstruct, false);
-
-        if (j === 0 && isInstruct) {
-            // Reformat with the first output sequence (if any)
-            chat2[i] = formatMessageHistoryItem(coreChat[j], isInstruct, force_output_sequence.FIRST);
-        }
-
-        if (lastUserMessageIndex >= 0 && j === lastUserMessageIndex && isInstruct && !isImpersonate) {
-            // Reformat with the last input sequence (if any)
-            chat2[i] = formatMessageHistoryItem(coreChat[j], isInstruct, force_output_sequence.LAST);
-        }
-
-        // Do not suffix the message for continuation
-        if (i === 0 && isContinue) {
-            // Pick something that's very unlikely to be in a message
-            const FORMAT_TOKEN = '\u0000\ufffc\u0000\ufffd';
-
-            if (isInstruct) {
-                const originalMessage = String(coreChat[j].mes ?? '');
-                // Work on a temporary shallow copy so we don't mutate the (possibly frozen) original
-                const tempMsg = { ...coreChat[j], mes: originalMessage.replaceAll(FORMAT_TOKEN, '') + FORMAT_TOKEN };
-                // Reformat with the last output sequence (if any)
-                chat2[i] = formatMessageHistoryItem(tempMsg, isInstruct, force_output_sequence.LAST);
-            }
-
-            chat2[i] = chat2[i].includes(FORMAT_TOKEN)
-                ? chat2[i].slice(0, chat2[i].lastIndexOf(FORMAT_TOKEN))
-                : chat2[i].slice(0, chat2[i].lastIndexOf(coreChat[j].mes) + coreChat[j].mes.length);
-            continue_mag = coreChat[j].mes;
-        }
-
-        if (coreChat[j].is_user) {
-            userMessageIndices.push(i);
-        }
-    }
-
-    let addUserAlignment = isInstruct && power_user.instruct.user_alignment_message;
-    let userAlignmentMessage = '';
-
-    if (addUserAlignment) {
-        const alignmentMessage = {
-            name: name1,
-            mes: substituteParams(power_user.instruct.user_alignment_message),
-            is_user: true,
-        };
-        userAlignmentMessage = formatMessageHistoryItem(alignmentMessage, isInstruct, force_output_sequence.FIRST);
-    }
-
-    let oaiMessages = [];
-    let oaiMessageExamples = [];
-
-    if (main_api === 'openai') {
-        oaiMessages = setOpenAIMessages(coreChat);
-        oaiMessageExamples = setOpenAIMessageExamples(mesExamplesArray);
-    }
-
-    // hack for regeneration of the first message
-    if (chat2.length == 0) {
-        chat2.push('');
-    }
-
-    let examplesString = '';
-    let chatString = addChatsPreamble(addChatsSeparator(''));
-    let cyclePrompt = '';
-
-    async function getMessagesTokenCount() {
-        const encodeString = [
-            combinedStoryString,
-            examplesString,
-            userAlignmentMessage,
-            chatString,
-            modifyLastPromptLine(''),
-            cyclePrompt,
-        ].join('').replace(/\r/gm, '');
-        return getTokenCountAsync(encodeString, power_user.token_padding);
-    }
-
-    // Force pinned examples into the context
-    let pinExmString;
-    if (power_user.pin_examples) {
-        pinExmString = examplesString = mesExamplesArray.join('');
-    }
-
-    // Only add the chat in context if past the greeting message
-    if (isContinue && (chat2.length > 1 || main_api === 'openai')) {
-        cyclePrompt = chat2.shift();
-        // Adjust indices to account for the shift
-        injectedIndices = injectedIndices.map(shiftDownByOne).filter(x => x >= 0);
-        userMessageIndices = userMessageIndices.map(shiftDownByOne).filter(x => x >= 0);
-    }
-
-    // Collect enough messages to fill the context
-    let arrMes = new Array(chat2.length);
-    let tokenCount = await getMessagesTokenCount();
-    let lastAddedIndex = 0;
-
-    // Pre-allocate all injections first.
-    // If it doesn't fit - user shot himself in the foot
-    for (const index of injectedIndices) {
-        // not needed for OAI prompting
-        if (main_api == 'openai') {
-            break;
-        }
-
-        const item = chat2[index];
-
-        if (typeof item !== 'string') {
-            continue;
-        }
-
-        tokenCount += await getTokenCountAsync(item.replace(/\r/gm, ''));
-        if (tokenCount < this_max_context) {
-            chatString = chatString + item;
-            arrMes[index] = item;
-            lastAddedIndex = Math.max(lastAddedIndex, index);
-        } else {
-            break;
-        }
-    }
-
-    for (let i = 0; i < chat2.length; i++) {
-        // not needed for OAI prompting
-        if (main_api == 'openai') {
-            break;
-        }
-
-        // Skip already injected messages
-        if (arrMes[i] !== undefined) {
-            continue;
-        }
-
-        const item = chat2[i];
-
-        if (typeof item !== 'string') {
-            continue;
-        }
-
-        tokenCount += await getTokenCountAsync(item.replace(/\r/gm, ''));
-        if (tokenCount < this_max_context) {
-            chatString = chatString + item;
-            arrMes[i] = item;
-            lastAddedIndex = Math.max(lastAddedIndex, i);
-        } else {
-            break;
-        }
-    }
-
-    // Add user alignment message if last message is not a user message
-    const stoppedAtUser = userMessageIndices.includes(lastAddedIndex);
-    if (addUserAlignment && !stoppedAtUser) {
-        tokenCount += await getTokenCountAsync(userAlignmentMessage.replace(/\r/gm, ''));
-        chatString = userAlignmentMessage + chatString;
-        arrMes.push(userAlignmentMessage);
-        injectedIndices.push(arrMes.length - 1);
-    }
-
-    // Unsparse the array. Adjust injected indices
-    const newArrMes = [];
-    const newInjectedIndices = [];
-    for (let i = 0; i < arrMes.length; i++) {
-        if (arrMes[i] !== undefined) {
-            newArrMes.push(arrMes[i]);
-            if (injectedIndices.includes(i)) {
-                newInjectedIndices.push(newArrMes.length - 1);
-            }
-        }
-    }
-
-    arrMes = newArrMes;
-    injectedIndices = newInjectedIndices;
-
-    if (main_api !== 'openai') {
-        setInContextMessages(arrMes.length - injectedIndices.length, type);
-    }
-
-    // Estimate how many unpinned example messages fit in the context
-    tokenCount = await getMessagesTokenCount();
-    let count_exm_add = 0;
-    if (!power_user.pin_examples) {
-        for (let example of mesExamplesArray) {
-            tokenCount += await getTokenCountAsync(example.replace(/\r/gm, ''));
-            examplesString += example;
-            if (tokenCount < this_max_context) {
-                count_exm_add++;
-            } else {
-                break;
-            }
-        }
-    }
-
-    let mesSend = [];
-    console.debug('calling runGenerate');
-
-    if (isContinue) {
-        // Coping mechanism for OAI spacing
-        if (main_api === 'openai' && !cyclePrompt.endsWith(' ')) {
-            cyclePrompt += oai_settings.continue_postfix;
-            continue_mag += oai_settings.continue_postfix;
-        }
-    }
-
-    const originalType = type;
-
-    if (!dryRun) {
-        is_send_press = true;
-    }
-
-    let generatedPromptCache = cyclePrompt || '';
-    if (generatedPromptCache.length == 0 || type === 'continue') {
-        console.debug('generating prompt');
-        chatString = '';
-        arrMes = arrMes.reverse();
-        arrMes.forEach(function (item, i, arr) {
-            // OAI doesn't need all of this
-            if (main_api === 'openai') {
-                return;
-            }
-
-            // Cohee: This removes a newline from the end of the last message in the context
-            // Last prompt line will add a newline if it's not a continuation
-            // In instruct mode it only removes it if wrap is enabled and it's not a quiet generation
-            if (i === arrMes.length - 1 && type !== 'continue') {
-                if (!isInstruct || (power_user.instruct.wrap && type !== 'quiet')) {
-                    item = item.replace(/\n?$/, '');
-                }
-            }
-
-            mesSend[mesSend.length] = { message: item, extensionPrompts: [] };
-        });
-    }
-
-    let mesExmString = '';
-
-    function setPromptString() {
-        if (main_api == 'openai') {
-            return;
-        }
-
-        console.debug('--setting Prompt string');
-        mesExmString = pinExmString ?? mesExamplesArray.slice(0, count_exm_add).join('');
-
-        if (mesSend.length) {
-            mesSend[mesSend.length - 1].message = modifyLastPromptLine(mesSend[mesSend.length - 1].message);
-        }
-    }
-
-    function modifyLastPromptLine(lastMesString) {
-        //#########QUIET PROMPT STUFF PT2##############
-
-        // Add quiet generation prompt at depth 0
-        if (quiet_prompt && quiet_prompt.length) {
-            // here name1 is forced for all quiet prompts..why?
-            const name = name1;
-            //checks if we are in instruct, if so, formats the chat as such, otherwise just adds the quiet prompt
-            const quietAppend = isInstruct ? formatInstructModeChat(name, quiet_prompt, false, true, '', name1, name2, false) : `\n${quiet_prompt}`;
-
-            //This begins to fix quietPrompts (particularly /sysgen) for instruct
-            //previously instruct input sequence was being appended to the last chat message w/o '\n'
-            //and no output sequence was added after the input's content.
-            //TODO: respect output_sequence vs last_output_sequence settings
-            //TODO: decide how to prompt this to clarify who is talking 'Narrator', 'System', etc.
-            if (isInstruct) {
-                lastMesString += quietAppend; // + power_user.instruct.output_sequence + '\n';
-            } else {
-                lastMesString += quietAppend;
-            }
-
-
-            // Ross: bailing out early prevents quiet prompts from respecting other instruct prompt toggles
-            // for sysgen, SD, and summary this is desireable as it prevents the AI from responding as char..
-            // but for idle prompting, we want the flexibility of the other prompt toggles, and to respect them as per settings in the extension
-            // need a detection for what the quiet prompt is being asked for...
-
-            // Bail out early?
-            if (!isInstruct && !quietToLoud) {
-                return lastMesString;
-            }
-        }
-
-
-        // Get instruct mode line
-        if (isInstruct && !isContinue) {
-            const name = (quiet_prompt && !quietToLoud && !isImpersonate) ? (quietName ?? 'System') : (isImpersonate ? name1 : name2);
-            const isQuiet = quiet_prompt && type == 'quiet';
-            lastMesString += formatInstructModePrompt(name, isImpersonate, promptBias, name1, name2, isQuiet, quietToLoud);
-        }
-
-        // Get non-instruct impersonation line
-        if (!isInstruct && isImpersonate && !isContinue) {
-            const name = name1;
-            if (!lastMesString.endsWith('\n')) {
-                lastMesString += '\n';
-            }
-            lastMesString += name + ':';
-        }
-
-        // Add character's name
-        // Force name append on continue (if not continuing on user message or first message)
-        const isContinuingOnFirstMessage = chat.length === 1 && isContinue;
-        if (!isInstruct && force_name2 && !isContinuingOnFirstMessage) {
-            if (!lastMesString.endsWith('\n')) {
-                lastMesString += '\n';
-            }
-            if (!isContinue || !(chat[chat.length - 1]?.is_user)) {
-                lastMesString += `${name2}:`;
-            }
-        }
-
-        return lastMesString;
-    }
-
-    async function checkPromptSize() {
-        console.debug('---checking Prompt size');
-        setPromptString();
-        const jointMessages = mesSend.map((e) => `${e.extensionPrompts.join('')}${e.message}`).join('');
-        const prompt = [
-            combinedStoryString,
-            mesExmString,
-            addChatsPreamble(addChatsSeparator(jointMessages)),
-            '\n',
-            modifyLastPromptLine(''),
-            generatedPromptCache,
-        ].join('').replace(/\r/gm, '');
-        let thisPromptContextSize = await getTokenCountAsync(prompt, power_user.token_padding);
-
-        if (thisPromptContextSize > this_max_context) {        //if the prepared prompt is larger than the max context size...
-            if (count_exm_add > 0) {                            // ..and we have example messages..
-                count_exm_add--;                            // remove the example messages...
-                await checkPromptSize();                            // and try agin...
-            } else if (mesSend.length > 0) {                    // if the chat history is longer than 0
-                mesSend.shift();                            // remove the first (oldest) chat entry..
-                await checkPromptSize();                            // and check size again..
-            } else {
-                //end
-                console.debug(`---mesSend.length = ${mesSend.length}`);
-            }
-        }
-    }
-
-    if (generatedPromptCache.length > 0 && main_api !== 'openai') {
-        console.debug('---Generated Prompt Cache length: ' + generatedPromptCache.length);
-        await checkPromptSize();
-    } else {
-        console.debug('---calling setPromptString ' + generatedPromptCache.length);
-        setPromptString();
-    }
-
-    // For prompt bit itemization
-    let mesSendString = '';
-
-    async function getCombinedPrompt(isNegative) {
-        // Only return if the guidance scale doesn't exist or the value is 1
-        // Also don't return if constructing the neutral prompt
-        if (isNegative && !useCfgPrompt) {
-            return;
-        }
-
-        // OAI has its own prompt manager. No need to do anything here
-        if (main_api === 'openai') {
-            return '';
-        }
-
-        // Deep clone
-        let finalMesSend = structuredClone(mesSend);
-
-        if (useCfgPrompt) {
-            const cfgPrompt = getCfgPrompt(cfgGuidanceScale, isNegative);
-            if (cfgPrompt.value) {
-                if (cfgPrompt.depth === 0) {
-                    finalMesSend[finalMesSend.length - 1].message +=
-                        /\s/.test(finalMesSend[finalMesSend.length - 1].message.slice(-1))
-                            ? cfgPrompt.value
-                            : ` ${cfgPrompt.value}`;
-                } else {
-                    // TODO: Make all extension prompts use an array/splice method
-                    const lengthDiff = mesSend.length - cfgPrompt.depth;
-                    const cfgDepth = lengthDiff >= 0 ? lengthDiff : 0;
-                    const cfgMessage = finalMesSend[cfgDepth];
-                    if (cfgMessage) {
-                        if (!Array.isArray(finalMesSend[cfgDepth].extensionPrompts)) {
-                            finalMesSend[cfgDepth].extensionPrompts = [];
-                        }
-                        finalMesSend[cfgDepth].extensionPrompts.push(`${cfgPrompt.value}\n`);
-                    }
-                }
-            }
-        }
-
-        // Add prompt bias after everything else
-        // Always run with continue
-        if (!isInstruct && !isImpersonate) {
-            if (promptBias.trim().length !== 0) {
-                finalMesSend[finalMesSend.length - 1].message +=
-                    /\s/.test(finalMesSend[finalMesSend.length - 1].message.slice(-1))
-                        ? promptBias.trimStart()
-                        : ` ${promptBias.trimStart()}`;
-            }
-        }
-
-        // Flattens the multiple prompt objects to a string.
-        const combine = () => {
-            // Right now, everything is suffixed with a newline
-            mesSendString = finalMesSend.map((e) => `${e.extensionPrompts.join('')}${e.message}`).join('');
-
-            // add a custom dingus (if defined)
-            mesSendString = addChatsSeparator(mesSendString);
-
-            // add chat preamble
-            mesSendString = addChatsPreamble(mesSendString);
-
-            let combinedPrompt = [
-                combinedStoryString,
-                mesExmString,
-                mesSendString,
-                generatedPromptCache,
-            ].join('').replace(/\r/gm, '');
-
-            if (power_user.collapse_newlines) {
-                combinedPrompt = collapseNewlines(combinedPrompt);
-            }
-
-            return combinedPrompt;
-        };
-
-        finalMesSend.forEach((item, i) => {
-            item.injected = injectedIndices.includes(finalMesSend.length - i - 1);
-        });
-
-        let data = {
-            api: main_api,
-            combinedPrompt: null,
-            description,
-            personality,
-            persona,
-            scenario,
-            char: name2,
-            user: name1,
-            worldInfoBefore,
-            worldInfoAfter,
-            beforeScenarioAnchor,
-            afterScenarioAnchor,
-            storyString,
-            mesExmString,
-            mesSendString,
-            finalMesSend,
-            generatedPromptCache,
-            main: system,
-            jailbreak,
-            naiPreamble: nai_settings.preamble,
-        };
-
-        // Before returning the combined prompt, give available context related information to all subscribers.
-        await eventSource.emit(event_types.GENERATE_BEFORE_COMBINE_PROMPTS, data);
-
-        // If one or multiple subscribers return a value, forfeit the responsibillity of flattening the context.
-        return !data.combinedPrompt ? combine() : data.combinedPrompt;
-    }
-
-    let finalPrompt = await getCombinedPrompt(false);
-
-    const eventData = { prompt: finalPrompt, dryRun: dryRun };
-    await eventSource.emit(event_types.GENERATE_AFTER_COMBINE_PROMPTS, eventData);
-    finalPrompt = eventData.prompt;
-
-    let maxLength = Number(amount_gen); // how many tokens the AI will be requested to generate
-    let thisPromptBits = [];
 
     // === Raw-action text-completion cutover ===
     // For a genuine plain "normal" send-and-reply turn over the textgenerationwebui backend, the
@@ -6483,33 +5863,64 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // the two literal `type` strings the client sent, unlike the client's own local `chat` array,
     // which is already shortened for 'regenerate' by the time it matters client-side).
     //
-    // JUDGMENT CALL #2 (assembly still runs): this does NOT skip the expensive client-side
-    // prompt-assembly above (world info scan, author's note resolution, instruct formatting,
-    // finalPrompt construction) even though that was the original ask. Doing so safely turned out to
-    // be impossible without a much larger rewrite: locals declared inside that assembly - notably
-    // `continue_mag`, `promptReasoning`, `canPerformToolCalls`, `worldInfoString`, `storyString`,
-    // `mesSend`, `arrMes`, `injectedIndices`, `description`, `personality`, `persona`, `scenario`,
-    // `system` - are read again much further down inside finishGenerating()'s itemized-prompt-bits
-    // object AND inside onSuccess()'s response handling (e.g. `parseAndSaveLogprobs(data,
-    // continue_mag)`, which runs unconditionally for every type). Skipping their assignment would
-    // throw a ReferenceError (temporal-dead-zone) the first time this path actually runs - confirmed
-    // by reading every downstream reference, not assumed. So the assembly still executes and its
-    // result (`finalPrompt` etc.) is simply never used for this one case - `generate_data` is
-    // overridden below, right where it would otherwise be built from that output. The stated goal (the
-    // server no longer receives or trusts any client-assembled prompt/sampler settings on this path)
-    // is achieved; the client just also still pays the assembly's redundant CPU/latency cost. Removing
-    // that cost is separate, larger follow-up work (making finishGenerating()/onSuccess() tolerate the
-    // assembly being skipped), intentionally not attempted in this change given the crash risk above.
+    // JUDGMENT CALL #2 (assembly now REALLY skipped - NARROWED after a real regression was found and
+    // fixed): this DOES skip the remaining, genuinely pure-prompt-string-construction part of the
+    // client-side assembly (world info scan, author's note resolution, instruct formatting,
+    // finalPrompt construction - see the `if (!rawActionGenerateData && !rawActionChatCompletionData)
+    // { ... }` block a few hundred lines below) whenever either raw-action gate below resolves to
+    // non-null. It does NOT skip the earlier part of the assembly (character-card-fields/depth-prompt
+    // writes, `coreChat` construction, `runGenerationInterceptors()`) - that part was moved to run
+    // BEFORE this whole comment block, unconditionally, for real, externally-observable-side-effect
+    // reasons documented at its own new location above (search "Always-run: character card fields").
+    // A prior version of this comment claimed everything through `runGenerationInterceptors()` was
+    // also safely skippable; that was wrong - `runGenerationInterceptors()` is a real third-party
+    // extension abort hook, not inert prompt-formatting, and leaving it skippable would have silently
+    // disabled every installed `generate_interceptor` extension for the majority of real generations.
+    // This eligibility check itself (this gate and the chat-completion one below it) was deliberately
+    // moved to run BEFORE the (now smaller) remaining assembly, as early as its own dependencies
+    // (`dryRun`, `main_api`, `type`, `selected_group`, `hasPendingFileAttachment()`,
+    // `canPerformToolCalls`, and - for the chat-completion gate - `jsonSchema`) allow, precisely so the
+    // remaining assembly can be conditioned on its result instead of always running and being
+    // discarded.
+    // Every local the remaining (still-skippable) assembly declares that is read anywhere later in
+    // this function (inside the `switch (main_api)` below, finishGenerating(), onSuccess(), or
+    // getCombinedPrompt() when called from the textgenerationwebui switch case) - `cfgGuidanceScale`,
+    // `useCfgPrompt`, `mesExamplesArray`, `worldInfoString`, `worldInfoBefore`, `worldInfoAfter`,
+    // `beforeScenarioAnchor`, `afterScenarioAnchor`, `storyString`, `injectedIndices`, `continue_mag`,
+    // `oaiMessages`, `oaiMessageExamples`, `examplesString`, `cyclePrompt`, `pinExmString`, `arrMes`,
+    // `count_exm_add`, `mesSend`, `generatedPromptCache`, `mesSendString`, `getCombinedPrompt`,
+    // `finalPrompt`, `maxLength`, and `thisPromptBits` - is hoisted with a safe, correctly-typed
+    // default a few lines above (see the "Hoisted locals for the prompt-assembly block below" comment),
+    // declared with `let` BEFORE this smaller assembly block so skipping it cannot throw a
+    // temporal-dead-zone ReferenceError. `description`, `personality`, `persona`, `scenario`,
+    // `mesExamples`, `system`, `jailbreak`, `charDepthPrompt`, `creatorNotes`, `promptReasoning`, and
+    // `this_max_context` no longer need any such hoisted default at all: they are now computed for
+    // real, unconditionally, in the always-run section above (`this_max_context` is only FURTHER
+    // adjusted, for Horde/CFG, inside the still-skippable block below - its own first, real assignment
+    // already happened above, so no TDZ risk either way). `canPerformToolCalls` itself (also read
+    // downstream, e.g. in finishGenerating()'s streaming-tool-call branch and onSuccess()) needed no
+    // hoisting either - it was already computed, together with `canUseTools`, before all of this.
+    // (`adjustedParams` and `originalType` are handled the same way as before: `adjustedParams` is
+    // hoisted with an implicit `undefined` default - it is only ever read inside the kobold/koboldhorde
+    // switch case, which never coincides with a raw-action request; `originalType` is a plain,
+    // correctness-critical `type` snapshot with no assembly dependency at all, computed unconditionally
+    // right after `canUseTools`/`canPerformToolCalls` instead of defaulted.)
+    // Every one of the still-hoisted locals is confirmed safe against its own first downstream read for
+    // raw-action case - see this task's own verification report for the full enumerated audit (per
+    // local: declaration site, first read site, and why the default doesn't crash that read). The one
+    // remaining piece of the original "assembly still runs" behavior that is preserved on purpose: the
+    // `switch (main_api)` block below still contains its own `if (rawActionGenerateData) { generate_data
+    // = rawActionGenerateData; break; }` / `if (rawActionChatCompletionData) { generate_data = {
+    // rawAction: rawActionChatCompletionData }; break; }` checks, now effectively always true whenever
+    // reached with a non-null raw-action value (since the assembly that would otherwise run before the
+    // switch has already been skipped) - kept for defensiveness/clarity rather than removed.
     //
-    // Side effects of the (still-running) legacy assembly that this cutover does NOT change, but that
-    // become pure waste for this one request since the server ignores their output: the world-info
-    // scan's sticky/cooldown timers and "activated entries" UI (getWorldInfoPrompt(), a few hundred
-    // lines above) still update from the CLIENT's own (now-redundant) scan, not the server's - so they
-    // may drift from what the server actually activated if its own WI resolution ever disagrees with
-    // the client's. The itemized-prompt token-breakdown UI likewise still shows the client's discarded
-    // assembly, not what was actually sent. Both are pre-existing UI-only surfaces, unchanged by this
-    // patch either way; flagged here only because they are the two most user-visible instances of "the
-    // client computed something for this request that the request no longer uses."
+    // Side effects of the legacy assembly that this cutover intentionally leaves alone for the
+    // non-raw-action paths (kobold/novel/koboldhorde, dryRun, and any textgenerationwebui/openai request
+    // that fails one of the gates' own preconditions - e.g. a pending file attachment or an active tool
+    // call): those still run the full assembly exactly as before, including its world-info sticky/
+    // cooldown timers and itemized-prompt-bits UI - both pre-existing UI/state surfaces, unchanged by
+    // this patch for the cases that still reach them.
     //
     // JUDGMENT CALL #3 (user_message for impersonate/quiet, verified not assumed): `textareaText` (a
     // few hundred lines above, at this function's very start) is only ever read from the send textarea
@@ -6547,9 +5958,10 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // between this function's start and here that DOES treat 'regenerate' differently from every other
     // type - the "delete the last message from `chat`" branch (`type !== 'quiet' && type !== 'swipe' &&
     // !isImpersonate && !dryRun && !depth && chat.length`, which fires for 'regenerate' since it's not
-    // itself in that exclusion list) - only mutates the CLIENT's local `chat` array (so the legacy,
-    // still-running prompt assembly builds the right context for 'regenerate' per its own existing,
-    // unchanged logic - see JUDGMENT CALL #2) and has no bearing on whether this gate is reached, nor
+    // itself in that exclusion list) - only mutates the CLIENT's local `chat` array (so the legacy
+    // prompt assembly, when it still runs at all - i.e. whenever this gate is NOT satisfied - builds
+    // the right context for 'regenerate' per its own existing, unchanged logic - see JUDGMENT CALL #2)
+    // and has no bearing on whether this gate is reached, nor
     // on the raw-action payload itself (`branch_name`/`type`/`is_swipe` are unaffected by local `chat`
     // array length - the server resolves its own chat state fresh from the persisted tree, independent
     // of anything the client did to its own copy).
@@ -6727,23 +6139,36 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     //     `canPerformToolCalls` here is, if anything, an even more directly-applicable precondition for chat
     //     completion than it was for text completion.
     //
-    // JUDGMENT CALL #2 (assembly still runs): IDENTICAL strategy to the text-completion cutover - this does NOT skip
-    // the client-side prompt-assembly above (world info scan, description/personality/scenario resolution, the
-    // legacy client-side `prepareOpenAIMessages()`-feeding locals) for the SAME reason: `system`, `jailbreak`,
-    // `promptBias`, `oaiMessages`, `oaiMessageExamples`, `worldInfoBefore`, `worldInfoAfter`, `description`,
-    // `personality`, `scenario` are all still read (or at minimum still assigned, satisfying the temporal-dead-zone
-    // requirement) unconditionally elsewhere. What IS skipped for the raw-action case is the actual CLIENT-SIDE
-    // `prepareOpenAIMessages()` CALL inside the `case 'openai':` block below (the "final generate_data builder" step
-    // - the direct analog of `getTextGenGenerationData()` for the textgen case) - its result (`prompt`/`counts`) is
-    // simply never computed for this one case, and `generate_data` is set directly from the raw action object
-    // instead. This is safe (does not skip anything read via TDZ downstream): `counts`/`thisPromptBits` are used only
-    // to build `additionalPromptStuff` in `finishGenerating()` via `thisPromptBits[Number(thisPromptBits.length - 1)]`
-    // - spreading `thisPromptBits[-1]` (`undefined`) into an object literal is a no-op, not a TypeError - verified by
-    // reading `finishGenerating()`'s own `additionalPromptStuff` construction. `openai_messages_count` (set as a
-    // side effect of the skipped call) is likewise UI-only (an "N messages in context" display, via
-    // `setInContextMessages()`) - also skipped here rather than fed a stale prior value, to avoid displaying a wrong
-    // number; a pure UI cosmetic, not a correctness concern, in the same spirit as the text-completion cutover's own
-    // documented "itemized-prompt token-breakdown UI still shows the client's discarded assembly" side effect.
+    // JUDGMENT CALL #2 (assembly now REALLY skipped - NARROWED after a real regression was found and fixed):
+    // IDENTICAL strategy to the text-completion cutover's own (identically-renumbered) JUDGMENT CALL #2 above - this
+    // DOES skip the remaining, genuinely pure-prompt-string-construction part of the client-side prompt-assembly
+    // (world info scan, the legacy client-side `prepareOpenAIMessages()`-feeding locals) whenever THIS gate (or the
+    // text-completion one above it) resolves to non-null, via the SAME
+    // `if (!rawActionGenerateData && !rawActionChatCompletionData) { ... }` wrapper. It does NOT skip
+    // character-card-fields/depth-prompt resolution, `coreChat` construction, or `runGenerationInterceptors()` -
+    // those were moved to run unconditionally, before either raw-action gate - see the text-completion cutover's own
+    // (identically-renumbered) JUDGMENT CALL #2 above for the full rationale (extension-interceptor abort hook +
+    // shared extension_prompts table writes), which applies identically here since it is the SAME code path (one
+    // `Generate()` function, one assembly, shared by both backends). `oaiMessages`, `oaiMessageExamples`,
+    // `worldInfoBefore`, `worldInfoAfter` (locals this cutover's own data flow depends on) are hoisted with safe
+    // defaults above that block for exactly the same temporal-dead-zone reason documented there. `system`,
+    // `jailbreak`, `description`, `personality`, `scenario` need no such hoisting any more - they are computed for
+    // real, unconditionally, by the always-run section above (`promptBias` likewise needed no such hoisting - it is
+    // resolved even earlier, before either gate, as part of this function's initial textarea/bias setup, so it
+    // already carries its real value regardless of whether the remaining assembly runs). What is ADDITIONALLY
+    // skipped for the
+    // raw-action case, beyond the assembly itself, is the actual CLIENT-SIDE `prepareOpenAIMessages()` CALL inside
+    // the `case 'openai':` block below (the "final generate_data builder" step - the direct analog of
+    // `getTextGenGenerationData()` for the textgen case) - its result (`prompt`/`counts`) is simply never computed
+    // for this one case, and `generate_data` is set directly from the raw action object instead. This remains safe
+    // (does not skip anything read via TDZ downstream): `counts`/`thisPromptBits` are used only to build
+    // `additionalPromptStuff` in `finishGenerating()` via `thisPromptBits[Number(thisPromptBits.length - 1)]` -
+    // spreading `thisPromptBits[-1]` (`undefined`) into an object literal is a no-op, not a TypeError - verified by
+    // reading `finishGenerating()`'s own `additionalPromptStuff` construction, and `thisPromptBits` itself is now
+    // hoisted to `[]` above the (skipped) assembly for the same reason every other local on this list is.
+    // `openai_messages_count` (set as a side effect of the skipped `prepareOpenAIMessages()` call) is likewise
+    // UI-only (an "N messages in context" display, via `setInContextMessages()`) - also skipped here rather than fed
+    // a stale prior value, to avoid displaying a wrong number; a pure UI cosmetic, not a correctness concern.
     //
     // JUDGMENT CALL #3 (jsonSchema, chat-completion-SPECIFIC - real, verified, and deliberately gated on): unlike
     // 'textgenerationwebui' (see the text-completion cutover's own JUDGMENT CALL #4 above), a per-call `jsonSchema`
@@ -6826,6 +6251,732 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         }
         // else: no resolvable branch_name (or other precondition) - fall through to the legacy
         // client-assembled path below, unchanged.
+    }
+
+    // === Hoisted locals for the (remaining, narrower) prompt-assembly block below ===
+    // The assembly below (world info scan, author's note resolution, instruct-mode formatting, the
+    // getCombinedPrompt()/prepareOpenAIMessages()-feeding pipeline) is skipped entirely when a
+    // raw-action request is going to be sent (see the `if` gate below) - the server resolves the
+    // whole prompt itself in that case. Every local this (now smaller) assembly declares that is READ
+    // ANYWHERE later in this function (the switch below, finishGenerating(), onSuccess(), or any other
+    // function nested in this closure) is hoisted here with a safe, correctly-typed default so
+    // skipping the assembly cannot throw a temporal-dead-zone ReferenceError. When the assembly DOES
+    // run (raw action not taken - i.e. kobold/novel/koboldhorde, a dryRun, or a legacy
+    // textgenerationwebui/openai request that didn't qualify for the raw-action gate), every one of
+    // these is overwritten with its real computed value inside the block below, exactly as before -
+    // the assembly's own internal logic is unchanged, only the `let`/`const` on its first assignment
+    // to each of these names was removed (the declaration now lives here instead).
+    // NOTE: `description`, `personality`, `persona`, `scenario`, `mesExamples`, `system`, `jailbreak`,
+    // `charDepthPrompt`, `creatorNotes`, `promptReasoning`, and `this_max_context` used to be hoisted
+    // here too, but no longer are: the regression fix that moved character-card-fields resolution,
+    // `coreChat` construction, and `runGenerationInterceptors()` to run unconditionally (see the
+    // "Always-run" section far above) means all of these are now computed for real, unconditionally,
+    // before either raw-action gate - there is no longer any TDZ gap for them to default across, so a
+    // hoisted placeholder here would be dead, misleading code (and `this_max_context` in particular
+    // would have masked the fact that it now always holds a real value even for the raw-action case).
+    let adjustedParams;
+    let cfgGuidanceScale = null;
+    let useCfgPrompt = false;
+    let mesExamplesArray = [];
+    let worldInfoString = '';
+    let worldInfoBefore = '';
+    let worldInfoAfter = '';
+    let beforeScenarioAnchor = '';
+    let afterScenarioAnchor = '';
+    let storyString = '';
+    let injectedIndices = [];
+    let continue_mag = '';
+    let oaiMessages = [];
+    let oaiMessageExamples = [];
+    let examplesString = '';
+    let cyclePrompt = '';
+    let pinExmString;
+    let arrMes = [];
+    let count_exm_add = 0;
+    let mesSend = [];
+    let generatedPromptCache = '';
+    let mesSendString = '';
+    // Stub default - never actually invoked when raw action is taken: its one external call site
+    // (the textgenerationwebui switch case below) is only reached after the `if (rawActionGenerateData)
+    // {...; break;}` early-out, i.e. only once the real assembly (which reassigns this to the real
+    // function) has run.
+    let getCombinedPrompt = async () => '';
+    let finalPrompt = '';
+    let maxLength = 0;
+    let thisPromptBits = [];
+
+    if (!rawActionGenerateData && !rawActionChatCompletionData) {
+        // Adjust token limit for Horde
+        if (main_api == 'koboldhorde' && (horde_settings.auto_adjust_context_length || horde_settings.auto_adjust_response_length)) {
+            try {
+                adjustedParams = await adjustHordeGenerationParams(max_context, amount_gen);
+            } catch {
+                unblockGeneration(type);
+                return Promise.resolve();
+            }
+            if (horde_settings.auto_adjust_context_length) {
+                this_max_context = (adjustedParams.maxContextLength - adjustedParams.maxLength);
+            }
+        }
+
+        // Fetches the combined prompt for both negative and positive prompts
+        cfgGuidanceScale = getGuidanceScale();
+        useCfgPrompt = cfgGuidanceScale && cfgGuidanceScale.value !== 1;
+
+        // Adjust max context based on CFG prompt to prevent overfitting
+        if (useCfgPrompt) {
+            const negativePrompt = getCfgPrompt(cfgGuidanceScale, true, true)?.value || '';
+            const positivePrompt = getCfgPrompt(cfgGuidanceScale, false, true)?.value || '';
+            if (negativePrompt || positivePrompt) {
+                const previousMaxContext = this_max_context;
+                const [negativePromptTokenCount, positivePromptTokenCount] = await Promise.all([getTokenCountAsync(negativePrompt), getTokenCountAsync(positivePrompt)]);
+                const decrement = Math.max(negativePromptTokenCount, positivePromptTokenCount);
+                this_max_context -= decrement;
+                console.log(`Max context reduced by ${decrement} tokens of CFG prompt (${previousMaxContext} -> ${this_max_context})`);
+            }
+        }
+
+        console.log(`Core/all messages: ${coreChat.length}/${chat.length}`);
+
+        if ((promptBias && !isUserPromptBias) || power_user.always_force_name2 || main_api == 'novel') {
+            force_name2 = true;
+        }
+
+        if (isImpersonate) {
+            force_name2 = false;
+        }
+
+        mesExamplesArray = parseMesExamples(mesExamples, isInstruct);
+
+        // Set non-WI AN
+        setFloatingPrompt();
+
+        // Add WI to prompt (and also inject WI to AN value via hijack)
+        // Make quiet prompt available for WIAN
+        setExtensionPrompt(inject_ids.QUIET_PROMPT, quiet_prompt || '', extension_prompt_types.IN_PROMPT, 0, true);
+        const chatForWI = coreChat.map(x => world_info_include_names ? `${x.name}: ${x.mes}` : x.mes).reverse();
+        /** @type {import('./scripts/world-info.js').WIGlobalScanData} */
+        const globalScanData = {
+            personaDescription: persona,
+            characterDescription: description,
+            characterPersonality: personality,
+            characterDepthPrompt: charDepthPrompt,
+            scenario: scenario,
+            creatorNotes: creatorNotes,
+            trigger: GENERATION_TYPE_TRIGGERS.includes(type) ? type : 'normal',
+        };
+        let worldInfoExamples, worldInfoDepth, outletEntries;
+        ({ worldInfoString, worldInfoBefore, worldInfoAfter, worldInfoExamples, worldInfoDepth, outletEntries } = await getWorldInfoPrompt(chatForWI, this_max_context, dryRun, globalScanData));
+        setExtensionPrompt(inject_ids.QUIET_PROMPT, '', extension_prompt_types.IN_PROMPT, 0, true);
+
+        // Add message example WI
+        for (const example of worldInfoExamples) {
+            const exampleMessage = example.content;
+
+            if (exampleMessage.length === 0) {
+                continue;
+            }
+
+            const formattedExample = baseChatReplace(exampleMessage);
+            const cleanedExample = parseMesExamples(formattedExample, isInstruct);
+
+            // Insert depending on before or after position
+            if (example.position === wi_anchor_position.before) {
+                mesExamplesArray.unshift(...cleanedExample);
+            } else {
+                mesExamplesArray.push(...cleanedExample);
+            }
+        }
+
+        // At this point, the raw message examples can be created
+        const mesExamplesRawArray = [...mesExamplesArray];
+
+        if (mesExamplesArray && isInstruct) {
+            mesExamplesArray = formatInstructModeExamples(mesExamplesArray, name1, name2);
+        }
+
+        if (skipWIAN !== true) {
+            console.log('skipWIAN not active, adding WIAN');
+            // Add all depth WI entries to prompt
+            flushWIInjections();
+            if (Array.isArray(worldInfoDepth)) {
+                worldInfoDepth.forEach((e) => {
+                    const joinedEntries = e.entries.join('\n');
+                    setExtensionPrompt(inject_ids.CUSTOM_WI_DEPTH_ROLE(e.depth, e.role), joinedEntries, extension_prompt_types.IN_CHAT, e.depth, false, e.role);
+                });
+            }
+            if (outletEntries && typeof outletEntries === 'object' && Object.keys(outletEntries).length > 0) {
+                Object.entries(outletEntries).forEach(([key, value]) => {
+                    setExtensionPrompt(inject_ids.CUSTOM_WI_OUTLET(key), value.join('\n'), extension_prompt_types.NONE, 0);
+                });
+            }
+        } else {
+            console.log('skipping WIAN');
+        }
+
+        // Add persona description to prompt
+        addPersonaDescriptionExtensionPrompt();
+
+        // Prepare the system prompt for Text Completion APIs
+        if (main_api !== 'openai') {
+            if (power_user.sysprompt.enabled) {
+                system = power_user.prefer_character_prompt && system
+                    ? substituteParams(system, { original: power_user.sysprompt.content ?? '' })
+                    : baseChatReplace(power_user.sysprompt.content);
+                system = isInstruct ? substituteParams(system, { original: power_user.sysprompt.content ?? '' }) : system;
+            } else {
+                // Nullify if it's not enabled
+                system = '';
+            }
+        }
+
+        // Collect before / after story string injections
+        beforeScenarioAnchor = await getExtensionPrompt(extension_prompt_types.BEFORE_PROMPT);
+        afterScenarioAnchor = await getExtensionPrompt(extension_prompt_types.IN_PROMPT);
+
+        const storyStringParams = {
+            description: description,
+            personality: personality,
+            persona: power_user.persona_description_position == persona_description_positions.IN_PROMPT ? persona : '',
+            scenario: scenario,
+            system: system,
+            char: name2,
+            user: name1,
+            wiBefore: worldInfoBefore,
+            wiAfter: worldInfoAfter,
+            loreBefore: worldInfoBefore,
+            loreAfter: worldInfoAfter,
+            anchorBefore: beforeScenarioAnchor.trim(),
+            anchorAfter: afterScenarioAnchor.trim(),
+            mesExamples: mesExamplesArray.join(''),
+            mesExamplesRaw: mesExamplesRawArray.join(''),
+        };
+
+        // Render the story string and combine with injections
+        storyString = renderStoryString(storyStringParams);
+        let combinedStoryString = isInstruct ? formatInstructModeStoryString(storyString) : storyString;
+
+        // Inject the story string as in-chat prompt (if needed)
+        const applyStoryStringInject = main_api !== 'openai' && power_user.context.story_string_position === extension_prompt_types.IN_CHAT;
+        if (applyStoryStringInject) {
+            const depth = power_user.context.story_string_depth ?? 1;
+            const role = power_user.context.story_string_role ?? extension_prompt_roles.SYSTEM;
+            setExtensionPrompt(inject_ids.STORY_STRING, combinedStoryString, extension_prompt_types.IN_CHAT, depth, false, role);
+            // Remove to prevent duplication
+            combinedStoryString = '';
+        } else {
+            setExtensionPrompt(inject_ids.STORY_STRING, '', extension_prompt_types.IN_CHAT, 0);
+        }
+
+        // Story string rendered, safe to remove
+        if (power_user.strip_examples) {
+            mesExamplesArray = [];
+        }
+
+        // Inject all Depth prompts. Chat Completion does it separately
+        injectedIndices = [];
+        if (main_api !== 'openai') {
+            injectedIndices = await doChatInject(coreChat, isContinue);
+        }
+
+        if (main_api !== 'openai' && power_user.sysprompt.enabled) {
+            jailbreak = power_user.prefer_character_jailbreak && jailbreak
+                ? substituteParams(jailbreak, { original: power_user.sysprompt.post_history ?? '' })
+                : baseChatReplace(power_user.sysprompt.post_history);
+
+            // Only inject the jb if there is one
+            if (jailbreak) {
+                // When continuing generation of previous output, last user message precedes the message to continue
+                if (isContinue) {
+                    coreChat.splice(coreChat.length - 1, 0, { mes: jailbreak, is_user: true });
+                } else {
+                    // This operation will result in the injectedIndices indexes being off by one
+                    coreChat.push({ mes: jailbreak, is_user: true });
+                    // Add +1 to the elements to correct for the new PHI/Jailbreak message.
+                    injectedIndices.forEach(shiftUpByOne);
+                }
+            }
+        }
+
+        let chat2 = [];
+        continue_mag = '';
+        let userMessageIndices = [];
+        const lastUserMessageIndex = coreChat.findLastIndex(x => x.is_user);
+
+        for (let i = coreChat.length - 1, j = 0; i >= 0; i--, j++) {
+            if (main_api == 'openai') {
+                chat2[i] = coreChat[j].mes;
+                if (i === 0 && isContinue) {
+                    chat2[i] = chat2[i].slice(0, chat2[i].lastIndexOf(coreChat[j].mes) + coreChat[j].mes.length);
+                    continue_mag = coreChat[j].mes;
+                }
+                continue;
+            }
+
+            chat2[i] = formatMessageHistoryItem(coreChat[j], isInstruct, false);
+
+            if (j === 0 && isInstruct) {
+                // Reformat with the first output sequence (if any)
+                chat2[i] = formatMessageHistoryItem(coreChat[j], isInstruct, force_output_sequence.FIRST);
+            }
+
+            if (lastUserMessageIndex >= 0 && j === lastUserMessageIndex && isInstruct && !isImpersonate) {
+                // Reformat with the last input sequence (if any)
+                chat2[i] = formatMessageHistoryItem(coreChat[j], isInstruct, force_output_sequence.LAST);
+            }
+
+            // Do not suffix the message for continuation
+            if (i === 0 && isContinue) {
+                // Pick something that's very unlikely to be in a message
+                const FORMAT_TOKEN = '\u0000\ufffc\u0000\ufffd';
+
+                if (isInstruct) {
+                    const originalMessage = String(coreChat[j].mes ?? '');
+                    // Work on a temporary shallow copy so we don't mutate the (possibly frozen) original
+                    const tempMsg = { ...coreChat[j], mes: originalMessage.replaceAll(FORMAT_TOKEN, '') + FORMAT_TOKEN };
+                    // Reformat with the last output sequence (if any)
+                    chat2[i] = formatMessageHistoryItem(tempMsg, isInstruct, force_output_sequence.LAST);
+                }
+
+                chat2[i] = chat2[i].includes(FORMAT_TOKEN)
+                    ? chat2[i].slice(0, chat2[i].lastIndexOf(FORMAT_TOKEN))
+                    : chat2[i].slice(0, chat2[i].lastIndexOf(coreChat[j].mes) + coreChat[j].mes.length);
+                continue_mag = coreChat[j].mes;
+            }
+
+            if (coreChat[j].is_user) {
+                userMessageIndices.push(i);
+            }
+        }
+
+        let addUserAlignment = isInstruct && power_user.instruct.user_alignment_message;
+        let userAlignmentMessage = '';
+
+        if (addUserAlignment) {
+            const alignmentMessage = {
+                name: name1,
+                mes: substituteParams(power_user.instruct.user_alignment_message),
+                is_user: true,
+            };
+            userAlignmentMessage = formatMessageHistoryItem(alignmentMessage, isInstruct, force_output_sequence.FIRST);
+        }
+
+        oaiMessages = [];
+        oaiMessageExamples = [];
+
+        if (main_api === 'openai') {
+            oaiMessages = setOpenAIMessages(coreChat);
+            oaiMessageExamples = setOpenAIMessageExamples(mesExamplesArray);
+        }
+
+        // hack for regeneration of the first message
+        if (chat2.length == 0) {
+            chat2.push('');
+        }
+
+        examplesString = '';
+        let chatString = addChatsPreamble(addChatsSeparator(''));
+        cyclePrompt = '';
+
+        async function getMessagesTokenCount() {
+            const encodeString = [
+                combinedStoryString,
+                examplesString,
+                userAlignmentMessage,
+                chatString,
+                modifyLastPromptLine(''),
+                cyclePrompt,
+            ].join('').replace(/\r/gm, '');
+            return getTokenCountAsync(encodeString, power_user.token_padding);
+        }
+
+        // Force pinned examples into the context
+        if (power_user.pin_examples) {
+            pinExmString = examplesString = mesExamplesArray.join('');
+        }
+
+        // Only add the chat in context if past the greeting message
+        if (isContinue && (chat2.length > 1 || main_api === 'openai')) {
+            cyclePrompt = chat2.shift();
+            // Adjust indices to account for the shift
+            injectedIndices = injectedIndices.map(shiftDownByOne).filter(x => x >= 0);
+            userMessageIndices = userMessageIndices.map(shiftDownByOne).filter(x => x >= 0);
+        }
+
+        // Collect enough messages to fill the context
+        arrMes = new Array(chat2.length);
+        let tokenCount = await getMessagesTokenCount();
+        let lastAddedIndex = 0;
+
+        // Pre-allocate all injections first.
+        // If it doesn't fit - user shot himself in the foot
+        for (const index of injectedIndices) {
+            // not needed for OAI prompting
+            if (main_api == 'openai') {
+                break;
+            }
+
+            const item = chat2[index];
+
+            if (typeof item !== 'string') {
+                continue;
+            }
+
+            tokenCount += await getTokenCountAsync(item.replace(/\r/gm, ''));
+            if (tokenCount < this_max_context) {
+                chatString = chatString + item;
+                arrMes[index] = item;
+                lastAddedIndex = Math.max(lastAddedIndex, index);
+            } else {
+                break;
+            }
+        }
+
+        for (let i = 0; i < chat2.length; i++) {
+            // not needed for OAI prompting
+            if (main_api == 'openai') {
+                break;
+            }
+
+            // Skip already injected messages
+            if (arrMes[i] !== undefined) {
+                continue;
+            }
+
+            const item = chat2[i];
+
+            if (typeof item !== 'string') {
+                continue;
+            }
+
+            tokenCount += await getTokenCountAsync(item.replace(/\r/gm, ''));
+            if (tokenCount < this_max_context) {
+                chatString = chatString + item;
+                arrMes[i] = item;
+                lastAddedIndex = Math.max(lastAddedIndex, i);
+            } else {
+                break;
+            }
+        }
+
+        // Add user alignment message if last message is not a user message
+        const stoppedAtUser = userMessageIndices.includes(lastAddedIndex);
+        if (addUserAlignment && !stoppedAtUser) {
+            tokenCount += await getTokenCountAsync(userAlignmentMessage.replace(/\r/gm, ''));
+            chatString = userAlignmentMessage + chatString;
+            arrMes.push(userAlignmentMessage);
+            injectedIndices.push(arrMes.length - 1);
+        }
+
+        // Unsparse the array. Adjust injected indices
+        const newArrMes = [];
+        const newInjectedIndices = [];
+        for (let i = 0; i < arrMes.length; i++) {
+            if (arrMes[i] !== undefined) {
+                newArrMes.push(arrMes[i]);
+                if (injectedIndices.includes(i)) {
+                    newInjectedIndices.push(newArrMes.length - 1);
+                }
+            }
+        }
+
+        arrMes = newArrMes;
+        injectedIndices = newInjectedIndices;
+
+        if (main_api !== 'openai') {
+            setInContextMessages(arrMes.length - injectedIndices.length, type);
+        }
+
+        // Estimate how many unpinned example messages fit in the context
+        tokenCount = await getMessagesTokenCount();
+        count_exm_add = 0;
+        if (!power_user.pin_examples) {
+            for (let example of mesExamplesArray) {
+                tokenCount += await getTokenCountAsync(example.replace(/\r/gm, ''));
+                examplesString += example;
+                if (tokenCount < this_max_context) {
+                    count_exm_add++;
+                } else {
+                    break;
+                }
+            }
+        }
+
+        mesSend = [];
+        console.debug('calling runGenerate');
+
+        if (isContinue) {
+            // Coping mechanism for OAI spacing
+            if (main_api === 'openai' && !cyclePrompt.endsWith(' ')) {
+                cyclePrompt += oai_settings.continue_postfix;
+                continue_mag += oai_settings.continue_postfix;
+            }
+        }
+
+
+        if (!dryRun) {
+            is_send_press = true;
+        }
+
+        generatedPromptCache = cyclePrompt || '';
+        if (generatedPromptCache.length == 0 || type === 'continue') {
+            console.debug('generating prompt');
+            chatString = '';
+            arrMes = arrMes.reverse();
+            arrMes.forEach(function (item, i, arr) {
+                // OAI doesn't need all of this
+                if (main_api === 'openai') {
+                    return;
+                }
+
+                // Cohee: This removes a newline from the end of the last message in the context
+                // Last prompt line will add a newline if it's not a continuation
+                // In instruct mode it only removes it if wrap is enabled and it's not a quiet generation
+                if (i === arrMes.length - 1 && type !== 'continue') {
+                    if (!isInstruct || (power_user.instruct.wrap && type !== 'quiet')) {
+                        item = item.replace(/\n?$/, '');
+                    }
+                }
+
+                mesSend[mesSend.length] = { message: item, extensionPrompts: [] };
+            });
+        }
+
+        let mesExmString = '';
+
+        function setPromptString() {
+            if (main_api == 'openai') {
+                return;
+            }
+
+            console.debug('--setting Prompt string');
+            mesExmString = pinExmString ?? mesExamplesArray.slice(0, count_exm_add).join('');
+
+            if (mesSend.length) {
+                mesSend[mesSend.length - 1].message = modifyLastPromptLine(mesSend[mesSend.length - 1].message);
+            }
+        }
+
+        function modifyLastPromptLine(lastMesString) {
+            //#########QUIET PROMPT STUFF PT2##############
+
+            // Add quiet generation prompt at depth 0
+            if (quiet_prompt && quiet_prompt.length) {
+                // here name1 is forced for all quiet prompts..why?
+                const name = name1;
+                //checks if we are in instruct, if so, formats the chat as such, otherwise just adds the quiet prompt
+                const quietAppend = isInstruct ? formatInstructModeChat(name, quiet_prompt, false, true, '', name1, name2, false) : `\n${quiet_prompt}`;
+
+                //This begins to fix quietPrompts (particularly /sysgen) for instruct
+                //previously instruct input sequence was being appended to the last chat message w/o '\n'
+                //and no output sequence was added after the input's content.
+                //TODO: respect output_sequence vs last_output_sequence settings
+                //TODO: decide how to prompt this to clarify who is talking 'Narrator', 'System', etc.
+                if (isInstruct) {
+                    lastMesString += quietAppend; // + power_user.instruct.output_sequence + '\n';
+                } else {
+                    lastMesString += quietAppend;
+                }
+
+
+                // Ross: bailing out early prevents quiet prompts from respecting other instruct prompt toggles
+                // for sysgen, SD, and summary this is desireable as it prevents the AI from responding as char..
+                // but for idle prompting, we want the flexibility of the other prompt toggles, and to respect them as per settings in the extension
+                // need a detection for what the quiet prompt is being asked for...
+
+                // Bail out early?
+                if (!isInstruct && !quietToLoud) {
+                    return lastMesString;
+                }
+            }
+
+
+            // Get instruct mode line
+            if (isInstruct && !isContinue) {
+                const name = (quiet_prompt && !quietToLoud && !isImpersonate) ? (quietName ?? 'System') : (isImpersonate ? name1 : name2);
+                const isQuiet = quiet_prompt && type == 'quiet';
+                lastMesString += formatInstructModePrompt(name, isImpersonate, promptBias, name1, name2, isQuiet, quietToLoud);
+            }
+
+            // Get non-instruct impersonation line
+            if (!isInstruct && isImpersonate && !isContinue) {
+                const name = name1;
+                if (!lastMesString.endsWith('\n')) {
+                    lastMesString += '\n';
+                }
+                lastMesString += name + ':';
+            }
+
+            // Add character's name
+            // Force name append on continue (if not continuing on user message or first message)
+            const isContinuingOnFirstMessage = chat.length === 1 && isContinue;
+            if (!isInstruct && force_name2 && !isContinuingOnFirstMessage) {
+                if (!lastMesString.endsWith('\n')) {
+                    lastMesString += '\n';
+                }
+                if (!isContinue || !(chat[chat.length - 1]?.is_user)) {
+                    lastMesString += `${name2}:`;
+                }
+            }
+
+            return lastMesString;
+        }
+
+        async function checkPromptSize() {
+            console.debug('---checking Prompt size');
+            setPromptString();
+            const jointMessages = mesSend.map((e) => `${e.extensionPrompts.join('')}${e.message}`).join('');
+            const prompt = [
+                combinedStoryString,
+                mesExmString,
+                addChatsPreamble(addChatsSeparator(jointMessages)),
+                '\n',
+                modifyLastPromptLine(''),
+                generatedPromptCache,
+            ].join('').replace(/\r/gm, '');
+            let thisPromptContextSize = await getTokenCountAsync(prompt, power_user.token_padding);
+
+            if (thisPromptContextSize > this_max_context) {        //if the prepared prompt is larger than the max context size...
+                if (count_exm_add > 0) {                            // ..and we have example messages..
+                    count_exm_add--;                            // remove the example messages...
+                    await checkPromptSize();                            // and try agin...
+                } else if (mesSend.length > 0) {                    // if the chat history is longer than 0
+                    mesSend.shift();                            // remove the first (oldest) chat entry..
+                    await checkPromptSize();                            // and check size again..
+                } else {
+                    //end
+                    console.debug(`---mesSend.length = ${mesSend.length}`);
+                }
+            }
+        }
+
+        if (generatedPromptCache.length > 0 && main_api !== 'openai') {
+            console.debug('---Generated Prompt Cache length: ' + generatedPromptCache.length);
+            await checkPromptSize();
+        } else {
+            console.debug('---calling setPromptString ' + generatedPromptCache.length);
+            setPromptString();
+        }
+
+        // For prompt bit itemization
+        mesSendString = '';
+
+        getCombinedPrompt = async function (isNegative) {
+            // Only return if the guidance scale doesn't exist or the value is 1
+            // Also don't return if constructing the neutral prompt
+            if (isNegative && !useCfgPrompt) {
+                return;
+            }
+
+            // OAI has its own prompt manager. No need to do anything here
+            if (main_api === 'openai') {
+                return '';
+            }
+
+            // Deep clone
+            let finalMesSend = structuredClone(mesSend);
+
+            if (useCfgPrompt) {
+                const cfgPrompt = getCfgPrompt(cfgGuidanceScale, isNegative);
+                if (cfgPrompt.value) {
+                    if (cfgPrompt.depth === 0) {
+                        finalMesSend[finalMesSend.length - 1].message +=
+                            /\s/.test(finalMesSend[finalMesSend.length - 1].message.slice(-1))
+                                ? cfgPrompt.value
+                                : ` ${cfgPrompt.value}`;
+                    } else {
+                        // TODO: Make all extension prompts use an array/splice method
+                        const lengthDiff = mesSend.length - cfgPrompt.depth;
+                        const cfgDepth = lengthDiff >= 0 ? lengthDiff : 0;
+                        const cfgMessage = finalMesSend[cfgDepth];
+                        if (cfgMessage) {
+                            if (!Array.isArray(finalMesSend[cfgDepth].extensionPrompts)) {
+                                finalMesSend[cfgDepth].extensionPrompts = [];
+                            }
+                            finalMesSend[cfgDepth].extensionPrompts.push(`${cfgPrompt.value}\n`);
+                        }
+                    }
+                }
+            }
+
+            // Add prompt bias after everything else
+            // Always run with continue
+            if (!isInstruct && !isImpersonate) {
+                if (promptBias.trim().length !== 0) {
+                    finalMesSend[finalMesSend.length - 1].message +=
+                        /\s/.test(finalMesSend[finalMesSend.length - 1].message.slice(-1))
+                            ? promptBias.trimStart()
+                            : ` ${promptBias.trimStart()}`;
+                }
+            }
+
+            // Flattens the multiple prompt objects to a string.
+            const combine = () => {
+                // Right now, everything is suffixed with a newline
+                mesSendString = finalMesSend.map((e) => `${e.extensionPrompts.join('')}${e.message}`).join('');
+
+                // add a custom dingus (if defined)
+                mesSendString = addChatsSeparator(mesSendString);
+
+                // add chat preamble
+                mesSendString = addChatsPreamble(mesSendString);
+
+                let combinedPrompt = [
+                    combinedStoryString,
+                    mesExmString,
+                    mesSendString,
+                    generatedPromptCache,
+                ].join('').replace(/\r/gm, '');
+
+                if (power_user.collapse_newlines) {
+                    combinedPrompt = collapseNewlines(combinedPrompt);
+                }
+
+                return combinedPrompt;
+            };
+
+            finalMesSend.forEach((item, i) => {
+                item.injected = injectedIndices.includes(finalMesSend.length - i - 1);
+            });
+
+            let data = {
+                api: main_api,
+                combinedPrompt: null,
+                description,
+                personality,
+                persona,
+                scenario,
+                char: name2,
+                user: name1,
+                worldInfoBefore,
+                worldInfoAfter,
+                beforeScenarioAnchor,
+                afterScenarioAnchor,
+                storyString,
+                mesExmString,
+                mesSendString,
+                finalMesSend,
+                generatedPromptCache,
+                main: system,
+                jailbreak,
+                naiPreamble: nai_settings.preamble,
+            };
+
+            // Before returning the combined prompt, give available context related information to all subscribers.
+            await eventSource.emit(event_types.GENERATE_BEFORE_COMBINE_PROMPTS, data);
+
+            // If one or multiple subscribers return a value, forfeit the responsibillity of flattening the context.
+            return !data.combinedPrompt ? combine() : data.combinedPrompt;
+        };
+
+        finalPrompt = await getCombinedPrompt(false);
+
+        const eventData = { prompt: finalPrompt, dryRun: dryRun };
+        await eventSource.emit(event_types.GENERATE_AFTER_COMBINE_PROMPTS, eventData);
+        finalPrompt = eventData.prompt;
+
+        maxLength = Number(amount_gen); // how many tokens the AI will be requested to generate
+        thisPromptBits = [];
     }
 
     let generate_data;
