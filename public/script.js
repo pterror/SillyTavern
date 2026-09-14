@@ -6427,6 +6427,105 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         // client-assembled path below, unchanged.
     }
 
+    // === Raw-action chat-completion cutover ===
+    // Direct analog of the raw-action text-completion cutover immediately above, for main_api === 'openai'. The
+    // already-built, already-tested server-side pipeline (resolveChatCompletionGenerationInput() +
+    // prepareOpenAIMessages() [src/chat-completion-prepare-messages.js, NOT the client-side legacy function of the
+    // same name called a few lines below] + createGenerationParameters() [src/chat-completion-generation-data.js])
+    // is wired into a real raw-action branch of /api/backends/chat-completions/generate - see
+    // buildRawActionChatCompletionRequest() in src/endpoints/backends/chat-completions.js (commits de3696095,
+    // 6bd95de8e). Instead of the client-assembled oaiMessages/prompt, this sends only which character/branch and the
+    // literal text typed, matching that endpoint's real, tested contract (character_avatar/group_id/owner_id/
+    // branch_name/node_id/type/is_impersonate/is_continue/is_swipe/user_message - field names deliberately verbatim
+    // from the text-completion precedent, per this session's own task instructions).
+    //
+    // JUDGMENT CALL #1 (scope): IDENTICAL restriction to the text-completion cutover above, for the IDENTICAL
+    // underlying reason - re-confirmed by reading the chat-completion side's OWN persistence code
+    // (buildRawActionChatCompletionRequest()'s `appendMessages()` calls in chat-completions.js), not copy-pasted
+    // blindly:
+    //   - 'continue': same problem as text-completion - the client's saveReply({type:'appendFinal'}) edits the
+    //     existing last node's text in place, but the server's appendMessages() call (keyed off `anchorNodeId`,
+    //     which for chat-completion's raw action is ALSO just the branch leaf - see
+    //     buildRawActionChatCompletionRequest()'s Step 2) always appends a brand-new CHILD node. Same tree-shape
+    //     mismatch, same exclusion.
+    //   - 'swipe'/'regenerate': same problem - `anchorNodeId` is the branch leaf (the message being swiped), so
+    //     appendMessages() would chain the alternative as a CHILD after it, not a SIBLING under its parent. Same
+    //     exclusion.
+    //   - 'impersonate': same problem - the generated text is never added to the chat client-side (written to the
+    //     send textarea instead), but the server would unconditionally persist it as a bogus assistant message.
+    //   - 'quiet': same problem - meta/background generations must never land in the visible chat tree.
+    //   - group chats: same exclusion, for the same reason (server-side speaker/character resolution for a group
+    //     turn not verified against generateGroupWrapper()'s own activation-strategy-dependent member selection).
+    // No genuinely NEW chat-completion-specific correctness concern was found beyond these - specifically checked
+    // and ruled out:
+    //   - Claude's assistant-prefill continuation semantics (`oai_settings.continue_prefill`/`supportsAssistantPrefill`,
+    //     threaded through src/chat-completion-history.js/src/chat-completion-prepare-messages.js) are used ONLY for
+    //     `type === 'continue'` (verified: src/chat-completion-generation-data.js line ~325, `if (type !== 'quiet' &&
+    //     !(type === 'continue' && settings.continue_prefill))`) - already excluded from this narrow scope, so this
+    //     never interacts with a plain 'normal' turn.
+    //   - Tool-call reconstruction in chat history (src/chat-completion-history.js's `canUseTools &&
+    //     Array.isArray(chatPrompt.invocations)` branch) operates on tool invocations already recorded on PAST
+    //     messages in the loaded chat history - it is not affected by whether the CURRENT turn is allowed to call
+    //     tools. The `!canPerformToolCalls` gate below (same `canPerformToolCalls` local declared above, computed via
+    //     `ToolManager.canPerformToolCalls(type)` which itself defaults to `oai_settings`/`getChatCompletionModel(oai_settings)`
+    //     when not given explicit settings/model - i.e. it is not main_api-specific in a way that changes anything
+    //     here; it already reflects the chat-completion settings regardless of main_api) only prevents the CURRENT
+    //     turn from registering/using tools, exactly mirroring the client's own `!canMultiSwipe &&
+    //     ToolManager.canPerformToolCalls(type, settings, model)` gate before `registerFunctionToolsOpenAI()` in
+    //     createGenerationParameters() (public/scripts/chat-completion-settings.js) - so excluding
+    //     `canPerformToolCalls` here is, if anything, an even more directly-applicable precondition for chat
+    //     completion than it was for text completion.
+    //
+    // JUDGMENT CALL #2 (assembly still runs): IDENTICAL strategy to the text-completion cutover - this does NOT skip
+    // the client-side prompt-assembly above (world info scan, description/personality/scenario resolution, the
+    // legacy client-side `prepareOpenAIMessages()`-feeding locals) for the SAME reason: `system`, `jailbreak`,
+    // `promptBias`, `oaiMessages`, `oaiMessageExamples`, `worldInfoBefore`, `worldInfoAfter`, `description`,
+    // `personality`, `scenario` are all still read (or at minimum still assigned, satisfying the temporal-dead-zone
+    // requirement) unconditionally elsewhere. What IS skipped for the raw-action case is the actual CLIENT-SIDE
+    // `prepareOpenAIMessages()` CALL inside the `case 'openai':` block below (the "final generate_data builder" step
+    // - the direct analog of `getTextGenGenerationData()` for the textgen case) - its result (`prompt`/`counts`) is
+    // simply never computed for this one case, and `generate_data` is set directly from the raw action object
+    // instead. This is safe (does not skip anything read via TDZ downstream): `counts`/`thisPromptBits` are used only
+    // to build `additionalPromptStuff` in `finishGenerating()` via `thisPromptBits[Number(thisPromptBits.length - 1)]`
+    // - spreading `thisPromptBits[-1]` (`undefined`) into an object literal is a no-op, not a TypeError - verified by
+    // reading `finishGenerating()`'s own `additionalPromptStuff` construction. `openai_messages_count` (set as a
+    // side effect of the skipped call) is likewise UI-only (an "N messages in context" display, via
+    // `setInContextMessages()`) - also skipped here rather than fed a stale prior value, to avoid displaying a wrong
+    // number; a pure UI cosmetic, not a correctness concern, in the same spirit as the text-completion cutover's own
+    // documented "itemized-prompt token-breakdown UI still shows the client's discarded assembly" side effect.
+    let rawActionChatCompletionData = null;
+    if (!dryRun && main_api === 'openai'
+        && (type === undefined || type === 'normal')
+        && !selected_group
+        && !hasPendingFileAttachment()
+        && !canPerformToolCalls
+    ) {
+        const characterAvatar = getCurrentCharacter()?.avatar;
+        const ownerId = characterAvatar ? String(characterAvatar).replace('.png', '') : undefined;
+        // Same real precondition check as the text-completion cutover above (not assumed) - see that block's own
+        // comment for why a "brand new, unlabeled chat" state should not be reachable here.
+        const branchName = getCurrentChatId();
+        if (ownerId && characterAvatar && branchName) {
+            // Same rationale as the text-completion cutover above: omitted (undefined) for any type that doesn't add
+            // a new message. Given the scope restriction above, this path is only ever reached for type
+            // 'normal'/undefined, where textareaText is the just-sent text or '' for a depth>0 tool-call follow-up
+            // generation (which likewise adds no new user message).
+            const userMessageText = textareaText !== '' ? textareaText : undefined;
+            rawActionChatCompletionData = {
+                character_avatar: characterAvatar,
+                owner_id: ownerId,
+                branch_name: branchName,
+                type: type ?? 'normal',
+                is_impersonate: isImpersonate,
+                is_continue: isContinue,
+                is_swipe: isSwipe,
+                user_message: userMessageText,
+            };
+        }
+        // else: no resolvable branch_name (or other precondition) - fall through to the legacy
+        // client-assembled path below, unchanged.
+    }
+
     let generate_data;
     switch (main_api) {
         case 'koboldhorde':
@@ -6470,6 +6569,16 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             break;
         }
         case 'openai': {
+            // Real raw-action cutover (see the block above `let generate_data;`) - the server resolves the whole
+            // request itself for this case, so the client's own `prepareOpenAIMessages()` call (and the
+            // `prompt`/`counts` it would have produced) is skipped entirely; `generate_data.rawAction` is read by
+            // sendGenerationRequest()/sendStreamingRequest() and forwarded to sendOpenAIRequest(), which builds the
+            // actual request body from it instead of calling createGenerationParameters() (see that function's own
+            // "Raw-action chat-completion cutover" comment in chat-completion-settings.js).
+            if (rawActionChatCompletionData) {
+                generate_data = { rawAction: rawActionChatCompletionData };
+                break;
+            }
             let [prompt, counts] = await prepareOpenAIMessages({
                 name2: name2,
                 charDescription: description,
@@ -7366,7 +7475,11 @@ function setInContextMessages(msgInContextCount, type) {
  */
 export async function sendGenerationRequest(type, data, options = {}) {
     if (main_api === 'openai') {
-        return await sendOpenAIRequest(type, data.prompt, abortController.signal, options);
+        // `data.rawAction`, when set, is the raw-action chat-completion cutover object built in Generate()'s
+        // `case 'openai':` block - forwarded through as an option so sendOpenAIRequest() can detect and use it
+        // (see that function's own "Raw-action chat-completion cutover" comment). `undefined` for every other
+        // (non-cutover) call, exactly like today - a no-op for sendOpenAIRequest() in that case.
+        return await sendOpenAIRequest(type, data.prompt, abortController.signal, { ...options, rawAction: data.rawAction });
     }
 
     if (main_api === 'koboldhorde') {
@@ -7402,7 +7515,9 @@ export async function sendStreamingRequest(type, data, options = {}) {
 
     switch (main_api) {
         case 'openai':
-            return await sendOpenAIRequest(type, data.prompt, streamingProcessor.abortController.signal, options);
+            // See sendGenerationRequest()'s identical comment above `data.rawAction` - same forwarding here for the
+            // streaming call path.
+            return await sendOpenAIRequest(type, data.prompt, streamingProcessor.abortController.signal, { ...options, rawAction: data.rawAction });
         case 'textgenerationwebui':
             return await generateTextGenWithStreaming(data, streamingProcessor.abortController.signal);
         case 'novel':
