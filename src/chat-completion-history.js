@@ -3,6 +3,20 @@ import { Prompt, preparePrompt } from './chat-completion-prompt-collection.js';
 import { substituteParams } from './macro-substitution.js';
 import { character_names_behavior } from './chat-completion-messages.js';
 
+/** @enum {string} Mirrors public/scripts/constants.js's MEDIA_DISPLAY (verified by direct read). */
+const MEDIA_DISPLAY = {
+    LIST: 'list',
+    GALLERY: 'gallery',
+};
+
+/** @enum {string} Mirrors public/scripts/constants.js's MEDIA_TYPE (verified by direct read - only
+ *  the plain string values are needed here, not the `getFromMime` helper). */
+const MEDIA_TYPE = {
+    IMAGE: 'image',
+    VIDEO: 'video',
+    AUDIO: 'audio',
+};
+
 /**
  * Server-side port of public/scripts/chat-completion-settings.js's
  * `populateChatHistory(messages, prompts, chatCompletion, type, cyclePrompt)` (~lines 880-1057) -
@@ -101,14 +115,27 @@ import { character_names_behavior } from './chat-completion-messages.js';
  * see chat-completion-history.test.js's dedicated fixture proving the two modes diverge on the same
  * message history.
  *
+ * MEDIA INLINING (`inlineMediaAttachment`/`chatPrompt.media`/`.mediaDisplay`/`.mediaIndex`): NOW
+ * REAL, wired to the real `Message.addImage`/`addVideo`/`addAudio` ported in
+ * src/chat-completion-budget.js (that module's own doc comment's earlier "no server-side
+ * image/video/audio processing pipeline exists" claim is now FALSE and has been corrected there -
+ * the pipeline exists and this function calls it). Per prompt, for `chatPrompt.media` entries:
+ * `MEDIA_DISPLAY.LIST` inlines every entry, `MEDIA_DISPLAY.GALLERY` inlines only
+ * `chatPrompt.media[chatPrompt.mediaIndex]`; each entry's `.type` (defaulting to
+ * `MEDIA_TYPE.IMAGE` when falsy, matching the client) picks `addImage`/`addVideo`/`addAudio`,
+ * gated respectively by the caller-supplied `imageInlining`/`videoInlining`/`audioInlining`
+ * booleans (see "caller resolves entities" below).
+ *
  * DELIBERATELY NOT PORTED (explicit, permanent gaps - see task instructions):
- * 1. THE MEDIA-INLINING BLOCK (`inlineMediaAttachment`/`chatPrompt.media`/`.mediaDisplay`/
- *    `.mediaIndex` handling, and the `imageInlining`/`videoInlining`/`audioInlining` capability
- *    checks that gate it) is skipped entirely - not called, not stubbed. This is the same
- *    permanent gap already documented in src/chat-completion-budget.js's module doc comment
- *    (`Message.addImage`/`addVideo`/`addAudio` are not ported - no server-side image/video/audio
- *    processing pipeline exists). A message with `.media` data simply never gets that media
- *    inlined here, exactly like the already-established gap for the `Message` methods themselves.
+ * 1. `isImageInliningSupported()`/`isVideoInliningSupported()`/`isAudioInliningSupported()` (the
+ *    CAPABILITY PREDICATES that decide whether media inlining is even possible for the current
+ *    chat-completion source/model) are NOT ported - a real, separate settings/capability-resolution
+ *    concern, analogous to how `canUseTools`/`includeSignature`/`toolReasoningMode` below are
+ *    likewise caller-resolved rather than re-derived here. Callers must resolve
+ *    `imageInlining`/`videoInlining`/`audioInlining` themselves (mirroring the client's own
+ *    `const imageInlining = isImageInliningSupported();` etc.) and pass them in as plain
+ *    already-resolved booleans (default `false`). This is the new, narrower remaining gap -
+ *    the actual inlining logic itself is fully wired, only the capability predicates are not.
  * 2. `ToolManager.isToolCallingSupported()`, `isReasoningSignatureSupported()`,
  *    `interleaved_reasoning_providers.includes(...)`, and `getEffectiveToolReasoningMode()` are NOT
  *    ported - real, separate settings/capability-resolution concerns (model-name allowlists, a
@@ -156,6 +183,12 @@ import { character_names_behavior } from './chat-completion-messages.js';
  * @property {string} [continueNudgePrompt] Raw `oai_settings.continue_nudge_prompt` equivalent; substituted with a one-off `{{lastChatMessage}}` dynamic macro - see the module doc comment's JUDGMENT CALL.
  * @property {string} [sendIfEmpty] Replaces `oai_settings.send_if_empty`.
  * @property {number} [namesBehavior] One of `character_names_behavior`'s values (src/chat-completion-messages.js), replaces `promptManager.serviceSettings.names_behavior`.
+ * @property {boolean} [imageInlining] Replaces the client's `isImageInliningSupported()` result - see "DELIBERATELY NOT PORTED" #1. Default `false`.
+ * @property {boolean} [videoInlining] Replaces the client's `isVideoInliningSupported()` result - see "DELIBERATELY NOT PORTED" #1. Default `false`.
+ * @property {boolean} [audioInlining] Replaces the client's `isAudioInliningSupported()` result - see "DELIBERATELY NOT PORTED" #1. Default `false`.
+ * @property {string} [imageQuality] Mirrors `oai_settings.inline_image_quality`, forwarded to every `Message.addImage`/`addVideo` call as their `quality` option. Default `'auto'`.
+ * @property {string} [chatCompletionSource] Mirrors `oai_settings.chat_completion_source`, forwarded to `Message.addImage` (only used to gate its size-threshold compression path).
+ * @property {{userImages?: string}} [directories] Forwarded to `Message.addImage`/`addVideo`/`addAudio` for resolving local relative attachment paths - see src/chat-completion-budget.js's `AttachmentDirectories`.
  * @property {boolean} [canUseTools] Replaces `ToolManager.isToolCallingSupported()` - see "DELIBERATELY NOT PORTED".
  * @property {boolean} [includeSignature] Replaces `isReasoningSignatureSupported()` - see "DELIBERATELY NOT PORTED".
  * @property {string} [toolReasoningMode] One of `TOOL_REASONING_MODES`'s values, already resolved by the caller - see "DELIBERATELY NOT PORTED".
@@ -222,6 +255,12 @@ export async function populateChatHistory(messages, prompts, chatCompletion, {
     continueNudgePrompt = '',
     sendIfEmpty = '',
     namesBehavior = character_names_behavior.NONE,
+    imageInlining = false,
+    videoInlining = false,
+    audioInlining = false,
+    imageQuality = 'auto',
+    chatCompletionSource,
+    directories,
     canUseTools = false,
     includeSignature = false,
     toolReasoningMode = TOOL_REASONING_MODES.DISABLED,
@@ -292,7 +331,31 @@ export async function populateChatHistory(messages, prompts, chatCompletion, {
             await chatMessage.setName(messageName, tokenHandler);
         }
 
-        // MEDIA INLINING BLOCK - deliberately out of scope, see module doc comment. Skipped entirely.
+        const inlineMediaAttachment = async (media) => {
+            if (!media || !media.url) return;
+            const mediaType = media.type || MEDIA_TYPE.IMAGE;
+            if (imageInlining && mediaType === MEDIA_TYPE.IMAGE) {
+                await chatMessage.addImage(media.url, { quality: imageQuality, chatCompletionSource, directories });
+            }
+            if (videoInlining && mediaType === MEDIA_TYPE.VIDEO) {
+                await chatMessage.addVideo(media.url, { quality: imageQuality, directories });
+            }
+            if (audioInlining && mediaType === MEDIA_TYPE.AUDIO) {
+                await chatMessage.addAudio(media.url, { directories });
+            }
+        };
+
+        if (Array.isArray(chatPrompt.media) && chatPrompt.media.length) {
+            if (chatPrompt.mediaDisplay === MEDIA_DISPLAY.LIST) {
+                for (const media of chatPrompt.media) {
+                    await inlineMediaAttachment(media);
+                }
+            }
+            if (chatPrompt.mediaDisplay === MEDIA_DISPLAY.GALLERY) {
+                const media = chatPrompt.media[chatPrompt.mediaIndex];
+                await inlineMediaAttachment(media);
+            }
+        }
 
         if (canUseTools && Array.isArray(chatPrompt.invocations)) {
             const promptIdx = messages.indexOf(chatPrompt);

@@ -1,12 +1,26 @@
 import assert from 'node:assert';
 import { test } from 'node:test';
 
+// JUDGMENT CALL: same as chat-completion-budget.test.js - Jimp's WASM codecs need this patch
+// installed before any encode/decode happens, and this standalone test file has no other entry
+// point that installs it.
+import './fetch-patch.js';
+import { Jimp, JimpMime } from './jimp.js';
+
 import { TokenHandler, ChatCompletion } from './chat-completion-budget.js';
 import { PromptCollection, Prompt, INJECTION_POSITION } from './chat-completion-prompt-collection.js';
 import { populateChatCompletion } from './chat-completion-populate.js';
 
 /** Simple deterministic fake tokenizer: token count = length of the JSON-stringified message(s). */
 const fakeCountTokenAsyncFn = async (messages) => JSON.stringify(messages).length;
+
+/** Builds a real JPEG data URL (mirrors chat-completion-budget.test.js's own helper) - used as a
+ *  small valid image fixture, avoiding any real network fetch or missing test fixture file. */
+async function makeJpegDataUrl(width, height) {
+    const image = new Jimp({ width, height, color: 0xffffffff });
+    const buffer = await image.getBuffer(JimpMime.jpeg, { quality: 90, jpegColorSpace: 'ycbcr' });
+    return `data:image/jpeg;base64,${buffer.toString('base64')}`;
+}
 
 /**
  * @param {number} [budget]
@@ -489,4 +503,51 @@ test('controlPrompts is added when non-empty (impersonate present)', async () =>
 
     const topLevel = chatCompletion.getMessages().getCollection();
     assert.strictEqual(topLevel.some((c) => c && c.identifier === 'controlPrompts'), true);
+});
+
+// ---------------------------------------------------------------------------
+// quietImage inlining (scope boundary #2)
+// ---------------------------------------------------------------------------
+
+test('quietImage: imageInlining=true inlines the image into the quiet-prompt message content', async () => {
+    const prompts = baseFixturePrompts();
+    prompts.collection.find((p) => p.identifier === 'quietPrompt').content = 'QUIET_TEXT';
+    const { chatCompletion, tokenHandler } = makeChatCompletion();
+    const dataUrl = await makeJpegDataUrl(32, 32);
+
+    await populateChatCompletion(prompts, chatCompletion, {
+        messages: [],
+        type: 'normal',
+        quietImage: dataUrl,
+        imageInlining: true,
+        tokenHandler,
+    });
+
+    const chat = chatCompletion.getChat();
+    const quietTurn = chat.find((m) => Array.isArray(m.content));
+    assert.ok(quietTurn, `expected the quiet-prompt message to have array content, got: ${JSON.stringify(chat)}`);
+    const imagePart = quietTurn.content.find((p) => p.type === 'image_url');
+    assert.ok(imagePart, 'expected an image_url content part');
+    assert.ok(imagePart.image_url.url.startsWith('data:image/jpeg;base64,'));
+    const textPart = quietTurn.content.find((p) => p.type === 'text');
+    assert.strictEqual(textPart.text, 'QUIET_TEXT');
+});
+
+test('quietImage: imageInlining=false leaves the quiet-prompt message as plain text', async () => {
+    const prompts = baseFixturePrompts();
+    prompts.collection.find((p) => p.identifier === 'quietPrompt').content = 'QUIET_TEXT';
+    const { chatCompletion, tokenHandler } = makeChatCompletion();
+    const dataUrl = await makeJpegDataUrl(32, 32);
+
+    await populateChatCompletion(prompts, chatCompletion, {
+        messages: [],
+        type: 'normal',
+        quietImage: dataUrl,
+        imageInlining: false,
+        tokenHandler,
+    });
+
+    const chat = chatCompletion.getChat();
+    const quietTurn = chat.find((m) => m.content === 'QUIET_TEXT');
+    assert.ok(quietTurn, `expected the quiet-prompt message untouched, got: ${JSON.stringify(chat)}`);
 });

@@ -25,12 +25,18 @@ import { substituteParams } from './macro-substitution.js';
  *    `isPromptDisabledForCharacter(promptOrder, characterId, identifier)`. This function therefore
  *    takes explicit `promptOrder`/`characterId` params (see `PopulateChatCompletionOptions`).
  *
- * 2. `isImageInliningSupported()` / `quietPromptMessage.addImage(quietImage)` - OUT OF SCOPE (same
- *    permanent media-inlining gap as `Message.addImage` in chat-completion-budget.js and the
- *    media-inlining skip in chat-completion-history.js). Only the `addImage` call itself is
- *    skipped; the surrounding logic (checking `.content`, adding to `controlPrompts`) is ported
- *    normally. `quietImage` is accepted as a documented-but-unused param for interface parity /
- *    future wiring, but never read.
+ * 2. `quietPromptMessage.addImage(quietImage)` is NOW WIRED FOR REAL, using the real
+ *    `Message.addImage` ported in chat-completion-budget.js and the same
+ *    `imageInlining`-as-caller-supplied-boolean convention wired into
+ *    chat-completion-history.js's media inlining. `isImageInliningSupported()` itself (the
+ *    CAPABILITY PREDICATE) remains OUT OF SCOPE - a real, separate settings/capability-resolution
+ *    concern - so this function takes the already-resolved `imageInlining` boolean (default
+ *    `false`) instead of calling it. When `imageInlining` is true and `quietImage` is provided,
+ *    `quietPromptMessage.addImage(quietImage, {quality: imageQuality, chatCompletionSource,
+ *    directories})` is called before `quietPromptMessage` is added to `controlPrompts` (mirroring
+ *    the client's exact call site, inside the same `if (quietPromptMessage &&
+ *    quietPromptMessage.content)` guard). This is the new, narrower remaining gap - only the
+ *    capability predicate is not ported, the inlining itself is real.
  *
  * 3. `ToolManager.canPerformToolCalls(type)` / `ToolManager.registerFunctionToolsOpenAI(toolData)` /
  *    the whole tool-budget-preallocation block - OUT OF SCOPE (ToolManager subsystem). Replaced with
@@ -106,9 +112,10 @@ import { substituteParams } from './macro-substitution.js';
  *     `{ messages }` (the post-injection value) purely for testability - nothing in this module's
  *     own control flow depends on the return value being read.
  *
- * DELIBERATELY NOT PORTED: the image-inlining sub-step (#2) and the ToolManager tool-budget
- * pre-allocation internals (#3) - see above; both are permanent, already-documented gaps elsewhere
- * in this porting effort, not TODOs.
+ * DELIBERATELY NOT PORTED: `isImageInliningSupported()` (the capability predicate underlying #2 -
+ * the inlining itself is now real, see #2 above) and the ToolManager tool-budget pre-allocation
+ * internals (#3) - see above; both are permanent, already-documented gaps elsewhere in this
+ * porting effort, not TODOs.
  *
  * @typedef {import('./chat-completion-budget.js').ChatCompletion} ChatCompletion
  * @typedef {import('./chat-completion-budget.js').TokenHandler} TokenHandler
@@ -119,7 +126,11 @@ import { substituteParams } from './macro-substitution.js';
  * @typedef {object} PopulateChatCompletionOptions
  * @property {string} [bias] Equivalent of the client's `bias` param - only added if non-empty after trim.
  * @property {string} [quietPrompt] Unused directly here (forwarded implicitly via `prompts.get('quietPrompt')`); kept for interface parity with the client's destructured param list.
- * @property {*} [quietImage] Accepted but never read - see scope boundary #2 (image inlining out of scope).
+ * @property {string} [quietImage] Image to inline into the quiet-prompt message when `imageInlining` is true - see scope boundary #2.
+ * @property {boolean} [imageInlining] Replaces the client's `isImageInliningSupported()` result - see scope boundary #2. Default `false`.
+ * @property {string} [imageQuality] Mirrors `oai_settings.inline_image_quality`, forwarded to `quietPromptMessage.addImage`. Default `'auto'`.
+ * @property {string} [chatCompletionSource] Mirrors `oai_settings.chat_completion_source`, forwarded to `quietPromptMessage.addImage`.
+ * @property {{userImages?: string}} [directories] Forwarded to `quietPromptMessage.addImage` for resolving local relative attachment paths.
  * @property {string} [type] Generation type (e.g. `'impersonate'`, `'continue'`, or other/`null` for normal generation).
  * @property {string} [cyclePrompt] Forwarded to `populateChatHistory` (only relevant for `type === 'continue'`).
  * @property {object[]} messages Chat-history messages, newest-first per `populateInjectionPrompts`'s documented input convention. MUTATED in place by the continue-prefill branch (`.shift()` removes the displaced message), matching the client exactly and matching the established precedent in `populateChatHistory` (which also mutates its own `messages` param in place). The RETURN VALUE of this function (`{messages}`) is the post-`populateInjectionPrompts` value, which is a NEW array (that helper never mutates its input) - see judgment call #14.
@@ -155,6 +166,10 @@ export async function populateChatCompletion(prompts, chatCompletion, {
     bias = '',
     quietPrompt,
     quietImage,
+    imageInlining = false,
+    imageQuality = 'auto',
+    chatCompletionSource,
+    directories,
     type = null,
     cyclePrompt = null,
     messages,
@@ -174,7 +189,6 @@ export async function populateChatCompletion(prompts, chatCompletion, {
     dialogueExamplesOptions = {},
 } = {}) {
     void quietPrompt; // documented-only, see PopulateChatCompletionOptions JSDoc
-    void quietImage; // see scope boundary #2 - image inlining out of scope
 
     const addToChatCompletion = async (source, target = null) => {
         if (false === prompts.has(source)) return;
@@ -210,8 +224,11 @@ export async function populateChatCompletion(prompts, chatCompletion, {
 
     const quietPromptMessage = await Message.fromPromptAsync(prompts.get('quietPrompt'), tokenHandler) ?? null;
     if (quietPromptMessage && quietPromptMessage.content) {
-        // Image inlining (isImageInliningSupported()/quietPromptMessage.addImage(quietImage)) is
-        // deliberately out of scope - see scope boundary #2.
+        // Image inlining - see scope boundary #2. `isImageInliningSupported()` itself remains out
+        // of scope; `imageInlining` is the caller-resolved boolean standing in for it.
+        if (imageInlining && quietImage) {
+            await quietPromptMessage.addImage(quietImage, { quality: imageQuality, chatCompletionSource, directories });
+        }
         controlPrompts.add(quietPromptMessage);
     }
 
