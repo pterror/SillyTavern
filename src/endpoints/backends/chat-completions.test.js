@@ -323,7 +323,72 @@ async function run() {
         assert.equal(branchAfter.messages[branchAfter.messages.length - 1].is_user, true);
     }
 
-    // (c) STREAMING and the provider-`switch` cases (Claude/AI21/MakerSuite/etc) are intentionally NOT
+    // (c) is_impersonate: true - NEITHER the (spuriously passed) user_message NOR the generated reply
+    // may ever land on the tree, even though the backend call succeeds and returns real text. The
+    // generated text must still reach the client unchanged.
+    {
+        const fakeBackend = await startFakeBackend((_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'I think you should go north.' } }] }));
+        });
+        pointBackendAt(fakeBackend.url);
+
+        const branchBefore = await loadBranch(directories, ownerId, branchName);
+        const messageCountBefore = branchBefore.messages.length;
+        const leafBefore = branchBefore.branch.leaf_id;
+
+        const app = buildTestApp();
+        const { status, data } = await postGenerate(app, {
+            owner_id: ownerId, character_avatar: avatar, branch_name: branchName,
+            type: 'impersonate', is_impersonate: true,
+            // Deliberately included even though a real client never sends this for impersonate - the
+            // route must defensively ignore it regardless.
+            user_message: 'This should never be persisted.',
+            stream: false,
+        });
+        fakeBackend.server.close();
+
+        assert.equal(status, 200, 'the (unchanged) response is forwarded to the client');
+        assert.deepEqual(data, { choices: [{ message: { role: 'assistant', content: 'I think you should go north.' } }] }, 'the generated text still reaches the client unmodified');
+
+        const branchAfter = await loadBranch(directories, ownerId, branchName);
+        assert.equal(branchAfter.messages.length, messageCountBefore, 'no message (user or assistant) was appended for is_impersonate: true');
+        assert.equal(branchAfter.branch.leaf_id, leafBefore, 'the branch leaf/ancestor path is completely unchanged');
+    }
+
+    // (d) type: 'quiet' - same assertion as (c): no tree mutation on either side, response still
+    // forwarded to the client unchanged.
+    {
+        const fakeBackend = await startFakeBackend((_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'Meta/background result.' } }] }));
+        });
+        pointBackendAt(fakeBackend.url);
+
+        const branchBefore = await loadBranch(directories, ownerId, branchName);
+        const messageCountBefore = branchBefore.messages.length;
+        const leafBefore = branchBefore.branch.leaf_id;
+
+        const app = buildTestApp();
+        const { status, data } = await postGenerate(app, {
+            owner_id: ownerId, character_avatar: avatar, branch_name: branchName,
+            type: 'quiet',
+            // Also deliberately included to verify the defensive skip - a real quiet call has no
+            // fresh user text to send either.
+            user_message: 'This should never be persisted.',
+            stream: false,
+        });
+        fakeBackend.server.close();
+
+        assert.equal(status, 200, 'the (unchanged) response is forwarded to the client');
+        assert.deepEqual(data, { choices: [{ message: { role: 'assistant', content: 'Meta/background result.' } }] }, 'the generated text still reaches the client unmodified');
+
+        const branchAfter = await loadBranch(directories, ownerId, branchName);
+        assert.equal(branchAfter.messages.length, messageCountBefore, 'no message (user or assistant) was appended for type: \'quiet\'');
+        assert.equal(branchAfter.branch.leaf_id, leafBefore, 'the branch leaf/ancestor path is completely unchanged');
+    }
+
+    // (e) STREAMING and the provider-`switch` cases (Claude/AI21/MakerSuite/etc) are intentionally NOT
     // exercised here - see this session's report / the code comments at `pendingAssistantPersist`'s
     // declaration in chat-completions.js for the full, explicit list of what remains deferred. Proving
     // the assistant reply is untouched for them is trivial (pendingAssistantPersist is simply never
