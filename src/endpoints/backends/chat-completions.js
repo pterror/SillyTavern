@@ -64,13 +64,8 @@ import { createGenerationParameters } from '../../chat-completion-generation-dat
 import { readSettingsAtPaths } from '../../settings-store.js';
 import { readPresetByName } from '../presets.js';
 import {
-    getTokenizerModel,
-    getSentencepiceTokenizer,
-    getTiktokenTokenizer,
-    sentencepieceTokenizers,
     TEXT_COMPLETION_MODELS,
-    webTokenizers,
-    getWebTokenizer,
+    computeLogitBias,
 } from '../tokenizers.js';
 import { getVertexAIAuth, getProjectIdFromServiceAccount } from '../google.js';
 import { getCookieSecret } from '../../users.js';
@@ -2156,79 +2151,8 @@ router.post('/bias', async function (request, response) {
         return response.sendStatus(400);
 
     try {
-        const result = {};
-        const model = getTokenizerModel(String(request.query.model || ''));
-
-        // no bias for claude
-        if (model == 'claude') {
-            return response.send(result);
-        }
-
-        let encodeFunction;
-
-        if (sentencepieceTokenizers.includes(model)) {
-            const tokenizer = getSentencepiceTokenizer(model);
-            const instance = await tokenizer?.get();
-            if (!instance) {
-                console.error('Tokenizer not initialized:', model);
-                return response.send({});
-            }
-            encodeFunction = (text) => new Uint32Array(instance.encodeIds(text));
-        } else if (webTokenizers.includes(model)) {
-            const tokenizer = getWebTokenizer(model);
-            const instance = await tokenizer?.get();
-            if (!instance) {
-                console.warn('Tokenizer not initialized:', model);
-                return response.send({});
-            }
-            encodeFunction = (text) => new Uint32Array(instance.encode(text));
-        } else {
-            const tokenizer = getTiktokenTokenizer(model);
-            encodeFunction = (tokenizer.encode.bind(tokenizer));
-        }
-
-        for (const entry of request.body) {
-            if (!entry || !entry.text) {
-                continue;
-            }
-
-            try {
-                const tokens = getEntryTokens(entry.text, encodeFunction);
-
-                for (const token of tokens) {
-                    result[token] = entry.value;
-                }
-            } catch {
-                console.warn('Tokenizer failed to encode:', entry.text);
-            }
-        }
-
-        // not needed for cached tokenizers
-        //tokenizer.free();
+        const result = await computeLogitBias(request.body, String(request.query.model || ''));
         return response.send(result);
-
-        /**
-         * Gets tokenids for a given entry
-         * @param {string} text Entry text
-         * @param {(string) => Uint32Array} encode Function to encode text to token ids
-         * @returns {Uint32Array} Array of token ids
-         */
-        function getEntryTokens(text, encode) {
-            // Get raw token ids from JSON array
-            if (text.trim().startsWith('[') && text.trim().endsWith(']')) {
-                try {
-                    const json = JSON.parse(text);
-                    if (Array.isArray(json) && json.every(x => typeof x === 'number')) {
-                        return new Uint32Array(json);
-                    }
-                } catch {
-                    // ignore
-                }
-            }
-
-            // Otherwise, get token ids from tokenizer
-            return encode(text);
-        }
     } catch (error) {
         console.error(error);
         return response.send({});
@@ -2270,7 +2194,8 @@ router.post('/generate', async function (request, response) {
                 settings.proxy_password = proxyPreset.password;
             }
 
-            const { generate_data } = await createGenerationParameters(settings, profile.model, type, messages, { macroContext: { name1, name2 } });
+            const biasPresetEntries = settings.bias_preset_selected ? settings.bias_presets?.[settings.bias_preset_selected] : undefined;
+            const { generate_data } = await createGenerationParameters(settings, profile.model, type, messages, { macroContext: { name1, name2 }, biasPresetEntries });
 
             if (request.body.overrides && typeof request.body.overrides === 'object' && !Array.isArray(request.body.overrides)) {
                 Object.assign(generate_data, _.omit(request.body.overrides, ['chat_completion_source', 'model', 'messages', 'custom_url', 'reverse_proxy', 'proxy_password', 'secret_id']));

@@ -1,5 +1,6 @@
 import { CHAT_COMPLETION_SOURCES, ZAI_ENDPOINT, POLLINATIONS_ENDPOINT, SILICONFLOW_ENDPOINT, MINIMAX_ENDPOINT } from './constants.js';
 import { substituteParams } from './macro-substitution.js';
+import { computeLogitBias } from './endpoints/tokenizers.js';
 
 /**
  * Server-side port of public/scripts/chat-completion-settings.js's createGenerationParameters() -
@@ -13,10 +14,20 @@ import { substituteParams } from './macro-substitution.js';
  * to reconcile that overlap; it's a faithful port of the client function as its own piece, flagged
  * for a later pass to de-duplicate against the existing dispatch functions.
  *
+ * logitBias is now computed for real: the client's calculateLogitBias() (public/scripts/chat-
+ * completion-settings.js) turned out to do no computation of its own - it just POSTs
+ * bias_presets[bias_preset_selected] to the server's existing `/api/backends/chat-completions/bias`
+ * route (src/endpoints/backends/chat-completions.js), which does the actual tokenizer-based work
+ * in-process. That route's core logic is now extracted into src/endpoints/tokenizers.js's exported
+ * computeLogitBias(), which this module calls directly given a `biasPresetEntries` context param
+ * (the same bias_presets[bias_preset_selected]-shaped array the client sends) - so the previously
+ * "not portable, needs the server's own tokenizer access" characterization was wrong: the server
+ * already has full tokenizer access via src/endpoints/tokenizers.js. A pre-resolved `logitBias`
+ * override is still accepted (and takes priority) for callers that already have one, mirroring the
+ * `toolsPayload` escape-hatch convention used elsewhere in this module.
+ *
  * Deliberately taken as explicit context parameters instead of ported (each needs its own
  * server-side capability that doesn't exist yet, or is genuinely external/live data):
- * - logitBias - calculateLogitBias() needs the server's own tokenizer access (same exclusion as
- *   the textgen port).
  * - getStoppingStrings(limit) - a function, not a flat array, because the original calls
  *   getCustomStoppingStrings() with a DIFFERENT limit per source (default openai_max_stop_strings,
  *   unlimited for Claude/Mistral/Chutes, 5 for MakerSuite/VertexAI/Cohere, 1 for ZAI) - a flat
@@ -171,7 +182,11 @@ function getVerbosity(settings) {
 /**
  * @typedef {object} ChatCompletionGenerationContext
  * @property {object} [jsonSchema]
- * @property {object} [logitBias] Already-computed token-id-keyed bias map, or undefined
+ * @property {object} [logitBias] Escape hatch: an already-computed token-id-keyed bias map to use
+ * as-is instead of computing one from `biasPresetEntries`. Takes priority when provided.
+ * @property {{text?: string, value?: number}[]} [biasPresetEntries] Raw bias-preset entries -
+ * settings.bias_presets[settings.bias_preset_selected] client-side - used to compute `logit_bias`
+ * via computeLogitBias() (src/endpoints/tokenizers.js) when `logitBias` isn't given.
  * @property {(limit?: number) => string[]} [getStoppingStrings] Mirrors getCustomStoppingStrings(limit) - called with a different limit per source
  * @property {string[]} [groupNames]
  * @property {boolean} [useLogprobs]
@@ -192,7 +207,8 @@ function getVerbosity(settings) {
 export async function createGenerationParameters(settings, model, type, messages, context = {}) {
     const {
         jsonSchema = null,
-        logitBias: logitBiasInput = undefined,
+        logitBias: logitBiasOverride = undefined,
+        biasPresetEntries = undefined,
         getStoppingStrings = () => [],
         groupNames = [],
         useLogprobs = false,
@@ -225,10 +241,16 @@ export async function createGenerationParameters(settings, model, type, messages
     const noMultiSwipeTypes = ['quiet', 'impersonate', 'continue'];
     const canMultiSwipe = settings.n > 1 && !noMultiSwipeTypes.includes(type) && multiswipeSources.includes(settings.chat_completion_source);
 
-    // Mirrors the original: defaults to {} (not undefined) unless the caller already computed one
-    // (gated on the same bias-preset-selected + logitBiasSources condition the client checks before
-    // calling calculateLogitBias() - out of scope here, tokenizer-dependent).
-    let logit_bias = logitBiasInput ?? {};
+    // Mirrors the original: defaults to {} (not undefined). Uses a pre-resolved override if given,
+    // else computes a real bias map from biasPresetEntries - gated on the same
+    // bias-preset-selected (non-empty entries array, standing in for it) + logitBiasSources
+    // condition the client checks before calling calculateLogitBias().
+    let logit_bias = {};
+    if (logitBiasOverride !== undefined) {
+        logit_bias = logitBiasOverride;
+    } else if (Array.isArray(biasPresetEntries) && biasPresetEntries.length && logitBiasSources.includes(settings.chat_completion_source)) {
+        logit_bias = await computeLogitBias(biasPresetEntries, model);
+    }
     if (Object.keys(logit_bias).length === 0) {
         logit_bias = undefined;
     }
