@@ -22,11 +22,22 @@ const { assembleTextCompletionPrompt } = await import('./text-completion-prompt-
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-text-completion-generation-input-test-'));
 const charactersDir = path.join(root, 'characters');
 const groupsDir = path.join(root, 'groups');
+const worldsDir = path.join(root, 'worlds');
 fs.mkdirSync(charactersDir, { recursive: true });
 fs.mkdirSync(groupsDir, { recursive: true });
+fs.mkdirSync(worldsDir, { recursive: true });
 
-const directories = { root, characters: charactersDir, groups: groupsDir };
+const directories = { root, characters: charactersDir, groups: groupsDir, worlds: worldsDir };
 globalThis.DATA_ROOT = root;
+
+/** Minimal real on-disk lorebook, matching src/world-info/candidate-resolution.test.js's own fixture shape. */
+function writeLorebook(name, entries) {
+    const entriesObj = {};
+    for (const entry of entries) {
+        entriesObj[String(entry.uid)] = entry;
+    }
+    fs.writeFileSync(path.join(worldsDir, `${name}.json`), JSON.stringify({ entries: entriesObj }));
+}
 
 const baseImage = fs.readFileSync(path.join(__dirname, '..', 'public', 'img', 'ai4.png'));
 
@@ -101,7 +112,7 @@ function buildSettingsFixture() {
                 user_alignment_message: '',
             },
             context: {
-                story_string: '{{#if system}}{{system}}\n{{/if}}{{description}}',
+                story_string: '{{#if system}}{{system}}\n{{/if}}{{wiBefore}}{{description}}{{wiAfter}}',
                 chat_start: '***',
                 example_separator: '***',
                 names_as_stop_strings: true,
@@ -112,6 +123,13 @@ function buildSettingsFixture() {
                 post_history: '',
             },
         },
+        // Real global lorebook selection - top-level `world_info` key, NOT `world_info_settings`
+        // (see text-completion-generation-input.js's own field-mapping notes on this exact distinction).
+        world_info: {
+            globalSelect: ['TestLore'],
+            charLore: [],
+        },
+        world_info_character_strategy: 1, // world_info_insertion_strategy.character_first
         world_info_settings: {
             world_info_depth: 3,
             world_info_budget: 30,
@@ -165,6 +183,9 @@ function makeFakeTokenizers() {
 
 async function run() {
     writeAllSettings(directories, buildSettingsFixture());
+    writeLorebook('TestLore', [
+        { uid: 'wi1', key: ['irrelevant-key'], keysecondary: [], comment: '', content: 'The ancient tower looms over the village.', constant: true, selective: false, order: 10, position: 0, disable: false },
+    ]);
     const avatar = writeCharacter('Rex.png', {
         name: 'Rex',
         description: 'Rex is a {{char}}.',
@@ -202,14 +223,37 @@ async function run() {
     assert.equal(input.reasoningMaxAdditions, 2);
     assert.equal(input.isInstruct, true, 'isInstruct resolves from power_user.instruct.enabled');
     assert.equal(input.instructWrap, true);
-    assert.equal(input.storyStringTemplate, '{{#if system}}{{system}}\n{{/if}}{{description}}');
+    assert.equal(input.storyStringTemplate, '{{#if system}}{{system}}\n{{/if}}{{wiBefore}}{{description}}{{wiAfter}}');
     assert.equal(input.chatStart, undefined, 'chatStart is not a resolved field on this orchestrator input - only storyStringTemplate/contextSettings are');
     assert.equal(input.contextSettings.chat_start, '***', 'chatStart-equivalent data is still present, nested under contextSettings');
     assert.equal(input.namesAsStopStrings, true, 'namesAsStopStrings resolves from power_user.context.names_as_stop_strings');
     assert.equal(input.customStoppingStringsRaw, '"CUSTOM_STOP"');
     assert.equal(input.noteSettings.default, 'Author note default text.', 'noteSettings passes extension_settings.note through unchanged (same field names)');
     assert.equal(input.globalCfg.guidance_scale, 1, 'globalCfg resolves from extension_settings.cfg.global');
-    assert.deepEqual(input.worldInfoCandidates, [], 'worldInfoCandidates is a plain out-of-scope passthrough, default []');
+    // --- world-info candidate resolution (now real, via resolveWorldInfoCandidates()) ---
+    assert.equal(input.worldInfoCandidates.length, 1, 'worldInfoCandidates is auto-resolved for real from the on-disk lorebook named in settings.world_info.globalSelect');
+    assert.equal(input.worldInfoCandidates[0].content, 'The ancient tower looms over the village.');
+    assert.equal(input.worldInfoCandidates[0].world, 'TestLore');
+    assert.ok(input.worldInfoCandidates[0].hash, 'resolved candidates carry the real getStringHash() hash');
+
+    // An explicit override (including []) always wins over auto-resolution.
+    const overriddenWI = await resolveTextCompletionGenerationInput(directories, {
+        avatar, ownerId, branchName, countTokens, encodeTokens, worldInfoCandidates: [],
+    });
+    assert.deepEqual(overriddenWI.worldInfoCandidates, [], 'an explicit worldInfoCandidates override bypasses auto-resolution');
+
+    // --- userMessageText: appends the pending user action onto the loaded chat history ---
+    const withUserMessage = await resolveTextCompletionGenerationInput(directories, {
+        avatar, ownerId, branchName, countTokens, encodeTokens,
+        userMessageText: 'What happens next, Rex?',
+    });
+    assert.equal(withUserMessage.chat.length, 4, 'userMessageText appends one new message onto the real loaded history');
+    const appended = withUserMessage.chat[3];
+    assert.equal(appended.is_user, true);
+    assert.equal(appended.name, 'Tester', 'appended message uses the resolved name1');
+    assert.equal(appended.mes, 'What happens next, Rex?');
+    assert.deepEqual(appended.extra, {});
+    assert.equal(input.chat.length, 3, 'omitting userMessageText leaves chat exactly as loaded, unchanged');
 
     // world_info_settings is nested (NOT top-level world_info_depth) - this is the field-mapping
     // correction the task specifically asked to verify against real settings.json.
@@ -257,6 +301,20 @@ async function run() {
     assert.ok(result.combinedPrompt.includes('Hello there, traveler.'), 'the real chat history made it into the final prompt');
     assert.ok(result.generate_data && typeof result.generate_data === 'object', 'generate_data wire payload is produced');
     assert.equal(result.generate_data.model, 'test-model-7b');
+
+    // --- end-to-end #2: the userMessageText-appended chat + real auto-resolved world-info
+    // candidates, both flowing all the way through the real orchestrator - the important proof for
+    // this session's two additions, not just that the individual fields look right in isolation.
+    const resultWithUserMessage = await assembleTextCompletionPrompt(withUserMessage);
+    assert.ok(typeof resultWithUserMessage.combinedPrompt === 'string' && resultWithUserMessage.combinedPrompt.length > 0);
+    assert.ok(
+        resultWithUserMessage.combinedPrompt.includes('What happens next, Rex?'),
+        'the new user message appended by userMessageText made it into the final assembled prompt',
+    );
+    assert.ok(
+        resultWithUserMessage.combinedPrompt.includes('The ancient tower looms over the village.'),
+        'the real, auto-resolved world-info candidate (a constant entry) was activated and made it into the final assembled prompt',
+    );
 
     console.log('text-completion-generation-input.test.js: all assertions passed');
 }
