@@ -35,11 +35,13 @@ const baseAvatarBuffer = fs.readFileSync(path.join(__dirname, '..', 'public', 'i
 function makeDirectories() {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-orchestrator-test-'));
     const charactersDir = path.join(root, 'characters');
+    const filesDir = path.join(root, 'user', 'files');
     fs.mkdirSync(charactersDir, { recursive: true });
+    fs.mkdirSync(filesDir, { recursive: true });
     // endpoints/characters.js's on-disk read cache keys its cache dir off this global (set by the
     // real server at startup) - point it at our fixture root so the cache doesn't error out standalone.
     globalThis.DATA_ROOT = root;
-    return { charactersDir, root };
+    return { charactersDir, filesDir, root };
 }
 
 function writeCharacterCard(charactersDir, avatar, cardV2) {
@@ -527,4 +529,97 @@ test('assembleTextCompletionPrompt: a WORLD_INFO regex script transforms an acti
     assert.ok(!result.worldInfoBefore.includes('was forged by ancient elves'), 'the pre-regex entry content should NOT appear in worldInfoBefore');
     assert.ok(result.combinedPrompt.includes('was crafted by ancient elves'), 'the WORLD_INFO-regexed entry content should appear in combinedPrompt');
     assert.ok(!result.combinedPrompt.includes('was forged by ancient elves'), 'the pre-regex entry content should NOT appear in combinedPrompt');
+});
+
+test('assembleTextCompletionPrompt: no extra.files on any fixture message - file-attachment inlining is a no-op (explicit verification of gap 3 default behavior)', async () => {
+    const { charactersDir, filesDir, root } = makeDirectories();
+    const avatar = 'aria8.png';
+    writeCharacterCard(charactersDir, avatar, {
+        spec: 'chara_card_v2',
+        spec_version: '2.0',
+        name: 'Aria',
+        description: 'Aria is a wandering ranger who guards the Whispering Woods.',
+        personality: 'brave and curious',
+        scenario: '',
+        first_mes: 'Hello there, traveler!',
+        mes_example: '',
+        avatar,
+        data: {
+            name: 'Aria',
+            description: 'Aria is a wandering ranger who guards the Whispering Woods.',
+            personality: 'brave and curious',
+            scenario: '',
+            first_mes: 'Hello there, traveler!',
+            mes_example: '',
+            system_prompt: '', post_history_instructions: '', character_version: '', creator_notes: '',
+            extensions: {}, alternate_greetings: [],
+        },
+    });
+    const directories = { characters: charactersDir, files: filesDir, root };
+
+    // Same fixture chat as baseFixture() - none of its messages carry an `extra.files` array, so
+    // appendFileAttachments() should take its no-op path for every message (see
+    // src/file-attachment-inline.js: `!Array.isArray(extra.files) || extra.files.length === 0` ->
+    // messageText unchanged) and combinedPrompt should be identical to the pre-gap-3-port baseline.
+    const withDirectories = baseFixture(directories, avatar);
+    const result = await assembleTextCompletionPrompt(withDirectories);
+
+    assert.ok(result.combinedPrompt.includes('ancient sword'), 'sanity check: raw chat message still present');
+    assert.ok(result.combinedPrompt.includes('moonblade sword'), 'sanity check: raw chat message still present');
+    // No stray leading '\n\n' artifact (the all-empty-file-texts edge case from
+    // file-attachment-inline.test.js) should leak in when there was never a files array at all.
+    assert.ok(!result.combinedPrompt.includes('\n\n\n\n'), 'no unexpected blank-line artifact from file-attachment inlining');
+});
+
+test('assembleTextCompletionPrompt: a real extra.files attachment is inlined into the final combinedPrompt (new in this task, closes gap 3)', async () => {
+    const { charactersDir, filesDir, root } = makeDirectories();
+    const avatar = 'aria9.png';
+    writeCharacterCard(charactersDir, avatar, {
+        spec: 'chara_card_v2',
+        spec_version: '2.0',
+        name: 'Aria',
+        description: 'Aria is a wandering ranger who guards the Whispering Woods.',
+        personality: 'brave and curious',
+        scenario: '',
+        first_mes: 'Hello there, traveler!',
+        mes_example: '',
+        avatar,
+        data: {
+            name: 'Aria',
+            description: 'Aria is a wandering ranger who guards the Whispering Woods.',
+            personality: 'brave and curious',
+            scenario: '',
+            first_mes: 'Hello there, traveler!',
+            mes_example: '',
+            system_prompt: '', post_history_instructions: '', character_version: '', creator_notes: '',
+            extensions: {}, alternate_greetings: [],
+        },
+    });
+    // A real temp file inside a real fixture directories.files directory, exactly as
+    // src/file-attachment-inline.test.js exercises readFileAttachment() itself.
+    fs.writeFileSync(path.join(filesDir, 'notes.txt'), 'ATTACHED NOTES: the bridge is out east of town.');
+    const directories = { characters: charactersDir, files: filesDir, root };
+
+    const input = {
+        ...baseFixture(directories, avatar),
+        chat: [
+            ...baseFixture(directories, avatar).chat,
+            {
+                name: 'User', mes: 'Here is a file I found.', is_user: true,
+                extra: { files: [{ url: '/user/files/notes.txt', name: 'notes.txt' }] },
+            },
+        ],
+    };
+
+    const result = await assembleTextCompletionPrompt(input);
+
+    assert.ok(
+        result.combinedPrompt.includes('ATTACHED NOTES: the bridge is out east of town.'),
+        'the real file attachment content should be read from disk and inlined into combinedPrompt',
+    );
+    assert.ok(result.combinedPrompt.includes('Here is a file I found.'), 'the message text itself should still be present, after the attachment content');
+    assert.ok(
+        result.combinedPrompt.indexOf('ATTACHED NOTES') < result.combinedPrompt.indexOf('Here is a file I found.'),
+        'attachment text should be prepended before the message text, matching appendFileContent\'s ordering',
+    );
 });
