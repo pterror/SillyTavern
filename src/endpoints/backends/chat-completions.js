@@ -233,8 +233,14 @@ function setJsonObjectFormat(bodyParams, messages, jsonSchema) {
  * Sends a request to Claude API.
  * @param {express.Request} request Express request
  * @param {express.Response} response Express response
+ * @param {object|null} [persist] `pendingAssistantPersist` from the `/generate` route (`null`/`undefined`
+ * for every non-raw-action call). When set, persists the ASSISTANT's real reply text - the actual
+ * `type: 'text'` content block(s) only, never a `type: 'thinking'` block - onto the message tree via the
+ * shared `persistAssistantReply()`, for both streaming (teed via `forwardAndPersistSseText()`, accumulating
+ * only `content_block_delta` events whose `delta.type === 'text_delta'`) and non-streaming. Purely additive:
+ * the bytes/JSON actually sent to the client are unaffected either way.
  */
-async function sendClaudeRequest(request, response) {
+async function sendClaudeRequest(request, response, persist) {
     const apiUrl = new URL(request.body.reverse_proxy || API_CLAUDE).toString();
     const apiKey = request.body.reverse_proxy ? request.body.proxy_password : readSecret(request.user.directories, SECRET_KEYS.CLAUDE, request.body.secret_id);
     const divider = '-'.repeat(process.stdout.columns);
@@ -417,8 +423,19 @@ async function sendClaudeRequest(request, response) {
         });
 
         if (request.body.stream) {
-            // Pipe remote SSE stream to Express response
-            await forwardFetchResponse(generateResponse, response);
+            // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
+            // accumulate the real reply text for raw-action persistence when `persist` is set - a
+            // no-op, byte-for-byte-identical-to-before pass-through otherwise (see
+            // `forwardAndPersistSseText()`'s own doc comment above for the full teeing mechanism).
+            // Claude's SSE stream is a sequence of named events (`message_start`/`content_block_start`/
+            // `content_block_delta`/`ping`/`message_delta`/`message_stop`, etc) whose payload JSON
+            // itself carries a matching `type` field - only `content_block_delta` events whose own
+            // `delta.type === 'text_delta'` are real reply text; every other event/delta type
+            // (`thinking_delta` for extended-thinking output, `input_json_delta` for tool-call
+            // argument streaming, `citations_delta`, and every non-`content_block_delta` event type)
+            // is correctly ignored, so thinking/tool-call content is never mistaken for the reply.
+            await forwardAndPersistSseText(generateResponse, response, persist, json =>
+                (json?.type === 'content_block_delta' && json?.delta?.type === 'text_delta') ? json.delta.text : undefined);
         } else {
             if (!generateResponse.ok) {
                 const generateResponseText = await generateResponse.text();
@@ -433,6 +450,21 @@ async function sendClaudeRequest(request, response) {
 
             // Wrap it back to OAI format + save the original content
             const reply = { choices: [{ 'message': { 'content': responseText } }], content: generateResponseJson.content };
+
+            // Persist the ASSISTANT's real reply text for a raw-action request (`persist` truthy - a
+            // no-op otherwise). The Messages API's `content` array can hold multiple block types
+            // alongside each other (e.g. a `type: 'thinking'` block from extended thinking, or
+            // `type: 'tool_use'`) - unlike `responseText` above (which only ever reads `content[0]`,
+            // pre-existing client-response behavior left untouched here), persistence must extract
+            // EVERY real `type: 'text'` block (there can be more than one) and none of the others, so
+            // thinking/tool-call content is never persisted as if it were the reply.
+            const persistedText = Array.isArray(generateResponseJson?.content)
+                ? generateResponseJson.content.filter(block => block?.type === 'text').map(block => block.text).join('')
+                : '';
+            if (persist) {
+                await persistAssistantReply(persist, persistedText);
+            }
+
             return response.send(reply);
         }
     } catch (error) {
@@ -447,8 +479,16 @@ async function sendClaudeRequest(request, response) {
  * Sends a request to Google AI API.
  * @param {express.Request} request Express request
  * @param {express.Response} response Express response
+ * @param {object|null} [persist] `pendingAssistantPersist` from the `/generate` route (`null`/`undefined`
+ * for every non-raw-action call). When set, persists the ASSISTANT's real reply text onto the message
+ * tree via the shared `persistAssistantReply()`, for both streaming (teed via
+ * `forwardAndPersistSseText()`) and non-streaming - in both cases extracting only real
+ * `candidates[0].content.parts` entries with `!part.thought` (Gemini's own "thought"/reasoning parts
+ * are excluded), matching this function's own existing, unmodified non-streaming `responseText`
+ * extraction below verbatim. Purely additive: the bytes/JSON actually sent to the client are
+ * unaffected either way.
  */
-async function sendMakerSuiteRequest(request, response) {
+async function sendMakerSuiteRequest(request, response, persist) {
     const useVertexAi = request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.VERTEXAI;
     const apiName = useVertexAi ? 'Google Vertex AI' : 'Google AI Studio';
     let apiUrl;
@@ -736,8 +776,22 @@ async function sendMakerSuiteRequest(request, response) {
 
         if (stream) {
             try {
-                // Pipe remote SSE stream to Express response
-                await forwardFetchResponse(generateResponse, response);
+                // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
+                // accumulate the real reply text for raw-action persistence when `persist` is set - a
+                // no-op, byte-for-byte-identical-to-before pass-through otherwise (see
+                // `forwardAndPersistSseText()`'s own doc comment above). Each `alt=sse` `data:` event
+                // is a real, full GenerateContentResponse-shaped JSON payload (the same shape as the
+                // non-streaming `generateResponseJson` parsed below), just carrying that CHUNK's own
+                // incremental `candidates[0].content.parts` rather than the whole reply - so the exact
+                // same `!part.thought` filter this function's own non-streaming branch already applies
+                // (see `responseText` below) is reused here too, excluding Gemini's own "thought"/
+                // reasoning parts from the persisted text. Parts within a single chunk are joined with
+                // '' (not '\n\n', unlike the non-streaming case below): a streamed chunk's parts are
+                // adjacent fragments of ONE ongoing chunk of text, not separate paragraphs.
+                await forwardAndPersistSseText(generateResponse, response, persist, json => {
+                    const parts = json?.candidates?.[0]?.content?.parts;
+                    return Array.isArray(parts) ? parts.filter(part => !part.thought).map(part => part.text ?? '').join('') : undefined;
+                });
             } catch (error) {
                 console.error('Error forwarding streaming response:', error);
                 if (!response.headersSent) {
@@ -781,6 +835,15 @@ async function sendMakerSuiteRequest(request, response) {
 
             // Wrap it back to OAI format (responseContent includes thought signatures in parts array)
             const reply = { choices: [{ 'message': { 'content': responseText } }], responseContent };
+
+            // Persist the ASSISTANT's real reply text for a raw-action request (`persist` truthy - a
+            // no-op otherwise). Reuses `responseText` as-is - it's already computed above with the
+            // exact same `!part.thought` filter this persistence needs (Gemini's own "thought"/
+            // reasoning parts excluded), so no separate extraction is needed here.
+            if (persist) {
+                await persistAssistantReply(persist, responseText ?? '');
+            }
+
             return response.send(reply);
         }
     } catch (error) {
@@ -795,8 +858,16 @@ async function sendMakerSuiteRequest(request, response) {
  * Sends a request to AI21 API.
  * @param {express.Request} request Express request
  * @param {express.Response} response Express response
+ * @param {object|null} [persist] `pendingAssistantPersist` from the `/generate` route (`null`/`undefined`
+ * for every non-raw-action call). When set, persists the ASSISTANT's real reply text onto the message
+ * tree via the shared `persistAssistantReply()`, for both streaming (teed via
+ * `forwardAndPersistSseText()`) and non-streaming. AI21's `/chat/completions` endpoint is real,
+ * verified OpenAI-Chat-Completions-shaped (`{choices: [{message: {content}}]}` non-streaming,
+ * `{choices: [{delta: {content}}]}` per SSE chunk while streaming - see `body` above: this function
+ * always builds and sends a real `messages: [...]` request to that same endpoint). Purely additive:
+ * the bytes/JSON actually sent to the client are unaffected either way.
  */
-async function sendAI21Request(request, response) {
+async function sendAI21Request(request, response, persist) {
     if (!request.body) return response.sendStatus(400);
 
     const apiKey = readSecret(request.user.directories, SECRET_KEYS.AI21, request.body.secret_id);
@@ -850,7 +921,11 @@ async function sendAI21Request(request, response) {
     try {
         const generateResponse = await fetch(API_AI21 + '/chat/completions', options);
         if (request.body.stream) {
-            await forwardFetchResponse(generateResponse, response);
+            // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
+            // accumulate the OpenAI Chat-Completions-shaped `choices[0].delta.content` field for
+            // raw-action persistence when `persist` is set - a no-op, byte-for-byte-identical-to-before
+            // pass-through otherwise (see `forwardAndPersistSseText()`'s own doc comment above).
+            await forwardAndPersistSseText(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -860,6 +935,14 @@ async function sendAI21Request(request, response) {
             }
             const generateResponseJson = await generateResponse.json();
             console.debug('AI21 response:', generateResponseJson);
+
+            // Persist the ASSISTANT's real reply text for a raw-action request (`persist` truthy - a
+            // no-op otherwise). Real, verified OpenAI-Chat-Completions-shaped body - see this
+            // function's own doc comment above.
+            if (persist) {
+                await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '');
+            }
+
             return response.send(generateResponseJson);
         }
     } catch (error) {
@@ -876,8 +959,17 @@ async function sendAI21Request(request, response) {
  * Sends a request to MistralAI API.
  * @param {express.Request} request Express request
  * @param {express.Response} response Express response
+ * @param {object|null} [persist] `pendingAssistantPersist` from the `/generate` route (`null`/`undefined`
+ * for every non-raw-action call). When set, persists the ASSISTANT's real reply text onto the message
+ * tree via the shared `persistAssistantReply()`, for both streaming (teed via
+ * `forwardAndPersistSseText()`) and non-streaming. MistralAI's `/chat/completions` endpoint is
+ * standard, verified OpenAI-Chat-Completions-shaped (`{choices: [{message: {content}}]}`
+ * non-streaming, `{choices: [{delta: {content}}]}` per SSE chunk while streaming - see `requestBody`
+ * above: this function always builds and sends a real `messages: [...]` request to that same
+ * endpoint, no Mistral-specific response reshaping). Purely additive: the bytes/JSON actually sent to
+ * the client are unaffected either way.
  */
-async function sendMistralAIRequest(request, response) {
+async function sendMistralAIRequest(request, response, persist) {
     const apiUrl = new URL(request.body.reverse_proxy || API_MISTRAL).toString();
     const apiKey = request.body.reverse_proxy ? request.body.proxy_password : readSecret(request.user.directories, SECRET_KEYS.MISTRALAI, request.body.secret_id);
 
@@ -940,7 +1032,11 @@ async function sendMistralAIRequest(request, response) {
 
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
         if (request.body.stream) {
-            await forwardFetchResponse(generateResponse, response);
+            // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
+            // accumulate the OpenAI Chat-Completions-shaped `choices[0].delta.content` field for
+            // raw-action persistence when `persist` is set - a no-op, byte-for-byte-identical-to-before
+            // pass-through otherwise (see `forwardAndPersistSseText()`'s own doc comment above).
+            await forwardAndPersistSseText(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -950,6 +1046,14 @@ async function sendMistralAIRequest(request, response) {
             }
             const generateResponseJson = await generateResponse.json();
             console.debug('MistralAI response:', generateResponseJson);
+
+            // Persist the ASSISTANT's real reply text for a raw-action request (`persist` truthy - a
+            // no-op otherwise). Standard, verified OpenAI-Chat-Completions-shaped body - see this
+            // function's own doc comment above.
+            if (persist) {
+                await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '');
+            }
+
             return response.send(generateResponseJson);
         }
     } catch (error) {
@@ -2443,9 +2547,23 @@ router.post('/generate', async function (request, response) {
     //   "..."}}]}`), and `forwardAndPersistSseText()` tees the untouched byte pipe to accumulate
     //   `choices[0].delta.content` per chunk, persisting the full text via the shared
     //   `persistAssistantReply()` (../../assistant-reply-persist.js) once the stream ends.
-    // - The ~12 provider-`switch` functions dispatched ABOVE this shared block (sendClaudeRequest/
-    //   sendAI21Request/sendMakerSuiteRequest/sendMistralAIRequest/sendCohereRequest/
-    //   sendDeepSeekRequest/sendAimlapiRequest/sendXaiRequest/sendChutesRequest/sendMinimaxRequest/
+    // - sendClaudeRequest/sendMakerSuiteRequest(also used for VERTEXAI)/sendAI21Request/
+    //   sendMistralAIRequest (each now taking `pendingAssistantPersist` as an explicit third
+    //   parameter, passed at their call sites below): PERSIST FOR REAL, for both streaming and
+    //   non-streaming, each per its OWN verified response/stream shape:
+    //   - sendClaudeRequest: non-streaming extracts every real `type: 'text'` block from the Messages
+    //     API's `content` array (never a `type: 'thinking'`/`type: 'tool_use'` block); streaming tees
+    //     via `forwardAndPersistSseText()`, accumulating only `content_block_delta` events whose own
+    //     `delta.type === 'text_delta'` (ignoring `thinking_delta`/`input_json_delta`/other event
+    //     types).
+    //   - sendMakerSuiteRequest: both modes reuse the exact same `!part.thought` filter over
+    //     `candidates[0].content.parts` this function already applied for its own non-streaming
+    //     client response, excluding Gemini's own "thought"/reasoning parts.
+    //   - sendAI21Request/sendMistralAIRequest: standard, verified OpenAI-Chat-Completions-shaped
+    //     bodies (`choices[0].message.content` non-streaming, `choices[0].delta.content` per SSE
+    //     chunk while streaming).
+    // - The remaining ~8 provider-`switch` functions (sendCohereRequest/sendDeepSeekRequest/
+    //   sendAimlapiRequest/sendXaiRequest/sendChutesRequest/sendMinimaxRequest/
     //   sendElectronHubRequest/sendAzureOpenAIRequest): DO NOT PERSIST, for EITHER streaming OR
     //   non-streaming - each is its own function with its own response shape/streaming format and
     //   would need individual review; each already `return`s from its own function (its own
@@ -2573,13 +2691,16 @@ router.post('/generate', async function (request, response) {
             }
 
             // Stash what's needed to persist the ASSISTANT's reply once a (streaming or
-            // non-streaming, default/legacy-dispatch-block) response is known - read only there,
-            // guarded by `if (pendingAssistantPersist)`/the `forwardAndPersistSseText()` call, so
-            // this has no effect on the provider-`switch` cases (see the comment on this variable's
-            // declaration above for exactly which paths persist for real). Left `null` (its declared
-            // default) for `is_impersonate`/`type === 'quiet'`, so the reply is never appended to the
-            // tree for either - it still reaches the client unchanged via the normal response, it
-            // just never gets persisted.
+            // non-streaming) response is known - read both by the default/legacy-dispatch-block below
+            // (guarded by `if (pendingAssistantPersist)`/the `forwardAndPersistSseText()` call) AND,
+            // passed explicitly as each function's own third parameter, by the four provider-`switch`
+            // cases that now persist for real (sendClaudeRequest/sendMakerSuiteRequest/
+            // sendAI21Request/sendMistralAIRequest) - the remaining ~8 provider-`switch` functions
+            // never take this parameter at all, so it has no effect on them (see the comment on this
+            // variable's declaration above for exactly which paths persist for real). Left `null` (its
+            // declared default) for `is_impersonate`/`type === 'quiet'`, so the reply is never appended
+            // to the tree for either - it still reaches the client unchanged via the normal response,
+            // it just never gets persisted.
             //
             // `isSwipe` is carried through identically to text-completions.js's own route wiring - see
             // that file's own comment on this same field for the full rationale (sibling-alternative
@@ -2631,11 +2752,11 @@ router.post('/generate', async function (request, response) {
         }
 
         switch (request.body.chat_completion_source) {
-            case CHAT_COMPLETION_SOURCES.CLAUDE: return await sendClaudeRequest(request, response);
-            case CHAT_COMPLETION_SOURCES.AI21: return await sendAI21Request(request, response);
-            case CHAT_COMPLETION_SOURCES.MAKERSUITE: return await sendMakerSuiteRequest(request, response);
-            case CHAT_COMPLETION_SOURCES.VERTEXAI: return await sendMakerSuiteRequest(request, response);
-            case CHAT_COMPLETION_SOURCES.MISTRALAI: return await sendMistralAIRequest(request, response);
+            case CHAT_COMPLETION_SOURCES.CLAUDE: return await sendClaudeRequest(request, response, pendingAssistantPersist);
+            case CHAT_COMPLETION_SOURCES.AI21: return await sendAI21Request(request, response, pendingAssistantPersist);
+            case CHAT_COMPLETION_SOURCES.MAKERSUITE: return await sendMakerSuiteRequest(request, response, pendingAssistantPersist);
+            case CHAT_COMPLETION_SOURCES.VERTEXAI: return await sendMakerSuiteRequest(request, response, pendingAssistantPersist);
+            case CHAT_COMPLETION_SOURCES.MISTRALAI: return await sendMistralAIRequest(request, response, pendingAssistantPersist);
             case CHAT_COMPLETION_SOURCES.COHERE: return await sendCohereRequest(request, response);
             case CHAT_COMPLETION_SOURCES.DEEPSEEK: return await sendDeepSeekRequest(request, response);
             case CHAT_COMPLETION_SOURCES.AIMLAPI: return await sendAimlapiRequest(request, response);

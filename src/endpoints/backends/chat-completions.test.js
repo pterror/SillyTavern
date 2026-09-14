@@ -4,6 +4,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { mock } from 'node:test';
 
 import express from 'express';
 
@@ -16,6 +17,49 @@ import { setConfigFilePath } from '../../util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', '..', 'config.yaml'));
+
+// JUDGMENT CALL: sendAI21Request (chat-completions.js) is the ONLY one of the four provider
+// functions covered by this task with NO override for its target host at all - verified by reading
+// its full body: it always calls `fetch(API_AI21 + '/chat/completions', options)`, a hardcoded
+// `https://api.ai21.com/studio/v1` constant, completely unlike sendClaudeRequest/
+// sendMakerSuiteRequest/sendMistralAIRequest (all of which honor `request.body.reverse_proxy`) - and
+// AI21 is confirmed absent from chat-completion-generation-data.js's own `proxySupportedSources`
+// list too. So there is no way, via any REQUEST-BUILDING field, to route a real raw-action AI21 call
+// at this route to a local fake backend - the only two options are (a) add reverse-proxy support to
+// sendAI21Request, which is explicitly out of scope (touches this task's four functions' own
+// request-building logic, not just persistence), or (b) intercept the `node-fetch` module itself for
+// the duration of the AI21-specific tests below, using Node's built-in (currently experimental)
+// `node:test` `mock.module()` - real network is never touched: the mock rewrites ONLY requests whose
+// origin is `https://api.ai21.com` to instead hit this session's own local fake HTTP backend (a REAL
+// `node-fetch` call still runs against that local server - the mock is a thin reroute, not a
+// hand-built fake Response, so `.ok`/`.status`/`.json()`/`.text()`/`.body` streaming semantics are
+// all genuinely real), and passes every other URL straight through to the real, unmodified
+// `node-fetch` (captured via its own file path below, bypassing the mock) - which is exactly what
+// every other test in this file already relies on (the 'custom'/'claude'/'makersuite'/'mistralai'
+// fake-backend tests all still go through this same indirection, unaffected, since none of their
+// URLs are ever `https://api.ai21.com`).
+//
+// `mock.module()` only exists when Node is launched with `--experimental-test-module-mocks` (not
+// otherwise enabled anywhere in this repo's tooling) - feature-detected below so this file still runs
+// to completion under a plain `node chat-completions.test.js` invocation exactly as before; the
+// AI21-specific tests further down skip themselves (with a clear console.log, not a silent no-op)
+// when the feature isn't available, and only then. Must run before `chat-completions.js` is first
+// imported below (its own top-level `import fetch from 'node-fetch'` needs to resolve to the mock).
+const canMockAi21Backend = typeof mock.module === 'function';
+/** @type {string|null} Set by pointAI21BackendAt() below; read by the node-fetch reroute mock. */
+let ai21FakeBackendUrl = null;
+if (canMockAi21Backend) {
+    const realNodeFetch = (await import(path.join(__dirname, '..', '..', '..', 'node_modules', 'node-fetch', 'src', 'index.js'))).default;
+    mock.module('node-fetch', {
+        defaultExport: async (url, opts) => {
+            const target = new URL(url);
+            if (ai21FakeBackendUrl && target.origin === 'https://api.ai21.com') {
+                return realNodeFetch(new URL(target.pathname + target.search, ai21FakeBackendUrl), opts);
+            }
+            return realNodeFetch(url, opts);
+        },
+    });
+}
 
 // This route handler (src/endpoints/backends/chat-completions.js) mirrors
 // src/endpoints/backends/text-completions.js's own precedent (commits ac42ce8c9/6eaa7897d) - no
@@ -37,6 +81,7 @@ setConfigFilePath(path.join(__dirname, '..', '..', '..', 'config.yaml'));
 const { router, buildRawActionChatCompletionRequest } = await import('./chat-completions.js');
 const { writeAllSettings } = await import('../../settings-store.js');
 const { saveChatToTree, loadBranch, appendMessages, getAncestorPath, getAlternatives, disposeMessageTreeStores } = await import('../../message-tree-db.js');
+const { writeSecret, SECRET_KEYS } = await import('../secrets.js');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-chat-completions-raw-action-test-'));
 const charactersDir = path.join(root, 'characters');
@@ -310,6 +355,53 @@ async function run() {
         const settings = buildSettingsFixture();
         settings.oai_settings.custom_url = url;
         writeAllSettings(directories, settings);
+    }
+
+    /** Routes a raw-action request to sendClaudeRequest() via a real `reverse_proxy` override - the exact same mechanism a real self-hosted Claude-compatible proxy would use. */
+    function pointClaudeBackendAt(url) {
+        const settings = buildSettingsFixture();
+        settings.oai_settings.chat_completion_source = 'claude';
+        settings.oai_settings.claude_model = 'claude-test-model';
+        settings.oai_settings.reverse_proxy = url;
+        settings.oai_settings.proxy_password = 'test-claude-proxy-password';
+        writeAllSettings(directories, settings);
+    }
+
+    /** Routes a raw-action request to sendMakerSuiteRequest() via a real `reverse_proxy` override. */
+    function pointMakerSuiteBackendAt(url) {
+        const settings = buildSettingsFixture();
+        settings.oai_settings.chat_completion_source = 'makersuite';
+        settings.oai_settings.google_model = 'gemini-test-model';
+        settings.oai_settings.reverse_proxy = url;
+        settings.oai_settings.proxy_password = 'test-makersuite-proxy-password';
+        writeAllSettings(directories, settings);
+    }
+
+    /** Routes a raw-action request to sendMistralAIRequest() via a real `reverse_proxy` override. */
+    function pointMistralBackendAt(url) {
+        const settings = buildSettingsFixture();
+        settings.oai_settings.chat_completion_source = 'mistralai';
+        settings.oai_settings.mistralai_model = 'mistral-test-model';
+        settings.oai_settings.reverse_proxy = url;
+        settings.oai_settings.proxy_password = 'test-mistral-proxy-password';
+        writeAllSettings(directories, settings);
+    }
+
+    /**
+     * Routes a raw-action request to sendAI21Request() - sendAI21Request has NO reverse-proxy support
+     * at all (see the `canMockAi21Backend` comment near the top of this file), so this instead (a)
+     * writes a real secret (sendAI21Request reads it via readSecret(), unlike the other three, which
+     * accept `proxy_password` instead) and (b) points the module-level `ai21FakeBackendUrl` the
+     * node-fetch reroute mock reads. Only meaningful when `canMockAi21Backend` is true - callers must
+     * check that themselves and skip the AI21 test(s) otherwise.
+     */
+    function pointAI21BackendAt(url) {
+        const settings = buildSettingsFixture();
+        settings.oai_settings.chat_completion_source = 'ai21';
+        settings.oai_settings.ai21_model = 'jamba-test-model';
+        writeAllSettings(directories, settings);
+        writeSecret(directories, SECRET_KEYS.AI21, 'test-ai21-key');
+        ai21FakeBackendUrl = url;
     }
 
     // (a) a real non-streaming generation appends the assistant's reply onto the tree, chained after
@@ -858,14 +950,342 @@ async function run() {
         assert.equal(branchAfter.messages.length, messageCountBefore, 'nothing was persisted onto any tree for a non-raw-action stream');
     }
 
-    // The provider-`switch` cases (Claude/AI21/MakerSuite/etc) are intentionally NOT exercised here -
-    // see the code comments at `pendingAssistantPersist`'s declaration in chat-completions.js for the
-    // full, explicit, by-name list of what remains deferred (for BOTH streaming and non-streaming).
-    // Proving the assistant reply is untouched for them is trivial (pendingAssistantPersist is simply
-    // never read on those paths - each function returns from its own, completely untouched
-    // forwardFetchResponse() call site before reaching this route's shared dispatch code at all), but
-    // actually driving real provider-specific traffic through this harness would be exercising
-    // existing, unmodified plumbing - out of scope here.
+    // (j) sendClaudeRequest, non-streaming: a real Messages-API-shaped response whose `content` array
+    // deliberately carries a `type: 'thinking'` block BEFORE the real `type: 'text'` block - proving
+    // persistence extracts only the real text block, never the thinking content (the existing,
+    // untouched client-facing `responseText` still only reads `content[0]` - a pre-existing quirk,
+    // unrelated to this task, left completely alone here; its own value is asserted below as evidence
+    // that the client-visible reply is unaffected by this task's change).
+    {
+        const claudeBranch = 'claude-plain-chat';
+        await saveChatToTree(directories, ownerId, claudeBranch, [
+            { chat_metadata: {} },
+            { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
+        ]);
+
+        const claudeContent = [
+            { type: 'thinking', thinking: 'The user wants a greeting back.' },
+            { type: 'text', text: 'Rex says hello back, Claude-style.' },
+        ];
+        const fakeBackend = await startFakeBackend((_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ content: claudeContent }));
+        });
+        pointClaudeBackendAt(fakeBackend.url);
+
+        const branchBefore = await loadBranch(directories, ownerId, claudeBranch);
+        const messageCountBefore = branchBefore.messages.length;
+
+        const app = buildTestApp();
+        const { status, data } = await postGenerate(app, {
+            owner_id: ownerId, character_avatar: avatar, branch_name: claudeBranch,
+            type: 'normal', user_message: 'Say hi, Claude.', stream: false,
+        });
+        fakeBackend.server.close();
+
+        assert.equal(status, 200);
+        assert.deepEqual(data, { choices: [{ message: { content: claudeContent[0].text ?? '' } }], content: claudeContent }, 'the client-facing reply shape is exactly this function\'s own pre-existing (unmodified) content[0]-only wrapping');
+
+        const branchAfter = await loadBranch(directories, ownerId, claudeBranch);
+        assert.equal(branchAfter.messages.length, messageCountBefore + 2);
+        const [userMsg, assistantMsg] = branchAfter.messages.slice(-2);
+        assert.equal(userMsg.mes, 'Say hi, Claude.');
+        assert.equal(assistantMsg.mes, 'Rex says hello back, Claude-style.', 'only the real type: \'text\' block was persisted - the type: \'thinking\' block is completely absent from the persisted text');
+        assert.equal(assistantMsg.name, 'Rex');
+    }
+
+    // (j-2) sendClaudeRequest, streaming: a real Messages-API SSE event sequence
+    // (message_start/content_block_start/ping/content_block_delta.../content_block_stop/message_delta/
+    // message_stop), including a `thinking_delta` event that must be excluded from the persisted text,
+    // alongside the real `text_delta` events that must be included.
+    {
+        const claudeStreamBranch = 'claude-stream-chat';
+        await saveChatToTree(directories, ownerId, claudeStreamBranch, [
+            { chat_metadata: {} },
+            { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
+        ]);
+
+        const claudeSseEvents = [
+            { type: 'message_start', message: { id: 'msg_1', role: 'assistant', content: [] } },
+            { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } },
+            { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'Thinking about a greeting...' } },
+            { type: 'content_block_stop', index: 0 },
+            { type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } },
+            { type: 'ping' },
+            { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'Rex ' } },
+            { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'says hi, ' } },
+            { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'streamed via Claude.' } },
+            { type: 'content_block_stop', index: 1 },
+            { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 12 } },
+            { type: 'message_stop' },
+        ];
+        const claudeSseBody = claudeSseEvents.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join('');
+        const fakeBackend = await startFakeBackend((_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+            res.end(claudeSseBody);
+        });
+        pointClaudeBackendAt(fakeBackend.url);
+
+        const app = buildTestApp();
+        const { status, bodyText } = await postGenerateStream(app, {
+            owner_id: ownerId, character_avatar: avatar, branch_name: claudeStreamBranch,
+            type: 'normal', user_message: 'Say hi, streamed Claude.', stream: true,
+        });
+        fakeBackend.server.close();
+
+        assert.equal(status, 200);
+        assert.equal(bodyText, claudeSseBody, 'the client-facing SSE bytes are byte-for-byte identical to what the fake backend sent - the teeing did not alter, buffer, or reorder anything');
+
+        const branchAfter = await waitFor(async () => {
+            const branch = await loadBranch(directories, ownerId, claudeStreamBranch);
+            return branch.messages.length > 1 && branch.messages[branch.messages.length - 1].mes ? branch : null;
+        });
+        const assistantMsg = branchAfter.messages[branchAfter.messages.length - 1];
+        assert.equal(assistantMsg.mes, 'Rex says hi, streamed via Claude.', 'only text_delta chunks were accumulated - the thinking_delta event never contributed to the persisted text');
+        assert.equal(assistantMsg.name, 'Rex');
+    }
+
+    // (k) sendMakerSuiteRequest, non-streaming: a real GenerateContentResponse-shaped body whose
+    // `candidates[0].content.parts` deliberately carries a `thought: true` part BEFORE the real text
+    // part - proving persistence reuses this function's own existing `!part.thought` filter (already
+    // applied, unmodified, to the client-facing `responseText` too - both are asserted equal below).
+    {
+        const makerSuiteBranch = 'makersuite-plain-chat';
+        await saveChatToTree(directories, ownerId, makerSuiteBranch, [
+            { chat_metadata: {} },
+            { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
+        ]);
+
+        const geminiParts = [
+            { thought: true, text: 'The user wants a greeting back.' },
+            { text: 'Rex says hello back, Gemini-style.' },
+        ];
+        const fakeBackend = await startFakeBackend((_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ candidates: [{ content: { parts: geminiParts, role: 'model' } }] }));
+        });
+        pointMakerSuiteBackendAt(fakeBackend.url);
+
+        const branchBefore = await loadBranch(directories, ownerId, makerSuiteBranch);
+        const messageCountBefore = branchBefore.messages.length;
+
+        const app = buildTestApp();
+        const { status, data } = await postGenerate(app, {
+            owner_id: ownerId, character_avatar: avatar, branch_name: makerSuiteBranch,
+            type: 'normal', user_message: 'Say hi, Gemini.', stream: false,
+        });
+        fakeBackend.server.close();
+
+        assert.equal(status, 200);
+        assert.equal(data?.choices?.[0]?.message?.content, 'Rex says hello back, Gemini-style.', 'the client-facing reply already excluded the thought part - this function\'s own pre-existing, unmodified behavior');
+
+        const branchAfter = await loadBranch(directories, ownerId, makerSuiteBranch);
+        assert.equal(branchAfter.messages.length, messageCountBefore + 2);
+        const [userMsg, assistantMsg] = branchAfter.messages.slice(-2);
+        assert.equal(userMsg.mes, 'Say hi, Gemini.');
+        assert.equal(assistantMsg.mes, 'Rex says hello back, Gemini-style.', 'only the real, non-thought part was persisted');
+        assert.equal(assistantMsg.name, 'Rex');
+    }
+
+    // (k-2) sendMakerSuiteRequest, streaming: real `alt=sse` chunks - each a FULL
+    // GenerateContentResponse-shaped JSON payload carrying that chunk's own incremental
+    // `candidates[0].content.parts` (verified against this function's own non-streaming parsing
+    // above, which this reuses) - including one thought-only chunk that must be excluded.
+    {
+        const makerSuiteStreamBranch = 'makersuite-stream-chat';
+        await saveChatToTree(directories, ownerId, makerSuiteStreamBranch, [
+            { chat_metadata: {} },
+            { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
+        ]);
+
+        const geminiChunks = [
+            { candidates: [{ content: { parts: [{ thought: true, text: 'Thinking about a greeting...' }], role: 'model' } }] },
+            { candidates: [{ content: { parts: [{ text: 'Rex ' }], role: 'model' } }] },
+            { candidates: [{ content: { parts: [{ text: 'says hi, ' }], role: 'model' } }] },
+            { candidates: [{ content: { parts: [{ text: 'streamed via Gemini.' }], role: 'model' } }] },
+        ];
+        const geminiSseBody = geminiChunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('');
+        const fakeBackend = await startFakeBackend((_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+            res.end(geminiSseBody);
+        });
+        pointMakerSuiteBackendAt(fakeBackend.url);
+
+        const app = buildTestApp();
+        const { status, bodyText } = await postGenerateStream(app, {
+            owner_id: ownerId, character_avatar: avatar, branch_name: makerSuiteStreamBranch,
+            type: 'normal', user_message: 'Say hi, streamed Gemini.', stream: true,
+        });
+        fakeBackend.server.close();
+
+        assert.equal(status, 200);
+        assert.equal(bodyText, geminiSseBody, 'the client-facing SSE bytes are byte-for-byte identical to what the fake backend sent');
+
+        const branchAfter = await waitFor(async () => {
+            const branch = await loadBranch(directories, ownerId, makerSuiteStreamBranch);
+            return branch.messages.length > 1 && branch.messages[branch.messages.length - 1].mes ? branch : null;
+        });
+        const assistantMsg = branchAfter.messages[branchAfter.messages.length - 1];
+        assert.equal(assistantMsg.mes, 'Rex says hi, streamed via Gemini.', 'the thought-only chunk never contributed to the persisted text');
+        assert.equal(assistantMsg.name, 'Rex');
+    }
+
+    // (l) sendMistralAIRequest, non-streaming: a standard OpenAI-Chat-Completions-shaped body, sent
+    // to the client completely unmodified (response.send(generateResponseJson) as-is, pre-existing
+    // behavior) - asserted structurally identical, alongside the persisted reply.
+    {
+        const mistralBranch = 'mistral-plain-chat';
+        await saveChatToTree(directories, ownerId, mistralBranch, [
+            { chat_metadata: {} },
+            { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
+        ]);
+
+        const mistralBody = { choices: [{ message: { role: 'assistant', content: 'Rex says hello back, Mistral-style.' } }] };
+        const fakeBackend = await startFakeBackend((_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(mistralBody));
+        });
+        pointMistralBackendAt(fakeBackend.url);
+
+        const branchBefore = await loadBranch(directories, ownerId, mistralBranch);
+        const messageCountBefore = branchBefore.messages.length;
+
+        const app = buildTestApp();
+        const { status, data } = await postGenerate(app, {
+            owner_id: ownerId, character_avatar: avatar, branch_name: mistralBranch,
+            type: 'normal', user_message: 'Say hi, Mistral.', stream: false,
+        });
+        fakeBackend.server.close();
+
+        assert.equal(status, 200);
+        assert.deepEqual(data, mistralBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
+
+        const branchAfter = await loadBranch(directories, ownerId, mistralBranch);
+        assert.equal(branchAfter.messages.length, messageCountBefore + 2);
+        const [userMsg, assistantMsg] = branchAfter.messages.slice(-2);
+        assert.equal(userMsg.mes, 'Say hi, Mistral.');
+        assert.equal(assistantMsg.mes, 'Rex says hello back, Mistral-style.');
+        assert.equal(assistantMsg.name, 'Rex');
+    }
+
+    // (l-2) sendMistralAIRequest, streaming: standard OpenAI Chat-Completions delta SSE chunks.
+    {
+        const mistralStreamBranch = 'mistral-stream-chat';
+        await saveChatToTree(directories, ownerId, mistralStreamBranch, [
+            { chat_metadata: {} },
+            { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
+        ]);
+
+        const fakeBackend = await startFakeSseBackend(['Rex ', 'says hi, ', 'streamed via Mistral.']);
+        pointMistralBackendAt(fakeBackend.url);
+
+        const app = buildTestApp();
+        const { status, bodyText } = await postGenerateStream(app, {
+            owner_id: ownerId, character_avatar: avatar, branch_name: mistralStreamBranch,
+            type: 'normal', user_message: 'Say hi, streamed Mistral.', stream: true,
+        });
+        fakeBackend.server.close();
+
+        assert.equal(status, 200);
+        assert.equal(bodyText, fakeBackend.expectedBody, 'the client-facing SSE bytes are byte-for-byte identical to what the fake backend sent');
+
+        const branchAfter = await waitFor(async () => {
+            const branch = await loadBranch(directories, ownerId, mistralStreamBranch);
+            return branch.messages.length > 1 && branch.messages[branch.messages.length - 1].mes ? branch : null;
+        });
+        const assistantMsg = branchAfter.messages[branchAfter.messages.length - 1];
+        assert.equal(assistantMsg.mes, 'Rex says hi, streamed via Mistral.');
+        assert.equal(assistantMsg.name, 'Rex');
+    }
+
+    // (m)/(m-2) sendAI21Request, non-streaming AND streaming - see the `canMockAi21Backend` comment
+    // near the top of this file for exactly why this needs `node:test`'s `mock.module()` (unlike the
+    // three functions above, sendAI21Request has NO reverse-proxy override at all) and why these two
+    // tests skip themselves, loudly, when that (currently experimental, opt-in-flag-gated) capability
+    // isn't available in the running Node process - every other test in this file (including the
+    // three provider tests directly above) runs identically either way.
+    if (!canMockAi21Backend) {
+        console.log('chat-completions.test.js: skipping sendAI21Request persistence tests - run with `node --experimental-test-module-mocks` to include them (see the canMockAi21Backend comment near the top of this file)');
+    } else {
+        // (m) non-streaming: a standard OpenAI-Chat-Completions-shaped body, sent to the client
+        // completely unmodified (response.send(generateResponseJson) as-is, pre-existing behavior).
+        {
+            const ai21Branch = 'ai21-plain-chat';
+            await saveChatToTree(directories, ownerId, ai21Branch, [
+                { chat_metadata: {} },
+                { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
+            ]);
+
+            const ai21Body = { choices: [{ message: { role: 'assistant', content: 'Rex says hello back, AI21-style.' } }] };
+            const fakeBackend = await startFakeBackend((_req, res) => {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify(ai21Body));
+            });
+            pointAI21BackendAt(fakeBackend.url);
+
+            const branchBefore = await loadBranch(directories, ownerId, ai21Branch);
+            const messageCountBefore = branchBefore.messages.length;
+
+            const app = buildTestApp();
+            const { status, data } = await postGenerate(app, {
+                owner_id: ownerId, character_avatar: avatar, branch_name: ai21Branch,
+                type: 'normal', user_message: 'Say hi, AI21.', stream: false,
+            });
+            fakeBackend.server.close();
+            ai21FakeBackendUrl = null;
+
+            assert.equal(status, 200);
+            assert.deepEqual(data, ai21Body, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
+
+            const branchAfter = await loadBranch(directories, ownerId, ai21Branch);
+            assert.equal(branchAfter.messages.length, messageCountBefore + 2);
+            const [userMsg, assistantMsg] = branchAfter.messages.slice(-2);
+            assert.equal(userMsg.mes, 'Say hi, AI21.');
+            assert.equal(assistantMsg.mes, 'Rex says hello back, AI21-style.');
+            assert.equal(assistantMsg.name, 'Rex');
+        }
+
+        // (m-2) streaming: standard OpenAI Chat-Completions delta SSE chunks.
+        {
+            const ai21StreamBranch = 'ai21-stream-chat';
+            await saveChatToTree(directories, ownerId, ai21StreamBranch, [
+                { chat_metadata: {} },
+                { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
+            ]);
+
+            const fakeBackend = await startFakeSseBackend(['Rex ', 'says hi, ', 'streamed via AI21.']);
+            pointAI21BackendAt(fakeBackend.url);
+
+            const app = buildTestApp();
+            const { status, bodyText } = await postGenerateStream(app, {
+                owner_id: ownerId, character_avatar: avatar, branch_name: ai21StreamBranch,
+                type: 'normal', user_message: 'Say hi, streamed AI21.', stream: true,
+            });
+            fakeBackend.server.close();
+            ai21FakeBackendUrl = null;
+
+            assert.equal(status, 200);
+            assert.equal(bodyText, fakeBackend.expectedBody, 'the client-facing SSE bytes are byte-for-byte identical to what the fake backend sent');
+
+            const branchAfter = await waitFor(async () => {
+                const branch = await loadBranch(directories, ownerId, ai21StreamBranch);
+                return branch.messages.length > 1 && branch.messages[branch.messages.length - 1].mes ? branch : null;
+            });
+            const assistantMsg = branchAfter.messages[branchAfter.messages.length - 1];
+            assert.equal(assistantMsg.mes, 'Rex says hi, streamed via AI21.');
+            assert.equal(assistantMsg.name, 'Rex');
+        }
+    }
+
+    // The remaining ~8 provider-`switch` cases (Cohere/DeepSeek/Aimlapi/Xai/Chutes/Minimax/
+    // ElectronHub/AzureOpenAI) are intentionally NOT exercised here - see the code comments at
+    // `pendingAssistantPersist`'s declaration in chat-completions.js for the full, explicit, by-name
+    // list of what remains deferred (for BOTH streaming and non-streaming). Proving the assistant
+    // reply is untouched for them is trivial (they never take/read a `persist` parameter at all -
+    // each function returns from its own, completely untouched `forwardFetchResponse()` call site
+    // before reaching this route's shared dispatch code at all), but actually driving real
+    // provider-specific traffic through this harness would be exercising existing, unmodified
+    // plumbing - out of scope here.
 
     // --- error handling (route-level): missing owner_id falls through as an ordinary (non-raw-action)
     // request - it is NOT gated into the raw-action branch at all (the gate itself requires owner_id),
