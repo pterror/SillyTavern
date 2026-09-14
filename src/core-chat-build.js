@@ -69,7 +69,12 @@
  *
  * @param {CoreChatMessage[]} chat The full, unfiltered chat array.
  * @param {object} options
- * @param {boolean} options.canUseTools Resolved result of ToolManager.isToolCallingSupported() (out of scope here).
+ * @param {boolean} options.canUseTools Resolved result of ToolManager.isToolCallingSupported() (now a
+ * real, ported predicate - src/chat-completion-tool-capabilities.js's isToolCallingSupported()).
+ * This module is only ever called from the text-completion orchestrator (src/text-completion-
+ * prompt-orchestrator.js), where mainApi is never `'openai'` - and the real predicate
+ * unconditionally returns `false` in that case (verified in public/scripts/tool-calling.js) - so
+ * the correct value here is always `false`; there is no case where a caller would need `true`.
  * @param {boolean} options.isSwipe Whether this is a 'swipe' generation (`type === 'swipe'` on the client).
  * @returns {CoreChatMessage[]} A new filtered array (the client's `coreChat` before its `.map()` step).
  */
