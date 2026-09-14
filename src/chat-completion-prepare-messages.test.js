@@ -393,3 +393,65 @@ function toolCallFixture() {
 }
 
 console.log('All chat-completion-prepare-messages tests passed.');
+
+// ---------------------------------------------------------------------------
+// 7. Media inlining (judgment call 15): imageInlining flows all the way through this top-level
+//    entry point into both the chat-history media block (chat-completion-history.js) and the
+//    quiet-prompt image (chat-completion-populate.js), and imageInlining=false suppresses both.
+// ---------------------------------------------------------------------------
+{
+    // 1x1 transparent PNG, small enough that quality:'low' never needs real dimension parsing.
+    const TINY_PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+
+    const tokenHandler = makeTokenHandler();
+    const fixture = baseFixture();
+    fixture.messages = [
+        { role: 'user', content: 'USER_WITH_IMAGE', media: [{ url: TINY_PNG, type: 'image' }], mediaDisplay: 'list' },
+        ...fixture.messages,
+    ];
+    fixture.quietPrompt = 'QUIET_PROMPT_TEXT';
+    fixture.quietImage = TINY_PNG;
+
+    const { chat } = await prepareOpenAIMessages({
+        ...fixture,
+        tokenHandler,
+        maxContext: 1_000_000,
+        maxTokens: 0,
+        imageInlining: true,
+        imageQuality: 'low',
+    }, false);
+
+    const historyImageMessage = chat.find((m) => Array.isArray(m.content) && m.content.some((p) => p.type === 'image_url'));
+    assert.ok(historyImageMessage, `expected a chat-history message with an inlined image_url part, got: ${JSON.stringify(chat)}`);
+
+    const quietImageMessage = chat.find((m) => m.identifier === 'quietPrompt' || (Array.isArray(m.content) && m.content.some((p) => p.type === 'image_url') && m !== historyImageMessage));
+    assert.ok(quietImageMessage, `expected the quiet-prompt message to also carry an inlined image, got: ${JSON.stringify(chat)}`);
+
+    console.log('PASS: imageInlining=true flows through prepareOpenAIMessages into both chat-history media and quiet-prompt image');
+}
+
+{
+    const TINY_PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+
+    const tokenHandler = makeTokenHandler();
+    const fixture = baseFixture();
+    fixture.messages = [
+        { role: 'user', content: 'USER_WITH_IMAGE', media: [{ url: TINY_PNG, type: 'image' }], mediaDisplay: 'list' },
+        ...fixture.messages,
+    ];
+    fixture.quietPrompt = 'QUIET_PROMPT_TEXT';
+    fixture.quietImage = TINY_PNG;
+
+    const { chat } = await prepareOpenAIMessages({
+        ...fixture,
+        tokenHandler,
+        maxContext: 1_000_000,
+        maxTokens: 0,
+        imageInlining: false,
+    }, false);
+
+    const anyImageMessage = chat.find((m) => Array.isArray(m.content) && m.content.some((p) => p.type === 'image_url'));
+    assert.ok(!anyImageMessage, `expected NO inlined image anywhere when imageInlining is false, got: ${JSON.stringify(chat)}`);
+
+    console.log('PASS: imageInlining=false suppresses media inlining everywhere in prepareOpenAIMessages');
+}
