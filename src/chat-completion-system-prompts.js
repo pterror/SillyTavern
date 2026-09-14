@@ -16,8 +16,11 @@ import { persona_description_positions } from './story-string-assembly.js';
  *   src/extension-prompt-table.js rather than redeclaring them.
  * - preparePromptsForChatCompletion()'s systemPrompts-array construction ONLY (~lines 1365-1465).
  *   Stops right before that function goes on to call `promptManager.getPromptCollection(type)`
- *   (~line 1468), which needs the ChatCompletion/PromptManager class infrastructure that does not
- *   exist server-side yet - EXPLICITLY OUT OF SCOPE for this port, tracked as a follow-up.
+ *   (~line 1468). NOTE: this is no longer an open follow-up - the tail end of the client's real
+ *   `preparePromptsForChatCompletion()` (the `getPromptCollection()` call and the systemPrompts/
+ *   PromptCollection merge) is fully ported in `src/chat-completion-prepare-prompts.js`, which calls
+ *   this module's `buildChatCompletionSystemPrompts()` directly and picks up exactly where it leaves
+ *   off - see that module's own doc comment for the full merge logic.
  *
  * JUDGMENT CALL - the `scenarioText`/`charPersonalityText` quirk: the client's exact code is
  *   `scenario && oai_settings.scenario_format ? substituteParams(oai_settings.scenario_format) : (scenario || '')`
