@@ -1,4 +1,17 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+// JUDGMENT CALL: side-effect import needed BEFORE any Jimp WASM codec is used (encode/decode) -
+// Jimp's WASM codecs (@jsquash/*) load their .wasm binary via a `fetch('file://...')` call, which
+// Node's own `fetch` doesn't support. In the real running server this is patched once, globally,
+// by src/server-main.js's own top-level `import './fetch-patch.js'` before any request-handling
+// code (including this module's image helpers) can run. This standalone test file has no such
+// entry point, so it imports the patch itself - `src/endpoints/thumbnails.js` (also Jimp-based)
+// relies on the exact same global patch already being installed by the time it runs.
+import './fetch-patch.js';
+import { Jimp, JimpMime } from './jimp.js';
+import { imageSize } from 'image-size';
 import {
     TokenHandler,
     Message,
@@ -429,6 +442,139 @@ const fakeCountTokens = async (messages) => JSON.stringify(messages).length;
     // removeLastFrom on an already-empty collection: no-op, no throw.
     cc.removeLastFrom('block');
     assert.equal(cc.tokenBudget, before);
+}
+
+// --- Message.addImage / addVideo / addAudio (multimodal port) ------------------
+
+/** Builds a real JPEG data URL of the given dimensions via Jimp (solid color, no noise needed for
+ *  most tests - only the compressImage-threshold test below needs incompressible noise). */
+async function makeJpegDataUrl(width, height, { noise = false } = {}) {
+    const image = new Jimp({ width, height, color: 0xffffffff });
+    if (noise) {
+        for (let i = 0; i < image.bitmap.data.length; i++) {
+            image.bitmap.data[i] = Math.floor(Math.random() * 256);
+        }
+    }
+    const buffer = await image.getBuffer(JimpMime.jpeg, { quality: 90, jpegColorSpace: 'ycbcr' });
+    return `data:image/jpeg;base64,${buffer.toString('base64')}`;
+}
+
+{
+    // (a) addImage, quality='low', data-URL input -> exactly tokensPerImage (85) tokens added,
+    // correct content entry shape.
+    const th = new TokenHandler(async () => 0); // don't let the base "hi" content contribute tokens
+    const msg = await Message.createAsync('user', undefined, 'imgLow', th);
+    const dataUrl = await makeJpegDataUrl(64, 64);
+    await msg.addImage(dataUrl, { quality: 'low' });
+    assert.equal(msg.tokens, Message.tokensPerImage);
+    assert.equal(msg.content.length, 1);
+    assert.equal(msg.content[0].type, 'image_url');
+    assert.equal(msg.content[0].image_url.detail, 'low');
+    assert.ok(msg.content[0].image_url.url.startsWith('data:image/jpeg;base64,'));
+}
+
+{
+    // (b) addImage, quality='auto', real known-dimension image -> tokens computed via the tile
+    // formula match a hand-computed expected value.
+    // 600x600: min=600, scale=2048/600, scaledW=scaledH=round(600*2048/600)=2048,
+    // finalScale=768/2048, finalW=finalH=round(2048*768/2048)=768,
+    // squares=ceil(768/512)^2=2*2=4, tokens=4*170+85=765.
+    const th = new TokenHandler(async () => 0);
+    const msg = await Message.createAsync('user', undefined, 'imgAuto', th);
+    const dataUrl = await makeJpegDataUrl(600, 600);
+    await msg.addImage(dataUrl, { quality: 'auto' });
+    assert.equal(msg.tokens, 765);
+
+    // Small (<=512x512) image with quality='auto' short-circuits to tokensPerImage.
+    const msg2 = await Message.createAsync('user', undefined, 'imgAutoSmall', th);
+    const smallDataUrl = await makeJpegDataUrl(400, 300);
+    await msg2.addImage(smallDataUrl, { quality: 'auto' });
+    assert.equal(msg2.tokens, Message.tokensPerImage);
+}
+
+{
+    // (c) addVideo/addAudio, data-URL input -> correct content entry shape and fallback token
+    // estimate applied (263*40 for video, 32*300 for audio) since no duration prober exists.
+    const th = new TokenHandler(async () => 0);
+    const dataUrl = await makeJpegDataUrl(32, 32);
+
+    const videoMsg = await Message.createAsync('user', undefined, 'vid1', th);
+    await videoMsg.addVideo(dataUrl);
+    assert.equal(videoMsg.tokens, 263 * 40);
+    assert.equal(videoMsg.content.length, 1);
+    assert.deepEqual(videoMsg.content[0], { type: 'video_url', video_url: { url: dataUrl, detail: 'auto' } });
+
+    const audioMsg = await Message.createAsync('user', undefined, 'aud1', th);
+    await audioMsg.addAudio(dataUrl);
+    assert.equal(audioMsg.tokens, 32 * 300);
+    assert.equal(audioMsg.content.length, 1);
+    assert.deepEqual(audioMsg.content[0], { type: 'audio_url', audio_url: { url: dataUrl } });
+}
+
+{
+    // (d) local-file-path input, resolved against a real temp directories.userImages fixture ->
+    // confirms the fs-based read path works and produces a valid data URL in the pushed content
+    // entry, and that path traversal is blocked.
+    const th = new TokenHandler(async () => 0);
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'st-chat-completion-budget-test-'));
+    const userImages = path.join(root, 'user', 'images');
+    const charDir = path.join(userImages, 'Alice');
+    await fs.mkdir(charDir, { recursive: true });
+    const sourceBuffer = Buffer.from((await makeJpegDataUrl(50, 50)).split(',')[1], 'base64');
+    await fs.writeFile(path.join(charDir, 'pic.jpg'), sourceBuffer);
+
+    const msg = await Message.createAsync('user', undefined, 'localImg', th);
+    await msg.addImage('/user/images/Alice/pic.jpg', { quality: 'low', directories: { userImages } });
+    assert.equal(msg.content.length, 1, 'local file was read and pushed');
+    assert.equal(msg.tokens, Message.tokensPerImage);
+    assert.ok(msg.content[0].image_url.url.startsWith('data:image/jpeg;base64,'));
+    const readBack = Buffer.from(msg.content[0].image_url.url.split(',')[1], 'base64');
+    assert.deepEqual(readBack, sourceBuffer, 'disk-read bytes round-trip into the data URL unchanged');
+
+    // Path traversal is blocked: nothing is pushed, no tokens added.
+    const trav = await Message.createAsync('user', undefined, 'traversal', th);
+    await trav.addImage('/user/images/../../../etc/passwd', { quality: 'low', directories: { userImages } });
+    assert.equal(trav.content.length, 0, 'traversal attempt must not read or push anything');
+    assert.equal(trav.tokens, 0);
+
+    // Missing directories option -> resolution fails gracefully (no throw), nothing pushed.
+    const noDirs = await Message.createAsync('user', undefined, 'noDirs', th);
+    await noDirs.addImage('/user/images/Alice/pic.jpg', { quality: 'low' });
+    assert.equal(noDirs.content.length, 0);
+}
+
+{
+    // (e) compressImage's actual resize/re-encode behavior with real oversized/wrong-format test
+    // images.
+    const th = new TokenHandler(async () => 0);
+    const msg = await Message.createAsync('user', undefined, 'compress', th);
+
+    // Wrong-format path: a non-"safe" MIME type (declared as image/gif here, though the bytes are
+    // real JPEG bytes - compressImage only inspects the declared MIME prefix, matching the client)
+    // is unconditionally re-encoded to JPEG, regardless of size.
+    const smallDataUrl = await makeJpegDataUrl(40, 40);
+    const mislabeled = 'data:image/gif;base64,' + smallDataUrl.split(',')[1];
+    const recompressed = await msg.compressImage(mislabeled, {});
+    assert.ok(recompressed.startsWith('data:image/jpeg;base64,'), 'non-safe MIME is re-encoded to JPEG');
+
+    // Safe MIME + under threshold: passed through unchanged (no source in the compress-allowlist).
+    const passthrough = await msg.compressImage(smallDataUrl, { chatCompletionSource: 'openai' });
+    assert.equal(passthrough, smallDataUrl, 'safe MIME + non-allowlisted source is untouched');
+
+    // Oversized + allowlisted source: resized down to fit maxSide=2048, preserving aspect ratio.
+    // Noise is required so the JPEG doesn't compress away below the 2MB threshold.
+    const bigDataUrl = await makeJpegDataUrl(2200, 1100, { noise: true });
+    const bigBytes = Buffer.byteLength(bigDataUrl.split(',')[1], 'base64');
+    assert.ok(bigBytes > 2 * 1024 * 1024, 'test fixture must actually exceed the 2MB threshold');
+    const resized = await msg.compressImage(bigDataUrl, { chatCompletionSource: 'openrouter' });
+    const resizedBuffer = Buffer.from(resized.split(',')[1], 'base64');
+    const dims = imageSize(resizedBuffer);
+    assert.equal(dims.width, 2048, 'width (the larger side) is capped at maxSide=2048');
+    assert.equal(dims.height, 1024, 'height scales down preserving the original 2:1 aspect ratio');
+
+    // Non-allowlisted source with the same oversized, safe-MIME image is left untouched.
+    const untouched = await msg.compressImage(bigDataUrl, { chatCompletionSource: 'openai' });
+    assert.equal(untouched, bigDataUrl);
 }
 
 console.log('All chat-completion-budget.test.js assertions passed.');
