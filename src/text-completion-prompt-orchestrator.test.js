@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { write as writeCardIntoPng } from './character-card-parser.js';
+import { regex_placement } from './regex-scripts-engine.js';
 // character-card-fields.js pulls in src/endpoints/characters.js, which (via character-shallow.js)
 // reads process-wide config at import time - set the config path before importing it, the same way
 // src/character-card-fields.test.js does (mirroring the real server's src/config-init.js startup
@@ -353,4 +354,109 @@ test('assembleTextCompletionPrompt: author\'s note combines with WI ANTop/ANBott
         result.combinedPrompt.includes('Above the note: a chill wind blows.\nRemember: it is raining.\nBelow the note: the woods grow quiet.'),
         'combinedPrompt should contain the ANTop+note+ANBottom combined block, in that exact order',
     );
+});
+
+test('assembleTextCompletionPrompt: an AI_OUTPUT regex script transforms a chat message (new in this task)', async () => {
+    const { charactersDir, root } = makeDirectories();
+    const avatar = 'aria6.png';
+    writeCharacterCard(charactersDir, avatar, {
+        spec: 'chara_card_v2',
+        spec_version: '2.0',
+        name: 'Aria',
+        description: 'Aria is a wandering ranger who guards the Whispering Woods.',
+        personality: 'brave and curious',
+        scenario: '',
+        first_mes: 'Hello there, traveler!',
+        mes_example: '',
+        avatar,
+        data: {
+            name: 'Aria',
+            description: 'Aria is a wandering ranger who guards the Whispering Woods.',
+            personality: 'brave and curious',
+            scenario: '',
+            first_mes: 'Hello there, traveler!',
+            mes_example: '',
+            system_prompt: '', post_history_instructions: '', character_version: '', creator_notes: '',
+            extensions: {}, alternate_greetings: [],
+        },
+    });
+    const directories = { characters: charactersDir, root };
+
+    const input = {
+        ...baseFixture(directories, avatar),
+        regexScripts: [
+            {
+                scriptName: 'moonblade-to-starblade',
+                findRegex: '/moonblade/g',
+                replaceString: 'starblade',
+                trimStrings: [],
+                placement: [regex_placement.AI_OUTPUT],
+                markdownOnly: false,
+                promptOnly: true,
+                substituteRegex: 0,
+            },
+        ],
+    };
+
+    const result = await assembleTextCompletionPrompt(input);
+
+    // The raw chat message ("Ah yes, the moonblade sword...") is an AI (non-user) message, so the
+    // AI_OUTPUT-placement script above should have rewritten "moonblade" to "starblade" before it
+    // ever reached finalizeCoreChatMessage()/combinedPrompt.
+    assert.ok(result.combinedPrompt.includes('the starblade sword'), 'the AI_OUTPUT-regexed chat message should appear in combinedPrompt');
+    assert.ok(!result.combinedPrompt.includes('the moonblade sword'), 'the pre-regex chat message text should NOT appear in combinedPrompt');
+});
+
+test('assembleTextCompletionPrompt: a WORLD_INFO regex script transforms an activated entry (new in this task)', async () => {
+    const { charactersDir, root } = makeDirectories();
+    const avatar = 'aria7.png';
+    writeCharacterCard(charactersDir, avatar, {
+        spec: 'chara_card_v2',
+        spec_version: '2.0',
+        name: 'Aria',
+        description: 'Aria is a wandering ranger who guards the Whispering Woods.',
+        personality: 'brave and curious',
+        scenario: '',
+        first_mes: 'Hello there, traveler!',
+        mes_example: '',
+        avatar,
+        data: {
+            name: 'Aria',
+            description: 'Aria is a wandering ranger who guards the Whispering Woods.',
+            personality: 'brave and curious',
+            scenario: '',
+            first_mes: 'Hello there, traveler!',
+            mes_example: '',
+            system_prompt: '', post_history_instructions: '', character_version: '', creator_notes: '',
+            extensions: {}, alternate_greetings: [],
+        },
+    });
+    const directories = { characters: charactersDir, root };
+
+    const input = {
+        ...baseFixture(directories, avatar),
+        regexScripts: [
+            {
+                scriptName: 'forged-to-crafted',
+                findRegex: '/forged/g',
+                replaceString: 'crafted',
+                trimStrings: [],
+                placement: [regex_placement.WORLD_INFO],
+                markdownOnly: false,
+                promptOnly: true,
+                substituteRegex: 0,
+            },
+        ],
+    };
+
+    const result = await assembleTextCompletionPrompt(input);
+
+    // The activated world-info entry's raw content is "The moonblade sword was forged by ancient
+    // elves..." - the WORLD_INFO-placement script above should have rewritten "forged" to "crafted"
+    // via bucketActivatedEntries's resolveContent callback before it landed in worldInfoBefore/
+    // combinedPrompt.
+    assert.ok(result.worldInfoBefore.includes('was crafted by ancient elves'), 'the WORLD_INFO-regexed entry content should appear in worldInfoBefore');
+    assert.ok(!result.worldInfoBefore.includes('was forged by ancient elves'), 'the pre-regex entry content should NOT appear in worldInfoBefore');
+    assert.ok(result.combinedPrompt.includes('was crafted by ancient elves'), 'the WORLD_INFO-regexed entry content should appear in combinedPrompt');
+    assert.ok(!result.combinedPrompt.includes('was forged by ancient elves'), 'the pre-regex entry content should NOT appear in combinedPrompt');
 });
