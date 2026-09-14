@@ -6349,14 +6349,54 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // branch_name/node_id/type/is_impersonate/is_continue/is_swipe/user_message).
     //
     // JUDGMENT CALL #1 (scope): `type === 'normal'`/undefined, `'impersonate'`, `'quiet'`, `'swipe'`,
-    // `'regenerate'`, and now `'continue'` on a single-character chat are cut over here - NOT group
-    // chats. This is narrower than a full cutover, because reading the server's own persistence logic
-    // (commits ac42ce8c9, 6eaa7897d) turned up a real correctness bug for each previously-excluded
-    // case, not a hypothetical one:
-    //   - group chats: server-side speaker/character resolution for a group turn was not verified
-    //     against generateGroupWrapper's own (activation-strategy-dependent) member selection within
-    //     this task's time budget - excluded out of caution rather than assumed compatible.
-    // Covering that later requires verified group speaker resolution - not attempted here.
+    // `'regenerate'`, `'continue'`, AND NOW GROUP CHATS are cut over here, for this backend
+    // (textgenerationwebui) only - see the chat-completion cutover's own JUDGMENT CALL #1 below for
+    // why groups stay OUT of that one. This is narrower than a full cutover, because reading the
+    // server's own persistence logic (commits ac42ce8c9, 6eaa7897d) turned up a real correctness bug
+    // for each previously-excluded case, not a hypothetical one - see below for each.
+    //
+    // GROUP CHATS (previously excluded, now included - investigated for real, not assumed): the
+    // original exclusion reasoned that `generateGroupWrapper()`'s (public/scripts/group-chats.js)
+    // activation-strategy-dependent member selection would need to be replicated/verified against
+    // this gate. Reading that function's full body end to end disproves that concern:
+    // `generateGroupWrapper()` is a separate orchestration layer ABOVE `Generate()` - it computes
+    // `activatedMembers` (an array of member avatars) via one of several strategies (natural/list/
+    // pooled/manual order, or `activateSwipe()`/`activateImpersonate()` for 'swipe'/'continue'/
+    // 'impersonate'/'quiet'), then, for EACH activated member, calls `setCharacterId(avatar)`
+    // (synchronously, before `await`ing) followed by exactly ONE `await Generate(generateType, ...)`
+    // call for that member - never more than one member per `Generate()` call, and the loop `await`s
+    // each call in turn before moving to the next, so there is no concurrent-iteration race. Crucially,
+    // this gate does NOT need `force_avatar` at all to know which member a given inner `Generate()`
+    // call is for: `setCharacterId(avatar)` sets `this_avatar` (this file's own source of truth for
+    // character selection - see `getCurrentCharacter()`'s doc comment), so `getCurrentCharacter()?.avatar`
+    // - the EXACT SAME expression the single-character case already used - already resolves to the
+    // correct responding member inside a group turn too, for every generation type this gate covers:
+    // verified by reading `generateGroupWrapper()`'s own member-selection for each of
+    // normal/impersonate/quiet/swipe/continue (see its `generateType` mapping, which maps every
+    // OTHER type - including a bare 'regenerate' - onto 'normal', and group regenerate never reaches
+    // here as a literal 'regenerate' type anyway - see `regenerateGroup()` in group-chats.js, which
+    // deletes the old message(s) first and then calls `generateGroupWrapper(false, 'normal', ...)`,
+    // not `'regenerate'`). `force_avatar` remains a real, separate mechanism (threaded through to let
+    // an external caller - e.g. a slash command - FORCE a specific member via
+    // `generateGroupWrapper()`'s own `params.force_avatar` check), it is simply not what THIS gate
+    // needs to read: by the time control reaches this point inside any inner `Generate()` call,
+    // `this_avatar` is already the real, resolved responding member regardless of how it got chosen.
+    // The one remaining gap between "just add `group_id`" and a working group gate was server-side,
+    // not client-side: `owner_id` for a group must be the group's own id (see below), not a character
+    // avatar - `selected_group` IS already that real id (assigned directly from `groupsStore`'s own
+    // `g.id`-keyed lookups - see `select_group_chats()`'s `groupsStore.get(openGroupId)` and the
+    // `selected_group = groupId` assignment a few hundred lines below in group-chats.js), so no
+    // client-side id-translation step was needed either.
+    //   - `buildRawActionTextCompletionRequest()`'s own existence check was re-read and confirmed to
+    //     already be `if (!characterAvatar && !groupId) throw` - an inclusive OR, not an "either but
+    //     not both" exclusivity check - so passing BOTH `character_avatar` (the responding member) AND
+    //     `group_id` (the group) together was already accepted with no server-side fix required.
+    //     `resolveTextCompletionGenerationInput()`'s own `resolveName2AndGroupMemberNames()` already
+    //     resolves `name2` from `avatar` while independently populating `groupMemberNames` from every
+    //     group member when `groupId` is ALSO given, and `getGroupCharacterDepthPrompts()`
+    //     (text-completion-prompt-orchestrator.js) already takes both `groupId` AND `avatar` together
+    //     - this combined shape was already a real, exercised code path for depth prompts before this
+    //     change, not a new invention.
     //
     // 'continue' was EXCLUDED for the same kind of reason as 'swipe'/'regenerate' below (a real
     // tree-shape mismatch, not a hypothetical one): the client's saveReply({type:'appendFinal'}) EDITS
@@ -6538,19 +6578,39 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     let rawActionGenerateData = null;
     if (!dryRun && main_api === 'textgenerationwebui'
         && [undefined, 'normal', 'impersonate', 'quiet', 'swipe', 'regenerate', 'continue'].includes(type)
-        && !selected_group
         && !hasPendingFileAttachment()
         && !canPerformToolCalls
     ) {
+        // `getCurrentCharacter()?.avatar` is unchanged from the single-character case - see JUDGMENT
+        // CALL #1 above for why this SAME expression already resolves to the correct RESPONDING
+        // MEMBER inside a group turn too (generateGroupWrapper() calls setCharacterId(avatar) - this
+        // file's own this_avatar source of truth - synchronously before each per-member Generate()
+        // call). `groupId` is `selected_group` itself, already the group's real id (see JUDGMENT CALL
+        // #1 above) - not derived from characterAvatar the way `ownerId` is for a plain character chat.
         const characterAvatar = getCurrentCharacter()?.avatar;
-        const ownerId = characterAvatar ? String(characterAvatar).replace('.png', '') : undefined;
+        const groupId = selected_group || undefined;
+        // For a group turn, owner_id addresses the GROUP's own chat/branch storage (matching
+        // src/endpoints/chats.js's own `ownerId = group_id ? touchGroupOwner(...).id : avatar...`
+        // pattern) - a character avatar would be the WRONG owner here, even though characterAvatar
+        // itself is still resolved and sent (as `character_avatar`) for the responding member's own
+        // card/prompt resolution. Falls back to the plain per-character ownerId when not in a group,
+        // unchanged from before.
+        const ownerId = groupId ? String(groupId) : (characterAvatar ? String(characterAvatar).replace('.png', '') : undefined);
         // getCurrentChatId() (branch_name) is always assigned synchronously when a new chat is
         // created (doNewChat()/replaceCurrentChat() for characters, createNewGroupChat() for groups),
         // before the chat becomes interactive - verified by reading those call sites, not assumed - so
         // there should be no reachable "brand new, unlabeled chat" state here. Kept as a real
         // precondition check (documented fallback) rather than assumed, per
         // buildRawActionTextCompletionRequest()'s own hard requirement for branch_name or node_id.
+        // getCurrentChatId() already resolves the GROUP's own chat_id when selected_group is set
+        // (getSelectionState() checks `selected_group` before `this_avatar`) - unchanged, no group-
+        // specific branch needed here either.
         const branchName = getCurrentChatId();
+        // `characterAvatar` is required unconditionally, group turn or not: even with `groupId` set,
+        // a responding member's own avatar must resolve for real (defensively falls through to the
+        // legacy path instead of assuming this, for the unlikely case `getCurrentCharacter()` were
+        // ever unresolved mid-group-turn) - see JUDGMENT CALL #1 above for why this is verified to
+        // always be true in practice for every type this gate covers.
         if (ownerId && characterAvatar && branchName) {
             // Omitted (undefined) for any type that doesn't add a new message - matches the server's
             // own documented contract. In practice, given the scope above, this path is reached for
@@ -6569,6 +6629,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             const userMessageText = textareaText !== '' ? textareaText : undefined;
             rawActionGenerateData = {
                 character_avatar: characterAvatar,
+                group_id: groupId,
                 owner_id: ownerId,
                 branch_name: branchName,
                 type: type ?? 'normal',
@@ -6598,8 +6659,16 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // underlying reason - re-confirmed by reading the chat-completion side's OWN persistence code
     // (buildRawActionChatCompletionRequest()'s appendMessages()/addAlternatives()/selectDefaultChild()/
     // editMessage() calls in chat-completions.js), not copy-pasted blindly:
-    //   - group chats: same exclusion, for the same reason (server-side speaker/character resolution for a group
-    //     turn not verified against generateGroupWrapper()'s own activation-strategy-dependent member selection).
+    //   - group chats: STILL excluded here, unlike the text-completion cutover above (see that block's own,
+    //     rewritten JUDGMENT CALL #1, which now supports groups for textgenerationwebui only). Group support was
+    //     investigated for THIS backend too and is NOT a client-side gap (the exact same getCurrentCharacter()/
+    //     setCharacterId() mechanism applies here as well) - the reason groups stay out of the chat-completion
+    //     cutover specifically is that resolveChatCompletionGenerationInput() (src/chat-completion-generation-
+    //     input.js) has its own, separate, pre-existing, documented MVP scope boundary: `groupId` is accepted for
+    //     interface parity only and has NO EFFECT (`isGroup` is hardcoded `false`, `groupMemberNames` is hardcoded
+    //     `[]` - see that file's own doc comment and its `void groupId` line) - a genuinely separate, larger task
+    //     (wiring real group support through THAT resolver, not attempted here) is required before this cutover can
+    //     be widened the same way, so it is deliberately left untouched by this pass.
     // 'continue' is now ALSO INCLUDED, same real tree-shape bug/fix as the text-completion cutover's own
     // (identically-worded) JUDGMENT CALL #1 above: the client's saveReply({type:'appendFinal'}) edits the existing
     // leaf node's text in place, but the server's appendMessages() call (keyed off `anchorNodeId`, which for

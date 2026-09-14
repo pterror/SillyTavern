@@ -565,6 +565,129 @@ async function run() {
         assert.equal(originalNode.mes, 'Once upon a time,', 'the original assistant leaf\'s text is byte-for-byte unchanged - continueUserTextConflict correctly skipped the in-place edit');
     }
 
+    // (j) GROUP CHAT support (this session's own task): `character_avatar` (the specific responding
+    // member) AND `group_id` (the group's own addressing) given TOGETHER - the shape
+    // public/script.js's widened raw-action gate now sends for a group turn. Real on-disk fixtures
+    // throughout: a real group.json (matching the exact shape src/endpoints/groups.js's own
+    // `/create` route writes), a real chat branch OWNED BY THE GROUP'S id (not either member's
+    // avatar), and two real member character cards with deliberately distinct `description`s so a
+    // wrong-member mixup would be detectable.
+    {
+        const nova = writeCharacter('Nova.png', {
+            name: 'Nova',
+            description: 'Nova is a stoic starship engineer.',
+            data: { name: 'Nova', description: 'Nova is a stoic starship engineer.', first_mes: 'Systems nominal.' },
+        });
+        const zephyr = writeCharacter('Zephyr.png', {
+            name: 'Zephyr',
+            description: 'Zephyr is a chaotic weather spirit.',
+            data: { name: 'Zephyr', description: 'Zephyr is a chaotic weather spirit.', first_mes: 'Winds are shifting!' },
+        });
+
+        const groupId = 'test-group-1';
+        const groupChatId = 'test-group-1-chat';
+        /** Exact shape src/endpoints/groups.js's own POST /create route writes to <id>.json. */
+        const groupMetadata = {
+            id: groupId,
+            name: 'Adventuring Party',
+            members: [nova, zephyr],
+            avatar_url: 'img/ai4.png',
+            allow_self_responses: false,
+            activation_strategy: 0,
+            generation_mode: 0,
+            disabled_members: [],
+            fav: false,
+            chat_id: groupChatId,
+            chats: [groupChatId],
+            auto_mode_delay: 5,
+            generation_mode_join_prefix: '',
+            generation_mode_join_suffix: '',
+        };
+        fs.writeFileSync(path.join(groupsDir, `${groupId}.json`), JSON.stringify(groupMetadata, null, 4));
+
+        // Enable names_as_stop_strings so groupMemberNames' real effect (not just its presence in the
+        // resolver's return value) is observable in the assembled generate_data.
+        const groupSettings = buildSettingsFixture();
+        groupSettings.power_user.context.names_as_stop_strings = true;
+        // Real default story-string template (public/scripts/power-user.js's own `defaultStoryString`)
+        // so `description` actually reaches the assembled prompt - the base fixture's `context: {}`
+        // has no template at all, so `description` would never appear regardless of which
+        // character's card was resolved, defeating this test's own "reflects the RIGHT member's card"
+        // assertion below.
+        groupSettings.power_user.context.story_string = '{{#if description}}{{description}}\n{{/if}}';
+        writeAllSettings(directories, groupSettings);
+
+        // A chat branch owned by the GROUP's own id - not either member's avatar - with one message
+        // from each member already in history, matching a real multi-member group conversation.
+        await saveChatToTree(directories, groupId, groupChatId, [
+            { chat_metadata: {} },
+            { name: 'Tester', is_user: true, mes: 'Hello, party!', send_date: 1, extra: {} },
+            { name: 'Zephyr', is_user: false, mes: 'Winds are shifting!', send_date: 2, extra: {}, original_avatar: zephyr },
+        ]);
+
+        // --- assembly: buildRawActionTextCompletionRequest() with BOTH characterAvatar (Nova, the
+        // member actually responding this turn) AND groupId (the group) set together. ---
+        const builtGroup = await buildRawActionTextCompletionRequest(directories, {
+            characterAvatar: nova, groupId, ownerId: groupId, branchName: groupChatId,
+            type: 'normal', userMessageText: 'Nova, status report?',
+            tokenizerOptions: fakeTokenizerOptions,
+        });
+
+        assert.equal(builtGroup.name2, 'Nova', 'name2 resolves to the SPECIFIC RESPONDING MEMBER (characterAvatar), not the group\'s own name, even though groupId is also set');
+        assert.ok(builtGroup.params.prompt.includes('Nova is a stoic starship engineer.'), 'the assembled prompt reflects the responding member\'s (Nova\'s) own character card');
+        assert.ok(!builtGroup.params.prompt.includes('Zephyr is a chaotic weather spirit.'), 'the assembled prompt does NOT pull in a DIFFERENT member\'s (Zephyr\'s) own character-card description - only Nova\'s, the one actually responding this turn');
+        assert.ok(builtGroup.params.prompt.includes('Winds are shifting!'), 'the real group chat HISTORY (including the other member\'s prior turn) is still loaded from the group\'s own owner id');
+
+        // groupMemberNames really does include EVERY OTHER group member (not just the responding
+        // one) - observed via its real, documented effect (namesAsStopStrings), not just resolver
+        // plumbing. src/stopping-strings.js's own getStoppingStrings() deliberately EXCLUDES name2
+        // itself from this list (`.filter(name => name !== name2)` - the responding member is
+        // already covered by its own `charString`/`userString` stop-string logic above), so Nova
+        // (name2, the responding member) is correctly ABSENT here while Zephyr (a non-responding
+        // member) is correctly PRESENT - proving groupMemberNames really carries the whole roster,
+        // not just the responding member, exactly as resolveName2AndGroupMemberNames()'s own doc
+        // comment describes.
+        const stopStrings = builtGroup.params.stop ?? builtGroup.params.stopping_strings ?? [];
+        assert.ok(Array.isArray(stopStrings) && stopStrings.length > 0, 'stop strings were assembled at all');
+        assert.ok(stopStrings.some(s => s.includes('Zephyr')), 'namesAsStopStrings-derived stop strings include the NON-responding member (Zephyr) - groupMemberNames covers the whole roster, not just the responding member');
+        assert.ok(!stopStrings.some(s => s.includes('Nova')), 'the responding member (Nova/name2) is correctly excluded from the groupMemberNames-derived entries (already covered by the separate name2-specific stop string)');
+
+        // --- persistence: a real, route-level raw-action /generate call persists BOTH sides against
+        // the GROUP's own owner_id, chained under the group's real chat branch. ---
+        const branchBeforeGroup = await loadBranch(directories, groupId, groupChatId);
+        const messageCountBeforeGroup = branchBeforeGroup.messages.length;
+
+        const fakeBackend = await startFakeBackend((_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ choices: [{ text: 'All systems nominal, Captain.' }] }));
+        });
+        pointBackendAt(fakeBackend.url);
+
+        const app = buildTestApp();
+        const { status, data } = await postGenerate(app, {
+            owner_id: groupId, character_avatar: nova, group_id: groupId, branch_name: groupChatId,
+            type: 'normal', user_message: 'Nova, status report?', stream: false,
+        });
+        fakeBackend.server.close();
+
+        assert.equal(status, 200, 'the group raw-action generation succeeds');
+        assert.deepEqual(data, { choices: [{ text: 'All systems nominal, Captain.' }] }, 'response body reaches the client unmodified');
+
+        const branchAfterGroup = await loadBranch(directories, groupId, groupChatId);
+        assert.equal(branchAfterGroup.messages.length, messageCountBeforeGroup + 2, 'both the user message and the assistant reply were persisted under the GROUP\'s own owner_id');
+        const [userMsg, assistantMsg] = branchAfterGroup.messages.slice(-2);
+        assert.equal(userMsg.mes, 'Nova, status report?');
+        assert.equal(userMsg.is_user, true);
+        assert.equal(assistantMsg.mes, 'All systems nominal, Captain.');
+        assert.equal(assistantMsg.is_user, false);
+        assert.equal(assistantMsg.name, 'Nova', 'the persisted assistant message is attributed to the SPECIFIC RESPONDING MEMBER (name2/Nova), not the group\'s own name or the other member (Zephyr)');
+
+        // Sanity: none of this leaked into either single-character owner namespace used elsewhere in
+        // this file (Rex's own branch, keyed by his own avatar as ownerId).
+        const rexBranchUnaffected = await loadBranch(directories, ownerId, branchName);
+        assert.ok(rexBranchUnaffected.messages.every(m => m.mes !== 'All systems nominal, Captain.'), 'the group turn did not leak into an unrelated single-character owner namespace');
+    }
+
     // (i) the STREAMING raw-action case (request.body.stream: true) is intentionally NOT exercised
     // here: proving the assistant reply is untouched for it is trivial (pendingAssistantPersist is
     // simply never read by either streaming branch - see the code comment at its declaration in

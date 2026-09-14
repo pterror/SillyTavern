@@ -321,7 +321,17 @@ router.post('/props', async function (request, response) {
  * @param {import('express').Request} [params.request] Original request - forwarded only for the
  * remote-tokenizer header-forwarding path (`encodeViaTextgenAPI`); safe to omit in tests.
  * @param {string} [params.characterAvatar] Character avatar filename. One of this or `groupId` is required.
- * @param {string} [params.groupId] Group id. One of this or `characterAvatar` is required.
+ *   For a GROUP turn, pass BOTH `characterAvatar` (the specific responding member's card, for
+ *   name2/world-info/depth-prompt resolution) AND `groupId` (the group's own addressing/roster) -
+ *   this is a real, intentional combination, not a fallback: the existence checks below run
+ *   independently for each, `resolveTextCompletionGenerationInput()`'s own
+ *   `resolveName2AndGroupMemberNames()` already resolves `name2` from `avatar` while still
+ *   populating `groupMemberNames` from every group member, and `getGroupCharacterDepthPrompts()`
+ *   (src/text-completion-prompt-orchestrator.js) already takes both `groupId` AND `avatar` together
+ *   for exactly this reason. `characterAvatar` alone (no `groupId`) still means a plain
+ *   single-character turn.
+ * @param {string} [params.groupId] Group id. One of this or `characterAvatar` is required. See
+ *   `characterAvatar`'s own doc comment above for the "both together, for a group turn" case.
  * @param {string} params.ownerId message-tree-db.js owner id.
  * @param {string} [params.branchName] message-tree-db.js labeled chat name. One of this or `nodeId` is required.
  * @param {string} [params.nodeId] Alternative to `branchName` - generate from this existing tree node.
