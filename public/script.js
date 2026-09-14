@@ -5486,6 +5486,9 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     }
 
     const isContinue = type == 'continue';
+    // No pre-existing named local for this (every other call site inlines `type === 'swipe'`) - added
+    // here so the raw-action text-completion cutover below can name it like isImpersonate/isContinue.
+    const isSwipe = type == 'swipe';
 
     // Rewrite the generation timer to account for the time passed for all the continuations.
     if (isContinue && chat.length) {
@@ -6321,6 +6324,109 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     let maxLength = Number(amount_gen); // how many tokens the AI will be requested to generate
     let thisPromptBits = [];
 
+    // === Raw-action text-completion cutover ===
+    // For a genuine plain "normal" send-and-reply turn over the textgenerationwebui backend, the
+    // server now resolves the ENTIRE prompt (character, chat history, world info, sampler settings)
+    // itself from its own stored state - see buildRawActionTextCompletionRequest() in
+    // src/endpoints/backends/text-completions.js. Instead of sending the client-assembled
+    // finalPrompt/sampler settings, this sends only which character/branch and the literal text
+    // typed, matching that endpoint's real, tested contract (character_avatar/group_id/owner_id/
+    // branch_name/node_id/type/is_impersonate/is_continue/is_swipe/user_message).
+    //
+    // JUDGMENT CALL #1 (scope): only `type === 'normal'` (or undefined) on a single-character chat
+    // is cut over here - NOT impersonate/continue/swipe/regenerate/quiet, and NOT group chats. This
+    // is narrower than originally asked for, because reading the server's own persistence logic
+    // (commits ac42ce8c9, 6eaa7897d) turned up real correctness bugs for the excluded cases, not
+    // hypothetical ones:
+    //   - 'continue': the client's saveReply({type:'appendFinal'}) EDITS the existing last node's
+    //     text in place to (old text + new text) - see this file's saveReply(), the `mes: getMessage`
+    //     assignment in its 'appendFinal' branch, where getMessage was built a few hundred lines above
+    //     as `continue_mag + newlyGeneratedText`. The server instead always appends a brand-new CHILD
+    //     node containing only the raw continuation fragment (its appendMessages() call keyed off
+    //     `anchorNodeId`, unconditionally on ANY successful generation). These are two different
+    //     operations on two different nodes - they cannot dedupe via nodeIdentityKey() the way a plain
+    //     new-message/new-reply turn does, and would corrupt/duplicate the tree.
+    //   - 'swipe'/'regenerate': the server's `anchorNodeId` is the branch leaf, i.e. the message BEING
+    //     swiped itself, so its appendMessages() call would chain the new alternative as a CHILD
+    //     *after* that message, not as a SIBLING under its parent (an actual swipe is a sibling - see
+    //     addAlternatives() in src/message-tree-db.js). Wrong tree shape if used here.
+    //   - 'impersonate': the generated text is what the user might say and is never added to the chat
+    //     at all client-side (it's written back into the send textarea a few hundred lines below via
+    //     `$('#send_textarea').val(getMessage)`) - but the server would unconditionally persist it as a
+    //     bogus ASSISTANT message (is_user: false, name: name2) in the tree.
+    //   - 'quiet': meta/background generations that must never land in the visible chat tree.
+    //   - group chats: server-side speaker/character resolution for a group turn was not verified
+    //     against generateGroupWrapper's own (activation-strategy-dependent) member selection within
+    //     this task's time budget - excluded out of caution rather than assumed compatible.
+    // Covering these later requires extending the server's persistence logic (sibling-alternative
+    // support for swipe/regenerate, in-place-edit for continue, no persistence at all for
+    // impersonate/quiet, verified group speaker resolution) - not attempted here.
+    //
+    // JUDGMENT CALL #2 (assembly still runs): this does NOT skip the expensive client-side
+    // prompt-assembly above (world info scan, author's note resolution, instruct formatting,
+    // finalPrompt construction) even though that was the original ask. Doing so safely turned out to
+    // be impossible without a much larger rewrite: locals declared inside that assembly - notably
+    // `continue_mag`, `promptReasoning`, `canPerformToolCalls`, `worldInfoString`, `storyString`,
+    // `mesSend`, `arrMes`, `injectedIndices`, `description`, `personality`, `persona`, `scenario`,
+    // `system` - are read again much further down inside finishGenerating()'s itemized-prompt-bits
+    // object AND inside onSuccess()'s response handling (e.g. `parseAndSaveLogprobs(data,
+    // continue_mag)`, which runs unconditionally for every type). Skipping their assignment would
+    // throw a ReferenceError (temporal-dead-zone) the first time this path actually runs - confirmed
+    // by reading every downstream reference, not assumed. So the assembly still executes and its
+    // result (`finalPrompt` etc.) is simply never used for this one case - `generate_data` is
+    // overridden below, right where it would otherwise be built from that output. The stated goal (the
+    // server no longer receives or trusts any client-assembled prompt/sampler settings on this path)
+    // is achieved; the client just also still pays the assembly's redundant CPU/latency cost. Removing
+    // that cost is separate, larger follow-up work (making finishGenerating()/onSuccess() tolerate the
+    // assembly being skipped), intentionally not attempted in this change given the crash risk above.
+    //
+    // Side effects of the (still-running) legacy assembly that this cutover does NOT change, but that
+    // become pure waste for this one request since the server ignores their output: the world-info
+    // scan's sticky/cooldown timers and "activated entries" UI (getWorldInfoPrompt(), a few hundred
+    // lines above) still update from the CLIENT's own (now-redundant) scan, not the server's - so they
+    // may drift from what the server actually activated if its own WI resolution ever disagrees with
+    // the client's. The itemized-prompt token-breakdown UI likewise still shows the client's discarded
+    // assembly, not what was actually sent. Both are pre-existing UI-only surfaces, unchanged by this
+    // patch either way; flagged here only because they are the two most user-visible instances of "the
+    // client computed something for this request that the request no longer uses."
+    let rawActionGenerateData = null;
+    if (!dryRun && main_api === 'textgenerationwebui'
+        && (type === undefined || type === 'normal')
+        && !selected_group
+        && !hasPendingFileAttachment()
+        && !canPerformToolCalls
+    ) {
+        const characterAvatar = getCurrentCharacter()?.avatar;
+        const ownerId = characterAvatar ? String(characterAvatar).replace('.png', '') : undefined;
+        // getCurrentChatId() (branch_name) is always assigned synchronously when a new chat is
+        // created (doNewChat()/replaceCurrentChat() for characters, createNewGroupChat() for groups),
+        // before the chat becomes interactive - verified by reading those call sites, not assumed - so
+        // there should be no reachable "brand new, unlabeled chat" state here. Kept as a real
+        // precondition check (documented fallback) rather than assumed, per
+        // buildRawActionTextCompletionRequest()'s own hard requirement for branch_name or node_id.
+        const branchName = getCurrentChatId();
+        if (ownerId && characterAvatar && branchName) {
+            // Omitted (undefined) for any type that doesn't add a new message - matches the server's
+            // own documented contract. In practice, given the scope restriction above, this path is
+            // only ever reached for type 'normal'/undefined, where textareaText is the just-sent text
+            // (already handed to sendMessageAsUser() above) or '' for a depth>0 tool-call follow-up
+            // generation (which likewise adds no new user message).
+            const userMessageText = textareaText !== '' ? textareaText : undefined;
+            rawActionGenerateData = {
+                character_avatar: characterAvatar,
+                owner_id: ownerId,
+                branch_name: branchName,
+                type: type ?? 'normal',
+                is_impersonate: isImpersonate,
+                is_continue: isContinue,
+                is_swipe: isSwipe,
+                user_message: userMessageText,
+            };
+        }
+        // else: no resolvable branch_name (or other precondition) - fall through to the legacy
+        // client-assembled path below, unchanged.
+    }
+
     let generate_data;
     switch (main_api) {
         case 'koboldhorde':
@@ -6346,6 +6452,13 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             }
             break;
         case 'textgenerationwebui': {
+            // Real raw-action cutover (see the block above `let generate_data;`) - the server resolves
+            // the whole request itself for this case, so the just-computed finalPrompt/cfgValues are
+            // never sent and never even referenced here.
+            if (rawActionGenerateData) {
+                generate_data = rawActionGenerateData;
+                break;
+            }
             const cfgValues = useCfgPrompt ? { guidanceScale: cfgGuidanceScale, negativePrompt: await getCombinedPrompt(true) } : null;
             generate_data = await getTextGenGenerationData(finalPrompt, maxLength, isImpersonate, isContinue, cfgValues, type);
             break;
