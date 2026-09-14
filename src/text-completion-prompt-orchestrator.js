@@ -45,7 +45,11 @@ import { createExtensionPromptTable, setExtensionPrompt, doChatInject, extension
  *        the same way, but ONLY when `authorsNote.position === extension_prompt_types.IN_CHAT` (see
  *        the inline judgment-call comment at the call site) - `resolveAuthorsNote()`'s own doc
  *        comment establishes that `position` already IS an extension_prompt_types value, so this is
- *        the accurate behavior, not a simplification of an unclear mapping.
+ *        the accurate behavior, not a simplification of an unclear mapping. When the note is actually
+ *        due this turn (`authorsNote.shouldAddPrompt`), `anBefore`/`anAfter` (bucketActivatedEntries's
+ *        WI ANTop/ANBottom output) are now combined into the injected value exactly like the client
+ *        (`${anBefore}\n${note}\n${anAfter}`, stripping at most one leading/trailing newline) - this
+ *        closes the anBefore/anAfter gap for the note-injection path.
  *      - `storyStringInjection` (from assembleStoryString, when the story string is configured to
  *        inject in-chat instead of at the top) - written into the table and spliced in the same way.
  *      - `injectedIndices` fed into injectJailbreak/buildChat2/fillContextBudget/combineFinalPrompt is
@@ -53,10 +57,6 @@ import { createExtensionPromptTable, setExtensionPrompt, doChatInject, extension
  *        caller doesn't override it - `initialInjectedIndices` (the old plain input, default `[]`) is
  *        kept only as a fallback/override for a caller with its own pre-computed indices.
  *    What is STILL NOT wired (separate, still-open gaps, deliberately out of scope for this task):
- *      - `anBefore`/`anAfter` (from bucketActivatedEntries) - the WI ANTop/ANBottom entries that the
- *        client combines with the author's-note text into a single string before injecting it at
- *        `authorsNote.depth`. This orchestrator still returns them as separate, unwired values; the
- *        author's-note value alone (without that combination) is what gets injected instead.
  *      - `outletEntries` (from bucketActivatedEntries) - still never delivered to whatever "outlet"
  *        consumer would read it.
  *      - `beforeScenarioAnchor`/`afterScenarioAnchor` (BEFORE_PROMPT/IN_PROMPT anchors) - still taken
@@ -486,9 +486,20 @@ export async function assembleTextCompletionPrompt(input) {
     // is IN_PROMPT or BEFORE_PROMPT, the note belongs to the beforeScenarioAnchor/afterScenarioAnchor
     // mechanism instead - which is a SEPARATE, already-documented gap (module doc comment gap 1) that
     // this task does not solve - so such notes remain unwired here, deliberately.
+    //
+    // WI ANTop/ANBottom combination (public/script.js ~5352-5356): when the note is actually due to
+    // be inserted this turn (`shouldWIAddPrompt`, i.e. resolveAuthorsNote()'s `shouldAddPrompt`), the
+    // client REPLACES the plain note value with `${ANTop}\n${note}\n${ANBottom}`, stripping at most
+    // ONE leading and ONE trailing newline (the client's regex `/(^\n)|(\n$)/g` only ever matches each
+    // anchor once, not every run of newlines - do not "fix" this into a stricter trim). This closes
+    // the anBefore/anAfter part of gap 1 below for the note-injection path specifically (outletEntries
+    // and the before/after scenario anchors remain separately unwired, as documented).
     if (authorsNote.disabled === false && authorsNote.position === extension_prompt_types.IN_CHAT) {
+        const noteValue = authorsNote.shouldAddPrompt
+            ? `${anBefore.join('\n')}\n${authorsNote.value}\n${anAfter.join('\n')}`.replace(/(^\n)|(\n$)/g, '')
+            : authorsNote.value;
         setExtensionPrompt(
-            extensionPromptTable, 'authors_note', authorsNote.value,
+            extensionPromptTable, 'authors_note', noteValue,
             extension_prompt_types.IN_CHAT, authorsNote.depth, false, authorsNote.role,
         );
     }
