@@ -1,6 +1,12 @@
 import assert from 'node:assert';
 import { test } from 'node:test';
 
+// JUDGMENT CALL: same as chat-completion-budget.test.js - Jimp's WASM codecs need this patch
+// installed before any encode/decode happens, and this standalone test file has no other entry
+// point that installs it.
+import './fetch-patch.js';
+import { Jimp, JimpMime } from './jimp.js';
+
 import { TokenHandler, ChatCompletion } from './chat-completion-budget.js';
 import { PromptCollection, Prompt } from './chat-completion-prompt-collection.js';
 import {
@@ -13,6 +19,15 @@ import { character_names_behavior } from './chat-completion-messages.js';
 
 /** Simple deterministic fake tokenizer: token count = length of the JSON-stringified message(s). */
 const fakeCountTokenAsyncFn = async (messages) => JSON.stringify(messages).length;
+
+/** Builds a real JPEG data URL (mirrors chat-completion-budget.test.js's own helper) - used as a
+ *  small valid image fixture for media-inlining tests, avoiding any real network fetch or missing
+ *  test fixture file. */
+async function makeJpegDataUrl(width, height) {
+    const image = new Jimp({ width, height, color: 0xffffffff });
+    const buffer = await image.getBuffer(JimpMime.jpeg, { quality: 90, jpegColorSpace: 'ycbcr' });
+    return `data:image/jpeg;base64,${buffer.toString('base64')}`;
+}
 
 /**
  * @param {number} [budget]
@@ -507,4 +522,84 @@ test('namesBehavior other than COMPLETION does not call setName', async () => {
     const chat = chatCompletion.getChat();
     const turn = chat.find(m => m.content === 'Hi');
     assert.strictEqual(turn.name, undefined);
+});
+
+// ---------------------------------------------------------------------------
+// Media inlining (image/video/audio)
+// ---------------------------------------------------------------------------
+
+test('media inlining: mediaDisplay=list + imageInlining=true inlines an image_url content part', async () => {
+    const prompts = makePrompts();
+    const { chatCompletion, tokenHandler } = makeChatCompletion();
+    const dataUrl = await makeJpegDataUrl(32, 32);
+    const messages = [
+        { role: 'user', content: 'Look at this', media: [{ url: dataUrl, type: 'image' }], mediaDisplay: 'list' },
+    ];
+
+    await populateChatHistory(messages, prompts, chatCompletion, {
+        newChatPrompt: '[New Chat]',
+        imageInlining: true,
+        tokenHandler,
+    });
+
+    const chat = chatCompletion.getChat();
+    const turn = chat.find(m => Array.isArray(m.content));
+    assert.ok(turn, `expected a message with array content, got: ${JSON.stringify(chat)}`);
+    const imagePart = turn.content.find(p => p.type === 'image_url');
+    assert.ok(imagePart, 'expected an image_url content part');
+    assert.ok(imagePart.image_url.url.startsWith('data:image/jpeg;base64,'));
+    const textPart = turn.content.find(p => p.type === 'text');
+    assert.strictEqual(textPart.text, 'Look at this');
+});
+
+test('media inlining: mediaDisplay=gallery + mediaIndex selects only one of several media items', async () => {
+    const prompts = makePrompts();
+    const { chatCompletion, tokenHandler } = makeChatCompletion();
+    const dataUrl0 = await makeJpegDataUrl(16, 16);
+    const dataUrl1 = await makeJpegDataUrl(24, 24);
+    const dataUrl2 = await makeJpegDataUrl(48, 48);
+    const messages = [
+        {
+            role: 'user',
+            content: 'Pick one',
+            media: [
+                { url: dataUrl0, type: 'image' },
+                { url: dataUrl1, type: 'image' },
+                { url: dataUrl2, type: 'image' },
+            ],
+            mediaDisplay: 'gallery',
+            mediaIndex: 1,
+        },
+    ];
+
+    await populateChatHistory(messages, prompts, chatCompletion, {
+        newChatPrompt: '[New Chat]',
+        imageInlining: true,
+        tokenHandler,
+    });
+
+    const chat = chatCompletion.getChat();
+    const turn = chat.find(m => Array.isArray(m.content));
+    const imageParts = turn.content.filter(p => p.type === 'image_url');
+    assert.strictEqual(imageParts.length, 1, 'only the media[mediaIndex] entry should be inlined');
+});
+
+test('media inlining: imageInlining=false means no media gets inlined even when chatPrompt.media is present', async () => {
+    const prompts = makePrompts();
+    const { chatCompletion, tokenHandler } = makeChatCompletion();
+    const dataUrl = await makeJpegDataUrl(32, 32);
+    const messages = [
+        { role: 'user', content: 'Look at this', media: [{ url: dataUrl, type: 'image' }], mediaDisplay: 'list' },
+    ];
+
+    await populateChatHistory(messages, prompts, chatCompletion, {
+        newChatPrompt: '[New Chat]',
+        imageInlining: false,
+        tokenHandler,
+    });
+
+    const chat = chatCompletion.getChat();
+    const turn = chat.find(m => m.content === 'Look at this');
+    assert.ok(turn, 'the plain text turn should still exist');
+    assert.ok(!Array.isArray(turn.content), 'content should remain a plain string, never converted to an array');
 });
