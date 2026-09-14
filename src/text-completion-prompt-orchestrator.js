@@ -19,7 +19,7 @@ import { getCustomTokenBans, calculateLogitBias } from './token-bans-and-bias.js
 import { createTextGenGenerationData } from './textgen-generation-data.js';
 import { baseChatReplace } from './macro-substitution.js';
 import { formatInstructModeExamples } from './instruct-mode-examples.js';
-import { createExtensionPromptTable, setExtensionPrompt, doChatInject, extension_prompt_types } from './extension-prompt-table.js';
+import { createExtensionPromptTable, setExtensionPrompt, getExtensionPrompt, doChatInject, extension_prompt_types } from './extension-prompt-table.js';
 
 /**
  * Server-side orchestrator that reproduces the TEXT-COMPLETION-ONLY prompt-assembly pipeline of
@@ -44,15 +44,31 @@ import { createExtensionPromptTable, setExtensionPrompt, doChatInject, extension
  *      - `worldInfoDepth` (from bucketActivatedEntries) - every @Depth world-info entry is written
  *        into the table (keyed by depth+role) and IS now spliced into the chat array (and therefore
  *        into `mesSend`/`combinedPrompt`) via doChatInject(), exactly like the client.
- *      - `authorsNote.value` - written into the table (as an IN_CHAT depth injection) and spliced in
- *        the same way, but ONLY when `authorsNote.position === extension_prompt_types.IN_CHAT` (see
- *        the inline judgment-call comment at the call site) - `resolveAuthorsNote()`'s own doc
- *        comment establishes that `position` already IS an extension_prompt_types value, so this is
- *        the accurate behavior, not a simplification of an unclear mapping. When the note is actually
- *        due this turn (`authorsNote.shouldAddPrompt`), `anBefore`/`anAfter` (bucketActivatedEntries's
- *        WI ANTop/ANBottom output) are now combined into the injected value exactly like the client
- *        (`${anBefore}\n${note}\n${anAfter}`, stripping at most one leading/trailing newline) - this
- *        closes the anBefore/anAfter gap for the note-injection path.
+ *      - `authorsNote.value` - written into the table at its REAL `authorsNote.position` (no longer
+ *        gated to IN_CHAT only - see the inline comment at the call site) - `resolveAuthorsNote()`'s
+ *        own doc comment establishes that `position` already IS an extension_prompt_types value, so
+ *        this is the accurate behavior, not a simplification of an unclear mapping. When the note is
+ *        actually due this turn (`authorsNote.shouldAddPrompt`), `anBefore`/`anAfter`
+ *        (bucketActivatedEntries's WI ANTop/ANBottom output) are now combined into the injected value
+ *        exactly like the client (`${anBefore}\n${note}\n${anAfter}`, stripping at most one
+ *        leading/trailing newline) - this closes the anBefore/anAfter gap for the note-injection path.
+ *        Position-appropriate consumption: an IN_CHAT-positioned note is spliced into the chat array by
+ *        `doChatInject()` below (same as before); a BEFORE_PROMPT/IN_PROMPT-positioned note is instead
+ *        read out via the `beforeScenarioAnchor`/`afterScenarioAnchor` resolution described next -
+ *        `doChatInject()` only ever reads IN_CHAT-positioned table entries (re-confirmed by re-reading
+ *        `getOccupiedInChatDepths()`/`doChatInject()` in src/extension-prompt-table.js), so the two
+ *        consumption paths are mutually exclusive - a note is never injected both ways.
+ *      - `beforeScenarioAnchor`/`afterScenarioAnchor` (BEFORE_PROMPT/IN_PROMPT anchors) - NOW CLOSED,
+ *        as of this task. Once the Author's Note has been written into the table (the only real
+ *        source, in this orchestrator's scope, that can ever populate these two positions - see the
+ *        note-write above), `getExtensionPrompt(table, { position: BEFORE_PROMPT }, macroContext)` /
+ *        `getExtensionPrompt(table, { position: IN_PROMPT }, macroContext)` (sync; already used
+ *        elsewhere in this file) resolve the two anchors for real, and these resolved values (trimmed)
+ *        are what `assembleStoryString()` actually receives whenever the table has non-empty content
+ *        at those positions. The plain caller-supplied `beforeScenarioAnchor`/`afterScenarioAnchor`
+ *        inputs (default '') remain available as a fallback only - used when the table-resolved value
+ *        is empty - so a caller with some other future extension-prompt source for these positions can
+ *        still inject a value directly.
  *      - `storyStringInjection` (from assembleStoryString, when the story string is configured to
  *        inject in-chat instead of at the top) - written into the table and spliced in the same way.
  *      - `injectedIndices` fed into injectJailbreak/buildChat2/fillContextBudget/combineFinalPrompt is
@@ -62,20 +78,16 @@ import { createExtensionPromptTable, setExtensionPrompt, doChatInject, extension
  *    What is STILL NOT wired (separate, still-open gaps, deliberately out of scope for this task):
  *      - `outletEntries` (from bucketActivatedEntries) - still never delivered to whatever "outlet"
  *        consumer would read it.
- *      - `beforeScenarioAnchor`/`afterScenarioAnchor` (BEFORE_PROMPT/IN_PROMPT anchors) - still taken
- *        as plain caller-supplied inputs (default '') rather than resolved from the live table (and,
- *        per the author's-note judgment call above, an AN with position IN_PROMPT/BEFORE_PROMPT would
- *        belong here too, but is not resolved into these anchors by this orchestrator).
  *      - The quiet-prompt/CFG-depth-splice/PHI-via-extension-prompts mechanisms the client also
  *        threads through this same table are not modeled here at all as TABLE entries - only the
- *        three sources listed above are written into the table by this orchestrator. (As of the
- *        Author's-Note/World-Info ordering fix below, the quiet-prompt text IS now used for one
- *        narrow purpose - feeding World-Info's scan buffer, matching the client's own transient
- *        `setExtensionPrompt(inject_ids.QUIET_PROMPT, ..., scan=true)` / immediate-clear pattern at
- *        public/script.js ~5698/~5711 - but it is still never written into THIS orchestrator's
- *        extension-prompt table nor spliced into the chat array as an actual injection, since the
- *        client itself clears that slot again immediately after the world-info call and never lets it
- *        reach doChatInject().)
+ *        three sources listed above are written into the table by this orchestrator. The quiet-prompt
+ *        text IS used for one narrow purpose - feeding World-Info's scan buffer, matching the client's
+ *        own transient `setExtensionPrompt(inject_ids.QUIET_PROMPT, ..., scan=true)` / immediate-clear
+ *        pattern at public/script.js ~5698/~5711 - but it is still never written into THIS
+ *        orchestrator's extension-prompt table nor spliced into the chat array as an actual injection,
+ *        since the client itself clears that slot again immediately after the world-info call and
+ *        never lets it reach doChatInject() - confirmed the anchors are resolved from the Author's
+ *        Note specifically, not from the quiet-prompt slot, which never contributes here.
  *      - The character card's own `depth_prompt` field
  *        (`character.data.extensions.depth_prompt.{prompt, depth, role}`) - BOTH the single-character
  *        AND group-chat cases are NOW CLOSED, as of this task (and the prior one). The client stashes
@@ -328,8 +340,12 @@ function parseMesExamplesBlocks(examplesStr, isInstruct, exampleSeparator = '') 
  * @property {string} [sysPromptContent]
  * @property {number} [personaDescriptionPosition]
  * @property {boolean} [stripExamples]
- * @property {string} [beforeScenarioAnchor] See gap (1) above - plain input, default ''.
- * @property {string} [afterScenarioAnchor] See gap (1) above - plain input, default ''.
+ * @property {string} [beforeScenarioAnchor] Fallback/override only - default ''. Used only when the
+ *   extension-prompt table's own BEFORE_PROMPT-position content (populated by the Author's Note when
+ *   its position is BEFORE_PROMPT - see gap (1) above) resolves to empty; the real, table-resolved
+ *   value otherwise wins.
+ * @property {string} [afterScenarioAnchor] Fallback/override only - default ''. Same as
+ *   `beforeScenarioAnchor` above, but for the IN_PROMPT position.
  * @property {boolean} [isInstruct]
  * @property {import('./instruct-template-format.js').InstructSettings} [instructPreset]
  * @property {object} [contextSettings] Equivalent of power_user.context.
@@ -578,6 +594,71 @@ export async function assembleTextCompletionPrompt(input) {
             },
         });
 
+    // ---- Step 6.5: extension-prompts table (created early) + Author's Note table-write + ---------
+    // ---- beforeScenarioAnchor/afterScenarioAnchor resolution ---------------------------------------
+    // Builds a FRESH, per-request extension_prompts table (see src/extension-prompt-table.js's module
+    // doc comment for why "fresh per request" is the correct server-side equivalent of the client's
+    // persistent-but-flushed global). Created HERE (earlier than the rest of the table population,
+    // which still happens after assembleStoryString() below, see Step 7.5) because the Author's
+    // Note's table-write has to happen BEFORE assembleStoryString() runs: on the real client,
+    // setFloatingPrompt() (which is what actually writes the note into extension_prompts) runs before
+    // getExtensionPrompt(BEFORE_PROMPT)/getExtensionPrompt(IN_PROMPT) are read at public/script.js
+    // ~5773-5776, which in turn happens before renderStoryString() is called - so a note positioned at
+    // BEFORE_PROMPT/IN_PROMPT can only ever reach assembleStoryString() if it's written first.
+    const extensionPromptTable = createExtensionPromptTable();
+
+    // Author's note. JUDGMENT CALL (updated from the prior task): resolveAuthorsNote()'s own doc
+    // comment states `authorsNote.position` is "One of extension_prompt_types positions" - i.e. it is
+    // NOT an ambiguous value that needs guessing at, it already IS an extension_prompt_types member
+    // (public/scripts/authors-note.js stores whatever the client's AN position dropdown holds, which
+    // is an extension_prompt_types value). The note is now written into the table at whatever its
+    // REAL position is (no longer gated to IN_CHAT only) - a note whose position is IN_CHAT is
+    // consumed by doChatInject()'s per-depth chat splicing (below, unchanged); a note whose position
+    // is BEFORE_PROMPT or IN_PROMPT is instead consumed via the beforeScenarioAnchor/afterScenarioAnchor
+    // resolution immediately below. Re-confirmed by re-reading src/extension-prompt-table.js's
+    // `getOccupiedInChatDepths()` (only ever collects entries with `position === IN_CHAT`) and
+    // `doChatInject()` (only ever calls `getExtensionPrompt(table, { position: IN_CHAT, ... })`) that
+    // doChatInject() truly never reads/splices a BEFORE_PROMPT/IN_PROMPT-positioned entry - so a note
+    // positioned there is consumed exactly once, via the anchor read, never double-injected.
+    //
+    // WI ANTop/ANBottom combination (public/script.js ~5352-5356): when the note is actually due to
+    // be inserted this turn (`shouldWIAddPrompt`, i.e. resolveAuthorsNote()'s `shouldAddPrompt`), the
+    // client REPLACES the plain note value with `${ANTop}\n${note}\n${ANBottom}`, stripping at most
+    // ONE leading and ONE trailing newline (the client's regex `/(^\n)|(\n$)/g` only ever matches each
+    // anchor once, not every run of newlines - do not "fix" this into a stricter trim). This combination
+    // logic is UNCHANGED from the prior task - only WHEN the write happens (now before assembleStoryString)
+    // and WHICH position-gate it's written under (now the real `authorsNote.position`, not hardcoded
+    // IN_CHAT) have changed. `anBefore`/`anAfter` are already available here (bucketActivatedEntries
+    // ran above, in Step 6), so the combined value is already computable at this point.
+    if (authorsNote.disabled === false) {
+        const noteValue = authorsNote.shouldAddPrompt
+            ? `${anBefore.join('\n')}\n${authorsNote.value}\n${anAfter.join('\n')}`.replace(/(^\n)|(\n$)/g, '')
+            : authorsNote.value;
+        setExtensionPrompt(
+            extensionPromptTable, 'authors_note', noteValue,
+            authorsNote.position, authorsNote.depth, false, authorsNote.role,
+        );
+    }
+
+    // beforeScenarioAnchor/afterScenarioAnchor: NOW resolved for real from the extension-prompt table
+    // (see module doc comment gap 1) via the already-committed, SYNCHRONOUS getExtensionPrompt() export
+    // (src/extension-prompt-table.js - confirmed sync by reading its signature; no `await` needed,
+    // matching how it's already called elsewhere in this file, e.g. inside doChatInject()). The only
+    // real source that can ever populate BEFORE_PROMPT/IN_PROMPT in this orchestrator's scope is the
+    // Author's Note write just above. The plain caller-supplied `beforeScenarioAnchor`/
+    // `afterScenarioAnchor` inputs (default '') are kept as a fallback/override for some other future
+    // extension-prompt source - used only when the table-resolved value is empty - but the REAL,
+    // resolved table value is what actually flows into assembleStoryString() below whenever the table
+    // has non-empty content at that position.
+    const resolvedBeforeScenarioAnchor = getExtensionPrompt(
+        extensionPromptTable, { position: extension_prompt_types.BEFORE_PROMPT }, macroContext,
+    ).trim();
+    const resolvedAfterScenarioAnchor = getExtensionPrompt(
+        extensionPromptTable, { position: extension_prompt_types.IN_PROMPT }, macroContext,
+    ).trim();
+    const effectiveBeforeScenarioAnchor = resolvedBeforeScenarioAnchor || beforeScenarioAnchor;
+    const effectiveAfterScenarioAnchor = resolvedAfterScenarioAnchor || afterScenarioAnchor;
+
     // ---- Step 7: story-string assembly ----------------------------------------------------------
     // mesExamplesArray/mesExamplesRawArray: see module doc comment gap (7) - the instruct-mode
     // reformatting gap is now closed; see the comment at the formatInstructModeExamples() call below.
@@ -611,7 +692,8 @@ export async function assembleTextCompletionPrompt(input) {
 
     const storyStringResult = assembleStoryString({
         description: fields.description, personality: fields.personality, persona: fields.persona, scenario: fields.scenario,
-        system: fields.system, name1, name2, worldInfoBefore, worldInfoAfter, beforeScenarioAnchor, afterScenarioAnchor,
+        system: fields.system, name1, name2, worldInfoBefore, worldInfoAfter,
+        beforeScenarioAnchor: effectiveBeforeScenarioAnchor, afterScenarioAnchor: effectiveAfterScenarioAnchor,
         mesExamplesArray, mesExamplesRawArray, isInstruct, sysPromptEnabled, sysPromptContent, preferCharacterPrompt,
         personaDescriptionPosition, storyStringTemplate, storyStringPosition, storyStringDepth, storyStringRole,
         instructPreset, contextSettings, stripExamples, mainApi,
@@ -619,13 +701,14 @@ export async function assembleTextCompletionPrompt(input) {
     const { system, combinedStoryString, storyStringInjection } = storyStringResult;
     mesExamplesArray = storyStringResult.mesExamplesArray;
 
-    // ---- Step 7.5: extension-prompts table + depth-indexed chat injection -------------------------
-    // Builds a FRESH, per-request extension_prompts table (see src/extension-prompt-table.js's module
-    // doc comment for why "fresh per request" is the correct server-side equivalent of the client's
-    // persistent-but-flushed global) and populates it with the three depth-indexed injection sources
-    // this task wires up (see module doc comment gap 1 below for what's still NOT included: anBefore/
-    // anAfter and outletEntries).
-    const extensionPromptTable = createExtensionPromptTable();
+    // ---- Step 7.5: remaining extension-prompts table writes + depth-indexed chat injection ---------
+    // Continues populating the SAME table created in Step 6.5 above (the Author's Note was already
+    // written there, before assembleStoryString() ran) with the remaining depth-indexed injection
+    // sources this orchestrator wires up (see module doc comment gap 1 for what's still NOT included:
+    // anBefore/anAfter's outletEntries counterpart). These three still need to run AFTER
+    // assembleStoryString(), since `storyStringInjection` (source 2 below) is only available once
+    // assembleStoryString() has returned - so, unlike the Author's Note, they could not have moved
+    // earlier alongside it.
 
     // 1. World-info @Depth entries (bucketActivatedEntries's worldInfoDepth output).
     for (const depthEntry of worldInfoDepthEntries) {
@@ -640,35 +723,7 @@ export async function assembleTextCompletionPrompt(input) {
         );
     }
 
-    // 2. Author's note. JUDGMENT CALL: resolveAuthorsNote()'s own doc comment states `authorsNote.
-    // position` is "One of extension_prompt_types positions" - i.e. it is NOT an ambiguous value that
-    // needs guessing at, it already IS an extension_prompt_types member (public/scripts/authors-note.js
-    // stores whatever the client's AN position dropdown holds, which is an extension_prompt_types
-    // value). So rather than the "always treat as IN_CHAT" simplification this task's instructions
-    // allow for an unclear mapping, this wiring honors the real value: the note is only fed into THIS
-    // table (and therefore only reachable via doChatInject) when position === IN_CHAT. When position
-    // is IN_PROMPT or BEFORE_PROMPT, the note belongs to the beforeScenarioAnchor/afterScenarioAnchor
-    // mechanism instead - which is a SEPARATE, already-documented gap (module doc comment gap 1) that
-    // this task does not solve - so such notes remain unwired here, deliberately.
-    //
-    // WI ANTop/ANBottom combination (public/script.js ~5352-5356): when the note is actually due to
-    // be inserted this turn (`shouldWIAddPrompt`, i.e. resolveAuthorsNote()'s `shouldAddPrompt`), the
-    // client REPLACES the plain note value with `${ANTop}\n${note}\n${ANBottom}`, stripping at most
-    // ONE leading and ONE trailing newline (the client's regex `/(^\n)|(\n$)/g` only ever matches each
-    // anchor once, not every run of newlines - do not "fix" this into a stricter trim). This closes
-    // the anBefore/anAfter part of gap 1 below for the note-injection path specifically (outletEntries
-    // and the before/after scenario anchors remain separately unwired, as documented).
-    if (authorsNote.disabled === false && authorsNote.position === extension_prompt_types.IN_CHAT) {
-        const noteValue = authorsNote.shouldAddPrompt
-            ? `${anBefore.join('\n')}\n${authorsNote.value}\n${anAfter.join('\n')}`.replace(/(^\n)|(\n$)/g, '')
-            : authorsNote.value;
-        setExtensionPrompt(
-            extensionPromptTable, 'authors_note', noteValue,
-            extension_prompt_types.IN_CHAT, authorsNote.depth, false, authorsNote.role,
-        );
-    }
-
-    // 3. Story-string-in-chat injection (assembleStoryString's storyStringInjection output, non-null
+    // 2. Story-string-in-chat injection (assembleStoryString's storyStringInjection output, non-null
     // only when power_user.context.story_string_position === IN_CHAT on the client).
     if (storyStringInjection) {
         setExtensionPrompt(
@@ -677,7 +732,7 @@ export async function assembleTextCompletionPrompt(input) {
         );
     }
 
-    // 4. Character card's own depth_prompt (public/script.js ~5545-5559), now with the REAL
+    // 3. Character card's own depth_prompt (public/script.js ~5545-5559), now with the REAL
     // group/single branching (this task closes the previously-documented group-chat sub-gap - see
     // module doc comment gap 1). The `scan` argument reuses `noteSettings.allowWIScan` in BOTH
     // branches - the same input this orchestrator already threads through for the author's-note's OWN
@@ -849,6 +904,11 @@ export async function assembleTextCompletionPrompt(input) {
         thisMaxContext, negativePrompt, positivePrompt,
         worldInfoBefore, worldInfoAfter, worldInfoExamples, worldInfoDepth: worldInfoDepthEntries, anBefore, anAfter, outletEntries,
         authorsNote,
+        // The real, table-resolved beforeScenarioAnchor/afterScenarioAnchor values that actually fed
+        // assembleStoryString() above (see module doc comment gap 1) - echoed back for sanity-checking,
+        // e.g. proving a note positioned at BEFORE_PROMPT/IN_PROMPT resolves here (and NOT via
+        // doChatInject/chat splicing), and that an IN_CHAT-positioned note leaves these empty.
+        resolvedBeforeScenarioAnchor, resolvedAfterScenarioAnchor,
         system, combinedStoryString, storyStringInjection, mesExamplesArray, mesExamplesRawArray,
         jailbreak,
         chat2, userMessageIndices, userAlignmentMessage, addUserAlignment,
@@ -861,7 +921,7 @@ export async function assembleTextCompletionPrompt(input) {
         doChatInjectIndices,
         // Documented gaps, echoed back so a caller can see what was NOT wired (see module doc comment).
         gaps: {
-            extensionPromptsSideTable: 'worldInfoDepth/authorsNote(IN_CHAT)/storyStringInjection/characterDepthPrompt(single-character AND group-chat, via getGroupCharacterDepthPrompts()) ARE now spliced into the chat array via doChatInject() (see module doc comment gap 1). anBefore/anAfter (WI-combined-with-AN) and outletEntries are still NOT wired into anything - still open.',
+            extensionPromptsSideTable: 'worldInfoDepth/storyStringInjection/characterDepthPrompt(single-character AND group-chat, via getGroupCharacterDepthPrompts()) ARE spliced into the chat array via doChatInject() (see module doc comment gap 1). authorsNote is now written at its REAL position (any of IN_CHAT/BEFORE_PROMPT/IN_PROMPT) - IN_CHAT is spliced via doChatInject(), BEFORE_PROMPT/IN_PROMPT is resolved into beforeScenarioAnchor/afterScenarioAnchor (now CLOSED, see resolvedBeforeScenarioAnchor/resolvedAfterScenarioAnchor above). outletEntries is still NOT wired into anything - still open.',
         },
     };
 }

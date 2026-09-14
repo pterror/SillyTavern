@@ -506,6 +506,115 @@ test('assembleTextCompletionPrompt: quiet-prompt and scannable author\'s-note te
     }
 });
 
+test('assembleTextCompletionPrompt: an author\'s note positioned at BEFORE_PROMPT is resolved into beforeScenarioAnchor (new in this task)', async () => {
+    const { charactersDir, root } = makeDirectories();
+    const avatar = 'aria5c.png';
+    writeCharacterCard(charactersDir, avatar, {
+        spec: 'chara_card_v2',
+        spec_version: '2.0',
+        name: 'Aria',
+        description: 'Aria is a wandering ranger who guards the Whispering Woods.',
+        personality: 'brave and curious',
+        scenario: '',
+        first_mes: 'Hello there, traveler!',
+        mes_example: '',
+        avatar,
+        data: {
+            name: 'Aria',
+            description: 'Aria is a wandering ranger who guards the Whispering Woods.',
+            personality: 'brave and curious',
+            scenario: '',
+            first_mes: 'Hello there, traveler!',
+            mes_example: '',
+            system_prompt: '', post_history_instructions: '', character_version: '', creator_notes: '',
+            extensions: {}, alternate_greetings: [],
+        },
+    });
+    const directories = { characters: charactersDir, root };
+
+    const input = {
+        ...baseFixture(directories, avatar),
+        hasCharacterOrGroup: true,
+        chatMetadata: {
+            note_prompt: 'A distinctive before-scenario note: the moon is full tonight.',
+            note_interval: 1, // always due
+            note_position: 2, // extension_prompt_types.BEFORE_PROMPT
+            note_depth: 0,
+            note_role: 0, // SYSTEM
+        },
+    };
+
+    const result = await assembleTextCompletionPrompt(input);
+
+    assert.equal(result.authorsNote.disabled, false, 'sanity check: authors note should be active');
+    assert.equal(result.authorsNote.position, 2, 'sanity check: note is positioned at BEFORE_PROMPT');
+    assert.ok(
+        result.resolvedBeforeScenarioAnchor.includes('A distinctive before-scenario note: the moon is full tonight.'),
+        'the BEFORE_PROMPT-positioned note should be resolved into resolvedBeforeScenarioAnchor - not possible before this task',
+    );
+    assert.equal(result.resolvedAfterScenarioAnchor, '', 'resolvedAfterScenarioAnchor (IN_PROMPT) should stay empty - the note is only at BEFORE_PROMPT');
+    assert.ok(
+        result.combinedPrompt.includes('A distinctive before-scenario note: the moon is full tonight.'),
+        'the note text should reach combinedPrompt via the beforeScenarioAnchor mechanism',
+    );
+
+    // Mutual exclusivity: the note is NOT also spliced into the chat as an IN_CHAT depth injection.
+    // doChatInject() only ever reads IN_CHAT-positioned table entries, so a BEFORE_PROMPT note must
+    // never appear via chat-splicing - it should appear in combinedPrompt exactly once (via the anchor).
+    const occurrences = result.combinedPrompt.split('A distinctive before-scenario note: the moon is full tonight.').length - 1;
+    assert.equal(occurrences, 1, 'the note text should appear exactly once in combinedPrompt, not double-injected');
+});
+
+test('assembleTextCompletionPrompt: an author\'s note positioned at IN_CHAT does NOT leak into the beforeScenarioAnchor/afterScenarioAnchor anchors (new in this task)', async () => {
+    const { charactersDir, root } = makeDirectories();
+    const avatar = 'aria5d.png';
+    writeCharacterCard(charactersDir, avatar, {
+        spec: 'chara_card_v2',
+        spec_version: '2.0',
+        name: 'Aria',
+        description: 'Aria is a wandering ranger who guards the Whispering Woods.',
+        personality: 'brave and curious',
+        scenario: '',
+        first_mes: 'Hello there, traveler!',
+        mes_example: '',
+        avatar,
+        data: {
+            name: 'Aria',
+            description: 'Aria is a wandering ranger who guards the Whispering Woods.',
+            personality: 'brave and curious',
+            scenario: '',
+            first_mes: 'Hello there, traveler!',
+            mes_example: '',
+            system_prompt: '', post_history_instructions: '', character_version: '', creator_notes: '',
+            extensions: {}, alternate_greetings: [],
+        },
+    });
+    const directories = { characters: charactersDir, root };
+
+    const input = {
+        ...baseFixture(directories, avatar),
+        hasCharacterOrGroup: true,
+        chatMetadata: {
+            note_prompt: 'A distinctive in-chat-only note: the lantern flickers.',
+            note_interval: 1, // always due
+            note_position: 1, // extension_prompt_types.IN_CHAT
+            note_depth: 0,
+            note_role: 0, // SYSTEM
+        },
+    };
+
+    const result = await assembleTextCompletionPrompt(input);
+
+    assert.equal(result.authorsNote.disabled, false, 'sanity check: authors note should be active');
+    assert.equal(result.authorsNote.position, 1, 'sanity check: note is positioned at IN_CHAT');
+    assert.equal(result.resolvedBeforeScenarioAnchor, '', 'an IN_CHAT-positioned note must not leak into resolvedBeforeScenarioAnchor');
+    assert.equal(result.resolvedAfterScenarioAnchor, '', 'an IN_CHAT-positioned note must not leak into resolvedAfterScenarioAnchor');
+    assert.ok(
+        result.combinedPrompt.includes('A distinctive in-chat-only note: the lantern flickers.'),
+        'the note should still reach combinedPrompt via the normal IN_CHAT chat-splicing path',
+    );
+});
+
 test('assembleTextCompletionPrompt: character card depth_prompt is now spliced into the chat as a real IN_CHAT injection, single-character case (new in this task)', async () => {
     const { charactersDir, root } = makeDirectories();
     const avatar = 'aria-depth-prompt.png';
