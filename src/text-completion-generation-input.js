@@ -4,6 +4,7 @@ import { loadBranch, getAncestorPath } from './message-tree-db.js';
 import { readCardContent } from './endpoints/characters.js';
 import { getGroupsByIds } from './endpoints/groups.js';
 import { extension_prompt_types, extension_prompt_roles } from './extension-prompt-table.js';
+import { resolveWorldInfoCandidates, world_info_insertion_strategy } from './world-info/candidate-resolution.js';
 
 /**
  * Adapter/resolver layer between REAL on-disk state (settings.json - via settings-store.js's
@@ -99,10 +100,54 @@ import { extension_prompt_types, extension_prompt_roles } from './extension-prom
  *   the client, e.g. passed as `Generate()` options or resolved by subsystems explicitly out of
  *   scope per the orchestrator's own gap list) - left at the orchestrator's own defaults unless a
  *   caller supplies an override via `macroExtras`.
- * - `worldInfoCandidates`: explicitly out of scope per the task and the orchestrator's own gap 6 -
- *   plain passthrough.
  * - `name2`/group member display names: resolved for real below via a real character-card / group
  *   read (see `resolveName2AndGroupMemberNames`), NOT guessed - documented in that function.
+ *
+ * ============================================================================================
+ * UPDATE (this session): `worldInfoCandidates` IS NOW RESOLVED FOR REAL by default, via
+ * `src/world-info/candidate-resolution.js`'s `resolveWorldInfoCandidates()` (this closes the
+ * previously-documented passthrough-only gap). Field mapping, verified against
+ * public/scripts/world-info.js:
+ * - `selectedWorldInfo` <- `world_info.globalSelect` (top-level settings key `world_info`, NOT
+ *   `world_info_settings` - these are two different top-level settings keys; `world_info` holds the
+ *   user's global lorebook SELECTION plus per-character `charLore` overrides, `world_info_settings`
+ *   holds the numeric/boolean WI behavior knobs already mapped above). Not filtered against a
+ *   "real lorebook names" list here (the client filters `globalSelect` against `world_names` at load
+ *   time) - a stale/deleted lorebook name simply resolves to zero entries via `loadWorldEntries()`'s
+ *   own `readWorldInfoFile(...) ?? {}` guard, so omitting the filter is behaviorally inert, not a gap.
+ * - `character` <- the same parsed character-card object `resolveName2AndGroupMemberNames()` already
+ *   loads for `name2` (only `.data.extensions.world`/`.data.character_book` are read from it, per
+ *   `getCharacterLore()`'s own contract) - reused, not re-read from disk a second time.
+ * - `characterExtraBooks` <- `world_info.charLore` (array of `{name, extraBooks}`), matched against
+ *   `getCharaFilename(avatar)`'s real derivation (`avatar` with its extension stripped via
+ *   `avatar.replace(/\.[^/.]+$/, '')` - verified against public/scripts/utils.js's
+ *   `getCharaFilename()`, which does the same strip when given an explicit avatar key).
+ * - `chatWorldName` <- `chatMetadata[METADATA_KEY]`, `METADATA_KEY === 'world_info'` (verified
+ *   against public/scripts/world-info.js's own `export const METADATA_KEY = 'world_info';`) - i.e.
+ *   `chatMetadata.world_info`, a plain string chat-metadata field, unrelated to the top-level
+ *   `world_info` settings key of the same name.
+ * - `personaWorldLorebook` <- `power_user.persona_description_lorebook`.
+ * - `worldInfoCharacterStrategy` <- the top-level settings key `world_info_character_strategy`
+ *   (verified NOT nested under `world_info_settings` - public/scripts/world-info.js reads/writes it
+ *   as a bare top-level `settings.world_info_character_strategy`), defaulting to
+ *   `world_info_insertion_strategy.character_first` (the client's own module-level default) when
+ *   absent from a fresh settings.json.
+ * A caller that already has its own resolved candidate list (or wants to bypass this resolution
+ * entirely, e.g. for a test) may still pass `worldInfoCandidates` explicitly - an explicit array
+ * (including `[]`) always wins over the auto-resolved one.
+ *
+ * UPDATE (this session): a new, OPTIONAL `userMessageText` param appends the actual raw user action
+ * for this turn - "the user sent this text" - onto the resolved chat history as the newest message,
+ * in the exact shape every other loaded message already uses (verified against
+ * `message-tree-db.js`'s own `rowToMessage()`/`getAncestorPath()` output shape:
+ * `{node_id, mes, send_date, extra, name, is_user}`): `{is_user: true, name: name1, mes:
+ * userMessageText, extra: {}, send_date: Date.now()}`. `node_id` is intentionally omitted (this
+ * message doesn't exist in the tree DB yet - it's the pending user input for a generation that
+ * hasn't been saved) - nothing this orchestrator's pipeline reads (`core-chat-build.js`,
+ * `finalizeCoreChatMessage()`, world-info key-matching, etc, all re-checked) requires `node_id` to be
+ * present. When `userMessageText` is omitted (e.g. a 'continue'/'swipe' generation that doesn't add a
+ * new message), `chat` is exactly the loaded history, unchanged - matching this resolver's prior
+ * behavior.
  */
 
 const DEFAULT_STORY_STRING_POSITION = extension_prompt_types.IN_PROMPT;
@@ -120,22 +165,26 @@ const DEFAULT_STORY_STRING_ROLE = extension_prompt_roles.SYSTEM;
  * can't be read is silently skipped (mirrors this module's general "don't fail the whole
  * resolution over one bad member" stance - a missing/corrupt character file elsewhere in the
  * codebase is already treated as non-fatal, e.g. character-card-fields.js's `loadCharacter`).
+ * `character` (the parsed character-card JSON, or `null`) is also returned - reused by the caller
+ * for real world-info candidate resolution (`resolveWorldInfoCandidates()`'s `character` param)
+ * instead of reading the same card file from disk a second time.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {object} params
  * @param {string} [params.avatar]
  * @param {string} [params.groupId]
- * @returns {Promise<{ name2: string, groupMemberNames: {name: string}[] }>}
+ * @returns {Promise<{ name2: string, groupMemberNames: {name: string}[], character: object|null }>}
  */
 async function resolveName2AndGroupMemberNames(directories, { avatar, groupId }) {
     let name2 = '';
     let groupMemberNames = [];
+    let character = null;
 
     if (avatar) {
         try {
             const raw = await readCardContent(directories, avatar);
             if (raw !== undefined) {
-                const card = JSON.parse(raw);
-                name2 = card?.name || card?.data?.name || '';
+                character = JSON.parse(raw);
+                name2 = character?.name || character?.data?.name || '';
             }
         } catch { /* leave name2 as '' - matches character-card-fields.js's own no-character fallback */ }
     }
@@ -159,7 +208,7 @@ async function resolveName2AndGroupMemberNames(directories, { avatar, groupId })
         }
     }
 
-    return { name2, groupMemberNames };
+    return { name2, groupMemberNames, character };
 }
 
 /**
@@ -208,8 +257,9 @@ async function resolveChatHistory(directories, { ownerId, branchName, nodeId }) 
  * (via src/settings-store.js) and the real message-tree chat DB (via src/message-tree-db.js).
  *
  * See this module's doc comment above for the full list of field-mapping decisions and documented
- * gaps. `worldInfoCandidates`, `countTokens`, and `encodeTokens` are still caller-supplied
- * passthrough params (see doc comment for exactly why, especially for the tokenizer functions).
+ * gaps. `countTokens`/`encodeTokens` are still caller-supplied passthrough params (see doc comment
+ * for exactly why). `worldInfoCandidates` is now auto-resolved for real by default (see the UPDATE
+ * section in the doc comment above) unless the caller passes an explicit override.
  * `macroExtras`, when given, is shallow-merged OVER the resolved object (caller overrides win) -
  * use it to supply any of the orchestrator's other optional fields this resolver doesn't compute
  * (e.g. `quiet_prompt`, `isDryRun`, `canUseTools`, CFG's `worldInfoRandom`, etc).
@@ -227,7 +277,14 @@ async function resolveChatHistory(directories, { ownerId, branchName, nodeId }) 
  * @param {boolean} [params.isSwipe]
  * @param {string} [params.textareaText]
  * @param {object} [params.chatMetadata] Overrides the loaded branch's own metadata when given.
- * @param {import('./world-info/activation.js').WIEntry[]} [params.worldInfoCandidates]
+ * @param {string} [params.userMessageText] The raw user action for this turn - "the user sent this
+ * text". When given, appended onto the resolved chat history as the newest message (see doc comment
+ * UPDATE section for the exact shape). Omit for generation types that don't add a new message
+ * (e.g. 'continue'/'swipe').
+ * @param {import('./world-info/activation.js').WIEntry[]} [params.worldInfoCandidates] Explicit
+ * override/bypass for the auto-resolved candidates (see doc comment UPDATE section) - when omitted
+ * (left `undefined`), this resolver calls `resolveWorldInfoCandidates()` for real; passing an
+ * explicit array (including `[]`) always wins.
  * @param {(text: string) => Promise<number>} params.countTokens REQUIRED - see doc comment.
  * @param {(text: string) => number[]} params.encodeTokens REQUIRED - see doc comment.
  * @param {number} [params.amountGen] Overrides settings.amount_gen when given.
@@ -237,8 +294,8 @@ async function resolveChatHistory(directories, { ownerId, branchName, nodeId }) 
 export async function resolveTextCompletionGenerationInput(directories, {
     avatar, groupId, ownerId, branchName, nodeId,
     type, isImpersonate = false, isContinue = false, isSwipe = false,
-    textareaText = '', chatMetadata: chatMetadataOverride,
-    worldInfoCandidates = [], countTokens, encodeTokens, amountGen, macroExtras = {},
+    textareaText = '', chatMetadata: chatMetadataOverride, userMessageText,
+    worldInfoCandidates: worldInfoCandidatesOverride, countTokens, encodeTokens, amountGen, macroExtras = {},
 } = {}) {
     if (typeof countTokens !== 'function') {
         throw new Error('resolveTextCompletionGenerationInput: countTokens is required (real tokenizer resolution is caller-owned - see module doc comment)');
@@ -250,14 +307,16 @@ export async function resolveTextCompletionGenerationInput(directories, {
     const {
         power_user: powerUser = {},
         world_info_settings: worldInfoSettings = {},
+        world_info: worldInfoSelection = {},
+        world_info_character_strategy: worldInfoCharacterStrategySetting,
         textgenerationwebui_settings: textgenSettings = {},
         extension_settings: extensionSettings = {},
         username,
         amount_gen: settingsAmountGen,
         max_context: settingsMaxContext,
     } = readSettingsAtPaths(directories, [
-        'power_user', 'world_info_settings', 'textgenerationwebui_settings', 'extension_settings',
-        'username', 'amount_gen', 'max_context',
+        'power_user', 'world_info_settings', 'world_info', 'world_info_character_strategy',
+        'textgenerationwebui_settings', 'extension_settings', 'username', 'amount_gen', 'max_context',
     ]);
 
     const backend = resolveTextGenBackend(directories);
@@ -265,11 +324,41 @@ export async function resolveTextCompletionGenerationInput(directories, {
     const isGroup = Boolean(groupId);
     const hasCharacterOrGroup = Boolean(avatar) || Boolean(groupId);
 
-    const { chat, metadata: loadedChatMetadata } = await resolveChatHistory(directories, { ownerId, branchName, nodeId });
+    const { chat: loadedChat, metadata: loadedChatMetadata } = await resolveChatHistory(directories, { ownerId, branchName, nodeId });
     const chatMetadata = chatMetadataOverride ?? loadedChatMetadata ?? {};
 
-    const { name2, groupMemberNames } = await resolveName2AndGroupMemberNames(directories, { avatar, groupId });
+    const { name2, groupMemberNames, character } = await resolveName2AndGroupMemberNames(directories, { avatar, groupId });
     const name1 = username || 'User';
+
+    // Appends the actual raw user action for this turn onto the loaded history, in the exact shape
+    // every other loaded message already uses - see this module's doc comment UPDATE section for
+    // why `node_id` is intentionally omitted. Left as exactly the loaded history when
+    // `userMessageText` isn't given (e.g. 'continue'/'swipe').
+    const chat = typeof userMessageText === 'string'
+        ? [...loadedChat, { is_user: true, name: name1, mes: userMessageText, extra: {}, send_date: Date.now() }]
+        : loadedChat;
+
+    // Real world-info candidate resolution (see doc comment UPDATE section for the full field
+    // mapping) - only attempted when the caller hasn't already supplied an explicit override/bypass.
+    // METADATA_KEY ('world_info') is mirrored inline rather than imported - it lives in
+    // public/scripts/world-info.js, a client-only module this server-side resolver otherwise never
+    // imports from.
+    const WORLD_INFO_METADATA_KEY = 'world_info';
+    let worldInfoCandidates = worldInfoCandidatesOverride;
+    if (worldInfoCandidates === undefined) {
+        const charFilename = avatar ? avatar.replace(/\.[^/.]+$/, '') : null;
+        const charLore = Array.isArray(worldInfoSelection.charLore) ? worldInfoSelection.charLore : [];
+        const characterExtraBooks = charLore.find(e => e.name === charFilename)?.extraBooks ?? [];
+        worldInfoCandidates = await resolveWorldInfoCandidates({
+            directories,
+            selectedWorldInfo: worldInfoSelection.globalSelect ?? [],
+            character,
+            characterExtraBooks,
+            chatWorldName: chatMetadata?.[WORLD_INFO_METADATA_KEY] ?? null,
+            personaWorldLorebook: powerUser.persona_description_lorebook ?? null,
+            worldInfoCharacterStrategy: worldInfoCharacterStrategySetting ?? world_info_insertion_strategy.character_first,
+        });
+    }
 
     const context = powerUser.context ?? {};
     const instruct = powerUser.instruct ?? {};
