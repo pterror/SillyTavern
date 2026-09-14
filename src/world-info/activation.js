@@ -75,6 +75,13 @@ import { substituteParams } from '../macro-substitution.js';
  * @param {number} [options.minActivations] world_info_min_activations setting (0 = disabled) - keep scanning deeper into chat history until at least this many entries have activated
  * @param {number} [options.minActivationsDepthMax] world_info_min_activations_depth_max setting (0 = no extra cap beyond chat length)
  * @param {Map<string, WIEntry>} [options.externalActivations] Entries to force-activate regardless of key matching, keyed by `${world}.${uid}` - mirrors the client's WORLDINFO_FORCE_ACTIVATE event; no event system here, the caller resolves and passes these in directly
+ * @param {string[]} [options.additionalScanInjects] Extra, already-resolved strings to feed into the
+ *   scan buffer's inject list (via WorldInfoBuffer#addInject()), mirroring the client's
+ *   `checkWorldInfo()` loop over `extension_prompts` entries with `scan === true` (e.g. the
+ *   quiet-prompt text, and the Author's Note text when its `allowWIScan` setting is on) - resolving
+ *   WHICH extension-prompt entries are scannable and reading their text is the caller's job (same
+ *   "caller resolves entities" pattern as `externalActivations`/`worldInfoCandidates`); this module
+ *   only injects the already-resolved strings it's given. Falsy/empty strings are ignored. Default `[]`.
  * @returns {Promise<{activatedEntries: WIEntry[], content: string}>}
  */
 export async function activateWorldInfoEntries(entries, chatMessages, options) {
@@ -83,6 +90,7 @@ export async function activateWorldInfoEntries(entries, chatMessages, options) {
         maxRecursionStepsSetting = 0, globalScanData = {}, macroContext = {}, countTokens, random = Math.random,
         chatMetadata = {}, isDryRun = false, useGroupScoring = false, entryFilterContext = {},
         minActivations = 0, minActivationsDepthMax = 0, externalActivations = new Map(),
+        additionalScanInjects = [],
     } = options;
     const maxRecursionSteps = maxRecursionStepsSetting > 0 ? maxRecursionStepsSetting : 25;
 
@@ -93,6 +101,9 @@ export async function activateWorldInfoEntries(entries, chatMessages, options) {
     if (candidateEntries.length === 0) return { activatedEntries: [], content: '' };
 
     const buffer = new WorldInfoBuffer(chatMessages, globalScanData, { depth }, externalActivations);
+    for (const text of additionalScanInjects) {
+        if (text) buffer.addInject(text);
+    }
     const timedEffects = new WorldInfoTimedEffects(chatMessages, candidateEntries, chatMetadata, isDryRun);
     timedEffects.checkTimedEffects();
 
