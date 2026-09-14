@@ -351,6 +351,98 @@ async function run() {
     // Restore the original fixture (writeAllSettings() is a full sharded-file replace, not a merge).
     writeAllSettings(directories, buildSettingsFixture());
 
+    // --- GROUP CHAT support (this follow-up task): real `groupId` wiring, mirroring
+    // text-completions.test.js's own group-chat test fixture conventions (same real group.json shape
+    // as src/endpoints/groups.js's own `/create` route writes, two members with deliberately distinct
+    // `description`s so a wrong-member/uncombined-card mixup would be detectable). Unlike the
+    // text-completion precedent, chat-completion's own `getCharacterCardFields()` COMBINES every
+    // member's card into one joined string (via `computeGroupCards()`) rather than resolving only the
+    // responding member's own card - so this test asserts against that combined-string shape
+    // specifically, not a single member's own uncombined card. ---
+    {
+        const nova = writeCharacter('Nova.png', {
+            name: 'Nova',
+            description: 'Nova is a stoic starship engineer.',
+            data: { name: 'Nova', description: 'Nova is a stoic starship engineer.', first_mes: 'Systems nominal.' },
+        });
+        const zephyr = writeCharacter('Zephyr.png', {
+            name: 'Zephyr',
+            description: 'Zephyr is a chaotic weather spirit.',
+            data: { name: 'Zephyr', description: 'Zephyr is a chaotic weather spirit.', first_mes: 'Winds are shifting!' },
+        });
+
+        const groupId = 'test-group-1';
+        const groupChatId = 'test-group-1-chat';
+        /** Exact shape src/endpoints/groups.js's own POST /create route writes to <id>.json - same
+         * fixture convention as text-completions.test.js's own group test. `generation_mode: 1`
+         * (group_generation_mode.APPEND, public/scripts/group-chats.js) so
+         * computeGroupCards()/getCharacterCardFields() actually produces COMBINED cards - SWAP (0) is
+         * falsy and would make computeGroupCards() return null (fall back to single-character
+         * resolution) instead, per that function's own `!group.generation_mode` guard. */
+        const groupMetadata = {
+            id: groupId,
+            name: 'Adventuring Party',
+            members: [nova, zephyr],
+            avatar_url: 'img/ai4.png',
+            allow_self_responses: false,
+            activation_strategy: 0,
+            generation_mode: 1,
+            disabled_members: [],
+            fav: false,
+            chat_id: groupChatId,
+            chats: [groupChatId],
+            auto_mode_delay: 5,
+            generation_mode_join_prefix: '',
+            generation_mode_join_suffix: '',
+        };
+        fs.writeFileSync(path.join(groupsDir, `${groupId}.json`), JSON.stringify(groupMetadata, null, 4));
+
+        // A chat branch owned by the GROUP's own id - not either member's avatar - with one message
+        // from each member already in history, matching a real multi-member group conversation.
+        await saveChatToTree(directories, groupId, groupChatId, [
+            { chat_metadata: {} },
+            { name: 'Tester', is_user: true, mes: 'Hello, party!', send_date: 1, extra: {} },
+            { name: 'Zephyr', is_user: false, mes: 'Winds are shifting!', send_date: 2, extra: {} },
+        ]);
+
+        const groupInput = await resolveChatCompletionGenerationInput(directories, {
+            avatar: nova, groupId, ownerId: groupId, branchName: groupChatId,
+            type: 'normal',
+        });
+
+        // --- isGroup is real (Boolean(groupId)) - not exposed as a top-level field on the returned
+        // object (see this module's own doc comment decision 2/FIELD-MAPPING NOTES: only
+        // `macroContext`/`historyOptions` carry it), so it's checked at both of its real, consumed
+        // locations. ---
+        assert.equal(groupInput.macroContext.isGroup, true, 'isGroup is real (Boolean(groupId)) in macroContext');
+        assert.equal(groupInput.historyOptions.isGroup, true, 'isGroup is real in historyOptions, forwarded to chat-completion-history.js');
+
+        // --- name2 resolves to the SPECIFIC RESPONDING MEMBER (avatar), not the group's own name. ---
+        assert.equal(groupInput.name2, 'Nova', 'name2 resolves to the specific responding member, not the group\'s own name, even though groupId is also set');
+
+        // --- groupMemberNames covers the WHOLE roster (a plain string[], per this resolver's own real
+        // consumer shape - see doc comment), including the responding member itself (no
+        // self-exclusion - resolveCharacterName2() mirrors text-completion's own
+        // resolveName2AndGroupMemberNames(), which applies none either). ---
+        assert.deepEqual(groupInput.groupMemberNames.slice().sort(), ['Nova', 'Zephyr'], 'groupMemberNames covers the whole roster, as a plain string[]');
+
+        // --- character fields reflect the COMBINED group cards (computeGroupCards()'s real
+        // combining behavior), NOT a single member's own uncombined card. ---
+        assert.ok(groupInput.charDescription.includes('Nova is a stoic starship engineer.'), 'combined charDescription includes Nova\'s own description');
+        assert.ok(groupInput.charDescription.includes('Zephyr is a chaotic weather spirit.'), 'combined charDescription ALSO includes Zephyr\'s description - proving real combining, not just the responding member\'s own uncombined card');
+
+        // --- end-to-end: feed the resolved group input into the REAL prepareOpenAIMessages() and
+        // confirm the assembled `chat` output reflects group-appropriate name-prefixing/content -
+        // buildChatCompletionMessages()'s own real `isGroup`-driven name-prefixing (character_names_behavior.DEFAULT:
+        // `(isGroup && chat[j].name !== name1)`) only activates when it's genuinely fed a real `isGroup: true`. ---
+        const groupResult = await prepareOpenAIMessages(groupInput);
+        assert.ok(Array.isArray(groupResult.chat), 'prepareOpenAIMessages() returns a real chat array for a group turn');
+        const groupFlattened = JSON.stringify(groupResult.chat);
+        assert.ok(groupFlattened.includes('Zephyr: Winds are shifting!'), 'the non-responding member\'s message is name-prefixed ("Zephyr: ...") in the assembled chat-completion payload - real group-appropriate name-prefixing, not the single-character (unprefixed) behavior');
+        assert.ok(groupFlattened.includes('Nova is a stoic starship engineer.'), 'the combined group-card description made it all the way into the final assembled chat-completion payload');
+        assert.ok(groupFlattened.includes('Zephyr is a chaotic weather spirit.'), 'the OTHER member\'s combined-card description also made it into the final assembled chat-completion payload');
+    }
+
     console.log('chat-completion-generation-input.test.js: all assertions passed');
 }
 

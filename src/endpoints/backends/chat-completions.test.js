@@ -560,6 +560,107 @@ async function run() {
         assert.equal(originalNode.mes, 'Once upon a time,', 'the original assistant leaf\'s text is byte-for-byte unchanged - continueUserTextConflict correctly skipped persisting the reply');
     }
 
+    // (j) GROUP CHAT support (this follow-up task): `character_avatar` (the specific responding member)
+    // AND `group_id` (the group's own addressing) given TOGETHER - the shape public/script.js's widened
+    // chat-completion raw-action gate now sends for a group turn, mirroring text-completions.test.js's
+    // own group test (case (j) there) with the identical real on-disk fixture conventions: a real
+    // group.json (matching the exact shape src/endpoints/groups.js's own `/create` route writes), a
+    // real chat branch OWNED BY THE GROUP'S id (not either member's avatar), and two real member
+    // character cards with deliberately distinct `description`s so a wrong-member/uncombined-card
+    // mixup would be detectable.
+    {
+        const nova = writeCharacter('Nova.png', {
+            name: 'Nova',
+            description: 'Nova is a stoic starship engineer.',
+            data: { name: 'Nova', description: 'Nova is a stoic starship engineer.', first_mes: 'Systems nominal.' },
+        });
+        const zephyr = writeCharacter('Zephyr.png', {
+            name: 'Zephyr',
+            description: 'Zephyr is a chaotic weather spirit.',
+            data: { name: 'Zephyr', description: 'Zephyr is a chaotic weather spirit.', first_mes: 'Winds are shifting!' },
+        });
+
+        const groupId = 'test-group-1';
+        const groupChatId = 'test-group-1-chat';
+        /** Exact shape src/endpoints/groups.js's own POST /create route writes to <id>.json.
+         * generation_mode: 1 (group_generation_mode.APPEND) so computeGroupCards() actually produces
+         * COMBINED cards - see chat-completion-generation-input.test.js's own identical fixture note. */
+        const groupMetadata = {
+            id: groupId,
+            name: 'Adventuring Party',
+            members: [nova, zephyr],
+            avatar_url: 'img/ai4.png',
+            allow_self_responses: false,
+            activation_strategy: 0,
+            generation_mode: 1,
+            disabled_members: [],
+            fav: false,
+            chat_id: groupChatId,
+            chats: [groupChatId],
+            auto_mode_delay: 5,
+            generation_mode_join_prefix: '',
+            generation_mode_join_suffix: '',
+        };
+        fs.writeFileSync(path.join(groupsDir, `${groupId}.json`), JSON.stringify(groupMetadata, null, 4));
+
+        // A chat branch owned by the GROUP's own id - not either member's avatar - with one message
+        // from each member already in history, matching a real multi-member group conversation.
+        await saveChatToTree(directories, groupId, groupChatId, [
+            { chat_metadata: {} },
+            { name: 'Tester', is_user: true, mes: 'Hello, party!', send_date: 1, extra: {} },
+            { name: 'Zephyr', is_user: false, mes: 'Winds are shifting!', send_date: 2, extra: {} },
+        ]);
+
+        // --- assembly: buildRawActionChatCompletionRequest() with BOTH characterAvatar (Nova, the
+        // member actually responding this turn) AND groupId (the group) set together. ---
+        const builtGroup = await buildRawActionChatCompletionRequest(directories, {
+            characterAvatar: nova, groupId, ownerId: groupId, branchName: groupChatId,
+            type: 'normal', userMessageText: 'Nova, status report?',
+        });
+
+        assert.equal(builtGroup.name2, 'Nova', 'name2 resolves to the SPECIFIC RESPONDING MEMBER (characterAvatar), not the group\'s own name, even though groupId is also set');
+        assert.ok(Array.isArray(builtGroup.params.messages), 'params.messages is the real, prepared chat-completion message array');
+        const groupJoined = builtGroup.params.messages.map(m => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content))).join('\n');
+        assert.ok(groupJoined.includes('Nova is a stoic starship engineer.'), 'the assembled messages reflect the COMBINED group cards (Nova\'s own description)');
+        assert.ok(groupJoined.includes('Zephyr is a chaotic weather spirit.'), 'the assembled messages ALSO reflect the OTHER member\'s combined-card description - proving real combining, not just the responding member\'s own uncombined card');
+        assert.ok(groupJoined.includes('Zephyr: Winds are shifting!'), 'the real group chat HISTORY is name-prefixed for the non-responding member, per real isGroup-driven name-prefixing');
+        assert.ok(groupJoined.includes('Nova, status report?'), 'the raw user_message made it into the prepared messages');
+
+        // --- persistence: a real, route-level raw-action /generate call persists BOTH sides against
+        // the GROUP's own owner_id, chained under the group's real chat branch. ---
+        const branchBeforeGroup = await loadBranch(directories, groupId, groupChatId);
+        const messageCountBeforeGroup = branchBeforeGroup.messages.length;
+
+        const fakeBackend = await startFakeBackend((_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'All systems nominal, Captain.' } }] }));
+        });
+        pointBackendAt(fakeBackend.url);
+
+        const app = buildTestApp();
+        const { status, data } = await postGenerate(app, {
+            owner_id: groupId, character_avatar: nova, group_id: groupId, branch_name: groupChatId,
+            type: 'normal', user_message: 'Nova, status report?', stream: false,
+        });
+        fakeBackend.server.close();
+
+        assert.equal(status, 200, 'the group raw-action generation succeeds');
+        assert.deepEqual(data, { choices: [{ message: { role: 'assistant', content: 'All systems nominal, Captain.' } }] }, 'response body reaches the client unmodified');
+
+        const branchAfterGroup = await loadBranch(directories, groupId, groupChatId);
+        assert.equal(branchAfterGroup.messages.length, messageCountBeforeGroup + 2, 'both the user message and the assistant reply were persisted under the GROUP\'s own owner_id');
+        const [userMsg, assistantMsg] = branchAfterGroup.messages.slice(-2);
+        assert.equal(userMsg.mes, 'Nova, status report?');
+        assert.equal(userMsg.is_user, true);
+        assert.equal(assistantMsg.mes, 'All systems nominal, Captain.');
+        assert.equal(assistantMsg.is_user, false);
+        assert.equal(assistantMsg.name, 'Nova', 'the persisted assistant message is attributed to the SPECIFIC RESPONDING MEMBER (name2/Nova), not the group\'s own name or the other member (Zephyr)');
+
+        // Sanity: none of this leaked into the single-character owner namespace used elsewhere in this file.
+        const rexBranchUnaffected = await loadBranch(directories, ownerId, branchName);
+        assert.ok(rexBranchUnaffected.messages.every(m => m.mes !== 'All systems nominal, Captain.'), 'the group turn did not leak into an unrelated single-character owner namespace');
+    }
+
     // (i) STREAMING and the provider-`switch` cases (Claude/AI21/MakerSuite/etc) are intentionally NOT
     // exercised here - see this session's report / the code comments at `pendingAssistantPersist`'s
     // declaration in chat-completions.js for the full, explicit list of what remains deferred. Proving
