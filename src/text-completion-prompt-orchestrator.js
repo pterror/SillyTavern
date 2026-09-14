@@ -889,7 +889,7 @@ export async function assembleTextCompletionPrompt(input) {
 
     // ---- Step 16: final generate_data wire payload ---------------------------------------------------
     const cfgValues = { guidanceScale: cfgGuidanceScale, negativePrompt: negativePrompt?.value };
-    const generate_data = createTextGenGenerationData(settings, model, combinedPrompt, amountGen, isImpersonate, isContinue, cfgValues, type, {
+    const generate_data = await createTextGenGenerationData(settings, model, combinedPrompt, amountGen, isImpersonate, isContinue, cfgValues, type, {
         stoppingStrings, bannedTokens, bannedStrings, logitBias, maxContext: thisMaxContext, requestTokenProbabilities, macroContext,
     });
 

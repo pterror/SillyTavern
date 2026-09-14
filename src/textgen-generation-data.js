@@ -1,5 +1,6 @@
 import { TEXTGEN_TYPES } from './constants.js';
 import { substituteParams } from './macro-substitution.js';
+import { computeTextgenLogitBias } from './endpoints/tokenizers.js';
 
 /**
  * Server-side port of public/scripts/textgen-settings.js's createTextGenGenerationData() - builds
@@ -9,11 +10,21 @@ import { substituteParams } from './macro-substitution.js';
  * those server-side, and model resolution (getTextGenModel) lives there too; this takes `model` as
  * an already-resolved parameter, matching the original function's own signature.
  *
+ * logitBias is now computed for real (this session, same pass as chat-completion-generation-data.js's
+ * equivalent fix): the client's calculateLogitBias() (public/scripts/textgen-settings.js) does no
+ * computation of its own beyond dispatching to getTokenizerForTokenIds() + getLogitBiasListResult() -
+ * both of which bottom out in either an already-in-process local tokenizer or one of the server's own
+ * existing remote-tokenize routes. Ported as computeTextgenLogitBias() (src/endpoints/tokenizers.js),
+ * called directly against `settings.logit_bias` (the raw preset array - textgen keeps it inline on
+ * settings, unlike chat-completion's separate bias_presets/bias_preset_selected indirection) via the
+ * `logitBiasContext` context param. A pre-resolved `logitBias` override is still accepted (and takes
+ * priority) for callers that already have one, mirroring the `logitBiasOverride` escape-hatch
+ * convention from that same chat-completion port.
+ *
  * Deliberately taken as explicit context parameters instead of ported (each needs its own
  * server-side capability that doesn't exist yet, tracked separately from this piece):
  * - bannedTokens/bannedStrings - getCustomTokenBans() needs the server's own tokenizer access to
  *   turn ban strings into token ids.
- * - logitBias - calculateLogitBias() has the same tokenizer dependency, plus a client-side cache.
  * - stoppingStrings - getStoppingStrings() depends on instruct-mode stopping sequences and
  *   getCustomStoppingStrings()'s macro substitution + "ephemeral stopping strings" concept, which
  *   isn't ported. Pass the fully-resolved array in; used verbatim for both `stop` and
@@ -77,7 +88,13 @@ const { OOBA, MANCER, VLLM, APHRODITE, TABBY, KOBOLDCPP, LLAMACPP, OLLAMA, INFER
  * @property {string[]} [stoppingStrings] Fully-resolved stop strings (instruct sequences + custom stopping strings)
  * @property {string} [bannedTokens] Raw banned-token line/array data, same shape getCustomTokenBans() would return
  * @property {string[]} [bannedStrings]
- * @property {object} [logitBias] Already-computed token-id-keyed bias map, or undefined
+ * @property {object} [logitBias] Escape hatch: an already-computed token-id-keyed bias map to use
+ * as-is instead of computing one from `settings.logit_bias` via computeTextgenLogitBias(). Takes
+ * priority when provided.
+ * @property {object} [logitBiasContext] `{tokenizerOptions, remoteContext}` forwarded to
+ * computeTextgenLogitBias() (src/endpoints/tokenizers.js) when `logitBias` isn't given - see that
+ * function's doc comment for every field. Both default to `{}`, matching computeTextgenLogitBias()'s
+ * own defaults.
  * @property {number} [maxContext]
  * @property {boolean} [requestTokenProbabilities]
  * @property {{name1?: string, name2?: string}} [macroContext] For substituting settings.negative_prompt
@@ -93,18 +110,29 @@ const { OOBA, MANCER, VLLM, APHRODITE, TABBY, KOBOLDCPP, LLAMACPP, OLLAMA, INFER
  * @param {{guidanceScale?: {value: number}, negativePrompt?: string}} cfgValues
  * @param {string} [type] 'quiet'/'impersonate'/'continue'/'normal' - only affects whether multi-swipe (n>1) is allowed
  * @param {TextGenGenerationDataContext} [context]
- * @returns {object}
+ * @returns {Promise<object>}
  */
-export function createTextGenGenerationData(settings, model, finalPrompt, maxTokens, isImpersonate, isContinue, cfgValues, type = 'quiet', context = {}) {
+export async function createTextGenGenerationData(settings, model, finalPrompt, maxTokens, isImpersonate, isContinue, cfgValues, type = 'quiet', context = {}) {
     const {
         stoppingStrings = [],
         bannedTokens = '',
         bannedStrings = [],
-        logitBias = undefined,
+        logitBias: logitBiasOverride = undefined,
+        logitBiasContext = {},
         maxContext = 0,
         requestTokenProbabilities = false,
         macroContext = {},
     } = context;
+
+    // Mirrors the original: computed only when settings.logit_bias (the raw preset array) is a
+    // non-empty array - the exact same condition public/scripts/textgen-settings.js's
+    // createTextGenGenerationData() checks before calling calculateLogitBias(settings). A
+    // pre-resolved override takes priority when given.
+    let logitBias = logitBiasOverride;
+    if (logitBias === undefined && Array.isArray(settings.logit_bias) && settings.logit_bias.length) {
+        const { tokenizerOptions = {}, remoteContext = {} } = logitBiasContext;
+        logitBias = await computeTextgenLogitBias(settings.logit_bias, tokenizerOptions, remoteContext);
+    }
 
     const canMultiSwipe = !isContinue && !isImpersonate && type !== 'quiet';
     const dynatemp = isDynamicTemperatureSupported(settings);
