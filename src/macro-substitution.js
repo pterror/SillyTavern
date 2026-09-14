@@ -81,6 +81,7 @@ import { getStringHash } from '../public/scripts/hash-utils.js';
  * @property {number|null} [firstDisplayedMessageId] Id of the message currently scrolled into view, for {{firstDisplayedMessageId}}
  * @property {string[]} [bannedWordsSink] Array to push into for every {{banned "word"}} macro found (mirrors the client's ban-list side effect without a module-level global)
  * @property {Record<string, string | (() => string)>} [dynamicMacros] Extra macros, checked after the built-in environment (same precedence as the client's additionalMacro)
+ * @property {(value: string) => string} [postProcessFn] Mirrors public/scripts/macros.js's evaluateMacros() third argument (as used via public/script.js's substituteParamsExtended): applied to EVERY individual macro's substituted value - built-in env macros, dynamicMacros, and the pre-/post-env special-cased ones alike - right before it's spliced into the result. Not a whole-string post-process. Defaults to identity when absent, so existing callers are unaffected.
  */
 
 function escapeRegexLiteral(str) {
@@ -253,7 +254,8 @@ function splitMacroList(listString) {
 function evaluateMacros(content, env, context) {
     if (!content) return '';
 
-    const { chat, chatMetadata, globalVariables, chatId, currentInput, firstDisplayedMessageId, bannedWordsSink } = context;
+    const { chat, chatMetadata, globalVariables, chatId, currentInput, firstDisplayedMessageId, bannedWordsSink, postProcessFn } = context;
+    const applyPostProcess = typeof postProcessFn === 'function' ? postProcessFn : (x => x);
     const rawContent = content;
 
     const preEnvMacros = [
@@ -344,7 +346,7 @@ function evaluateMacros(content, env, context) {
         if (!content) break;
         if (!macro.regex.source.startsWith('<') && !content.includes('{{')) break;
         try {
-            content = content.replace(macro.regex, (...args) => macro.replace(...args));
+            content = content.replace(macro.regex, (...args) => applyPostProcess(macro.replace(...args)));
         } catch { /* skip malformed macro syntax, same as client */ }
     }
 
