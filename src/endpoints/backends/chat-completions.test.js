@@ -18,36 +18,47 @@ import { setConfigFilePath } from '../../util.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', '..', 'config.yaml'));
 
-// JUDGMENT CALL: sendAI21Request (chat-completions.js) is the ONLY one of the four provider
-// functions covered by this task with NO override for its target host at all - verified by reading
-// its full body: it always calls `fetch(API_AI21 + '/chat/completions', options)`, a hardcoded
-// `https://api.ai21.com/studio/v1` constant, completely unlike sendClaudeRequest/
-// sendMakerSuiteRequest/sendMistralAIRequest (all of which honor `request.body.reverse_proxy`) - and
-// AI21 is confirmed absent from chat-completion-generation-data.js's own `proxySupportedSources`
-// list too. So there is no way, via any REQUEST-BUILDING field, to route a real raw-action AI21 call
-// at this route to a local fake backend - the only two options are (a) add reverse-proxy support to
-// sendAI21Request, which is explicitly out of scope (touches this task's four functions' own
-// request-building logic, not just persistence), or (b) intercept the `node-fetch` module itself for
-// the duration of the AI21-specific tests below, using Node's built-in (currently experimental)
-// `node:test` `mock.module()` - real network is never touched: the mock rewrites ONLY requests whose
-// origin is `https://api.ai21.com` to instead hit this session's own local fake HTTP backend (a REAL
-// `node-fetch` call still runs against that local server - the mock is a thin reroute, not a
-// hand-built fake Response, so `.ok`/`.status`/`.json()`/`.text()`/`.body` streaming semantics are
-// all genuinely real), and passes every other URL straight through to the real, unmodified
-// `node-fetch` (captured via its own file path below, bypassing the mock) - which is exactly what
-// every other test in this file already relies on (the 'custom'/'claude'/'makersuite'/'mistralai'
-// fake-backend tests all still go through this same indirection, unaffected, since none of their
-// URLs are ever `https://api.ai21.com`).
+// JUDGMENT CALL: sendAI21Request/sendCohereRequest/sendAimlapiRequest (chat-completions.js) are the
+// ONLY three of the eight provider functions covered so far (this task's four - sendCohereRequest/
+// sendDeepSeekRequest/sendAimlapiRequest/sendXaiRequest - plus the prior batch's four) with NO
+// override for their target host at all - verified by reading each function's full body: AI21 always
+// calls `fetch(API_AI21 + '/chat/completions', options)` (hardcoded `https://api.ai21.com/studio/v1`);
+// Cohere always calls `fetch(API_COHERE_V2 + '/chat', config)` (hardcoded `https://api.cohere.ai/v2`);
+// AI/ML API always calls `fetch(API_AIMLAPI + '/chat/completions', config)` (hardcoded
+// `https://api.aimlapi.com/v1`) - completely unlike sendClaudeRequest/sendMakerSuiteRequest/
+// sendMistralAIRequest/sendDeepSeekRequest/sendXaiRequest (all of which honor
+// `request.body.reverse_proxy`), and all three are confirmed absent from
+// chat-completion-generation-data.js's own `proxySupportedSources` list too (which DOES list DEEPSEEK
+// and XAI, confirming those two really do support a raw-action reverse-proxy override end-to-end). So
+// there is no way, via any REQUEST-BUILDING field, to route a real raw-action AI21/Cohere/AI-ML-API
+// call at this route to a local fake backend - the only two options are (a) add reverse-proxy support
+// to these functions, which is explicitly out of scope (touches request-building logic, not just
+// persistence), or (b) intercept the `node-fetch` module itself for the duration of these
+// provider-specific tests, using Node's built-in (currently experimental) `node:test` `mock.module()`
+// - real network is never touched: the mock rewrites ONLY requests whose origin is
+// `https://api.ai21.com`/`https://api.cohere.ai`/`https://api.aimlapi.com` to instead hit this
+// session's own local fake HTTP backend (a REAL `node-fetch` call still runs against that local server
+// - the mock is a thin reroute, not a hand-built fake Response, so
+// `.ok`/`.status`/`.json()`/`.text()`/`.body` streaming semantics are all genuinely real), and passes
+// every other URL straight through to the real, unmodified `node-fetch` (captured via its own file
+// path below, bypassing the mock) - which is exactly what every other test in this file already relies
+// on (the 'custom'/'claude'/'makersuite'/'mistralai'/'deepseek'/'xai' fake-backend tests all still go
+// through this same indirection, unaffected, since none of their URLs are ever those three origins).
 //
 // `mock.module()` only exists when Node is launched with `--experimental-test-module-mocks` (not
 // otherwise enabled anywhere in this repo's tooling) - feature-detected below so this file still runs
 // to completion under a plain `node chat-completions.test.js` invocation exactly as before; the
-// AI21-specific tests further down skip themselves (with a clear console.log, not a silent no-op)
-// when the feature isn't available, and only then. Must run before `chat-completions.js` is first
-// imported below (its own top-level `import fetch from 'node-fetch'` needs to resolve to the mock).
+// AI21/Cohere/AI-ML-API-specific tests further down skip themselves (with a clear console.log, not a
+// silent no-op) when the feature isn't available, and only then. Must run before `chat-completions.js`
+// is first imported below (its own top-level `import fetch from 'node-fetch'` needs to resolve to the
+// mock).
 const canMockAi21Backend = typeof mock.module === 'function';
 /** @type {string|null} Set by pointAI21BackendAt() below; read by the node-fetch reroute mock. */
 let ai21FakeBackendUrl = null;
+/** @type {string|null} Set by pointCohereBackendAt() below; read by the node-fetch reroute mock. */
+let cohereFakeBackendUrl = null;
+/** @type {string|null} Set by pointAimlapiBackendAt() below; read by the node-fetch reroute mock. */
+let aimlapiFakeBackendUrl = null;
 if (canMockAi21Backend) {
     const realNodeFetch = (await import(path.join(__dirname, '..', '..', '..', 'node_modules', 'node-fetch', 'src', 'index.js'))).default;
     mock.module('node-fetch', {
@@ -55,6 +66,12 @@ if (canMockAi21Backend) {
             const target = new URL(url);
             if (ai21FakeBackendUrl && target.origin === 'https://api.ai21.com') {
                 return realNodeFetch(new URL(target.pathname + target.search, ai21FakeBackendUrl), opts);
+            }
+            if (cohereFakeBackendUrl && target.origin === 'https://api.cohere.ai') {
+                return realNodeFetch(new URL(target.pathname + target.search, cohereFakeBackendUrl), opts);
+            }
+            if (aimlapiFakeBackendUrl && target.origin === 'https://api.aimlapi.com') {
+                return realNodeFetch(new URL(target.pathname + target.search, aimlapiFakeBackendUrl), opts);
             }
             return realNodeFetch(url, opts);
         },
@@ -402,6 +419,60 @@ async function run() {
         writeAllSettings(directories, settings);
         writeSecret(directories, SECRET_KEYS.AI21, 'test-ai21-key');
         ai21FakeBackendUrl = url;
+    }
+
+    /** Routes a raw-action request to sendDeepSeekRequest() via a real `reverse_proxy` override - DeepSeek IS in chat-completion-generation-data.js's own `proxySupportedSources`, confirmed by reading that file, and sendDeepSeekRequest itself reads `request.body.reverse_proxy`/`proxy_password`. */
+    function pointDeepSeekBackendAt(url) {
+        const settings = buildSettingsFixture();
+        settings.oai_settings.chat_completion_source = 'deepseek';
+        settings.oai_settings.deepseek_model = 'deepseek-test-model';
+        settings.oai_settings.reverse_proxy = url;
+        settings.oai_settings.proxy_password = 'test-deepseek-proxy-password';
+        writeAllSettings(directories, settings);
+    }
+
+    /** Routes a raw-action request to sendXaiRequest() via a real `reverse_proxy` override - xAI IS in `proxySupportedSources` too, and sendXaiRequest itself reads `request.body.reverse_proxy`/`proxy_password`. */
+    function pointXaiBackendAt(url) {
+        const settings = buildSettingsFixture();
+        settings.oai_settings.chat_completion_source = 'xai';
+        settings.oai_settings.xai_model = 'grok-test-model';
+        settings.oai_settings.reverse_proxy = url;
+        settings.oai_settings.proxy_password = 'test-xai-proxy-password';
+        writeAllSettings(directories, settings);
+    }
+
+    /**
+     * Routes a raw-action request to sendCohereRequest() - sendCohereRequest has NO reverse-proxy
+     * support at all (see the `canMockAi21Backend` comment near the top of this file), so this instead
+     * (a) writes a real secret (sendCohereRequest reads it via readSecret()) and (b) points the
+     * module-level `cohereFakeBackendUrl` the node-fetch reroute mock reads. Only meaningful when
+     * `canMockAi21Backend` is true - callers must check that themselves and skip the Cohere test(s)
+     * otherwise.
+     */
+    function pointCohereBackendAt(url) {
+        const settings = buildSettingsFixture();
+        settings.oai_settings.chat_completion_source = 'cohere';
+        settings.oai_settings.cohere_model = 'command-test-model';
+        writeAllSettings(directories, settings);
+        writeSecret(directories, SECRET_KEYS.COHERE, 'test-cohere-key');
+        cohereFakeBackendUrl = url;
+    }
+
+    /**
+     * Routes a raw-action request to sendAimlapiRequest() - sendAimlapiRequest has NO reverse-proxy
+     * support at all (same situation as sendCohereRequest/sendAI21Request above), so this instead (a)
+     * writes a real secret (sendAimlapiRequest reads it via readSecret()) and (b) points the
+     * module-level `aimlapiFakeBackendUrl` the node-fetch reroute mock reads. Only meaningful when
+     * `canMockAi21Backend` is true - callers must check that themselves and skip the AI/ML API test(s)
+     * otherwise.
+     */
+    function pointAimlapiBackendAt(url) {
+        const settings = buildSettingsFixture();
+        settings.oai_settings.chat_completion_source = 'aimlapi';
+        settings.oai_settings.aimlapi_model = 'aimlapi-test-model';
+        writeAllSettings(directories, settings);
+        writeSecret(directories, SECRET_KEYS.AIMLAPI, 'test-aimlapi-key');
+        aimlapiFakeBackendUrl = url;
     }
 
     // (a) a real non-streaming generation appends the assistant's reply onto the tree, chained after
@@ -1198,14 +1269,162 @@ async function run() {
         assert.equal(assistantMsg.name, 'Rex');
     }
 
-    // (m)/(m-2) sendAI21Request, non-streaming AND streaming - see the `canMockAi21Backend` comment
-    // near the top of this file for exactly why this needs `node:test`'s `mock.module()` (unlike the
-    // three functions above, sendAI21Request has NO reverse-proxy override at all) and why these two
-    // tests skip themselves, loudly, when that (currently experimental, opt-in-flag-gated) capability
-    // isn't available in the running Node process - every other test in this file (including the
-    // three provider tests directly above) runs identically either way.
+    // (n) sendDeepSeekRequest, non-streaming: a standard OpenAI-Chat-Completions-shaped body, sent to
+    // the client completely unmodified (response.send(generateResponseJson) as-is, pre-existing
+    // behavior) - deliberately including a `reasoning_content` field alongside `content`, proving
+    // persistence reads only the real `content` and never the separate reasoning field.
+    {
+        const deepseekBranch = 'deepseek-plain-chat';
+        await saveChatToTree(directories, ownerId, deepseekBranch, [
+            { chat_metadata: {} },
+            { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
+        ]);
+
+        const deepseekBody = { choices: [{ message: { role: 'assistant', reasoning_content: 'The user wants a greeting back.', content: 'Rex says hello back, DeepSeek-style.' } }] };
+        const fakeBackend = await startFakeBackend((_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(deepseekBody));
+        });
+        pointDeepSeekBackendAt(fakeBackend.url);
+
+        const branchBefore = await loadBranch(directories, ownerId, deepseekBranch);
+        const messageCountBefore = branchBefore.messages.length;
+
+        const app = buildTestApp();
+        const { status, data } = await postGenerate(app, {
+            owner_id: ownerId, character_avatar: avatar, branch_name: deepseekBranch,
+            type: 'normal', user_message: 'Say hi, DeepSeek.', stream: false,
+        });
+        fakeBackend.server.close();
+
+        assert.equal(status, 200);
+        assert.deepEqual(data, deepseekBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
+
+        const branchAfter = await loadBranch(directories, ownerId, deepseekBranch);
+        assert.equal(branchAfter.messages.length, messageCountBefore + 2);
+        const [userMsg, assistantMsg] = branchAfter.messages.slice(-2);
+        assert.equal(userMsg.mes, 'Say hi, DeepSeek.');
+        assert.equal(assistantMsg.mes, 'Rex says hello back, DeepSeek-style.', 'only the real content field was persisted - reasoning_content is completely absent from the persisted text');
+        assert.equal(assistantMsg.name, 'Rex');
+    }
+
+    // (n-2) sendDeepSeekRequest, streaming: standard OpenAI Chat-Completions delta SSE chunks,
+    // deliberately including a `delta.reasoning_content`-only chunk that must be excluded.
+    {
+        const deepseekStreamBranch = 'deepseek-stream-chat';
+        await saveChatToTree(directories, ownerId, deepseekStreamBranch, [
+            { chat_metadata: {} },
+            { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
+        ]);
+
+        const deepseekSseBody = [
+            `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: 'Thinking about a greeting...' } }] })}\n\n`,
+            `data: ${JSON.stringify({ choices: [{ delta: { content: 'Rex ' } }] })}\n\n`,
+            `data: ${JSON.stringify({ choices: [{ delta: { content: 'says hi, ' } }] })}\n\n`,
+            `data: ${JSON.stringify({ choices: [{ delta: { content: 'streamed via DeepSeek.' } }] })}\n\n`,
+            'data: [DONE]\n\n',
+        ].join('');
+        const fakeBackend = await startFakeBackend((_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+            res.end(deepseekSseBody);
+        });
+        pointDeepSeekBackendAt(fakeBackend.url);
+
+        const app = buildTestApp();
+        const { status, bodyText } = await postGenerateStream(app, {
+            owner_id: ownerId, character_avatar: avatar, branch_name: deepseekStreamBranch,
+            type: 'normal', user_message: 'Say hi, streamed DeepSeek.', stream: true,
+        });
+        fakeBackend.server.close();
+
+        assert.equal(status, 200);
+        assert.equal(bodyText, deepseekSseBody, 'the client-facing SSE bytes are byte-for-byte identical to what the fake backend sent');
+
+        const branchAfter = await waitFor(async () => {
+            const branch = await loadBranch(directories, ownerId, deepseekStreamBranch);
+            return branch.messages.length > 1 && branch.messages[branch.messages.length - 1].mes ? branch : null;
+        });
+        const assistantMsg = branchAfter.messages[branchAfter.messages.length - 1];
+        assert.equal(assistantMsg.mes, 'Rex says hi, streamed via DeepSeek.', 'only delta.content chunks were accumulated - the reasoning_content-only chunk never contributed to the persisted text');
+        assert.equal(assistantMsg.name, 'Rex');
+    }
+
+    // (o) sendXaiRequest, non-streaming: a standard OpenAI-Chat-Completions-shaped body, sent to the
+    // client completely unmodified.
+    {
+        const xaiBranch = 'xai-plain-chat';
+        await saveChatToTree(directories, ownerId, xaiBranch, [
+            { chat_metadata: {} },
+            { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
+        ]);
+
+        const xaiBody = { choices: [{ message: { role: 'assistant', content: 'Rex says hello back, xAI-style.' } }] };
+        const fakeBackend = await startFakeBackend((_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(xaiBody));
+        });
+        pointXaiBackendAt(fakeBackend.url);
+
+        const branchBefore = await loadBranch(directories, ownerId, xaiBranch);
+        const messageCountBefore = branchBefore.messages.length;
+
+        const app = buildTestApp();
+        const { status, data } = await postGenerate(app, {
+            owner_id: ownerId, character_avatar: avatar, branch_name: xaiBranch,
+            type: 'normal', user_message: 'Say hi, xAI.', stream: false,
+        });
+        fakeBackend.server.close();
+
+        assert.equal(status, 200);
+        assert.deepEqual(data, xaiBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
+
+        const branchAfter = await loadBranch(directories, ownerId, xaiBranch);
+        assert.equal(branchAfter.messages.length, messageCountBefore + 2);
+        const [userMsg, assistantMsg] = branchAfter.messages.slice(-2);
+        assert.equal(userMsg.mes, 'Say hi, xAI.');
+        assert.equal(assistantMsg.mes, 'Rex says hello back, xAI-style.');
+        assert.equal(assistantMsg.name, 'Rex');
+    }
+
+    // (o-2) sendXaiRequest, streaming: standard OpenAI Chat-Completions delta SSE chunks.
+    {
+        const xaiStreamBranch = 'xai-stream-chat';
+        await saveChatToTree(directories, ownerId, xaiStreamBranch, [
+            { chat_metadata: {} },
+            { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
+        ]);
+
+        const fakeBackend = await startFakeSseBackend(['Rex ', 'says hi, ', 'streamed via xAI.']);
+        pointXaiBackendAt(fakeBackend.url);
+
+        const app = buildTestApp();
+        const { status, bodyText } = await postGenerateStream(app, {
+            owner_id: ownerId, character_avatar: avatar, branch_name: xaiStreamBranch,
+            type: 'normal', user_message: 'Say hi, streamed xAI.', stream: true,
+        });
+        fakeBackend.server.close();
+
+        assert.equal(status, 200);
+        assert.equal(bodyText, fakeBackend.expectedBody, 'the client-facing SSE bytes are byte-for-byte identical to what the fake backend sent');
+
+        const branchAfter = await waitFor(async () => {
+            const branch = await loadBranch(directories, ownerId, xaiStreamBranch);
+            return branch.messages.length > 1 && branch.messages[branch.messages.length - 1].mes ? branch : null;
+        });
+        const assistantMsg = branchAfter.messages[branchAfter.messages.length - 1];
+        assert.equal(assistantMsg.mes, 'Rex says hi, streamed via xAI.');
+        assert.equal(assistantMsg.name, 'Rex');
+    }
+
+    // (m)/(m-2)/(p)/(p-2)/(q)/(q-2) sendAI21Request/sendCohereRequest/sendAimlapiRequest,
+    // non-streaming AND streaming - see the `canMockAi21Backend` comment near the top of this file for
+    // exactly why this needs `node:test`'s `mock.module()` (unlike sendDeepSeekRequest/sendXaiRequest
+    // above, none of these three have a reverse-proxy override at all) and why these tests skip
+    // themselves, loudly, when that (currently experimental, opt-in-flag-gated) capability isn't
+    // available in the running Node process - every other test in this file (including the four
+    // provider tests directly above) runs identically either way.
     if (!canMockAi21Backend) {
-        console.log('chat-completions.test.js: skipping sendAI21Request persistence tests - run with `node --experimental-test-module-mocks` to include them (see the canMockAi21Backend comment near the top of this file)');
+        console.log('chat-completions.test.js: skipping sendAI21Request/sendCohereRequest/sendAimlapiRequest persistence tests - run with `node --experimental-test-module-mocks` to include them (see the canMockAi21Backend comment near the top of this file)');
     } else {
         // (m) non-streaming: a standard OpenAI-Chat-Completions-shaped body, sent to the client
         // completely unmodified (response.send(generateResponseJson) as-is, pre-existing behavior).
@@ -1275,17 +1494,175 @@ async function run() {
             assert.equal(assistantMsg.mes, 'Rex says hi, streamed via AI21.');
             assert.equal(assistantMsg.name, 'Rex');
         }
+
+        // (p) sendCohereRequest, non-streaming: a real Cohere v2 chat-shaped response whose
+        // `message.content` array deliberately carries a non-`text` block type alongside the real
+        // `type: 'text'` block, plus a `tool_plan` field - proving persistence extracts only the real
+        // text block(s), never falling back to `tool_plan` when real text content is present (this
+        // function's own existing, unmodified client-facing `response.send(generateResponseJson)`
+        // forwards the whole body as-is - asserted below as evidence the client-visible reply is
+        // unaffected).
+        {
+            const cohereBranch = 'cohere-plain-chat';
+            await saveChatToTree(directories, ownerId, cohereBranch, [
+                { chat_metadata: {} },
+                { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
+            ]);
+
+            const cohereBody = { message: { role: 'assistant', tool_plan: 'I will just greet the user.', content: [{ type: 'text', text: 'Rex says hello back, Cohere-style.' }] } };
+            const fakeBackend = await startFakeBackend((_req, res) => {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify(cohereBody));
+            });
+            pointCohereBackendAt(fakeBackend.url);
+
+            const branchBefore = await loadBranch(directories, ownerId, cohereBranch);
+            const messageCountBefore = branchBefore.messages.length;
+
+            const app = buildTestApp();
+            const { status, data } = await postGenerate(app, {
+                owner_id: ownerId, character_avatar: avatar, branch_name: cohereBranch,
+                type: 'normal', user_message: 'Say hi, Cohere.', stream: false,
+            });
+            fakeBackend.server.close();
+            cohereFakeBackendUrl = null;
+
+            assert.equal(status, 200);
+            assert.deepEqual(data, cohereBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
+
+            const branchAfter = await loadBranch(directories, ownerId, cohereBranch);
+            assert.equal(branchAfter.messages.length, messageCountBefore + 2);
+            const [userMsg, assistantMsg] = branchAfter.messages.slice(-2);
+            assert.equal(userMsg.mes, 'Say hi, Cohere.');
+            assert.equal(assistantMsg.mes, 'Rex says hello back, Cohere-style.', 'the real type: \'text\' content block was persisted, NOT the tool_plan fallback (which is only used when there is no real text content)');
+            assert.equal(assistantMsg.name, 'Rex');
+        }
+
+        // (p-2) sendCohereRequest, streaming: real Cohere v2 SSE events - a `tool-plan-delta` event
+        // followed by `content-delta` events, each carrying `delta.message.content.text`, matching the
+        // exact shape this codebase's own public/scripts/sse-stream.js `parseStreamData()` already
+        // parses for Cohere.
+        {
+            const cohereStreamBranch = 'cohere-stream-chat';
+            await saveChatToTree(directories, ownerId, cohereStreamBranch, [
+                { chat_metadata: {} },
+                { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
+            ]);
+
+            const cohereSseEvents = [
+                { type: 'message-start', delta: { message: { role: 'assistant' } } },
+                { type: 'content-start', index: 0, delta: { message: { content: { type: 'text', text: '' } } } },
+                { type: 'content-delta', index: 0, delta: { message: { content: { text: 'Rex ' } } } },
+                { type: 'content-delta', index: 0, delta: { message: { content: { text: 'says hi, ' } } } },
+                { type: 'content-delta', index: 0, delta: { message: { content: { text: 'streamed via Cohere.' } } } },
+                { type: 'content-end', index: 0 },
+                { type: 'message-end', delta: { finish_reason: 'COMPLETE' } },
+            ];
+            const cohereSseBody = cohereSseEvents.map(event => `data: ${JSON.stringify(event)}\n\n`).join('');
+            const fakeBackend = await startFakeBackend((_req, res) => {
+                res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+                res.end(cohereSseBody);
+            });
+            pointCohereBackendAt(fakeBackend.url);
+
+            const app = buildTestApp();
+            const { status, bodyText } = await postGenerateStream(app, {
+                owner_id: ownerId, character_avatar: avatar, branch_name: cohereStreamBranch,
+                type: 'normal', user_message: 'Say hi, streamed Cohere.', stream: true,
+            });
+            fakeBackend.server.close();
+            cohereFakeBackendUrl = null;
+
+            assert.equal(status, 200);
+            assert.equal(bodyText, cohereSseBody, 'the client-facing SSE bytes are byte-for-byte identical to what the fake backend sent');
+
+            const branchAfter = await waitFor(async () => {
+                const branch = await loadBranch(directories, ownerId, cohereStreamBranch);
+                return branch.messages.length > 1 && branch.messages[branch.messages.length - 1].mes ? branch : null;
+            });
+            const assistantMsg = branchAfter.messages[branchAfter.messages.length - 1];
+            assert.equal(assistantMsg.mes, 'Rex says hi, streamed via Cohere.', 'only content-delta events\' own delta.message.content.text were accumulated');
+            assert.equal(assistantMsg.name, 'Rex');
+        }
+
+        // (q) sendAimlapiRequest, non-streaming: a standard OpenAI-Chat-Completions-shaped body, sent
+        // to the client completely unmodified.
+        {
+            const aimlapiBranch = 'aimlapi-plain-chat';
+            await saveChatToTree(directories, ownerId, aimlapiBranch, [
+                { chat_metadata: {} },
+                { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
+            ]);
+
+            const aimlapiBody = { choices: [{ message: { role: 'assistant', content: 'Rex says hello back, AI/ML-API-style.' } }] };
+            const fakeBackend = await startFakeBackend((_req, res) => {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify(aimlapiBody));
+            });
+            pointAimlapiBackendAt(fakeBackend.url);
+
+            const branchBefore = await loadBranch(directories, ownerId, aimlapiBranch);
+            const messageCountBefore = branchBefore.messages.length;
+
+            const app = buildTestApp();
+            const { status, data } = await postGenerate(app, {
+                owner_id: ownerId, character_avatar: avatar, branch_name: aimlapiBranch,
+                type: 'normal', user_message: 'Say hi, AI/ML API.', stream: false,
+            });
+            fakeBackend.server.close();
+            aimlapiFakeBackendUrl = null;
+
+            assert.equal(status, 200);
+            assert.deepEqual(data, aimlapiBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
+
+            const branchAfter = await loadBranch(directories, ownerId, aimlapiBranch);
+            assert.equal(branchAfter.messages.length, messageCountBefore + 2);
+            const [userMsg, assistantMsg] = branchAfter.messages.slice(-2);
+            assert.equal(userMsg.mes, 'Say hi, AI/ML API.');
+            assert.equal(assistantMsg.mes, 'Rex says hello back, AI/ML-API-style.');
+            assert.equal(assistantMsg.name, 'Rex');
+        }
+
+        // (q-2) sendAimlapiRequest, streaming: standard OpenAI Chat-Completions delta SSE chunks.
+        {
+            const aimlapiStreamBranch = 'aimlapi-stream-chat';
+            await saveChatToTree(directories, ownerId, aimlapiStreamBranch, [
+                { chat_metadata: {} },
+                { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
+            ]);
+
+            const fakeBackend = await startFakeSseBackend(['Rex ', 'says hi, ', 'streamed via AI/ML API.']);
+            pointAimlapiBackendAt(fakeBackend.url);
+
+            const app = buildTestApp();
+            const { status, bodyText } = await postGenerateStream(app, {
+                owner_id: ownerId, character_avatar: avatar, branch_name: aimlapiStreamBranch,
+                type: 'normal', user_message: 'Say hi, streamed AI/ML API.', stream: true,
+            });
+            fakeBackend.server.close();
+            aimlapiFakeBackendUrl = null;
+
+            assert.equal(status, 200);
+            assert.equal(bodyText, fakeBackend.expectedBody, 'the client-facing SSE bytes are byte-for-byte identical to what the fake backend sent');
+
+            const branchAfter = await waitFor(async () => {
+                const branch = await loadBranch(directories, ownerId, aimlapiStreamBranch);
+                return branch.messages.length > 1 && branch.messages[branch.messages.length - 1].mes ? branch : null;
+            });
+            const assistantMsg = branchAfter.messages[branchAfter.messages.length - 1];
+            assert.equal(assistantMsg.mes, 'Rex says hi, streamed via AI/ML API.');
+            assert.equal(assistantMsg.name, 'Rex');
+        }
     }
 
-    // The remaining ~8 provider-`switch` cases (Cohere/DeepSeek/Aimlapi/Xai/Chutes/Minimax/
-    // ElectronHub/AzureOpenAI) are intentionally NOT exercised here - see the code comments at
-    // `pendingAssistantPersist`'s declaration in chat-completions.js for the full, explicit, by-name
-    // list of what remains deferred (for BOTH streaming and non-streaming). Proving the assistant
-    // reply is untouched for them is trivial (they never take/read a `persist` parameter at all -
-    // each function returns from its own, completely untouched `forwardFetchResponse()` call site
-    // before reaching this route's shared dispatch code at all), but actually driving real
-    // provider-specific traffic through this harness would be exercising existing, unmodified
-    // plumbing - out of scope here.
+    // The remaining ~4 provider-`switch` cases (Chutes/Minimax/ElectronHub/AzureOpenAI) are
+    // intentionally NOT exercised here - see the code comments at `pendingAssistantPersist`'s
+    // declaration in chat-completions.js for the full, explicit, by-name list of what remains deferred
+    // (for BOTH streaming and non-streaming). Proving the assistant reply is untouched for them is
+    // trivial (they never take/read a `persist` parameter at all - each function returns from its own,
+    // completely untouched `forwardFetchResponse()` call site before reaching this route's shared
+    // dispatch code at all), but actually driving real provider-specific traffic through this harness
+    // would be exercising existing, unmodified plumbing - out of scope here.
 
     // --- error handling (route-level): missing owner_id falls through as an ordinary (non-raw-action)
     // request - it is NOT gated into the raw-action branch at all (the gate itself requires owner_id),
