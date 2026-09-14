@@ -162,6 +162,20 @@ import {
  *     for real here and exposed as an additional output/param, `canPerformToolCalls`, alongside
  *     `canUseTools`.
  *
+ * 15. MEDIA INLINING (images/video/audio) -> forwarded through, not re-derived here. Commit cd10c6f32
+ *     wired real `Message.addImage`/`addVideo`/`addAudio` calls into `chat-completion-history.js`
+ *     (chat-message media) and `chat-completion-populate.js` (quiet-prompt image), both gated by
+ *     caller-supplied `imageInlining`/`videoInlining`/`audioInlining` booleans (standing in for the
+ *     still-unported `isImageInliningSupported()`/etc. capability predicates - same convention as
+ *     `canUseTools` before this task's own judgment call 14). This orchestrator's job is purely to
+ *     forward those booleans (plus `imageQuality`/`directories`) to both call sites: directly as
+ *     `populateChatCompletion()` options (which itself uses `imageInlining`/`imageQuality`/
+ *     `directories` for the quiet-prompt-image case, deriving `chatCompletionSource` from
+ *     `settings.chat_completion_source` - no separate top-level param needed since `settings` is
+ *     already required for judgment call 14's tool-capability resolution), and folded into
+ *     `historyOptions` (same auto-merge gap as judgment call 14 - `populateChatCompletion()`'s
+ *     auto-merge into `populateChatHistory`'s options does not include these fields either).
+ *
  * Everything else - the full "caller resolves entities" parameter surface of
  * `preparePromptsForChatCompletion()` and `populateChatCompletion()` - is forwarded through
  * unmodified; see those two modules' own doc comments for what each option does.
@@ -181,7 +195,20 @@ import {
  * @property {string} [bias] Forwarded to preparePromptsForChatCompletion() and populateChatCompletion().
  * @property {string} [type] Forwarded to preparePromptsForChatCompletion() and populateChatCompletion().
  * @property {string} [quietPrompt] Forwarded to preparePromptsForChatCompletion() and populateChatCompletion().
- * @property {*} [quietImage] Forwarded to populateChatCompletion() (never read there either - see that module's own scope boundary 2).
+ * @property {string} [quietImage] Forwarded to populateChatCompletion() - inlined into the quiet-prompt
+ * message when `imageInlining` is true (see judgment call 15; that module's own scope boundary 2).
+ * @property {boolean} [imageInlining] Replaces the client's `isImageInliningSupported()` result -
+ * forwarded to both `populateChatCompletion()` directly and into `historyOptions`. See judgment call 15.
+ * Default `false`.
+ * @property {boolean} [videoInlining] Replaces `isVideoInliningSupported()` - forwarded into
+ * `historyOptions` only (chat-completion-history.js's own concern). See judgment call 15. Default `false`.
+ * @property {boolean} [audioInlining] Replaces `isAudioInliningSupported()` - forwarded into
+ * `historyOptions` only. See judgment call 15. Default `false`.
+ * @property {string} [imageQuality] Mirrors `oai_settings.inline_image_quality` - forwarded to both
+ * `populateChatCompletion()` and `historyOptions`. Default `'auto'`.
+ * @property {{userImages?: string}} [directories] Forwarded to both `populateChatCompletion()` and
+ * `historyOptions`, for resolving local relative attachment paths (see chat-completion-budget.js's
+ * `AttachmentDirectories`).
  * @property {Record<string, import('./chat-completion-system-prompts.js').ExtensionPromptInput>} [extensionPrompts] Forwarded to preparePromptsForChatCompletion().
  * @property {string} [cyclePrompt] Forwarded to populateChatCompletion().
  * @property {string} [systemPromptOverride] Forwarded to preparePromptsForChatCompletion().
@@ -279,6 +306,11 @@ export async function prepareOpenAIMessages({
     includeSignatureOverride,
     toolReasoningModeOverride,
     includeToolReasoningOverride,
+    imageInlining = false,
+    videoInlining = false,
+    audioInlining = false,
+    imageQuality = 'auto',
+    directories,
     toolBudgetTokens = 0,
     continuePrefill = false,
     supportsAssistantPrefill = false,
@@ -325,23 +357,36 @@ export async function prepareOpenAIMessages({
             prompts, promptOrder, characterId, groupMemberNames,
         });
 
+        const chatCompletionSource = settings?.chat_completion_source;
+
         await populateChatCompletion(preparedPrompts, chatCompletion, {
             bias, quietPrompt, quietImage, type, cyclePrompt, messages, messageExamples,
             promptOrder, characterId,
             toolBudgetTokens, continuePrefill, supportsAssistantPrefill, namesInCompletion,
             assistantPrefill, pinExamples, injectionTable, macroContext, tokenHandler,
+            // Media inlining (judgment call 15): `populateChatCompletion()` DOES have a direct
+            // top-level use for `imageInlining`/`imageQuality`/`chatCompletionSource`/`directories`
+            // (its own quiet-prompt-image wiring, chat-completion-populate.js scope boundary #2) -
+            // forwarded here directly, derived from `settings.chat_completion_source` (no separate
+            // caller-supplied param needed for that one, since `settings` already carries it and is
+            // required for tool-capability resolution above).
+            imageInlining, imageQuality, chatCompletionSource, directories,
             // `populateChatCompletion()` has no direct top-level use for `canUseTools`/
-            // `includeSignature`/`toolReasoningMode`/`includeToolReasoning` itself - it only forwards
-            // options through to `populateChatHistory()`, and (re-verified against
-            // src/chat-completion-populate.js's real forwarding code) its auto-merge into
-            // `populateChatHistory`'s options is only `{ type, cyclePrompt, continuePrefill,
-            // tokenHandler, macroContext, ...historyOptions }` - none of the four tool-capability
-            // values are part of that auto-merged set. So they must be (and are) explicitly folded
-            // into `historyOptions` here, since that's what `populateChatHistory()` actually consumes
-            // for its tool-call-reconstruction branch. A caller-supplied `historyOptions` still wins on
-            // conflict (spread last), matching populateChatCompletion()'s own "nested options win"
-            // convention for this bag.
-            historyOptions: { canUseTools, includeSignature, toolReasoningMode, includeToolReasoning, ...historyOptions },
+            // `includeSignature`/`toolReasoningMode`/`includeToolReasoning`/`videoInlining`/
+            // `audioInlining` themselves - it only forwards options through to
+            // `populateChatHistory()`, and (re-verified against src/chat-completion-populate.js's
+            // real forwarding code) its auto-merge into `populateChatHistory`'s options is only
+            // `{ type, cyclePrompt, continuePrefill, tokenHandler, macroContext, ...historyOptions }`
+            // - none of these values are part of that auto-merged set. So they must be (and are)
+            // explicitly folded into `historyOptions` here, since that's what `populateChatHistory()`
+            // actually consumes for its tool-call-reconstruction and media-inlining logic. A
+            // caller-supplied `historyOptions` still wins on conflict (spread last), matching
+            // populateChatCompletion()'s own "nested options win" convention for this bag.
+            historyOptions: {
+                canUseTools, includeSignature, toolReasoningMode, includeToolReasoning,
+                imageInlining, videoInlining, audioInlining, imageQuality, chatCompletionSource, directories,
+                ...historyOptions,
+            },
             dialogueExamplesOptions,
         });
     } finally {
