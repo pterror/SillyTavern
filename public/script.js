@@ -10236,10 +10236,13 @@ async function _saveTreeChat(fileName, metadata, messages, addressedByName = fal
  * @param {number} [options.mesId] The message ID to save the chat up to
  * @param {boolean} [options.force] Force the saving despite the integrity check result
  * @param {ChatMessage[]} [options.chatData] Chat snapshot to save instead of the current in-memory chat
+ * @param {boolean} [options.unique] Ask the server to mint a unique file name if `chatName` collides,
+ * instead of asserting a name the caller uniquified against its own fetched chat list (e.g. branching).
  *
- * @returns {Promise<void>}
+ * @returns {Promise<string|void>} The chat name actually saved under (may differ from `chatName` when
+ * `unique` caused a rename), or void when nothing was saved.
  */
-export async function saveChat({ chatName, withMetadata, mesId, force = false, chatData = undefined } = {}) {
+export async function saveChat({ chatName, withMetadata, mesId, force = false, chatData = undefined, unique = false } = {}) {
     if (selected_group) {
         toastr.error(t`Operation was aborted to prevent data corruption.`, t`saveChat called for a group chat`);
         throw new Error('saveChat called for a group chat');
@@ -10304,6 +10307,7 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
             chat: [chatHeader, ...payloadMessages],
             avatar_url: getCurrentCharacter().avatar,
             force: force,
+            unique: unique,
         });
         const saveChatRequest = await compressRequest({
             method: 'POST',
@@ -10319,6 +10323,10 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
                 chat_metadata.integrity = data.integrity;
             }
 
+            // The server may have renamed this to stay unique (only asked for via `unique`) - adopt
+            // whatever it actually saved under instead of assuming the name this call proposed.
+            const savedFileName = (data && typeof data.file_name === 'string' && data.file_name) ? data.file_name : fileName;
+
             if (Array.isArray(data?.assigned_node_ids)) {
                 for (const { index, node_id } of data.assigned_node_ids) {
                     if (index < chat.length) {
@@ -10333,7 +10341,7 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
             if (isTreeChat) {
                 _snapshotMessages();
             }
-            return;
+            return savedFileName;
         }
 
         const errorData = await result.json();

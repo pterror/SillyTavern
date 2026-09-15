@@ -2564,17 +2564,18 @@ export async function importGroupChat(formData, { refresh = true } = {}) {
  * @param {ChatMetadata?} metadata New metadata to save with the chat
  * @param {number|undefined} mesId Optional message ID to trim the chat up to
  * @param {ChatMessage[]|undefined} chatData Optional chat snapshot to save instead of the current in-memory chat
- * @returns {Promise<void>} Promise that resolves when the group chat is saved
+ * @param {object} [options={}]
+ * @param {boolean} [options.unique=false] Ask the server to mint a unique chat id if `name` collides,
+ * instead of asserting an id the caller uniquified against its own in-memory group.chats list.
+ * @returns {Promise<string?>} The chat id actually saved under (may differ from `name` when `unique`
+ * caused a rename), or null if the save failed.
  */
-export async function saveGroupBookmarkChat(groupId, name, metadata, mesId, chatData = undefined) {
+export async function saveGroupBookmarkChat(groupId, name, metadata, mesId, chatData = undefined, { unique = false } = {}) {
     const group = groupsStore.get(groupId);
 
     if (!group) {
-        return;
+        return null;
     }
-
-    group.chats.push(name);
-    groupsStore.update(group.id, { chats: group.chats });
 
     /** @type {ChatHeader} */
     const chatHeader = {
@@ -2590,19 +2591,32 @@ export async function saveGroupBookmarkChat(groupId, name, metadata, mesId, chat
             ? chat.slice(0, Number(mesId) + 1)
             : chat;
 
-    await saveGroupField(groupId, { chats: group.chats }, true, false);
-
     const saveChatRequest = await compressRequest({
         method: 'POST',
         headers: getRequestHeaders(),
-        body: JSON.stringify({ id: name, group_id: groupId, chat: [chatHeader, ...trimmedChat] }),
+        body: JSON.stringify({ id: name, group_id: groupId, chat: [chatHeader, ...trimmedChat], unique }),
     });
     const response = await fetch('/api/chats/group/save', saveChatRequest);
 
     if (!response.ok) {
         toastr.error(t`Check the server connection and reload the page to prevent data loss.`, t`Group chat could not be saved`);
         console.error('Group chat could not be saved', response);
+        return null;
     }
+
+    const data = await response.json().catch(() => null);
+    if (data && typeof data.integrity === 'string') {
+        chat_metadata.integrity = data.integrity;
+    }
+    // The server may have renamed this to stay unique (only asked for via `unique`) - adopt whatever
+    // it actually saved under instead of assuming the id this call proposed.
+    const savedId = (data && typeof data.chat_id === 'string' && data.chat_id) ? data.chat_id : name;
+
+    group.chats.push(savedId);
+    groupsStore.update(group.id, { chats: group.chats });
+    await saveGroupField(groupId, { chats: group.chats }, true, false);
+
+    return savedId;
 }
 
 function onSendTextareaInput() {
