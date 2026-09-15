@@ -5696,39 +5696,13 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // call ever runs any backend request) - see JUDGMENT CALL on hasPendingFileAttachment() below.
     let sentUserMessage;
 
-    // BUGFIX (double-append on raw-action sends): hoisted raw-action eligibility CHECK (just the
-    // boolean gate, not the payload build) so it is known BEFORE sendMessageAsUser() runs below.
-    // Root cause: sendMessageAsUser() unconditionally calls chatOpAppend() (public/scripts/
-    // chat-store.js) whenever chat_metadata?._tree_stored, which POSTs the client's own
-    // shallow-spread message object (including `persona: avatar`, set on `message` inside
-    // sendMessageAsUser() itself) to /api/chats/message/append -> appendMessages()
-    // (src/message-tree-db.js). Separately, whenever the raw-action gate below fires for a message
-    // send, the raw-action route handler (src/endpoints/backends/text-completions.js,
-    // src/endpoints/backends/chat-completions.js) ALSO independently calls appendMessages() for the
-    // SAME logical user message - built server-side with NO `persona` field (falls back to
-    // `built.name1`, a display name). appendMessages()'s dedup-by-identity_hash
-    // (identityHashOf()/nodeIdentityKey(), src/message-tree-db.js) computes `speaker = 'u' +
-    // (o?.persona ?? o?.name ?? '')` - since the client sends a persona AVATAR/filename and the
-    // server-side re-append has no persona and falls back to a display NAME, the two hashes almost
-    // never match, so the dedup check fails and the raw-action route's own appendMessages() call
-    // creates a genuine duplicate sibling node for the same logical message on every raw-action-
-    // eligible send. Fix: make the raw-action route's own appendMessages() call the SOLE writer for
-    // this message by skipping sendMessageAsUser()'s own tree-append whenever a raw-action call is
-    // about to persist it itself. `willUseRawAction` mirrors the REAL, current gate preconditions of
-    // BOTH raw-action gates below (`rawActionGenerateData`/`rawActionChatCompletionData`) verbatim -
-    // re-read from those gates directly, not reconstructed from memory - so keep this in sync with
-    // them if either changes. Every value read here (`dryRun`, `main_api`, `type`, `selected_group`,
-    // `getCurrentCharacter()`/`this_avatar`) is fixed before this point and not reassigned anywhere
-    // between here and either gate (verified by reading every line in between), so this boolean is
-    // guaranteed to agree with whichever gate actually evaluates further down - it can never diverge
-    // into "skip the client append, but no raw-action gate ends up persisting it either" server no-op
-    // risk within this function's own single invocation.
-    // NOTE: this does NOT apply to the `insertAt`-based mid-chain graft path inside sendMessageAsUser
-    // (chatOpGraft) - Generate() (this function) never calls sendMessageAsUser() with a real
-    // `insertAt`, only the standalone `/send at=` slash command (public/scripts/slash-commands.js)
-    // does, and that command never itself triggers a raw-action generate call - so there is no
-    // double-append risk to fix on that path; `skipTreePersistence` is still honored there (see
-    // sendMessageAsUser() itself) purely for API-contract consistency, not because it's reachable here.
+    // Computed before sendMessageAsUser() runs, mirroring both raw-action gates' real preconditions
+    // below verbatim (keep in sync if either changes) - passed in as skipTreePersistence so
+    // sendMessageAsUser() doesn't append the user's message itself when a raw-action call is about
+    // to append it server-side. Needed because the two appends would hash to different identities
+    // (client sends `persona: avatar`, the server-side append falls back to a display name) and
+    // dedup would miss it, creating a duplicate node. Doesn't apply to the insertAt/graft path -
+    // only the `/send at=` slash command uses that, and it never triggers a raw-action send.
     const rawActionCharacterAvatar = getCurrentCharacter()?.avatar;
     const rawActionGroupId = selected_group || undefined;
     const rawActionOwnerId = rawActionGroupId
@@ -8312,12 +8286,7 @@ export async function sendMessageAsUser(messageText, messageBias, insertAt = nul
         await eventSource.emit(event_types.USER_MESSAGE_RENDERED, chat_id);
 
         // Awaited, not fire-and-forget: otherwise the next save can miss the isChatSaving window and drop the AI message.
-        // BUGFIX (double-append on raw-action sends): skip this function's own append when the
-        // caller (Generate(), public/script.js) already knows a raw-action generate call is
-        // about to persist this exact message server-side via its own appendMessages() call -
-        // see `skipTreePersistence`'s own doc comment above, and Generate()'s `willUseRawAction`
-        // local, for the full identity-hash-mismatch root cause this prevents. When true, the
-        // raw-action route's own appendMessages() call becomes the SOLE writer for this message.
+        // See skipTreePersistence's own doc comment above.
         if (!skipTreePersistence) {
             await chatOpAppend(chat_id).catch(error =>
                 console.error('Could not save the new user message:', error));
