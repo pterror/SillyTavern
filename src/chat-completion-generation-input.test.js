@@ -28,11 +28,13 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-chat-completion-generatio
 const charactersDir = path.join(root, 'characters');
 const groupsDir = path.join(root, 'groups');
 const worldsDir = path.join(root, 'worlds');
+const filesDir = path.join(root, 'files');
 fs.mkdirSync(charactersDir, { recursive: true });
 fs.mkdirSync(groupsDir, { recursive: true });
 fs.mkdirSync(worldsDir, { recursive: true });
+fs.mkdirSync(filesDir, { recursive: true });
 
-const directories = { root, characters: charactersDir, groups: groupsDir, worlds: worldsDir };
+const directories = { root, characters: charactersDir, groups: groupsDir, worlds: worldsDir, files: filesDir };
 globalThis.DATA_ROOT = root;
 
 /** Minimal real on-disk lorebook, matching src/world-info/candidate-resolution.test.js's own fixture shape. */
@@ -298,6 +300,37 @@ async function run() {
     const imagePart = turnWithMedia.content.find(p => p.type === 'image_url');
     assert.ok(imagePart, 'a real media-attachment reference forwarded via userMessageExtra is actually inlined into the assembled chat-completion payload as a real image_url content part');
     assert.ok(imagePart.image_url.url.startsWith('data:image/jpeg;base64,'));
+
+    // --- userMessageExtra: a forwarded FILE (text) attachment reference is inlined into this
+    // resolver's own `messages` output - i.e. BEFORE prepareOpenAIMessages() even runs - via the same
+    // `appendFileAttachments()` (src/file-attachment-inline.js) text-completion-prompt-orchestrator.js
+    // already reuses. Covers both resolution paths: a real on-disk file read via `.url`, and an
+    // already-resolved `.text` entry that skips the disk read entirely. ---
+    fs.writeFileSync(path.join(filesDir, 'notes.txt'), 'The tower key is hidden under the loose stone.');
+    const withFileExtra = await resolveChatCompletionGenerationInput(directories, {
+        avatar, ownerId, branchName,
+        userMessageText: 'Check my notes.',
+        userMessageExtra: {
+            files: [
+                { url: '/user/files/notes.txt', size: 42, name: 'notes.txt', created: 1700000000000 },
+                { text: 'Also remember: the drawbridge is broken.', size: 10, name: 'inline.txt', created: 1700000000001 },
+            ],
+        },
+    });
+    const appendedWithFileExtra = withFileExtra.messages[0];
+    assert.equal(appendedWithFileExtra.role, 'user');
+    assert.ok(
+        appendedWithFileExtra.content.includes('The tower key is hidden under the loose stone.'),
+        'the .url-resolved file text was read off disk and inlined',
+    );
+    assert.ok(
+        appendedWithFileExtra.content.includes('Also remember: the drawbridge is broken.'),
+        'the already-resolved .text file entry was inlined without a disk read',
+    );
+    assert.ok(
+        appendedWithFileExtra.content.includes('Check my notes.'),
+        'the inlined file text is prepended onto the turn\'s own message text, not a replacement of it',
+    );
 
     // --- tool-capability inputs are supplied, NOT pre-resolved by this resolver ---
     assert.equal(input.settings.chat_completion_source, 'openai', 'settings forwards the real oai_settings object for prepareOpenAIMessages() to resolve tool-capability values from internally');
