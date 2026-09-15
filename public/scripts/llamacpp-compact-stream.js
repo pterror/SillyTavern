@@ -11,6 +11,9 @@
  * `0xFF 0x02 <4-byte BE length><length bytes>`    = token-probabilities payload (JSON) for the current token.
  * `0xFF 0x03 <4-byte BE length><length bytes>`    = reasoning/thinking text chunk (UTF-8), not content.
  * `0xFF 0x04 <4-byte BE length><length bytes>`    = assistant_node_id (UTF-8 string), the final frame.
+ * `0xFF 0x05 <4-byte BE length><length bytes>`    = one tool-call delta (JSON).
+ * `0xFF 0x06 <4-byte BE length><length bytes>`    = one generated image (JSON {mimeType, data}).
+ * `0xFF 0x07 <4-byte BE length><length bytes>`    = thought signature (UTF-8 string).
  *
  * This is a private contract between ST's own server and ST's own client, not a public/supported surface.
  */
@@ -19,9 +22,12 @@ export const FRAME_TYPE_INDEX = 0x01;
 export const FRAME_TYPE_PROBABILITIES = 0x02;
 export const FRAME_TYPE_REASONING = 0x03;
 export const FRAME_TYPE_ASSISTANT_NODE_ID = 0x04;
+export const FRAME_TYPE_TOOL_CALL_DELTA = 0x05;
+export const FRAME_TYPE_IMAGE = 0x06;
+export const FRAME_TYPE_THOUGHT_SIGNATURE = 0x07;
 
 /**
- * @typedef {{content: string} | {index: number} | {probabilities: any} | {reasoning: string} | {assistantNodeId: string}} CompactStreamEvent
+ * @typedef {{content: string} | {index: number} | {probabilities: any} | {reasoning: string} | {assistantNodeId: string} | {toolCallDelta: any} | {image: {mimeType: string, data: string}} | {thoughtSignature: string}} CompactStreamEvent
  */
 
 /**
@@ -133,7 +139,7 @@ export class CompactStreamDecoder {
                 continue;
             }
 
-            if (type === FRAME_TYPE_REASONING || type === FRAME_TYPE_ASSISTANT_NODE_ID) {
+            if (type === FRAME_TYPE_REASONING || type === FRAME_TYPE_ASSISTANT_NODE_ID || type === FRAME_TYPE_THOUGHT_SIGNATURE) {
                 if (i + 6 > buf.length) {
                     flushContent();
                     this.pending = buf.subarray(i);
@@ -149,7 +155,38 @@ export class CompactStreamDecoder {
                 flushContent();
                 const textBytes = buf.subarray(i + 6, i + total);
                 const text = new TextDecoder('utf-8').decode(textBytes);
-                events.push(type === FRAME_TYPE_REASONING ? { reasoning: text } : { assistantNodeId: text });
+                if (type === FRAME_TYPE_REASONING) {
+                    events.push({ reasoning: text });
+                } else if (type === FRAME_TYPE_ASSISTANT_NODE_ID) {
+                    events.push({ assistantNodeId: text });
+                } else {
+                    events.push({ thoughtSignature: text });
+                }
+                i += total;
+                continue;
+            }
+
+            if (type === FRAME_TYPE_TOOL_CALL_DELTA || type === FRAME_TYPE_IMAGE) {
+                if (i + 6 > buf.length) {
+                    flushContent();
+                    this.pending = buf.subarray(i);
+                    return events;
+                }
+                const len = ((buf[i + 2] << 24) | (buf[i + 3] << 16) | (buf[i + 4] << 8) | buf[i + 5]) >>> 0;
+                const total = 6 + len;
+                if (i + total > buf.length) {
+                    flushContent();
+                    this.pending = buf.subarray(i);
+                    return events;
+                }
+                flushContent();
+                const jsonBytes = buf.subarray(i + 6, i + total);
+                try {
+                    const parsed = JSON.parse(new TextDecoder('utf-8').decode(jsonBytes));
+                    events.push(type === FRAME_TYPE_TOOL_CALL_DELTA ? { toolCallDelta: parsed } : { image: parsed });
+                } catch (error) {
+                    console.warn('Failed to parse compact stream tool-call/image frame:', error);
+                }
                 i += total;
                 continue;
             }

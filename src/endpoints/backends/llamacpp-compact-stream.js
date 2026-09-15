@@ -19,6 +19,14 @@ import { persistAssistantReply } from '../../assistant-reply-persist.js';
  *                                                 very end, once persistence is known - see
  *                                                 forwardAndPersistSseText()'s own doc comment for why
  *                                                 this must be the LAST frame before the stream ends.
+ * `0xFF 0x05 <4-byte BE length><length bytes>`  = one tool-call delta (JSON, the same per-chunk shape
+ *                                                 ToolManager.parseToolCalls() already accepts client-
+ *                                                 side - {index, id?, type?, function:{name?,arguments?}}).
+ * `0xFF 0x06 <4-byte BE length><length bytes>`  = one generated image (JSON {mimeType, data} - `data`
+ *                                                 is base64, matching the shape image consumers already
+ *                                                 expect as a data: URL body).
+ * `0xFF 0x07 <4-byte BE length><length bytes>`  = thought signature (UTF-8 string) - Gemini's opaque
+ *                                                 token for continuing a thinking turn across requests.
  *
  * Private contract with the bundled client; not a public/supported surface.
  */
@@ -27,6 +35,9 @@ export const FRAME_TYPE_INDEX = 0x01;
 export const FRAME_TYPE_PROBABILITIES = 0x02;
 export const FRAME_TYPE_REASONING = 0x03;
 export const FRAME_TYPE_ASSISTANT_NODE_ID = 0x04;
+export const FRAME_TYPE_TOOL_CALL_DELTA = 0x05;
+export const FRAME_TYPE_IMAGE = 0x06;
+export const FRAME_TYPE_THOUGHT_SIGNATURE = 0x07;
 
 /** Escapes any literal 0xFF byte so it can't be mistaken for a control frame. */
 export function encodeContent(text) {
@@ -79,6 +90,27 @@ export function encodeReasoningFrame(text) {
 
 export function encodeAssistantNodeIdFrame(nodeId) {
     return encodeLengthPrefixedTextFrame(FRAME_TYPE_ASSISTANT_NODE_ID, nodeId);
+}
+
+export function encodeThoughtSignatureFrame(signature) {
+    return encodeLengthPrefixedTextFrame(FRAME_TYPE_THOUGHT_SIGNATURE, signature);
+}
+
+function encodeLengthPrefixedJsonFrame(type, data) {
+    const json = Buffer.from(JSON.stringify(data), 'utf-8');
+    const header = Buffer.alloc(6);
+    header[0] = FRAME_SENTINEL;
+    header[1] = type;
+    header.writeUInt32BE(json.length, 2);
+    return Buffer.concat([header, json]);
+}
+
+export function encodeToolCallDeltaFrame(delta) {
+    return encodeLengthPrefixedJsonFrame(FRAME_TYPE_TOOL_CALL_DELTA, delta);
+}
+
+export function encodeImageFrame(image) {
+    return encodeLengthPrefixedJsonFrame(FRAME_TYPE_IMAGE, image);
 }
 
 /** @returns {{bytes: Buffer, index: number}} */
