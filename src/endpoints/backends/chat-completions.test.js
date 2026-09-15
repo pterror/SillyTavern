@@ -2160,26 +2160,23 @@ async function run() {
         assert.match(data.message, /already has an existing conversation/, 'the error explains why null was rejected here');
     }
 
-    // --- file attachment reference, route-level (this task): PERSISTENCE ONLY. Unlike the
-    // text-completion/Kobold/NovelAI/Horde family, chat-completion's raw-action pipeline does NOT
-    // inline `.files` text-attachment content into the outgoing messages array - verified (not
-    // assumed) by grepping every `src/chat-completion-*.js` module: `appendFileAttachments()`/
-    // `file-attachment-inline.js` is wired ONLY into `text-completion-prompt-orchestrator.js`, never
-    // into `chat-completion-messages.js`'s `buildChatCompletionMessages()` or
-    // `chat-completion-prepare-messages.js`. This is a REAL, PRE-EXISTING gap in chat-completion's
-    // server-side pipeline (the legacy CLIENT-assembled chat-completion path DOES inline file text,
-    // via `coreChat`'s own `appendFileContent()` call in public/script.js, so this is a genuine
-    // functional difference from the client, not a deliberately-scoped omission this task introduces)
-    // - separate from, and NOT fixed by, this task's own file/media-REFERENCE-forwarding change. The
-    // forwarded reference still round-trips correctly into the persisted tree (asserted below), so a
-    // future fix to wire file-attachment-inline.js into the chat-completion pipeline would make this
-    // already work without any further client or route-level plumbing changes - only the
-    // INLINING-INTO-THIS-TURN'S-OWN-PROMPT step is what's currently missing here, unlike the media
-    // (image/video/audio) case just below, which IS fully wired and functional.
+    // --- file attachment reference, route-level: PERSISTENCE *and* INLINING. Chat-completion's
+    // raw-action pipeline now reuses `file-attachment-inline.js`'s `appendFileAttachments()` - the
+    // exact same function `text-completion-prompt-orchestrator.js` already wires in - from
+    // `resolveChatCompletionGenerationInput()` (src/chat-completion-generation-input.js), applied to
+    // `promptChat` (which already includes the just-appended in-memory turn) BEFORE
+    // `buildChatCompletionMessages()` converts it to `{role, content}`. This closes the real,
+    // previously-documented gap versus the legacy CLIENT-assembled chat-completion path, which already
+    // inlined file text via `coreChat`'s own `appendFileContent()` call in public/script.js. Both the
+    // persisted-node shape (unaffected - `.extra` is stored verbatim, the inlining only affects the
+    // outgoing prompt) AND the actual outgoing request body (asserted below, mirroring the media/image
+    // test just below it) are verified.
     {
         fs.writeFileSync(path.join(filesDir, 'raw-action-attach.txt'), 'The password is hunter2.');
 
-        const fakeBackend = await startFakeBackend((_req, res) => {
+        let capturedRequestBody = null;
+        const fakeBackend = await startFakeBackend((_req, res, body) => {
+            capturedRequestBody = JSON.parse(body);
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'Got your file.' } }] }));
         });
@@ -2195,13 +2192,26 @@ async function run() {
         fakeBackend.server.close();
 
         assert.equal(status, 200);
+        assert.ok(capturedRequestBody, 'the fake backend actually received a request');
+        const outgoingMessages = capturedRequestBody.messages;
+        assert.ok(Array.isArray(outgoingMessages), 'the outgoing request carries a real messages array');
+        const turnWithFile = outgoingMessages.find(m => typeof m.content === 'string' && m.content.includes('The password is hunter2.'));
+        assert.ok(
+            turnWithFile,
+            `expected the attached file's text to be inlined into the outgoing turn's own content, got: ${JSON.stringify(outgoingMessages)}`,
+        );
+        assert.ok(
+            turnWithFile.content.includes('Check the attached file.'),
+            'the inlined file text is prepended onto the turn\'s own message text, not a replacement of it',
+        );
+
         const branchAfter = await loadBranch(directories, ownerId, branchName);
         const persistedUserMsg = branchAfter.messages[branchAfter.messages.length - 2];
-        assert.equal(persistedUserMsg.mes, 'Check the attached file.');
+        assert.equal(persistedUserMsg.mes, 'Check the attached file.', 'the persisted node keeps the ORIGINAL (non-inlined) message text - inlining only affects the outgoing prompt, not what is stored');
         assert.deepEqual(
             persistedUserMsg.extra,
             { files: [{ url: '/user/files/raw-action-attach.txt', size: 25, name: 'raw-action-attach.txt', created: 1700000000000 }] },
-            'the persisted user message node carries the (sanitized) forwarded extra, even though chat-completion does not yet inline it into this turn\'s own prompt (see comment above)',
+            'the persisted user message node carries the (sanitized) forwarded extra unchanged',
         );
     }
 
@@ -3151,6 +3161,60 @@ async function run() {
         const branchAfterFollowUp = await loadBranch(directories, ownerId, toolBranch);
         const resolvedToolMsg = branchAfterFollowUp.messages.find(m => m.node_id === handoffPayload.tool_call_handoff.node_id);
         assert.equal(resolvedToolMsg.extra.tool_invocations[0].result, 'Curtains opened on the left.', 'the in-place edit resolving the pending node still happened even though the follow-up round\'s own backend call then failed');
+    }
+
+    // --- json_schema threading (this task): a raw-action `type: 'quiet'` request carrying a
+    // `json_schema` field must actually reach the backend as a real `response_format`/`json_schema`
+    // constraint, exactly like the legacy client-assembled path already produces via
+    // `createGenerationParameters()`'s own `jsonSchema` support (src/chat-completion-generation-data.js) -
+    // see `buildRawActionChatCompletionRequest()`'s own `jsonSchema` param doc comment. Default fixture
+    // settings use `chat_completion_source: 'custom'` (buildSettingsFixture() above), which is served by
+    // the generic/default dispatch branch (chat-completions.js, the `request.body.json_schema` handling
+    // right before `requestBody` is assembled) - not one of the ~12 provider-`switch` cases.
+    {
+        const jsonSchemaBranch = 'json-schema-branch';
+        await saveChatToTree(directories, ownerId, jsonSchemaBranch, [
+            { chat_metadata: {} },
+            { name: 'Tester', is_user: true, mes: 'Hi Rex, json-schema branch.', send_date: 1, extra: {} },
+            { name: 'Rex', is_user: false, mes: 'Hello there, json-schema branch!', send_date: 2, extra: {} },
+        ]);
+        const branchBefore = await loadBranch(directories, ownerId, jsonSchemaBranch);
+
+        const requestBodies = [];
+        const fakeBackend = await startFakeBackend((_req, res, body) => {
+            requestBodies.push(JSON.parse(body));
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: '{"mood": "happy"}' } }] }));
+        });
+        pointBackendAt(fakeBackend.url);
+
+        const app = buildTestApp();
+        let status, data;
+        try {
+            ({ status, data } = await postGenerate(app, {
+                owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+                type: 'quiet', user_message: '', stream: false,
+                json_schema: { name: 'mood_schema', description: 'The character\'s mood.', strict: true, value: { type: 'object', properties: { mood: { type: 'string' } }, required: ['mood'] } },
+            }));
+        } finally {
+            fakeBackend.server.close();
+        }
+
+        assert.equal(status, 200, 'the raw-action route accepted a json_schema-bearing quiet request instead of falling through/erroring');
+        assert.equal(data.choices[0].message.content, '{"mood": "happy"}');
+
+        assert.equal(requestBodies.length, 1);
+        const sentBody = requestBodies[0];
+        assert.ok(sentBody.response_format, 'the backend request actually carries a response_format constraint, not an unconstrained completion');
+        assert.equal(sentBody.response_format.type, 'json_schema');
+        assert.equal(sentBody.response_format.json_schema.name, 'mood_schema');
+        assert.equal(sentBody.response_format.json_schema.strict, true);
+        assert.deepEqual(sentBody.response_format.json_schema.schema, { type: 'object', properties: { mood: { type: 'string' } }, required: ['mood'] }, 'the schema value forwarded is the exact object the client sent, not a re-derived one');
+
+        // quiet generations never touch the visible tree on either side (see the route handler's own
+        // `skipPersistence` comment) - confirm the json_schema plumbing didn't accidentally change that.
+        const branchAfter = await loadBranch(directories, ownerId, jsonSchemaBranch);
+        assert.equal(branchAfter.messages.length, branchBefore.messages.length, 'a quiet generation persists neither the user nor the assistant side, json_schema or not');
     }
 
     console.log('chat-completions.test.js: all assertions passed');

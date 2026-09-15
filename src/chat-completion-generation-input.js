@@ -13,6 +13,7 @@ import { setExtensionPrompt, extension_prompt_types } from './extension-prompt-t
 import { getRegexedString, regex_placement } from './regex-scripts-engine.js';
 import { getTokenizerModel, getTiktokenTokenizer } from './endpoints/tokenizers.js';
 import { getBiasStrings } from './prompt-line-formatting.js';
+import { appendFileAttachments } from './file-attachment-inline.js';
 
 /**
  * Adapter/resolver layer between REAL on-disk state (settings.json - via settings-store.js's
@@ -748,7 +749,25 @@ export async function resolveChatCompletionGenerationInput(directories, {
     // routed through this pipeline would have fed the model its OWN about-to-be-replaced reply as the
     // newest turn of its own context, instead of excluding it like the text-completion pipeline
     // already correctly does.
-    const promptChat = isSwipe && chat.length ? chat.slice(0, -1) : chat;
+    const promptChatBeforeFileInline = isSwipe && chat.length ? chat.slice(0, -1) : chat;
+
+    // File-attachment inlining (closes a real, documented gap - see file-attachment-inline.js's own
+    // module doc comment and this task's own investigation): reuses the SAME
+    // `appendFileAttachments()` function text-completion-prompt-orchestrator.js already wires into
+    // its own per-message finalization step, here at the one point in the chat-completion pipeline
+    // that still has each message's raw `.extra` available (BEFORE `buildChatCompletionMessages()`
+    // converts the array to `{role, content}` and drops everything else). Runs over `promptChat` -
+    // i.e. tree-loaded history AND the just-appended in-memory turn alike (the turn built from
+    // `userMessageText`/`userMessageExtra` above is already part of `chat`/`promptChat` by this
+    // point) - matching how `.media` inlining already reaches that same freshly-injected turn via
+    // the very same array. `promptChat` is reassigned so every downstream consumer (world-info
+    // scanning's `chatForWI`, `macroContext.chat`, and `buildChatCompletionMessages()` itself) sees
+    // the file-inlined text, mirroring how text-completion's own `coreChat` is mutated once, early,
+    // before any of ITS downstream consumers run.
+    const promptChat = await Promise.all(promptChatBeforeFileInline.map(async (msg) => ({
+        ...msg,
+        mes: await appendFileAttachments(msg.extra, msg.mes, { directories }),
+    })));
 
     const fields = await getCharacterCardFields(directories, {
         avatar,
