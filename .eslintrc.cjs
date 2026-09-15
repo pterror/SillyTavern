@@ -81,6 +81,38 @@ module.exports = {
                 ],
             },
         },
+        {
+            // saveChatConditional()/saveChatDebounced() dispatch to _saveTreeChat()'s diff-based
+            // persistence, which has no idea what actually happened. A real user action knows what it
+            // did - call the matching chatOp*() directly (chat-store.js) instead of asking the whole
+            // chat to be diffed. Silence with an inline eslint-disable comment ONLY for a call that's
+            // a documented fallback after a direct op already failed/doesn't apply, not as a shortcut.
+            files: ['public/script.js'],
+            rules: {
+                'no-restricted-syntax': ['error',
+                    {
+                        selector: "CallExpression[callee.name=/^saveChat(Conditional|Debounced)$/]",
+                        message: 'Call the specific chatOp*() for this action instead (public/scripts/chat-store.js) - see this rule\'s own comment in .eslintrc.cjs.',
+                    },
+                ],
+            },
+        },
+        {
+            // Same rationale as the block above, for bundled (first-party-maintained) extensions -
+            // context.saveChat() is the getContext() equivalent of saveChatConditional(). Real
+            // third-party extensions are excluded from lint entirely (see ignorePatterns below), so
+            // this only applies to extensions we actually maintain and can migrate to
+            // context.editMessage()/editMessages()/appendMessage().
+            files: ['public/scripts/extensions/**/*.js'],
+            rules: {
+                'no-restricted-syntax': ['error',
+                    {
+                        selector: "CallExpression[callee.property.name='saveChat']",
+                        message: 'Use context.editMessage()/editMessages()/appendMessage() for this action instead - see this rule\'s own comment in .eslintrc.cjs.',
+                    },
+                ],
+            },
+        },
     ],
     ignorePatterns: [
         '**/node_modules/**',
