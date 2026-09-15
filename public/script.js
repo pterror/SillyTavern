@@ -10406,154 +10406,6 @@ function _isBlankUnwrittenSwipe(message) {
     return !message.swipe_info?.[at]?.node_id;
 }
 
-// Saves a tree-backed chat by reconstructing operations from a before/after snapshot comparison, since callers don't tell this function what changed.
-// Returns null for a brand new chat (nothing persisted yet).
-async function _saveTreeChat(fileName, metadata, messages, addressedByName = false) {
-    const avatar = getCurrentCharacter()?.avatar;
-    if (!avatar) return null;
-
-    let lastPersisted = null;
-    let firstNewIndex = -1;
-
-    // Each operation records its own message as saved as it lands, so one failing doesn't leave every other write's message looking unsaved next time.
-    for (let i = 0; i < messages.length; i++) {
-        let msg = messages[i];
-
-        if (!msg.node_id) {
-            if (firstNewIndex < 0) firstNewIndex = i;
-            continue;
-        }
-
-        // A provisional id earns a real row only if something was written into the opening or something follows it - never merely because it was shown.
-        let justEnsured = false;
-        if (isProvisionalNodeId(msg.node_id)) {
-            // The provisional id is derived from the message's own text, so text still hashing to it hasn't changed.
-            const at = msg.swipe_id ?? 0;
-            const said = msg.swipe_info?.[at]?.name ?? msg.name;
-            const written = msg.node_id !== provisionalNodeId(said, msg.mes);
-            const followed = messages.length > i + 1;
-            if (written || followed) {
-                const realId = await ensureOpeningRow(i);
-                if (realId && chat[i]?.node_id === realId) {
-                    msg = chat[i];
-                    justEnsured = true;
-                }
-            }
-        }
-
-        if (!isStoredNodeId(msg.node_id)) continue;
-
-        lastPersisted = msg.node_id;
-
-        const seen = _messageSnapshots.get(msg.node_id);
-        if (seen === msg) continue;
-
-        // A different object isn't necessarily different content (holes filled, arrays normalized, etc) - suppress a write that provably changes nothing.
-        if (seen && JSON.stringify(seen) === JSON.stringify(msg)) {
-            _markMessageSaved(i, msg.node_id);
-            continue;
-        }
-
-        // The selected slot counts as new too, so overswiping creates a sibling instead of editing the previous row.
-        const hasSlots = Array.isArray(msg.swipes) && Array.isArray(msg.swipe_info);
-        const selected = msg.swipe_id ?? 0;
-
-        if (hasSlots
-            && typeof msg.swipes[selected] === 'string'
-            && msg.swipes[selected].length === 0
-            && !msg.swipe_info[selected]?.node_id) {
-            // Sitting on a blank slot that has never been written. Nothing exists to save.
-            continue;
-        }
-
-        let newSelectedId = null;
-        let learnedIds = null;
-        if (hasSlots) {
-            for (let k = 0; k < msg.swipes.length; k++) {
-                if (typeof msg.swipes[k] !== 'string') continue;
-                if (msg.swipes[k].length === 0) continue;
-                // Card text the union injected for display, not a row - skip it, or every card greeting mints an opening on save.
-                if (msg.swipe_info[k]?.node_id) continue;
-
-                const createdId = await chatOpAddAlternative(i, msg.swipes[k]);
-                if (!createdId) continue;
-
-                learnedIds = learnedIds ?? [...msg.swipe_info];
-                learnedIds[k] = { ...(learnedIds[k] || {}), node_id: createdId };
-                if (k === selected) newSelectedId = createdId;
-            }
-        }
-        if (learnedIds && i < chat.length) {
-            updateMessage(i, { swipe_info: learnedIds });
-        }
-
-        if (newSelectedId) {
-            // The shown slot is itself brand new, so it becomes this message's node instead of the old one.
-            await chatOpSelect(i, selected);
-            lastPersisted = newSelectedId;
-        } else {
-            // The route 409s on an edit that empties a message that has text; overswiping a greeting reaches exactly this state.
-            if (typeof msg.mes === 'string' && msg.mes.length === 0) {
-                continue;
-            }
-
-            // This row was just created from this message, so it already holds what an edit would send.
-            if (justEnsured) {
-                _markMessageSaved(i, msg.node_id);
-                continue;
-            }
-
-            await chatOpEdit(i);
-        }
-    }
-
-    if (!lastPersisted) return null;
-
-    if (firstNewIndex >= 0) {
-        await chatOpAppend(firstNewIndex);
-    }
-
-    // Metadata is stored on the node the chat is positioned at; `target` falls back to the opening's own node for a chat's first save.
-    const position = getCurrentCharacter()?.chat;
-    const opening = chat[0]?.node_id;
-    const target = addressedByName
-        ? fileName
-        : (chat.some(m => m.node_id === position) ? position
-            : (isStoredNodeId(opening) ? opening : fileName));
-
-    // A pure structural tree op (delete/degraft/swap/delete-alternative) already persisted its own
-    // change via a dedicated chatOp* call above (or before this function was even entered); it has
-    // nothing new to tell the metadata endpoint. Only actually POST when chat_metadata's own content
-    // has changed since the last successful metadata save - otherwise this would be a second round
-    // trip per action that writes back the exact same object the server already has.
-    const metadataContentJSON = _metadataContentJSON(metadata);
-    if (metadataContentJSON === _lastSavedMetadataJSON) {
-        return {};
-    }
-
-    // A metadata write failure must not take the save down with it - every message write has already landed by this point.
-    try {
-        const response = await fetch('/api/chats/metadata', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ avatar_url: avatar, file_name: target, metadata, expected_integrity: metadata?.integrity }),
-        });
-        if (response.status === 409) {
-            _handleMetadataIntegrityConflict();
-            return {};
-        }
-        if (!response.ok) {
-            throw new Error(`/api/chats/metadata responded ${response.status}`);
-        }
-        const meta = await response.json().catch(() => ({}));
-        _lastSavedMetadataJSON = metadataContentJSON;
-        return { integrity: meta.integrity };
-    } catch (error) {
-        console.warn('[saveChat] The messages are saved; their chat metadata is not:', error);
-        return {};
-    }
-}
-
 /**
  * Saves the chat to the server.
  * @param {object} [options] - Additional options.
@@ -10587,10 +10439,10 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
         return;
     }
 
-    // A tree-backed chat needs no name/id pointer to save under (Workstream 6): _saveTreeChat()
-    // addresses every write by each message's own real node id, falling back to `fileName` only as
-    // a last resort that's unreachable once any message has actually persisted (see its own
-    // comments). The legacy JSONL path has no such fallback - it truly cannot save without a name.
+    // A tree-backed chat needs no name/id pointer to save under: the block below addresses every
+    // write by each message's own real node id, falling back to `fileName` only as a last resort
+    // that's unreachable once any message has actually persisted. The legacy JSONL path has no such
+    // fallback - it truly cannot save without a name.
     const isTreeChat = !!metadata?._tree_stored && !Array.isArray(chatData);
     if (!fileName && !isTreeChat) {
         console.warn('saveChat called without chat_name and no chat file found');
@@ -10614,7 +10466,137 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
 
     try {
         if (isTreeChat) {
-            const treeResult = await _saveTreeChat(fileName, metadata, trimmedChat, chatName !== undefined);
+            // This diff-based reconstruction must stay inline here, not become a separately-callable
+            // function again - its only legitimate caller is the generic save path extensions reach
+            // via getContext().saveChat(). First-party code states its own operations directly via
+            // chat-store.js's chatOp*() family instead.
+            const addressedByName = chatName !== undefined;
+            const treeAvatar = getCurrentCharacter()?.avatar;
+            let treeResult = null;
+            if (treeAvatar) {
+                let lastPersisted = null;
+                let firstNewIndex = -1;
+
+                for (let i = 0; i < trimmedChat.length; i++) {
+                    let msg = trimmedChat[i];
+
+                    if (!msg.node_id) {
+                        if (firstNewIndex < 0) firstNewIndex = i;
+                        continue;
+                    }
+
+                    let justEnsured = false;
+                    if (isProvisionalNodeId(msg.node_id)) {
+                        const at = msg.swipe_id ?? 0;
+                        const said = msg.swipe_info?.[at]?.name ?? msg.name;
+                        const written = msg.node_id !== provisionalNodeId(said, msg.mes);
+                        const followed = trimmedChat.length > i + 1;
+                        if (written || followed) {
+                            const realId = await ensureOpeningRow(i);
+                            if (realId && chat[i]?.node_id === realId) {
+                                msg = chat[i];
+                                justEnsured = true;
+                            }
+                        }
+                    }
+
+                    if (!isStoredNodeId(msg.node_id)) continue;
+
+                    lastPersisted = msg.node_id;
+
+                    const seen = _messageSnapshots.get(msg.node_id);
+                    if (seen === msg) continue;
+
+                    if (seen && JSON.stringify(seen) === JSON.stringify(msg)) {
+                        _markMessageSaved(i, msg.node_id);
+                        continue;
+                    }
+
+                    const hasSlots = Array.isArray(msg.swipes) && Array.isArray(msg.swipe_info);
+                    const selected = msg.swipe_id ?? 0;
+
+                    if (hasSlots
+                        && typeof msg.swipes[selected] === 'string'
+                        && msg.swipes[selected].length === 0
+                        && !msg.swipe_info[selected]?.node_id) {
+                        continue;
+                    }
+
+                    let newSelectedId = null;
+                    let learnedIds = null;
+                    if (hasSlots) {
+                        for (let k = 0; k < msg.swipes.length; k++) {
+                            if (typeof msg.swipes[k] !== 'string') continue;
+                            if (msg.swipes[k].length === 0) continue;
+                            if (msg.swipe_info[k]?.node_id) continue;
+
+                            const createdId = await chatOpAddAlternative(i, msg.swipes[k]);
+                            if (!createdId) continue;
+
+                            learnedIds = learnedIds ?? [...msg.swipe_info];
+                            learnedIds[k] = { ...(learnedIds[k] || {}), node_id: createdId };
+                            if (k === selected) newSelectedId = createdId;
+                        }
+                    }
+                    if (learnedIds && i < chat.length) {
+                        updateMessage(i, { swipe_info: learnedIds });
+                    }
+
+                    if (newSelectedId) {
+                        await chatOpSelect(i, selected);
+                        lastPersisted = newSelectedId;
+                    } else {
+                        if (typeof msg.mes === 'string' && msg.mes.length === 0) {
+                            continue;
+                        }
+                        if (justEnsured) {
+                            _markMessageSaved(i, msg.node_id);
+                            continue;
+                        }
+                        await chatOpEdit(i);
+                    }
+                }
+
+                if (lastPersisted) {
+                    if (firstNewIndex >= 0) {
+                        await chatOpAppend(firstNewIndex);
+                    }
+
+                    const position = getCurrentCharacter()?.chat;
+                    const opening = chat[0]?.node_id;
+                    const target = addressedByName
+                        ? fileName
+                        : (chat.some(m => m.node_id === position) ? position
+                            : (isStoredNodeId(opening) ? opening : fileName));
+
+                    const metadataContentJSON = _metadataContentJSON(metadata);
+                    if (metadataContentJSON === _lastSavedMetadataJSON) {
+                        treeResult = {};
+                    } else {
+                        try {
+                            const response = await fetch('/api/chats/metadata', {
+                                method: 'POST',
+                                headers: getRequestHeaders(),
+                                body: JSON.stringify({ avatar_url: treeAvatar, file_name: target, metadata, expected_integrity: metadata?.integrity }),
+                            });
+                            if (response.status === 409) {
+                                _handleMetadataIntegrityConflict();
+                                treeResult = {};
+                            } else if (!response.ok) {
+                                throw new Error(`/api/chats/metadata responded ${response.status}`);
+                            } else {
+                                const meta = await response.json().catch(() => ({}));
+                                _lastSavedMetadataJSON = metadataContentJSON;
+                                treeResult = { integrity: meta.integrity };
+                            }
+                        } catch (error) {
+                            console.warn('[saveChat] The messages are saved; their chat metadata is not:', error);
+                            treeResult = {};
+                        }
+                    }
+                }
+            }
+
             if (treeResult) {
                 if (typeof treeResult.integrity === 'string') {
                     chat_metadata.integrity = treeResult.integrity;
