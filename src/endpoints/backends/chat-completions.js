@@ -2956,10 +2956,13 @@ async function forwardAndPersistCompactStream(fetchResponse, response, persist, 
     if (statusCode === 401) statusCode = 400;
     response.statusCode = statusCode;
     response.statusMessage = fetchResponse.statusText;
-    // Distinct from the llama.cpp/text-completion path's own 'compact-v1' - same wire format, but
-    // kept as a separate value to avoid any ambiguity between the two independent conversions
-    // happening concurrently this session (see this function's own doc comment above).
-    response.setHeader('X-ST-Stream-Format', 'compact-v1-chat');
+    // Same header value/wire format as the llama.cpp/text-completion path's own compact stream
+    // (text-completions.js's forwardAndPersistCompactStream()) - originally given a distinct
+    // 'compact-v1-chat' value to avoid ambiguity between two independent conversions happening
+    // concurrently in the same session, but the bytes are byte-for-byte identical (both use the same
+    // encoder functions from llamacpp-compact-stream.js), so there is exactly one wire format and one
+    // header value across every raw-action streaming path.
+    response.setHeader('X-ST-Stream-Format', 'compact-v1');
 
     const writer = createChatCompactStreamWriter(response);
     let sseBuffer = '';
