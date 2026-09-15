@@ -5,11 +5,76 @@ import { getVersion, delay, Cache } from '../util.js';
 import { readSecret, SECRET_KEYS } from './secrets.js';
 import { buildRawActionKoboldRequest } from './backends/kobold.js';
 import { appendMessages, sanitizeUserMessageExtra } from '../message-tree-db.js';
+import { persistAssistantReply } from '../assistant-reply-persist.js';
+import {
+    createGenerationRecord, createResumableWriter, createBackpressureWriter, detachFromResponse,
+    encodeContent, encodeAssistantNodeIdFrame, handleGenerationResume, KEEPALIVE_INTERVAL_MS,
+} from './backends/llamacpp-compact-stream.js';
 
 const ANONYMOUS_KEY = '0000000000';
 const HORDE_TEXT_MODEL_METADATA_URL = 'https://raw.githubusercontent.com/db0/AI-Horde-text-model-reference/main/db.json';
 const cache = new Cache(60 * 1000);
 export const router = express.Router();
+
+// Real values ported verbatim from public/scripts/horde.js's own MAX_RETRIES/CHECK_INTERVAL (the
+// client-side poll loop these constants used to drive before polling moved server-side - see
+// streamHordeGeneration()'s own doc comment below). Overridable ONLY via
+// `_setHordePollingConfigForTests()`, so a real end-to-end test can exercise the real poll loop
+// without literally waiting up to 20 minutes.
+const HORDE_MAX_RETRIES_DEFAULT = 480;
+const HORDE_POLL_INTERVAL_MS_DEFAULT = 2500;
+let HORDE_MAX_RETRIES = HORDE_MAX_RETRIES_DEFAULT;
+let HORDE_POLL_INTERVAL_MS = HORDE_POLL_INTERVAL_MS_DEFAULT;
+let HORDE_KEEPALIVE_INTERVAL_MS = KEEPALIVE_INTERVAL_MS;
+
+/**
+ * Test-only hook to speed up streamHordeGeneration()'s poll loop and its keepalive cadence. Never
+ * called outside a test.
+ * @param {{pollIntervalMs?: number, maxRetries?: number, keepaliveIntervalMs?: number}} [overrides]
+ */
+export function _setHordePollingConfigForTests({ pollIntervalMs, maxRetries, keepaliveIntervalMs } = {}) {
+    HORDE_POLL_INTERVAL_MS = pollIntervalMs ?? HORDE_POLL_INTERVAL_MS_DEFAULT;
+    HORDE_MAX_RETRIES = maxRetries ?? HORDE_MAX_RETRIES_DEFAULT;
+    HORDE_KEEPALIVE_INTERVAL_MS = keepaliveIntervalMs ?? KEEPALIVE_INTERVAL_MS;
+}
+
+/**
+ * One in-flight server-side Horde poll loop's cancellation handle, keyed by Horde's own job id -
+ * the obvious shared key, since `/cancel-task` (below) only ever receives that same `taskId`. Mirrors
+ * `llamacpp-compact-stream.js`'s own `metaCache`/`generationBuffers` maps: a plain `Map`, capped so a
+ * flood of abandoned generations can't leak memory, with entries removed as soon as their own poll
+ * loop actually finishes (success, fault, timeout, or cancellation) in `streamHordeGeneration()`'s own
+ * `finally` block - there is no separate TTL sweep because every entry's lifetime is already bounded
+ * by "however long one real Horde job's poll loop runs for."
+ * @type {Map<string, {cancelled: boolean, cancel: () => void, cancelPromise: Promise<void>}>}
+ */
+const activeHordePolls = new Map();
+const ACTIVE_HORDE_POLLS_MAX = 200;
+
+function createHordePollState() {
+    let cancelled = false;
+    let notifyCancel;
+    const cancelPromise = new Promise((resolve) => { notifyCancel = resolve; });
+    return {
+        get cancelled() { return cancelled; },
+        cancel() {
+            if (cancelled) return;
+            cancelled = true;
+            notifyCancel();
+        },
+        cancelPromise,
+    };
+}
+
+function registerHordePoll(jobId) {
+    if (activeHordePolls.size >= ACTIVE_HORDE_POLLS_MAX) {
+        const oldestKey = activeHordePolls.keys().next().value;
+        if (oldestKey !== undefined) activeHordePolls.delete(oldestKey);
+    }
+    const state = createHordePollState();
+    activeHordePolls.set(jobId, state);
+    return state;
+}
 
 /**
  * Returns the AIHorde client agent.
@@ -146,6 +211,9 @@ router.post('/status', async (_, response) => {
 router.post('/cancel-task', async (request, response) => {
     try {
         const taskId = request.body.taskId;
+        // Stops the actual in-flight server-side poll loop for this job, if streamHordeGeneration()
+        // (below) is currently running one - see activeHordePolls' own doc comment above.
+        activeHordePolls.get(taskId)?.cancel();
         const agent = await getClientAgent();
         const fetchResult = await fetch(`https://aihorde.net/api/v2/generate/text/status/${taskId}`, {
             method: 'DELETE',
@@ -301,6 +369,134 @@ async function buildRawActionHordePayload(request) {
     };
 }
 
+/**
+ * Fetches one Horde job's current status via the real, public `GET .../generate/text/status/:id`
+ * endpoint - same URL and headers `/task-status` above already uses.
+ * @param {string} jobId
+ * @param {string} agent
+ * @returns {Promise<any>}
+ */
+async function fetchHordeJobStatus(jobId, agent) {
+    const fetchResult = await fetch(`https://aihorde.net/api/v2/generate/text/status/${jobId}`, {
+        headers: { 'Client-Agent': agent },
+    });
+    if (!fetchResult.ok) {
+        throw new Error(`Horde status check responded ${fetchResult.status}`);
+    }
+    return fetchResult.json();
+}
+
+/**
+ * Shims a Horde job (already submitted, real job id in hand) onto the same `compact-v1` wire protocol
+ * every other backend now streams over - see this module's own header comment / the task this
+ * implements for the full rationale. The client's connection to OUR server is held open exactly like
+ * any other raw-action stream (`X-ST-Stream-Format`/`X-Generation-Id` headers,
+ * `createResumableWriter()` for keepalive + resumability); the fact that Horde's own API is
+ * submit-then-poll is an internal implementation detail of THIS function, invisible to the client.
+ *
+ * Cancellation has two independent triggers, exactly like every other raw-action streaming route:
+ * - `/cancel-task` (above) looks up this job's `activeHordePolls` entry and calls `.cancel()` on it,
+ *   which this loop notices (via `pollState.cancelled`/`pollState.cancelPromise`) and stops on.
+ * - The client's own HTTP connection dropping does NOT cancel the poll - matching every other
+ *   raw-action backend's now-established "a persisted generation survives a client disconnect and can
+ *   still be resumed" behavior, the response writer is swapped for one that only buffers into the
+ *   resumable generation record (`detachFromResponse()`), and the poll loop runs to completion
+ *   regardless.
+ *
+ * On success, the generated text is written as a real content frame and, for a raw-action request
+ * (`rawActionPersist` non-null), persisted server-side via `persistAssistantReply()` exactly like
+ * every other backend - the resulting `assistant_node_id` frame is written last, per the wire
+ * protocol's own contract. On a fault/unsatisfiable-request/timeout/status-check-error, nothing is
+ * persisted and the stream simply ends without a content or node-id frame - the same convention
+ * `forwardAndPersistCompactStream()`/`pipeLlamaCppCompactStream()` already use for a failed upstream
+ * generation (no dedicated "failed" frame type exists yet - see llamacpp-compact-stream.js's own frame
+ * type list).
+ * @param {object} params
+ * @param {import('express').Response} params.response
+ * @param {string} params.jobId Horde's own job id - also used as the `X-Generation-Id`.
+ * @param {string} params.agent
+ * @param {object|null} params.rawActionPersist Same shape `persistAssistantReply()` takes minus
+ * `directories`/`ownerId` (already merged in by the caller) - or `null` to skip persistence.
+ * @returns {Promise<void>}
+ */
+async function streamHordeGeneration({ response, jobId, agent, rawActionPersist }) {
+    response.setHeader('X-ST-Stream-Format', 'compact-v1');
+    response.setHeader('X-Generation-Id', jobId);
+
+    const generationRecord = createGenerationRecord(jobId);
+    const { writer: initialWriter, stopKeepalive } = createResumableWriter(createBackpressureWriter(response), generationRecord, HORDE_KEEPALIVE_INTERVAL_MS);
+    let writer = initialWriter;
+
+    const pollState = registerHordePoll(jobId);
+
+    const onSocketClose = () => {
+        stopKeepalive();
+        writer = detachFromResponse(generationRecord);
+    };
+    response.socket?.once('close', onSocketClose);
+
+    try {
+        let text = '';
+        for (let attempt = 0; attempt < HORDE_MAX_RETRIES; attempt++) {
+            if (pollState.cancelled) {
+                console.info(`Horde task ${jobId} was cancelled; stopping the server-side poll loop.`);
+                break;
+            }
+
+            let statusJson;
+            try {
+                statusJson = await fetchHordeJobStatus(jobId, agent);
+            } catch (error) {
+                console.error(`Failed to check Horde task ${jobId} status:`, error);
+                break;
+            }
+
+            if (statusJson.faulted === true) {
+                console.error(`Horde task ${jobId} faulted.`);
+                break;
+            }
+
+            if (statusJson.is_possible === false) {
+                console.error(`Horde task ${jobId} is not satisfiable by any available worker.`);
+                break;
+            }
+
+            if (statusJson.done && Array.isArray(statusJson.generations) && statusJson.generations.length) {
+                text = statusJson.generations[0].text || '';
+                break;
+            }
+
+            if (attempt === HORDE_MAX_RETRIES - 1) {
+                console.error(`Horde task ${jobId} timed out after ${HORDE_MAX_RETRIES} polling attempts.`);
+                break;
+            }
+
+            await Promise.race([delay(HORDE_POLL_INTERVAL_MS), pollState.cancelPromise]);
+        }
+
+        if (!pollState.cancelled && text) {
+            writer.write(encodeContent(text));
+
+            if (rawActionPersist) {
+                try {
+                    const persisted = await persistAssistantReply(rawActionPersist, text);
+                    if (persisted) {
+                        writer.write(encodeAssistantNodeIdFrame(persisted.node_id));
+                    }
+                } catch (error) {
+                    console.error(`Failed to persist Horde raw-action assistant reply for task ${jobId}:`, error);
+                }
+            }
+        }
+    } finally {
+        response.socket?.off('close', onSocketClose);
+        activeHordePolls.delete(jobId);
+        writer.end();
+    }
+}
+
+router.get('/generate/resume/:id', handleGenerationResume);
+
 router.post('/generate-text', async (request, response) => {
     // Real raw-action cutover - see buildRawActionHordePayload()'s own doc comment above for the
     // full design. Same trigger condition kobold.js's own raw-action branch uses (owner_id plus
@@ -308,10 +504,13 @@ router.post('/generate-text', async (request, response) => {
     // coordinator) is completely unaware of which branch produced `request.body`, same pattern.
     let rawActionPersist = null;
     if (request.body.owner_id && (request.body.character_avatar || request.body.group_id)) {
+        const ownerId = request.body.owner_id;
         try {
             const built = await buildRawActionHordePayload(request);
             request.body = built.body;
-            rawActionPersist = built.rawActionPersist;
+            rawActionPersist = built.rawActionPersist
+                ? { ...built.rawActionPersist, directories: request.user.directories, ownerId }
+                : null;
         } catch (error) {
             console.error('Failed to build raw-action Horde request:', error);
             return response.status(400).send({ error: true, message: error?.message ?? 'Could not resolve this generation request' });
@@ -322,6 +521,7 @@ router.post('/generate-text', async (request, response) => {
     const url = 'https://aihorde.net/api/v2/generate/text/async';
     const agent = await getClientAgent();
 
+    let submitData;
     try {
         const result = await fetch(url, {
             method: 'POST',
@@ -339,21 +539,18 @@ router.post('/generate-text', async (request, response) => {
             return response.send({ error: { message } });
         }
 
-        const data = await result.json();
-        // Real raw-action metadata - see buildRawActionHordePayload()'s own doc comment above. Not a
-        // real AI Horde API field; the client's own generateHordeRawAction() (public/scripts/horde.js)
-        // reads it to know how/where to persist the assistant's reply once its own polling loop
-        // resolves with the final text. Omitted (not attached at all) for a non-raw-action request,
-        // or whenever this route decided persistence should be skipped - see rawActionPersist's own
-        // null cases above.
-        if (rawActionPersist) {
-            data.raw_action_persist = rawActionPersist;
-        }
-        return response.send(data);
+        submitData = await result.json();
     } catch (error) {
         console.error(error);
         return response.send({ error: true });
     }
+
+    if (!submitData?.id) {
+        console.error('Horde submission did not return a job id:', submitData);
+        return response.send({ error: { message: submitData?.message || 'Horde did not return a job id' } });
+    }
+
+    return streamHordeGeneration({ response, jobId: submitData.id, agent, rawActionPersist });
 });
 
 router.post('/sd-samplers', async (_, response) => {

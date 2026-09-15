@@ -18,37 +18,14 @@ import { setConfigFilePath } from '../util.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
 
-// Route-level Express-integration test for horde.js's own real raw-action /generate-text branch -
-// see this task's own report / src/endpoints/horde.js's `buildRawActionHordePayload()` doc comment
-// for the full architecture. Mirrors src/endpoints/backends/kobold.test.js's/novelai.test.js's
-// established convention: a real express app mounting the real routers, real on-disk fixtures
-// (writeCharacter/buildSettingsFixture/saveChatToTree/writeAllSettings), and loadBranch()-based
-// tree-persistence assertions.
+// Route-level Express-integration test for horde.js's own /generate-text route, now that it shims a
+// real submit-then-poll Horde job onto the same compact-v1 wire protocol every other backend streams
+// over (see this task's own report / streamHordeGeneration()'s doc comment for the full design).
 //
-// JUDGMENT CALL (verified, not assumed): AI Horde's real coordinator URL
-// (`https://aihorde.net/api/v2/generate/text/async`) is hardcoded in horde.js's own `/generate-text`
-// route - there is no settings.json field or raw-action-resolved value that can override it (unlike
-// Kobold's own `kai_settings.api_server`, which the raw-action branch DOES resolve from real,
-// on-disk settings - see kobold.test.js's own comment on this exact distinction for NovelAI). So,
-// like novelai.test.js, this file uses this repo's own established `mock.module()` node-fetch reroute
-// technique to redirect ONLY `https://aihorde.net` traffic to a local fake backend - every other URL
-// (there are none reachable from this route) would pass straight through unmodified.
-//
-// SCOPE: this file only exercises what the SERVER genuinely participates in - assembling the
-// raw-action prompt (via buildRawActionKoboldRequest(), reused as-is from kobold.js with
-// `macroExtras: { isHorde: true }`), persisting the user's message immediately, and submitting the
-// job to Horde's real coordinator. The actual submit-then-POLL-then-report loop
-// (public/scripts/horde.js's `generateHordeRawAction()`/`pollHordeTask()`) is real BROWSER code that
-// polls `/api/horde/task-status` itself over time with a live client-side AbortController - a
-// genuinely different, client-side concern this Node test suite does not simulate (see this task's
-// own report for the full "why this architecture" investigation). What IS tested end-to-end here is
-// the real persistence contract that architecture depends on: this route's own `raw_action_persist`
-// response field carries everything `generateHordeRawAction()`'s own `persistHordeRawActionReply()`
-// needs to persist the assistant's reply via the EXISTING, already-idempotent-by-content-identity
-// `/api/chats/message/append` route (src/endpoints/chats.js) - test (a) below drives that SAME real
-// route directly with the SAME real field shape `persistHordeRawActionReply()` sends, proving the
-// full real persistence chain (user message via buildRawActionHordePayload(), assistant reply via
-// the real chats.js route) produces the correct final tree state.
+// Uses this repo's own established `mock.module()` node-fetch reroute technique (same as
+// novelai.test.js) to redirect ONLY `https://aihorde.net` traffic to a local fake coordinator that
+// implements both the real submit endpoint (POST /api/v2/generate/text/async) and the real status
+// endpoint (GET /api/v2/generate/text/status/:id) it now polls internally.
 const canMockHordeBackend = typeof mock.module === 'function';
 /** @type {string|null} Set per-test below; read by the node-fetch reroute mock. */
 let hordeFakeBackendUrl = null;
@@ -65,13 +42,18 @@ if (canMockHordeBackend) {
         namedExports: {},
     });
 } else {
-    console.log('horde.test.js: node:test mock.module() is unavailable (run with --experimental-test-module-mocks) - skipping all raw-action /generate-text route tests, which need it to redirect AI Horde\'s hardcoded coordinator host to a local fake backend');
+    console.log('horde.test.js: node:test mock.module() is unavailable (run with --experimental-test-module-mocks) - skipping all /generate-text route tests, which need it to redirect AI Horde\'s hardcoded coordinator host to a local fake backend');
 }
 
-const { router: hordeRouter } = await import('./horde.js');
-const { router: chatsRouter } = await import('./chats.js');
+const { router: hordeRouter, _setHordePollingConfigForTests } = await import('./horde.js');
 const { writeAllSettings } = await import('../settings-store.js');
 const { saveChatToTree, loadBranch, getAlternatives, disposeMessageTreeStores } = await import('../message-tree-db.js');
+const { CompactStreamDecoder } = await import('../../public/scripts/llamacpp-compact-stream.js');
+
+// Real polling/keepalive timing sped way up for the test - see streamHordeGeneration()'s own
+// `_setHordePollingConfigForTests()` doc comment. Small enough that a real "still processing" reply
+// or two, plus at least one real keepalive frame, land well within a normal test timeout.
+_setHordePollingConfigForTests({ pollIntervalMs: 30, maxRetries: 50, keepaliveIntervalMs: 25 });
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-horde-raw-action-test-'));
 const charactersDir = path.join(root, 'characters');
@@ -159,14 +141,48 @@ function buildSettingsFixture() {
     };
 }
 
-async function startFakeHordeCoordinator(handler) {
+/**
+ * Fake AI Horde coordinator: accepts one submit call, returns `jobId`; responds "still processing"
+ * to the first `pendingReplies` status polls, then a real completed generation carrying `finalText`.
+ * `onDelete` is invoked for a real DELETE .../status/:id (cancellation) call. Every call is logged so
+ * tests can assert on how many status polls actually happened (e.g. "no further calls after cancel").
+ */
+function startFakeHordeCoordinator({ jobId, pendingReplies, finalText, onDelete }) {
+    const calls = { submit: 0, status: 0, delete: 0 };
+    let statusCallCount = 0;
     const server = http.createServer((req, res) => {
-        let body = '';
-        req.on('data', chunk => { body += chunk; });
-        req.on('end', () => handler(req, res, body));
+        req.on('data', () => { });
+        req.on('end', () => {
+            if (req.method === 'POST' && req.url === '/api/v2/generate/text/async') {
+                calls.submit++;
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ id: jobId }));
+                return;
+            }
+            if (req.method === 'GET' && req.url === `/api/v2/generate/text/status/${jobId}`) {
+                calls.status++;
+                statusCallCount++;
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                if (statusCallCount <= pendingReplies) {
+                    res.end(JSON.stringify({ done: false, faulted: false, is_possible: true, queue_position: pendingReplies - statusCallCount + 1, generations: [] }));
+                } else {
+                    res.end(JSON.stringify({ done: true, faulted: false, generations: [{ text: finalText, worker_name: 'fake-worker', model: 'fake-model' }] }));
+                }
+                return;
+            }
+            if (req.method === 'DELETE' && req.url === `/api/v2/generate/text/status/${jobId}`) {
+                calls.delete++;
+                onDelete?.();
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ done: false }));
+                return;
+            }
+            res.writeHead(404);
+            res.end();
+        });
     });
-    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-    return { server, url: `http://127.0.0.1:${server.address().port}` };
+    const listenPromise = new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    return listenPromise.then(() => ({ server, url: `http://127.0.0.1:${server.address().port}`, calls }));
 }
 
 function buildTestApp() {
@@ -177,25 +193,16 @@ function buildTestApp() {
         next();
     });
     app.use('/api/horde', hordeRouter);
-    app.use('/api/chats', chatsRouter);
     return app;
 }
 
-async function postJson(app, urlPath, body) {
-    const server = app.listen(0, '127.0.0.1');
-    await new Promise(resolve => server.once('listening', resolve));
-    const port = server.address().port;
-    try {
-        const res = await fetch(`http://127.0.0.1:${port}${urlPath}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-        });
-        const data = await res.json().catch(() => ({}));
-        return { status: res.status, data };
-    } finally {
-        server.closeAllConnections?.();
-        await new Promise(resolve => server.close(resolve));
+async function waitFor(check, { timeoutMs = 3000, intervalMs = 10 } = {}) {
+    const deadline = Date.now() + timeoutMs;
+    for (; ;) {
+        const result = await check();
+        if (result) return result;
+        if (Date.now() > deadline) throw new Error('waitFor() timed out waiting for condition to become true');
+        await new Promise(resolve => setTimeout(resolve, intervalMs));
     }
 }
 
@@ -213,17 +220,8 @@ async function run() {
     });
 
     // NOT `avatar` verbatim: the real client (public/script.js's own `rawActionGenerateData`
-    // construction) always strips the `.png` extension before sending `owner_id`
-    // (`characterAvatar.replace('.png', '')`), and src/endpoints/chats.js's own `ownerOf()` (used by
-    // the REAL /api/chats/message/append route this test also drives directly, in test (a) below)
-    // does the exact same strip from `avatar_url` - so both must agree on the SAME owner id for
-    // test (a)'s two real routes to operate on the same tree row.
+    // construction) always strips the `.png` extension before sending `owner_id`.
     const ownerId = avatar.replace(/\.png$/, '');
-    // `branchName` here is ONLY message-tree-db.js's own label/bookmark concept - a real, still-
-    // supported, unrelated primitive. It is NOT a raw-action request field anymore (see
-    // buildRawActionKoboldRequest()'s own ADDRESSING MODEL doc comment, reused verbatim here via
-    // buildRawActionHordePayload()) - every raw-action call below resolves and passes the real
-    // `node_id` (a leaf id from `loadBranch()`) instead.
     const branchName = 'main-chat';
     await saveChatToTree(directories, ownerId, branchName, [
         { chat_metadata: {} },
@@ -232,26 +230,12 @@ async function run() {
         { name: 'Rex', is_user: false, mes: 'Likewise!', send_date: 3, extra: {} },
     ]);
 
-    // (a) route-level: successful raw-action submission + real persistence of BOTH the user message
-    // (via buildRawActionHordePayload(), server-side, immediately) and the assistant reply (via the
-    // REAL /api/chats/message/append route, driven directly with the exact same field shape
-    // public/scripts/horde.js's own persistHordeRawActionReply() sends once its own polling loop
-    // resolves - see this file's own top-of-file doc comment for why the polling loop itself isn't
-    // simulated here).
+    // (a) real end-to-end raw-action generation: submit -> a few "still processing" polls (with real
+    // keepalive frames received meanwhile) -> a completed generation -> real content frame(s) ->
+    // real server-side persistence -> assistant_node_id frame, last.
     {
-        const fakeCoordinator = await startFakeHordeCoordinator((req, res, body) => {
-            assert.equal(req.url, '/api/v2/generate/text/async', 'the raw-action submission really hits AI Horde\'s real async-generate endpoint');
-            const parsed = JSON.parse(body);
-            assert.equal(typeof parsed.prompt, 'string', 'a real, server-assembled prompt is sent as a separate top-level field');
-            assert.ok(parsed.prompt.includes('Hello there, traveler.'));
-            assert.ok(parsed.prompt.includes('One more time, Rex?'), 'the raw user action is included in the assembled prompt');
-            assert.equal(parsed.params.prompt, undefined, 'prompt is NOT duplicated inside params - matches generateHorde()\'s own delete params.prompt transformation');
-            assert.equal(parsed.params.n, 1);
-            assert.equal(parsed.params.api_server, undefined, 'api_server (Kobold-specific, meaningless for Horde) is stripped, never forwarded to the real coordinator');
-            assert.equal(parsed.trusted_workers, true);
-            assert.deepEqual(parsed.models, ['some-horde-model']);
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ id: 'task-abc-123' }));
+        const fakeCoordinator = await startFakeHordeCoordinator({
+            jobId: 'task-abc-123', pendingReplies: 3, finalText: 'Rex says hello back.',
         });
         hordeFakeBackendUrl = fakeCoordinator.url;
 
@@ -259,106 +243,102 @@ async function run() {
         const messageCountBefore = branchBefore.messages.length;
 
         const app = buildTestApp();
-        const { status, data } = await postJson(app, '/api/horde/generate-text', {
-            owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-            type: 'normal', user_message: 'One more time, Rex?',
-            trusted_workers: true, models: ['some-horde-model'],
-        });
-        fakeCoordinator.server.close();
-        hordeFakeBackendUrl = null;
+        const server = app.listen(0, '127.0.0.1');
+        await new Promise(resolve => server.once('listening', resolve));
+        const port = server.address().port;
 
-        assert.equal(status, 200);
-        assert.equal(data.id, 'task-abc-123', 'the real Horde task id reaches the client');
-        assert.ok(data.raw_action_persist, 'raw_action_persist metadata is attached for a real, persistable raw-action request');
-        assert.equal(data.raw_action_persist.isSwipe, false);
-        assert.equal(data.raw_action_persist.isContinue, false);
-        assert.equal(data.raw_action_persist.name2, 'Rex', 'name2 is the character\'s real display name');
-        assert.ok(data.raw_action_persist.anchorNodeId, 'a real anchor node id (the just-persisted user message) is returned');
+        let res;
+        try {
+            res = await fetch(`http://127.0.0.1:${port}/api/horde/generate-text`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+                    type: 'normal', user_message: 'One more time, Rex?',
+                    trusted_workers: true, models: ['some-horde-model'],
+                }),
+            });
 
-        // The user message was already persisted, server-side, immediately - BEFORE any Horde
-        // polling could even begin (matches every other raw-action backend's "persist regardless of
-        // outcome" principle).
-        const branchAfterSubmit = await loadBranch(directories, ownerId, branchName);
-        assert.equal(branchAfterSubmit.messages.length, messageCountBefore + 1, 'only the user message was persisted at submission time - the assistant reply is not known yet');
-        const userMsg = branchAfterSubmit.messages[branchAfterSubmit.messages.length - 1];
-        assert.equal(userMsg.mes, 'One more time, Rex?');
-        assert.equal(userMsg.is_user, true);
-        assert.equal(userMsg.node_id, data.raw_action_persist.anchorNodeId, 'raw_action_persist.anchorNodeId really is the just-appended user message\'s own node id');
+            assert.equal(res.status, 200);
+            assert.equal(res.headers.get('X-ST-Stream-Format'), 'compact-v1', 'Horde is now shimmed onto the same wire format as every other backend');
+            const generationId = res.headers.get('X-Generation-Id');
+            assert.equal(generationId, 'task-abc-123', 'Horde\'s own job id is reused as the X-Generation-Id');
 
-        // Now simulate generateHordeRawAction()'s OWN post-poll persistence call - the exact same
-        // real route, with the exact same real field shape persistHordeRawActionReply() sends for
-        // the plain (neither continue nor swipe) case.
-        const appendResult = await postJson(app, '/api/chats/message/append', {
-            avatar_url: avatar, after_node_id: data.raw_action_persist.anchorNodeId,
-            messages: [{ name: data.raw_action_persist.name2, is_user: false, mes: 'Rex says hello back.', extra: {}, send_date: Date.now() }],
-        });
-        assert.equal(appendResult.status, 200);
-        assert.ok(appendResult.data.ok, 'the real /api/chats/message/append route accepted the assistant reply');
+            const decoder = new CompactStreamDecoder();
+            let text = '';
+            let assistantNodeId = null;
+            let sawKeepalive = false;
+            const reader = res.body.getReader();
+            for (; ;) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                if (!value || !value.length) continue;
+                if (value.length === 2 && value[0] === 0xFF && value[1] === 0x09) sawKeepalive = true;
+                for (const event of decoder.push(value)) {
+                    if ('content' in event) text += event.content;
+                    else if ('assistantNodeId' in event) assistantNodeId = event.assistantNodeId;
+                }
+            }
+            for (const event of decoder.flush()) {
+                if ('content' in event) text += event.content;
+            }
 
-        const branchAfterReply = await loadBranch(directories, ownerId, branchName);
-        assert.equal(branchAfterReply.messages.length, messageCountBefore + 2, 'both the user message and the assistant reply are now persisted');
-        const [finalUserMsg, assistantMsg] = branchAfterReply.messages.slice(-2);
-        assert.equal(finalUserMsg.mes, 'One more time, Rex?');
-        assert.equal(assistantMsg.mes, 'Rex says hello back.');
-        assert.equal(assistantMsg.is_user, false);
-        assert.equal(assistantMsg.name, 'Rex');
+            assert.ok(sawKeepalive, 'at least one real 0x09 keepalive frame was received while waiting on the still-processing polls');
+            assert.equal(text, 'Rex says hello back.', 'the real completed generation text was received as content frame(s)');
+            assert.ok(assistantNodeId, 'an assistant_node_id frame was received - real server-side persistence happened');
+            assert.ok(fakeCoordinator.calls.status >= 4, 'the server polled Horde\'s own status endpoint internally, not the client');
 
-        // Chained, not a sibling: the assistant message is a direct child of the user message, not a
-        // swipe alternative - real ancestry depth check via getAlternatives, same style as
-        // kobold.test.js's own (a) test.
-        const userAlternatives = await getAlternatives(directories, userMsg.node_id);
-        assert.equal(userAlternatives.total, 1, 'the persisted user message has no siblings - it is a genuine new child, not a swipe alternative');
+            const branchAfter = await loadBranch(directories, ownerId, branchName);
+            assert.equal(branchAfter.messages.length, messageCountBefore + 2, 'both the user message and the assistant reply are now persisted');
+            const [userMsg, assistantMsg] = branchAfter.messages.slice(-2);
+            assert.equal(userMsg.mes, 'One more time, Rex?');
+            assert.equal(assistantMsg.mes, 'Rex says hello back.');
+            assert.equal(assistantMsg.node_id, assistantNodeId, 'the node id received via the stream is exactly where the reply landed');
+
+            const userAlternatives = await getAlternatives(directories, userMsg.node_id);
+            assert.equal(userAlternatives.total, 1, 'the persisted user message is a genuine new child, not a swipe alternative');
+        } finally {
+            fakeCoordinator.server.close();
+            hordeFakeBackendUrl = null;
+            server.closeAllConnections?.();
+            await new Promise(resolve => server.close(resolve));
+        }
     }
 
     // (b) validation error: unknown character - buildRawActionKoboldRequest() throws for real, the
-    // route surfaces it as a 400 with the real error message, and (critically) never even attempts
-    // to reach the real Horde coordinator - proven by NOT pointing hordeFakeBackendUrl at anything,
-    // so a stray real network call to https://aihorde.net would either fail this test's process (no
-    // network in a sandboxed test run) or hang, not silently succeed.
+    // route surfaces it as a plain 400 JSON error (never switches into stream mode), and never
+    // attempts to reach the real Horde coordinator at all.
     {
         hordeFakeBackendUrl = null;
         const app = buildTestApp();
-        const { status, data } = await postJson(app, '/api/horde/generate-text', {
-            owner_id: 'NoSuchCharacter.png', character_avatar: 'NoSuchCharacter.png',
-            node_id: null, type: 'normal', user_message: 'Hello?',
-            trusted_workers: false, models: [],
-        });
-
-        assert.equal(status, 400);
-        assert.match(data.message, /Character not found/, 'the real buildRawActionKoboldRequest() validation error message reaches the client');
-
-        const branchAfter = await loadBranch(directories, ownerId, branchName);
-        const branchNow = await loadBranch(directories, ownerId, branchName);
-        assert.equal(branchAfter.messages.length, branchNow.messages.length, 'no persistence was attempted for a request that failed validation');
+        const server = app.listen(0, '127.0.0.1');
+        await new Promise(resolve => server.once('listening', resolve));
+        const port = server.address().port;
+        try {
+            const res = await fetch(`http://127.0.0.1:${port}/api/horde/generate-text`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    owner_id: 'NoSuchCharacter.png', character_avatar: 'NoSuchCharacter.png',
+                    node_id: null, type: 'normal', user_message: 'Hello?',
+                    trusted_workers: false, models: [],
+                }),
+            });
+            assert.equal(res.status, 400);
+            assert.equal(res.headers.get('X-ST-Stream-Format'), null, 'a validation failure never enters stream mode');
+            const data = await res.json();
+            assert.match(data.message, /Character not found/);
+        } finally {
+            server.closeAllConnections?.();
+            await new Promise(resolve => server.close(resolve));
+        }
     }
 
-    // (b2) validation error: node_id key entirely absent (not even explicit null) - loud failure
-    // instead of a silent wrong-guess (see buildRawActionKoboldRequest()'s own ADDRESSING MODEL doc
-    // comment, reused here via buildRawActionHordePayload()).
+    // (c) legacy, non-raw-action (quiet/impersonate-preview) requests also go through the shimmed
+    // streaming path now, with no persistence and no assistant_node_id frame.
     {
-        hordeFakeBackendUrl = null;
-        const app = buildTestApp();
-        const { status, data } = await postJson(app, '/api/horde/generate-text', {
-            owner_id: ownerId, character_avatar: avatar,
-            type: 'normal', user_message: 'Hello?',
-            trusted_workers: false, models: [],
-        });
-
-        assert.equal(status, 400);
-        assert.match(data.message, /node_id is required \(pass null explicitly for a brand-new, empty conversation\)/);
-    }
-
-    // (c) legacy, non-raw-action passthrough is unaffected: no `owner_id` field at all means the
-    // route never even looks at buildRawActionHordePayload() - the exact real
-    // {prompt, params, trusted_workers, models} shape generateHorde() itself builds client-side is
-    // forwarded to the real coordinator completely unmodified, and no raw_action_persist metadata is
-    // attached.
-    {
-        const fakeCoordinator = await startFakeHordeCoordinator((req, res, body) => {
-            const parsed = JSON.parse(body);
-            assert.equal(parsed.prompt, 'Legacy client-assembled prompt.');
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ id: 'legacy-task-456' }));
+        const fakeCoordinator = await startFakeHordeCoordinator({
+            jobId: 'legacy-task-456', pendingReplies: 1, finalText: 'Legacy generated text.',
         });
         hordeFakeBackendUrl = fakeCoordinator.url;
 
@@ -366,20 +346,175 @@ async function run() {
         const messageCountBefore = branchBefore.messages.length;
 
         const app = buildTestApp();
-        const { status, data } = await postJson(app, '/api/horde/generate-text', {
-            prompt: 'Legacy client-assembled prompt.',
-            params: { max_length: 100, max_context_length: 2048 },
-            trusted_workers: false,
-            models: ['some-model'],
+        const server = app.listen(0, '127.0.0.1');
+        await new Promise(resolve => server.once('listening', resolve));
+        const port = server.address().port;
+        try {
+            const res = await fetch(`http://127.0.0.1:${port}/api/horde/generate-text`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    prompt: 'Legacy client-assembled prompt.',
+                    params: { max_length: 100, max_context_length: 2048 },
+                    trusted_workers: false,
+                    models: ['some-model'],
+                }),
+            });
+            assert.equal(res.status, 200);
+            assert.equal(res.headers.get('X-ST-Stream-Format'), 'compact-v1');
+
+            const decoder = new CompactStreamDecoder();
+            let text = '';
+            let assistantNodeId = null;
+            const reader = res.body.getReader();
+            for (; ;) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                for (const event of decoder.push(value)) {
+                    if ('content' in event) text += event.content;
+                    else if ('assistantNodeId' in event) assistantNodeId = event.assistantNodeId;
+                }
+            }
+
+            assert.equal(text, 'Legacy generated text.');
+            assert.equal(assistantNodeId, null, 'no persistence happens for a non-raw-action request');
+
+            const branchAfter = await loadBranch(directories, ownerId, branchName);
+            assert.equal(branchAfter.messages.length, messageCountBefore, 'no persistence was attempted for a non-raw-action request');
+        } finally {
+            fakeCoordinator.server.close();
+            hordeFakeBackendUrl = null;
+            server.closeAllConnections?.();
+            await new Promise(resolve => server.close(resolve));
+        }
+    }
+
+    // (d) cancellation via /cancel-task actually stops the in-flight server-side poll loop: no
+    // further status polls happen after cancellation, and the streaming response ends cleanly
+    // without a content or assistant_node_id frame.
+    {
+        const fakeCoordinator = await startFakeHordeCoordinator({
+            jobId: 'cancel-task-789', pendingReplies: 1000, finalText: 'Should never be seen.',
         });
-        fakeCoordinator.server.close();
-        hordeFakeBackendUrl = null;
+        hordeFakeBackendUrl = fakeCoordinator.url;
 
-        assert.equal(status, 200);
-        assert.deepEqual(data, { id: 'legacy-task-456' }, 'the real coordinator response reaches the client with no raw_action_persist field attached');
+        const app = buildTestApp();
+        const server = app.listen(0, '127.0.0.1');
+        await new Promise(resolve => server.once('listening', resolve));
+        const port = server.address().port;
+        try {
+            const res = await fetch(`http://127.0.0.1:${port}/api/horde/generate-text`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ prompt: 'Cancel me.', params: {}, trusted_workers: false, models: [] }),
+            });
+            assert.equal(res.status, 200);
+            const generationId = res.headers.get('X-Generation-Id');
+            assert.equal(generationId, 'cancel-task-789');
 
-        const branchAfter = await loadBranch(directories, ownerId, branchName);
-        assert.equal(branchAfter.messages.length, messageCountBefore, 'no persistence was attempted for a non-raw-action request');
+            const reader = res.body.getReader();
+            // Let at least one real status poll happen before cancelling.
+            await waitFor(() => fakeCoordinator.calls.status >= 1);
+
+            const cancelRes = await fetch(`http://127.0.0.1:${port}/api/horde/cancel-task`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ taskId: generationId }),
+            });
+            assert.equal(cancelRes.status, 200);
+            assert.equal(fakeCoordinator.calls.delete, 1, 'the real DELETE cancel call reached the fake coordinator');
+
+            const decoder = new CompactStreamDecoder();
+            let text = '';
+            let assistantNodeId = null;
+            for (; ;) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                for (const event of decoder.push(value)) {
+                    if ('content' in event) text += event.content;
+                    else if ('assistantNodeId' in event) assistantNodeId = event.assistantNodeId;
+                }
+            }
+
+            assert.equal(text, '', 'no content was emitted for a cancelled generation');
+            assert.equal(assistantNodeId, null, 'no assistant_node_id frame was emitted for a cancelled generation');
+
+            const statusCallsAtCancel = fakeCoordinator.calls.status;
+            await new Promise(resolve => setTimeout(resolve, 150));
+            assert.equal(fakeCoordinator.calls.status, statusCallsAtCancel, 'no further Horde status polls happened after cancellation');
+        } finally {
+            fakeCoordinator.server.close();
+            hordeFakeBackendUrl = null;
+            server.closeAllConnections?.();
+            await new Promise(resolve => server.close(resolve));
+        }
+    }
+
+    // (e) client disconnect mid-poll does NOT kill the server-side poll loop - matching every other
+    // backend's "persisted generations survive a client disconnect" behavior - and a subsequent
+    // resume call gets the eventual result.
+    {
+        const fakeCoordinator = await startFakeHordeCoordinator({
+            jobId: 'disconnect-task-321', pendingReplies: 3, finalText: 'Still here after you left.',
+        });
+        hordeFakeBackendUrl = fakeCoordinator.url;
+
+        const branchBefore = await loadBranch(directories, ownerId, branchName);
+        const messageCountBefore = branchBefore.messages.length;
+
+        const app = buildTestApp();
+        const server = app.listen(0, '127.0.0.1');
+        await new Promise(resolve => server.once('listening', resolve));
+        const port = server.address().port;
+        try {
+            const controller = new AbortController();
+            const res = await fetch(`http://127.0.0.1:${port}/api/horde/generate-text`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+                    type: 'normal', user_message: 'Then I vanish.',
+                    trusted_workers: false, models: [],
+                }),
+                signal: controller.signal,
+            });
+            const generationId = res.headers.get('X-Generation-Id');
+            assert.equal(generationId, 'disconnect-task-321');
+
+            const reader = res.body.getReader();
+            await reader.read();
+            controller.abort();
+            await assert.rejects(() => reader.read());
+
+            const branchAfter = await waitFor(async () => {
+                const branch = await loadBranch(directories, ownerId, branchName);
+                return branch.messages.length === messageCountBefore + 2 ? branch : null;
+            });
+            const [, assistantMsg] = branchAfter.messages.slice(-2);
+            assert.equal(assistantMsg.mes, 'Still here after you left.', 'the poll loop kept running server-side after the client disconnected, and persisted the real final reply');
+
+            const resumeRes = await fetch(`http://127.0.0.1:${port}/api/horde/generate/resume/${encodeURIComponent(generationId)}?from=0`);
+            assert.equal(resumeRes.status, 200);
+            const decoder = new CompactStreamDecoder();
+            let text = '';
+            let assistantNodeId = null;
+            const resumeReader = resumeRes.body.getReader();
+            for (; ;) {
+                const { done, value } = await resumeReader.read();
+                if (done) break;
+                for (const event of decoder.push(value)) {
+                    if ('content' in event) text += event.content;
+                    else if ('assistantNodeId' in event) assistantNodeId = event.assistantNodeId;
+                }
+            }
+            assert.equal(text, 'Still here after you left.', 'a resume call after disconnect gets the eventual result');
+            assert.equal(assistantNodeId, assistantMsg.node_id);
+        } finally {
+            fakeCoordinator.server.close();
+            hordeFakeBackendUrl = null;
+            server.closeAllConnections?.();
+            await new Promise(resolve => server.close(resolve));
+        }
     }
 
     console.log('horde.test.js: all assertions passed');
