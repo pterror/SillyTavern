@@ -206,7 +206,46 @@ async function _saveProperty(id, props, reload = true, { silentGroups = false } 
     }
 }
 
-const savePropertyDebounced = debounce(async (id, props, reload, options) => await _saveProperty(id, props, reload, options), debounce_timeout.relaxed);
+/**
+ * Per-(group id + field-set) debounce timers for saveGroupField's debounced (`immediately: false`)
+ * path, replacing a single shared `debounce()` timer that used to reuse ONE timeout across every
+ * debounced call site. Plain `debounce()` replaces any pending call's args with the latest call's
+ * args, so if two DIFFERENT fields were edited within the debounce window (e.g. typing the group
+ * name, then immediately typing the auto-mode delay) via two different debounced saveGroupField()
+ * calls sharing that one timer, the second call's args used to silently replace the first's -
+ * dropping the first edit even though the UI already showed it applied. This mirrors
+ * QuickReplySet.js's `_qrUpdateTimers` fix (a Map of per-QR-id timers instead of one shared timer -
+ * see e227206e3) for the identical class of bug.
+ *
+ * Every call site left debounced below (see saveGroupField's callers) is a genuinely CONTINUOUS,
+ * in-progress edit (typing into a text field/textarea, or nudging a number input) where each call
+ * from that one site always saves the exact same fixed set of field names every time - so keying by
+ * "group id + the sorted set of field names in this call" is enough to guarantee only successive
+ * edits to the SAME field(s) coalesce, while two different debounced fields (even from the same
+ * handler, like the join-prefix/join-suffix textareas sharing one handler) always get independent,
+ * non-colliding timers. Discrete, single-gesture actions (a click, a checkbox toggle, a <select>
+ * change) were moved to `immediately: true` instead of being debounced at all - see saveGroupField's
+ * call sites for the discrete/continuous classification.
+ * @type {Map<string, ReturnType<typeof setTimeout>>}
+ */
+const _groupFieldSaveTimers = new Map();
+
+/**
+ * Debounced dispatch for saveGroupField's `immediately: false` path - see _groupFieldSaveTimers for
+ * why this is keyed per (id, field-set) instead of using one shared debounce timer.
+ * @param {string} id Group ID
+ * @param {object} props Properties to merge into the stored group
+ * @param {boolean} reload Whether to reload characters after saving
+ * @param {object} options See _saveProperty()
+ */
+function savePropertyDebounced(id, props, reload, options) {
+    const key = `${id}:${Object.keys(props).sort().join(',')}`;
+    clearTimeout(_groupFieldSaveTimers.get(key));
+    _groupFieldSaveTimers.set(key, setTimeout(() => {
+        _groupFieldSaveTimers.delete(key);
+        _saveProperty(id, props, reload, options);
+    }, debounce_timeout.relaxed));
+}
 
 /**
  * Field-level replacement for the retired whole-object editGroup()/_save() path: saves only `props` via
@@ -824,6 +863,8 @@ async function saveGroupChat(groupId, shouldSaveGroup, force = false) {
     }
 
     if (shouldSaveGroup) {
+        // Fires on every group-chat save during ongoing generation/activity, not a single discrete
+        // gesture - genuinely continuous, so keep it debounced (see savePropertyDebounced's note above).
         await saveGroupField(groupId, { date_last_chat: group.date_last_chat }, false, false);
     }
 }
@@ -1546,7 +1587,9 @@ async function modifyGroupMember(groupId, groupMember, isDelete) {
 
     if (openGroupId) {
         await unshallowGroupMembers(openGroupId);
-        await saveGroupField(openGroupId, { members: thisGroup.members }, false, false);
+        // Adding/removing a member is a single discrete click - dispatch immediately (see savePropertyDebounced's
+        // note above; this was only debounced as a leftover of the old shared-timer pattern).
+        await saveGroupField(openGroupId, { members: thisGroup.members }, true, false);
         updateGroupAvatar(thisGroup);
     }
 
@@ -1599,7 +1642,10 @@ async function reorderGroupMember(groupId, groupMember, direction) {
 
     // Existing groups need to modify members list
     if (openGroupId) {
-        await saveGroupField(groupId, { members: memberArray }, false, false);
+        // Reordering via the up/down arrow is a single discrete click - dispatch immediately (see
+        // savePropertyDebounced's note above; this was only debounced as a leftover of the old
+        // shared-timer pattern).
+        await saveGroupField(groupId, { members: memberArray }, true, false);
         updateGroupAvatar(thisGroup);
     }
 }
@@ -1608,7 +1654,8 @@ async function onGroupActivationStrategyInput(e) {
     if (openGroupId) {
         const activation_strategy = Number(e.target.value);
         groupsStore.update(openGroupId, { activation_strategy });
-        await saveGroupField(openGroupId, { activation_strategy }, false, false);
+        // A <select> 'change' event fires once per discrete selection, not per keystroke - dispatch immediately.
+        await saveGroupField(openGroupId, { activation_strategy }, true, false);
     }
 }
 
@@ -1616,7 +1663,8 @@ async function onGroupGenerationModeInput(e) {
     if (openGroupId) {
         const generation_mode = Number(e.target.value);
         const change = groupsStore.update(openGroupId, { generation_mode });
-        await saveGroupField(openGroupId, { generation_mode }, false, false);
+        // A <select> 'change' event fires once per discrete selection, not per keystroke - dispatch immediately.
+        await saveGroupField(openGroupId, { generation_mode }, true, false);
 
         toggleHiddenControls(change?.entity);
     }
@@ -1626,6 +1674,7 @@ async function onGroupAutoModeDelayInput(e) {
     if (openGroupId) {
         const auto_mode_delay = Number(e.target.value);
         groupsStore.update(openGroupId, { auto_mode_delay });
+        // A number input fires 'input' per keystroke/spinner-nudge - continuous, keep debounced.
         await saveGroupField(openGroupId, { auto_mode_delay }, false, false);
         setAutoModeWorker();
     }
@@ -1636,6 +1685,10 @@ async function onGroupGenerationModeTemplateInput(e) {
         const prop = $(e.target).attr('setting');
         const value = String(e.target.value);
         groupsStore.update(openGroupId, { [prop]: value });
+        // Shared handler for both the join-prefix and join-suffix textareas - 'input' fires per
+        // keystroke while typing, continuous, so keep debounced. Since `prop` (the field name) is
+        // part of savePropertyDebounced's key, typing in one textarea then quickly switching to the
+        // other still gets two independent, non-colliding timers instead of one clobbering the other.
         await saveGroupField(openGroupId, { [prop]: value }, false, false);
     }
 }
@@ -1645,6 +1698,7 @@ async function onGroupNameInput() {
         const name = $(this).val();
         const change = groupsStore.update(openGroupId, { name });
         $('#rm_button_selected_ch').children('h2').text(change?.entity?.name);
+        // A text input fires 'input' per keystroke - continuous, keep debounced.
         await saveGroupField(openGroupId, { name }, false, true, { silentGroups: true });
     }
 }
@@ -1919,7 +1973,8 @@ async function onFavoriteGroupClick() {
     updateFavButtonState(!fav_grp_checked);
     if (openGroupId) {
         groupsStore.update(openGroupId, { fav: fav_grp_checked });
-        await saveGroupField(openGroupId, { fav: fav_grp_checked }, false, false);
+        // A single discrete click - dispatch immediately.
+        await saveGroupField(openGroupId, { fav: fav_grp_checked }, true, false);
         favsToHotswap();
     }
 }
@@ -1928,14 +1983,16 @@ async function onGroupSelfResponsesClick() {
     if (openGroupId) {
         const value = $(this).prop('checked');
         groupsStore.update(openGroupId, { allow_self_responses: value });
-        await saveGroupField(openGroupId, { allow_self_responses: value }, false, false);
+        // A single discrete checkbox click - dispatch immediately.
+        await saveGroupField(openGroupId, { allow_self_responses: value }, true, false);
     }
 }
 
 async function onHideMutedSpritesClick(value) {
     if (openGroupId) {
         groupsStore.update(openGroupId, { hideMutedSprites: value });
-        await saveGroupField(openGroupId, { hideMutedSprites: value }, false, false);
+        // A single discrete click - dispatch immediately.
+        await saveGroupField(openGroupId, { hideMutedSprites: value }, true, false);
         await eventSource.emit(event_types.GROUP_UPDATED);
     }
 }
