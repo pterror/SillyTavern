@@ -11,6 +11,7 @@ import {
     chatElement,
     chatOpAddAlternative,
     chatOpAppend,
+    chatOpGraft,
     chatOpEdit,
     chat_metadata,
     comment_avatar,
@@ -5939,7 +5940,14 @@ export async function sendMessageAs(args, text) {
 
     if (!isNaN(insertAt) && insertAt >= 0 && insertAt <= chat.length) {
         chat.splice(insertAt, 0, message);
-        await saveChatConditional();
+        // Mid-chain insert is a graft, not a diff-engine-visible change — see sendMessageAsUser()'s
+        // own insertAt branch for the same reasoning.
+        if (chat_metadata?._tree_stored) {
+            await chatOpGraft(insertAt).catch(error =>
+                console.error('Could not save the inserted message:', error));
+        } else {
+            await saveChatConditional();
+        }
         await eventSource.emit(event_types.MESSAGE_RECEIVED, insertAt, 'command');
         await reloadCurrentChat();
         await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, insertAt, 'command');
@@ -5996,7 +6004,14 @@ export async function sendNarratorMessage(args, text) {
 
     if (!isNaN(insertAt) && insertAt >= 0 && insertAt <= chat.length) {
         chat.splice(insertAt, 0, message);
-        await saveChatConditional();
+        // Mid-chain insert is a graft, not a diff-engine-visible change — see sendMessageAsUser()'s
+        // own insertAt branch for the same reasoning.
+        if (chat_metadata?._tree_stored) {
+            await chatOpGraft(insertAt).catch(error =>
+                console.error('Could not save the inserted message:', error));
+        } else {
+            await saveChatConditional();
+        }
         await eventSource.emit(event_types.MESSAGE_SENT, insertAt);
         await reloadCurrentChat();
         await eventSource.emit(event_types.USER_MESSAGE_RENDERED, insertAt);
@@ -6093,7 +6108,14 @@ async function sendCommentMessage(args, text) {
 
     if (!isNaN(insertAt) && insertAt >= 0 && insertAt <= chat.length) {
         chat.splice(insertAt, 0, message);
-        await saveChatConditional();
+        // Mid-chain insert is a graft, not a diff-engine-visible change — see sendMessageAsUser()'s
+        // own insertAt branch for the same reasoning.
+        if (chat_metadata?._tree_stored) {
+            await chatOpGraft(insertAt).catch(error =>
+                console.error('Could not save the inserted message:', error));
+        } else {
+            await saveChatConditional();
+        }
         await eventSource.emit(event_types.MESSAGE_SENT, insertAt);
         await reloadCurrentChat();
         await eventSource.emit(event_types.USER_MESSAGE_RENDERED, insertAt);

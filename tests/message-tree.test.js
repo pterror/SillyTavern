@@ -31,6 +31,13 @@ let treeDb;
 let migration;
 
 beforeAll(async () => {
+    // message-tree-db.js transitively imports src/endpoints/secrets.js, which reads a config value at
+    // import time - without this, the import crashes the whole worker via process.exit(1) ("No config
+    // file path set") before a single test in this file can run. Same fix already applied in
+    // worldinfo-endpoint.test.js/chat-metadata-db.test.js for the identical reason.
+    const { setConfigFilePath } = await import('../src/util.js');
+    setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
+
     treeDb = await import('../src/message-tree-db.js');
     migration = await import('../src/message-tree-migration.js');
 });
@@ -381,6 +388,173 @@ describe('labeling nodes', () => {
         // Ensure the DB file exists so this hits the "not found" branch, not "no backend".
         await treeDb.isAvailable(directories);
         expect(await treeDb.labelNode(directories, 'not-a-real-id', 'x')).toBe(false);
+    });
+});
+
+describe('graft (mid-chain insert) and degraft (mid-chain delete)', () => {
+    /** Builds a 3-message chain m0 -> m1 -> m2 under `owner` and returns their node ids in order. */
+    async function makeChain(directories, owner = 'owner', texts = ['m0', 'm1', 'm2']) {
+        const chatData = [{ chat_metadata: {} }, ...texts.map((mes, i) => makeMessage({ mes, sendDate: `d${i}` }))];
+        await treeDb.saveChatToTree(directories, owner, 'chat', chatData, false);
+        const loaded = await treeDb.loadBranch(directories, owner, 'chat');
+        return loaded.messages.map(m => m.node_id);
+    }
+
+    test('graftMessage() inserts a node between two adjacent nodes and reparents the one after it', async () => {
+        const directories = makeDirectories();
+        const [n0, n1, n2] = await makeChain(directories);
+
+        const result = await treeDb.graftMessage(directories, 'owner', n0, n1, makeMessage({ mes: 'grafted', sendDate: 'dg' }));
+        expect(result.ok).toBe(true);
+        expect(typeof result.node_id).toBe('string');
+
+        const loaded = await treeDb.loadBranch(directories, 'owner', 'chat');
+        expect(loaded.messages.map(m => m.mes)).toEqual(['m0', 'grafted', 'm1', 'm2']);
+        expect(loaded.messages[2].node_id).toBe(n1);
+        expect(loaded.messages[3].node_id).toBe(n2);
+    });
+
+    test('graftMessage() refuses when beforeNodeId is not currently parented under afterNodeId (stale edge)', async () => {
+        const directories = makeDirectories();
+        const [n0, n1, n2] = await makeChain(directories);
+
+        // n2's real parent is n1, not n0 — a stale/already-moved edge.
+        const result = await treeDb.graftMessage(directories, 'owner', n0, n2, makeMessage({ mes: 'bad graft', sendDate: 'dg' }));
+        expect(result).toEqual({ ok: false, reason: 'not adjacent' });
+
+        // Nothing was mutated.
+        const loaded = await treeDb.loadBranch(directories, 'owner', 'chat');
+        expect(loaded.messages.map(m => m.mes)).toEqual(['m0', 'm1', 'm2']);
+        expect(loaded.messages.map(m => m.node_id)).toEqual([n0, n1, n2]);
+    });
+
+    test('degraftMessage() removes a mid-chain node from the default path without deleting its row', async () => {
+        const directories = makeDirectories();
+        const [n0, n1, n2] = await makeChain(directories);
+
+        const result = await treeDb.degraftMessage(directories, 'owner', n1);
+        expect(result).toEqual({ ok: true });
+
+        const loaded = await treeDb.loadBranch(directories, 'owner', 'chat');
+        expect(loaded.messages.map(m => m.mes)).toEqual(['m0', 'm2']);
+        expect(loaded.messages[1].node_id).toBe(n2);
+
+        // n1's row still exists and is still addressable by raw node_id — not deleted, just unreachable from the default path.
+        const db = await treeDb.getDbHandle(directories);
+        const row = db.get('SELECT id FROM messages WHERE id = @id', { id: n1 });
+        expect(row).toBeTruthy();
+    });
+
+    test('degraftMessage() refuses a node with no default child, pointing the caller at end-path instead', async () => {
+        const directories = makeDirectories();
+        const [, , n2] = await makeChain(directories);
+
+        // n2 is the leaf — nothing follows it on the path.
+        const result = await treeDb.degraftMessage(directories, 'owner', n2);
+        expect(result).toEqual({ ok: false, reason: 'use end-path instead' });
+    });
+
+    test('degraftMessage() refuses a node that is not its parent\'s current default child', async () => {
+        const directories = makeDirectories();
+        const [n0, n1] = await makeChain(directories);
+
+        // Add an alternative to n1 (a sibling under n0) without making it the default.
+        const alt = await treeDb.addAlternatives(directories, 'owner', n1, [makeMessage({ mes: 'alt-m1', sendDate: 'dalt' })]);
+        const altId = alt.node_ids[0];
+        expect(altId).not.toBe(n1);
+
+        // n0's default child is still n1, so the alternative is not on the default path.
+        const result = await treeDb.degraftMessage(directories, 'owner', altId);
+        expect(result).toEqual({ ok: false, reason: 'not on default path' });
+    });
+
+    test('graft then degraft round-trips back to the original chain shape', async () => {
+        const directories = makeDirectories();
+        const [n0, n1, n2] = await makeChain(directories);
+
+        const graft = await treeDb.graftMessage(directories, 'owner', n0, n1, makeMessage({ mes: 'temp', sendDate: 'dt' }));
+        expect(graft.ok).toBe(true);
+
+        const degraft = await treeDb.degraftMessage(directories, 'owner', graft.node_id);
+        expect(degraft).toEqual({ ok: true });
+
+        const loaded = await treeDb.loadBranch(directories, 'owner', 'chat');
+        expect(loaded.messages.map(m => m.mes)).toEqual(['m0', 'm1', 'm2']);
+        expect(loaded.messages.map(m => m.node_id)).toEqual([n0, n1, n2]);
+
+        // The ancestor path from the leaf agrees too.
+        const ancestry = await treeDb.getAncestorPath(directories, n2);
+        expect(ancestry.map(m => m.mes)).toEqual(['m0', 'm1', 'm2']);
+    });
+
+    test('graft/degraft leave OTHER alternatives at the same fork point untouched', async () => {
+        const directories = makeDirectories();
+        const [n0, n1, n2] = await makeChain(directories);
+
+        // A sibling alternative to n1, sitting alongside it under n0.
+        const alt = await treeDb.addAlternatives(directories, 'owner', n1, [makeMessage({ mes: 'sibling-alt', sendDate: 'ds' })]);
+        const altId = alt.node_ids[0];
+
+        const graft = await treeDb.graftMessage(directories, 'owner', n0, n1, makeMessage({ mes: 'inserted', sendDate: 'di' }));
+        expect(graft.ok).toBe(true);
+
+        // The sibling alternative is still parented under n0, untouched by the graft.
+        const db = await treeDb.getDbHandle(directories);
+        const altRow = db.get('SELECT parent_id FROM messages WHERE id = @id', { id: altId });
+        expect(altRow.parent_id).toBe(n0);
+
+        await treeDb.degraftMessage(directories, 'owner', graft.node_id);
+        const altRowAfter = db.get('SELECT parent_id FROM messages WHERE id = @id', { id: altId });
+        expect(altRowAfter.parent_id).toBe(n0);
+
+        const loaded = await treeDb.loadBranch(directories, 'owner', 'chat');
+        expect(loaded.messages.map(m => m.mes)).toEqual(['m0', 'm1', 'm2']);
+    });
+
+    test('a labeled node survives being orphaned by a degraft — the label stays on the node, not the path', async () => {
+        const directories = makeDirectories();
+        const [n0, n1, n2] = await makeChain(directories);
+
+        const labelResult = await treeDb.labelNode(directories, n1, 'checkpoint-on-n1');
+        expect(labelResult.ok).toBe(true);
+
+        await treeDb.degraftMessage(directories, 'owner', n1);
+
+        // n1 is off the default path now, but its label is untouched.
+        const db = await treeDb.getDbHandle(directories);
+        const row = db.get('SELECT label FROM messages WHERE id = @id', { id: n1 });
+        expect(row.label).toBe('checkpoint-on-n1');
+
+        // The main chat's default path no longer shows it.
+        const loaded = await treeDb.loadBranch(directories, 'owner', 'chat');
+        expect(loaded.messages.map(m => m.mes)).toEqual(['m0', 'm2']);
+    });
+
+    test('degraftRange() removes a contiguous multi-node run in one operation', async () => {
+        const directories = makeDirectories();
+        const [, n1, n2, n3] = await makeChain(directories, 'owner', ['m0', 'm1', 'm2', 'm3']);
+
+        const result = await treeDb.degraftRange(directories, 'owner', n1, n2);
+        expect(result).toEqual({ ok: true });
+
+        const loaded = await treeDb.loadBranch(directories, 'owner', 'chat');
+        expect(loaded.messages.map(m => m.mes)).toEqual(['m0', 'm3']);
+        expect(loaded.messages[1].node_id).toBe(n3);
+
+        // Neither removed row was deleted.
+        const db = await treeDb.getDbHandle(directories);
+        expect(db.get('SELECT id FROM messages WHERE id = @id', { id: n1 })).toBeTruthy();
+        expect(db.get('SELECT id FROM messages WHERE id = @id', { id: n2 })).toBeTruthy();
+    });
+
+    test('degraftRange() refuses when the two ends do not form a contiguous default-path run', async () => {
+        const directories = makeDirectories();
+        const [n0, , , n3] = await makeChain(directories, 'owner', ['m0', 'm1', 'm2', 'm3']);
+
+        // n0 and n3 are both real nodes, but degraftRange is called with the ends reversed / non-adjacent
+        // in a way that breaks containment — use n0 (no default-child walk reaches itself as "last").
+        const result = await treeDb.degraftRange(directories, 'owner', n3, n0);
+        expect(result.ok).toBe(false);
     });
 });
 
