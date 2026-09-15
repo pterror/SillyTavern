@@ -188,3 +188,103 @@ describe('POST /api/chats/message/degraft', () => {
         expect(res.body).toEqual({ ok: false, reason: 'use end-path instead' });
     });
 });
+
+describe('POST /api/chats/message/swap-adjacent', () => {
+    let counter = 0;
+    function nextAvatar() {
+        counter += 1;
+        return `swap-owner-${counter}.png`;
+    }
+
+    test('swaps two adjacent messages and persists the new order', async () => {
+        const avatar = nextAvatar();
+        const [, n1, n2] = await seedChain(avatar);
+
+        const res = await postJson('/api/chats/message/swap-adjacent', {
+            avatar_url: avatar, upper_node_id: n1, lower_node_id: n2,
+        });
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual({ ok: true });
+
+        const loaded = await postJson('/api/chats/get', { avatar_url: avatar, ch_name: avatar, file_name: 'chat' });
+        const messages = loaded.body.filter(m => m.mes !== undefined);
+        expect(messages.map(m => m.mes)).toEqual(['m0', 'm2', 'm1']);
+        expect(messages.map(m => m.node_id)).toEqual([messages[0].node_id, n2, n1]);
+    });
+
+    test('400s when upper_node_id is missing', async () => {
+        const avatar = nextAvatar();
+        const [, , n2] = await seedChain(avatar);
+        const res = await postJson('/api/chats/message/swap-adjacent', { avatar_url: avatar, lower_node_id: n2 });
+        expect(res.status).toBe(400);
+    });
+
+    test('400s when lower_node_id is missing', async () => {
+        const avatar = nextAvatar();
+        const [, n1] = await seedChain(avatar);
+        const res = await postJson('/api/chats/message/swap-adjacent', { avatar_url: avatar, upper_node_id: n1 });
+        expect(res.status).toBe(400);
+    });
+
+    test('409s and refuses non-adjacent nodes', async () => {
+        const avatar = nextAvatar();
+        const [n0, , n2] = await seedChain(avatar);
+        const res = await postJson('/api/chats/message/swap-adjacent', {
+            avatar_url: avatar, upper_node_id: n0, lower_node_id: n2,
+        });
+        expect(res.status).toBe(409);
+        expect(res.body).toEqual({ ok: false, reason: 'not adjacent' });
+    });
+
+    test('409s and refuses when the upper node is not on the default path', async () => {
+        const avatar = nextAvatar();
+        const [, n1, n2] = await seedChain(avatar);
+
+        // Add a sibling alternative to n1 that never becomes the default child.
+        const altRes = await postJson('/api/chats/message/alternative', {
+            avatar_url: avatar, sibling_node_id: n1, contents: [makeMessage('alt-m1')],
+        });
+        const altId = altRes.body.node_ids[0];
+
+        const res = await postJson('/api/chats/message/swap-adjacent', {
+            avatar_url: avatar, upper_node_id: altId, lower_node_id: n2,
+        });
+        expect(res.status).toBe(409);
+        expect(res.body).toEqual({ ok: false, reason: 'not adjacent' });
+    });
+
+    test('swap at the very end of the chain (lower node has no child) does not crash', async () => {
+        const avatar = nextAvatar();
+        const [, n1, n2] = await seedChain(avatar);
+
+        const res = await postJson('/api/chats/message/swap-adjacent', {
+            avatar_url: avatar, upper_node_id: n1, lower_node_id: n2,
+        });
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual({ ok: true });
+
+        const loaded = await postJson('/api/chats/get', { avatar_url: avatar, ch_name: avatar, file_name: 'chat' });
+        const messages = loaded.body.filter(m => m.mes !== undefined);
+        expect(messages.map(m => m.mes)).toEqual(['m0', 'm2', 'm1']);
+    });
+
+    test('swapping twice in a row returns to the original order', async () => {
+        const avatar = nextAvatar();
+        const [n0, n1, n2] = await seedChain(avatar);
+
+        const first = await postJson('/api/chats/message/swap-adjacent', {
+            avatar_url: avatar, upper_node_id: n1, lower_node_id: n2,
+        });
+        expect(first.body).toEqual({ ok: true });
+
+        const second = await postJson('/api/chats/message/swap-adjacent', {
+            avatar_url: avatar, upper_node_id: n2, lower_node_id: n1,
+        });
+        expect(second.body).toEqual({ ok: true });
+
+        const loaded = await postJson('/api/chats/get', { avatar_url: avatar, ch_name: avatar, file_name: 'chat' });
+        const messages = loaded.body.filter(m => m.mes !== undefined);
+        expect(messages.map(m => m.mes)).toEqual(['m0', 'm1', 'm2']);
+        expect(messages.map(m => m.node_id)).toEqual([n0, n1, n2]);
+    });
+});

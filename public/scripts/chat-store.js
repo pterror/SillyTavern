@@ -435,6 +435,30 @@ export async function chatOpDegraft(firstMesId, lastMesId = firstMesId) {
     return true;
 }
 
+// Swaps two adjacent on-path messages. Which one is "upper" (closer to the start) is determined by
+// index, not argument order — the caller passes source/target in whichever order the user dragged.
+// The server doesn't mint new node_ids for this op (the two rows just trade parents), so the client's
+// own chat[] swap is still the right way to reflect it locally — only the persistence mechanism
+// changes versus the old unconditional array-slot swap.
+export async function chatOpSwapAdjacent(sourceMesId, targetMesId) {
+    const sourceMsg = chat[sourceMesId];
+    const targetMsg = chat[targetMesId];
+    if (!isStoredNodeId(sourceMsg?.node_id) || !isStoredNodeId(targetMsg?.node_id)) return null;
+
+    const upperMesId = Math.min(sourceMesId, targetMesId);
+    const lowerMesId = Math.max(sourceMesId, targetMesId);
+    const upperNodeId = chat[upperMesId].node_id;
+    const lowerNodeId = chat[lowerMesId].node_id;
+
+    await _chatOpPost('/api/chats/message/swap-adjacent', {
+        upper_node_id: upperNodeId,
+        lower_node_id: lowerNodeId,
+    });
+
+    [chat[sourceMesId], chat[targetMesId]] = [chat[targetMesId], chat[sourceMesId]];
+    return true;
+}
+
 // May return an existing row — asserting the same alternative twice is the same statement twice.
 export async function chatOpAddAlternative(mesId, text) {
     const msg = chat[mesId];

@@ -558,6 +558,179 @@ describe('graft (mid-chain insert) and degraft (mid-chain delete)', () => {
     });
 });
 
+describe('swapAdjacent (mid-chain reorder)', () => {
+    /** Builds a chain m0 -> m1 -> ... under `owner` and returns their node ids in order. */
+    async function makeChain(directories, owner = 'owner', texts = ['m0', 'm1', 'm2']) {
+        const chatData = [{ chat_metadata: {} }, ...texts.map((mes, i) => makeMessage({ mes, sendDate: `d${i}` }))];
+        await treeDb.saveChatToTree(directories, owner, 'chat', chatData, false);
+        const loaded = await treeDb.loadBranch(directories, owner, 'chat');
+        return loaded.messages.map(m => m.node_id);
+    }
+
+    test('swapAdjacent() reverses the order of two adjacent on-path messages', async () => {
+        const directories = makeDirectories();
+        const [n0, n1, n2] = await makeChain(directories);
+
+        const result = await treeDb.swapAdjacent(directories, 'owner', n1, n2);
+        expect(result).toEqual({ ok: true });
+
+        const loaded = await treeDb.loadBranch(directories, 'owner', 'chat');
+        expect(loaded.messages.map(m => m.mes)).toEqual(['m0', 'm2', 'm1']);
+        expect(loaded.messages.map(m => m.node_id)).toEqual([n0, n2, n1]);
+
+        const ancestry = await treeDb.getAncestorPath(directories, n1);
+        expect(ancestry.map(m => m.mes)).toEqual(['m0', 'm2', 'm1']);
+    });
+
+    test('swapAdjacent() refuses non-adjacent nodes', async () => {
+        const directories = makeDirectories();
+        const [n0, , n2] = await makeChain(directories);
+
+        // n2's real parent is n1, not n0 — not adjacent.
+        const result = await treeDb.swapAdjacent(directories, 'owner', n0, n2);
+        expect(result).toEqual({ ok: false, reason: 'not adjacent' });
+
+        const loaded = await treeDb.loadBranch(directories, 'owner', 'chat');
+        expect(loaded.messages.map(m => m.mes)).toEqual(['m0', 'm1', 'm2']);
+    });
+
+    test('swapAdjacent() refuses when upperNodeId itself is not on the default path (an unselected alternative)', async () => {
+        const directories = makeDirectories();
+        const [, n1, n2] = await makeChain(directories);
+
+        // Give n0 an alternative child, then SELECT it as the default — n1 (still n2's real parent) is
+        // now off the default path, even though n1 -> n2 is still a real, adjacent edge.
+        const alt = await treeDb.addAlternatives(directories, 'owner', n1, [makeMessage({ mes: 'alt-m1', sendDate: 'dalt' })]);
+        const altId = alt.node_ids[0];
+        await treeDb.selectDefaultChild(directories, altId);
+
+        const result = await treeDb.swapAdjacent(directories, 'owner', n1, n2);
+        expect(result).toEqual({ ok: false, reason: 'not on default path' });
+
+        // Nothing was mutated.
+        const loaded = await treeDb.loadBranch(directories, 'owner', 'chat');
+        expect(loaded.messages.map(m => m.mes)).toEqual(['m0', 'alt-m1']);
+    });
+
+    test('swapAdjacent() refuses when lowerNodeId is not upperNodeId\'s current default child (an unselected alternative)', async () => {
+        const directories = makeDirectories();
+        const [, n1, n2] = await makeChain(directories);
+
+        // Give n1 an alternative child, then SELECT it as the default — n2 is now off the default path.
+        const alt = await treeDb.addAlternatives(directories, 'owner', n2, [makeMessage({ mes: 'alt-m2', sendDate: 'dalt2' })]);
+        const altId = alt.node_ids[0];
+        await treeDb.selectDefaultChild(directories, altId);
+
+        const result = await treeDb.swapAdjacent(directories, 'owner', n1, n2);
+        expect(result).toEqual({ ok: false, reason: 'not on default path' });
+
+        const loaded = await treeDb.loadBranch(directories, 'owner', 'chat');
+        expect(loaded.messages.map(m => m.mes)).toEqual(['m0', 'm1', 'alt-m2']);
+    });
+
+    test('swapAdjacent() at the tail of the chain (no child after the pair) does not crash', async () => {
+        const directories = makeDirectories();
+        const [, n1, n2] = await makeChain(directories);
+
+        // n1/n2 are the last two messages — n2 has no default child.
+        const result = await treeDb.swapAdjacent(directories, 'owner', n1, n2);
+        expect(result).toEqual({ ok: true });
+
+        const loaded = await treeDb.loadBranch(directories, 'owner', 'chat');
+        expect(loaded.messages.map(m => m.mes)).toEqual(['m0', 'm2', 'm1']);
+
+        // n1 (now the tail) must not have inherited a stale default_child_id.
+        const db = await treeDb.getDbHandle(directories);
+        const row = db.get('SELECT default_child_id FROM messages WHERE id = @id', { id: n1 });
+        expect(row.default_child_id).toBeNull();
+    });
+
+    test('swapAdjacent() mid-chain (with a real trailing message) reparents that trailing message onto the new order, not just its default_child_id pointer', async () => {
+        const directories = makeDirectories();
+        const [n0, n1, n2, n3] = await makeChain(directories, 'owner', ['m0', 'm1', 'm2', 'm3']);
+
+        // Swap the MIDDLE pair - n2 has a real child (n3) that must move with the swap, unlike the
+        // tail-swap case above where there's nothing after the pair.
+        const result = await treeDb.swapAdjacent(directories, 'owner', n1, n2);
+        expect(result).toEqual({ ok: true });
+
+        const loaded = await treeDb.loadBranch(directories, 'owner', 'chat');
+        expect(loaded.messages.map(m => m.mes)).toEqual(['m0', 'm2', 'm1', 'm3']);
+        expect(loaded.messages.map(m => m.node_id)).toEqual([n0, n2, n1, n3]);
+
+        // n3's own parent_id must now be n1 (not still n2) - not just default_child_id pointers along
+        // the way, but the actual row n3 itself was reparented, per swapAdjacent()'s own step 1b.
+        const db = await treeDb.getDbHandle(directories);
+        const n3Row = db.get('SELECT parent_id FROM messages WHERE id = @id', { id: n3 });
+        expect(n3Row.parent_id).toBe(n1);
+
+        // The default path must be a real, finite chain, not a cycle - walking from n2 all the way to
+        // n3 must terminate (getAncestorPath() would loop/misbehave against a corrupted default path).
+        const ancestry = await treeDb.getAncestorPath(directories, n3);
+        expect(ancestry.map(m => m.mes)).toEqual(['m0', 'm2', 'm1', 'm3']);
+    });
+
+    test('swapAdjacent() preserves an unselected sibling alternative at the upper position', async () => {
+        const directories = makeDirectories();
+        const [n0, n1, n2] = await makeChain(directories, 'owner', ['m0', 'm1', 'm2', 'm3'].slice(0, 3));
+
+        // A sibling alternative to n1, sitting alongside it under n0 — n1 stays the default child.
+        const alt = await treeDb.addAlternatives(directories, 'owner', n1, [makeMessage({ mes: 'sibling-alt', sendDate: 'ds' })]);
+        const altId = alt.node_ids[0];
+
+        const result = await treeDb.swapAdjacent(directories, 'owner', n1, n2);
+        expect(result).toEqual({ ok: true });
+
+        // The sibling alternative is still parented under n0, untouched by the swap.
+        const db = await treeDb.getDbHandle(directories);
+        const altRow = db.get('SELECT parent_id FROM messages WHERE id = @id', { id: altId });
+        expect(altRow.parent_id).toBe(n0);
+
+        const loaded = await treeDb.loadBranch(directories, 'owner', 'chat');
+        expect(loaded.messages.map(m => m.mes)).toEqual(['m0', 'm2', 'm1']);
+    });
+
+    test('swapAdjacent() preserves an unselected sibling alternative at the lower position', async () => {
+        const directories = makeDirectories();
+        const [, n1, n2] = await makeChain(directories);
+
+        // A sibling alternative to n2, sitting alongside it under n1 — n2 stays the default child.
+        const alt = await treeDb.addAlternatives(directories, 'owner', n2, [makeMessage({ mes: 'sibling-alt-2', sendDate: 'ds2' })]);
+        const altId = alt.node_ids[0];
+
+        const result = await treeDb.swapAdjacent(directories, 'owner', n1, n2);
+        expect(result).toEqual({ ok: true });
+
+        // The sibling alternative is still parented under n1 (n1 didn't move away, it's still the id
+        // the alternative was created against), untouched by the swap.
+        const db = await treeDb.getDbHandle(directories);
+        const altRow = db.get('SELECT parent_id FROM messages WHERE id = @id', { id: altId });
+        expect(altRow.parent_id).toBe(n1);
+
+        const loaded = await treeDb.loadBranch(directories, 'owner', 'chat');
+        expect(loaded.messages.map(m => m.mes)).toEqual(['m0', 'm2', 'm1']);
+    });
+
+    test('swapping twice in a row round-trips back to the original order', async () => {
+        const directories = makeDirectories();
+        const [n0, n1, n2] = await makeChain(directories);
+
+        const first = await treeDb.swapAdjacent(directories, 'owner', n1, n2);
+        expect(first).toEqual({ ok: true });
+
+        let loaded = await treeDb.loadBranch(directories, 'owner', 'chat');
+        expect(loaded.messages.map(m => m.mes)).toEqual(['m0', 'm2', 'm1']);
+
+        // After the first swap, the pair is now n2 -> n1 (n2 is upper).
+        const second = await treeDb.swapAdjacent(directories, 'owner', n2, n1);
+        expect(second).toEqual({ ok: true });
+
+        loaded = await treeDb.loadBranch(directories, 'owner', 'chat');
+        expect(loaded.messages.map(m => m.mes)).toEqual(['m0', 'm1', 'm2']);
+        expect(loaded.messages.map(m => m.node_id)).toEqual([n0, n1, n2]);
+    });
+});
+
 // ---------------------------------------------------------------------------
 //  Stub wire protocol tests: stubs, edits, deletes, swipes
 // ---------------------------------------------------------------------------

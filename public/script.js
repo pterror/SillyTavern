@@ -307,12 +307,12 @@ export { messageFormatting };
 // Lives in chat-store.js, the only module allowed to write messages; re-exported for existing importers.
 import {
     updateMessage, updateIn, deepFreeze,
-    ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath, chatOpSelect, chatOpGraft, chatOpDegraft,
+    ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath, chatOpSelect, chatOpGraft, chatOpDegraft, chatOpSwapAdjacent,
     _mergeCardGreetingsIntoOpening, _restoreContinuation, _isBlankSlot, _markMessageSaved,
 } from './scripts/chat-store.js';
 export {
     updateMessage, updateIn,
-    ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath, chatOpSelect, chatOpGraft, chatOpDegraft,
+    ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath, chatOpSelect, chatOpGraft, chatOpDegraft, chatOpSwapAdjacent,
 };
 import { MacroEngine } from './scripts/macros/engine/MacroEngine.js';
 import { addChatBackupsBrowser } from './scripts/chat-backups.js';
@@ -11653,8 +11653,18 @@ async function messageEditMove(sourceId, targetId) {
     targetMessageDiv.attr('mesid', sourceId);
     sourceMessageDiv.attr('mesid', targetId);
 
-    // Swap chat array entries.
-    [chat[sourceId], chat[targetId]] = [chat[targetId], chat[sourceId]];
+    // Reordering two adjacent tree nodes is a real structural operation (fused degraft+graft) - the
+    // diff engine can't see it at all, since both messages keep their own unchanged node_id. The
+    // tree-stored op already performs the local chat[] swap itself (it's still needed for display,
+    // only the persistence mechanism changes) - don't also swap here, or it'd swap right back.
+    if (chat_metadata?._tree_stored) {
+        await chatOpSwapAdjacent(sourceId, targetId).catch(error =>
+            console.error('Could not save the reordered messages:', error));
+    } else {
+        // Swap chat array entries.
+        [chat[sourceId], chat[targetId]] = [chat[targetId], chat[sourceId]];
+        await saveChatConditional();
+    }
 
     // Update edited message id
     if (this_edit_mes_id === sourceId) {
@@ -11664,7 +11674,6 @@ async function messageEditMove(sourceId, targetId) {
     swapItemizedPrompts(sourceId, targetId);
     updateViewMessageIds();
     refreshSwipeButtons();
-    await saveChatConditional();
     return true;
 }
 
