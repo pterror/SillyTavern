@@ -6074,7 +6074,13 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     let rawActionGenerateData = null;
     if (!dryRun && (main_api === 'textgenerationwebui' || main_api === 'kobold' || main_api === 'novel' || main_api === 'koboldhorde')
         && [undefined, 'normal', 'impersonate', 'quiet', 'swipe', 'regenerate', 'continue'].includes(type)
-        && !canPerformToolCalls
+        // UPDATE (chunk (c) - client-proxy tool calling): `!canPerformToolCalls` REMOVED. This is a
+        // no-op for this particular gate in practice - `ToolManager.isToolCallingSupported()`
+        // unconditionally returns `false` whenever `main_api !== 'openai'` (public/scripts/
+        // tool-calling.js), and every `main_api` this gate covers is never 'openai' - but it's
+        // removed here too for consistency with the chat-completion gate below (see that gate's own,
+        // load-bearing removal comment) and so this precondition list doesn't misleadingly suggest
+        // tool-calling is a real concern for these four backends.
     ) {
         // `getCurrentCharacter()?.avatar` is unchanged from the single-character case - see JUDGMENT
         // CALL #1 above for why this SAME expression already resolves to the correct RESPONDING
@@ -6364,7 +6370,13 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     if (!dryRun && main_api === 'openai'
         && [undefined, 'normal', 'impersonate', 'quiet', 'swipe', 'regenerate', 'continue'].includes(type)
         && !jsonSchema
-        && !canPerformToolCalls
+        // UPDATE (chunk (c) - client-proxy tool calling): `!canPerformToolCalls` REMOVED - this is
+        // the actual point of this chunk. A tool-calling-capable connection is no longer excluded
+        // from the raw-action cutover wholesale; `client_tools` (below) advertises the client's own
+        // registered tools to the server, and a `pending_tool_calls` hand-off response (see
+        // `sendOpenAIRequest()`'s own `rawAction` branch/`finishGenerating()`'s
+        // `resolveClientToolHandoffLoop()` below) is how the client still gets to execute them when
+        // the backend actually calls one - no fallback to legacy client-side prompt assembly.
     ) {
         // `getCurrentCharacter()?.avatar`/`groupId`/`ownerId` derivation is IDENTICAL to the
         // text-completion raw-action cutover's own (see that block's JUDGMENT CALL #1 above for the
@@ -6405,6 +6417,27 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             // local above - `sentUserMessage` is the same single local, set at most once per
             // `Generate()` call, shared by both raw-action gates.
             const userMessageExtra = userMessageText !== undefined ? sentUserMessage?.extra : undefined;
+            // Chunk (c): advertise the client's own ToolManager-registered tools (browser-extension
+            // tools that genuinely can't execute server-side - DOM access, extension state, etc.) via
+            // the NEW `client_tools` field, exactly `ToolManager.registerFunctionToolsOpenAI()`'s own
+            // computed `[{type:'function', function:{name, description, parameters}}, ...]` shape -
+            // read straight off a throwaway object rather than reinventing the schema-building logic
+            // (that method itself decides, per tool, whether to include it via each tool's own
+            // `shouldRegister()`). Gated on `canPerformToolCalls` (this function's own local, computed
+            // above from `ToolManager.canPerformToolCalls(type)` - real tool-calling support for this
+            // model/source/type/depth) so a connection/model/type that can't actually use tools never
+            // advertises any (`clientToolsPayload` stays `undefined`, so `client_tools` is omitted from
+            // the JSON body entirely - `JSON.stringify` drops `undefined` values). The server merges
+            // this with its own server-native tools (server wins on a name collision - see
+            // `buildRawActionChatCompletionRequest()`'s own doc comment, `clientToolSchemas` param) and,
+            // if the backend calls one of THESE names, hands off via `pending_tool_calls` instead of
+            // trying to execute it itself.
+            let clientToolsPayload;
+            if (canPerformToolCalls) {
+                const toolsHolder = {};
+                await ToolManager.registerFunctionToolsOpenAI(toolsHolder);
+                clientToolsPayload = toolsHolder.tools;
+            }
             rawActionChatCompletionData = {
                 character_avatar: characterAvatar,
                 group_id: groupId,
@@ -6419,6 +6452,8 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                 // cutover, chat-completion's server-side pipeline actually inlines `.media` too, not
                 // just `.files`.
                 user_message_extra: userMessageExtra,
+                // Chunk (c) - see this block's own comment on `clientToolsPayload` immediately above.
+                client_tools: clientToolsPayload,
             };
         }
         // else: no resolvable ownerId/characterAvatar (other precondition) - fall through to the
@@ -7400,7 +7435,17 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                 });
             }
         } else {
-            return await sendGenerationRequest(type, generate_data, { jsonSchema });
+            const data = await sendGenerationRequest(type, generate_data, { jsonSchema });
+            // Chunk (c): the raw-action chat-completion route can now hand a tool call off to the
+            // client instead of returning a normal generation result (`{choices: [...]}`) - see
+            // `buildRawActionChatCompletionRequest()`'s own doc comment (server-tools.js/
+            // chat-completions.js). Only ever set for `generate_data.rawAction` (the raw-action
+            // cutover, see `sendOpenAIRequest()`'s own `rawAction` branch) - every other backend/path
+            // never produces this field, so this check is a no-op for them.
+            if (data && Array.isArray(data.pending_tool_calls) && data.pending_tool_calls.length && generate_data?.rawAction) {
+                return await resolveClientToolHandoffLoop(data, generate_data.rawAction);
+            }
+            return data;
         }
     }
 
@@ -8109,6 +8154,143 @@ function setInContextMessages(msgInContextCount, type) {
  * @typedef {object} AdditionalRequestOptions
  * @property {JsonSchema} [jsonSchema]
  */
+
+/**
+ * Chunk (c) of the tool-calling raw-action cutover: resolves a chain of `pending_tool_calls`
+ * hand-offs from the raw-action chat-completion route (src/endpoints/backends/chat-completions.js,
+ * `runServerToolRounds()`'s own doc comment) by actually invoking the named CLIENT tools (registered
+ * via `ToolManager.registerFunctionTool()`, public/scripts/tool-calling.js - the ones the server
+ * genuinely cannot execute itself: arbitrary client JS callbacks, DOM access, extension state) and
+ * submitting their results back via `type: 'tool_result'` follow-up requests, resuming the server's
+ * own loop each time.
+ *
+ * This is a SMALL, LOCAL loop - not a recursive `Generate('normal', {...depth})` call like the
+ * legacy (non-raw-action) tool-calling path (see the `canPerformToolCalls` block inside
+ * `finishGenerating()`'s `onSuccess()`) - because recursing through the whole `Generate()` function
+ * again would re-trigger legacy assembly checks/UI side effects that don't belong mid-tool-loop.
+ * Every round here is a real raw-action request; there is no fallback to legacy client-side prompt
+ * assembly at any point.
+ *
+ * TERMINATION: bounded by `ToolManager.RECURSE_LIMIT` (5, the same numeric bound the legacy
+ * client-side tool-calling loop and the server's own `SERVER_TOOL_ROUND_LIMIT` use) - the `for` loop
+ * below runs at most that many iterations, and each iteration makes exactly one `fetch()` call (no
+ * further recursion), so the worst case is a bounded, finite number of network round-trips, never an
+ * infinite loop. If `data.pending_tool_calls` is STILL set after the loop exits (bound exceeded, not
+ * a normal exit), a real `Error` is thrown - mirroring the server's own "exceeded round limit" 500 -
+ * rather than returning a malformed `pending_tool_calls`-shaped object to `onSuccess()` (which
+ * expects a normal `{choices: [...]}` result and would otherwise crash confusingly on
+ * `extractMessageFromData()`).
+ *
+ * KNOWN LIMITATION - stealth tools: the legacy (non-raw-action) loop gives `ToolManager.isStealthTool()`
+ * tools special treatment - when EVERY tool call in a round is stealth, it stops generation entirely
+ * with NOTHING persisted (`saveFunctionToolInvocations([])` on an empty invocations array, then an
+ * early `return` - see `finishGenerating()`'s `onSuccess()`, `shouldStopGeneration`). This function does
+ * NOT replicate that: by the time the client sees a `pending_tool_calls` hand-off, the server has
+ * ALREADY persisted the pending tool-call node (it has no way to know a tool is "stealth" - that's a
+ * client-only registration flag, never sent to the server), so there is no clean way to make the round
+ * simply vanish the way the legacy path does. A stealth tool invoked through this loop still gets
+ * `invokeFunctionTools()`'s normal treatment (pushed to `stealthCalls`, no `.invocations` entry), which
+ * this loop's `tool_results` mapping resolves as a generic "could not be resolved on the client" error
+ * result instead - the round still completes and the model sees an error, rather than generation
+ * stopping silently. Fixing this for real would need a new wire-protocol primitive (an explicit "abort
+ * this pending round, don't call the backend again" signal) - out of scope for this chunk; flagging
+ * this as a real, narrow, currently-unresolved behavioral difference for anyone relying on stealth
+ * tools with a tool-calling-capable connection once this cutover is live.
+ *
+ * NO DOUBLE-FIRE OF PERSISTENCE: this function never itself writes to the chat tree - every write
+ * (the in-flight tool-invocation node, the in-place edit resolving it, the eventual final reply) is
+ * performed SERVER-side, exactly once per real fact, by the same code chunk (b) already uses
+ * (`runServerToolRounds()`/`resolvePendingToolResults()`/`persistAssistantReply()`). This function
+ * only invokes the client's own tool callback (a pure computation from the caller's point of view -
+ * `ToolManager.invokeFunctionTool()` has no chat-tree side effect) and forwards its result; it never
+ * calls `ToolManager.saveFunctionToolInvocations()` (that would create a SECOND, redundant
+ * client-side tree write for a turn the server already persisted).
+ * @param {object} initialData The raw-action route's response body, already known to carry a
+ *   non-empty `pending_tool_calls` array (`[{node_id, tool_call_id, name, arguments}, ...]`).
+ * @param {object} rawAction The SAME raw-action object originally sent (`character_avatar`/
+ *   `group_id`/`owner_id` are read off it; `node_id`/`type`/`user_message` are not used here - each
+ *   round addresses the pending node named in that round's own `pending_tool_calls` entries instead).
+ * @returns {Promise<object>} The final response body once the server stops returning
+ *   `pending_tool_calls` (a normal `{choices: [...]}` result, or an `{error: true, ...}` body if the
+ *   server rejected the follow-up for some other reason - both handled identically to any other
+ *   `sendGenerationRequest()` result by the caller).
+ * @throws {Error} If the response isn't ok, or if the bound above is exceeded without ever reaching a
+ *   non-`pending_tool_calls` response.
+ */
+async function resolveClientToolHandoffLoop(initialData, rawAction) {
+    let data = initialData;
+
+    for (let round = 0; round < ToolManager.RECURSE_LIMIT && Array.isArray(data?.pending_tool_calls) && data.pending_tool_calls.length; round++) {
+        const pending = data.pending_tool_calls;
+        // Chunk (b)/(c)'s single-node-per-round persistence (see `runServerToolRounds()`'s own doc
+        // comment) means every entry in one `pending_tool_calls` array shares the same `node_id`.
+        const nodeId = pending[0]?.node_id;
+
+        // Reuse the EXISTING client tool-invocation machinery (toasts, error handling, stealth
+        // handling) rather than hand-rolling it - `ToolManager.invokeFunctionTools()` just needs a
+        // synthetic OpenAI-Chat-Completions-shaped `data` object to read `tool_calls` off of.
+        const syntheticData = {
+            choices: [{
+                index: 0,
+                message: {
+                    tool_calls: pending.map(call => ({
+                        id: call.tool_call_id,
+                        function: { name: call.name, arguments: JSON.stringify(call.arguments ?? {}) },
+                    })),
+                },
+            }],
+        };
+        const invocationResult = await ToolManager.invokeFunctionTools(syntheticData);
+        if (Array.isArray(invocationResult.errors) && invocationResult.errors.length) {
+            ToolManager.showToolCallError(invocationResult.errors);
+        }
+        const invocationsById = new Map(invocationResult.invocations.map(invocation => [invocation.id, invocation]));
+
+        // Every pending call gets a real tool_results entry regardless of `stealthCalls`/an unknown
+        // name (`ToolManager.invokeFunctionTool()` itself already turns "no such tool registered"
+        // into an Error result, not a thrown exception) - the server-side pending invocation MUST be
+        // resolved one way or another, or the round can never advance.
+        const tool_results = pending.map(call => {
+            const invocation = invocationsById.get(call.tool_call_id);
+            return {
+                id: call.tool_call_id,
+                result: invocation ? (typeof invocation.result === 'string' ? invocation.result : String(invocation.result)) : 'This tool call could not be resolved on the client (no invocation result was produced).',
+                error: invocation ? !!invocation.error : true,
+            };
+        });
+
+        // Re-advertise the SAME client tools - the server never remembers a live client-only tool
+        // list across requests (REST is stateless; the tree is the only durable state) - see
+        // `buildRawActionChatCompletionRequest()`'s own `clientToolSchemas` doc comment.
+        const toolsHolder = {};
+        await ToolManager.registerFunctionToolsOpenAI(toolsHolder);
+
+        const response = await fetch('/api/backends/chat-completions/generate', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({
+                character_avatar: rawAction.character_avatar,
+                group_id: rawAction.group_id,
+                owner_id: rawAction.owner_id,
+                node_id: nodeId,
+                type: 'tool_result',
+                tool_results,
+                client_tools: toolsHolder.tools,
+            }),
+        });
+
+        if (!response.ok) {
+            throw await response.json();
+        }
+        data = await response.json();
+    }
+
+    if (Array.isArray(data?.pending_tool_calls) && data.pending_tool_calls.length) {
+        throw new Error('Exceeded the maximum number of client tool-call rounds without receiving a final reply.');
+    }
+
+    return data;
+}
 
 /**
  * Sends a non-streaming request to the API.
