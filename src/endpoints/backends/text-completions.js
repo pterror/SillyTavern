@@ -16,7 +16,7 @@ import {
 import { forwardFetchResponse, trimV1, getConfigValue } from '../../util.js';
 import { setAdditionalHeaders } from '../../additional-headers.js';
 import { createHash } from 'node:crypto';
-import { pipeLlamaCppCompactStream, getLlamaCppStreamMeta } from './llamacpp-compact-stream.js';
+import { pipeLlamaCppCompactStream, getLlamaCppStreamMeta, createBackpressureWriter, encodeContent, encodeIndexFrame, encodeReasoningFrame, encodeAssistantNodeIdFrame } from './llamacpp-compact-stream.js';
 import { resolveTextGenBackend, resolveServerUrl } from '../../textgen-backend-resolve.js';
 import { resolveConnectionProfile } from '../../connection-profile-resolve.js';
 import { mergeTextGenPreset } from '../../textgen-preset-merge.js';
@@ -235,6 +235,160 @@ export async function forwardAndPersistSseText(fetchResponse, response, persist,
 
     response.socket?.off('close', onSocketClose);
     if (!response.writableEnded) response.end();
+}
+
+/**
+ * Same job as `forwardAndPersistSseText()` above (accumulate a raw-action reply from an upstream
+ * OpenAI-completions-shaped SSE stream and persist it once the stream ends), but for the two call
+ * sites below (GENERIC/DREAMGEN/MANCER/VLLM's `choices[0].text` shape and OPENROUTER's
+ * `choices[0].delta.content` shape) it re-encodes what it forwards to the client into the compact
+ * binary wire format (llamacpp-compact-stream.js), coalescing many small upstream chunks into fewer,
+ * larger writes instead of forwarding one frame per upstream token/SSE-chunk - see
+ * llamacpp-compact-stream.js's own module doc comment for the frame format itself.
+ *
+ * The FIRST piece of content is flushed immediately (so the reply visibly starts without delay);
+ * everything after that is buffered and flushed on a ~40ms timer or once ~256 buffered bytes are
+ * reached, whichever comes first. A reasoning or index frame always flushes any buffered content
+ * first, so frames reach the client in the same relative order the events arrived in upstream.
+ *
+ * There is no upstream `[DONE]`-equivalent to hold back here (unlike the SSE-JSON version): once the
+ * upstream body ends, this flushes any remaining buffered content, persists the accumulated text, and
+ * - if persistence produced a node - writes the assistant_node_id frame as the LAST frame before
+ * `response.end()`, so the client (whose stream reader stops at the natural end of the byte stream,
+ * not a sentinel line) still reads it before it stops.
+ * @param {import('node-fetch').Response} fetchResponse
+ * @param {import('express').Response} response
+ * @param {object|null|undefined} persist `pendingAssistantPersist`, or a falsy value to skip
+ * teeing/persistence entirely and just forward the bytes untouched.
+ * @param {(json: any) => string|undefined} extractText Pulls this api_type's own real per-chunk
+ * generated-text field out of one parsed SSE JSON payload - see forwardAndPersistSseText()'s own doc
+ * comment for the two real shapes this covers at the call sites below.
+ * @returns {Promise<void>}
+ */
+export async function forwardAndPersistCompactStream(fetchResponse, response, persist, extractText) {
+    if (!persist || !fetchResponse.ok || !fetchResponse.body) {
+        return forwardFetchResponse(fetchResponse, response);
+    }
+
+    let statusCode = fetchResponse.status;
+    if (statusCode === 401) statusCode = 400;
+    response.statusCode = statusCode;
+    response.statusMessage = fetchResponse.statusText;
+    response.setHeader('X-ST-Stream-Format', 'compact-v1');
+
+    let sseBuffer = '';
+    let text = '';
+    let lastIndex = 0;
+
+    // Same backpressure-coalescing writer pipeLlamaCppCompactStream() uses - its own `ended` flag
+    // (set by end(), checked by every subsequent flush()) is what makes end() and write() both safe
+    // to call after a client disconnect without an explicit response.writableEnded check at each
+    // call site here.
+    const writer = createBackpressureWriter(response);
+    const safeWrite = (chunk) => writer.write(chunk);
+
+    const onSocketClose = () => {
+        if (fetchResponse.body instanceof Readable) fetchResponse.body.destroy();
+        writer.end();
+    };
+    response.socket?.once('close', onSocketClose);
+
+    const COALESCE_BYTES = 256;
+    const COALESCE_MS = 40;
+    let pendingContent = Buffer.alloc(0);
+    let firstContentSent = false;
+    let flushTimer = null;
+
+    const flushPendingContent = () => {
+        if (flushTimer) {
+            clearTimeout(flushTimer);
+            flushTimer = null;
+        }
+        if (pendingContent.length) {
+            safeWrite(pendingContent);
+            pendingContent = Buffer.alloc(0);
+        }
+    };
+
+    const emitContent = (chunkText) => {
+        const encoded = encodeContent(chunkText);
+        if (!encoded.length) return;
+        if (!firstContentSent) {
+            firstContentSent = true;
+            safeWrite(encoded);
+            return;
+        }
+        pendingContent = pendingContent.length ? Buffer.concat([pendingContent, encoded]) : encoded;
+        if (pendingContent.length >= COALESCE_BYTES) {
+            flushPendingContent();
+        } else if (!flushTimer) {
+            flushTimer = setTimeout(flushPendingContent, COALESCE_MS);
+        }
+    };
+
+    const handleEvent = (json) => {
+        const index = json?.choices?.[0]?.index;
+        if (typeof index === 'number' && index !== lastIndex) {
+            lastIndex = index;
+            flushPendingContent();
+            safeWrite(encodeIndexFrame(index));
+        }
+
+        const reasoning = json?.choices?.[0]?.reasoning ?? json?.choices?.[0]?.thinking;
+        if (reasoning) {
+            flushPendingContent();
+            safeWrite(encodeReasoningFrame(reasoning));
+        }
+
+        const chunkText = extractText(json) ?? '';
+        if (chunkText) {
+            text += chunkText;
+            emitContent(chunkText);
+        }
+    };
+
+    const processLine = (rawLine) => {
+        const trimmed = rawLine.trim();
+        if (!trimmed.startsWith('data:')) return;
+        const payload = trimmed.slice(5).trim();
+        if (!payload || payload === '[DONE]') return;
+        try {
+            handleEvent(JSON.parse(payload));
+        } catch (error) {
+            console.warn('Failed to parse streamed SSE event while accumulating text for persistence (compact stream):', error);
+        }
+    };
+
+    await new Promise((resolve) => {
+        fetchResponse.body.on('data', (chunk) => {
+            sseBuffer += chunk.toString('utf-8');
+            let idx;
+            while ((idx = sseBuffer.indexOf('\n')) !== -1) {
+                const rawLine = sseBuffer.slice(0, idx);
+                sseBuffer = sseBuffer.slice(idx + 1);
+                processLine(rawLine);
+            }
+        });
+        fetchResponse.body.once('end', resolve);
+        fetchResponse.body.once('error', resolve);
+        fetchResponse.body.once('close', resolve);
+    });
+
+    if (sseBuffer) {
+        processLine(sseBuffer);
+    }
+
+    flushPendingContent();
+
+    if (text) {
+        const persisted = await persistAssistantReply(persist, text);
+        if (persisted) {
+            safeWrite(encodeAssistantNodeIdFrame(persisted.node_id));
+        }
+    }
+
+    response.socket?.off('close', onSocketClose);
+    writer.end();
 }
 
 /**
@@ -662,13 +816,14 @@ router.post('/generate', async function (request, response) {
     // ../../assistant-reply-persist.js for the shared plain/continue/swipe persistence logic all of
     // these funnel into once they have the final text):
     // - GENERIC/VLLM/FEATHERLESS/APHRODITE/OOBA/TABBY/KOBOLDCPP/TOGETHERAI/INFERMATICAI/HUGGINGFACE/
-    //   DREAMGEN/MANCER (the `/v1/completions`-style, `forwardAndPersistSseText()`-routed api_types
-    //   below): PERSISTS FOR REAL. Their stream is an OpenAI TEXT-completions-shaped SSE
-    //   (`data: {"choices":[{"text": "..."}]}`) - `forwardAndPersistSseText()` tees the untouched
-    //   byte pipe to accumulate `choices[0].text` per chunk and persists the full text once the
+    //   DREAMGEN/MANCER (the `/v1/completions`-style, `forwardAndPersistCompactStream()`-routed
+    //   api_types below): PERSISTS FOR REAL. Their upstream stream is an OpenAI TEXT-completions-
+    //   shaped SSE (`data: {"choices":[{"text": "..."}]}`) - `forwardAndPersistCompactStream()`
+    //   accumulates `choices[0].text` per chunk, re-encodes it into the compact binary wire format
+    //   (coalesced into fewer, larger writes) for the client, and persists the full text once the
     //   stream ends.
-    // - OPENROUTER: PERSISTS FOR REAL, via the same `forwardAndPersistSseText()` teeing, but with its
-    //   own extractor - it is dispatched through `/v1/chat/completions` (see the URL-construction
+    // - OPENROUTER: PERSISTS FOR REAL, via the same `forwardAndPersistCompactStream()` re-encoding,
+    //   but with its own extractor - it is dispatched through `/v1/chat/completions` (see the URL-construction
     //   switch below), a materially different, OpenAI CHAT-completions-shaped delta stream
     //   (`data: {"choices":[{"delta":{"content": "..."}}]}`), not the TEXT-completions shape every
     //   other api_type above uses. This is a real, pre-existing oddity of this "text completions"
@@ -1054,14 +1209,15 @@ router.post('/generate', async function (request, response) {
                 // (`choices[0].delta.content`), a materially different shape from every other
                 // api_type reaching this branch (`choices[0].text`). Given its own extractor rather
                 // than folded into the generic branch below.
-                await forwardAndPersistSseText(completionsStream, response, pendingAssistantPersist, json => json?.choices?.[0]?.delta?.content);
+                await forwardAndPersistCompactStream(completionsStream, response, pendingAssistantPersist, json => json?.choices?.[0]?.delta?.content);
             } else {
-                // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
-                // accumulate the OpenAI TEXT-completions-shaped `choices[0].text` field for raw-action
-                // persistence - see forwardAndPersistSseText()'s own doc comment above. A no-op,
-                // byte-for-byte-identical-to-before pass-through whenever pendingAssistantPersist is
-                // null (every non-raw-action stream, i.e. connection_profile_id and legacy/default).
-                await forwardAndPersistSseText(completionsStream, response, pendingAssistantPersist, json => json?.choices?.[0]?.text);
+                // Pipe remote SSE stream to Express response as the compact binary wire format,
+                // tapping the OpenAI TEXT-completions-shaped `choices[0].text` field for raw-action
+                // persistence - see forwardAndPersistCompactStream()'s own doc comment above. A no-op,
+                // byte-for-byte-identical-to-before (forwardFetchResponse()) pass-through whenever
+                // pendingAssistantPersist is null (every non-raw-action stream, i.e.
+                // connection_profile_id and legacy/default).
+                await forwardAndPersistCompactStream(completionsStream, response, pendingAssistantPersist, json => json?.choices?.[0]?.text);
             }
         } else {
             const completionsReply = await fetch(url, args);
