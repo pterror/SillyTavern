@@ -4729,6 +4729,11 @@ class StreamingProcessor {
         this.toolCalls = [];
         /** @type {{node_id: string, pending_tool_calls: any[]}?} */
         this.toolCallHandoff = null;
+        // THIS TASK (stealth-tool parity) - see this class's end-of-stream call site
+        // (finishGenerating()) and forwardAndPersistSseWithServerTools()'s `aborted` branch doc
+        // comment (src/endpoints/backends/chat-completions.js) for the full mechanism. Mirrors
+        // `toolCallHandoff` above exactly, for the distinct "abort, nothing persisted" trailer.
+        this.toolCallAborted = false;
         // Initialize reasoning in its own handler
         this.reasoningHandler = new ReasoningHandler(timeStarted);
         /** @type {PromptReasoning} */
@@ -5060,6 +5065,9 @@ class StreamingProcessor {
                 // chat-completions.js) for the full mechanism. `state` is the SAME object reused across
                 // every yield of this generator, so once set it stays set for every later iteration.
                 this.toolCallHandoff = state?.toolCallHandoff ?? this.toolCallHandoff;
+                // THIS TASK (stealth-tool parity) - see StreamingProcessor.toolCallAborted's own
+                // declaration comment above.
+                this.toolCallAborted = state?.toolCallAborted ?? this.toolCallAborted;
                 this.result = text;
                 this.swipes = Array.from(swipes ?? []);
                 if (logprobs) {
@@ -6557,11 +6565,26 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             // `buildRawActionChatCompletionRequest()`'s own doc comment, `clientToolSchemas` param) and,
             // if the backend calls one of THESE names, hands off via `pending_tool_calls` instead of
             // trying to execute it itself.
+            // THIS TASK (stealth-tool parity - see resolveClientToolHandoffLoop()'s own doc comment
+            // below for the full investigation/design): the server can't tell a stealth tool apart
+            // from a normal one just by name - `stealth` is a per-TOOL registration flag
+            // (`ToolManager.registerFunctionTool()`'s own `stealth` param), never sent to the server
+            // before this task. Advertise it as a SEPARATE `stealth_tool_names` list (not an extra key
+            // smuggled into `clientToolsPayload`'s own OpenAI-standard tool schema entries) - only
+            // ever the names ALREADY in `clientToolsPayload` (a tool that isn't registered at all, or
+            // whose `shouldRegister()` said no this turn, was never advertised in the first place, so
+            // it has nothing to be "stealth" about server-side). Omitted (`undefined`, dropped by
+            // `JSON.stringify`) when there are none, matching `clientToolsPayload` itself.
             let clientToolsPayload;
+            let stealthToolNamesPayload;
             if (canPerformToolCalls) {
                 const toolsHolder = {};
                 await ToolManager.registerFunctionToolsOpenAI(toolsHolder);
                 clientToolsPayload = toolsHolder.tools;
+                const stealthNames = (clientToolsPayload ?? [])
+                    .map(tool => tool?.function?.name)
+                    .filter(name => typeof name === 'string' && ToolManager.isStealthTool(name));
+                stealthToolNamesPayload = stealthNames.length ? stealthNames : undefined;
             }
             rawActionChatCompletionData = {
                 character_avatar: characterAvatar,
@@ -6579,6 +6602,8 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                 user_message_extra: userMessageExtra,
                 // Chunk (c) - see this block's own comment on `clientToolsPayload` immediately above.
                 client_tools: clientToolsPayload,
+                // THIS TASK - see this block's own comment on `stealthToolNamesPayload` immediately above.
+                stealth_tool_names: stealthToolNamesPayload,
                 // See the removed `!jsonSchema` exclusion's own UPDATE comment above this gate - sent
                 // exactly as this function received it (`JsonSchema` typedef shape), `undefined` (thus
                 // dropped by `JSON.stringify`) when this call has no schema.
@@ -7550,7 +7575,43 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                 // forwardAndPersistSseWithServerTools()'s own doc comment for why this is safe: the
                 // pending tree node was already persisted server-side before this trailer chunk was
                 // ever sent, so there is nothing left for the client to persist, only to resolve.
-                return await resolveClientToolHandoffLoop({ pending_tool_calls: handoff.pending_tool_calls }, generate_data.rawAction);
+                const resolved = await resolveClientToolHandoffLoop({ pending_tool_calls: handoff.pending_tool_calls }, generate_data.rawAction);
+                // THIS TASK (stealth-tool parity) - a LATER round inside the resolve loop itself hit a
+                // stealth call (see resolveClientToolHandoffLoop()'s own `data.aborted` check) - unblock
+                // exactly like a first-round abort would (`isStreamWithToolCallAborted` above), no
+                // persisted reply.
+                if (resolved && resolved.aborted) {
+                    unblockGeneration(type);
+                    return;
+                }
+                return resolved;
+            }
+
+            // THIS TASK (stealth-tool parity) - the streaming counterpart of the non-streaming
+            // `data.aborted` check further below. See resolveClientToolHandoffLoop()'s own doc comment
+            // for the full legacy investigation this replicates: the legacy (non-raw-action) loop's
+            // `shouldStopGeneration` is true whenever ANY stealth tool call is present in a round
+            // (`invocationResult.stealthCalls.length`, unconditionally, via `||` - not merely "every
+            // call was stealth"), discarding the WHOLE round (even an already-succeeded non-stealth
+            // invocation in the same round) and stopping generation with nothing persisted -
+            // `unblockGeneration(type)` then a plain `return`, no toast, no error. The server (see
+            // `forwardAndPersistSseWithServerTools()`'s own `aborted` branch,
+            // src/endpoints/backends/chat-completions.js) already decided not to persist anything for
+            // this round and signaled that via the `tool_call_aborted` SSE trailer
+            // (`streamingProcessor.toolCallAborted`, stashed off `state` the same way
+            // `toolCallHandoff` is). Mirror the legacy branch's own UI-unblocking behavior exactly: no
+            // persisted reply, no error toast, and the in-progress placeholder message this streaming
+            // turn created (chat[]'s last entry) is removed unconditionally - not merely when
+            // empty/`shouldDeleteMessage`-eligible like the handoff branch above, since NOTHING from
+            // this round is meant to remain visible (see this task's own doc comment on the server's
+            // `aborted` branch for the documented narrowing this implies for text-alongside-a-stealth-
+            // call).
+            const isStreamWithToolCallAborted = streamingProcessor && isStreamFinished && streamingProcessor.toolCallAborted && generate_data?.rawAction;
+            if (isStreamWithToolCallAborted) {
+                await deleteLastMessage();
+                streamingProcessor = null;
+                unblockGeneration(type);
+                return;
             }
 
             const isStreamWithToolCalls = streamingProcessor && Array.isArray(streamingProcessor.toolCalls) && streamingProcessor.toolCalls.length;
@@ -7601,7 +7662,26 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             // cutover, see `sendOpenAIRequest()`'s own `rawAction` branch) - every other backend/path
             // never produces this field, so this check is a no-op for them.
             if (data && Array.isArray(data.pending_tool_calls) && data.pending_tool_calls.length && generate_data?.rawAction) {
-                return await resolveClientToolHandoffLoop(data, generate_data.rawAction);
+                const resolved = await resolveClientToolHandoffLoop(data, generate_data.rawAction);
+                // THIS TASK (stealth-tool parity) - see the streaming branch's own identical check
+                // above for the full rationale (a LATER round inside the resolve loop hit a stealth
+                // call).
+                if (resolved && resolved.aborted) {
+                    unblockGeneration(type);
+                    return;
+                }
+                return resolved;
+            }
+            // THIS TASK (stealth-tool parity) - the non-streaming counterpart of
+            // `isStreamWithToolCallAborted` above; see that branch's own doc comment and
+            // resolveClientToolHandoffLoop()'s own doc comment for the full legacy investigation this
+            // replicates. No message was ever added to `chat[]` for this branch by the time this line
+            // runs (unlike streaming, which creates an in-progress placeholder as tokens arrive) - the
+            // non-streaming path only calls `saveReply()` further down in `onSuccess()`, which this
+            // early return never reaches - so there is nothing to delete here, only to skip.
+            if (data && data.aborted && generate_data?.rawAction) {
+                unblockGeneration(type);
+                return;
             }
             return data;
         }
@@ -8352,21 +8432,46 @@ function setInContextMessages(msgInContextCount, type) {
  * expects a normal `{choices: [...]}` result and would otherwise crash confusingly on
  * `extractMessageFromData()`).
  *
- * KNOWN LIMITATION - stealth tools: the legacy (non-raw-action) loop gives `ToolManager.isStealthTool()`
- * tools special treatment - when EVERY tool call in a round is stealth, it stops generation entirely
- * with NOTHING persisted (`saveFunctionToolInvocations([])` on an empty invocations array, then an
- * early `return` - see `finishGenerating()`'s `onSuccess()`, `shouldStopGeneration`). This function does
- * NOT replicate that: by the time the client sees a `pending_tool_calls` hand-off, the server has
- * ALREADY persisted the pending tool-call node (it has no way to know a tool is "stealth" - that's a
- * client-only registration flag, never sent to the server), so there is no clean way to make the round
- * simply vanish the way the legacy path does. A stealth tool invoked through this loop still gets
- * `invokeFunctionTools()`'s normal treatment (pushed to `stealthCalls`, no `.invocations` entry), which
- * this loop's `tool_results` mapping resolves as a generic "could not be resolved on the client" error
- * result instead - the round still completes and the model sees an error, rather than generation
- * stopping silently. Fixing this for real would need a new wire-protocol primitive (an explicit "abort
- * this pending round, don't call the backend again" signal) - out of scope for this chunk; flagging
- * this as a real, narrow, currently-unresolved behavioral difference for anyone relying on stealth
- * tools with a tool-calling-capable connection once this cutover is live.
+ * STEALTH TOOLS - FIXED (this task; formerly a documented KNOWN LIMITATION here). Precise legacy
+ * semantics, verified by reading `ToolManager.invokeFunctionTools()`/`finishGenerating()`'s
+ * `onSuccess()` in full (public/scripts/tool-calling.js, this file): `stealth` is a per-TOOL
+ * registration property (`ToolManager.registerFunctionTool()`'s own `stealth` param - never
+ * per-call), and `shouldStopGeneration = (!invocationResult.invocations.length && shouldDeleteMessage)
+ * || invocationResult.stealthCalls.length` - the `||` means ANY stealth call present in a round stops
+ * generation entirely and UNCONDITIONALLY discards the whole round (even an already-succeeded
+ * non-stealth invocation in the SAME round never gets `saveFunctionToolInvocations()`'d), not merely
+ * "every call in the round was stealth" (the narrower case this doc comment used to describe).
+ *
+ * This could not be replicated here before this task because, by the time the client saw a
+ * `pending_tool_calls` hand-off, the server had ALREADY persisted the pending tool-call node with no
+ * way to know a tool is "stealth" (a client-only registration flag, never sent to the server). Fixed
+ * by teaching the server about it in advance: `Generate()`'s raw-action gate now also sends a
+ * `stealth_tool_names` list (the subset of `client_tools` names `ToolManager.isStealthTool()` flags -
+ * see that gate's own `stealthToolNamesPayload` doc comment for why this is a separate list rather
+ * than an extra key smuggled into the OpenAI-standard `client_tools` schema entries themselves) and
+ * `runServerToolRounds()` (src/endpoints/backends/chat-completions.js) checks it BEFORE persisting
+ * anything: if ANY call in a round is in that set, the round returns `{ok: 'aborted'}` - no tool
+ * invoked, no tree node written, no hand-off - so this function typically never even sees such a round
+ * (it never reaches `pending_tool_calls` at all for a first-round abort - see `finishGenerating()`'s
+ * own `isStreamWithToolCallAborted`/non-streaming `data.aborted` checks, which intercept it earlier).
+ * The one place THIS function still has to care is a LATER round of its own loop (this function's own
+ * `tool_result` follow-up can just as easily trigger a fresh abort) - handled by the explicit
+ * `data?.aborted` check inside the loop below, which stops iterating and returns the `{aborted: true}`
+ * body straight back to the caller, exactly like a first-round abort.
+ *
+ * DOCUMENTED, DELIBERATE NARROWING (not a parity gap - see `runServerToolRounds()`'s own doc comment,
+ * step 2b, for the full reasoning): unlike legacy (which invokes every non-stealth call first, real
+ * side effects happen, and only THEN discards the round), the server here never invokes anything once
+ * a stealth name is detected in a round - it does not run a real server-native tool's `invoke()`
+ * purely to throw the result away. This is exact, verified parity for a stealth call mixed with other
+ * CLIENT-ONLY calls (stealth or not) - legacy has no equivalent concept of "server-native" tools at
+ * all, so a stealth call mixed with a genuine server-native call is the one case with no legacy
+ * precedent to match; the "never invoke, just abort" behavior was chosen there as the safer,
+ * user-visibly-identical ("nothing persisted, generation stops") simplification. Also documented,
+ * narrower-than-legacy on the CLIENT side: any real narrative text the model generated in the SAME
+ * round as the stealth call is not preserved either (the in-progress placeholder message is deleted
+ * unconditionally on abort - see `isStreamWithToolCallAborted` above - whereas legacy keeps
+ * already-persisted visible text and only discards the tool-invocation record).
  *
  * NO DOUBLE-FIRE OF PERSISTENCE: this function never itself writes to the chat tree - every write
  * (the in-flight tool-invocation node, the in-place edit resolving it, the eventual final reply) is
@@ -8432,9 +8537,21 @@ async function resolveClientToolHandoffLoop(initialData, rawAction) {
 
         // Re-advertise the SAME client tools - the server never remembers a live client-only tool
         // list across requests (REST is stateless; the tree is the only durable state) - see
-        // `buildRawActionChatCompletionRequest()`'s own `clientToolSchemas` doc comment.
+        // `buildRawActionChatCompletionRequest()`'s own `clientToolSchemas` doc comment. THIS TASK:
+        // `stealth_tool_names` is re-derived and re-sent alongside them every round for the identical
+        // reason - a LATER round's own backend response can call a (possibly different) stealth tool
+        // just as easily as the first one could, and the server has no memory of the first round's
+        // advertised set either. See `Generate()`'s own identical `stealthToolNamesPayload`
+        // computation/doc comment (this function's own doc comment references it) for the full
+        // rationale - duplicated here rather than shared, since `registerFunctionToolsOpenAI()` itself
+        // must NOT gain a `stealth_tool_names` field (it also builds the LEGACY path's real backend
+        // request body via the SAME method - see that method's own callers - so anything it adds would
+        // leak a non-standard field straight into an actual provider request).
         const toolsHolder = {};
         await ToolManager.registerFunctionToolsOpenAI(toolsHolder);
+        const stealthNames = (toolsHolder.tools ?? [])
+            .map(tool => tool?.function?.name)
+            .filter(name => typeof name === 'string' && ToolManager.isStealthTool(name));
 
         const response = await fetch('/api/backends/chat-completions/generate', {
             method: 'POST',
@@ -8447,6 +8564,7 @@ async function resolveClientToolHandoffLoop(initialData, rawAction) {
                 type: 'tool_result',
                 tool_results,
                 client_tools: toolsHolder.tools,
+                stealth_tool_names: stealthNames.length ? stealthNames : undefined,
             }),
         });
 
@@ -8454,6 +8572,19 @@ async function resolveClientToolHandoffLoop(initialData, rawAction) {
             throw await response.json();
         }
         data = await response.json();
+
+        // THIS TASK (stealth-tool parity) - a LATER round (this `tool_result` follow-up's own backend
+        // response) can hit a stealth call too, exactly like the very first round can (see
+        // `finishGenerating()`'s own `isStreamWithToolCallAborted`/non-streaming `data.aborted` checks,
+        // which only ever see the FIRST round - this loop's own subsequent rounds need the identical
+        // check inline). The server already decided not to persist/hand off anything for this round
+        // (`{aborted: true}`, no `.pending_tool_calls`) - stop looping (the `for` condition below would
+        // stop anyway, since `data.pending_tool_calls` is absent) and let the caller's own `.aborted`
+        // check (both call sites in `finishGenerating()`) handle unblocking generation, exactly the
+        // same way it would have for a first-round abort.
+        if (data?.aborted) {
+            return data;
+        }
     }
 
     if (Array.isArray(data?.pending_tool_calls) && data.pending_tool_calls.length) {
