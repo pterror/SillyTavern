@@ -4631,6 +4631,8 @@ class StreamingProcessor {
         /** @type {import('./scripts/logprobs.js').TokenLogprobs[]} */
         this.messageLogprobs = [];
         this.toolCalls = [];
+        /** @type {{node_id: string, pending_tool_calls: any[]}?} */
+        this.toolCallHandoff = null;
         // Initialize reasoning in its own handler
         this.reasoningHandler = new ReasoningHandler(timeStarted);
         /** @type {PromptReasoning} */
@@ -4956,6 +4958,12 @@ class StreamingProcessor {
                 }
 
                 this.toolCalls = toolCalls;
+                // Streaming raw-action tool-calling cutover - see StreamingProcessor.toolCallHandoff's
+                // own use at this class's end-of-stream call site (finishGenerating()) and
+                // forwardAndPersistSseWithServerTools()'s doc comment (src/endpoints/backends/
+                // chat-completions.js) for the full mechanism. `state` is the SAME object reused across
+                // every yield of this generator, so once set it stays set for every later iteration.
+                this.toolCallHandoff = state?.toolCallHandoff ?? this.toolCallHandoff;
                 this.result = text;
                 this.swipes = Array.from(swipes ?? []);
                 if (logprobs) {
@@ -7395,6 +7403,35 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             }
 
             const isStreamFinished = streamingProcessor && !streamingProcessor.isStopped && streamingProcessor.isFinished;
+            // Streaming raw-action tool-calling cutover (chunk (b)/(c)'s streaming counterpart) - see
+            // forwardAndPersistSseWithServerTools()'s own doc comment (src/endpoints/backends/
+            // chat-completions.js) for the full mechanism. Only ever set for a raw-action request whose
+            // server-side loop hit a CLIENT-only tool call (`generate_data?.rawAction` truthy - the
+            // exact same field the non-streaming branch below reads for its own, non-streaming
+            // `pending_tool_calls` hand-off). Checked BEFORE the legacy `isStreamWithToolCalls` block:
+            // the server intentionally never forwards raw `tool_calls` deltas to the client for a
+            // request that reaches this hand-off (see that same doc comment, step 3), so
+            // `streamingProcessor.toolCalls` is naturally empty in this case and the legacy block below
+            // would not fire for it anyway - this check exists to actually resolve the hand-off, not
+            // merely to avoid a conflict with it.
+            const isStreamWithToolCallHandoff = streamingProcessor && isStreamFinished && streamingProcessor.toolCallHandoff && generate_data?.rawAction;
+            if (isStreamWithToolCallHandoff) {
+                const lastMessage = chat[chat.length - 1];
+                const shouldDeleteMessage = type !== 'swipe' && ['', '...'].includes(lastMessage?.mes) && !lastMessage?.extra?.reasoning && ['', '...'].includes(streamingProcessor?.result);
+                if (shouldDeleteMessage) {
+                    await deleteLastMessage();
+                } else {
+                    await streamingProcessor.finalizeIntermediaryMessage(streamingProcessor.messageId, getMessage, { unlockUI: false });
+                }
+                const handoff = streamingProcessor.toolCallHandoff;
+                streamingProcessor = null;
+                // Reuses chunk (c)'s EXISTING resolveClientToolHandoffLoop() unchanged - see
+                // forwardAndPersistSseWithServerTools()'s own doc comment for why this is safe: the
+                // pending tree node was already persisted server-side before this trailer chunk was
+                // ever sent, so there is nothing left for the client to persist, only to resolve.
+                return await resolveClientToolHandoffLoop({ pending_tool_calls: handoff.pending_tool_calls }, generate_data.rawAction);
+            }
+
             const isStreamWithToolCalls = streamingProcessor && Array.isArray(streamingProcessor.toolCalls) && streamingProcessor.toolCalls.length;
             if (canPerformToolCalls && isStreamFinished && isStreamWithToolCalls) {
                 const lastMessage = chat[chat.length - 1];

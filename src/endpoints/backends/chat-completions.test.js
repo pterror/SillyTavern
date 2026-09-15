@@ -2990,6 +2990,169 @@ async function run() {
         assert.equal(data.pending_tool_calls, undefined, 'never a hand-off for a name the server tool registry owns');
     }
 
+    // --- STREAMING tool calling (this task's own scope: extends chunk (b)/(c) to the streaming branch) ---
+
+    // (j) STREAMING, server-native tool call: the fake backend's FIRST response streams `tool_calls`
+    // deltas split across several chunks (including a mid-argument-string split); the server must
+    // accumulate them faithfully, execute the registered tool, persist the round, and re-call the
+    // backend (non-streamingly, per the established round-2+ precedent) for the final reply - which
+    // must reach the client as an ordinary-looking SSE content chunk (no client-side special-casing
+    // needed for this case), AND be persisted on the tree, exactly like the non-streaming happy-path
+    // test (b) above.
+    {
+        const toolBranch = 'stream-tool-branch-server-native';
+        await saveChatToTree(directories, ownerId, toolBranch, [
+            { chat_metadata: {} },
+            { name: 'Tester', is_user: true, mes: 'Hi Rex, streaming server-tool branch.', send_date: 1, extra: {} },
+            { name: 'Rex', is_user: false, mes: 'Hello there, streaming server-tool branch!', send_date: 2, extra: {} },
+        ]);
+        const branchBefore = await loadBranch(directories, ownerId, toolBranch);
+
+        let invokeArgs = null;
+        registerServerTool({
+            id: 'test-tool:stream_get_weather',
+            name: 'get_weather',
+            description: 'Gets the current weather for a city.',
+            parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] },
+            invoke: async (args) => { invokeArgs = args; return `Sunny in ${args.city}`; },
+        });
+
+        let callCount = 0;
+        const requestBodies = [];
+        const fakeBackend = await startFakeBackend((_req, res, body) => {
+            callCount++;
+            requestBodies.push(JSON.parse(body));
+            if (callCount === 1) {
+                // First round: a real SSE stream, tool-call arguments split mid-token across chunks -
+                // '{"ci' + 'ty": "Bo' + 'oktown"}' must reassemble to '{"city": "Booktown"}'.
+                const deltaChunks = [
+                    { choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_stream_1', type: 'function', function: { name: 'get_weather', arguments: '' } }] } }] },
+                    { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '{"ci' } }] } }] },
+                    { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: 'ty": "Bo' } }] } }] },
+                    { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: 'oktown"}' } }] } }] },
+                ];
+                const sseBody = deltaChunks.map(json => `data: ${JSON.stringify(json)}\n\n`).join('') + 'data: [DONE]\n\n';
+                res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+                res.end(sseBody);
+            } else {
+                // Round 2+: the established precedent (point 3) - always a plain, non-streaming JSON
+                // reply, regardless of the original request's own `stream: true`.
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'It is sunny in Booktown, streamed.' } }] }));
+            }
+        });
+        pointBackendAtWithToolsEnabled(fakeBackend.url);
+
+        const app = buildTestApp();
+        let status, bodyText;
+        try {
+            ({ status, bodyText } = await postGenerateStream(app, {
+                owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+                type: 'normal', user_message: 'What is the weather in Booktown, streamed?', stream: true,
+            }));
+        } finally {
+            fakeBackend.server.close();
+            unregisterServerTool('test-tool:stream_get_weather');
+        }
+
+        assert.equal(status, 200);
+        assert.equal(callCount, 2, 'backend was called twice: once streaming tool_calls, once with the final plain-text reply');
+        assert.equal(requestBodies[1].stream, false, 'round 2+ is forced non-streaming regardless of the original request\'s own stream:true');
+        assert.deepEqual(invokeArgs, { city: 'Booktown' }, 'the split-across-chunks arguments string was reassembled correctly before parsing');
+
+        assert.ok(!bodyText.includes('tool_calls'), 'raw tool_calls deltas are never forwarded to the client for this gated case');
+        assert.ok(bodyText.includes('It is sunny in Booktown, streamed.'), 'the final round\'s content reaches the client as an ordinary-looking SSE content chunk');
+        assert.ok(bodyText.trim().endsWith('data: [DONE]'), 'the stream still ends with the normal [DONE] sentinel');
+
+        const branchAfter = await waitFor(async () => {
+            const branch = await loadBranch(directories, ownerId, toolBranch);
+            return branch.messages.length === branchBefore.messages.length + 3 ? branch : null;
+        });
+        const [userMsg, toolMsg, finalMsg] = branchAfter.messages.slice(-3);
+        assert.equal(userMsg.is_user, true);
+        assert.equal(toolMsg.is_system, true);
+        assert.equal(toolMsg.extra.tool_invocations[0].name, 'get_weather');
+        assert.equal(toolMsg.extra.tool_invocations[0].result, 'Sunny in Booktown');
+        assert.equal(finalMsg.mes, 'It is sunny in Booktown, streamed.');
+        assert.equal(finalMsg.name, 'Rex');
+    }
+
+    // (k) STREAMING, client-only tool call: the fake backend streams a `tool_calls` delta for a name
+    // the server does NOT recognize (only advertised via this request's own `client_tools`) - the
+    // server must hand off via the `tool_call_handoff` SSE trailer instead of corrupting the stream,
+    // AND must have already persisted the pending node server-side (a real, addressable `node_id`)
+    // before that trailer is even sent - mirroring non-streaming test (f)'s own invariants.
+    {
+        const toolBranch = 'stream-tool-branch-client-only';
+        await saveChatToTree(directories, ownerId, toolBranch, [
+            { chat_metadata: {} },
+            { name: 'Tester', is_user: true, mes: 'Hi Rex, streaming client-tool branch.', send_date: 1, extra: {} },
+            { name: 'Rex', is_user: false, mes: 'Hello there, streaming client-tool branch!', send_date: 2, extra: {} },
+        ]);
+        const branchBefore = await loadBranch(directories, ownerId, toolBranch);
+
+        let callCount = 0;
+        const fakeBackend = await startFakeBackend((_req, res) => {
+            callCount++;
+            const deltaChunks = [
+                { choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_curtains_stream', type: 'function', function: { name: 'open_curtains', arguments: '' } }] } }] },
+                { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '{"side": "left"}' } }] } }] },
+            ];
+            const sseBody = deltaChunks.map(json => `data: ${JSON.stringify(json)}\n\n`).join('') + 'data: [DONE]\n\n';
+            res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+            res.end(sseBody);
+        });
+        pointBackendAtWithToolsEnabled(fakeBackend.url);
+
+        const app = buildTestApp();
+        let status, bodyText;
+        try {
+            ({ status, bodyText } = await postGenerateStream(app, {
+                owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+                type: 'normal', user_message: 'Open the curtains, streamed.', stream: true,
+                client_tools: [{ type: 'function', function: { name: 'open_curtains', description: 'Opens the curtains.', parameters: { type: 'object', properties: { side: { type: 'string' } } } } }],
+            }));
+        } finally {
+            fakeBackend.server.close();
+        }
+
+        assert.equal(status, 200);
+        assert.equal(callCount, 1, 'the backend is never re-called for a client-only hand-off - there is nothing left for the server to resolve');
+        assert.ok(!bodyText.includes('"tool_calls"'), 'the raw tool_calls delta is never forwarded to the client');
+
+        const handoffLine = bodyText.split('\n').map(line => line.trim()).find(line => line.startsWith('data:') && line.includes('tool_call_handoff'));
+        assert.ok(handoffLine, 'a tool_call_handoff trailer event was sent before the stream closed');
+        const handoffPayload = JSON.parse(handoffLine.slice(5).trim());
+        assert.ok(Array.isArray(handoffPayload.tool_call_handoff.pending_tool_calls) && handoffPayload.tool_call_handoff.pending_tool_calls.length === 1);
+        assert.equal(handoffPayload.tool_call_handoff.pending_tool_calls[0].tool_call_id, 'call_curtains_stream');
+        assert.equal(handoffPayload.tool_call_handoff.pending_tool_calls[0].name, 'open_curtains');
+        assert.deepEqual(handoffPayload.tool_call_handoff.pending_tool_calls[0].arguments, { side: 'left' });
+        assert.equal(handoffPayload.tool_call_handoff.node_id, handoffPayload.tool_call_handoff.pending_tool_calls[0].node_id);
+
+        // The pending node was ALREADY persisted server-side before the trailer was sent - not
+        // something the client still needs to create.
+        const branchAfterHandoff = await loadBranch(directories, ownerId, toolBranch);
+        const toolMsg = branchAfterHandoff.messages[branchAfterHandoff.messages.length - 1];
+        assert.equal(toolMsg.node_id, handoffPayload.tool_call_handoff.node_id);
+        assert.equal(toolMsg.extra.tool_invocations[0].result, null, 'in-flight: not yet resolved by a tool_result follow-up');
+
+        // (k-2) Mixed round-trip: resolve the streaming hand-off via the SAME non-streaming
+        // `type: 'tool_result'` follow-up chunk (b)/(c) already uses - proving persisted shape/replay
+        // is identical regardless of whether the round that CREATED the pending node was itself
+        // streaming or not.
+        const app2 = buildTestApp();
+        const { status: status2, data: data2 } = await postGenerate(app2, {
+            owner_id: ownerId, character_avatar: avatar, node_id: handoffPayload.tool_call_handoff.node_id, type: 'tool_result',
+            tool_results: [{ id: 'call_curtains_stream', result: 'Curtains opened on the left.', error: false }],
+        });
+        assert.equal(status2, 502, 'no fake backend is listening any more for the follow-up round - a real, sane error (connection refused), not a hang or an unhandled crash');
+        assert.ok(data2.error, 'a real error body, not a silent failure');
+
+        const branchAfterFollowUp = await loadBranch(directories, ownerId, toolBranch);
+        const resolvedToolMsg = branchAfterFollowUp.messages.find(m => m.node_id === handoffPayload.tool_call_handoff.node_id);
+        assert.equal(resolvedToolMsg.extra.tool_invocations[0].result, 'Curtains opened on the left.', 'the in-place edit resolving the pending node still happened even though the follow-up round\'s own backend call then failed');
+    }
+
     console.log('chat-completions.test.js: all assertions passed');
 }
 
