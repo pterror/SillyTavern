@@ -3065,6 +3065,7 @@ export async function deleteMessage(id, swipeDeletionIndex = undefined, askConfi
     const startIndex = firstMessageId <= minId ? firstMessageId : null;
     updateViewMessageIds(startIndex);
     if (!persist) {
+        // eslint-disable-next-line no-restricted-syntax -- caller explicitly opted out of the direct ops above.
         saveChatDebounced();
     }
 
@@ -5017,6 +5018,7 @@ class StreamingProcessor {
         if (!isAborted && power_user.auto_swipe && generatedTextFiltered(text)) {
             return await swipe(null, SWIPE_DIRECTION.RIGHT, { source: SWIPE_SOURCE.AUTO_SWIPE, repeated: true, forceMesId: chat.length - 1 });
         }
+        // eslint-disable-next-line no-restricted-syntax -- streaming can't return the persisted node_id in time to stamp the reply clean; see assistant-reply-persist.js's own doc comment.
         await saveChatConditional();
 
         playMessageSound();
@@ -7871,6 +7873,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         }
 
         console.debug('/api/chats/save called by /Generate');
+        // eslint-disable-next-line no-restricted-syntax -- still the sole persister whenever willUseRawAction was false for this generation (type outside the raw-action set, or no owner/character context); the raw-action reply is already stamped clean by this point when it wasn't.
         await saveChatConditional();
         unblockGeneration(type);
         streamingProcessor = null;
@@ -10370,6 +10373,7 @@ export function saveChatDebounced() {
         }
 
         console.debug('Chat save timeout triggered');
+        // eslint-disable-next-line no-restricted-syntax -- this IS saveChatDebounced()'s own definition.
         await saveChatConditional();
         console.debug('Chat saved');
     }, DEFAULT_SAVE_EDIT_TIMEOUT);
@@ -12029,6 +12033,7 @@ async function messageEditDone(div) {
         console.error('Could not save the edit directly, falling back to the whole-chat save:', error);
     }
     if (!editedViaOp) {
+        // eslint-disable-next-line no-restricted-syntax -- fallback after chatOpEdit() above already failed/didn't apply.
         await saveChatConditional();
     }
     showSwipeButtons();
@@ -13177,6 +13182,7 @@ export async function saveMetadata() {
             }
         }
     }
+    // eslint-disable-next-line no-restricted-syntax -- fallback after the direct metadata POST above already failed/didn't apply.
     return await saveChatConditional();
 }
 
@@ -14346,7 +14352,10 @@ export async function createOrEditCharacter(e) {
                 await clearChat();
                 await printMessages();
                 await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, messageId, 'first_message');
-                await saveChatConditional();
+                if (message.node_id) {
+                    chat_metadata._tree_stored = true;
+                }
+                await ensureOpeningRow(0);
             }
         } catch (error) {
             console.log(error);
@@ -15205,6 +15214,7 @@ export async function doNewChat({ deleteCurrentChat = false } = {}) {
 
     // Make it easier to find in backups
     if (deleteCurrentChat) {
+        // eslint-disable-next-line no-restricted-syntax -- new-chat bootstrap after a delete; no direct op applies to "make an empty chat exist."
         await saveChatConditional();
     }
 
@@ -15622,6 +15632,7 @@ function addDebugFunctions() {
             }
         }
         if (!editedViaOp) {
+            // eslint-disable-next-line no-restricted-syntax -- fallback after chatOpEditMany() above already failed/didn't apply.
             await saveChatConditional();
         }
         await reloadCurrentChat();
@@ -16422,6 +16433,7 @@ jQuery(async function () {
         // Exporting is a pure read of the currently-displayed chat - only flush a save first if
         // there's actually something unsaved that the export would otherwise miss.
         if (isChatSaveScheduled()) {
+            // eslint-disable-next-line no-restricted-syntax -- flushes whatever a debounced generic save already had pending; not a new op.
             await saveChatConditional();
         }
         const filename = $(this).closest('.select_chat_block_wrapper').find('.select_chat_block_filename').text();
@@ -16643,6 +16655,7 @@ jQuery(async function () {
                 await chatOpEndPath(chat.length - 1).catch(error =>
                     console.error('Could not cut the conversation back:', error));
             } else {
+                // eslint-disable-next-line no-restricted-syntax -- deleted down to zero messages; no direct op covers "end the path at nothing."
                 await saveChatConditional();
             }
             chatElement.scrollTop(chatElement[0].scrollHeight);
