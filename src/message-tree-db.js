@@ -429,6 +429,17 @@ function setMetadataSync(db, id, metadata) {
     db.run('UPDATE messages SET metadata = @metadata WHERE id = @id', { id, metadata });
 }
 
+/** Pulls the `integrity` slug out of a row's raw metadata JSON, or null if there isn't one yet. */
+function readIntegritySync(row) {
+    if (!row?.metadata) return null;
+    try {
+        const parsed = JSON.parse(row.metadata);
+        return typeof parsed?.integrity === 'string' ? parsed.integrity : null;
+    } catch {
+        return null;
+    }
+}
+
 /** Points a parent at one of its children as the shown continuation. Touches exactly this one row. */
 function setDefaultChildSync(db, parentId, childId) {
     if (!parentId || !childId) return false;
@@ -1272,15 +1283,28 @@ export async function addAlternatives(directories, ownerId, siblingNodeId, conte
     return { ok: true, node_ids: nodeIds, added, total };
 }
 
-/** Replaces a chat's metadata and rotates its integrity slug. */
-export async function setChatMetadata(directories, ownerId, chatName, metadata) {
+/**
+ * Replaces a chat's metadata and rotates its integrity slug.
+ * If `expectedIntegrity` is given, the write is rejected with a conflict when the node's current
+ * `integrity` doesn't match - the same optional, per-write precondition `/api/settings/save-partial`
+ * applies to its `expectedHashes`. Omitting it (older client, or a node with no integrity yet) allows
+ * the write unconditionally.
+ */
+export async function setChatMetadata(directories, ownerId, chatName, metadata, expectedIntegrity) {
     const entry = await getEntry(directories);
     if (!entry) return { ok: false, reason: 'unavailable' };
 
-    const node = entry.db.get('SELECT id FROM messages WHERE id = @id AND owner_id = @ownerId',
+    const node = entry.db.get('SELECT id, metadata FROM messages WHERE id = @id AND owner_id = @ownerId',
         { id: chatName, ownerId })
         ?? getLabeledNodeSync(entry.db, ownerId, chatName);
     if (!node) return { ok: false, reason: 'unknown chat' };
+
+    if (typeof expectedIntegrity === 'string' && expectedIntegrity) {
+        const currentIntegrity = readIntegritySync(node);
+        if (currentIntegrity !== expectedIntegrity) {
+            return { ok: false, reason: 'conflict' };
+        }
+    }
 
     const meta = { ...(metadata || {}) };
     const integrity = crypto.randomUUID();
@@ -1460,14 +1484,25 @@ export async function listLabels(directories, ownerId) {
     });
 }
 
-/** Replaces the metadata stored on a node, node-addressed. */
-export async function setNodeMetadata(directories, ownerId, nodeId, metadata) {
+/**
+ * Replaces the metadata stored on a node, node-addressed.
+ * If `expectedIntegrity` is given, the write is rejected with a conflict when the node's current
+ * `integrity` doesn't match - see `setChatMetadata()` for the same optional precondition.
+ */
+export async function setNodeMetadata(directories, ownerId, nodeId, metadata, expectedIntegrity) {
     const entry = await getEntry(directories);
     if (!entry) return { ok: false, reason: 'unavailable' };
 
-    const node = entry.db.get('SELECT id FROM messages WHERE id = @id AND owner_id = @ownerId',
+    const node = entry.db.get('SELECT id, metadata FROM messages WHERE id = @id AND owner_id = @ownerId',
         { id: nodeId, ownerId });
     if (!node) return { ok: false, reason: 'unknown node' };
+
+    if (typeof expectedIntegrity === 'string' && expectedIntegrity) {
+        const currentIntegrity = readIntegritySync(node);
+        if (currentIntegrity !== expectedIntegrity) {
+            return { ok: false, reason: 'conflict' };
+        }
+    }
 
     const meta = { ...(metadata || {}) };
     const integrity = crypto.randomUUID();
