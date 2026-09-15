@@ -1,5 +1,5 @@
 /* eslint-disable dot-notation */
-import { createHmac } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
 import process from 'node:process';
 import util from 'node:util';
 import { Readable } from 'node:stream';
@@ -78,7 +78,7 @@ import {
 import { getVertexAIAuth, getProjectIdFromServiceAccount } from '../google.js';
 import { getCookieSecret } from '../../users.js';
 import { fetchGoogleModels, GoogleModelsHttpError } from './google-models.js';
-import { encodeContent, encodeIndexFrame, encodeReasoningFrame, encodeAssistantNodeIdFrame, encodeToolCallDeltaFrame, encodeControlFrame } from './llamacpp-compact-stream.js';
+import { encodeContent, encodeIndexFrame, encodeReasoningFrame, encodeAssistantNodeIdFrame, encodeToolCallDeltaFrame, encodeControlFrame, createGenerationRecord, withGenerationBuffer, handleGenerationResume } from './llamacpp-compact-stream.js';
 
 const API_OPENAI = 'https://api.openai.com/v1';
 const API_CLAUDE = 'https://api.anthropic.com/v1';
@@ -2963,8 +2963,10 @@ async function forwardAndPersistCompactStream(fetchResponse, response, persist, 
     // encoder functions from llamacpp-compact-stream.js), so there is exactly one wire format and one
     // header value across every raw-action streaming path.
     response.setHeader('X-ST-Stream-Format', 'compact-v1');
+    const generationId = randomUUID();
+    response.setHeader('X-Generation-Id', generationId);
 
-    const writer = createChatCompactStreamWriter(response);
+    const writer = withGenerationBuffer(createChatCompactStreamWriter(response), createGenerationRecord(generationId));
     let sseBuffer = '';
     let accumulatedText = '';
     let lastIndex = 0;
@@ -3208,8 +3210,10 @@ async function forwardAndPersistCompactStreamWithServerTools(fetchResponse, resp
     response.statusCode = fetchResponse.status;
     response.statusMessage = fetchResponse.statusText;
     response.setHeader('X-ST-Stream-Format', 'compact-v1');
+    const generationId = randomUUID();
+    response.setHeader('X-Generation-Id', generationId);
 
-    const writer = createChatCompactStreamWriter(response);
+    const writer = withGenerationBuffer(createChatCompactStreamWriter(response), createGenerationRecord(generationId));
 
     let buffer = '';
     let text = '';
@@ -4916,6 +4920,10 @@ multimodalModels.post('/workers_ai', async (req, res) => {
 });
 
 router.use('/multimodal-models', multimodalModels);
+
+// See text-completions.js's identical route for the shared implementation/rationale - both routers
+// mount it since a generation id doesn't identify which backend produced it.
+router.get('/generate/resume/:id', handleGenerationResume);
 
 router.post('/process', async function (request, response) {
     try {

@@ -15,8 +15,8 @@ import {
 } from '../../constants.js';
 import { forwardFetchResponse, trimV1, getConfigValue } from '../../util.js';
 import { setAdditionalHeaders } from '../../additional-headers.js';
-import { createHash } from 'node:crypto';
-import { pipeLlamaCppCompactStream, getLlamaCppStreamMeta, createBackpressureWriter, encodeContent, encodeIndexFrame, encodeReasoningFrame, encodeAssistantNodeIdFrame, encodeProbabilitiesFrame } from './llamacpp-compact-stream.js';
+import { createHash, randomUUID } from 'node:crypto';
+import { pipeLlamaCppCompactStream, getLlamaCppStreamMeta, createBackpressureWriter, createGenerationRecord, withGenerationBuffer, handleGenerationResume, encodeContent, encodeIndexFrame, encodeReasoningFrame, encodeAssistantNodeIdFrame, encodeProbabilitiesFrame } from './llamacpp-compact-stream.js';
 import { resolveTextGenBackend, resolveServerUrl } from '../../textgen-backend-resolve.js';
 import { resolveConnectionProfile } from '../../connection-profile-resolve.js';
 import { mergeTextGenPreset } from '../../textgen-preset-merge.js';
@@ -60,7 +60,9 @@ async function parseOllamaStream(jsonStream, request, response, persist) {
         }
 
         response.setHeader('X-ST-Stream-Format', 'compact-v1');
-        const writer = createBackpressureWriter(response);
+        const generationId = randomUUID();
+        response.setHeader('X-Generation-Id', generationId);
+        const writer = withGenerationBuffer(createBackpressureWriter(response), createGenerationRecord(generationId));
 
         let partialData = '';
         let accumulatedText = '';
@@ -161,6 +163,8 @@ export async function forwardAndPersistCompactStream(fetchResponse, response, pe
     response.statusCode = statusCode;
     response.statusMessage = fetchResponse.statusText;
     response.setHeader('X-ST-Stream-Format', 'compact-v1');
+    const generationId = randomUUID();
+    response.setHeader('X-Generation-Id', generationId);
 
     let sseBuffer = '';
     let text = '';
@@ -169,8 +173,9 @@ export async function forwardAndPersistCompactStream(fetchResponse, response, pe
     // Same backpressure-coalescing writer pipeLlamaCppCompactStream() uses - its own `ended` flag
     // (set by end(), checked by every subsequent flush()) is what makes end() and write() both safe
     // to call after a client disconnect without an explicit response.writableEnded check at each
-    // call site here.
-    const writer = createBackpressureWriter(response);
+    // call site here. Wrapped so every byte is also retained for a resume (see
+    // llamacpp-compact-stream.js's withGenerationBuffer()/handleGenerationResume()).
+    const writer = withGenerationBuffer(createBackpressureWriter(response), createGenerationRecord(generationId));
     const safeWrite = (chunk) => writer.write(chunk);
 
     const onSocketClose = () => {
@@ -1182,6 +1187,15 @@ router.get('/generate/meta/:id', function (request, response) {
 
     return response.json(meta);
 });
+
+/**
+ * Resumes a dropped raw-action compact stream from a client-supplied byte offset (`?from=`) - see
+ * llamacpp-compact-stream.js's handleGenerationResume() for the full behavior/response shapes.
+ * Mounted here AND on chat-completions.js's router (both delegate to the same shared generation
+ * buffer, keyed by `X-Generation-Id`, regardless of which backend produced it), so the client
+ * doesn't need to know which backend originated a given generation id to resume it.
+ */
+router.get('/generate/resume/:id', handleGenerationResume);
 
 const ollama = express.Router();
 
