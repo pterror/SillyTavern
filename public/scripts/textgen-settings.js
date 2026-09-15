@@ -1314,8 +1314,10 @@ export async function generateTextGenWithStreaming(generate_data, signal) {
         throw new Error(`Got response status ${response.status}`);
     }
 
-    // Compact wire format used only for the llama.cpp raw-completions streaming path - see
-    // llamacpp-compact-stream.js. Every other backend keeps using the SSE-JSON path below, unchanged.
+    // Compact wire format - originally llama.cpp-only, now also used by the general (non-Ollama)
+    // text-completion streaming path (forwardAndPersistCompactStream() in text-completions.js) - both
+    // set the same header/decoder since the decoded event shape is identical either way. See
+    // llamacpp-compact-stream.js for the wire format itself.
     if (response.headers.get('X-ST-Stream-Format') === 'compact-v1') {
         return async function* streamData() {
             const reader = response.body.getReader();
@@ -1356,6 +1358,12 @@ export async function generateTextGenWithStreaming(generate_data, signal) {
                         pendingProbabilities = event.probabilities;
                     } else if ('content' in event) {
                         yield* applyContent(event);
+                    } else if ('reasoning' in event) {
+                        state.reasoning += event.reasoning;
+                        yield { text, swipes, logprobs, toolCalls, state };
+                    } else if ('assistantNodeId' in event) {
+                        state.assistantNodeId = event.assistantNodeId;
+                        yield { text, swipes, logprobs, toolCalls, state };
                     }
                 }
             }
