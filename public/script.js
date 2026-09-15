@@ -6099,6 +6099,22 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                 streaming: main_api === 'kobold'
                     ? (kai_settings.streaming_kobold && kai_flags.can_use_streaming && type !== 'quiet')
                     : undefined,
+                // Kobold-only, same root cause as `streaming` above but a SIMPLER real condition -
+                // verified by reading getKoboldGenerationData() (kai-settings.js line ~187) and its
+                // server-side port createKoboldGenerationData() (src/kobold-generation-data.js line
+                // ~112): both compute `can_abort` as JUST `kai_flags.can_use_streaming` alone - no
+                // `kai_settings.streaming_kobold` term, no `type !== 'quiet'` term (unlike `streaming`
+                // above, which genuinely needs all three). Without this, the raw-action payload never
+                // set `.can_abort`, and built.params.can_abort (from createKoboldGenerationData(), see
+                // the route's own `koboldFlags` comment) is unconditionally `false` server-side for the
+                // same reason `streaming` was: buildRawActionKoboldRequest() never passes a real
+                // `koboldFlags` value through, so it defaults to `{}`. That falsy `can_abort` silently
+                // disables the socket-close abort-on-disconnect call in kobold.js's `/generate` route
+                // (`if (request.body.can_abort && !response_generate.writableEnded) { ... }`), so a
+                // raw-action stream whose client disconnects mid-generation would never tell the real
+                // Kobold backend to stop. Left `undefined` for 'novel'/'textgenerationwebui' for the
+                // same reason as `streaming` above - out of scope here.
+                can_abort: main_api === 'kobold' ? kai_flags.can_use_streaming : undefined,
             };
         }
         // else: no resolvable branch_name (or other precondition) - fall through to the legacy

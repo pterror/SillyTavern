@@ -534,6 +534,102 @@ async function run() {
         assert.equal(branchAfter.messages.length, messageCountBefore, 'no persistence was attempted for a non-raw-action request');
     }
 
+    // (f) can_abort raw-action fix: mirrors test (b)'s streaming fix proof, but for the related
+    // `can_abort` gap flagged (not fixed) in 5537311f9 - see that commit's own message and this
+    // fix's own comments in kobold.js/public/script.js. `can_abort` has a SIMPLER real condition than
+    // `streaming` (verified by reading public/scripts/kai-settings.js line ~187 and
+    // src/kobold-generation-data.js line ~112: JUST `kai_flags.can_use_streaming` /
+    // `koboldFlags.can_use_streaming` alone, no extra terms) but the SAME root cause and SAME
+    // capture-before-reassignment-then-remerge fix shape.
+    //
+    // This is a REAL end-to-end proof, not a superficial "doesn't throw" check: it drives an actual
+    // client fetch() against the real Express route (not a call to buildRawActionKoboldRequest() in
+    // isolation, and not a mocked request.socket), reads one real SSE chunk from a real in-progress
+    // fake-backend stream to confirm generation is genuinely underway, then calls the client's own
+    // AbortController.abort() - which closes the real TCP socket between the test's fetch() and the
+    // route's server, firing the route's REAL `request.socket.on('close', ...)` handler (kobold.js,
+    // unchanged by this fix) under completely real conditions. That handler reads
+    // `request.body.can_abort` - the exact field this fix threads through - and, if truthy, issues a
+    // real HTTP POST to the fake backend's `/extra/abort` endpoint. The test's fake backend records
+    // whether that real call arrives. Before this fix, `request.body.can_abort` was unconditionally
+    // `false` for every raw-action request (built.params.can_abort, from createKoboldGenerationData(),
+    // defaults to `false` since buildRawActionKoboldRequest() never supplies a real `koboldFlags`), so
+    // this exact test would have failed (the abort call would never fire) prior to the fix.
+    {
+        const settings = buildSettingsFixture();
+        settings.kai_settings.streaming_kobold = true;
+        let sawAbortCall = false;
+        let releaseStream = () => { };
+        const streamGate = new Promise(resolve => { releaseStream = resolve; });
+        const fakeBackend = await startFakeBackend((req, res) => {
+            if (req.url === '/extra/abort') {
+                sawAbortCall = true;
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: true }));
+                return;
+            }
+            if (req.url === '/extra/generate/stream') {
+                res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+                res.write(`data: ${JSON.stringify({ token: 'Rex ' })}\n\n`);
+                // Deliberately NOT res.end()'d yet - simulates a real in-progress generation, so the
+                // test has a real window to disconnect the CLIENT side before the upstream response
+                // completes on its own (which would otherwise race the abort and make this test flaky
+                // / prove nothing). Released (and the fake backend's own socket closed) at the very
+                // end of this block, after the abort assertion.
+                streamGate.then(() => res.end('data: [DONE]\n\n'));
+                return;
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ results: [{ text: 'Should not be reached in this test.' }] }));
+        });
+        settings.kai_settings.api_server = fakeBackend.url;
+        writeAllSettings(directories, settings);
+
+        const abortBranch = 'kobold-abort-on-disconnect-chat';
+        await saveChatToTree(directories, ownerId, abortBranch, [
+            { chat_metadata: {} },
+            { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
+        ]);
+
+        const app = buildTestApp();
+        const server = app.listen(0, '127.0.0.1');
+        await new Promise(resolve => server.once('listening', resolve));
+        const port = server.address().port;
+
+        const controller = new AbortController();
+        try {
+            const res = await fetch(`http://127.0.0.1:${port}/generate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    owner_id: ownerId, character_avatar: avatar, branch_name: abortBranch,
+                    type: 'normal', user_message: 'Abort me, Rex.',
+                    streaming: true, can_abort: true,
+                }),
+                signal: controller.signal,
+            });
+
+            // Read one real chunk before disconnecting, to confirm the stream is genuinely underway
+            // (not aborting before the route has even started forwarding) - proves this exercises the
+            // real in-progress-generation disconnect case the abort handler exists for.
+            const reader = res.body.getReader();
+            const { value: firstChunk } = await reader.read();
+            assert.ok(firstChunk && firstChunk.length > 0, 'a real SSE chunk was received before the client disconnects');
+
+            controller.abort();
+            // Wait for the real request.socket 'close' handler (kobold.js) to run and fire its real
+            // /extra/abort call to the fake backend.
+            await waitFor(() => sawAbortCall || null);
+        } finally {
+            releaseStream();
+            fakeBackend.server.close();
+            server.closeAllConnections?.();
+            await new Promise(resolve => server.close(resolve));
+        }
+
+        assert.equal(sawAbortCall, true, 'the client disconnecting mid-stream triggered a real POST to the Kobold backend\'s /extra/abort endpoint - proving can_abort correctly reached `true` end-to-end for a raw-action request, not silently `false` as it was before this fix');
+    }
+
     console.log('kobold.test.js: all assertions passed');
 }
 
