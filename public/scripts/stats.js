@@ -221,18 +221,6 @@ function calculateGenTime(gen_started, gen_finished) {
 }
 
 /**
- * Returns the count of words in the given string.
- * A word is a sequence of alphanumeric characters (including underscore).
- *
- * @param {string} str - The string to count words in.
- * @returns {number} - Number of words.
- */
-function countWords(str) {
-    const match = str.match(/\b\w+\b/g);
-    return match ? match.length : 0;
-}
-
-/**
  * Handles stat processing for messages.
  *
  * @param {Object} line - Object containing message data.
@@ -253,33 +241,37 @@ async function statMesProcess(line, type, character, oldMessage) {
 
     // Deltas only - no GET-the-whole-blob-first needed, the server already holds the
     // authoritative running totals in memory and applies these in place. Every path below adds
-    // to exactly one of these fields; only one of user_word_count/non_user_word_count and
-    // user_msg_count/non_user_msg_count/total_swipe_count actually moves per call.
+    // to exactly one of these fields; only one of user_msg_count/non_user_msg_count/
+    // total_swipe_count actually moves per call. Word counts are NOT computed here - the raw
+    // text is sent in `wordCount` below and the server derives the word-count delta itself (see
+    // countWordsInString() in src/endpoints/stats.js), since the server already owns the final
+    // persisted message text and re-deriving the count client-side would just be duplicating
+    // work the server can do authoritatively.
+    //
+    // gen-time IS still computed here from the client-recorded gen_started/gen_finished
+    // timestamps - this genuinely differs from the word-count/dates cases: those client values
+    // were pure re-derivations of data the server already has/owns, but gen_started/gen_finished
+    // mark when THIS CLIENT dispatched its request and when it finished receiving the response,
+    // which is the accurate end-to-end latency from the user's perspective. A server-side timestamp
+    // of only its own backend call (even where one exists, e.g. some raw-action generation paths)
+    // would be a narrower, less meaningful measurement - it would exclude network/queueing time -
+    // not a more correct one, so this is intentionally left client-computed.
     const deltas = {
         total_gen_time: calculateGenTime(line.gen_started, line.gen_finished),
-        user_word_count: 0,
-        non_user_word_count: 0,
         user_msg_count: 0,
         non_user_msg_count: 0,
         total_swipe_count: 0,
     };
 
     const isEdit = type === 'append' || type === 'continue' || type === 'appendFinal';
-    const oldLen = isEdit ? oldMessage.split(' ').length : 0;
 
     if (line.is_user) {
         if (!isEdit) {
             deltas.user_msg_count++;
-            deltas.user_word_count += countWords(line.mes);
-        } else {
-            deltas.user_word_count += countWords(line.mes) - oldLen;
         }
     } else {
         if (!isEdit) {
             deltas.non_user_msg_count++;
-            deltas.non_user_word_count += countWords(line.mes);
-        } else {
-            deltas.non_user_word_count += countWords(line.mes) - oldLen;
         }
     }
 
@@ -287,8 +279,20 @@ async function statMesProcess(line, type, character, oldMessage) {
         deltas.total_swipe_count++;
     }
 
-    const now = Date.now();
-    const stat = await incrementStats(character.avatar, deltas, { last_chat: now, first_chat_candidate: now });
+    // Raw text (and, for edits, the prior text) for the server to derive the word-count delta
+    // from itself - no client-side word counting. `dates` are no longer sent at all: the server
+    // now stamps date_last_chat/date_first_chat from its own clock (see /api/stats/increment),
+    // the same precedent already used for date_last_chat elsewhere (bumpCharacterDateLastChat()
+    // in src/character-metadata-db.js), so a spoofed/incorrect client clock can no longer affect
+    // stored stats.
+    const wordCount = {
+        is_user: !!line.is_user,
+        text: line.mes,
+        is_edit: isEdit,
+        old_text: isEdit ? oldMessage : undefined,
+    };
+
+    const stat = await incrementStats(character.avatar, deltas, wordCount);
     if (stat) {
         charStats[character.avatar] = stat;
     }
@@ -296,18 +300,20 @@ async function statMesProcess(line, type, character, oldMessage) {
 
 /**
  * Sends one character's stat deltas to the server in a single request and returns the
- * server's own confirmed resulting stat object (or null on failure).
+ * server's own confirmed resulting stat object (or null on failure). Word-count deltas are
+ * derived server-side from `wordCount`'s raw text (see /api/stats/increment) rather than being
+ * pre-computed here; `date_last_chat`/`date_first_chat` are stamped from the server's own clock.
  * @param {string} avatar
  * @param {Object} deltas
- * @param {{last_chat: number, first_chat_candidate: number}} dates
+ * @param {{is_user: boolean, text: string, is_edit: boolean, old_text: (string|undefined)}} wordCount
  * @returns {Promise<Object|null>}
  */
-async function incrementStats(avatar, deltas, dates) {
+async function incrementStats(avatar, deltas, wordCount) {
     try {
         const response = await fetch('/api/stats/increment', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ avatar, deltas, dates }),
+            body: JSON.stringify({ avatar, deltas, wordCount }),
         });
         if (!response.ok) {
             console.error('Failed to increment stats', response.status);
