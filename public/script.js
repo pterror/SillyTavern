@@ -11845,12 +11845,8 @@ function messageEditAuto(div) {
     ));
     mesBlock.find('.mes_bias').empty();
     mesBlock.find('.mes_bias').append(messageFormatting(bias, '', false, false, -1, {}, false));
-    if (chat_metadata?._tree_stored) {
-        chatOpEdit(this_edit_mes_id).catch(error =>
-            console.error('Could not save the edited message:', error));
-    } else {
-        saveChatDebounced();
-    }
+    chatOpEdit(this_edit_mes_id).catch(error =>
+        console.error('Could not save the edited message:', error));
 }
 
 /**
@@ -12018,18 +12014,8 @@ async function messageEditMove(sourceId, targetId) {
     targetMessageDiv.attr('mesid', sourceId);
     sourceMessageDiv.attr('mesid', targetId);
 
-    // Reordering two adjacent tree nodes is a real structural operation (fused degraft+graft) - the
-    // diff engine can't see it at all, since both messages keep their own unchanged node_id. The
-    // tree-stored op already performs the local chat[] swap itself (it's still needed for display,
-    // only the persistence mechanism changes) - don't also swap here, or it'd swap right back.
-    if (chat_metadata?._tree_stored) {
-        await chatOpSwapAdjacent(sourceId, targetId).catch(error =>
-            console.error('Could not save the reordered messages:', error));
-    } else {
-        // Swap chat array entries.
-        [chat[sourceId], chat[targetId]] = [chat[targetId], chat[sourceId]];
-        await saveChatConditional();
-    }
+    await chatOpSwapAdjacent(sourceId, targetId).catch(error =>
+        console.error('Could not save the reordered messages:', error));
 
     // Update edited message id
     if (this_edit_mes_id === sourceId) {
@@ -16710,7 +16696,7 @@ jQuery(async function () {
             chat.length = this_del_mes;
             chat_metadata.tainted = true;
             // Removed messages keep their rows and continuations; selecting one again brings the whole thing back.
-            if (chat_metadata?._tree_stored && chat.length > 0) {
+            if (chat.length > 0) {
                 await chatOpEndPath(chat.length - 1).catch(error =>
                     console.error('Could not cut the conversation back:', error));
             } else {
@@ -17041,12 +17027,8 @@ jQuery(async function () {
         this_edit_mes_element.after(newMessageElement);
 
         updateViewMessageIds();
-        if (chat_metadata?._tree_stored) {
-            await chatOpGraft(targetId).catch(error =>
-                console.error('Could not save the copied message:', error));
-        } else {
-            await saveChatConditional();
-        }
+        await chatOpGraft(targetId).catch(error =>
+            console.error('Could not save the copied message:', error));
         chatElement[0].scrollTop = oldScroll;
         showSwipeButtons();
     });
