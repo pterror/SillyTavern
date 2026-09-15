@@ -165,25 +165,15 @@ function setContextSizePreview() {
     }
 }
 
-export async function generateHorde(prompt, params, signal, reportProgress) {
-    validateHordeModel();
-    delete params.prompt;
-
-    // No idea what these do
-    params.n = 1;
-    params.frmtadsnsp = false;
-    params.frmtrmblln = false;
-    params.frmtrmspch = false;
-    params.frmttriminc = false;
-
-    const payload = {
-        'prompt': prompt,
-        'params': params,
-        'trusted_workers': horde_settings.trusted_workers_only,
-        //"slow_workers": false,
-        'models': horde_settings.models,
-    };
-
+/**
+ * Submits one job to `/api/horde/generate-text` and returns its parsed response, or throws (with a
+ * user-facing toastr already shown) on a transport error or a real Horde-reported submission error.
+ * Factored out of generateHorde() so generateHordeRawAction() below can reuse the exact same
+ * submission/error-handling behavior without duplicating it.
+ * @param {object} payload The real `/api/horde/generate-text` request body.
+ * @returns {Promise<object>} The parsed, non-error response JSON (carries at least `.id`).
+ */
+async function submitHordeJob(payload) {
     const response = await fetch('/api/horde/generate-text', {
         method: 'POST',
         headers: getRequestHeaders(),
@@ -203,7 +193,24 @@ export async function generateHorde(prompt, params, signal, reportProgress) {
         throw new Error(`Horde generation failed: ${reason}`);
     }
 
-    const taskId = responseJson.id;
+    return responseJson;
+}
+
+/**
+ * Polls `/api/horde/task-status` for `taskId` until it's done, faulted, unsatisfiable, or times out
+ * (MAX_RETRIES * CHECK_INTERVAL ~= 20 minutes) - checking `signal.aborted` every iteration so a real
+ * disconnect/stop calls `cancelTask()` for real. Factored out of generateHorde() so
+ * generateHordeRawAction() below (the real raw-action cutover - see
+ * src/endpoints/horde.js's own `buildRawActionHordePayload()` doc comment for the full
+ * architecture this is part of) can reuse the EXACT same real polling/progress-reporting/
+ * abort-cancellation behavior, rather than duplicating it - this loop is genuinely
+ * backend-submission-shape-agnostic, it only ever needs the task id.
+ * @param {string} taskId
+ * @param {AbortSignal} signal
+ * @param {boolean} reportProgress
+ * @returns {Promise<{text: string, workerName: string}>}
+ */
+async function pollHordeTask(taskId, signal, reportProgress) {
     let queue_position_first = null;
     console.log(`Horde task id = ${taskId}`);
 
@@ -246,6 +253,141 @@ export async function generateHorde(prompt, params, signal, reportProgress) {
 
     await callGenericPopup(t`Horde request timed out. Try again`, POPUP_TYPE.TEXT);
     throw new Error('Horde timeout');
+}
+
+export async function generateHorde(prompt, params, signal, reportProgress) {
+    validateHordeModel();
+    delete params.prompt;
+
+    // No idea what these do
+    params.n = 1;
+    params.frmtadsnsp = false;
+    params.frmtrmblln = false;
+    params.frmtrmspch = false;
+    params.frmttriminc = false;
+
+    const payload = {
+        'prompt': prompt,
+        'params': params,
+        'trusted_workers': horde_settings.trusted_workers_only,
+        //"slow_workers": false,
+        'models': horde_settings.models,
+    };
+
+    const responseJson = await submitHordeJob(payload);
+    return await pollHordeTask(responseJson.id, signal, reportProgress);
+}
+
+/**
+ * Real raw-action version of generateHorde() - see src/endpoints/horde.js's own
+ * `buildRawActionHordePayload()` doc comment for the full architecture investigation this required.
+ * Unlike every other raw-action-eligible backend (kobold/novel/textgenerationwebui), Horde's
+ * generation genuinely cannot collapse into one blocking server request - pollHordeTask() above
+ * already proves this: a real, unavoidable client-side wait of up to 20 minutes, with live
+ * signal-driven abort/cancellation only the client can perform. So raw action here only changes WHAT
+ * gets submitted (the server resolves/assembles the whole prompt+params itself, from the real
+ * character/chat/branch identity - `rawAction`'s own character_avatar/group_id/owner_id/branch_name/
+ * node_id/type/is_impersonate/is_continue/is_swipe/user_message fields, the EXACT same shape
+ * public/script.js's own `rawActionGenerateData` already builds for kobold/novel/textgenerationwebui)
+ * - the submit-then-poll-then-report mechanics are UNCHANGED, reusing submitHordeJob()/
+ * pollHordeTask() rather than duplicating them.
+ *
+ * Persistence: the user's raw action is persisted SERVER-SIDE, immediately, by the real
+ * `/api/horde/generate-text` route itself (see that route's own doc comment) - matching every other
+ * raw-action backend's "persist regardless of outcome" principle, since a Horde job can time out/
+ * fault/get aborted after up to 20 minutes with nothing else to fall back on. The ASSISTANT's reply,
+ * though, can only be known once THIS function's own pollHordeTask() call resolves - so it's
+ * persisted here, client-side, via persistHordeRawActionReply() below, once the real final text is
+ * in hand. `responseJson.raw_action_persist` (attached by the route only when persistence should
+ * happen - `null`/absent for impersonate/quiet types or the continue/user-text-conflict edge case) is
+ * exactly what that needs; nothing is persisted when it's absent.
+ * @param {object} rawAction Same shape as public/script.js's own `rawActionGenerateData`.
+ * @param {AbortSignal} signal
+ * @param {boolean} reportProgress
+ * @returns {Promise<{text: string, workerName: string}>}
+ */
+export async function generateHordeRawAction(rawAction, signal, reportProgress) {
+    validateHordeModel();
+
+    const payload = {
+        ...rawAction,
+        trusted_workers: horde_settings.trusted_workers_only,
+        models: horde_settings.models,
+    };
+
+    const responseJson = await submitHordeJob(payload);
+    const result = await pollHordeTask(responseJson.id, signal, reportProgress);
+
+    if (responseJson.raw_action_persist && result.text) {
+        await persistHordeRawActionReply(rawAction, responseJson.raw_action_persist, result.text);
+    }
+
+    return result;
+}
+
+/**
+ * Persists a raw-action Horde reply onto the message tree, once pollHordeTask() has resolved with
+ * the real final text - see generateHordeRawAction()'s own doc comment for why this can't happen
+ * server-side. Deliberately reuses the EXISTING, already-idempotent-by-content-identity generic
+ * tree-mutation endpoints (src/endpoints/chats.js's `/message/append`, `/message/alternative` +
+ * `/message/select`, `/message/edit`) instead of a new dedicated persistence endpoint - the client's
+ * own natural post-generation save flow (public/scripts/chat-store.js) already calls these same
+ * endpoints for every other backend's own reply, so this is not new surface area, just an earlier,
+ * explicit, guaranteed call to it (rather than depending on that flow running - a raw-action
+ * generation bypasses the local, in-memory `chat` array's own bookkeeping, so chat-store.js's own
+ * `chatOpAppend()`/`chatOpAddAlternative()` - which index by that array, not a raw node id - are not
+ * usable here directly). Mirrors src/assistant-reply-persist.js's `persistAssistantReply()` exact
+ * three-mode branching (continue/swipe/plain), verbatim, just issued as three real HTTP calls instead
+ * of three real message-tree-db.js calls.
+ * @param {object} rawAction The same object passed to generateHordeRawAction() - only
+ * `character_avatar`/`group_id` are read here (to address the same owner the server itself used).
+ * @param {object} persist `responseJson.raw_action_persist` - `{anchorNodeId, name2, isSwipe, isContinue, anchorContent}`.
+ * @param {string} generatedText The real, final generated text.
+ * @returns {Promise<void>}
+ */
+async function persistHordeRawActionReply(rawAction, persist, generatedText) {
+    const owner = rawAction.group_id ? { group_id: rawAction.group_id } : { avatar_url: rawAction.character_avatar };
+    const replyContent = { name: persist.name2, is_user: false, mes: generatedText, extra: {}, send_date: Date.now() };
+
+    try {
+        if (persist.isContinue) {
+            if (!persist.anchorContent) {
+                console.error('Failed to persist Horde raw-action continue edit: no anchor content resolved.');
+                return;
+            }
+            const oldText = typeof persist.anchorContent.mes === 'string' ? persist.anchorContent.mes : '';
+            await fetch('/api/chats/message/edit', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ ...owner, node_id: persist.anchorNodeId, content: { ...persist.anchorContent, mes: oldText + generatedText } }),
+            });
+        } else if (persist.isSwipe) {
+            const response = await fetch('/api/chats/message/alternative', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ ...owner, sibling_node_id: persist.anchorNodeId, contents: [replyContent] }),
+            });
+            const created = await response.json().catch(() => ({}));
+            const newNodeId = created?.node_ids?.[0];
+            if (newNodeId) {
+                await fetch('/api/chats/message/select', {
+                    method: 'POST',
+                    headers: getRequestHeaders(),
+                    body: JSON.stringify({ ...owner, node_id: newNodeId }),
+                });
+            } else {
+                console.error('Failed to select the new Horde raw-action swipe alternative as current.');
+            }
+        } else {
+            await fetch('/api/chats/message/append', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ ...owner, after_node_id: persist.anchorNodeId, messages: [replyContent] }),
+            });
+        }
+    } catch (error) {
+        console.error('Failed to persist Horde raw-action assistant reply onto the tree:', error);
+    }
 }
 
 

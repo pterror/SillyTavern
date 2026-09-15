@@ -57,12 +57,19 @@ export const router = express.Router();
  * @param {boolean} [params.isContinue]
  * @param {boolean} [params.isSwipe]
  * @param {string} [params.userMessageText]
+ * @param {object} [params.macroExtras] Forwarded verbatim to resolveTextCompletionGenerationInput()'s
+ * own `macroExtras` (shallow-merged over its resolved input object, caller wins). Added so
+ * src/endpoints/horde.js's own raw-action /generate-text branch can reuse this SAME builder for
+ * Horde (main_api === 'koboldhorde') by passing `{ isHorde: true }` - createKoboldGenerationData()'s
+ * real `isHorde` flag (src/kobold-generation-data.js) already produces the correct payload shape for
+ * Horde too, it was just never threaded through here. Defaults to `{}` - existing callers/tests
+ * (which never pass this) keep their exact prior behavior.
  * @returns {Promise<{ params: object, anchorNodeId: string|null, anchorContent: object|null, name1: string, name2: string }>}
  */
 export async function buildRawActionKoboldRequest(directories, {
     request, characterAvatar, groupId, ownerId, branchName, nodeId,
     type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText,
-    tokenizerOptions = {},
+    tokenizerOptions = {}, macroExtras = {},
 } = {}) {
     if (!ownerId) {
         throw new Error('owner_id is required');
@@ -115,7 +122,7 @@ export async function buildRawActionKoboldRequest(directories, {
     const orchestratorInput = await resolveTextCompletionGenerationInput(directories, {
         avatar: characterAvatar, groupId, mainApi: 'kobold', ownerId, branchName, nodeId,
         type, isImpersonate, isContinue, isSwipe, userMessageText,
-        countTokens, encodeTokens,
+        countTokens, encodeTokens, macroExtras,
     });
 
     if ((isContinue || isSwipe) && orchestratorInput.chat.length === 0) {
