@@ -4640,16 +4640,14 @@ async function addSwipeCallback(args, value) {
     const newSwipeId = swipes.length - 1;
 
     // Recorded before the switch check below, since selecting onto it needs the row's node_id already set.
-    if (chat_metadata?._tree_stored) {
-        const createdId = await chatOpAddAlternative(lastMessageId, value).catch(error => {
-            console.error('Could not save the new swipe as an alternative:', error);
-            return null;
-        });
-        if (createdId) {
-            const info = [...chat[lastMessageId].swipe_info];
-            info[newSwipeId] = { ...(info[newSwipeId] || {}), node_id: createdId };
-            updateMessage(lastMessageId, { swipe_info: info });
-        }
+    const createdId = await chatOpAddAlternative(lastMessageId, value).catch(error => {
+        console.error('Could not save the new swipe as an alternative:', error);
+        return null;
+    });
+    if (createdId) {
+        const info = [...chat[lastMessageId].swipe_info];
+        info[newSwipeId] = { ...(info[newSwipeId] || {}), node_id: createdId };
+        updateMessage(lastMessageId, { swipe_info: info });
     }
 
     if (isTrueBoolean(args.switch)) {
@@ -4658,10 +4656,6 @@ async function addSwipeCallback(args, value) {
         // Re-read: updateMessage() above replaced the message, so the copy captured earlier is stale.
         await updateSwipeCounter(lastMessageId, { message: chat[lastMessageId] });
         refreshSwipeButtons();
-    }
-
-    if (!chat_metadata?._tree_stored) {
-        await saveChatConditional();
     }
 
     return String(newSwipeId);
@@ -5785,12 +5779,8 @@ async function messageRoleCallback(args, role) {
         existingMessage.remove();
     }
     await eventSource.emit(event_types.MESSAGE_UPDATED, modifyAt);
-    if (chat_metadata?._tree_stored) {
-        await chatOpEdit(modifyAt).catch(error =>
-            console.error('Could not save the role change for that message:', error));
-    } else {
-        await saveChatConditional();
-    }
+    await chatOpEdit(modifyAt).catch(error =>
+        console.error('Could not save the role change for that message:', error));
 
     return role;
 }
@@ -5855,12 +5845,8 @@ async function messageNameCallback(args, name) {
         existingMessage.remove();
     }
     await eventSource.emit(event_types.MESSAGE_UPDATED, modifyAt);
-    if (chat_metadata?._tree_stored) {
-        await chatOpEdit(modifyAt).catch(error =>
-            console.error('Could not save the name change for that message:', error));
-    } else {
-        await saveChatConditional();
-    }
+    await chatOpEdit(modifyAt).catch(error =>
+        console.error('Could not save the name change for that message:', error));
 
     return newName;
 }
@@ -5942,12 +5928,8 @@ export async function sendMessageAs(args, text) {
         chat.splice(insertAt, 0, message);
         // Mid-chain insert is a graft, not a diff-engine-visible change — see sendMessageAsUser()'s
         // own insertAt branch for the same reasoning.
-        if (chat_metadata?._tree_stored) {
-            await chatOpGraft(insertAt).catch(error =>
-                console.error('Could not save the inserted message:', error));
-        } else {
-            await saveChatConditional();
-        }
+        await chatOpGraft(insertAt).catch(error =>
+            console.error('Could not save the inserted message:', error));
         await eventSource.emit(event_types.MESSAGE_RECEIVED, insertAt, 'command');
         await reloadCurrentChat();
         await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, insertAt, 'command');
@@ -5957,12 +5939,8 @@ export async function sendMessageAs(args, text) {
         await eventSource.emit(event_types.MESSAGE_RECEIVED, (chat.length - 1), 'command');
         addOneMessage(message);
         await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, (chat.length - 1), 'command');
-        if (chat_metadata?._tree_stored) {
-            await chatOpAppend(newIndex).catch(error =>
-                console.error('Could not save the new message:', error));
-        } else {
-            await saveChatConditional();
-        }
+        await chatOpAppend(newIndex).catch(error =>
+            console.error('Could not save the new message:', error));
     }
 
     return await slashCommandReturnHelper.doReturn(args.return ?? 'none', message, { objectToStringFunc: x => x.mes });
@@ -6006,12 +5984,8 @@ export async function sendNarratorMessage(args, text) {
         chat.splice(insertAt, 0, message);
         // Mid-chain insert is a graft, not a diff-engine-visible change — see sendMessageAsUser()'s
         // own insertAt branch for the same reasoning.
-        if (chat_metadata?._tree_stored) {
-            await chatOpGraft(insertAt).catch(error =>
-                console.error('Could not save the inserted message:', error));
-        } else {
-            await saveChatConditional();
-        }
+        await chatOpGraft(insertAt).catch(error =>
+            console.error('Could not save the inserted message:', error));
         await eventSource.emit(event_types.MESSAGE_SENT, insertAt);
         await reloadCurrentChat();
         await eventSource.emit(event_types.USER_MESSAGE_RENDERED, insertAt);
@@ -6021,12 +5995,8 @@ export async function sendNarratorMessage(args, text) {
         await eventSource.emit(event_types.MESSAGE_SENT, (chat.length - 1));
         addOneMessage(message);
         await eventSource.emit(event_types.USER_MESSAGE_RENDERED, (chat.length - 1));
-        if (chat_metadata?._tree_stored) {
-            await chatOpAppend(newIndex).catch(error =>
-                console.error('Could not save the new message:', error));
-        } else {
-            await saveChatConditional();
-        }
+        await chatOpAppend(newIndex).catch(error =>
+            console.error('Could not save the new message:', error));
     }
 
     return await slashCommandReturnHelper.doReturn(args.return ?? 'none', message, { objectToStringFunc: x => x.mes });
@@ -6071,12 +6041,8 @@ export async function promptQuietForLoudResponse(who, text) {
     await eventSource.emit(event_types.MESSAGE_SENT, (chat.length - 1));
     addOneMessage(message);
     await eventSource.emit(event_types.USER_MESSAGE_RENDERED, (chat.length - 1));
-    if (chat_metadata?._tree_stored) {
-        await chatOpAppend(newIndex).catch(error =>
-            console.error('Could not save the new message:', error));
-    } else {
-        await saveChatConditional();
-    }
+    await chatOpAppend(newIndex).catch(error =>
+        console.error('Could not save the new message:', error));
 }
 
 async function sendCommentMessage(args, text) {
@@ -6110,12 +6076,8 @@ async function sendCommentMessage(args, text) {
         chat.splice(insertAt, 0, message);
         // Mid-chain insert is a graft, not a diff-engine-visible change — see sendMessageAsUser()'s
         // own insertAt branch for the same reasoning.
-        if (chat_metadata?._tree_stored) {
-            await chatOpGraft(insertAt).catch(error =>
-                console.error('Could not save the inserted message:', error));
-        } else {
-            await saveChatConditional();
-        }
+        await chatOpGraft(insertAt).catch(error =>
+            console.error('Could not save the inserted message:', error));
         await eventSource.emit(event_types.MESSAGE_SENT, insertAt);
         await reloadCurrentChat();
         await eventSource.emit(event_types.USER_MESSAGE_RENDERED, insertAt);
@@ -6125,12 +6087,8 @@ async function sendCommentMessage(args, text) {
         await eventSource.emit(event_types.MESSAGE_SENT, (chat.length - 1));
         addOneMessage(message);
         await eventSource.emit(event_types.USER_MESSAGE_RENDERED, (chat.length - 1));
-        if (chat_metadata?._tree_stored) {
-            await chatOpAppend(newIndex).catch(error =>
-                console.error('Could not save the new message:', error));
-        } else {
-            await saveChatConditional();
-        }
+        await chatOpAppend(newIndex).catch(error =>
+            console.error('Could not save the new message:', error));
     }
 
     return await slashCommandReturnHelper.doReturn(args.return ?? 'none', message, { objectToStringFunc: x => x.mes });
