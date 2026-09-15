@@ -7177,9 +7177,6 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                 //checks if we are in instruct, if so, formats the chat as such, otherwise just adds the quiet prompt
                 const quietAppend = isInstruct ? formatInstructModeChat(name, quiet_prompt, false, true, '', name1, name2, false) : `\n${quiet_prompt}`;
 
-                //This begins to fix quietPrompts (particularly /sysgen) for instruct
-                //previously instruct input sequence was being appended to the last chat message w/o '\n'
-                //and no output sequence was added after the input's content.
                 //TODO: respect output_sequence vs last_output_sequence settings
                 //TODO: decide how to prompt this to clarify who is talking 'Narrator', 'System', etc.
                 if (isInstruct) {
@@ -10438,7 +10435,7 @@ async function _saveTreeChat(fileName, metadata, messages, addressedByName = fal
             continue;
         }
 
-        // The selected slot counts as new too - skipping it used to make overswiping edit the previous row instead of creating a sibling.
+        // The selected slot counts as new too, so overswiping creates a sibling instead of editing the previous row.
         const hasSlots = Array.isArray(msg.swipes) && Array.isArray(msg.swipe_info);
         const selected = msg.swipe_id ?? 0;
 
