@@ -220,3 +220,111 @@ describe('worldinfo /list', () => {
         expect(names).toEqual(['LegacyOne', 'SidecarOne']);
     });
 });
+
+describe('worldinfo /entry/transplant', () => {
+    async function seedBooks() {
+        await postJson('/api/worldinfo/edit', {
+            name: 'Source',
+            data: { entries: { 0: makeEntry(0, 'Moved'), 1: makeEntry(1, 'Stays behind') } },
+        });
+        await postJson('/api/worldinfo/edit', {
+            name: 'Target',
+            data: { entries: { 5: { ...makeEntry(5, 'Already there'), displayIndex: 3 } } },
+        });
+    }
+
+    test('moves an entry: removed from source, present in target with a fresh uid and end-of-list displayIndex', async () => {
+        await seedBooks();
+
+        const res = await postJson('/api/worldinfo/entry/transplant', {
+            source_name: 'Source', target_name: 'Target', uid: 0, delete_original: true,
+        });
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.ok).toBe(true);
+        expect(body.entry.content).toBe('Moved');
+        expect(body.entry.uid).not.toBe(5); // server minted a fresh uid, distinct from target's existing entries
+        expect(body.entry.displayIndex).toBe(4); // placed after the existing target entry's displayIndex of 3
+
+        const source = await (await postJson('/api/worldinfo/get', { name: 'Source' })).json();
+        expect(source.entries['0']).toBeUndefined();
+        expect(source.entries['1'].content).toBe('Stays behind'); // other source entries untouched
+
+        const target = await (await postJson('/api/worldinfo/get', { name: 'Target' })).json();
+        const transplanted = Object.values(target.entries).find(e => e.content === 'Moved');
+        expect(transplanted).toBeDefined();
+        expect(transplanted.uid).toBe(body.entry.uid);
+        expect(target.entries['5'].content).toBe('Already there'); // other target entries untouched
+    });
+
+    test('copies an entry (delete_original: false): present in both books afterward', async () => {
+        await seedBooks();
+
+        const res = await postJson('/api/worldinfo/entry/transplant', {
+            source_name: 'Source', target_name: 'Target', uid: 0, delete_original: false,
+        });
+        expect(res.status).toBe(200);
+
+        const source = await (await postJson('/api/worldinfo/get', { name: 'Source' })).json();
+        expect(source.entries['0'].content).toBe('Moved'); // original untouched when not deleting
+
+        const target = await (await postJson('/api/worldinfo/get', { name: 'Target' })).json();
+        expect(Object.values(target.entries).some(e => e.content === 'Moved')).toBe(true);
+    });
+
+    test('a single request/response fully reflects the change in both files - no follow-up call needed', async () => {
+        await seedBooks();
+
+        await postJson('/api/worldinfo/entry/transplant', {
+            source_name: 'Source', target_name: 'Target', uid: 1, delete_original: true,
+        });
+
+        // Read straight off disk (not through another endpoint) to confirm the one call already
+        // finished both writes by the time it returned.
+        const sourceManifest = JSON.parse(fs.readFileSync(path.join(worldsDir, 'Source.json'), 'utf8'));
+        expect(sourceManifest.entries.sort()).toEqual(['0']);
+        const targetManifest = JSON.parse(fs.readFileSync(path.join(worldsDir, 'Target.json'), 'utf8'));
+        expect(targetManifest.entries.length).toBe(2);
+    });
+
+    test('rejects a nonexistent source uid without touching either book', async () => {
+        await seedBooks();
+
+        const res = await postJson('/api/worldinfo/entry/transplant', {
+            source_name: 'Source', target_name: 'Target', uid: 999, delete_original: true,
+        });
+        expect(res.status).toBe(404);
+
+        const source = await (await postJson('/api/worldinfo/get', { name: 'Source' })).json();
+        expect(Object.keys(source.entries).sort()).toEqual(['0', '1']);
+        const target = await (await postJson('/api/worldinfo/get', { name: 'Target' })).json();
+        expect(Object.keys(target.entries)).toEqual(['5']);
+    });
+
+    test('rejects a nonexistent source or target book', async () => {
+        await seedBooks();
+
+        const noSource = await postJson('/api/worldinfo/entry/transplant', {
+            source_name: 'Ghost', target_name: 'Target', uid: 0, delete_original: true,
+        });
+        expect(noSource.status).toBe(404);
+
+        const noTarget = await postJson('/api/worldinfo/entry/transplant', {
+            source_name: 'Source', target_name: 'Ghost', uid: 0, delete_original: true,
+        });
+        expect(noTarget.status).toBe(404);
+
+        // Source book still has both entries - the failed noTarget call didn't partially apply.
+        const source = await (await postJson('/api/worldinfo/get', { name: 'Source' })).json();
+        expect(Object.keys(source.entries).sort()).toEqual(['0', '1']);
+    });
+
+    test('rejects source_name === target_name', async () => {
+        await seedBooks();
+
+        const res = await postJson('/api/worldinfo/entry/transplant', {
+            source_name: 'Source', target_name: 'Source', uid: 0, delete_original: true,
+        });
+        expect(res.status).toBe(400);
+    });
+});

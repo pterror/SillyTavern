@@ -133,6 +133,29 @@ function writeWorldInfoFile(directories, worldInfoName, data) {
     }
 }
 
+/**
+ * Finds the lowest non-negative integer uid not already used by an entry in `data`, matching the
+ * allocation scheme `getFreeWorldEntryUid()` in public/scripts/world-info.js uses for entries minted
+ * client-side - there is no other server-side uid-minting path for World Info entries to reuse.
+ * @param {object} data World Info file contents (as read by {@link readWorldInfoFile})
+ * @returns {number|null} A free uid, or null if none could be found (should not happen in practice)
+ */
+function getFreeWorldEntryUid(data) {
+    if (!data || typeof data.entries !== 'object' || data.entries === null) {
+        return null;
+    }
+
+    const MAX_UID = 1_000_000; // <- should be safe enough :)
+    for (let uid = 0; uid < MAX_UID; uid++) {
+        if (uid in data.entries) {
+            continue;
+        }
+        return uid;
+    }
+
+    return null;
+}
+
 export const router = express.Router();
 
 router.post('/list', async (request, response) => {
@@ -327,4 +350,88 @@ router.post('/edit', (request, response) => {
     writeWorldInfoFile(request.user.directories, request.body.name, request.body.data);
 
     return response.send({ ok: true });
+});
+
+/**
+ * Moves (or copies) a single World Info entry from one lorebook to another, server-side, in one
+ * request. Replaces the former client-side flow of loading both whole books, minting a new uid by
+ * scanning the target book's entries in local memory, splicing the entry between the two in-memory
+ * copies, and issuing two separate whole-book /edit POSTs - which left a client-visible race window
+ * between the two saves (a crash/reload between them could leave the entry duplicated in both books,
+ * or missing from both).
+ *
+ * Atomicity: this is sequential-but-server-side, NOT a single filesystem transaction. Both books are
+ * written (via the same writeWorldInfoFile() used by /edit, itself a series of per-entry
+ * write-file-atomic calls plus a manifest write) inside one synchronous handler, so no client-visible
+ * intermediate state exists - the client only ever sees "not yet requested" or "done" - and the whole
+ * network-round-trip-sized race window from the old two-request flow is eliminated. It does NOT
+ * protect against the server process crashing mid-handler between the target write and the source
+ * write (when delete_original is set): in that narrow in-process window the entry could still end up
+ * in both books or - if the crash lands before the target write completes - the source deletion simply
+ * never happens (delete_original writes source only after target succeeds), so at worst the operation
+ * is left un-applied, never half-applied with the entry missing from both.
+ *
+ * Note on inter-entry linkage: World Info entries have no uid-based reference to other entries. The
+ * `group` field is a plain string label matched at runtime among currently-activated entries (from any
+ * book), not an identifier of a specific entry; `automationId` refers to an external Quick Reply
+ * automation, not another WI entry. So transplanting one entry cannot orphan a reference from another
+ * entry in either book - there is nothing that structurally requires two entries to travel together.
+ */
+router.post('/entry/transplant', (request, response) => {
+    const { source_name, target_name, uid, delete_original } = request.body ?? {};
+
+    if (typeof source_name !== 'string' || !source_name) {
+        return response.status(400).send({ error: 'source_name is required' });
+    }
+    if (typeof target_name !== 'string' || !target_name) {
+        return response.status(400).send({ error: 'target_name is required' });
+    }
+    if (uid === undefined || uid === null || uid === '') {
+        return response.status(400).send({ error: 'uid is required' });
+    }
+    if (source_name === target_name) {
+        return response.status(400).send({ error: 'source_name and target_name must differ' });
+    }
+
+    const deleteOriginal = delete_original !== false;
+    const sourceUid = String(uid);
+
+    const sourceData = readWorldInfoFile(request.user.directories, source_name, false);
+    if (!sourceData || typeof sourceData.entries !== 'object' || sourceData.entries === null) {
+        return response.status(404).send({ error: `Source lorebook '${source_name}' not found` });
+    }
+
+    const targetData = readWorldInfoFile(request.user.directories, target_name, false);
+    if (!targetData || typeof targetData.entries !== 'object' || targetData.entries === null) {
+        return response.status(404).send({ error: `Target lorebook '${target_name}' not found` });
+    }
+
+    if (!(sourceUid in sourceData.entries)) {
+        return response.status(404).send({ error: `Entry uid '${sourceUid}' not found in source lorebook '${source_name}'` });
+    }
+
+    const newUid = getFreeWorldEntryUid(targetData);
+    if (newUid === null) {
+        return response.status(500).send({ error: `Could not allocate a free uid in target lorebook '${target_name}'` });
+    }
+
+    const transplantedEntry = _.cloneDeep(sourceData.entries[sourceUid]);
+    transplantedEntry.uid = newUid;
+
+    // Place the entry at the end of the target lorebook, mirroring the client's prior placement decision.
+    const maxDisplayIndex = Object.values(targetData.entries).reduce((max, entry) => Math.max(max, entry?.displayIndex ?? -1), -1);
+    transplantedEntry.displayIndex = maxDisplayIndex + 1;
+
+    targetData.entries[newUid] = transplantedEntry;
+
+    // Target write happens first: if the process dies before this completes, nothing has changed in
+    // either book, so the operation is un-applied rather than half-applied.
+    writeWorldInfoFile(request.user.directories, target_name, targetData);
+
+    if (deleteOriginal) {
+        delete sourceData.entries[sourceUid];
+        writeWorldInfoFile(request.user.directories, source_name, sourceData);
+    }
+
+    return response.send({ ok: true, entry: transplantedEntry });
 });

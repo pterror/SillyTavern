@@ -6226,58 +6226,35 @@ export async function moveWorldInfoEntry(sourceName, targetName, uid, { deleteOr
         return false;
     }
 
-    const entryUidString = String(uid);
-
     try {
-        const sourceData = await loadWorldInfo(sourceName);
-        const targetData = await loadWorldInfo(targetName);
+        // The server reads both books, mints the destination uid, places the entry, and writes both
+        // files itself - the client sends only the raw facts and never computes a uid of its own.
+        const response = await fetch('/api/worldinfo/entry/transplant', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({
+                source_name: sourceName,
+                target_name: targetName,
+                uid: uid,
+                delete_original: deleteOriginal,
+            }),
+        });
 
-        if (!sourceData || !sourceData.entries) {
-            toastr.error(t`Failed to load data for source lorebook '${sourceName}'.`);
-            console.error(`[WI Move] Could not load source data for '${sourceName}'.`);
-            return false;
-        }
-        if (!targetData || !targetData.entries) {
-            toastr.error(t`Failed to load data for target lorebook '${targetName}'.`);
-            console.error(`[WI Move] Could not load target data for '${targetName}'.`);
-            return false;
-        }
-
-        if (!sourceData.entries[entryUidString]) {
-            toastr.error(t`Entry not found in source lorebook '${sourceName}'.`);
-            console.error(`[WI Move] Entry UID ${entryUidString} not found in '${sourceName}'.`);
-            return false;
-        }
-
-        const entryToMove = structuredClone(sourceData.entries[entryUidString]);
-
-        const newUid = getFreeWorldEntryUid(targetData);
-        if (newUid === null) {
-            console.error(`[WI Move] Failed to get a free UID in '${targetName}'.`);
+        if (!response.ok) {
+            const error = await response.json().catch(() => null);
+            toastr.error(error?.error ?? t`Failed to move the entry.`);
+            console.error(`[WI Move] Transplant request failed for '${sourceName}' -> '${targetName}':`, error);
             return false;
         }
 
-        entryToMove.uid = newUid;
-        // Place the entry at the end of the target lorebook
-        const maxDisplayIndex = Object.values(targetData.entries).reduce((max, entry) => Math.max(max, entry.displayIndex ?? -1), -1);
-        entryToMove.displayIndex = maxDisplayIndex + 1;
+        const result = await response.json();
 
-        targetData.entries[newUid] = entryToMove;
+        // Both books changed server-side; drop the client caches so the next load reflects the
+        // server's state rather than a stale in-memory copy.
+        worldInfoCache.delete(sourceName);
+        worldInfoCache.delete(targetName);
 
-        if (deleteOriginal) {
-            delete sourceData.entries[entryUidString];
-            // Remove from originalData if it exists
-            deleteWIOriginalDataValue(sourceData, entryUidString);
-            // TODO: setWIOriginalDataValue
-            console.debug(`[WI Move] Removed entry UID ${entryUidString} from source '${sourceName}'.`);
-        }
-
-        await saveWorldInfo(targetName, targetData, true);
-        console.debug(`[WI Move] Saved target lorebook '${targetName}'.`);
-        await saveWorldInfo(sourceName, sourceData, true);
-        console.debug(`[WI Move] Saved source lorebook '${sourceName}'.`);
-
-        console.log(`[WI Move] ${entryToMove.comment} ${deleteOriginal ? 'moved' : 'copied'} successfully to '${targetName}'.`);
+        console.log(`[WI Move] ${result.entry?.comment} ${deleteOriginal ? 'moved' : 'copied'} successfully to '${targetName}'.`);
 
         // Check if the currently viewed book in the editor is the source or target and reload it
         const currentEditorBookIndex = Number($('#world_editor_select').val());
