@@ -5021,7 +5021,7 @@ async function sendMessage(prompt, image, generationType, additionalNegativePref
     await eventSource.emit(event_types.MESSAGE_RECEIVED, messageId, 'extension');
     context.addOneMessage(message);
     await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, messageId, 'extension');
-    await context.saveChat();
+    await context.appendMessage(messageId);
     setTimeout(() => context.scrollOnMediaLoad(), debounce_timeout.short);
 }
 
@@ -5256,7 +5256,7 @@ async function sdMessageButton($icon, { animate } = {}) {
 
     appendMediaToMessage(message, messageElement, SCROLL_BEHAVIOR.KEEP);
 
-    await context.saveChat();
+    await context.editMessage(messageId);
 }
 
 async function onCharacterPromptShareInput() {
@@ -5527,13 +5527,17 @@ export async function init() {
                 // Save override width/height into a message result
                 if (!isTrueBoolean(args?.quiet?.toString()) && Object.hasOwn(args, 'width') && Object.hasOwn(args, 'height')) {
                     const context = getContext();
-                    const message = context.chat.at(-1);
+                    const messageId = context.chat.length - 1;
+                    const message = context.chat[messageId];
                     if (Array.isArray(message?.extra?.media) && message.extra.media.length > 0) {
-                        const mediaAttachment = message.extra.media.findLast(m => m.url === url);
-                        if (mediaAttachment) {
-                            mediaAttachment.width = extension_settings.sd.width;
-                            mediaAttachment.height = extension_settings.sd.height;
-                            await context.saveChat();
+                        const targetIndex = message.extra.media.findLastIndex(m => m.url === url);
+                        if (targetIndex >= 0) {
+                            context.updateIn(messageId, ['extra', 'media', targetIndex], (m) => ({
+                                ...m,
+                                width: extension_settings.sd.width,
+                                height: extension_settings.sd.height,
+                            }));
+                            await context.editMessage(messageId);
                         }
                     }
                 }

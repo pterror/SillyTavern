@@ -495,7 +495,9 @@ async function onTranslateChatClick() {
             await translateIncomingMessage(i);
         }
 
-        await context.saveChat();
+        if (chat.length) {
+            await context.editMessages(Array.from({ length: chat.length }, (_, i) => i));
+        }
     } catch (error) {
         console.log(error);
         toastr.error('Failed to translate chat');
@@ -515,14 +517,22 @@ async function onTranslationsClearClick() {
     const context = getContext();
     const chat = context.chat;
 
-    for (const mes of chat) {
-        if (mes.extra) {
-            delete mes.extra.display_text;
-            delete mes.extra.reasoning_display_text;
+    const editedIds = [];
+    for (let i = 0; i < chat.length; i++) {
+        if (chat[i].extra) {
+            context.updateIn(i, ['extra'], (extra) => {
+                const next = { ...extra };
+                delete next.display_text;
+                delete next.reasoning_display_text;
+                return next;
+            });
+            editedIds.push(i);
         }
     }
 
-    await context.saveChat();
+    if (editedIds.length) {
+        await context.editMessages(editedIds);
+    }
     await reloadCurrentChat();
 }
 
@@ -533,8 +543,12 @@ async function translateMessageEdit(messageId) {
 
     let anyChange = false;
     if (message.is_system || (extension_settings.translate.auto_mode == autoModeOptions.NONE && message.extra?.display_text)) {
-        delete message.extra.display_text;
-        updateMessageBlock(messageId, message);
+        const updated = context.updateIn(messageId, ['extra'], (extra) => {
+            const next = { ...extra };
+            delete next.display_text;
+            return next;
+        });
+        updateMessageBlock(messageId, updated);
         anyChange = true;
     } else if ((message.is_user && shouldTranslate(outgoingTypes)) || (!message.is_user && shouldTranslate(incomingTypes))) {
         await translateIncomingMessage(messageId);
@@ -542,7 +556,7 @@ async function translateMessageEdit(messageId) {
     }
 
     if (anyChange) {
-        await context.saveChat();
+        await context.editMessage(messageId);
     }
 }
 
@@ -553,7 +567,11 @@ async function translateMessageReasoningEdit(messageId) {
 
     let anyChange = false;
     if (message.is_system || (extension_settings.translate.auto_mode == autoModeOptions.NONE && message.extra?.reasoning_display_text)) {
-        delete message.extra.reasoning_display_text;
+        context.updateIn(messageId, ['extra'], (extra) => {
+            const next = { ...extra };
+            delete next.reasoning_display_text;
+            return next;
+        });
         updateReasoningUI(Number(messageId));
         anyChange = true;
     } else if ((message.is_user && shouldTranslate(outgoingTypes)) || (!message.is_user && shouldTranslate(incomingTypes))) {
@@ -561,7 +579,7 @@ async function translateMessageReasoningEdit(messageId) {
     }
 
     if (anyChange) {
-        await context.saveChat();
+        await context.editMessage(messageId);
     }
 }
 
@@ -569,9 +587,13 @@ async function removeReasoningDisplayText(messageId) {
     const context = getContext();
     const message = context.chat[messageId];
     if (message.extra?.reasoning_display_text) {
-        delete message.extra.reasoning_display_text;
+        context.updateIn(messageId, ['extra'], (extra) => {
+            const next = { ...extra };
+            delete next.reasoning_display_text;
+            return next;
+        });
         updateReasoningUI(Number(messageId));
-        await context.saveChat();
+        await context.editMessage(messageId);
     }
 }
 
@@ -582,14 +604,21 @@ async function onMessageTranslateClick() {
 
     // If the message is already translated, revert it back to the original text
     let alreadyTranslated = false;
-    if (message?.extra?.display_text) {
-        delete message.extra.display_text;
-        updateMessageBlock(Number(messageId), message);
-        alreadyTranslated = true;
-    }
-    if (message?.extra?.reasoning_display_text) {
-        delete message.extra.reasoning_display_text;
-        updateReasoningUI(Number(messageId));
+    if (message?.extra?.display_text || message?.extra?.reasoning_display_text) {
+        const hadDisplayText = !!message.extra.display_text;
+        const hadReasoningDisplayText = !!message.extra.reasoning_display_text;
+        const updated = context.updateIn(messageId, ['extra'], (extra) => {
+            const next = { ...extra };
+            delete next.display_text;
+            delete next.reasoning_display_text;
+            return next;
+        });
+        if (hadDisplayText) {
+            updateMessageBlock(Number(messageId), updated);
+        }
+        if (hadReasoningDisplayText) {
+            updateReasoningUI(Number(messageId));
+        }
         alreadyTranslated = true;
     }
 
@@ -599,7 +628,7 @@ async function onMessageTranslateClick() {
         await translateIncomingMessage(messageId);
     }
 
-    await context.saveChat();
+    await context.editMessage(messageId);
 }
 
 const handleIncomingMessage = createEventHandler(async (messageId) => {

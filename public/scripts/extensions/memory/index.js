@@ -88,7 +88,7 @@ const formatMemoryValue = function (value) {
     }
 };
 
-const saveChatDebounced = debounce(() => getContext().saveChat(), debounce_timeout.relaxed);
+const saveMemoryEditDebounced = debounce((idx) => getContext().editMessage(idx), debounce_timeout.relaxed);
 
 const summary_sources = {
     'extras': 'extras',
@@ -1038,9 +1038,9 @@ function setMemoryContext(value, saveToMessage, index = null) {
 
     const context = getContext();
     if (saveToMessage && context.chat.length) {
-        const idx = index ?? context.chat.length - 2;
-        context.updateIn(idx < 0 ? 0 : idx, ['extra', 'memory'], value);
-        saveChatDebounced();
+        const idx = Math.max(0, index ?? context.chat.length - 2);
+        context.updateIn(idx, ['extra', 'memory'], value);
+        saveMemoryEditDebounced(idx);
     }
 }
 

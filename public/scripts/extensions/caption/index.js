@@ -1,6 +1,6 @@
 import { ensureImageFormatSupported, getBase64Async, getFileExtension, isTrueBoolean, saveBase64AsFile } from '../../utils.js';
 import { getContext, getApiUrl, doExtrasFetch, extension_settings, modules, renderExtensionTemplateAsync } from '../../extensions.js';
-import { appendMediaToMessage, chat_metadata, eventSource, event_types, getRequestHeaders, saveChatConditional, saveSettingsDebounced, substituteParams } from '../../../script.js';
+import { appendMediaToMessage, chat_metadata, eventSource, event_types, getRequestHeaders, saveSettingsDebounced, substituteParams } from '../../../script.js';
 import { getMessageTimeStamp } from '../../RossAscends-mods.js';
 import { SECRET_KEYS, secret_state } from '../../secrets.js';
 import { oai_settings, POLLINATIONS_ENDPOINT } from '../../chat-completion-settings.js';
@@ -207,7 +207,7 @@ async function sendCaptionedMessage(caption, image, mimeType) {
     await eventSource.emit(event_types.MESSAGE_SENT, messageId);
     context.addOneMessage(message);
     await eventSource.emit(event_types.USER_MESSAGE_RENDERED, messageId);
-    await context.saveChat();
+    await context.appendMessage(messageId);
     setTimeout(() => context.scrollOnMediaLoad(), debounce_timeout.short);
 }
 
@@ -663,9 +663,11 @@ export async function init() {
         }
 
         const message = getContext().chat[messageId];
+        let anyCaptioned = false;
         if (Array.isArray(message?.extra?.media) && message.extra.media.length > 0) {
             for (let mediaIndex = 0; mediaIndex < message.extra.media.length; mediaIndex++) {
-                const mediaAttachment = message.extra.media[mediaIndex];
+                const currentMessage = getContext().chat[messageId];
+                const mediaAttachment = currentMessage.extra.media[mediaIndex];
                 if (mediaAttachment.type === MEDIA_TYPE.VIDEO && !isVideoCaptioningAvailable()) {
                     continue;
                 }
@@ -677,12 +679,16 @@ export async function init() {
                     continue;
                 }
                 try {
-                    await captionExistingMessage(message, mediaIndex);
+                    await captionExistingMessage(currentMessage, mediaIndex);
+                    anyCaptioned = true;
                 } catch (e) {
                     console.error(`Auto-captioning failed for message ID ${messageId}, media index ${mediaIndex}`, e);
                     continue;
                 }
             }
+        }
+        if (anyCaptioned) {
+            await getContext().editMessage(messageId);
         }
     };
 
@@ -702,7 +708,7 @@ export async function init() {
             const data = getContext().chat[messageId];
             await captionExistingMessage(data, mediaIndex);
             appendMediaToMessage(getContext().chat[messageId], messageBlock, SCROLL_BEHAVIOR.KEEP);
-            await saveChatConditional();
+            await getContext().editMessage(messageId);
         } catch (e) {
             console.error('Message image recaption failed', e);
             toastr.error(e.message || 'Unknown error', 'Failed to caption');
