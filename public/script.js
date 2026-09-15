@@ -6079,6 +6079,26 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                 is_continue: isContinue,
                 is_swipe: isSwipe,
                 user_message: userMessageText,
+                // Kobold-only: mirrors the EXACT real condition getKoboldGenerationData() (public/
+                // scripts/kai-settings.js) and its server-side port createKoboldGenerationData()
+                // (src/kobold-generation-data.js) both use for their own `streaming` field -
+                // `kai_settings.streaming_kobold && kai_flags.can_use_streaming && type !== 'quiet'`
+                // (NOT a simplified two-term version - `type !== 'quiet'` is a real third term found
+                // by reading that computation in full). Without this, the raw-action payload built
+                // above never set `.streaming` at all, so generateKoboldWithStreaming() (kai-
+                // settings.js) - which, unlike generateNovelWithStreaming()'s unconditional
+                // `generate_data.streaming = nai_settings.streaming_novel;` overwrite, just fetches
+                // whatever `.streaming` already is - would send `streaming: undefined` even though
+                // isStreamingEnabled() (~line 4572 above) already decided to call the streaming send
+                // path. `kai_flags.can_use_streaming` is a live client-side connection probe result
+                // that has no server-side equivalent, so this must be computed here, client-side.
+                // Left `undefined` for 'novel'/'textgenerationwebui' (this same object is shared by
+                // all three raw-action-eligible main_apis): NovelAI's own wrapper overwrites it
+                // unconditionally regardless of what's sent here, so it's a no-op there; textgen's
+                // equivalent asymmetry (if any) is out of scope for this fix.
+                streaming: main_api === 'kobold'
+                    ? (kai_settings.streaming_kobold && kai_flags.can_use_streaming && type !== 'quiet')
+                    : undefined,
             };
         }
         // else: no resolvable branch_name (or other precondition) - fall through to the legacy
