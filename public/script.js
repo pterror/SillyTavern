@@ -588,10 +588,25 @@ const _dirtyCharacterFields = new Set();
 /** @type {Map<string, number>} */
 const _loadedCharacterFieldHashes = new Map();
 
-/** @param {object} character */
-function snapshotLoadedCharacterFieldHashes(character) {
-    _loadedCharacterFieldHashes.clear();
+/**
+ * @param {object} character
+ * @param {Object<string, number>|null} [serverHashes] Per-field hashes the server just issued (the `hashes` object
+ * from a successful `/api/characters/merge-attributes` response) for whichever fields that request touched. Those
+ * are used verbatim, never recomputed. Any FORM_TO_CARD field not covered - including every field on the very
+ * first populate, when this is omitted entirely - still needs a baseline, computed locally from the loaded value:
+ * the character-load endpoint doesn't hand back a hash for every field, only merge-attributes does for the fields
+ * it just wrote, so this mirrors the greeting pager's own accepted "seed once locally, then only ever echo a
+ * server-issued value" pattern (see hashGreetingText()).
+ */
+function snapshotLoadedCharacterFieldHashes(character, serverHashes = null) {
+    if (!serverHashes) {
+        _loadedCharacterFieldHashes.clear();
+    }
     for (const mapping of Object.values(FORM_TO_CARD)) {
+        if (serverHashes && Object.prototype.hasOwnProperty.call(serverHashes, mapping.v2)) {
+            _loadedCharacterFieldHashes.set(mapping.v2, serverHashes[mapping.v2]);
+            continue;
+        }
         const loadedValue = lodash.get(character, mapping.v2);
         _loadedCharacterFieldHashes.set(mapping.v2, getStringHash(JSON.stringify(loadedValue !== undefined ? loadedValue : null)));
     }
@@ -13878,6 +13893,12 @@ export async function createOrEditCharacter(e) {
                 body: JSON.stringify(mergeData),
             });
 
+            // Populated from the response's `hashes` on a plain (non-conflict) success - the server's fresh
+            // post-write hash for each field it just wrote, echoed straight into the next round's baseline
+            // instead of being recomputed here. Left null on every other path (409, force-overwrite retry,
+            // no body): the fallback in snapshotLoadedCharacterFieldHashes() below covers those.
+            let savedFieldHashes = null;
+
             if (fetchResult.status === 409) {
                 let errorData;
                 try { errorData = await fetchResult.json(); } catch { /* ignore parse errors */ }
@@ -13920,13 +13941,18 @@ export async function createOrEditCharacter(e) {
                     return;
                 }
                 throw new Error('Fetch result is not ok');
+            } else {
+                try {
+                    const payload = await fetchResult.json();
+                    savedFieldHashes = payload?.hashes ?? null;
+                } catch { /* no body, or not JSON - fine, the fallback below covers it */ }
             }
 
             // ─── Common post-save logic ────────────────────────────────────
             await getOneCharacter(avatarUrl);
 
             _dirtyCharacterFields.clear();
-            snapshotLoadedCharacterFieldHashes(charactersStore.get(avatarUrl));
+            snapshotLoadedCharacterFieldHashes(charactersStore.get(avatarUrl), savedFieldHashes);
 
             if (Boolean(previousFav) !== Boolean(fav_ch_checked)) {
                 favsToHotswap();
