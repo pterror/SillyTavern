@@ -1212,13 +1212,30 @@ router.post('/labels', validateAvatarUrlMiddleware, async function (request, res
     }
 });
 
+/**
+ * Builds the /api/settings/save-partial-shaped 409 body for a metadata write whose `expected_integrity`
+ * no longer matches the node's current `integrity` - same `result`/`error`/`conflictingKeys` convention,
+ * with the single addressed node/chat standing in for save-partial's list of conflicting settings keys.
+ */
+function integrityConflictResponse(id) {
+    return {
+        result: 'conflict',
+        error: 'This metadata was changed by another session since this client last saw it.',
+        conflictingKeys: [id],
+    };
+}
+
 /** Replaces the metadata stored on a node. */
 router.post('/node/metadata', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const nodeId = String(request.body.node_id || '');
         if (!nodeId) return response.status(400).send({ error: 'node_id is required' });
 
-        const result = await setNodeMetadata(request.user.directories, ownerOf(request), nodeId, request.body.metadata);
+        const expectedIntegrity = request.body.expected_integrity;
+        const result = await setNodeMetadata(request.user.directories, ownerOf(request), nodeId, request.body.metadata, expectedIntegrity);
+        if (!result.ok && result.reason === 'conflict') {
+            return response.status(409).send(integrityConflictResponse(nodeId));
+        }
         return response.status(result.ok ? 200 : 409).send(result);
     } catch (error) {
         console.error('Error saving node metadata:', error);
@@ -1232,7 +1249,11 @@ router.post('/metadata', validateAvatarUrlMiddleware, async function (request, r
         const chatName = String(request.body.file_name || '');
         if (!chatName) return response.status(400).send({ error: 'file_name is required' });
 
-        const result = await setChatMetadata(request.user.directories, ownerOf(request), chatName, request.body.metadata);
+        const expectedIntegrity = request.body.expected_integrity;
+        const result = await setChatMetadata(request.user.directories, ownerOf(request), chatName, request.body.metadata, expectedIntegrity);
+        if (!result.ok && result.reason === 'conflict') {
+            return response.status(409).send(integrityConflictResponse(chatName));
+        }
         return response.status(result.ok ? 200 : 409).send(result);
     } catch (error) {
         console.error('Error saving chat metadata:', error);

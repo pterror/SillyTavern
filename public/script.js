@@ -10061,18 +10061,6 @@ async function _saveTreeChat(fileName, metadata, messages, addressedByName = fal
     const avatar = getCurrentCharacter()?.avatar;
     if (!avatar) return null;
 
-    const post = async (path, body) => {
-        const response = await fetch(path, {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ avatar_url: avatar, ...body }),
-        });
-        if (!response.ok) {
-            throw new Error(`${path} responded ${response.status}`);
-        }
-        return response.json().catch(() => ({}));
-    };
-
     let lastPersisted = null;
     let firstNewIndex = -1;
 
@@ -10184,7 +10172,19 @@ async function _saveTreeChat(fileName, metadata, messages, addressedByName = fal
 
     // A metadata write failure must not take the save down with it - every message write has already landed by this point.
     try {
-        const meta = await post('/api/chats/metadata', { file_name: target, metadata });
+        const response = await fetch('/api/chats/metadata', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ avatar_url: avatar, file_name: target, metadata, expected_integrity: metadata?.integrity }),
+        });
+        if (response.status === 409) {
+            _handleMetadataIntegrityConflict();
+            return {};
+        }
+        if (!response.ok) {
+            throw new Error(`/api/chats/metadata responded ${response.status}`);
+        }
+        const meta = await response.json().catch(() => ({}));
         return { integrity: meta.integrity };
     } catch (error) {
         console.warn('[saveChat] The messages are saved; their chat metadata is not:', error);
@@ -12757,6 +12757,15 @@ export async function deleteSwipe(swipeId = null, messageId = chat.length - 1) {
     return newSwipeId;
 }
 
+// Shared conflict UX for a metadata write rejected because the node's `integrity` changed elsewhere since this
+// client last saw it - same toast+refresh convention as the settings save-partial 409 (see saveSettingsDebounced/
+// savePartialSettings), adapted to chat metadata: there's no equivalent of getSettings() to silently refetch into,
+// so this just tells the user to reload rather than risk clobbering the other session's write.
+function _handleMetadataIntegrityConflict() {
+    console.warn('Chat metadata save rejected: it was changed by another session since this client last saw it.');
+    toastr.warning(t`This chat's metadata was changed in another tab or session. Reload the page to see the latest version.`, t`Metadata save rejected`);
+}
+
 // Persists chat_metadata alone, without dragging the per-message diff a full tree save would do. Falls back to the whole-chat save for anything it can't address directly.
 export async function saveMetadata() {
     const metadata = chat_metadata;
@@ -12771,8 +12780,12 @@ export async function saveMetadata() {
                 const response = await fetch('/api/chats/metadata', {
                     method: 'POST',
                     headers: getRequestHeaders(),
-                    body: JSON.stringify({ avatar_url: avatar, file_name: target, metadata }),
+                    body: JSON.stringify({ avatar_url: avatar, file_name: target, metadata, expected_integrity: metadata?.integrity }),
                 });
+                if (response.status === 409) {
+                    _handleMetadataIntegrityConflict();
+                    return;
+                }
                 if (response.ok) {
                     const result = await response.json().catch(() => ({}));
                     if (typeof result.integrity === 'string') {
