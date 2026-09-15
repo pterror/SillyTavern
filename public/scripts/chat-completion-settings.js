@@ -3299,9 +3299,9 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, ra
                     state.toolCallAborted = true;
                 }
 
-                // Raw-action persistence teed this stream server-side (chat-completions.js's
-                // forwardAndPersistSseText()) and, once it knew the full text, wrote this ahead of
-                // [DONE] - not real generated content, just the node the reply landed on.
+                // Raw-action persistence teed this stream server-side and, once it knew the full
+                // text, wrote this ahead of [DONE] - not real generated content, just the node the
+                // reply landed on.
                 if (typeof parsed?.assistant_node_id === 'string') {
                     state.assistantNodeId = parsed.assistant_node_id;
                 }

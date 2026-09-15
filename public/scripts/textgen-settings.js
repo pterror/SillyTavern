@@ -1394,9 +1394,11 @@ export async function generateTextGenWithStreaming(generate_data, signal) {
 
             let data = JSON.parse(value.data);
 
-            // Raw-action persistence teed this stream server-side (text-completions.js's
-            // forwardAndPersistSseText()) and, once it knew the full text, wrote this ahead of
-            // [DONE] - not real generated content, just the node the reply landed on.
+            // Historical: server-side raw-action persistence used to tee this SSE-JSON stream and
+            // inject this line ahead of [DONE] once it knew the full text. Every raw-action
+            // streaming backend now uses the compact binary protocol instead (the branch above), so
+            // this SSE-JSON path only ever carries non-raw-action streams, which never set this field -
+            // kept as a harmless no-op rather than removed without full verification.
             if (typeof data?.assistant_node_id === 'string') {
                 state.assistantNodeId = data.assistant_node_id;
                 yield { text, swipes, logprobs, toolCalls, state };

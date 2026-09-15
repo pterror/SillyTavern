@@ -119,155 +119,31 @@ async function parseOllamaStream(jsonStream, request, response, persist) {
 }
 
 /**
- * Forwards a fetch() response's live SSE stream line-by-line (not a raw byte pipe) so the literal
- * `data: [DONE]` sentinel line can be held back instead of forwarded immediately. Every other line
- * is written to the client the instant it arrives - unmodified, same latency as a raw pipe. Only
- * once `[DONE]` itself is seen (meaning the full text is now known) does this persist the reply and
- * write one more real content frame - `data: {"assistant_node_id": "..."}` - ahead of the (now
- * released) `[DONE]` line, so the client learns the node id BEFORE it stops reading, instead of
- * after (a plain trailing frame doesn't work: the client's own stream consumer returns immediately
- * upon seeing `[DONE]`, before anything sent after it would ever be read).
- *
- * This adds real latency, but only between the last content token being displayed and the
- * connection formally closing - a single local persistAssistantReply() call (a SQLite write), not a
- * buffer-the-whole-response delay. Nothing the user perceives as "waiting for the reply."
- *
- * Only ever called when `persist` (`pendingAssistantPersist`) is set (a raw-action request) - the
- * caller is expected to fall through to a PLAIN, untouched `forwardFetchResponse()` call otherwise,
- * so a non-raw-action stream is never rewritten this way.
- *
- * Each `data:` line's JSON is parsed and passed to `extractText(json)` to pull out that api_type's
- * own real per-chunk text field - see the two real, DIFFERENT on-wire shapes this covers at the call
- * site below (`choices[0].text` for the `/v1/completions`-style api_types vs.
- * `choices[0].delta.content` for OPENROUTER's `/v1/chat/completions`-style stream). A line that
- * isn't valid JSON (or isn't a `data:` line) is forwarded as-is but skipped for accumulation -
- * logged, not thrown, matching this file's/llamacpp-compact-stream.js's own "warn and keep going"
- * convention for malformed stream chunks.
- * @param {import('node-fetch').Response} fetchResponse
- * @param {import('express').Response} response
- * @param {object|null|undefined} persist `pendingAssistantPersist`, or a falsy value to skip
- * teeing/persistence entirely and just forward the bytes untouched.
- * @param {(json: any) => string|undefined} extractText Pulls this api_type's own real per-chunk
- * generated-text field out of one parsed SSE JSON payload.
- * @returns {Promise<void>}
- */
-export async function forwardAndPersistSseText(fetchResponse, response, persist, extractText) {
-    if (!persist || !fetchResponse.ok || !fetchResponse.body) {
-        return forwardFetchResponse(fetchResponse, response);
-    }
-
-    let statusCode = fetchResponse.status;
-    if (statusCode === 401) statusCode = 400;
-    response.statusCode = statusCode;
-    response.statusMessage = fetchResponse.statusText;
-
-    let buffer = '';
-    let text = '';
-    let pendingDoneLine = null;
-
-    const onSocketClose = () => {
-        if (fetchResponse.body instanceof Readable) fetchResponse.body.destroy();
-        if (!response.writableEnded) response.end();
-    };
-    response.socket?.once('close', onSocketClose);
-
-    // The client can disconnect (firing onSocketClose, which ends `response`) at any point while
-    // this is still forwarding upstream bytes or persisting - every write after that point must be
-    // skipped, not attempted, or it throws (ERR_STREAM_WRITE_AFTER_END).
-    const safeWrite = (chunk) => {
-        if (!response.writableEnded) response.write(chunk);
-    };
-
-    let holdingDoneLine = false;
-
-    await new Promise((resolve) => {
-        fetchResponse.body.on('data', (chunk) => {
-            buffer += chunk.toString('utf-8');
-            let idx;
-            while ((idx = buffer.indexOf('\n')) !== -1) {
-                const rawLine = buffer.slice(0, idx);
-                buffer = buffer.slice(idx + 1);
-
-                // The blank line right after a held-back `data: [DONE]` is that event's own
-                // terminator (the `\n\n` separator), not a new event - it must stay held back WITH
-                // it, or [DONE] would forward without the blank line that properly ends it.
-                if (holdingDoneLine) {
-                    holdingDoneLine = false;
-                    if (rawLine === '') {
-                        pendingDoneLine += '\n';
-                        continue;
-                    }
-                }
-
-                const trimmed = rawLine.trim();
-                if (trimmed.startsWith('data:')) {
-                    const payload = trimmed.slice(5).trim();
-                    if (payload === '[DONE]') {
-                        pendingDoneLine = rawLine + '\n';
-                        holdingDoneLine = true;
-                        continue;
-                    }
-                    if (payload) {
-                        try {
-                            text += extractText(JSON.parse(payload)) ?? '';
-                        } catch (error) {
-                            console.warn('Failed to parse streamed SSE event while accumulating text for persistence:', error);
-                        }
-                    }
-                }
-                safeWrite(rawLine + '\n');
-            }
-        });
-        fetchResponse.body.once('end', resolve);
-        fetchResponse.body.once('error', resolve);
-        fetchResponse.body.once('close', resolve);
-    });
-
-    if (buffer) {
-        safeWrite(buffer);
-    }
-
-    if (text) {
-        const persisted = await persistAssistantReply(persist, text);
-        if (persisted) {
-            safeWrite(`data: ${JSON.stringify({ assistant_node_id: persisted.node_id })}\n\n`);
-        }
-    }
-
-    if (pendingDoneLine !== null) {
-        safeWrite(pendingDoneLine);
-    }
-
-    response.socket?.off('close', onSocketClose);
-    if (!response.writableEnded) response.end();
-}
-
-/**
- * Same job as `forwardAndPersistSseText()` above (accumulate a raw-action reply from an upstream
- * OpenAI-completions-shaped SSE stream and persist it once the stream ends), but for the two call
- * sites below (GENERIC/DREAMGEN/MANCER/VLLM's `choices[0].text` shape and OPENROUTER's
- * `choices[0].delta.content` shape) it re-encodes what it forwards to the client into the compact
- * binary wire format (llamacpp-compact-stream.js), coalescing many small upstream chunks into fewer,
- * larger writes instead of forwarding one frame per upstream token/SSE-chunk - see
- * llamacpp-compact-stream.js's own module doc comment for the frame format itself.
+ * Accumulates a raw-action reply from an upstream OpenAI-completions-shaped SSE stream and persists
+ * it once the stream ends, for the two call sites below (GENERIC/DREAMGEN/MANCER/VLLM's
+ * `choices[0].text` shape and OPENROUTER's `choices[0].delta.content` shape). Re-encodes what it
+ * forwards to the client into the compact binary wire format (llamacpp-compact-stream.js),
+ * coalescing many small upstream chunks into fewer, larger writes instead of forwarding one frame
+ * per upstream token/SSE-chunk - see llamacpp-compact-stream.js's own module doc comment for the
+ * frame format itself.
  *
  * The FIRST piece of content is flushed immediately (so the reply visibly starts without delay);
  * everything after that is buffered and flushed on a ~40ms timer or once ~256 buffered bytes are
  * reached, whichever comes first. A reasoning or index frame always flushes any buffered content
  * first, so frames reach the client in the same relative order the events arrived in upstream.
  *
- * There is no upstream `[DONE]`-equivalent to hold back here (unlike the SSE-JSON version): once the
- * upstream body ends, this flushes any remaining buffered content, persists the accumulated text, and
- * - if persistence produced a node - writes the assistant_node_id frame as the LAST frame before
- * `response.end()`, so the client (whose stream reader stops at the natural end of the byte stream,
- * not a sentinel line) still reads it before it stops.
+ * Once the upstream body ends, this flushes any remaining buffered content, persists the
+ * accumulated text, and - if persistence produced a node - writes the assistant_node_id frame as the
+ * LAST frame before `response.end()`, so the client (whose stream reader stops at the natural end of
+ * the byte stream, not a sentinel line) still reads it before it stops.
  * @param {import('node-fetch').Response} fetchResponse
  * @param {import('express').Response} response
  * @param {object|null|undefined} persist `pendingAssistantPersist`, or a falsy value to skip
  * teeing/persistence entirely and just forward the bytes untouched.
  * @param {(json: any) => string|undefined} extractText Pulls this api_type's own real per-chunk
- * generated-text field out of one parsed SSE JSON payload - see forwardAndPersistSseText()'s own doc
- * comment for the two real shapes this covers at the call sites below.
+ * generated-text field out of one parsed SSE JSON payload - see the two real, DIFFERENT on-wire
+ * shapes this covers at the call sites below (`choices[0].text` for the `/v1/completions`-style
+ * api_types vs. `choices[0].delta.content` for OPENROUTER's `/v1/chat/completions`-style stream).
  * @param {((json: any) => any)|null} [extractProbabilities] Pulls this api_type's own real per-chunk
  * token-probabilities payload (if any) out of one parsed SSE JSON payload - re-encoded as a `0x02`
  * probabilities frame ahead of the content frame it belongs to, same ordering
