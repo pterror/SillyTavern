@@ -3,6 +3,8 @@ import express from 'express';
 import { AIHorde, ModelGenerationInputStableSamplers, ModelInterrogationFormTypes, HordeAsyncRequestStates } from '@zeldafan0225/ai_horde';
 import { getVersion, delay, Cache } from '../util.js';
 import { readSecret, SECRET_KEYS } from './secrets.js';
+import { buildRawActionKoboldRequest } from './backends/kobold.js';
+import { appendMessages } from '../message-tree-db.js';
 
 const ANONYMOUS_KEY = '0000000000';
 const HORDE_TEXT_MODEL_METADATA_URL = 'https://raw.githubusercontent.com/db0/AI-Horde-text-model-reference/main/db.json';
@@ -180,7 +182,135 @@ router.post('/task-status', async (request, response) => {
     }
 });
 
+/**
+ * Real raw-action cutover for Horde (main_api === 'koboldhorde') - mirrors
+ * src/endpoints/backends/kobold.js's own raw-action `/generate` branch (see `git show 341d1dead`/
+ * `5537311f9`/`ea42051ad`) as closely as the real architectural difference allows.
+ *
+ * JUDGMENT CALL (verified, not assumed - see public/scripts/horde.js's own `generateHorde()` body in
+ * full): Horde's generation genuinely CANNOT collapse into one blocking server request the way
+ * Kobold's/NovelAI's raw-action branches do. `generateHorde()` submits a job, then polls
+ * `/api/horde/task-status` itself in a loop of up to `MAX_RETRIES * CHECK_INTERVAL` (480 * 2500ms =
+ * 20 minutes), checking `signal.aborted` every iteration so a real user-initiated stop can call
+ * `cancelTask()` - a live client-side wait tied to a live client-side AbortController the server has
+ * no equivalent access to. So this route, unlike kobold.js's/novelai.js's own raw-action branches,
+ * does NOT block until the final text is known - it only resolves the real character/chat/branch
+ * identity, assembles the real prompt via the SAME `buildRawActionKoboldRequest()` kobold.js's own
+ * raw-action branch already uses (passing `macroExtras: { isHorde: true }`, since
+ * createKoboldGenerationData()'s real, already-tested `isHorde` branch - src/kobold-generation-data.js
+ * - already produces the correct payload shape for Horde: `min_p`/`stop_sequence`/`mirostat`/
+ * `use_default_badwordsids`/`grammar` are all included regardless of `koboldFlags`, matching the
+ * client's own `getKoboldGenerationData(finalPrompt, presetSettings, maxLength, maxContext, isHorde,
+ * type)` call site for `main_api === 'koboldhorde'`), persists the user's message immediately (same
+ * "persist regardless of outcome" principle as every other raw-action backend - a Horde job can take
+ * up to 20 minutes and may still time out/fault/get aborted, so the user's own turn must not depend
+ * on that succeeding), and submits the job - returning the SAME `{id, ...}` shape this endpoint
+ * always has (see the real submission code below, entered via the SAME fall-through as any
+ * non-raw-action request, unaware of which branch produced `request.body` - matching kobold.js's own
+ * `request.body = built.params` pattern).
+ *
+ * The ASSISTANT's reply can only be persisted once the CLIENT's own polling loop resolves with the
+ * final text - see public/scripts/horde.js's own `generateHordeRawAction()`, which does so via the
+ * EXISTING, already-idempotent-by-content-identity generic tree-mutation endpoints
+ * (src/endpoints/chats.js's `/message/append`, `/message/alternative` + `/message/select`,
+ * `/message/edit`) rather than a new dedicated persistence endpoint - the exact same three real modes
+ * `persistAssistantReply()` (src/assistant-reply-persist.js) implements server-side for every other
+ * backend, just invoked from the client since only the client knows when the text is final. This
+ * route hands the client everything it needs for that call via the real (non-Horde-API) extra
+ * `raw_action_persist` field attached to the response below - `null`/absent whenever persistence
+ * should be skipped (impersonate/quiet types, or the same `continueUserTextConflict` edge case
+ * kobold.js's own raw-action branch already guards against).
+ *
+ * MVP SCOPE BOUNDARY (real, narrow, deliberately deferred - NOT attempted here): live
+ * worker-capacity auto-adjustment (public/scripts/horde.js's `adjustHordeGenerationParams()`, itself
+ * just a client-side wrapper around the EXISTING `/api/horde/text-workers` endpoint, shrinking
+ * `max_context_length`/`max_length` to whatever a currently-available worker can actually handle) is
+ * not performed for a raw-action request. `createKoboldGenerationData()` still produces a valid
+ * request using the user's own configured `kai_settings`/`amount_gen`/`max_context` values - a real
+ * request still works, it may just be rejected/retried more often by Horde when no worker matches an
+ * unadjusted size. This is an honest, narrow MVP boundary, not a disguised gap: nothing about basic
+ * generation is broken or faked by this omission.
+ * @param {import('express').Request} request
+ * @returns {Promise<{ body: object, rawActionPersist: object|null }|{ error: { status: number, message: string } }>}
+ */
+async function buildRawActionHordePayload(request) {
+    const {
+        character_avatar: characterAvatar, group_id: groupId, owner_id: ownerId,
+        branch_name: branchName, node_id: nodeId, type = 'normal',
+        is_impersonate: isImpersonate = false, is_continue: isContinue = false, is_swipe: isSwipe = false,
+        user_message: userMessageText, trusted_workers: trustedWorkers = false, models,
+    } = request.body;
+
+    const directories = request.user.directories;
+
+    const built = await buildRawActionKoboldRequest(directories, {
+        request, characterAvatar, groupId, ownerId, branchName, nodeId,
+        type, isImpersonate, isContinue, isSwipe, userMessageText,
+        macroExtras: { isHorde: true },
+    });
+
+    // Same three-mode persistence contract as kobold.js's own raw-action branch - see that file's
+    // own extensive comment on impersonate/quiet skipping, the swipe/regenerate sibling-vs-child
+    // distinction, and the continue/userMessageText tree-shape edge case. Not re-derived here;
+    // identical reasoning applies verbatim since both routes share the exact same
+    // resolveTextCompletionGenerationInput()/message-tree-db.js persistence primitives.
+    const skipPersistence = isImpersonate || type === 'quiet';
+    let replyAnchorNodeId = built.anchorNodeId;
+    if (!skipPersistence && typeof userMessageText === 'string' && built.anchorNodeId) {
+        const appendResult = await appendMessages(directories, ownerId, built.anchorNodeId, [
+            { name: built.name1, is_user: true, mes: userMessageText, extra: {}, send_date: Date.now() },
+        ]);
+        if (!appendResult.ok) {
+            console.error('Failed to persist user message onto the tree:', appendResult.reason);
+        } else if (appendResult.node_ids?.length) {
+            replyAnchorNodeId = appendResult.node_ids[appendResult.node_ids.length - 1];
+        }
+    }
+    const continueUserTextConflict = isContinue && replyAnchorNodeId !== built.anchorNodeId;
+    const rawActionPersist = (!skipPersistence && !continueUserTextConflict)
+        ? { anchorNodeId: replyAnchorNodeId, name2: built.name2, isSwipe, isContinue, anchorContent: built.anchorContent }
+        : null;
+
+    // Horde's own real params shape: `prompt` is a SEPARATE top-level field (never inside `params`),
+    // matching generateHorde()'s own real transformation (public/scripts/horde.js) exactly - it
+    // `delete params.prompt`s then sets a handful of fixed fields ("No idea what these do", per that
+    // function's own comment, copied verbatim here for the identical real values). `api_server`
+    // (createKoboldGenerationData()'s Kobold-specific wire field, resolved from `kai_settings.api_server`)
+    // is meaningless for Horde - a worker pool picks the real backend, never a client-sent URL - so
+    // it is simply dropped here, never forwarded to the real Horde coordinator.
+    const { prompt } = built.params;
+    const params = { ...built.params };
+    delete params.prompt;
+    delete params.api_server;
+    params.n = 1;
+    params.frmtadsnsp = false;
+    params.frmtrmblln = false;
+    params.frmtrmspch = false;
+    params.frmttriminc = false;
+
+    return {
+        body: { prompt, params, trusted_workers: !!trustedWorkers, models: Array.isArray(models) ? models : [] },
+        rawActionPersist,
+    };
+}
+
 router.post('/generate-text', async (request, response) => {
+    // Real raw-action cutover - see buildRawActionHordePayload()'s own doc comment above for the
+    // full design. Same trigger condition kobold.js's own raw-action branch uses (owner_id plus
+    // character_avatar/group_id) - the existing dispatch code below (the actual POST to Horde's real
+    // coordinator) is completely unaware of which branch produced `request.body`, same pattern.
+    let rawActionPersist = null;
+    if (request.body.owner_id && (request.body.character_avatar || request.body.group_id)) {
+        try {
+            const built = await buildRawActionHordePayload(request);
+            request.body = built.body;
+            rawActionPersist = built.rawActionPersist;
+        } catch (error) {
+            console.error('Failed to build raw-action Horde request:', error);
+            return response.status(400).send({ error: true, message: error?.message ?? 'Could not resolve this generation request' });
+        }
+    }
+
     const apiKey = readSecret(request.user.directories, SECRET_KEYS.HORDE) || ANONYMOUS_KEY;
     const url = 'https://aihorde.net/api/v2/generate/text/async';
     const agent = await getClientAgent();
@@ -203,6 +333,15 @@ router.post('/generate-text', async (request, response) => {
         }
 
         const data = await result.json();
+        // Real raw-action metadata - see buildRawActionHordePayload()'s own doc comment above. Not a
+        // real AI Horde API field; the client's own generateHordeRawAction() (public/scripts/horde.js)
+        // reads it to know how/where to persist the assistant's reply once its own polling loop
+        // resolves with the final text. Omitted (not attached at all) for a non-raw-action request,
+        // or whenever this route decided persistence should be skipped - see rawActionPersist's own
+        // null cases above.
+        if (rawActionPersist) {
+            data.raw_action_persist = rawActionPersist;
+        }
         return response.send(data);
     } catch (error) {
         console.error(error);

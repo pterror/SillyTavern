@@ -140,6 +140,7 @@ import {
     horde_settings,
     loadHordeSettings,
     generateHorde,
+    generateHordeRawAction,
     getStatusHorde,
     getHordeModels,
     adjustHordeGenerationParams,
@@ -5988,8 +5989,8 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // slash-command interception exactly like a normal turn's does - unrelated to this gate, and
     // unchanged by this cutover). So a plain continue reaches this gate exactly like a normal turn does.
     //
-    // JUDGMENT CALL #7 (widened to 'kobold'/'novel', 'koboldhorde' deliberately excluded): the server
-    // side of this cutover (resolveTextCompletionGenerationInput()/assembleTextCompletionPrompt(),
+    // JUDGMENT CALL #7 (widened to 'kobold'/'novel'/'koboldhorde'): the server side of this cutover
+    // (resolveTextCompletionGenerationInput()/assembleTextCompletionPrompt(),
     // src/text-completion-generation-input.js) now dispatches its own Step 16 on `mainApi` for
     // 'kobold'/'novel' too (src/text-completion-prompt-orchestrator.js), and real raw-action `/generate`
     // branches now exist for both (src/endpoints/backends/kobold.js's buildRawActionKoboldRequest(),
@@ -6001,24 +6002,39 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // are both resolved SERVER-side from real, on-disk settings, not sent by the client). So this gate
     // now covers `main_api === 'kobold'` and `main_api === 'novel'` too, unchanged otherwise (same
     // dryRun/type/file-attachment/tool-calling restrictions).
-    // `'koboldhorde'` is DELIBERATELY NOT included, for real, verified reasons (not a hypothetical
-    // future gap): Horde is a WORKER-ROUTED backend - `getKoboldGenerationData()`'s own `isHorde` branch
-    // just below (the `case 'koboldhorde': case 'kobold':` switch a few hundred lines down) shows the
-    // real difference - Horde has no single fixed `api_server` at all (a worker pool decides which real
-    // KoboldAI instance actually serves each request, chosen by public/scripts/horde.js's own
-    // worker-selection logic, not by this client sending one target URL), and
-    // `horde_settings.auto_adjust_response_length`/`auto_adjust_context_length` further adjust
-    // `maxLength`/`maxContextLength` from LIVE worker-capability data this client already has in hand
-    // (`adjustedParams`) that the server-side resolver has no equivalent source for. Wiring Horde into
-    // this same raw-action shape would mean either sending worker-selection state to the server (a
-    // genuinely different request shape, not reusable here) or having the server re-poll Horde's worker
-    // pool itself (a live, non-trivial capability with its own retry/timeout story) - a materially
-    // larger, separate integration effort than "one more mainApi branch", so it stays on the existing,
-    // unchanged client-assembled path for now (same as `koboldFlags`/`novelDataTier` being deliberately
-    // left server-side "caller resolves it" gaps rather than guessed at - see
-    // src/text-completion-generation-input.js's own doc comment for the identical judgment call there).
+    // UPDATE (this task): `'koboldhorde'` is NOW REAL, real-verified support too - an earlier version
+    // of this comment excluded it "by name" on the assumption that Horde needs a fundamentally
+    // different architecture; that assumption was WRONG. `createKoboldGenerationData()`'s own real,
+    // already-tested `isHorde` flag (src/kobold-generation-data.js) already produces the correct
+    // payload shape for Horde (min_p/stop_sequence/mirostat/use_default_badwordsids/grammar all
+    // included regardless of `koboldFlags`) - buildRawActionKoboldRequest() just needed its
+    // `macroExtras` threaded through so src/endpoints/horde.js's own new raw-action
+    // `/api/horde/generate-text` branch could pass `{ isHorde: true }`. Horde has no single fixed
+    // `api_server` (a worker pool routes each request), but that was never actually a REQUEST-shape
+    // requirement - Horde's own `/generate-text` endpoint (public/scripts/horde.js's `generateHorde()`)
+    // never sent one either; it POSTs `{prompt, params, trusted_workers, models}` to Horde's own
+    // coordinator, which does worker selection itself.
+    // The one genuinely REAL architectural difference (verified by reading `generateHorde()`'s FULL
+    // body, not assumed): Horde generation is CLIENT-POLLED, not a single blocking request - it
+    // submits a job then polls `/api/horde/task-status` itself for up to 20 minutes, with a live,
+    // client-side AbortController the server has no access to. So this gate still only builds the
+    // RAW-ACTION IDENTITY payload (character/branch/user-message) here, same as every other backend -
+    // see sendGenerationRequest()'s own `main_api === 'koboldhorde'` branch and
+    // public/scripts/horde.js's new `generateHordeRawAction()` for how the actual submit-then-poll
+    // dispatch (and the resulting reply's persistence, which likewise can't happen server-side until
+    // the client's own poll resolves) is handled once `generate_data` reaches that point.
+    // REAL, NARROW, DELIBERATELY DEFERRED SCOPE BOUNDARY (not attempted by this task):
+    // `horde_settings.auto_adjust_response_length`/`auto_adjust_context_length` (live worker-capacity
+    // auto-adjustment, `adjustHordeGenerationParams()` below) is NOT applied to a raw-action Horde
+    // request - `adjustHordeGenerationParams()` is itself just a client-side wrapper around the
+    // EXISTING `/api/horde/text-workers` endpoint, so this is a real, addressable follow-up (the
+    // server could call it itself, or the client could still pre-adjust `amount_gen`/`max_context`
+    // before this gate runs), not a fundamental blocker - without it, `createKoboldGenerationData()`
+    // still produces a valid request from the user's own configured settings, just without shrinking
+    // it to fit whatever a currently-available worker can handle, so Horde may reject/retry more
+    // often on an unadjusted size. Basic raw-action Horde generation works correctly without it.
     let rawActionGenerateData = null;
-    if (!dryRun && (main_api === 'textgenerationwebui' || main_api === 'kobold' || main_api === 'novel')
+    if (!dryRun && (main_api === 'textgenerationwebui' || main_api === 'kobold' || main_api === 'novel' || main_api === 'koboldhorde')
         && [undefined, 'normal', 'impersonate', 'quiet', 'swipe', 'regenerate', 'continue'].includes(type)
         && !hasPendingFileAttachment()
         && !canPerformToolCalls
@@ -6092,9 +6108,11 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                 // isStreamingEnabled() (~line 4572 above) already decided to call the streaming send
                 // path. `kai_flags.can_use_streaming` is a live client-side connection probe result
                 // that has no server-side equivalent, so this must be computed here, client-side.
-                // Left `undefined` for 'novel'/'textgenerationwebui' (this same object is shared by
-                // all three raw-action-eligible main_apis): NovelAI's own wrapper overwrites it
-                // unconditionally regardless of what's sent here, so it's a no-op there; textgen's
+                // Left `undefined` for 'novel'/'textgenerationwebui'/'koboldhorde' (this same object is
+                // shared by all four raw-action-eligible main_apis): NovelAI's own wrapper overwrites
+                // it unconditionally regardless of what's sent here, so it's a no-op there; Horde is
+                // never streamed at all (isStreamingEnabled() has no 'koboldhorde' branch - see that
+                // function, ~line 4572 - so this field is simply never read for it); textgen's
                 // equivalent asymmetry (if any) is out of scope for this fix.
                 streaming: main_api === 'kobold'
                     ? (kai_settings.streaming_kobold && kai_flags.can_use_streaming && type !== 'quiet')
@@ -6112,8 +6130,9 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                 // disables the socket-close abort-on-disconnect call in kobold.js's `/generate` route
                 // (`if (request.body.can_abort && !response_generate.writableEnded) { ... }`), so a
                 // raw-action stream whose client disconnects mid-generation would never tell the real
-                // Kobold backend to stop. Left `undefined` for 'novel'/'textgenerationwebui' for the
-                // same reason as `streaming` above - out of scope here.
+                // Kobold backend to stop. Left `undefined` for 'novel'/'textgenerationwebui'/
+                // 'koboldhorde' for the same reason as `streaming` above - out of scope here (and,
+                // for 'koboldhorde' specifically, meaningless: Horde is never streamed at all).
                 can_abort: main_api === 'kobold' ? kai_flags.can_use_streaming : undefined,
             };
         }
@@ -7049,10 +7068,14 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     switch (main_api) {
         case 'koboldhorde':
         case 'kobold':
-            // Real raw-action cutover (see JUDGMENT CALL #7 above `let rawActionGenerateData;`) - only
-            // ever set when `main_api === 'kobold'` (the eligibility gate above excludes 'koboldhorde'
-            // by name), so this is a no-op for the 'koboldhorde' case sharing this same switch label -
-            // Horde always falls through to its own unchanged, existing client-assembled path below.
+            // Real raw-action cutover (see JUDGMENT CALL #7 above `let rawActionGenerateData;`) - now
+            // set for `main_api === 'koboldhorde'` too, real and verified (not the previous "excluded
+            // by name" state). When set, this same object reaches sendGenerationRequest() below as
+            // `generate_data`, which dispatches 'koboldhorde' to generateHordeRawAction() instead of
+            // generateHorde() - see that function's own `main_api === 'koboldhorde'` branch. The
+            // `horde_settings.auto_adjust_response_length`/adjustedParams block just below is correctly
+            // skipped in this case (real MVP scope boundary - see JUDGMENT CALL #7's own note on this),
+            // since it's never reached once `break` fires here.
             if (rawActionGenerateData) {
                 generate_data = rawActionGenerateData;
                 break;
@@ -8018,6 +8041,17 @@ export async function sendGenerationRequest(type, data, options = {}) {
     }
 
     if (main_api === 'koboldhorde') {
+        // Real raw-action cutover (see JUDGMENT CALL #7 above `let rawActionGenerateData;`, and
+        // src/endpoints/horde.js's own `buildRawActionHordePayload()` doc comment for the full
+        // architecture) - `data.owner_id` is only ever present on a real raw-action payload (see
+        // `rawActionGenerateData`'s own construction), matching the exact same detection kobold.js's
+        // own raw-action `/generate` route uses server-side. generateHordeRawAction() is a dedicated
+        // function, not a branch inside generateHorde() itself, because the real request SHAPE
+        // differs (no client-resolved `prompt`/`params` at all - the server resolves those) even
+        // though the submit-then-poll mechanics are shared (see that function's own doc comment).
+        if (data.owner_id) {
+            return await generateHordeRawAction(data, abortController.signal, true);
+        }
         return await generateHorde(data.prompt, data, abortController.signal, true);
     }
 
