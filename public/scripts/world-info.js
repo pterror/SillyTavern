@@ -1,7 +1,7 @@
 import { Fuse } from '../lib.js';
 
 import { saveSettingsDebounced, substituteParams, getRequestHeaders, chat_metadata, charactersStore, getCurrentCharacter, saveCharacterDebounced, menu_type, eventSource, event_types, getExtensionPromptByName, saveMetadata, getCurrentChatId, extension_prompt_roles, create_save, createOrEditCharacter, name1, getOneCharacter, select_selected_character } from '../script.js';
-import { download, debounce, initScrollHeight, resetScrollHeight, parseJsonFile, extractDataFromPng, getFileBuffer, getCharaFilename, getSortableDelay, escapeRegex, PAGINATION_TEMPLATE, navigation_option, waitUntilCondition, isTrueBoolean, setValueByPath, flashHighlight, select2ModifyOptions, getSelect2OptionId, dynamicSelect2DataViaAjax, highlightRegex, select2ChoiceClickSubscribe, isFalseBoolean, getSanitizedFilename, checkOverwriteExistingData, getStringHash, parseStringArray, cancelDebounce, findChar, onlyUnique, equalsIgnoreCaseAndAccents, uuidv4, normalizeArray, getUniqueName, logSlashCommandWarn, addLongPressEvent, escapeHtml, setInfoBlock, clearInfoBlock } from './utils.js';
+import { download, debounce, initScrollHeight, resetScrollHeight, parseJsonFile, extractDataFromPng, getFileBuffer, getCharaFilename, getSortableDelay, escapeRegex, PAGINATION_TEMPLATE, navigation_option, waitUntilCondition, isTrueBoolean, setValueByPath, flashHighlight, select2ModifyOptions, getSelect2OptionId, dynamicSelect2DataViaAjax, highlightRegex, select2ChoiceClickSubscribe, isFalseBoolean, getSanitizedFilename, checkOverwriteExistingData, getStringHash, parseStringArray, cancelDebounce, findChar, onlyUnique, equalsIgnoreCaseAndAccents, uuidv4, normalizeArray, logSlashCommandWarn, addLongPressEvent, escapeHtml, setInfoBlock, clearInfoBlock } from './utils.js';
 import { extension_settings, getContext } from './extensions.js';
 import { NOTE_MODULE_NAME, metadata_keys, shouldWIAddPrompt } from './authors-note.js';
 import { isMobile } from './RossAscends-mods.js';
@@ -1219,24 +1219,40 @@ function registerWorldInfoSlashCommands() {
     }
 
     async function createWorldWithName(possibleName = undefined, fallbackName = undefined) {
-        let newName = (() => {
-            // Use the provided name if it's not in use
-            if (typeof possibleName === 'string') {
-                const name = String(possibleName);
-                if (world_names.includes(name)) {
-                    throw new Error('This World Info file name is already in use');
-                }
-                return name;
-            }
+        const hasExplicitName = typeof possibleName === 'string';
+        const desiredName = hasExplicitName ? String(possibleName) : (fallbackName ?? `Lorebook (${uuidv4()})`);
 
-            // Replace non-alphanumeric characters with underscores, cut to 64 characters
-            return fallbackName ?? `Lorebook (${uuidv4()})`;
-        })();
+        // The server mints/validates the final name against real on-disk state (POST
+        // /api/worldinfo/create) instead of resolving uniqueness against this client's cached
+        // `world_names`, which could be stale (e.g. another tab created a book with the same name
+        // in the meantime). An explicitly given name (hasExplicitName) must fail loudly on a real
+        // collision, matching this function's prior behavior, rather than be silently renamed; an
+        // auto-generated fallback name (no name given) may be silently uniquified.
+        const response = await fetch('/api/worldinfo/create', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ name: desiredName, unique: !hasExplicitName }),
+        });
 
-        // Make sure the name is unique
-        newName = getUniqueName(newName, world_names.includes.bind(world_names));
+        if (response.status === 409) {
+            throw new Error('This World Info file name is already in use');
+        }
+        if (!response.ok) {
+            throw new Error('Failed to create World Info file');
+        }
 
-        await createNewWorldInfo(newName);
+        /** @type {{ name: string }} */
+        const { name: newName } = await response.json();
+
+        await updateWorldInfoList();
+
+        const selectedIndex = world_names.indexOf(newName);
+        if (selectedIndex !== -1) {
+            $('#world_editor_select').val(selectedIndex).trigger('change');
+        } else {
+            await hideWorldEditor();
+        }
+
         return newName;
     }
 
