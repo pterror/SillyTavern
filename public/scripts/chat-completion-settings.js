@@ -46,6 +46,7 @@ import { forceCharacterEditorTokenize, getCustomStoppingStrings, persona_descrip
 import { SECRET_KEYS, secret_state, writeSecret } from './secrets.js';
 
 import { getEventSourceStream } from './sse-stream.js';
+import { CompactStreamDecoder } from './llamacpp-compact-stream.js';
 import {
     arraysEqual,
     clamp,
@@ -3214,6 +3215,53 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, ra
         throw new Error(`Got response status ${response.status}`);
     }
     if (stream) {
+        // Raw-action chat-completion streams are the compact binary protocol (see
+        // public/scripts/llamacpp-compact-stream.js for the wire format/decoder) instead of raw
+        // SSE-JSON, signaled by this response header - src/endpoints/backends/chat-completions.js's
+        // forwardAndPersistCompactStream() is the only thing that sets it. Every other streaming
+        // path (non-raw-action, and the tool-calling forwardAndPersistSseWithServerTools() round
+        // trips) never sets it and keeps going through the SSE-JSON branch below unchanged.
+        if (response.headers.get('X-ST-Stream-Format') === 'compact-v1-chat') {
+            const reader = response.body.getReader();
+            return async function* streamData() {
+                const decoder = new CompactStreamDecoder();
+                let text = '';
+                const swipes = [];
+                const toolCalls = [];
+                const state = { reasoning: '', images: [], signature: '', toolSignatures: {}, toolCallHandoff: null, toolCallAborted: false };
+                let swipeIndex = 0;
+                while (true) {
+                    const { done, value } = await reader.read();
+                    const events = done ? decoder.flush() : decoder.push(value);
+
+                    for (const event of events) {
+                        if ('content' in event) {
+                            if (canMultiSwipe && swipeIndex > 0) {
+                                const idx = swipeIndex - 1;
+                                swipes[idx] = (swipes[idx] || '') + event.content;
+                            } else {
+                                text += event.content;
+                            }
+                        } else if ('index' in event) {
+                            swipeIndex = event.index;
+                        } else if ('reasoning' in event) {
+                            if (oai_settings.show_thoughts) {
+                                state.reasoning += event.reasoning;
+                            }
+                        } else if ('assistantNodeId' in event) {
+                            state.assistantNodeId = event.assistantNodeId;
+                        }
+                    }
+
+                    if (events.length) {
+                        yield { text, swipes: swipes, logprobs: null, toolCalls: toolCalls, state: state };
+                    }
+
+                    if (done) return;
+                }
+            };
+        }
+
         const eventStream = getEventSourceStream();
         response.body.pipeThrough(eventStream);
         const reader = eventStream.readable.getReader();
