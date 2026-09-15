@@ -3064,7 +3064,9 @@ export async function deleteMessage(id, swipeDeletionIndex = undefined, askConfi
 
     const startIndex = firstMessageId <= minId ? firstMessageId : null;
     updateViewMessageIds(startIndex);
-    saveChatDebounced();
+    if (!persist || !chat_metadata?._tree_stored) {
+        saveChatDebounced();
+    }
 
     refreshSwipeButtons();
 
