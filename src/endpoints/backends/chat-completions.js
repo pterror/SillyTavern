@@ -77,7 +77,7 @@ import {
 import { getVertexAIAuth, getProjectIdFromServiceAccount } from '../google.js';
 import { getCookieSecret } from '../../users.js';
 import { fetchGoogleModels, GoogleModelsHttpError } from './google-models.js';
-import { encodeContent, encodeIndexFrame, encodeReasoningFrame, encodeAssistantNodeIdFrame, encodeToolCallDeltaFrame, encodeControlFrame, createGenerationRecord, withGenerationBuffer, detachFromResponse, handleGenerationResume } from './llamacpp-compact-stream.js';
+import { encodeContent, encodeIndexFrame, encodeReasoningFrame, encodeAssistantNodeIdFrame, encodeToolCallDeltaFrame, encodeControlFrame, createGenerationRecord, createResumableWriter, detachFromResponse, handleGenerationResume } from './llamacpp-compact-stream.js';
 
 const API_OPENAI = 'https://api.openai.com/v1';
 const API_CLAUDE = 'https://api.anthropic.com/v1';
@@ -2991,7 +2991,8 @@ async function forwardAndPersistCompactStream(fetchResponse, response, persist, 
     response.setHeader('X-Generation-Id', generationId);
 
     const generationRecord = createGenerationRecord(generationId);
-    let writer = withGenerationBuffer(createChatCompactStreamWriter(response), generationRecord);
+    const { writer: initialWriter, stopKeepalive } = createResumableWriter(createChatCompactStreamWriter(response), generationRecord);
+    let writer = initialWriter;
     let sseBuffer = '';
     let accumulatedText = '';
     let lastIndex = 0;
@@ -3062,6 +3063,7 @@ async function forwardAndPersistCompactStream(fetchResponse, response, persist, 
         // Client dropped - keep buffering the still-in-flight upstream generation for a possible
         // resume (see llamacpp-compact-stream.js's module doc comment) instead of tearing it down;
         // the persist-and-end logic below still runs once fetchResponse.body ends on its own.
+        stopKeepalive();
         writer = detachFromResponse(generationRecord);
     };
     response.socket?.once('close', onSocketClose);
@@ -3241,7 +3243,7 @@ async function forwardAndPersistCompactStreamWithServerTools(fetchResponse, resp
     const generationId = randomUUID();
     response.setHeader('X-Generation-Id', generationId);
 
-    const writer = withGenerationBuffer(createChatCompactStreamWriter(response), createGenerationRecord(generationId));
+    const { writer } = createResumableWriter(createChatCompactStreamWriter(response), createGenerationRecord(generationId));
 
     let buffer = '';
     let text = '';

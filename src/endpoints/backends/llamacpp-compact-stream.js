@@ -38,6 +38,22 @@ import { persistAssistantReply } from '../../assistant-reply-persist.js';
  *                                                 always one of `{tool_call_handoff: {node_id,
  *                                                 pending_tool_calls}}`, `{tool_call_aborted: true}`, or
  *                                                 `{error: {message}}`.
+ * `0xFF 0x09`                                    = keepalive - no payload, no length prefix (just the
+ *                                                 sentinel + type byte, 2 bytes total). Written by
+ *                                                 `withKeepalive()` whenever a raw-action generation has
+ *                                                 gone `KEEPALIVE_INTERVAL_MS` (see below) without any
+ *                                                 other frame being written, so a connection that's gone
+ *                                                 silently dead on a lossy link (heavy packet loss/flaky
+ *                                                 NAT/VPN - see the module's original design brief) is
+ *                                                 never quiet long enough to be mistaken for one that's
+ *                                                 still alive but just slow. Purely a liveness signal:
+ *                                                 it carries no information, is a no-op for the decoder
+ *                                                 (beyond resetting its "last activity" clock), and is
+ *                                                 deliberately NOT written into the resumable generation
+ *                                                 buffer (see RESUMABILITY below and `withKeepalive()`) -
+ *                                                 there is nothing to replay about a no-op frame, and
+ *                                                 letting it into the buffer would shift the byte-offset
+ *                                                 accounting the `from=<offset>` resume protocol depends on.
  *
  * Private contract with the bundled client; not a public/supported surface.
  *
@@ -62,6 +78,12 @@ export const FRAME_TYPE_TOOL_CALL_DELTA = 0x05;
 export const FRAME_TYPE_IMAGE = 0x06;
 export const FRAME_TYPE_THOUGHT_SIGNATURE = 0x07;
 export const FRAME_TYPE_CONTROL = 0x08;
+export const FRAME_TYPE_KEEPALIVE = 0x09;
+
+// See the RESUMABILITY doc comment above for how this interval was picked relative to the generation
+// buffer's own TTL - it just needs to comfortably beat typical NAT/proxy idle-connection timeouts
+// (commonly 30-60s) without being needlessly chatty.
+export const KEEPALIVE_INTERVAL_MS = 12 * 1000;
 
 /** Escapes any literal 0xFF byte so it can't be mistaken for a control frame. */
 export function encodeContent(text) {
@@ -139,6 +161,10 @@ export function encodeImageFrame(image) {
 
 export function encodeControlFrame(data) {
     return encodeLengthPrefixedJsonFrame(FRAME_TYPE_CONTROL, data);
+}
+
+export function encodeKeepaliveFrame() {
+    return Buffer.from([FRAME_SENTINEL, FRAME_TYPE_KEEPALIVE]);
 }
 
 /** @returns {{bytes: Buffer, index: number}} */
@@ -299,6 +325,70 @@ export function withGenerationBuffer(writer, record) {
             record.finish();
             writer.end();
         },
+    };
+}
+
+/**
+ * Wraps a writer so that whenever `KEEPALIVE_INTERVAL_MS` passes with no call to `write()`, a keepalive
+ * frame is written on its own. Must be the innermost wrapper around the real response writer (i.e.
+ * `withGenerationBuffer()` wraps THIS, not the other way around): the keepalive frames this writes on
+ * its own timer go straight to `writer` and never pass through `write()`'s own caller, so they never
+ * reach `withGenerationBuffer()`'s `record.append()` and never shift the resume buffer's byte offsets.
+ * @param {{write: (buf: Buffer) => void, end: () => void}} writer
+ * @param {number} [intervalMs]
+ */
+export function withKeepalive(writer, intervalMs = KEEPALIVE_INTERVAL_MS) {
+    const keepaliveFrame = encodeKeepaliveFrame();
+    let ended = false;
+    /** @type {NodeJS.Timeout | null} */
+    let timer = null;
+
+    function reschedule() {
+        if (timer) clearTimeout(timer);
+        if (ended) return;
+        timer = setTimeout(() => {
+            writer.write(keepaliveFrame);
+            reschedule();
+        }, intervalMs);
+        timer.unref?.();
+    }
+
+    reschedule();
+
+    return {
+        write(/** @type {Buffer} */ buf) {
+            if (ended) return;
+            writer.write(buf);
+            reschedule();
+        },
+        end() {
+            if (ended) return;
+            ended = true;
+            if (timer) clearTimeout(timer);
+            writer.end();
+        },
+    };
+}
+
+/**
+ * Combines `withKeepalive()` and `withGenerationBuffer()` in the one order that keeps keepalive frames
+ * out of the resume buffer (see both functions' own doc comments) - the composition every raw-action
+ * streaming call site needs, so they don't each have to get that ordering right by hand.
+ * @param {{write: (buf: Buffer) => void, end: () => void}} baseWriter The real writer for the live
+ * response (`createBackpressureWriter()`'s return value, or an equivalent).
+ * @param {GenerationRecord} record
+ * @param {number} [intervalMs]
+ * @returns {{writer: {write: (buf: Buffer) => void, end: () => void}, stopKeepalive: () => void}}
+ * `writer` is what callers should write real frames to and reassign to `detachFromResponse(record)` on
+ * client disconnect, same as before; `stopKeepalive` must be called at that same disconnect point, since
+ * the keepalive timer otherwise has no other way to learn the live response is gone and would keep
+ * firing indefinitely against a dead socket.
+ */
+export function createResumableWriter(baseWriter, record, intervalMs = KEEPALIVE_INTERVAL_MS) {
+    const keepaliveWriter = withKeepalive(baseWriter, intervalMs);
+    return {
+        writer: withGenerationBuffer(keepaliveWriter, record),
+        stopKeepalive: () => keepaliveWriter.end(),
     };
 }
 
@@ -477,7 +567,8 @@ export async function pipeLlamaCppCompactStream(upstreamResponse, response, pers
         response.setHeader('X-Generation-Id', id);
 
         const generationRecord = createGenerationRecord(id);
-        let writer = withGenerationBuffer(createBackpressureWriter(response), generationRecord);
+        const { writer: initialWriter, stopKeepalive } = createResumableWriter(createBackpressureWriter(response), generationRecord);
+        let writer = initialWriter;
         const decoder = new StringDecoder('utf8');
         let sseBuffer = '';
         let lastIndex = 0;
@@ -559,6 +650,7 @@ export async function pipeLlamaCppCompactStream(upstreamResponse, response, pers
             // down, so a client that reconnects via GET /generate/resume/:id gets the live
             // continuation rather than just whatever streamed before the drop. `finish()` still runs,
             // persisting the full reply, once the upstream body actually ends on its own below.
+            stopKeepalive();
             writer = detachFromResponse(generationRecord);
         });
     });
