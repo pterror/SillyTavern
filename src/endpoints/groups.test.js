@@ -242,6 +242,30 @@ async function run() {
         assert.deepEqual({ ...onDisk, auto_mode_delay: fixture.auto_mode_delay }, fixture, 'every other field is untouched');
     }
 
+    // (k2) two independent /save-partial calls for DIFFERENT fields, issued back-to-back without
+    // awaiting the first before starting the second - simulates the scenario that motivated
+    // group-chats.js's per-(id, field-set) debounce-key fix (see this task's own report): a user
+    // toggles one field then immediately edits another, and each edit is dispatched as its own
+    // request by the (now per-field-keyed) client debounce instead of one shared timer dropping the
+    // first edit's args. This validates the SERVER's own read-then-merge-then-write is safe for that
+    // pattern - each request reads the current file, merges only its own field, and writes - so both
+    // edits land as long as the writes are not truly simultaneous (they are serialized in practice by
+    // the client's own debounce delay, which is exactly what the client-side fix now guarantees for
+    // different fields).
+    {
+        const id = 'group-concurrent-fields';
+        writeGroupFixture(id);
+        const [first, second] = await Promise.all([
+            postJson(app, '/api/groups/save-partial', { id, props: { name: 'Renamed Concurrently' } }),
+            postJson(app, '/api/groups/save-partial', { id, props: { fav: true } }),
+        ]);
+        assert.equal(first.status, 200);
+        assert.equal(second.status, 200);
+        const onDisk = readGroupFromDisk(id);
+        assert.equal(onDisk.name, 'Renamed Concurrently', 'the first field-edit was not dropped by the second');
+        assert.equal(onDisk.fav, true, 'the second field-edit was not dropped by the first');
+    }
+
     // (k) unknown id still 404s, and a malformed body still 400s (baseline route-shape regression guard).
     {
         const { status } = await postJson(app, '/api/groups/save-partial', { id: 'does-not-exist', props: { name: 'x' } });
