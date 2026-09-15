@@ -6199,15 +6199,15 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // requirement - Horde's own `/generate-text` endpoint (public/scripts/horde.js's `generateHorde()`)
     // never sent one either; it POSTs `{prompt, params, trusted_workers, models}` to Horde's own
     // coordinator, which does worker selection itself.
-    // The one genuinely REAL architectural difference (verified by reading `generateHorde()`'s FULL
-    // body, not assumed): Horde generation is CLIENT-POLLED, not a single blocking request - it
-    // submits a job then polls `/api/horde/task-status` itself for up to 20 minutes, with a live,
-    // client-side AbortController the server has no access to. So this gate still only builds the
-    // RAW-ACTION IDENTITY payload (character/branch/user-message) here, same as every other backend -
-    // see sendGenerationRequest()'s own `main_api === 'koboldhorde'` branch and
-    // public/scripts/horde.js's new `generateHordeRawAction()` for how the actual submit-then-poll
-    // dispatch (and the resulting reply's persistence, which likewise can't happen server-side until
-    // the client's own poll resolves) is handled once `generate_data` reaches that point.
+    // UPDATE (server-side streaming cutover): Horde generation is no longer client-polled at all -
+    // src/endpoints/horde.js's `/generate-text` route now submits the job to Horde AND polls it
+    // internally, streaming the result back over the same compact-v1 wire protocol every other
+    // backend uses (keepalive frames while waiting, a content frame once done, a real server-side
+    // `persistAssistantReply()` call for a raw-action request, then the `assistant_node_id` frame).
+    // This gate still only builds the RAW-ACTION IDENTITY payload (character/branch/user-message)
+    // here, same as every other backend - see sendGenerationRequest()'s own `main_api ===
+    // 'koboldhorde'` branch and public/scripts/horde.js's `generateHordeRawAction()` for how the
+    // request reaches the server and the resulting stream is consumed.
     // REAL, NARROW, DELIBERATELY DEFERRED SCOPE BOUNDARY (not attempted by this task):
     // `horde_settings.auto_adjust_response_length`/`auto_adjust_context_length` (live worker-capacity
     // auto-adjustment, `adjustHordeGenerationParams()` below) is NOT applied to a raw-action Horde
