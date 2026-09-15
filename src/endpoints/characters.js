@@ -1557,10 +1557,15 @@ router.post('/chat', getFileNameValidationFunction('avatar'), async function (re
         if (typeof avatar !== 'string' || !avatar) {
             return response.status(400).send({ error: true, reason: 'avatar-required' });
         }
-        if (typeof chat !== 'string' || !chat) {
+        // An empty string (or explicit null) is a real, valid pointer value now: "this character has
+        // no active chat right now" - not an error. A character's conversation needs no name/id
+        // until the user labels a point in it (Workstream 6), so callers must be able to persist
+        // "no active chat" the same way they persist a real one. Only a missing/wrong-typed `chat`
+        // (the field absent from the body entirely, or not a string) is a malformed request.
+        if (chat !== null && typeof chat !== 'string') {
             return response.status(400).send({ error: true, reason: 'chat-required' });
         }
-        const updated = await setCharacterActiveChat(request.user.directories, avatar, chat);
+        const updated = await setCharacterActiveChat(request.user.directories, avatar, chat || null);
         if (!updated) {
             return response.status(404).send({ error: true, reason: 'not-tracked' });
         }

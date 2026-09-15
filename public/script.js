@@ -11,7 +11,7 @@ import {
     lodash,
 } from './lib.js';
 
-import { humanizedDateTime, favsToHotswap, getMessageTimeStamp, dragElement, isMobile, initRossMods, RA_CountCharTokens } from './scripts/RossAscends-mods.js';
+import { favsToHotswap, getMessageTimeStamp, dragElement, isMobile, initRossMods, RA_CountCharTokens } from './scripts/RossAscends-mods.js';
 import { EntityStore } from './scripts/entity-store.js';
 import { userStatsHandler, statMesProcess, initStats } from './scripts/stats.js';
 import {
@@ -1193,7 +1193,11 @@ export async function selectCharacterByAvatar(avatar, { switchMenu = true } = {}
             });
             if (response.ok) {
                 const data = await response.json();
-                data.chat = String(data.chat);
+                // Same normalization as finalizeFetchedCharacter(): a character with no active
+                // chat pointer comes back with `chat` unset/null (Workstream 6 - that's a valid,
+                // common state now, not an error) - `String(undefined)` would otherwise corrupt it
+                // into the literal string "undefined" and get treated as a real (bogus) chat name.
+                data.chat = data.chat ? String(data.chat) : '';
                 data.shallow = false;
                 // Re-check: a concurrent fetch may have made this resident while this request was in flight.
                 entity = charactersStore.get(avatar) ?? charactersStore.create(data)?.entity;
@@ -1789,7 +1793,9 @@ export async function getOneCharacter(avatarUrl) {
 
     if (response.ok) {
         const getData = await response.json();
-        getData.chat = String(getData.chat);
+        // See selectCharacterByAvatar()'s identical fix: `chat` can legitimately be unset/null now
+        // (Workstream 6), and `String(undefined)` would corrupt it into the literal "undefined".
+        getData.chat = getData.chat ? String(getData.chat) : '';
         // This response is always full data; reset shallow explicitly or a once-shallow entity stays shallow forever.
         getData.shallow = false;
 
@@ -2634,6 +2640,11 @@ export async function deleteCharacterChatByName(avatar, fileName) {
     }
 
     if (fileName === character.chat) {
+        // `character` here is whichever character owned the deleted chat - not necessarily the
+        // globally-selected/on-screen one (this is called from the "recent chats" list, which can
+        // list any character). So this only needs to repoint that character's own stored active-chat
+        // pointer server-side; it must not touch the live `chat`/`chat_metadata` UI state, which
+        // belongs to whatever character is actually being displayed right now.
         const chatsResponse = await fetch('/api/characters/chats', {
             method: 'POST',
             headers: getRequestHeaders(),
@@ -2643,11 +2654,42 @@ export async function deleteCharacterChatByName(avatar, fileName) {
         // Guards against { error: true } (not an array) on a real read failure.
         const chats = Array.isArray(chatsData) ? chatsData : [];
         chats.sort((a, b) => sortMoments(timestampToMoment(a.last_mes), timestampToMoment(b.last_mes)));
-        const newChatName = chats.length && typeof chats[0] === 'object' ? chats[0].file_name.replace('.jsonl', '') : '';
-        await updateRemoteChatName(character.avatar, newChatName);
+        // Resume the next most recently active labeled checkpoint, if any (node_id when this
+        // character is tree-backed, else the JSONL-era name). If none remain, there is nothing left
+        // to point at by name - clearing the pointer is a valid, final state (Workstream 6), not
+        // something needing a fabricated replacement name.
+        const successor = chats.length && typeof chats[0] === 'object'
+            ? (chats[0].node_id || chats[0].file_name.replace('.jsonl', ''))
+            : '';
+        await updateRemoteChatName(character.avatar, successor);
     }
 
     await eventSource.emit(event_types.CHAT_DELETED, fileName);
+}
+
+/**
+ * Clears this character's active-chat pointer and rebuilds the opening state from the card/tree,
+ * with no name-minting step (Workstream 6: a character's conversation is one anchor with no
+ * required name - "nothing to point at yet" is a valid, final state, not something that needs a
+ * fabricated `${name} - ${timestamp}` string, client- or server-side).
+ *
+ * getFirstMessage() -> _openingFromTree() resolves this character's real, stored opening node id
+ * whenever real anchor-rooted history already exists (even if it was never labeled/named) - and
+ * loadAtNode()'s own default-child descent (server-side) recovers the FULL current conversation
+ * from that single node id on the next load, not just the opening line. Only a genuinely
+ * never-touched character, or one whose card-only greeting has never been used, falls back to an
+ * empty pointer here.
+ */
+async function pointToFreshChat() {
+    charactersStore.update(getCurrentCharacter().avatar, { chat: '' });
+    $('#selected_chat_pole').val('');
+    await getChat({ isNewChat: true });
+    // getChat() can refetch and clobber the clear above back to a still-old server value; reapply it before the save below.
+    const openingNodeId = chat[0]?.node_id;
+    const pointer = isStoredNodeId(openingNodeId) ? openingNodeId : '';
+    charactersStore.update(getCurrentCharacter().avatar, { chat: pointer });
+    $('#selected_chat_pole').val(pointer);
+    await saveActiveChat(getCurrentCharacter().avatar, pointer);
 }
 
 export async function replaceCurrentChat() {
@@ -2664,17 +2706,18 @@ export async function replaceCurrentChat() {
         chats.sort((a, b) => sortMoments(timestampToMoment(a.last_mes), timestampToMoment(b.last_mes)));
 
         if (chats.length && typeof chats[0] === 'object') {
-            // pick existing chat
-            charactersStore.update(getCurrentCharacter().avatar, { chat: chats[0].file_name.replace('.jsonl', '') });
+            // Resume the most recently active labeled checkpoint. `/api/characters/chats` lists
+            // branches (labeled tree nodes) when this character is tree-backed - node_id addresses
+            // it exactly; the JSONL-era fallback shape has no node_id, so fall back to its name.
+            const pointer = chats[0].node_id || chats[0].file_name.replace('.jsonl', '');
+            charactersStore.update(getCurrentCharacter().avatar, { chat: pointer });
             $('#selected_chat_pole').val(getCurrentCharacter().chat);
             await saveActiveChat(getCurrentCharacter().avatar, getCurrentCharacter().chat);
             await getChat();
         } else {
-            // start new chat
-            charactersStore.update(getCurrentCharacter().avatar, { chat: `${name2} - ${humanizedDateTime()}` });
-            $('#selected_chat_pole').val(getCurrentCharacter().chat);
-            await saveActiveChat(getCurrentCharacter().avatar, getCurrentCharacter().chat);
-            await getChat({ isNewChat: true });
+            // No labeled checkpoint exists for this character. That does not mean "nothing to
+            // resume" - it only means nothing has been explicitly named (see pointToFreshChat()).
+            await pointToFreshChat();
         }
     }
 }
@@ -10261,7 +10304,12 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
         return;
     }
 
-    if (!fileName) {
+    // A tree-backed chat needs no name/id pointer to save under (Workstream 6): _saveTreeChat()
+    // addresses every write by each message's own real node id, falling back to `fileName` only as
+    // a last resort that's unreachable once any message has actually persisted (see its own
+    // comments). The legacy JSONL path has no such fallback - it truly cannot save without a name.
+    const isTreeChat = !!metadata?._tree_stored && !Array.isArray(chatData);
+    if (!fileName && !isTreeChat) {
         console.warn('saveChat called without chat_name and no chat file found');
         return;
     }
@@ -10282,8 +10330,6 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
     };
 
     try {
-        const isTreeChat = !!metadata?._tree_stored && !Array.isArray(chatData);
-
         if (isTreeChat) {
             const treeResult = await _saveTreeChat(fileName, metadata, trimmedChat, chatName !== undefined);
             if (treeResult) {
@@ -14904,20 +14950,12 @@ export async function doNewChat({ deleteCurrentChat = false } = {}) {
         await createNewGroupChat(selected_group);
         if (deleteCurrentChat) await deleteGroupChat(selected_group, chat_file_for_del, { jumpToNewChat: false }); // don't jump, new chat was already created and jumped to above
     } else {
-        //RossAscends: added character name to new chat filenames and replaced Date.now() with humanizedDateTime;
+        // Workstream 6: a brand-new conversation needs no name-minting step at all, client- or
+        // server-side - it's just an empty tree under this character's anchor until the user
+        // sends a message (which mints a real row) or explicitly labels a point in it. See
+        // pointToFreshChat() for how the pointer is (or isn't) actually resolved.
         chat_metadata = {};
-        const newChatName = `${name2} - ${humanizedDateTime()}`;
-        charactersStore.update(getCurrentCharacter().avatar, { chat: newChatName });
-        $('#selected_chat_pole').val(newChatName);
-        await getChat({ isNewChat: true });
-        // getChat() can refetch and clobber the chat rename above back to the still-old server value; reapply it before the save below.
-        // Points at the opening node itself when it's a real row; a card-only greeting has no row to point at, so the name stays the pointer.
-        const openingNodeId = chat[0]?.node_id;
-        const pointer = isStoredNodeId(openingNodeId) ? openingNodeId : newChatName;
-
-        charactersStore.update(getCurrentCharacter().avatar, { chat: pointer });
-        $('#selected_chat_pole').val(pointer);
-        await saveActiveChat(getCurrentCharacter().avatar, pointer);
+        await pointToFreshChat();
         if (deleteCurrentChat) await delChat(chat_file_for_del + '.jsonl');
     }
 }
@@ -15052,9 +15090,9 @@ export async function closeCurrentChat() {
 }
 
 /**
- * Forces the update of the chat name for a remote character.
- * @param {string} avatar Character avatar to update chat name for
- * @param {string} newName New name for the chat
+ * Forces the update of a character's stored active-chat pointer.
+ * @param {string} avatar Character avatar to update the pointer for
+ * @param {string} newName New pointer value (a node id, a legacy chat name, or '' to clear it - "no active chat" is a valid state)
  * @returns {Promise<void>}
  */
 export async function updateRemoteChatName(avatar, newName) {
