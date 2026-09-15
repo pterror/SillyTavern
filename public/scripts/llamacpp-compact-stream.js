@@ -1,22 +1,27 @@
 /**
- * Decoder for the compact llama.cpp streaming wire format emitted by the server's
- * `/api/backends/text-completions/generate` route (llama.cpp raw-completions path only, signaled by the
- * `X-ST-Stream-Format: compact-v1` response header). See src/endpoints/backends/llamacpp-compact-stream.js
- * on the server for the encoder side and the full protocol description.
+ * Decoder for the compact streaming wire format emitted by the server's
+ * `/api/backends/text-completions/generate` route, signaled by the `X-ST-Stream-Format: compact-v1`
+ * response header - originally llama.cpp-only, now also used by the general SSE-JSON text-completion
+ * path. See src/endpoints/backends/llamacpp-compact-stream.js on the server for the encoder side and
+ * the full protocol description.
  *
  * Plain bytes = raw UTF-8 text, appended directly to accumulated content.
  * `0xFF 0xFF`                                    = one literal content byte 0xFF (defensive escape).
  * `0xFF 0x01 <1 byte index>`                     = target/swipe index changed.
  * `0xFF 0x02 <4-byte BE length><length bytes>`    = token-probabilities payload (JSON) for the current token.
+ * `0xFF 0x03 <4-byte BE length><length bytes>`    = reasoning/thinking text chunk (UTF-8), not content.
+ * `0xFF 0x04 <4-byte BE length><length bytes>`    = assistant_node_id (UTF-8 string), the final frame.
  *
  * This is a private contract between ST's own server and ST's own client, not a public/supported surface.
  */
 export const FRAME_SENTINEL = 0xFF;
 export const FRAME_TYPE_INDEX = 0x01;
 export const FRAME_TYPE_PROBABILITIES = 0x02;
+export const FRAME_TYPE_REASONING = 0x03;
+export const FRAME_TYPE_ASSISTANT_NODE_ID = 0x04;
 
 /**
- * @typedef {{content: string} | {index: number} | {probabilities: any}} CompactStreamEvent
+ * @typedef {{content: string} | {index: number} | {probabilities: any} | {reasoning: string} | {assistantNodeId: string}} CompactStreamEvent
  */
 
 /**
@@ -124,6 +129,27 @@ export class CompactStreamDecoder {
                 } catch (error) {
                     console.warn('Failed to parse compact stream probabilities frame:', error);
                 }
+                i += total;
+                continue;
+            }
+
+            if (type === FRAME_TYPE_REASONING || type === FRAME_TYPE_ASSISTANT_NODE_ID) {
+                if (i + 6 > buf.length) {
+                    flushContent();
+                    this.pending = buf.subarray(i);
+                    return events;
+                }
+                const len = ((buf[i + 2] << 24) | (buf[i + 3] << 16) | (buf[i + 4] << 8) | buf[i + 5]) >>> 0;
+                const total = 6 + len;
+                if (i + total > buf.length) {
+                    flushContent();
+                    this.pending = buf.subarray(i);
+                    return events;
+                }
+                flushContent();
+                const textBytes = buf.subarray(i + 6, i + total);
+                const text = new TextDecoder('utf-8').decode(textBytes);
+                events.push(type === FRAME_TYPE_REASONING ? { reasoning: text } : { assistantNodeId: text });
                 i += total;
                 continue;
             }
