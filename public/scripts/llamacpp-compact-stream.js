@@ -19,6 +19,11 @@
  *                                                   server-tool-calling stream's end-of-round
  *                                                   signals: `{tool_call_handoff}`/
  *                                                   `{tool_call_aborted}`/`{error}`).
+ * `0xFF 0x09`                                     = keepalive - no payload (2 bytes total). A pure
+ *                                                   liveness signal for lossy connections; decoded as
+ *                                                   a no-op (no event pushed) but still resets
+ *                                                   `ResumableCompactStreamReader`'s stall-detection
+ *                                                   timer, same as any real frame would.
  *
  * This is a private contract between ST's own server and ST's own client, not a public/supported surface.
  */
@@ -31,6 +36,18 @@ export const FRAME_TYPE_TOOL_CALL_DELTA = 0x05;
 export const FRAME_TYPE_IMAGE = 0x06;
 export const FRAME_TYPE_THOUGHT_SIGNATURE = 0x07;
 export const FRAME_TYPE_CONTROL = 0x08;
+export const FRAME_TYPE_KEEPALIVE = 0x09;
+
+// Must match src/endpoints/backends/llamacpp-compact-stream.js's own KEEPALIVE_INTERVAL_MS - how often
+// the server injects a keepalive frame into an in-flight raw-action stream.
+export const SERVER_KEEPALIVE_INTERVAL_MS = 12 * 1000;
+
+// How long ResumableCompactStreamReader waits for ANY frame (content or keepalive) before deciding the
+// connection has silently died and proactively resuming, rather than waiting on the browser's own
+// fetch/reader (which can take minutes, or never, to notice a dead socket on a lossy link). 3x the
+// server's own keepalive interval: comfortably past one missed keepalive (a single slow/lost packet)
+// while still being much faster than relying on OS-level detection.
+export const STREAM_STALL_TIMEOUT_MS = 3 * SERVER_KEEPALIVE_INTERVAL_MS;
 
 /**
  * @typedef {{content: string} | {index: number} | {probabilities: any} | {reasoning: string} | {assistantNodeId: string} | {toolCallDelta: any} | {image: {mimeType: string, data: string}} | {thoughtSignature: string} | {control: any}} CompactStreamEvent
@@ -45,6 +62,11 @@ export class CompactStreamDecoder {
         /** @type {Uint8Array} Bytes carried over from a previous push() because a frame was incomplete. */
         this.pending = new Uint8Array(0);
         this.textDecoder = new TextDecoder('utf-8', { fatal: false });
+        /** @type {number} `Date.now()` of the last time push() saw any bytes at all (content, a
+         * control frame, or a keepalive) - a keepalive resets this exactly like real content does,
+         * since its only job is proving the connection is still alive. Read by
+         * `ResumableCompactStreamReader` to detect a stalled-but-not-closed connection. */
+        this.lastActivityAt = Date.now();
     }
 
     /**
@@ -67,6 +89,8 @@ export class CompactStreamDecoder {
      * @returns {CompactStreamEvent[]} Structured events decoded from this chunk (plus any carried-over bytes)
      */
     push(chunk) {
+        if (chunk?.length) this.lastActivityAt = Date.now();
+
         const buf = CompactStreamDecoder.concat(this.pending, chunk);
         this.pending = new Uint8Array(0);
 
@@ -105,6 +129,15 @@ export class CompactStreamDecoder {
             if (type === FRAME_SENTINEL) {
                 // Escaped literal 0xFF content byte.
                 contentRuns.push(Uint8Array.of(FRAME_SENTINEL));
+                i += 2;
+                continue;
+            }
+
+            if (type === FRAME_TYPE_KEEPALIVE) {
+                // No payload, no length prefix - just the sentinel + type byte, both already in hand
+                // at this point. A no-op: no event pushed, but push()'s lastActivityAt update above
+                // already counts it as activity.
+                flushContent();
                 i += 2;
                 continue;
             }
@@ -258,6 +291,14 @@ export class CompactStreamDecoder {
  * also drops after exhausting `maxResumeAttempts`), the original read error is re-thrown so the
  * caller's existing failure handling (today's "treat as a partial/failed generation" behavior) is
  * unchanged.
+ *
+ * STALL DETECTION: a dead connection doesn't always surface as a `reader.read()` error - on a lossy
+ * link/flaky NAT/proxy, the socket can go silently dead with no RST reaching either side, so `read()`
+ * would otherwise just hang forever waiting on OS-level detection (which can take minutes, or never
+ * happen at all). To avoid that, every `read()` races the underlying read against a
+ * `STREAM_STALL_TIMEOUT_MS` timer that only the arrival of bytes (real content OR a `0x09` keepalive
+ * frame - see the server's `KEEPALIVE_INTERVAL_MS`) resets; if it fires, the stalled read is cancelled
+ * and treated exactly like a genuine `reader.read()` error, going through the same resume path above.
  */
 export class ResumableCompactStreamReader {
     /**
@@ -269,23 +310,55 @@ export class ResumableCompactStreamReader {
      * @param {number} [maxResumeAttempts] Gives up (and re-throws the last read error) after this
      * many consecutive successful-resume-but-dropped-again cycles, so a persistently bad connection
      * can't loop forever.
+     * @param {number} [stallTimeoutMs] How long to wait for ANY bytes before treating the connection as
+     * stalled and proactively resuming; see STALL DETECTION above.
      */
-    constructor(response, resumeUrlBase, getRequestHeaders = null, maxResumeAttempts = 5) {
+    constructor(response, resumeUrlBase, getRequestHeaders = null, maxResumeAttempts = 5, stallTimeoutMs = STREAM_STALL_TIMEOUT_MS) {
         this.reader = response.body.getReader();
         this.generationId = response.headers.get('X-Generation-Id');
         this.resumeUrlBase = resumeUrlBase;
         this.getRequestHeaders = getRequestHeaders;
         this.maxResumeAttempts = maxResumeAttempts;
+        this.stallTimeoutMs = stallTimeoutMs;
         this.bytesReceived = 0;
         this.resumeAttempts = 0;
         this.gaveUp = false;
+    }
+
+    /**
+     * Races `this.reader.read()` against `this.stallTimeoutMs`; on timeout, cancels the stalled reader
+     * (so its underlying connection is actually torn down rather than left dangling) and throws a
+     * `StreamStallError` - deliberately not named `AbortError`, so `read()`'s catch block below treats
+     * it as a genuine drop rather than the caller's own intentional abort.
+     * @returns {Promise<{done: boolean, value: Uint8Array | undefined}>}
+     */
+    async readWithStallTimeout() {
+        let timer;
+        const stalled = new Promise((_resolve, reject) => {
+            timer = setTimeout(() => {
+                const error = new Error(`No data received for ${this.stallTimeoutMs}ms; treating connection as stalled`);
+                error.name = 'StreamStallError';
+                reject(error);
+            }, this.stallTimeoutMs);
+        });
+
+        try {
+            return await Promise.race([this.reader.read(), stalled]);
+        } catch (error) {
+            if (error?.name === 'StreamStallError') {
+                this.reader.cancel().catch(() => { });
+            }
+            throw error;
+        } finally {
+            clearTimeout(timer);
+        }
     }
 
     /** @returns {Promise<{done: boolean, value: Uint8Array | undefined}>} */
     async read() {
         for (; ;) {
             try {
-                const result = await this.reader.read();
+                const result = await this.readWithStallTimeout();
                 if (result.value) this.bytesReceived += result.value.length;
                 return result;
             } catch (error) {

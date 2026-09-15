@@ -15,7 +15,7 @@ import {
 import { forwardFetchResponse, trimV1, getConfigValue } from '../../util.js';
 import { setAdditionalHeaders } from '../../additional-headers.js';
 import { createHash, randomUUID } from 'node:crypto';
-import { pipeLlamaCppCompactStream, getLlamaCppStreamMeta, createBackpressureWriter, createGenerationRecord, withGenerationBuffer, detachFromResponse, handleGenerationResume, encodeContent, encodeIndexFrame, encodeReasoningFrame, encodeAssistantNodeIdFrame, encodeProbabilitiesFrame } from './llamacpp-compact-stream.js';
+import { pipeLlamaCppCompactStream, getLlamaCppStreamMeta, createBackpressureWriter, createGenerationRecord, createResumableWriter, detachFromResponse, handleGenerationResume, encodeContent, encodeIndexFrame, encodeReasoningFrame, encodeAssistantNodeIdFrame, encodeProbabilitiesFrame } from './llamacpp-compact-stream.js';
 import { resolveTextGenBackend, resolveServerUrl } from '../../textgen-backend-resolve.js';
 import { resolveConnectionProfile } from '../../connection-profile-resolve.js';
 import { mergeTextGenPreset } from '../../textgen-preset-merge.js';
@@ -62,7 +62,8 @@ async function parseOllamaStream(jsonStream, request, response, persist) {
         const generationId = randomUUID();
         response.setHeader('X-Generation-Id', generationId);
         const generationRecord = createGenerationRecord(generationId);
-        let writer = withGenerationBuffer(createBackpressureWriter(response), generationRecord);
+        const { writer: initialWriter, stopKeepalive } = createResumableWriter(createBackpressureWriter(response), generationRecord);
+        let writer = initialWriter;
 
         let partialData = '';
         let accumulatedText = '';
@@ -106,6 +107,7 @@ async function parseOllamaStream(jsonStream, request, response, persist) {
             // Client dropped - keep buffering the still-in-flight upstream generation for a possible
             // resume (see llamacpp-compact-stream.js's module doc comment) instead of tearing it
             // down; `finishPersist()` still runs once jsonStream.body actually ends on its own below.
+            stopKeepalive();
             writer = detachFromResponse(generationRecord);
         });
 
@@ -181,13 +183,15 @@ export async function forwardAndPersistCompactStream(fetchResponse, response, pe
     // call site here. Wrapped so every byte is also retained for a resume (see
     // llamacpp-compact-stream.js's withGenerationBuffer()/handleGenerationResume()).
     const generationRecord = createGenerationRecord(generationId);
-    let writer = withGenerationBuffer(createBackpressureWriter(response), generationRecord);
+    const { writer: initialWriter, stopKeepalive } = createResumableWriter(createBackpressureWriter(response), generationRecord);
+    let writer = initialWriter;
     const safeWrite = (chunk) => writer.write(chunk);
 
     const onSocketClose = () => {
         // Client dropped - keep buffering the still-in-flight upstream generation for a possible
         // resume instead of tearing it down; the persist-and-end logic below still runs once
         // fetchResponse.body actually ends on its own.
+        stopKeepalive();
         writer = detachFromResponse(generationRecord);
     };
     response.socket?.once('close', onSocketClose);
