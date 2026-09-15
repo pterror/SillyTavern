@@ -156,6 +156,52 @@ function buildSettingsFixture() {
             send_banned_tokens: false,
             logit_bias: [],
         },
+        kai_settings: {
+            temp: 0.65,
+            rep_pen: 1.05,
+            rep_pen_range: 512,
+            top_p: 0.9,
+            top_k: 0,
+            top_a: 0,
+            typical: 1,
+            tfs: 1,
+            min_p: 0.02,
+            rep_pen_slope: 0,
+            sampler_order: [6, 0, 1, 2, 3, 4, 5],
+            mirostat: 0,
+            mirostat_tau: 5,
+            mirostat_eta: 0.1,
+            use_default_badwordsids: false,
+            grammar: '',
+            streaming_kobold: false,
+            api_server: 'http://localhost:5001',
+        },
+        nai_settings: {
+            model_novel: 'clio-v1',
+            temperature: 1.5,
+            min_length: 1,
+            tail_free_sampling: 0.975,
+            repetition_penalty: 2.25,
+            repetition_penalty_range: 2048,
+            repetition_penalty_slope: 0.09,
+            repetition_penalty_frequency: 0,
+            repetition_penalty_presence: 0.005,
+            top_a: 0.08,
+            top_p: 0.75,
+            top_k: 10,
+            min_p: 0,
+            math1_temp: 0,
+            math1_quad: 0,
+            math1_quad_entropy_scale: 0,
+            typical_p: 0.975,
+            mirostat_lr: 1,
+            mirostat_tau: 0,
+            phrase_rep_pen: 'off',
+            banned_tokens: '',
+            logit_bias: [],
+            prefix: 'vanilla',
+            order: [1, 5, 0, 2, 3, 4],
+        },
         extension_settings: {
             note: {
                 default: 'Author note default text.',
@@ -314,6 +360,39 @@ async function run() {
     assert.ok(
         resultWithUserMessage.combinedPrompt.includes('The ancient tower looms over the village.'),
         'the real, auto-resolved world-info candidate (a constant entry) was activated and made it into the final assembled prompt',
+    );
+
+    // --- mainApi: 'kobold' dispatch (new in this task) ---
+    const koboldInput = await resolveTextCompletionGenerationInput(directories, {
+        avatar, ownerId, branchName, mainApi: 'kobold', countTokens, encodeTokens,
+    });
+    assert.equal(koboldInput.mainApi, 'kobold');
+    assert.equal(koboldInput.settings.temp, 0.65, 'settings resolves from the real top-level kai_settings, not textgenerationwebui_settings');
+    assert.equal(koboldInput.settings.rep_pen, 1.05);
+    assert.equal(koboldInput.model, undefined, 'Kobold has no per-request model field - model stays undefined');
+    assert.equal(koboldInput.apiServer, 'http://localhost:5001', 'apiServer resolves from kai_settings.api_server');
+    const koboldResult = await assembleTextCompletionPrompt(koboldInput);
+    assert.equal(koboldResult.generate_data.prompt, koboldResult.combinedPrompt, 'kobold dispatch produces createKoboldGenerationData()\'s own shape');
+    assert.equal(koboldResult.generate_data.temperature, 0.65);
+    assert.equal(koboldResult.generate_data.api_server, 'http://localhost:5001');
+    assert.equal(koboldResult.generate_data.max_new_tokens, undefined, 'textgen-only field must not leak into the kobold payload');
+
+    // --- mainApi: 'novel' dispatch (new in this task) ---
+    const novelInput = await resolveTextCompletionGenerationInput(directories, {
+        avatar, ownerId, branchName, mainApi: 'novel', countTokens, encodeTokens,
+    });
+    assert.equal(novelInput.mainApi, 'novel');
+    assert.equal(novelInput.settings.model_novel, 'clio-v1', 'settings resolves from the real top-level nai_settings, not textgenerationwebui_settings');
+    assert.equal(novelInput.model, undefined, 'model is a textgenerationwebui-only field - novel carries its own model via settings.model_novel');
+    const novelResult = await assembleTextCompletionPrompt(novelInput);
+    assert.equal(novelResult.generate_data.input, novelResult.combinedPrompt, 'novel dispatch produces createNovelGenerationData()\'s own shape');
+    assert.equal(novelResult.generate_data.model, 'clio-v1');
+    assert.equal(novelResult.generate_data.max_new_tokens, undefined, 'textgen-only field must not leak into the novel payload');
+
+    // --- mainApi: 'koboldhorde' is explicitly rejected (see module doc comment) ---
+    await assert.rejects(
+        () => resolveTextCompletionGenerationInput(directories, { avatar, ownerId, branchName, mainApi: 'koboldhorde', countTokens, encodeTokens }),
+        /unsupported mainApi/,
     );
 
     console.log('text-completion-generation-input.test.js: all assertions passed');

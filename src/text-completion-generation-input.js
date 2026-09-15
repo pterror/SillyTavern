@@ -61,11 +61,55 @@ import { resolveWorldInfoCandidates, world_info_insertion_strategy } from './wor
  *   are similarly absent from the shipped default (defaulted client-side in
  *   public/scripts/textgen-settings.js's own settings object: `''`, `''`, `true`, `[]`
  *   respectively) - mirrored here for the same reason.
- * - `main_api` in real settings.json defaults to `'koboldhorde'`, NOT `'textgenerationwebui'` - but
- *   this resolver is explicitly for the text-completion-only orchestrator, so `mainApi` is always
- *   hardcoded to `'textgenerationwebui'` here regardless of the user's live `main_api` setting
- *   (deciding whether the *caller* should even invoke this resolver when main_api says otherwise is
- *   out of scope - a later routing decision, per the task).
+ * - `main_api` in real settings.json defaults to `'koboldhorde'`, NOT `'textgenerationwebui'`. UPDATE
+ *   (this task): this resolver now takes an explicit `mainApi` param (`'textgenerationwebui'` /
+ *   `'kobold'` / `'novel'`, default `'textgenerationwebui'` - unchanged default, so every EXISTING
+ *   caller keeps its exact prior behavior) instead of always hardcoding `'textgenerationwebui'`.
+ *   `'koboldhorde'` is deliberately NOT one of the accepted values - Horde is a worker-routed backend
+ *   with no single fixed server URL and its own, materially different dispatch semantics (no
+ *   `api_server`, a worker pool picks which real Kobold instance actually serves the request), a
+ *   genuinely different integration effort than "one more `mainApi` branch" - out of scope here, same
+ *   as it was already out of scope for the orchestrator itself (see
+ *   text-completion-prompt-orchestrator.js's own module doc comment). Passing `'koboldhorde'` throws.
+ *   Per-`mainApi` settings-namespace mapping, verified against default/content/settings.json and the
+ *   client's own settings modules:
+ *   - `'textgenerationwebui'`: `textgenerationwebui_settings` (unchanged).
+ *   - `'kobold'`: `kai_settings` (top-level settings.json key) - verified against
+ *     public/scripts/kai-settings.js's own `kai_settings` shape (temp/rep_pen/top_p/.../sampler_order/
+ *     grammar/api_server - `api_server` IS a real `kai_settings` field, confirmed by reading that
+ *     module's own `loadKoboldSettings()`, even though it's ABSENT from the shipped
+ *     default/content/settings.json until a user actually sets a Kobold URL - same "absent until
+ *     touched" pattern already established above for several `power_user`/`textgenerationwebui_settings`
+ *     fields). `kai_flags` (streaming/mirostat/grammar/etc. CAPABILITY flags) is NOT a settings.json
+ *     field at all - it's a client-side, LIVE version-probe result against the connected Kobold
+ *     server (kai-settings.js's `checkStatusKobold()`), the exact same "would trigger a live network
+ *     call as a side effect of pure settings resolution" concern already established for
+ *     countTokens/encodeTokens above - so `koboldFlags` is left to the caller (via `macroExtras`),
+ *     defaulting (via the orchestrator's own default) to all-`false`, matching kai_flags' own
+ *     pre-probe module-level default. This resolver does NOT attempt to merge a named Kobold preset
+ *     (`koboldai_settings`/`koboldai_setting_names`) the way the client's own
+ *     `getKoboldGenerationData(finalPrompt, presetSettings, ...)` call site does - `kai_settings`
+ *     itself already carries every sampler field directly (unlike textgenerationwebui, which has no
+ *     preset-merge step in this resolver either - see `settings: textgenSettings` below, a plain,
+ *     unmerged read) - so `settings`/`koboldSettings` (Step 16's own "one object, two call-site
+ *     roles" - see the orchestrator's own comment on this) both resolve to this same, unmerged
+ *     `kai_settings` object. A caller that needs real named-preset merging can pre-merge before
+ *     calling this resolver (same "caller resolves entities" contract as everything else here).
+ *   - `'novel'`: `nai_settings` (top-level settings.json key) - verified against
+ *     public/scripts/nai-settings.js's own `nai_settings` shape (temperature/repetition_penalty/.../
+ *     model_novel/banned_tokens/logit_bias/order/preamble). `novel_data?.tier` (the NovelAI account's
+ *     own LIVE subscription tier, from `/api/novelai/status`) is genuinely external, live, per-account
+ *     data with no settings.json source at all - left to the caller via `macroExtras` as
+ *     `novelDataTier`, same "external live data, caller resolves it" pattern as
+ *     `worldInfoRandom`/`externalActivations`. `presetOrder` (a distinct named-preset's own `.order`
+ *     fallback) is likewise not resolved here, for the identical "no preset-merge step in this
+ *     resolver" reason as Kobold above - `nai_settings.order` itself already covers the common case.
+ * - Regardless of `mainApi`, `textgenerationwebui_settings.{banned_tokens,logit_bias,...}` are still
+ *   always read into `bannedTokensRaw`/`logitBiasEntries`/etc. below (harmless - `assembleTextCompletionPrompt()`'s
+ *   own Step 16 dispatch simply never forwards them into `createKoboldGenerationData()`/
+ *   `createNovelGenerationData()`'s inputs for the 'kobold'/'novel' cases, per that module's own Step
+ *   15 comment) - not re-guarded per-`mainApi` here, since doing so would add branching for zero
+ *   behavioral difference.
  * - `world_info_settings.world_info_case_sensitive` / `.world_info_match_whole_words` /
  *   `.world_info_character_strategy` / `.world_info_overflow_alert` are REAL settings that exist in
  *   settings.json, but `assembleTextCompletionPrompt`'s input typedef has NO corresponding
@@ -268,6 +312,9 @@ async function resolveChatHistory(directories, { ownerId, branchName, nodeId }) 
  * @param {object} params
  * @param {string} [params.avatar] Character avatar filename.
  * @param {string} [params.groupId] Group id.
+ * @param {string} [params.mainApi] One of 'textgenerationwebui' (default) / 'kobold' / 'novel'. See
+ * module doc comment's FIELD-MAPPING NOTES for the exact per-value settings-namespace mapping.
+ * 'koboldhorde' is NOT accepted (throws) - see module doc comment for why.
  * @param {string} [params.ownerId] message-tree-db.js owner id for chat resolution.
  * @param {string} [params.branchName] message-tree-db.js labeled chat name.
  * @param {string} [params.nodeId] Alternative to `branchName` - resolve history up to this tree node.
@@ -292,7 +339,7 @@ async function resolveChatHistory(directories, { ownerId, branchName, nodeId }) 
  * @returns {Promise<import('./text-completion-prompt-orchestrator.js').AssembleTextCompletionPromptInput>}
  */
 export async function resolveTextCompletionGenerationInput(directories, {
-    avatar, groupId, ownerId, branchName, nodeId,
+    avatar, groupId, mainApi = 'textgenerationwebui', ownerId, branchName, nodeId,
     type, isImpersonate = false, isContinue = false, isSwipe = false,
     textareaText = '', chatMetadata: chatMetadataOverride, userMessageText,
     worldInfoCandidates: worldInfoCandidatesOverride, countTokens, encodeTokens, amountGen, macroExtras = {},
@@ -303,6 +350,9 @@ export async function resolveTextCompletionGenerationInput(directories, {
     if (typeof encodeTokens !== 'function') {
         throw new Error('resolveTextCompletionGenerationInput: encodeTokens is required (real tokenizer resolution is caller-owned - see module doc comment)');
     }
+    if (!['textgenerationwebui', 'kobold', 'novel'].includes(mainApi)) {
+        throw new Error(`resolveTextCompletionGenerationInput: unsupported mainApi '${mainApi}' (koboldhorde is deliberately not supported here - see module doc comment)`);
+    }
 
     const {
         power_user: powerUser = {},
@@ -310,16 +360,24 @@ export async function resolveTextCompletionGenerationInput(directories, {
         world_info: worldInfoSelection = {},
         world_info_character_strategy: worldInfoCharacterStrategySetting,
         textgenerationwebui_settings: textgenSettings = {},
+        kai_settings: koboldSettings = {},
+        nai_settings: novelSettings = {},
         extension_settings: extensionSettings = {},
         username,
         amount_gen: settingsAmountGen,
         max_context: settingsMaxContext,
     } = readSettingsAtPaths(directories, [
         'power_user', 'world_info_settings', 'world_info', 'world_info_character_strategy',
-        'textgenerationwebui_settings', 'extension_settings', 'username', 'amount_gen', 'max_context',
+        'textgenerationwebui_settings', 'kai_settings', 'nai_settings',
+        'extension_settings', 'username', 'amount_gen', 'max_context',
     ]);
 
-    const backend = resolveTextGenBackend(directories);
+    // Per-mainApi backend-specific settings object - see module doc comment FIELD-MAPPING NOTES for
+    // the exact rationale (no preset-merge step for kobold/novel here, same as textgenerationwebui's
+    // own plain, unmerged `textgenSettings` read below).
+    const backendSettings = mainApi === 'kobold' ? koboldSettings : mainApi === 'novel' ? novelSettings : textgenSettings;
+
+    const backend = mainApi === 'textgenerationwebui' ? resolveTextGenBackend(directories) : null;
 
     const isGroup = Boolean(groupId);
     const hasCharacterOrGroup = Boolean(avatar) || Boolean(groupId);
@@ -442,9 +500,10 @@ export async function resolveTextCompletionGenerationInput(directories, {
         sysPromptPostHistory: sysprompt.post_history ?? '',
 
         // --- Backend / API ---
-        // This resolver is text-completion-only - `mainApi` is always 'textgenerationwebui' here
-        // regardless of the user's live main_api setting (see module doc comment).
-        mainApi: 'textgenerationwebui',
+        // UPDATE (this task): `mainApi` is now the caller-supplied value (default
+        // 'textgenerationwebui', unchanged from before) instead of always hardcoded - see module doc
+        // comment for the accepted values and the 'koboldhorde' exclusion.
+        mainApi,
         collapseNewlines: Boolean(powerUser.collapse_newlines ?? false),
 
         // --- Stopping strings / token bans / logit bias ---
@@ -459,8 +518,21 @@ export async function resolveTextCompletionGenerationInput(directories, {
         logitBiasEntries: textgenSettings.logit_bias ?? [],
 
         // --- Final generation-data wire payload ---
-        settings: textgenSettings,
-        model: backend.model,
+        // `settings` is now the backend-specific (per-`mainApi`) settings object - see module doc
+        // comment FIELD-MAPPING NOTES. `model` is only meaningful for 'textgenerationwebui' (Kobold
+        // has no per-request model selector; NovelAI's model lives INSIDE `settings.model_novel`
+        // already, not as a separate top-level field) - `undefined` for the other two, matching
+        // text-completion-prompt-orchestrator.js's own Step 16 doc comment on this exact point.
+        settings: backendSettings,
+        model: mainApi === 'textgenerationwebui' ? backend.model : undefined,
+
+        // --- Backend-specific generation-data (kobold/novel dispatch only) ---
+        // None of these have a real settings.json/chat-metadata source of truth without either a
+        // live capability/version probe (koboldFlags) or live external account data (novelDataTier) -
+        // see module doc comment FIELD-MAPPING NOTES for exactly why each is left at the
+        // orchestrator's own conservative default here, overridable via `macroExtras`.
+        apiServer: mainApi === 'kobold' ? (koboldSettings.api_server ?? '') : undefined,
+        consoleLogPrompts: Boolean(powerUser.console_log_prompts ?? false),
     };
 
     return { ...resolved, ...macroExtras };

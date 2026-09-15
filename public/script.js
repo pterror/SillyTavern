@@ -5987,8 +5987,38 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // dryRun/depth are named there, so a continue's send-textarea content, if any, still runs through
     // slash-command interception exactly like a normal turn's does - unrelated to this gate, and
     // unchanged by this cutover). So a plain continue reaches this gate exactly like a normal turn does.
+    //
+    // JUDGMENT CALL #7 (widened to 'kobold'/'novel', 'koboldhorde' deliberately excluded): the server
+    // side of this cutover (resolveTextCompletionGenerationInput()/assembleTextCompletionPrompt(),
+    // src/text-completion-generation-input.js) now dispatches its own Step 16 on `mainApi` for
+    // 'kobold'/'novel' too (src/text-completion-prompt-orchestrator.js), and real raw-action `/generate`
+    // branches now exist for both (src/endpoints/backends/kobold.js's buildRawActionKoboldRequest(),
+    // src/endpoints/novelai.js's buildRawActionNovelRequest()) - built the SAME way as the
+    // textgenerationwebui one already wired here, reusing the exact same
+    // character_avatar/group_id/owner_id/branch_name/type/is_impersonate/is_continue/is_swipe/
+    // user_message payload shape (verified: neither builder needs anything backend-specific in the
+    // REQUEST shape itself - Kobold's own `kai_settings.api_server`/NovelAI's own `nai_settings.model_novel`
+    // are both resolved SERVER-side from real, on-disk settings, not sent by the client). So this gate
+    // now covers `main_api === 'kobold'` and `main_api === 'novel'` too, unchanged otherwise (same
+    // dryRun/type/file-attachment/tool-calling restrictions).
+    // `'koboldhorde'` is DELIBERATELY NOT included, for real, verified reasons (not a hypothetical
+    // future gap): Horde is a WORKER-ROUTED backend - `getKoboldGenerationData()`'s own `isHorde` branch
+    // just below (the `case 'koboldhorde': case 'kobold':` switch a few hundred lines down) shows the
+    // real difference - Horde has no single fixed `api_server` at all (a worker pool decides which real
+    // KoboldAI instance actually serves each request, chosen by public/scripts/horde.js's own
+    // worker-selection logic, not by this client sending one target URL), and
+    // `horde_settings.auto_adjust_response_length`/`auto_adjust_context_length` further adjust
+    // `maxLength`/`maxContextLength` from LIVE worker-capability data this client already has in hand
+    // (`adjustedParams`) that the server-side resolver has no equivalent source for. Wiring Horde into
+    // this same raw-action shape would mean either sending worker-selection state to the server (a
+    // genuinely different request shape, not reusable here) or having the server re-poll Horde's worker
+    // pool itself (a live, non-trivial capability with its own retry/timeout story) - a materially
+    // larger, separate integration effort than "one more mainApi branch", so it stays on the existing,
+    // unchanged client-assembled path for now (same as `koboldFlags`/`novelDataTier` being deliberately
+    // left server-side "caller resolves it" gaps rather than guessed at - see
+    // src/text-completion-generation-input.js's own doc comment for the identical judgment call there).
     let rawActionGenerateData = null;
-    if (!dryRun && main_api === 'textgenerationwebui'
+    if (!dryRun && (main_api === 'textgenerationwebui' || main_api === 'kobold' || main_api === 'novel')
         && [undefined, 'normal', 'impersonate', 'quiet', 'swipe', 'regenerate', 'continue'].includes(type)
         && !hasPendingFileAttachment()
         && !canPerformToolCalls
@@ -6983,6 +7013,15 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     switch (main_api) {
         case 'koboldhorde':
         case 'kobold':
+            // Real raw-action cutover (see JUDGMENT CALL #7 above `let rawActionGenerateData;`) - only
+            // ever set when `main_api === 'kobold'` (the eligibility gate above excludes 'koboldhorde'
+            // by name), so this is a no-op for the 'koboldhorde' case sharing this same switch label -
+            // Horde always falls through to its own unchanged, existing client-assembled path below.
+            if (rawActionGenerateData) {
+                generate_data = rawActionGenerateData;
+                break;
+            }
+
             if (main_api == 'koboldhorde' && horde_settings.auto_adjust_response_length) {
                 maxLength = Math.min(maxLength, adjustedParams.maxLength);
                 maxLength = Math.max(maxLength, MIN_LENGTH); // prevent validation errors
@@ -7016,6 +7055,13 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             break;
         }
         case 'novel': {
+            // Real raw-action cutover (see JUDGMENT CALL #7 above `let rawActionGenerateData;`) - the
+            // server resolves the whole request itself for this case, so the just-computed
+            // finalPrompt/cfgValues are never sent and never even referenced here.
+            if (rawActionGenerateData) {
+                generate_data = rawActionGenerateData;
+                break;
+            }
             const cfgValues = useCfgPrompt ? { guidanceScale: cfgGuidanceScale } : null;
             const presetSettings = novelai_settings[novelai_setting_names[nai_settings.preset_settings_novel]];
             generate_data = getNovelGenerationData(finalPrompt, presetSettings, maxLength, isImpersonate, isContinue, cfgValues, type);

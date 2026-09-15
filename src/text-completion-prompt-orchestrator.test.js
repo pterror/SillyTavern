@@ -947,3 +947,112 @@ test('assembleTextCompletionPrompt: a real extra.files attachment is inlined int
         'attachment text should be prepended before the message text, matching appendFileContent\'s ordering',
     );
 });
+
+function writeSimpleCharacter(charactersDir, avatar) {
+    writeCharacterCard(charactersDir, avatar, {
+        spec: 'chara_card_v2',
+        spec_version: '2.0',
+        name: 'Aria',
+        description: 'Aria is a wandering ranger who guards the Whispering Woods.',
+        personality: 'brave and curious',
+        scenario: '',
+        first_mes: 'Hello there, traveler!',
+        mes_example: '',
+        avatar,
+        data: {
+            name: 'Aria',
+            description: 'Aria is a wandering ranger who guards the Whispering Woods.',
+            personality: 'brave and curious',
+            scenario: '',
+            first_mes: 'Hello there, traveler!',
+            mes_example: '',
+            system_prompt: '', post_history_instructions: '', character_version: '', creator_notes: '',
+            extensions: {}, alternate_greetings: [],
+        },
+    });
+}
+
+test('assembleTextCompletionPrompt: mainApi "kobold" dispatches Step 16 to createKoboldGenerationData() (new in this task)', async () => {
+    const { charactersDir, root } = makeDirectories();
+    const avatar = 'aria-kobold.png';
+    writeSimpleCharacter(charactersDir, avatar);
+    const directories = { characters: charactersDir, root };
+
+    const input = {
+        ...baseFixture(directories, avatar),
+        mainApi: 'kobold',
+        settings: {
+            temp: 0.65, rep_pen: 1.05, rep_pen_range: 512, top_p: 0.9, top_k: 0, top_a: 0, typical: 1, tfs: 1,
+            min_p: 0.02, rep_pen_slope: 0, sampler_order: [6, 0, 1, 2, 3, 4, 5], mirostat: 0, mirostat_tau: 5, mirostat_eta: 0.1,
+            use_default_badwordsids: false, grammar: '', streaming_kobold: false,
+        },
+        koboldFlags: { can_use_min_p: true, can_use_stop_sequence: true, can_use_streaming: false, can_use_mirostat: false, can_use_default_badwordsids: false, can_use_grammar: false },
+        apiServer: 'http://localhost:5001',
+        isHorde: false,
+    };
+
+    const result = await assembleTextCompletionPrompt(input);
+
+    // Real createKoboldGenerationData() shape (src/kobold-generation-data.js), NOT
+    // createTextGenGenerationData()'s shape - proves Step 16 actually dispatched on mainApi.
+    assert.equal(result.generate_data.prompt, result.combinedPrompt);
+    assert.equal(result.generate_data.gui_settings, false);
+    assert.equal(result.generate_data.max_length, 80);
+    assert.equal(result.generate_data.max_context_length, result.thisMaxContext);
+    assert.equal(result.generate_data.temperature, 0.65);
+    assert.equal(result.generate_data.rep_pen, 1.05);
+    assert.equal(result.generate_data.min_p, 0.02, 'can_use_min_p:true should resolve the real koboldSettings.min_p value');
+    assert.equal(result.generate_data.api_server, 'http://localhost:5001');
+    assert.ok(Array.isArray(result.generate_data.stop_sequence), 'can_use_stop_sequence:true should resolve a real stop_sequence array');
+    assert.equal(result.generate_data.prompt.includes('Aria is a wandering ranger'), true);
+    // textgen-only fields must NOT be present on the kobold payload.
+    assert.equal(result.generate_data.max_new_tokens, undefined);
+    assert.equal(result.generate_data.truncation_length, undefined);
+});
+
+test('assembleTextCompletionPrompt: mainApi "novel" dispatches Step 16 to createNovelGenerationData() (new in this task)', async () => {
+    const { charactersDir, root } = makeDirectories();
+    const avatar = 'aria-novel.png';
+    writeSimpleCharacter(charactersDir, avatar);
+    const directories = { characters: charactersDir, root };
+
+    const input = {
+        ...baseFixture(directories, avatar),
+        mainApi: 'novel',
+        settings: {
+            model_novel: 'clio-v1', temperature: 1.5, min_length: 1, tail_free_sampling: 0.975,
+            repetition_penalty: 2.25, repetition_penalty_range: 2048, repetition_penalty_slope: 0.09,
+            repetition_penalty_frequency: 0, repetition_penalty_presence: 0.005, top_a: 0.08, top_p: 0.75,
+            top_k: 10, min_p: 0, math1_temp: 0, math1_quad: 0, math1_quad_entropy_scale: 0, typical_p: 0.975,
+            mirostat_lr: 1, mirostat_tau: 0, phrase_rep_pen: 'off', banned_tokens: '', logit_bias: [], prefix: 'vanilla',
+            order: [1, 5, 0, 2, 3, 4],
+        },
+        // Real, verified two-arg (tokenizerType, text) encoder - see the orchestrator's own
+        // `encodeTokensByType` JSDoc for exactly why this must NOT be the same shape as the generic
+        // single-arg `encodeTokens` fixture (createNovelGenerationData() calls this with a real
+        // `tokenizerType` as the FIRST argument - passing the generic `encodeTokens` straight through
+        // would silently misbind it and drop `text`, a real bug this test guards against).
+        encodeTokensByType: (tokenizerType, text) => [tokenizerType, ...Array.from(text).map(ch => ch.codePointAt(0))],
+        ephemeralStoppingStrings: ['STOP_HERE'],
+    };
+
+    const result = await assembleTextCompletionPrompt(input);
+
+    // Real createNovelGenerationData() shape (src/novel-generation-data.js), NOT
+    // createTextGenGenerationData()'s/createKoboldGenerationData()'s shape.
+    assert.equal(result.generate_data.input, result.combinedPrompt);
+    assert.equal(result.generate_data.model, 'clio-v1');
+    assert.equal(result.generate_data.use_string, true);
+    assert.equal(result.generate_data.temperature, 1.5);
+    assert.ok(result.generate_data.max_length <= 150, 'clio (non-kayra/erato) should cap at MAXIMUM_OUTPUT_LENGTH (150)');
+    assert.ok(Array.isArray(result.generate_data.stop_sequences), 'clio has a real tokenizer type, so stop_sequences should be resolved');
+    assert.ok(result.generate_data.stop_sequences.length > 0, 'at least one real stopping string should have been resolved');
+    for (const seq of result.generate_data.stop_sequences) {
+        assert.ok(Array.isArray(seq) && seq.length > 1, 'encodeTokensByType should have been called with the real (tokenizerType, text) shape, not misbound - a dropped `text` arg would yield a length-1 array');
+    }
+    assert.deepEqual(result.generate_data.bad_words_ids, []);
+    assert.deepEqual(result.generate_data.logit_bias_exp, []);
+    // textgen/kobold-only fields must NOT be present on the novel payload.
+    assert.equal(result.generate_data.max_new_tokens, undefined);
+    assert.equal(result.generate_data.max_context_length, undefined);
+});
