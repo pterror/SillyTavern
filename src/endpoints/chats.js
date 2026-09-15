@@ -35,7 +35,7 @@ import {
     isAvailable as isTreeAvailable, hasSavedChats,
     saveChatToTree, loadBranch, forkBranch, labelNode,
     deleteBranch, renameBranch as renameBranchInTree, listBranches, listRecentBranches, searchBranchesByContent,
-    renameCharacterInMessages, renameGroupMemberInMessages, getAlternatives, getContinuation, getAncestorPath, editMessage, editMessages, appendMessages, addAlternatives, setChatMetadata, getOpeningAlternatives, addOpeningAlternatives, loadAtNode, listLabels, setNodeMetadata, selectDefaultChild, endPathAt,
+    renameCharacterInMessages, renameGroupMemberInMessages, getAlternatives, getContinuation, getAncestorPath, editMessage, editMessages, appendMessages, addAlternatives, setChatMetadata, getOpeningAlternatives, addOpeningAlternatives, loadAtNode, listLabels, setNodeMetadata, selectDefaultChild, endPathAt, graftMessage, degraftRange,
 } from '../message-tree-db.js';
 
 const isBackupEnabled = !!getConfigValue('backups.chat.enabled', true, 'boolean');
@@ -1165,6 +1165,43 @@ router.post('/message/end-path', validateAvatarUrlMiddleware, async function (re
         return response.status(ok ? 200 : 409).send({ ok, reason: ok ? undefined : 'unknown node' });
     } catch (error) {
         console.error('Error ending the path:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/** Inserts a new node between two adjacent nodes — the mid-chain-insert primitive (a user-typed message spliced into the middle of a chain, not appended at the end). */
+router.post('/message/graft', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const after = String(request.body.after_node_id || '');
+        if (!after) return response.status(400).send({ error: 'after_node_id is required' });
+        const before = String(request.body.before_node_id || '');
+        if (!before) return response.status(400).send({ error: 'before_node_id is required' });
+
+        const result = await graftMessage(request.user.directories, ownerOf(request), after, before, request.body.content);
+
+        if (result.ok) {
+            await bumpCharacterDateLastChat(request.user.directories, String(request.body.avatar_url)).catch(err =>
+                console.error('Could not bump date_last_chat:', err));
+        }
+
+        return response.status(result.ok ? 200 : 409).send(result);
+    } catch (error) {
+        console.error('Error grafting message:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/** Removes one or more contiguous messages from the default path — the mid-chain-delete primitive. */
+router.post('/message/degraft', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const first = String(request.body.first_node_id || '');
+        if (!first) return response.status(400).send({ error: 'first_node_id is required' });
+        const last = String(request.body.last_node_id || first);
+
+        const result = await degraftRange(request.user.directories, ownerOf(request), first, last);
+        return response.status(result.ok ? 200 : 409).send(result);
+    } catch (error) {
+        console.error('Error degrafting message:', error);
         return response.status(500).send({ error: true });
     }
 });

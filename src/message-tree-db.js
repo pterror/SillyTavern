@@ -1238,6 +1238,123 @@ export async function appendMessages(directories, ownerId, afterNodeId, contents
 }
 
 /**
+ * Grafts a new node between `afterNodeId` and `beforeNodeId`: inserts a node under `afterNodeId`,
+ * then reparents `beforeNodeId` onto it. This is the mid-chain-insert primitive — inserting a message
+ * in the middle of a chain is structurally "point the new node at what used to be the default child,
+ * then take over that slot". Refuses unless `beforeNodeId` is CURRENTLY parented under `afterNodeId`
+ * AND is currently `afterNodeId`'s own default child (guards against grafting across an edge that
+ * moved, or a default-child selection that changed - e.g. another session swiped to a different
+ * alternative - since the caller last read it; mirrors {@link degraftRange}'s own equivalent
+ * default-path check on the node it removes, for the same concurrent-edit-safety reason).
+ */
+export async function graftMessage(directories, ownerId, afterNodeId, beforeNodeId, content) {
+    const entry = await getEntry(directories);
+    if (!entry) return { ok: false, reason: 'unavailable' };
+
+    const after = entry.db.get('SELECT id, default_child_id FROM messages WHERE id = @id AND owner_id = @ownerId',
+        { id: afterNodeId, ownerId });
+    if (!after) return { ok: false, reason: 'unknown after node' };
+
+    const before = entry.db.get('SELECT id, parent_id FROM messages WHERE id = @id AND owner_id = @ownerId',
+        { id: beforeNodeId, ownerId });
+    if (!before) return { ok: false, reason: 'unknown before node' };
+    if (before.parent_id !== afterNodeId) return { ok: false, reason: 'not adjacent' };
+    if (after.default_child_id !== beforeNodeId) return { ok: false, reason: 'not on default path' };
+
+    const now = Date.now();
+    let newNodeId;
+    entry.db.transaction(() => {
+        const body = sanitizeForStorage(content);
+        // Same convergence rule appendMessages()/addAlternatives() use: a retry that matches an
+        // existing sibling of afterNodeId lands on that row instead of duplicating.
+        const twin = entry.db.get(
+            'SELECT id FROM messages WHERE parent_id = @parentId AND identity_hash = @identity',
+            { parentId: afterNodeId, identity: identityHashOf(afterNodeId, body) });
+        newNodeId = twin ? twin.id : newId();
+        if (!twin) {
+            insertMessageSync(entry.db, { id: newNodeId, parentId: afterNodeId, ownerId, content: body, createdAt: now });
+        }
+
+        // Reparent beforeNodeId onto the new node — identity_hash bakes in parent_id, so it must be
+        // recomputed, not just the row's parent pointer.
+        const beforeContent = entry.db.get('SELECT content FROM messages WHERE id = @id', { id: beforeNodeId }).content;
+        const recomputedHash = identityHashOf(newNodeId, beforeContent);
+        entry.db.run('UPDATE messages SET parent_id = @newNodeId, identity_hash = @hash WHERE id = @id',
+            { id: beforeNodeId, newNodeId, hash: recomputedHash });
+
+        setDefaultChildSync(entry.db, afterNodeId, newNodeId);
+        setDefaultChildSync(entry.db, newNodeId, beforeNodeId);
+    });
+
+    return { ok: true, node_id: newNodeId };
+}
+
+/**
+ * Removes `nodeId` from the default path by reparenting its current default child onto `nodeId`'s own
+ * parent — the mid-chain-delete primitive. `nodeId`'s row is NOT deleted (matches every other
+ * "removal" in this file — `deleteBranch` only clears a label, `endPathAt` only clears a pointer): it
+ * becomes unreachable from the default path but stays addressable by raw node_id, so a label already
+ * sitting on it survives untouched rather than needing to move anywhere.
+ *
+ * If `nodeId` has no default child, there is nothing after it on the path to reparent — that's the
+ * existing tail-delete case `endPathAt()` already covers, so this refuses rather than duplicate it.
+ */
+export async function degraftMessage(directories, ownerId, nodeId) {
+    return degraftRange(directories, ownerId, nodeId, nodeId);
+}
+
+/**
+ * Same operation as {@link degraftMessage}, computed from the two ends of a contiguous default-path
+ * run (needed when a caller removes more than one message at once, e.g. a tool-call group): reparents
+ * `lastNodeId`'s default child onto `firstNodeId`'s parent. Refuses unless `firstNodeId` through
+ * `lastNodeId` actually form a contiguous default-path chain — walked via `default_child_id` from
+ * `firstNodeId`, not `parent_id`, so a node that's on some OTHER node's default path but not on this
+ * one's can't be swept in.
+ */
+export async function degraftRange(directories, ownerId, firstNodeId, lastNodeId) {
+    const entry = await getEntry(directories);
+    if (!entry) return { ok: false, reason: 'unavailable' };
+
+    const first = entry.db.get('SELECT id, parent_id FROM messages WHERE id = @id AND owner_id = @ownerId',
+        { id: firstNodeId, ownerId });
+    if (!first) return { ok: false, reason: 'unknown node' };
+    if (!first.parent_id) return { ok: false, reason: 'unknown node' };
+
+    // firstNodeId must be its parent's CURRENT default child — can't degraft a message that isn't
+    // even the one currently shown on the path (would corrupt an alternative branch).
+    const parent = entry.db.get('SELECT default_child_id FROM messages WHERE id = @id', { id: first.parent_id });
+    if (!parent || parent.default_child_id !== firstNodeId) return { ok: false, reason: 'not on default path' };
+
+    // Walk default_child_id from firstNodeId to confirm lastNodeId is reached by a contiguous run.
+    let cursor = entry.db.get('SELECT id, default_child_id FROM messages WHERE id = @id', { id: firstNodeId });
+    const seen = new Set([cursor.id]);
+    while (cursor.id !== lastNodeId) {
+        const next = cursor.default_child_id;
+        if (!next || seen.has(next)) return { ok: false, reason: 'not on default path' };
+        const row = entry.db.get('SELECT id, owner_id, default_child_id FROM messages WHERE id = @id', { id: next });
+        if (!row || row.owner_id !== ownerId) return { ok: false, reason: 'not on default path' };
+        seen.add(next);
+        cursor = row;
+    }
+
+    const last = entry.db.get('SELECT id, default_child_id FROM messages WHERE id = @id', { id: lastNodeId });
+    const childId = last.default_child_id;
+    if (!childId) return { ok: false, reason: 'use end-path instead' };
+
+    const parentId = first.parent_id;
+
+    entry.db.transaction(() => {
+        const childRow = entry.db.get('SELECT content FROM messages WHERE id = @id', { id: childId });
+        const recomputedHash = identityHashOf(parentId, childRow.content);
+        entry.db.run('UPDATE messages SET parent_id = @parentId, identity_hash = @hash WHERE id = @id',
+            { id: childId, parentId, hash: recomputedHash });
+        setDefaultChildSync(entry.db, parentId, childId);
+    });
+
+    return { ok: true };
+}
+
+/**
  * Adds an alternative alongside an existing node. Named by SIBLING (not parent) so the caller never
  * needs to know about the synthetic anchor. Idempotent: a matching alternative resolves to the
  * existing row instead of duplicating, so a set can be asserted on every chat open safely.

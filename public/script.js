@@ -307,12 +307,12 @@ export { messageFormatting };
 // Lives in chat-store.js, the only module allowed to write messages; re-exported for existing importers.
 import {
     updateMessage, updateIn, deepFreeze,
-    ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath, chatOpSelect,
+    ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath, chatOpSelect, chatOpGraft, chatOpDegraft,
     _mergeCardGreetingsIntoOpening, _restoreContinuation, _isBlankSlot, _markMessageSaved,
 } from './scripts/chat-store.js';
 export {
     updateMessage, updateIn,
-    ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath, chatOpSelect,
+    ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath, chatOpSelect, chatOpGraft, chatOpDegraft,
 };
 import { MacroEngine } from './scripts/macros/engine/MacroEngine.js';
 import { addChatBackupsBrowser } from './scripts/chat-backups.js';
@@ -2937,6 +2937,19 @@ export async function deleteMessage(id, swipeDeletionIndex = undefined, askConfi
         closeMessageEditor();
     }
 
+    // Nothing follows this range once it's gone — the existing tail-delete path (chatOpEndPath),
+    // which is already correct. Otherwise it's a mid-chain delete: every SURVIVING message keeps its
+    // own unchanged node_id, so the diff engine would see no change at all and persist nothing — this
+    // must be told to the tree explicitly, and before splicing, since chatOpDegraft reads the range's
+    // (and its neighbors') node ids off `chat[]` by index.
+    const preSpliceLength = chat.length;
+    const postSpliceLength = preSpliceLength - messageIds.length;
+    const isTailDeletion = postSpliceLength > 0 && firstMessageId === postSpliceLength;
+    if (chat_metadata?._tree_stored && !isTailDeletion) {
+        await chatOpDegraft(firstMessageId, id).catch(error =>
+            console.error('Could not remove the deleted message(s) from the tree:', error));
+    }
+
     // Delete from the end so earlier indices remain stable.
     for (const messageId of messageIds) {
         chat.splice(messageId, 1);
@@ -2947,7 +2960,7 @@ export async function deleteMessage(id, swipeDeletionIndex = undefined, askConfi
     chat_metadata.tainted = true;
 
     // Only meaningful for a removal reaching the end - the tree-backed store otherwise has no way to learn where the conversation now ends.
-    if (chat_metadata?._tree_stored && chat.length > 0 && Math.min(...messageIds) === chat.length) {
+    if (chat_metadata?._tree_stored && isTailDeletion) {
         await chatOpEndPath(chat.length - 1).catch(error =>
             console.error('Could not end the conversation at the last remaining message:', error));
     }
@@ -8004,7 +8017,15 @@ export async function sendMessageAsUser(messageText, messageBias, insertAt = nul
 
     if (typeof insertAt === 'number' && insertAt >= 0 && insertAt <= chat.length) {
         chat.splice(insertAt, 0, message);
-        await saveChatConditional();
+        // A mid-chain insert is a graft (the new node lands between the message that used to precede
+        // this slot and the one that used to follow it) — the diff engine can't see this correctly,
+        // since every message after the insertion point keeps its own unchanged node_id.
+        if (chat_metadata?._tree_stored) {
+            await chatOpGraft(insertAt).catch(error =>
+                console.error('Could not save the inserted message:', error));
+        } else {
+            await saveChatConditional();
+        }
         await eventSource.emit(event_types.MESSAGE_SENT, insertAt);
         await reloadCurrentChat();
         await eventSource.emit(event_types.USER_MESSAGE_RENDERED, insertAt);

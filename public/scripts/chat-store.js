@@ -388,6 +388,53 @@ export async function chatOpAppend(fromIndex) {
     return ids;
 }
 
+// Splices a new message in between two existing ones. Nothing to graft before when mesId lands at
+// the tail (nothing follows it yet) — that's a plain append, so delegate rather than duplicate it.
+export async function chatOpGraft(mesId) {
+    const msg = chat[mesId];
+    if (!msg) return null;
+    if (mesId + 1 >= chat.length) return (await chatOpAppend(mesId))[0] ?? null;
+
+    let after = null;
+    for (let i = mesId - 1; i >= 0; i--) {
+        if (isProvisionalNodeId(chat[i]?.node_id)) await ensureOpeningRow(i);
+        if (isStoredNodeId(chat[i]?.node_id)) { after = chat[i].node_id; break; }
+    }
+    if (!after) return null;
+
+    const before = chat[mesId + 1]?.node_id;
+    if (!isStoredNodeId(before)) return null;
+
+    const result = await _chatOpPost('/api/chats/message/graft', {
+        after_node_id: after,
+        before_node_id: before,
+        content: _messageContent(msg),
+    });
+    updateMessage(mesId, { node_id: result.node_id });
+    _markMessageSaved(mesId, result.node_id);
+    return result.node_id;
+}
+
+// Removes a contiguous run of messages [firstMesId..lastMesId] from the default path. Nothing follows
+// the range — deleting to the end of the chat — is the already-correct tail-delete case, so this
+// delegates to chatOpEndPath rather than duplicate that logic.
+export async function chatOpDegraft(firstMesId, lastMesId = firstMesId) {
+    const firstMsg = chat[firstMesId];
+    const lastMsg = chat[lastMesId];
+    if (!isStoredNodeId(firstMsg?.node_id) || !isStoredNodeId(lastMsg?.node_id)) return false;
+
+    const after = chat[lastMesId + 1];
+    if (!isStoredNodeId(after?.node_id)) {
+        return chatOpEndPath(firstMesId - 1);
+    }
+
+    await _chatOpPost('/api/chats/message/degraft', {
+        first_node_id: firstMsg.node_id,
+        last_node_id: lastMsg.node_id,
+    });
+    return true;
+}
+
 // May return an existing row — asserting the same alternative twice is the same statement twice.
 export async function chatOpAddAlternative(mesId, text) {
     const msg = chat[mesId];
