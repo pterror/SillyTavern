@@ -3042,7 +3042,7 @@ export async function deleteMessage(id, swipeDeletionIndex = undefined, askConfi
     const preSpliceLength = chat.length;
     const postSpliceLength = preSpliceLength - messageIds.length;
     const isTailDeletion = postSpliceLength > 0 && firstMessageId === postSpliceLength;
-    if (persist && chat_metadata?._tree_stored && !isTailDeletion) {
+    if (persist && !isTailDeletion) {
         await chatOpDegraft(firstMessageId, id).catch(error =>
             console.error('Could not remove the deleted message(s) from the tree:', error));
     }
@@ -3057,14 +3057,14 @@ export async function deleteMessage(id, swipeDeletionIndex = undefined, askConfi
     chat_metadata.tainted = true;
 
     // Only meaningful for a removal reaching the end - the tree-backed store otherwise has no way to learn where the conversation now ends.
-    if (persist && chat_metadata?._tree_stored && isTailDeletion) {
+    if (persist && isTailDeletion) {
         await chatOpEndPath(chat.length - 1).catch(error =>
             console.error('Could not end the conversation at the last remaining message:', error));
     }
 
     const startIndex = firstMessageId <= minId ? firstMessageId : null;
     updateViewMessageIds(startIndex);
-    if (!persist || !chat_metadata?._tree_stored) {
+    if (!persist) {
         saveChatDebounced();
     }
 
