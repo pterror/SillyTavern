@@ -307,12 +307,12 @@ export { messageFormatting };
 // Lives in chat-store.js, the only module allowed to write messages; re-exported for existing importers.
 import {
     updateMessage, updateIn, deepFreeze,
-    ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath, chatOpSelect, chatOpGraft, chatOpDegraft, chatOpSwapAdjacent, chatOpDeleteAlternative,
+    ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath, chatOpSelect, chatOpGraft, chatOpDegraft, chatOpSwapAdjacent, chatOpDeleteAlternative, chatOpDeleteAlternativeNode,
     _mergeCardGreetingsIntoOpening, _restoreContinuation, _isBlankSlot, _markMessageSaved,
 } from './scripts/chat-store.js';
 export {
     updateMessage, updateIn,
-    ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath, chatOpSelect, chatOpGraft, chatOpDegraft, chatOpSwapAdjacent, chatOpDeleteAlternative,
+    ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath, chatOpSelect, chatOpGraft, chatOpDegraft, chatOpSwapAdjacent, chatOpDeleteAlternative, chatOpDeleteAlternativeNode,
 };
 import { MacroEngine } from './scripts/macros/engine/MacroEngine.js';
 import { addChatBackupsBrowser } from './scripts/chat-backups.js';
@@ -13130,11 +13130,17 @@ export async function deleteSwipe(swipeId = null, messageId = chat.length - 1) {
     messageId = Number(messageId);
     swipeId = Number(swipeId);
 
-    // The shown-swipe branch below already persists correctly via swipe() -> the selection-change
-    // path. This only ever covers the non-shown case: an alternative nobody is currently looking at.
-    // Read off `chat[]` BEFORE updateMessage() below replaces its swipe_info with the already-spliced
-    // copy — chatOpDeleteAlternative needs the alternative's own node_id, not the spliced result.
+    // The shown-swipe branch below already persists the SELECTION change correctly via swipe() -> the
+    // selection-change path — but until now it never deleted the old node's row afterward, leaving it
+    // orphaned (deselected but still in the DB). Both branches need the deleted alternative's own
+    // node_id read off `chat[]` BEFORE updateMessage() below replaces its swipe_info with the
+    // already-spliced copy. For the shown case this is `message.node_id` itself (swipeId ===
+    // currentSwipeId here, so it names the same node as `message.swipe_info[swipeId].node_id`) —
+    // captured now because chatOpDeleteAlternativeNode() can only run AFTER swipe() moves the
+    // selection off of it (deleteAlternative()'s own "is default" refusal, src/message-tree-db.js,
+    // otherwise applies), by which point chat[messageId].node_id has already been overwritten.
     const isShownSwipe = swipeId === currentSwipeId;
+    const deletedNodeId = isShownSwipe ? message.node_id : undefined;
     if (chat_metadata?._tree_stored && !isShownSwipe) {
         await chatOpDeleteAlternative(messageId, swipeId).catch(error =>
             console.error('Could not remove the deleted alternative from the tree:', error));
@@ -13147,6 +13153,14 @@ export async function deleteSwipe(swipeId = null, messageId = chat.length - 1) {
         const direction = (swipeId <= newSwipeId) ? SWIPE_DIRECTION.RIGHT : SWIPE_DIRECTION.LEFT;
         // Animate swipe and swap displayed message when the currently visible swipe was deleted.
         await swipe(null, direction, { source: SWIPE_SOURCE.DELETE, repeated: false, forceMesId: messageId, forceSwipeId: newSwipeId });
+        // Only now — after swipe() has (attempted to) move the selection to newSwipeId's node — is the
+        // old node no longer the current default child. If swipe() bailed out early for any reason
+        // (chat[messageId] is still on deletedNodeId), chatOpDeleteAlternativeNode() refuses locally
+        // without a server round-trip, same as chatOpDeleteAlternative() does for the non-shown case.
+        if (chat_metadata?._tree_stored) {
+            await chatOpDeleteAlternativeNode(deletedNodeId, chat[messageId]?.node_id).catch(error =>
+                console.error('Could not remove the deleted alternative from the tree:', error));
+        }
     } else {
         await updateSwipeCounter(messageId);
         if (messageId !== chat.length - 1) {

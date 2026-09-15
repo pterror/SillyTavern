@@ -492,6 +492,14 @@ export async function chatOpSelect(mesId, swipeId) {
     return true;
 }
 
+// Shared persistence call behind both chatOpDeleteAlternative() and chatOpDeleteAlternativeNode() below.
+async function _deleteAlternativeNode(nodeId) {
+    if (!isStoredNodeId(nodeId)) return false;
+
+    await _chatOpPost('/api/chats/message/alternative/delete', { node_id: nodeId });
+    return true;
+}
+
 // Deletes an unused alternative (swipe) outright. This only ever handles the NON-shown case: if
 // `swipeId` names the currently-selected swipe (`msg.node_id`, not the swipe-specific id this reads
 // off `swipe_info`), it refuses WITHOUT contacting the server — the caller (deleteSwipe()) is
@@ -501,8 +509,22 @@ export async function chatOpSelect(mesId, swipeId) {
 export async function chatOpDeleteAlternative(mesId, swipeId) {
     const msg = chat[mesId];
     const nodeId = msg?.swipe_info?.[swipeId]?.node_id;
-    if (!isStoredNodeId(nodeId) || nodeId === msg.node_id) return false;
+    if (nodeId === msg?.node_id) return false;
+    return _deleteAlternativeNode(nodeId);
+}
 
-    await _chatOpPost('/api/chats/message/alternative/delete', { node_id: nodeId });
-    return true;
+// Deletes a swipe's node by its raw id, for callers that can no longer look it up by (mesId, swipeId)
+// because something already spliced it out of `chat[]`'s swipe_info before this runs. Used by
+// deleteSwipe()'s SHOWN-swipe branch: after swipe() finishes swapping the message onto a different
+// alternative (persisting that selection change itself, via its own switchToAlternativePath() ->
+// chatOpSelect-equivalent path), the OLD node is no longer the current default child and becomes
+// eligible for deletion — but its swipe_info entry was already removed from `chat[mesId]` before
+// swipe() ran, so it must be captured by the caller beforehand and passed in here directly.
+// `currentNodeId` is the live node to compare against (pass `chat[mesId]?.node_id` fresh, not a stale
+// copy) — if it still matches `nodeId`, the selection never actually moved (e.g. swipe() bailed out
+// early), and this refuses locally without contacting the server, same guarantee as
+// chatOpDeleteAlternative() above.
+export async function chatOpDeleteAlternativeNode(nodeId, currentNodeId) {
+    if (nodeId === currentNodeId) return false;
+    return _deleteAlternativeNode(nodeId);
 }
