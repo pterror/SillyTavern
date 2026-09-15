@@ -8293,16 +8293,12 @@ export async function sendMessageAsUser(messageText, messageBias, insertAt = nul
         // A mid-chain insert is a graft (the new node lands between the message that used to precede
         // this slot and the one that used to follow it) — the diff engine can't see this correctly,
         // since every message after the insertion point keeps its own unchanged node_id.
-        if (chat_metadata?._tree_stored) {
-            // See this function's own `skipTreePersistence` doc comment - not reachable with
-            // `skipTreePersistence: true` from Generate() today (it never passes `insertAt`), kept
-            // here purely so the parameter's contract holds for any future/other caller.
-            if (!skipTreePersistence) {
-                await chatOpGraft(insertAt).catch(error =>
-                    console.error('Could not save the inserted message:', error));
-            }
-        } else {
-            await saveChatConditional();
+        // See this function's own `skipTreePersistence` doc comment - not reachable with
+        // `skipTreePersistence: true` from Generate() today (it never passes `insertAt`), kept
+        // here purely so the parameter's contract holds for any future/other caller.
+        if (!skipTreePersistence) {
+            await chatOpGraft(insertAt).catch(error =>
+                console.error('Could not save the inserted message:', error));
         }
         await eventSource.emit(event_types.MESSAGE_SENT, insertAt);
         await reloadCurrentChat();
@@ -8316,19 +8312,15 @@ export async function sendMessageAsUser(messageText, messageBias, insertAt = nul
         await eventSource.emit(event_types.USER_MESSAGE_RENDERED, chat_id);
 
         // Awaited, not fire-and-forget: otherwise the next save can miss the isChatSaving window and drop the AI message.
-        if (chat_metadata?._tree_stored) {
-            // BUGFIX (double-append on raw-action sends): skip this function's own append when the
-            // caller (Generate(), public/script.js) already knows a raw-action generate call is
-            // about to persist this exact message server-side via its own appendMessages() call -
-            // see `skipTreePersistence`'s own doc comment above, and Generate()'s `willUseRawAction`
-            // local, for the full identity-hash-mismatch root cause this prevents. When true, the
-            // raw-action route's own appendMessages() call becomes the SOLE writer for this message.
-            if (!skipTreePersistence) {
-                await chatOpAppend(chat_id).catch(error =>
-                    console.error('Could not save the new user message:', error));
-            }
-        } else {
-            await saveChatConditional();
+        // BUGFIX (double-append on raw-action sends): skip this function's own append when the
+        // caller (Generate(), public/script.js) already knows a raw-action generate call is
+        // about to persist this exact message server-side via its own appendMessages() call -
+        // see `skipTreePersistence`'s own doc comment above, and Generate()'s `willUseRawAction`
+        // local, for the full identity-hash-mismatch root cause this prevents. When true, the
+        // raw-action route's own appendMessages() call becomes the SOLE writer for this message.
+        if (!skipTreePersistence) {
+            await chatOpAppend(chat_id).catch(error =>
+                console.error('Could not save the new user message:', error));
         }
     }
 
