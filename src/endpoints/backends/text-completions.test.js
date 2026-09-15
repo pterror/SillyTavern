@@ -1232,12 +1232,21 @@ async function run() {
     // (i-6c) STREAMING raw-action, CLIENT DISCONNECT MID-STREAM: mirrors kobold.test.js's own real-
     // TCP-close disconnect test (see that file's comment on the same pattern) - a real AbortController
     // closes the real client-side TCP socket while the fake backend still has more (unsent) content
-    // queued up. Proves forwardAndPersistCompactStream()'s safeWrite()-via-createBackpressureWriter()
-    // guard actually prevents the write-after-end crash class this session already found and fixed
-    // once elsewhere (kobold.js) - if that guard were missing/broken, the attempted write to the
-    // already-closed socket after disconnect would throw/emit an unhandled error and take this whole
-    // test process down, not just fail one assertion. Also proves the partial text received BEFORE the
-    // disconnect is still persisted (a real, if partial, reply - not nothing).
+    // queued up. Proves forwardAndPersistCompactStream()'s createBackpressureWriter() guard
+    // (`res.writableEnded` check) actually prevents the write-after-end crash class this session
+    // already found and fixed once elsewhere (kobold.js) - if that guard were missing/broken, the
+    // attempted write to the already-closed socket after disconnect would throw/emit an unhandled
+    // error and take this whole test process down, not just fail one assertion.
+    //
+    // UPDATED for real resumability (this session's own later task): a client disconnect no longer
+    // aborts the upstream generation - see text-completions.js's own `request.socket.on('close', ...)`
+    // comment (`if (pendingAssistantPersist) return;`) for why: it's what lets a client reconnect via
+    // GET /generate/resume/:id and get the live continuation instead of a truncated partial. So the
+    // fake backend's post-disconnect content, which used to be discarded, is now genuinely still
+    // consumed into the resumable generation buffer and persisted once the backend finishes - this
+    // test now asserts the FULL text (both pre- and post-disconnect) lands on the tree, not just the
+    // pre-disconnect fragment. resume-stream.test.js is the dedicated, focused test for the
+    // resume-endpoint mechanics themselves.
     {
         const disconnectBranch = 'stream-compact-disconnect-chat';
         await saveChatToTree(directories, ownerId, disconnectBranch, [
@@ -1255,7 +1264,7 @@ async function run() {
             // window to disconnect the client before the upstream response completes on its own.
             streamGate.then(() => {
                 try {
-                    res.write(`data: ${JSON.stringify({ choices: [{ text: ' Should never reach the client.' }] })}\n\n`);
+                    res.write(`data: ${JSON.stringify({ choices: [{ text: ' Still generated after disconnect.' }] })}\n\n`);
                     res.end('data: [DONE]\n\n');
                 } catch {
                     // The fake backend's own socket may already be gone too by this point - not what's under test.
@@ -1289,22 +1298,23 @@ async function run() {
             // Closes the real TCP socket between this test's fetch() and the route's server, firing
             // the route's real response.socket 'close' handler under completely real conditions.
             controller.abort();
-        } finally {
             releaseStream();
+        } finally {
             fakeBackend.server.close();
             server.closeAllConnections?.();
             await new Promise(resolve => server.close(resolve));
         }
 
         // If the process is still alive to run this assertion at all, no write-after-end exception
-        // escaped uncaught - that's the primary thing this test proves. The partial text received
-        // before the disconnect must still have been persisted.
+        // escaped uncaught - that's the primary thing this test proves. The generation kept running
+        // after the disconnect and its FULL text (pre- and post-disconnect) was persisted.
         const branchAfter = await waitFor(async () => {
             const branch = await loadBranch(directories, ownerId, disconnectBranch);
-            return branch.messages.length > branchBefore.messages.length + 1 ? branch : null;
+            const leaf = branch.messages[branch.messages.length - 1];
+            return leaf?.mes === 'Partial before disconnect. Still generated after disconnect.' ? branch : null;
         });
         const assistantMsg = branchAfter.messages[branchAfter.messages.length - 1];
-        assert.equal(assistantMsg.mes, 'Partial before disconnect.', 'only the text received before the disconnect was persisted - not the text the backend tried to send afterward');
+        assert.equal(assistantMsg.mes, 'Partial before disconnect. Still generated after disconnect.', 'the full text - including what the backend generated AFTER the client disconnected - was persisted, since the upstream generation is no longer aborted on disconnect');
     }
 
     // (i-7) ROUTE-LEVEL: a raw-action request whose body never includes the `node_id` key at all

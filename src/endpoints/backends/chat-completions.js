@@ -255,7 +255,14 @@ async function sendClaudeRequest(request, response, persist) {
     try {
         const controller = new AbortController();
         request.socket.removeAllListeners('close');
+        // A raw-action (persisted) generation deliberately keeps its upstream request running after
+        // the client disconnects, instead of aborting it here - same reasoning/precedent as
+        // text-completions.js's own `/generate` route (search that file for this exact comment) -
+        // this is what lets GET /generate/resume/:id serve a live continuation rather than a
+        // truncated partial. Every `controller.abort()` call in this file guarded by `if (persist)
+        // return;`/`if (!persist)` follows this same rule.
         request.socket.on('close', function () {
+            if (persist) return;
             controller.abort();
         });
         const additionalHeaders = {};
@@ -714,6 +721,7 @@ async function sendMakerSuiteRequest(request, response, persist) {
         const controller = new AbortController();
         request.socket.removeAllListeners('close');
         request.socket.on('close', function () {
+            if (persist) return;
             controller.abort();
         });
 
@@ -885,6 +893,7 @@ async function sendAI21Request(request, response, persist) {
     const controller = new AbortController();
     request.socket.removeAllListeners('close');
     request.socket.on('close', function () {
+        if (persist) return;
         controller.abort();
     });
     // Hack to support JSON schema
@@ -989,6 +998,7 @@ async function sendMistralAIRequest(request, response, persist) {
         const controller = new AbortController();
         request.socket.removeAllListeners('close');
         request.socket.on('close', function () {
+            if (persist) return;
             controller.abort();
         });
 
@@ -1102,6 +1112,7 @@ async function sendCohereRequest(request, response, persist) {
     const controller = new AbortController();
     request.socket.removeAllListeners('close');
     request.socket.on('close', function () {
+        if (persist) return;
         controller.abort();
     });
 
@@ -1248,6 +1259,7 @@ async function sendDeepSeekRequest(request, response, persist) {
     const controller = new AbortController();
     request.socket.removeAllListeners('close');
     request.socket.on('close', function () {
+        if (persist) return;
         controller.abort();
     });
 
@@ -1389,6 +1401,7 @@ async function sendXaiRequest(request, response, persist) {
     const controller = new AbortController();
     request.socket.removeAllListeners('close');
     request.socket.on('close', function () {
+        if (persist) return;
         controller.abort();
     });
 
@@ -1519,6 +1532,7 @@ async function sendAimlapiRequest(request, response, persist) {
     const controller = new AbortController();
     request.socket.removeAllListeners('close');
     request.socket.on('close', function () {
+        if (persist) return;
         controller.abort();
     });
 
@@ -1648,6 +1662,7 @@ async function sendElectronHubRequest(request, response, persist) {
     const controller = new AbortController();
     request.socket.removeAllListeners('close');
     request.socket.on('close', function () {
+        if (persist) return;
         controller.abort();
     });
 
@@ -1786,6 +1801,7 @@ async function sendChutesRequest(request, response, persist) {
     const controller = new AbortController();
     request.socket.removeAllListeners('close');
     request.socket.on('close', function () {
+        if (persist) return;
         controller.abort();
     });
 
@@ -1915,6 +1931,7 @@ async function sendMinimaxRequest(request, response, persist) {
     const controller = new AbortController();
     request.socket.removeAllListeners('close');
     request.socket.on('close', function () {
+        if (persist) return;
         controller.abort();
     });
 
@@ -2059,7 +2076,7 @@ async function sendAzureOpenAIRequest(request, response, persist) {
 
     const controller = new AbortController();
     request.socket.removeAllListeners('close');
-    request.socket.on('close', () => controller.abort());
+    request.socket.on('close', () => { if (!persist) controller.abort(); });
 
     const config = {
         method: 'POST',
@@ -4468,6 +4485,7 @@ router.post('/generate', async function (request, response) {
         const controller = new AbortController();
         request.socket.removeAllListeners('close');
         request.socket.on('close', function () {
+            if (pendingAssistantPersist) return;
             controller.abort();
         });
 
