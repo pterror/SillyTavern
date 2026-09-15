@@ -143,7 +143,7 @@ export function getLlamaCppStreamMeta(id) {
 }
 
 /** Coalesces writes while waiting for `drain` under backpressure. */
-function createBackpressureWriter(res) {
+export function createBackpressureWriter(res) {
     /** @type {Buffer[]} */
     let pending = [];
     let waitingDrain = false;
