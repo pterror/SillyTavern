@@ -473,9 +473,20 @@ router.post('/update', function (request, response) {
  * the whole stats blob first just to compute new running totals, or send every other character's
  * stats back along with the one that actually changed. STATS is already in memory (no disk read
  * either way), so this is one round trip instead of /get then /update.
+ *
+ * Word-count deltas are derived HERE from `wordCount`'s raw text via `countWordsInString()` (the
+ * same function `calculateStats()`/`calculateTotalGenTimeAndWordCount()` above already use to
+ * build stats from chat files), not trusted as pre-computed numbers from the client - the client
+ * already has the final message text at this point (it's what it just persisted), so having it
+ * count its own words client-side was pure redundant duplicate work, not authoritative input.
+ *
+ * `date_last_chat`/`date_first_chat` are stamped from THIS SERVER's own clock, not a client-
+ * supplied value - the same precedent already used for `date_last_chat` elsewhere (see
+ * `bumpCharacterDateLastChat()` in src/character-metadata-db.js, which also uses its own
+ * `Date.now()` rather than trusting a caller-supplied timestamp).
  */
 router.post('/increment', function (request, response) {
-    const { avatar, deltas, dates } = request.body ?? {};
+    const { avatar, deltas, wordCount } = request.body ?? {};
     if (typeof avatar !== 'string' || !avatar || typeof deltas !== 'object' || deltas === null) {
         return response.sendStatus(400);
     }
@@ -494,19 +505,29 @@ router.post('/increment', function (request, response) {
         date_first_chat: new Date('9999-12-31T23:59:59.999Z').getTime(),
     };
 
-    for (const key of ['total_gen_time', 'user_word_count', 'non_user_word_count', 'user_msg_count', 'non_user_msg_count', 'total_swipe_count', 'chat_size']) {
+    for (const key of ['total_gen_time', 'user_msg_count', 'non_user_msg_count', 'total_swipe_count', 'chat_size']) {
         if (typeof deltas[key] === 'number') {
             stat[key] = (stat[key] || 0) + deltas[key];
         }
     }
-    if (dates && typeof dates === 'object') {
-        if (typeof dates.last_chat === 'number') {
-            stat.date_last_chat = dates.last_chat;
-        }
-        if (typeof dates.first_chat_candidate === 'number') {
-            stat.date_first_chat = Math.min(stat.date_first_chat ?? dates.first_chat_candidate, dates.first_chat_candidate);
+
+    if (wordCount && typeof wordCount === 'object' && typeof wordCount.text === 'string') {
+        const newCount = countWordsInString(wordCount.text);
+        // Mirrors the exact old-length formula the client used to compute this same delta with
+        // (a plain space-split, not a word-count re-run of the old text) - preserved as-is since
+        // this task is about WHERE the computation happens, not changing its semantics.
+        const oldLen = wordCount.is_edit && typeof wordCount.old_text === 'string' ? wordCount.old_text.split(' ').length : 0;
+        const delta = newCount - oldLen;
+        if (wordCount.is_user) {
+            stat.user_word_count = (stat.user_word_count || 0) + delta;
+        } else {
+            stat.non_user_word_count = (stat.non_user_word_count || 0) + delta;
         }
     }
+
+    const now = Date.now();
+    stat.date_last_chat = now;
+    stat.date_first_chat = Math.min(stat.date_first_chat ?? now, now);
 
     charStats[avatar] = stat;
     setCharStats(handle, charStats);
