@@ -2,6 +2,7 @@ import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } fr
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { getStringHash } from '../public/scripts/hash-utils.js';
 
 /** @type {typeof import('../src/character-card-parser.js')} */
 let cardParser;
@@ -221,5 +222,85 @@ describe('/merge-attributes carves chat out the same way, and never writes it in
 
         const row = await metadataDb.getCharacterMetadataRow(directories, 'Alice.png');
         expect(row.active_chat).toBe('Alice - Original Chat');
+    });
+});
+
+describe('/merge-attributes issues fresh per-field hashes instead of making the caller compute its own', () => {
+    // The client never calls getStringHash() itself for this anymore - it only ever echoes back whatever hash
+    // the server most recently handed it. These assertions cover that whole round trip through the one seam
+    // that actually issues and checks the hash: this endpoint.
+
+    test('omitting _loadedFieldHashes entirely keeps the old, no-hashes response shape (opt-in, not a breaking change)', async () => {
+        expect((await create({ ch_name: 'Alice', description: 'desc', file_name: 'Alice' })).status).toBe(200);
+
+        const mergeResponse = await mergeAttributes({ avatar: 'Alice.png', description: 'no hashes requested' });
+        expect(mergeResponse.status).toBe(200);
+
+        // express's sendStatus(200) body is the literal string 'OK' - not JSON, and definitely no `hashes` key.
+        const text = await mergeResponse.text();
+        expect(text).toBe('OK');
+    });
+
+    test('a successful save with _loadedFieldHashes gets back a `hashes` object with a fresh hash for every field it sent', async () => {
+        expect((await create({ ch_name: 'Alice', description: 'v1', file_name: 'Alice', personality: 'p1' })).status).toBe(200);
+
+        const mergeResponse = await mergeAttributes({
+            avatar: 'Alice.png',
+            data: { description: 'v2', personality: 'p2' },
+            _loadedFieldHashes: {
+                'data.description': getStringHash(JSON.stringify('v1')),
+                'data.personality': getStringHash(JSON.stringify('p1')),
+            },
+        });
+        expect(mergeResponse.status).toBe(200);
+
+        const body = await mergeResponse.json();
+        expect(body.hashes).toEqual({
+            'data.description': getStringHash(JSON.stringify('v2')),
+            'data.personality': getStringHash(JSON.stringify('p2')),
+        });
+    });
+
+    test('echoing that exact server-issued hash back on the next save succeeds', async () => {
+        expect((await create({ ch_name: 'Alice', description: 'v1', file_name: 'Alice' })).status).toBe(200);
+
+        const first = await mergeAttributes({
+            avatar: 'Alice.png',
+            data: { description: 'v2' },
+            _loadedFieldHashes: { 'data.description': getStringHash(JSON.stringify('v1')) },
+        });
+        expect(first.status).toBe(200);
+        const { hashes } = await first.json();
+
+        // Nothing recomputed locally here - `hashes['data.description']` is echoed verbatim, exactly like a
+        // client would do on its next edit round.
+        const second = await mergeAttributes({
+            avatar: 'Alice.png',
+            data: { description: 'v3' },
+            _loadedFieldHashes: { 'data.description': hashes['data.description'] },
+        });
+        expect(second.status).toBe(200);
+
+        const card = JSON.parse(await readCardContent(directories, 'Alice.png'));
+        expect(card.data.description).toBe('v3');
+    });
+
+    test('a stale/wrong echoed hash is still rejected with a 409 conflict - the check itself is unchanged', async () => {
+        expect((await create({ ch_name: 'Alice', description: 'v1', file_name: 'Alice' })).status).toBe(200);
+
+        const mergeResponse = await mergeAttributes({
+            avatar: 'Alice.png',
+            data: { description: 'v2' },
+            _loadedFieldHashes: { 'data.description': getStringHash(JSON.stringify('some other value the server never had')) },
+        });
+        expect(mergeResponse.status).toBe(409);
+
+        const body = await mergeResponse.json();
+        expect(body.error).toBe('conflict');
+        expect(body.conflictingFields).toEqual(['data.description']);
+
+        // Rejected save must not have landed.
+        const card = JSON.parse(await readCardContent(directories, 'Alice.png'));
+        expect(card.data.description).toBe('v1');
     });
 });

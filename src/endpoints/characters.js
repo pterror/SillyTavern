@@ -1160,7 +1160,7 @@ function processUnsetSentinels(target, source) {
  * @param {object} updateData The merge payload to apply
  * @param {import("express").Request} request Express request object
  * @param {((data: any) => boolean) | null} [shouldSkip] Used for bulk merge filtering.
- * @returns {Promise<{ok: boolean, error?: string, skipped?: boolean}>}
+ * @returns {Promise<{ok: boolean, error?: string, skipped?: boolean, hashes?: Object<string, number>}>}
  */
 async function mergeCharacterUpdate(avatarPath, avatar, updateData, request, shouldSkip = null) {
     const pngStringData = await readCardContent(request.user.directories, avatar, avatarPath);
@@ -1233,7 +1233,21 @@ async function mergeCharacterUpdate(avatarPath, avatar, updateData, request, sho
     if (chatRequested && typeof requestedChat === 'string' && requestedChat !== '') {
         await setCharacterActiveChat(request.user.directories, avatar, requestedChat);
     }
-    return { ok: true };
+
+    // Server is the sole source of the conflict-detection hash: for every field the caller echoed a loaded hash
+    // for, hand back a fresh one computed off the just-written value, so the caller's next edit round has an
+    // up-to-date baseline it never had to compute itself. Additive - omitted entirely when the caller didn't
+    // opt in by sending _loadedFieldHashes, so callers that don't care about hashes see no response-shape change.
+    let hashes;
+    if (loadedFieldHashes && typeof loadedFieldHashes === 'object') {
+        hashes = {};
+        for (const v2Path of Object.keys(loadedFieldHashes)) {
+            const currentValue = _.get(character, v2Path);
+            hashes[v2Path] = getStringHash(JSON.stringify(currentValue !== undefined ? currentValue : null));
+        }
+    }
+
+    return { ok: true, hashes };
 }
 
 /**
@@ -1314,7 +1328,13 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
 
         const result = await mergeCharacterUpdate(avatarPath, update.avatar, update, request);
         if (result.ok) {
-            response.sendStatus(200);
+            // Additive: only present when the request opted in via _loadedFieldHashes, so a caller that never
+            // sends that (and therefore never reads this) sees the exact same `200, no body` shape as before.
+            if (result.hashes) {
+                response.status(200).json({ hashes: result.hashes });
+            } else {
+                response.sendStatus(200);
+            }
         } else if (result.error === 'conflict' && result.conflictingFields) {
             response.status(409).json({ error: 'conflict', conflictingFields: result.conflictingFields });
         } else if (result.error === 'greeting-fields-forbidden') {
