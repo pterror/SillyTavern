@@ -7847,8 +7847,6 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             // This relies on `saveReply` having been called to add the message to the chat, so it must be last.
             parseAndSaveLogprobs(data, continue_mag);
 
-            // Server already persisted this reply for raw-action responses; mark it clean so
-            // _saveTreeChat() doesn't write it again.
             if (data.assistant_node_id) {
                 const mesId = chat.length - 1;
                 const msg = chat[mesId];
@@ -10986,14 +10984,11 @@ async function getChatResult() {
             freshChat = true;
         }
 
-        // A node_id on the opening says this chat lives in the tree; without _tree_stored, saves would take the whole-array legacy route.
         if (message?.node_id) {
             chat_metadata._tree_stored = true;
             _snapshotMessages();
         }
-
-        // Make sure the chat appears on the server
-        await saveChatConditional();
+        await ensureOpeningRow(0);
     }
     await loadItemizedPrompts(getCurrentChatId());
     await printMessages();
@@ -17033,12 +17028,18 @@ jQuery(async function () {
             clone.mes = clone.mes.trim();
         }
 
-        chat.splice(Number(this_edit_mes_id) + 1, 0, clone);
+        const targetId = Number(this_edit_mes_id) + 1;
+        chat.splice(targetId, 0, clone);
         const newMessageElement = updateMessageElement(clone);
         this_edit_mes_element.after(newMessageElement);
 
         updateViewMessageIds();
-        await saveChatConditional();
+        if (chat_metadata?._tree_stored) {
+            await chatOpGraft(targetId).catch(error =>
+                console.error('Could not save the copied message:', error));
+        } else {
+            await saveChatConditional();
+        }
         chatElement[0].scrollTop = oldScroll;
         showSwipeButtons();
     });
