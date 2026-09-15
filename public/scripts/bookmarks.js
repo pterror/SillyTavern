@@ -24,7 +24,6 @@ import {
     DEFAULT_AUTO_MODE_DELAY,
     group_activation_strategy,
     group_generation_mode,
-    groups,
     groupsStore,
     openGroupById,
     openGroupChat,
@@ -46,7 +45,6 @@ import { t } from './i18n.js';
 import {
     getUniqueName,
     isTrueBoolean,
-    uuidv4,
 } from './utils.js';
 
 const bookmarkNameToken = 'Bookmark #';
@@ -265,21 +263,10 @@ export async function createBranch(mesId, { swipeId = null } = {}) {
         return name;
     }
 
-    // Legacy JSONL path: copy the chat prefix into a new file
-    function buildBranchName(name, i) {
-        let cleanName = name.replace(/ - Branch #\d+$/, '');
-        cleanName = cleanName.replace(/^Branch #\d+ - /, '');
-        return `${cleanName} - Branch #${i}`;
-    }
-    const existingChats = await getExistingChatNames();
-    const name = getUniqueName(mainChatName, (x) => existingChats.includes(x), { nameBuilder: buildBranchName, startIndex: 1 });
-    if (!name) {
-        console.error('Could not generate a unique branch name.');
-        toastr.error('Could not generate a unique branch name.', 'Branch creation failed');
-        return;
-    }
-
-    const newMetadata = { main_chat: mainChatName, integrity: uuidv4(), fork_point: { mesId: Number(mesId), swipeId: resolvedSwipeId } };
+    // Legacy JSONL path: copy the chat prefix into a new file. Uniqueness is minted server-side (same
+    // "<name> - Branch #N" scheme /api/chats/label's unique:true already uses for the tree path above),
+    // not by asserting a name uniquified against a client-fetched chat list.
+    const newMetadata = { main_chat: mainChatName, fork_point: { mesId: Number(mesId), swipeId: resolvedSwipeId } };
 
     const branchChatSnapshot = await getBranchChatSnapshot(mesId, { swipeId: selectedSwipeId });
     if (!branchChatSnapshot) {
@@ -287,11 +274,16 @@ export async function createBranch(mesId, { swipeId = null } = {}) {
         return;
     }
 
-    if (selected_group) {
-        await saveGroupBookmarkChat(selected_group, name, newMetadata, mesId, branchChatSnapshot);
-    } else {
-        await saveChat({ chatName: name, withMetadata: newMetadata, mesId, chatData: branchChatSnapshot });
+    const name = selected_group
+        ? await saveGroupBookmarkChat(selected_group, mainChatName, newMetadata, mesId, branchChatSnapshot, { unique: true })
+        : await saveChat({ chatName: mainChatName, withMetadata: newMetadata, mesId, chatData: branchChatSnapshot, unique: true });
+
+    if (!name) {
+        console.error('Could not create the branch.');
+        toastr.error('Could not create the branch.', 'Branch creation failed');
+        return;
     }
+
     const extra = typeof lastMes.extra === 'object' ? { ...lastMes.extra } : {};
     const branches = (typeof extra.branches === 'object' && !Array.isArray(extra.branches)) ? { ...extra.branches } : {};
     const groupKey = String(resolvedSwipeId);
@@ -530,9 +522,10 @@ export async function createNewBookmark(mesId, { forceName = null } = {}) {
         return name;
     }
 
-    // Legacy JSONL path
+    // Legacy JSONL path. `integrity` isn't set here - the server mints and rotates it on every
+    // successful save regardless of what's sent, same as the already-fixed getChat()/getGroupChat() fills.
     const mainChat = selected_group ? groupsStore.get(selected_group)?.chat_id : getCurrentCharacter().chat;
-    const newMetadata = { main_chat: mainChat, integrity: uuidv4() };
+    const newMetadata = { main_chat: mainChat };
     await saveItemizedPrompts(name);
 
     if (selected_group) {
@@ -585,8 +578,10 @@ export async function convertSoloToGroupChat() {
 
     const character = getCurrentCharacter();
 
-    // Populate group required fields
-    const name = getUniqueName(`Group: ${character.name}`, y => groups.findIndex(x => x.name === y) !== -1);
+    // Populate group required fields. A plain, non-unique default name - same as group-chats.js's
+    // createGroup() - the server's /api/groups/create doesn't key groups by name (it mints its own
+    // Date.now()-based id), so there's nothing to uniquify against.
+    const name = `Group: ${character.name}`;
     const avatar = getThumbnailUrl('avatar', character.avatar);
     const members = [character.avatar];
     const favChecked = character.fav || character.fav == 'true';
@@ -635,7 +630,6 @@ export async function convertSoloToGroupChat() {
 
     // Convert chat to group format
     const groupChat = [...chat].map(m => structuredClone(m));
-    const genIdFirst = Date.now();
 
     for (let index = 0; index < groupChat.length; index++) {
         const message = groupChat[index];
@@ -653,8 +647,9 @@ export async function convertSoloToGroupChat() {
         message.name = character.name;
         message.original_avatar = character.avatar;
         message.force_avatar = getThumbnailUrl('avatar', character.avatar);
-        // Allow regens of a single message in group
-        message.extra.gen_id = genIdFirst + index;
+        // Allow regens of a single message in group. gen_id isn't set here - /api/chats/group/save mints
+        // one for any message that doesn't already carry a real one from the solo chat, since the whole
+        // array is already going to the server in this one request.
     }
 
     // Save group chat

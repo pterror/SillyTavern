@@ -613,12 +613,32 @@ export async function trySaveChat(chatData, filePath, skipIntegrityCheck = false
     return nextIntegritySlug;
 }
 
+/**
+ * Picks a filename that doesn't already exist on disk, for callers that only have a desired base name
+ * (e.g. "Some Chat") and want the server - not a client-fetched directory listing - to be the source of
+ * truth for uniqueness. Mirrors labelNode()'s "<name> - Branch #N" scheme so branch names look the same
+ * whether the chat is tree-stored or still a legacy JSONL file.
+ * @param {string} chatDir Directory the chat file would be written into.
+ * @param {string} baseName Desired chat name, without extension.
+ * @returns {string} `baseName` unchanged if free, otherwise `<baseName> - Branch #N` for the first free N.
+ */
+function pickUniqueChatFileName(chatDir, baseName) {
+    const exists = (name) => fs.existsSync(path.join(chatDir, sanitize(`${name}.jsonl`)));
+    if (!exists(baseName)) {
+        return baseName;
+    }
+    const cleanBase = String(baseName).replace(/ - Branch #\d+$/, '');
+    let i = 1;
+    while (exists(`${cleanBase} - Branch #${i}`)) i++;
+    return `${cleanBase} - Branch #${i}`;
+}
+
 router.post('/save', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const handle = request.user.profile.handle;
         const cardName = String(request.body.avatar_url).replace('.png', '');
         const chatData = request.body.chat;
-        const chatName = String(request.body.file_name);
+        let chatName = String(request.body.file_name);
 
         if (!Array.isArray(chatData)) {
             return response.status(400).send({ error: 'The request\'s body.chat is not an array.' });
@@ -630,6 +650,13 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
             ownerId: cardName,
             chatDir: path.join(request.user.directories.chats, cardName),
         });
+
+        // A fresh branch/bookmark save asks for a name minted here (like /chats/label's unique:true)
+        // instead of asserting a name the client uniquified against its own fetched chat list.
+        if (request.body.unique) {
+            chatName = pickUniqueChatFileName(path.join(request.user.directories.chats, cardName), chatName);
+        }
+
         const result = await saveChatToTree(request.user.directories, cardName, chatName, chatData, false);
         if (result) {
             await bumpCharacterDateLastChat(request.user.directories, String(request.body.avatar_url)).catch(err =>
@@ -638,6 +665,7 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
                 ok: true,
                 integrity: result.integrity,
                 assigned_node_ids: result.assignedNodeIds,
+                file_name: chatName,
             });
         }
 
@@ -651,7 +679,7 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
         const integrity = await trySaveChat(chatData, chatFilePath, request.body.force, handle, cardName, request.user.directories.backups, request.user.directories);
         await bumpCharacterDateLastChat(request.user.directories, String(request.body.avatar_url)).catch(err =>
             console.error(`Could not bump date_last_chat for ${cardName}:`, err));
-        return response.send({ ok: true, integrity });
+        return response.send({ ok: true, integrity, file_name: chatName });
     } catch (error) {
         if (error instanceof IntegrityMismatchError) {
             console.error(error.message);
@@ -1726,13 +1754,58 @@ router.post('/group/delete', async (request, response) => {
     }
 });
 
+/**
+ * Same idea as pickUniqueChatFileName(), but for group chats: uniqueness is checked against the group's
+ * own `chats` id list (already loaded via touchGroupOwner()) instead of a directory listing, since a
+ * group chat id doubles as its display name in this legacy save path.
+ * @param {string[]} existingIds Group's current `chats` array.
+ * @param {string} baseId Desired chat id, e.g. the main chat's display name.
+ * @returns {string} `baseId` unchanged if free, otherwise `<baseId> - Branch #N` for the first free N.
+ */
+function pickUniqueGroupChatId(existingIds, baseId) {
+    const existing = new Set(Array.isArray(existingIds) ? existingIds : []);
+    if (!existing.has(baseId)) {
+        return baseId;
+    }
+    const cleanBase = String(baseId).replace(/ - Branch #\d+$/, '');
+    let i = 1;
+    while (existing.has(`${cleanBase} - Branch #${i}`)) i++;
+    return `${cleanBase} - Branch #${i}`;
+}
+
+/**
+ * Fills in `extra.gen_id` for character messages missing one before a group chat is written to disk.
+ * Group regeneration/swipe tracking depends on every character message carrying *some* gen_id; minting
+ * the fallback here means callers that hand the server a whole chat array in one request (e.g. converting
+ * a solo chat to a group) don't need to fabricate one client-side. A message that already has a gen_id -
+ * real prior generation data - is left untouched; only messages missing one are filled in, with a value
+ * that only needs to be unique within this one save (mirrors the old client-side `Date.now() + index`).
+ * @param {Array<object>} chatData Chat array as posted to /group/save, i.e. [header, ...messages].
+ */
+function assignMissingGenIds(chatData) {
+    const baseId = Date.now();
+    for (let index = 1; index < chatData.length; index++) {
+        const message = chatData[index];
+        if (!message || message.is_user || message.is_system) {
+            continue;
+        }
+        if (message.extra && typeof message.extra === 'object' && (message.extra.gen_id !== undefined && message.extra.gen_id !== null)) {
+            continue;
+        }
+        if (!message.extra || typeof message.extra !== 'object') {
+            message.extra = {};
+        }
+        message.extra.gen_id = baseId + index;
+    }
+}
+
 router.post('/group/save', async function (request, response) {
     try {
         if (!request.body || !request.body.id) {
             return response.sendStatus(400);
         }
 
-        const id = String(request.body.id);
+        let id = String(request.body.id);
         const handle = request.user.profile.handle;
         const chatData = request.body.chat;
 
@@ -1740,11 +1813,19 @@ router.post('/group/save', async function (request, response) {
             return response.status(400).send({ error: 'The request\'s body.chat is not an array.' });
         }
 
+        assignMissingGenIds(chatData);
+
         const group = await touchGroupOwner(request.user.directories, { chatId: id, groupId: request.body.group_id });
         if (!group) {
             // Refused rather than silently written to a file nothing reads once the group is tree-backed.
             console.error(`Refusing to save group chat "${id}": no group claims it.`);
             return response.status(400).send({ error: 'unknown_group' });
+        }
+
+        // A fresh branch/bookmark save asks for an id minted here (like /chats/label's unique:true)
+        // instead of asserting an id the client uniquified against its own in-memory group.chats list.
+        if (request.body.unique) {
+            id = pickUniqueGroupChatId(group.chats, id);
         }
 
         const result = await saveChatToTree(request.user.directories, group.id, id, chatData, true);
@@ -1758,6 +1839,7 @@ router.post('/group/save', async function (request, response) {
                 ok: true,
                 integrity: result.integrity,
                 assigned_node_ids: result.assignedNodeIds,
+                chat_id: id,
             });
         }
 
@@ -1767,7 +1849,7 @@ router.post('/group/save', async function (request, response) {
         await bumpGroupChatStats(request.user.directories, id, { groupId: request.body.group_id }).catch(err =>
             console.error(`Could not update group chat stats for ${id}:`, err));
 
-        return response.send({ ok: true, integrity });
+        return response.send({ ok: true, integrity, chat_id: id });
     } catch (error) {
         if (error instanceof IntegrityMismatchError) {
             console.error(error.message);
