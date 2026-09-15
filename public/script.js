@@ -460,6 +460,33 @@ function _snapshotMessages() {
     }
 }
 
+// Mirrors _messageSnapshots, but for chat_metadata's own content (author's note, custom extension
+// keys, `tainted`, etc.) rather than message rows - so a tree op that only changed the message tree
+// (already persisted via its own chatOp*/degraft/endPath call) doesn't also trigger a redundant
+// /api/chats/metadata POST that would write back the exact same metadata unchanged. `null` always
+// means "unknown state, save unconditionally" - every metadata reset in this file clears it to that,
+// so this can only ever cause an extra save, never a dropped one.
+/** @type {string|null} */
+let _lastSavedMetadataJSON = null;
+
+// `integrity` is excluded on purpose: the server rotates it on every metadata write (even a true
+// no-op one), so comparing it would make every save look "dirty" and defeat the whole point.
+function _metadataContentJSON(metadata) {
+    if (!metadata || typeof metadata !== 'object') {
+        return JSON.stringify(metadata);
+    }
+    const rest = { ...metadata };
+    delete rest.integrity;
+    return JSON.stringify(rest);
+}
+
+// Forces the next tree-chat metadata save to go through unconditionally, e.g. after chat_metadata
+// is wholesale reset/reassigned (new chat, chat switch, import) rather than merged in place - in
+// those cases the previous snapshot no longer describes what the server has, so treat it as unknown.
+function _resetMetadataSaveSnapshot() {
+    _lastSavedMetadataJSON = null;
+}
+
 function _buildSlimPayload(messages) {
     return messages.map(msg => {
         if (msg.node_id && _messageSnapshots.get(msg.node_id) === msg) {
@@ -1232,6 +1259,7 @@ export async function selectCharacterByAvatar(avatar, { switchMenu = true } = {}
             selected_button = 'character_edit';
             setCharacterId(entity);
             chat_metadata = {};
+            _resetMetadataSaveSnapshot();
             await getChat();
         } else {
             toastr.info(t`Please wait until the current generation finishes before switching characters.`, t`Generation in progress...`);
@@ -2601,6 +2629,7 @@ async function delChat(chatfile) {
         const name = chatfile.replace('.jsonl', '');
         if (name === getCurrentCharacter().chat) {
             chat_metadata = {};
+            _resetMetadataSaveSnapshot();
             await replaceCurrentChat();
         }
         await eventSource.emit(event_types.CHAT_DELETED, name);
@@ -10057,6 +10086,7 @@ export function resetChatState() {
     chat.splice(0, chat.length, ...SAFETY_CHAT);
     // resets chat metadata
     chat_metadata = {};
+    _resetMetadataSaveSnapshot();
     // resets the characters array, forcing getcharacters to reset
     characters.length = 0;
 }
@@ -10494,6 +10524,16 @@ async function _saveTreeChat(fileName, metadata, messages, addressedByName = fal
         : (chat.some(m => m.node_id === position) ? position
             : (isStoredNodeId(opening) ? opening : fileName));
 
+    // A pure structural tree op (delete/degraft/swap/delete-alternative) already persisted its own
+    // change via a dedicated chatOp* call above (or before this function was even entered); it has
+    // nothing new to tell the metadata endpoint. Only actually POST when chat_metadata's own content
+    // has changed since the last successful metadata save - otherwise this would be a second round
+    // trip per action that writes back the exact same object the server already has.
+    const metadataContentJSON = _metadataContentJSON(metadata);
+    if (metadataContentJSON === _lastSavedMetadataJSON) {
+        return {};
+    }
+
     // A metadata write failure must not take the save down with it - every message write has already landed by this point.
     try {
         const response = await fetch('/api/chats/metadata', {
@@ -10509,6 +10549,7 @@ async function _saveTreeChat(fileName, metadata, messages, addressedByName = fal
             throw new Error(`/api/chats/metadata responded ${response.status}`);
         }
         const meta = await response.json().catch(() => ({}));
+        _lastSavedMetadataJSON = metadataContentJSON;
         return { integrity: meta.integrity };
     } catch (error) {
         console.warn('[saveChat] The messages are saved; their chat metadata is not:', error);
@@ -10873,6 +10914,7 @@ export async function getChat({ isNewChat = false } = {}) {
             /** @type {ChatHeader} */
             const chatHeader = data.shift();
             chat_metadata = chatHeader?.chat_metadata ?? {};
+            _resetMetadataSaveSnapshot();
             chat.splice(0, chat.length, ...data);
             chat.forEach(ensureMessageMediaIsArray);
             // Freeze messages loaded from tree DB: immutable values, replaced only via updateMessage()
@@ -10887,6 +10929,7 @@ export async function getChat({ isNewChat = false } = {}) {
             // An empty/corrupted chat file
             chat.splice(0, chat.length);
             chat_metadata = {};
+            _resetMetadataSaveSnapshot();
         }
         await getChatResult();
 
@@ -11091,6 +11134,7 @@ export async function openCharacterChat(file_name) {
     await clearChat({ clearData: true });
     charactersStore.update(getCurrentCharacter().avatar, { chat: file_name });
     chat_metadata = {};
+    _resetMetadataSaveSnapshot();
 
     // Must run even if getChat fails, or "which chat was open" is lost on reload.
     try {
@@ -12666,6 +12710,11 @@ export function removeDepthPrompts() {
  */
 export function updateChatMetadata(newValues, reset) {
     chat_metadata = reset ? { ...newValues } : { ...chat_metadata, ...newValues };
+    if (reset) {
+        // A wholesale replace (chat switch, import, group-chat metadata load) - the previous
+        // save snapshot no longer describes what the server has for this metadata object.
+        _resetMetadataSaveSnapshot();
+    }
 }
 
 
@@ -13146,6 +13195,9 @@ export async function saveMetadata() {
                     if (typeof result.integrity === 'string') {
                         chat_metadata.integrity = result.integrity;
                     }
+                    // Keep _saveTreeChat's own dirty check in sync, so a subsequent tree op doesn't
+                    // needlessly re-POST metadata this call already saved.
+                    _lastSavedMetadataJSON = _metadataContentJSON(metadata);
                     return;
                 }
                 console.warn(`[saveMetadata] /api/chats/metadata responded ${response.status}, falling back to the whole-chat save`);
@@ -15200,6 +15252,7 @@ export async function doNewChat({ deleteCurrentChat = false } = {}) {
         // sends a message (which mints a real row) or explicitly labels a point in it. See
         // pointToFreshChat() for how the pointer is (or isn't) actually resolved.
         chat_metadata = {};
+        _resetMetadataSaveSnapshot();
         await pointToFreshChat();
         if (deleteCurrentChat) await delChat(chat_file_for_del + '.jsonl');
     }
@@ -15321,6 +15374,7 @@ export async function closeCurrentChat() {
         setActiveGroup(null);
         this_edit_mes_id = undefined;
         chat_metadata = {};
+        _resetMetadataSaveSnapshot();
         selected_button = 'characters';
         $('#rm_button_selected_ch').children('h2').text('');
         // A real close, not just switching the visible menu away - the panel's character/chat no longer applies.
@@ -15490,6 +15544,7 @@ export async function newAssistantChat({ temporary = false } = {}) {
     }
     chat.splice(0, chat.length);
     chat_metadata = {};
+    _resetMetadataSaveSnapshot();
     setCharacterName(neutralCharacterName);
     sendSystemMessage(system_message_types.ASSISTANT_NOTE);
 }

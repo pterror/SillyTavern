@@ -1001,3 +1001,71 @@ describe('slim wire protocol (stub handling)', () => {
         expect(second.assignedNodeIds[1].index).toBe(3);
     });
 });
+
+// Backs the client-side fix that stops deleteMessage()/deleteSwipe()/messageEditMove()/doMesCut()
+// from unconditionally re-POSTing /api/chats/metadata after a structural tree op that already
+// persisted itself via its own dedicated endpoint (chatOpDegraft/chatOpEndPath/chatOpSwapAdjacent/
+// chatOpDeleteAlternative). There's no browser harness for the client-side dirty-tracking logic
+// itself (public/script.js's _lastSavedMetadataJSON / _metadataContentJSON), so these tests instead
+// establish the two server-side facts that make skipping the call safe:
+//   1. setChatMetadata() does no content-diffing of its own - it always rotates `integrity`, even
+//      across two calls with byte-identical metadata - so the client's own dirty check is the only
+//      thing standing between "unchanged" and a wasted round trip; the server won't skip it for you.
+//   2. The structural ops themselves (degraftRange, by extension endPathAt/swapAdjacent/
+//      deleteAlternative - all update only parent_id/default_child_id/identity_hash, see their own
+//      implementations) never touch the `metadata` column, so a tree op alone truly has nothing new
+//      to tell /api/chats/metadata; the metadata a client re-sends after one is always the same
+//      metadata it already sent last, save for the integrity value the server itself will re-mint
+//      regardless of content.
+describe('chat metadata: safety of skipping a content-unchanged /api/chats/metadata write', () => {
+    test('setChatMetadata() rotates integrity on every call, even when metadata content is byte-identical - proving the server does no no-op detection of its own', async () => {
+        const directories = makeDirectories();
+        const chatData = [{ chat_metadata: {} }, makeMessage({ mes: 'm0', sendDate: 'd0' })];
+        await treeDb.saveChatToTree(directories, 'owner', 'chat', chatData, false);
+
+        const first = await treeDb.setChatMetadata(directories, 'owner', 'chat', { note: 'hello' });
+        expect(first.ok).toBe(true);
+
+        const second = await treeDb.setChatMetadata(directories, 'owner', 'chat', { note: 'hello' });
+        expect(second.ok).toBe(true);
+        // Identical content in both calls, yet the server still mints a fresh integrity each time -
+        // it has no idea the second call changed nothing, so a client that always calls this
+        // endpoint after every tree op is generating real, distinct server writes, not idempotent no-ops.
+        expect(second.integrity).not.toBe(first.integrity);
+
+        const loaded = await treeDb.loadBranch(directories, 'owner', 'chat');
+        expect(loaded.metadata).toEqual({ note: 'hello', integrity: second.integrity });
+    });
+
+    test('a structural degraft never touches the metadata column, so a tree op alone has no metadata content to save', async () => {
+        const directories = makeDirectories();
+        const chatData = [
+            { chat_metadata: {} },
+            makeMessage({ mes: 'm0', sendDate: 'd0' }),
+            makeMessage({ mes: 'm1', sendDate: 'd1' }),
+            makeMessage({ mes: 'm2', sendDate: 'd2' }),
+        ];
+        await treeDb.saveChatToTree(directories, 'owner', 'chat', chatData, false);
+        const saved = await treeDb.setChatMetadata(directories, 'owner', 'chat', { note: 'hello' });
+        expect(saved.ok).toBe(true);
+
+        const beforeDegraft = await treeDb.loadBranch(directories, 'owner', 'chat');
+        expect(beforeDegraft.messages.map(m => m.mes)).toEqual(['m0', 'm1', 'm2']);
+        const midNodeId = beforeDegraft.messages[1].node_id;
+
+        // The structural op deleteMessage()/doMesCut() actually persists a delete through - it
+        // reparents m2 onto m0 and never opens the metadata column.
+        const result = await treeDb.degraftMessage(directories, 'owner', midNodeId);
+        expect(result).toEqual({ ok: true });
+
+        const afterDegraft = await treeDb.loadBranch(directories, 'owner', 'chat');
+        expect(afterDegraft.messages.map(m => m.mes)).toEqual(['m0', 'm2']);
+        // The tree structurally changed, but chat_metadata's own content (and its integrity, which
+        // only setChatMetadata ever rotates) is byte-for-byte what it was before the degraft - proof
+        // that a client-side dirty check comparing this metadata against its last-saved snapshot
+        // would correctly see "unchanged" and skip the redundant /api/chats/metadata POST, without
+        // needing to re-derive anything the server doesn't already expose.
+        expect(afterDegraft.metadata).toEqual(beforeDegraft.metadata);
+        expect(afterDegraft.metadata.integrity).toBe(saved.integrity);
+    });
+});
