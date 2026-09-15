@@ -481,6 +481,13 @@ export async function chatOpEndPath(mesId) {
     return true;
 }
 
+// Same operation as chatOpEndPath(), for when every message was just deleted and there is no
+// chat[] entry left to name - ends the path at the owner's own anchor instead.
+export async function chatOpEndPathAtAnchor() {
+    await _chatOpPost('/api/chats/message/end-path', { end_at_anchor: true });
+    return true;
+}
+
 export async function chatOpSelect(mesId, swipeId) {
     const msg = chat[mesId];
     const nodeId = msg?.swipe_info?.[swipeId]?.node_id;

@@ -36,7 +36,7 @@ import {
     isAvailable as isTreeAvailable, hasSavedChats,
     saveChatToTree, loadBranch, forkBranch, labelNode,
     deleteBranch, renameBranch as renameBranchInTree, listBranches, listRecentBranches, searchBranchesByContent,
-    renameCharacterInMessages, renameGroupMemberInMessages, getAlternatives, getContinuation, getAncestorPath, editMessage, editMessages, appendMessages, addAlternatives, setChatMetadata, getOpeningAlternatives, addOpeningAlternatives, loadAtNode, listLabels, setNodeMetadata, selectDefaultChild, endPathAt, graftMessage, degraftRange, swapAdjacent, deleteAlternative,
+    renameCharacterInMessages, renameGroupMemberInMessages, getAlternatives, getContinuation, getAncestorPath, editMessage, editMessages, appendMessages, addAlternatives, setChatMetadata, getOpeningAlternatives, addOpeningAlternatives, loadAtNode, listLabels, setNodeMetadata, selectDefaultChild, endPathAt, endPathAtAnchor, graftMessage, degraftRange, swapAdjacent, deleteAlternative,
 } from '../message-tree-db.js';
 
 const isBackupEnabled = !!getConfigValue('backups.chat.enabled', true, 'boolean');
@@ -1187,6 +1187,11 @@ router.post('/message/alternative', validateAvatarUrlMiddleware, async function 
 /** Ends the conversation at this node: cuts the tail without deleting it (a later select restores it). */
 router.post('/message/end-path', validateAvatarUrlMiddleware, async function (request, response) {
     try {
+        if (request.body.end_at_anchor) {
+            const ok = await endPathAtAnchor(request.user.directories, ownerOf(request));
+            return response.status(ok ? 200 : 409).send({ ok, reason: ok ? undefined : 'no tree store' });
+        }
+
         const nodeId = String(request.body.node_id || '');
         if (!nodeId) return response.status(400).send({ error: 'node_id is required' });
 

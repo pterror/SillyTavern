@@ -307,12 +307,12 @@ export { messageFormatting };
 // Lives in chat-store.js, the only module allowed to write messages; re-exported for existing importers.
 import {
     updateMessage, updateIn, deepFreeze,
-    ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath, chatOpSelect, chatOpGraft, chatOpDegraft, chatOpSwapAdjacent, chatOpDeleteAlternative, chatOpDeleteAlternativeNode,
+    ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath, chatOpEndPathAtAnchor, chatOpSelect, chatOpGraft, chatOpDegraft, chatOpSwapAdjacent, chatOpDeleteAlternative, chatOpDeleteAlternativeNode,
     _mergeCardGreetingsIntoOpening, _restoreContinuation, _isBlankSlot, _markMessageSaved,
 } from './scripts/chat-store.js';
 export {
     updateMessage, updateIn,
-    ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath, chatOpSelect, chatOpGraft, chatOpDegraft, chatOpSwapAdjacent, chatOpDeleteAlternative, chatOpDeleteAlternativeNode,
+    ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath, chatOpEndPathAtAnchor, chatOpSelect, chatOpGraft, chatOpDegraft, chatOpSwapAdjacent, chatOpDeleteAlternative, chatOpDeleteAlternativeNode,
 };
 import { MacroEngine } from './scripts/macros/engine/MacroEngine.js';
 import { addChatBackupsBrowser } from './scripts/chat-backups.js';
@@ -15212,10 +15212,12 @@ export async function doNewChat({ deleteCurrentChat = false } = {}) {
 
     chat_file_for_del = getCurrentChatDetails()?.sessionName;
 
-    // Make it easier to find in backups
     if (deleteCurrentChat) {
-        // eslint-disable-next-line no-restricted-syntax -- new-chat bootstrap after a delete; no direct op applies to "make an empty chat exist."
-        await saveChatConditional();
+        if (selected_group) {
+            await saveGroupChat(selected_group, true);
+        } else {
+            charactersStore.update(getCurrentCharacter().avatar, { date_last_chat: Date.now() });
+        }
     }
 
     if (selected_group) {
@@ -16655,8 +16657,8 @@ jQuery(async function () {
                 await chatOpEndPath(chat.length - 1).catch(error =>
                     console.error('Could not cut the conversation back:', error));
             } else {
-                // eslint-disable-next-line no-restricted-syntax -- deleted down to zero messages; no direct op covers "end the path at nothing."
-                await saveChatConditional();
+                await chatOpEndPathAtAnchor().catch(error =>
+                    console.error('Could not cut the conversation back:', error));
             }
             chatElement.scrollTop(chatElement[0].scrollHeight);
             await eventSource.emit(event_types.MESSAGE_DELETED, chat.length);

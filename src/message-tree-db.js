@@ -1062,6 +1062,22 @@ export async function endPathAt(directories, ownerId, nodeId) {
     return true;
 }
 
+/**
+ * Ends the path at the owner's own anchor - the same operation as endPathAt(), for the one case
+ * that has no message node to address: every visible message was just deleted, so there is nothing
+ * left in `chat[]` to name. The anchor always exists (ensureAnchorSync mints it on first touch) and
+ * is a real row like any other, so this is endPathAt() with the target resolved server-side instead
+ * of passed in.
+ */
+export async function endPathAtAnchor(directories, ownerId) {
+    const entry = await getEntry(directories);
+    if (!entry) return false;
+
+    const anchor = ensureAnchorSync(entry.db, ownerId, Date.now());
+    entry.db.run('UPDATE messages SET default_child_id = NULL WHERE id = @id', { id: anchor.id });
+    return true;
+}
+
 export async function selectDefaultChild(directories, childId) {
     const entry = await getEntry(directories);
     if (!entry) return false;
