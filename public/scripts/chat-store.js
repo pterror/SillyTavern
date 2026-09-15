@@ -317,6 +317,20 @@ async function _retryTransient(fn, { attempts = 3, baseDelayMs = 500 } = {}) {
     throw lastError;
 }
 
+/**
+ * Public export of the exact same retry policy `_chatOpPost()` uses below (transient network/5xx
+ * errors retried with backoff, a 4xx refusal thrown immediately) - for a caller that must persist by
+ * raw node id and an explicit owner instead of through a `chatOp*()` (which always reads/writes
+ * `chat[]`/`getCurrentCharacter()`, i.e. whatever's CURRENTLY open - wrong for a caller whose target
+ * chat may no longer be the one on screen). See public/scripts/horde.js's `persistHordeRawActionReply()`
+ * for the real caller and why it can't use `chatOp*()` directly.
+ * @param {() => Promise<any>} fn
+ * @param {{attempts?: number, baseDelayMs?: number}} [options]
+ */
+export async function retryTransient(fn, options) {
+    return _retryTransient(fn, options);
+}
+
 /** Posts one operation. Throws on refusal, so a caller cannot mistake a refusal for a write. */
 async function _chatOpPost(path, body) {
     const avatar = getCurrentCharacter()?.avatar;
