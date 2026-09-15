@@ -78,6 +78,7 @@ import {
 import { getVertexAIAuth, getProjectIdFromServiceAccount } from '../google.js';
 import { getCookieSecret } from '../../users.js';
 import { fetchGoogleModels, GoogleModelsHttpError } from './google-models.js';
+import { encodeContent, encodeIndexFrame, encodeReasoningFrame, encodeAssistantNodeIdFrame } from './llamacpp-compact-stream.js';
 
 const API_OPENAI = 'https://api.openai.com/v1';
 const API_CLAUDE = 'https://api.anthropic.com/v1';
@@ -238,7 +239,7 @@ function setJsonObjectFormat(bodyParams, messages, jsonSchema) {
  * @param {object|null} [persist] `pendingAssistantPersist` from the `/generate` route (`null`/`undefined`
  * for every non-raw-action call). When set, persists the ASSISTANT's real reply text - the actual
  * `type: 'text'` content block(s) only, never a `type: 'thinking'` block - onto the message tree via the
- * shared `persistAssistantReply()`, for both streaming (teed via `forwardAndPersistSseText()`, accumulating
+ * shared `persistAssistantReply()`, for both streaming (teed via `forwardAndPersistCompactStream()`, accumulating
  * only `content_block_delta` events whose `delta.type === 'text_delta'`) and non-streaming. Purely additive:
  * the bytes/JSON actually sent to the client are unaffected either way.
  */
@@ -428,7 +429,7 @@ async function sendClaudeRequest(request, response, persist) {
             // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
             // accumulate the real reply text for raw-action persistence when `persist` is set - a
             // no-op, byte-for-byte-identical-to-before pass-through otherwise (see
-            // `forwardAndPersistSseText()`'s own doc comment above for the full teeing mechanism).
+            // `forwardAndPersistCompactStream()`'s own doc comment above for the full teeing mechanism).
             // Claude's SSE stream is a sequence of named events (`message_start`/`content_block_start`/
             // `content_block_delta`/`ping`/`message_delta`/`message_stop`, etc) whose payload JSON
             // itself carries a matching `type` field - only `content_block_delta` events whose own
@@ -436,8 +437,9 @@ async function sendClaudeRequest(request, response, persist) {
             // (`thinking_delta` for extended-thinking output, `input_json_delta` for tool-call
             // argument streaming, `citations_delta`, and every non-`content_block_delta` event type)
             // is correctly ignored, so thinking/tool-call content is never mistaken for the reply.
-            await forwardAndPersistSseText(generateResponse, response, persist, json =>
-                (json?.type === 'content_block_delta' && json?.delta?.type === 'text_delta') ? json.delta.text : undefined);
+            await forwardAndPersistCompactStream(generateResponse, response, persist,
+                json => (json?.type === 'content_block_delta' && json?.delta?.type === 'text_delta') ? json.delta.text : undefined,
+                json => json?.delta?.thinking || undefined);
         } else {
             if (!generateResponse.ok) {
                 const generateResponseText = await generateResponse.text();
@@ -485,7 +487,7 @@ async function sendClaudeRequest(request, response, persist) {
  * @param {object|null} [persist] `pendingAssistantPersist` from the `/generate` route (`null`/`undefined`
  * for every non-raw-action call). When set, persists the ASSISTANT's real reply text onto the message
  * tree via the shared `persistAssistantReply()`, for both streaming (teed via
- * `forwardAndPersistSseText()`) and non-streaming - in both cases extracting only real
+ * `forwardAndPersistCompactStream()`) and non-streaming - in both cases extracting only real
  * `candidates[0].content.parts` entries with `!part.thought` (Gemini's own "thought"/reasoning parts
  * are excluded), matching this function's own existing, unmodified non-streaming `responseText`
  * extraction below verbatim. Purely additive: the bytes/JSON actually sent to the client are
@@ -782,7 +784,7 @@ async function sendMakerSuiteRequest(request, response, persist) {
                 // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
                 // accumulate the real reply text for raw-action persistence when `persist` is set - a
                 // no-op, byte-for-byte-identical-to-before pass-through otherwise (see
-                // `forwardAndPersistSseText()`'s own doc comment above). Each `alt=sse` `data:` event
+                // `forwardAndPersistCompactStream()`'s own doc comment above). Each `alt=sse` `data:` event
                 // is a real, full GenerateContentResponse-shaped JSON payload (the same shape as the
                 // non-streaming `generateResponseJson` parsed below), just carrying that CHUNK's own
                 // incremental `candidates[0].content.parts` rather than the whole reply - so the exact
@@ -791,10 +793,10 @@ async function sendMakerSuiteRequest(request, response, persist) {
                 // reasoning parts from the persisted text. Parts within a single chunk are joined with
                 // '' (not '\n\n', unlike the non-streaming case below): a streamed chunk's parts are
                 // adjacent fragments of ONE ongoing chunk of text, not separate paragraphs.
-                await forwardAndPersistSseText(generateResponse, response, persist, json => {
+                await forwardAndPersistCompactStream(generateResponse, response, persist, json => {
                     const parts = json?.candidates?.[0]?.content?.parts;
                     return Array.isArray(parts) ? parts.filter(part => !part.thought).map(part => part.text ?? '').join('') : undefined;
-                });
+                }, json => json?.candidates?.[0]?.content?.parts?.find(part => part.thought)?.text || undefined);
             } catch (error) {
                 console.error('Error forwarding streaming response:', error);
                 if (!response.headersSent) {
@@ -865,7 +867,7 @@ async function sendMakerSuiteRequest(request, response, persist) {
  * @param {object|null} [persist] `pendingAssistantPersist` from the `/generate` route (`null`/`undefined`
  * for every non-raw-action call). When set, persists the ASSISTANT's real reply text onto the message
  * tree via the shared `persistAssistantReply()`, for both streaming (teed via
- * `forwardAndPersistSseText()`) and non-streaming. AI21's `/chat/completions` endpoint is real,
+ * `forwardAndPersistCompactStream()`) and non-streaming. AI21's `/chat/completions` endpoint is real,
  * verified OpenAI-Chat-Completions-shaped (`{choices: [{message: {content}}]}` non-streaming,
  * `{choices: [{delta: {content}}]}` per SSE chunk while streaming - see `body` above: this function
  * always builds and sends a real `messages: [...]` request to that same endpoint). Purely additive:
@@ -928,8 +930,8 @@ async function sendAI21Request(request, response, persist) {
             // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
             // accumulate the OpenAI Chat-Completions-shaped `choices[0].delta.content` field for
             // raw-action persistence when `persist` is set - a no-op, byte-for-byte-identical-to-before
-            // pass-through otherwise (see `forwardAndPersistSseText()`'s own doc comment above).
-            await forwardAndPersistSseText(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content);
+            // pass-through otherwise (see `forwardAndPersistCompactStream()`'s own doc comment above).
+            await forwardAndPersistCompactStream(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -967,7 +969,7 @@ async function sendAI21Request(request, response, persist) {
  * @param {object|null} [persist] `pendingAssistantPersist` from the `/generate` route (`null`/`undefined`
  * for every non-raw-action call). When set, persists the ASSISTANT's real reply text onto the message
  * tree via the shared `persistAssistantReply()`, for both streaming (teed via
- * `forwardAndPersistSseText()`) and non-streaming. MistralAI's `/chat/completions` endpoint is
+ * `forwardAndPersistCompactStream()`) and non-streaming. MistralAI's `/chat/completions` endpoint is
  * standard, verified OpenAI-Chat-Completions-shaped (`{choices: [{message: {content}}]}`
  * non-streaming, `{choices: [{delta: {content}}]}` per SSE chunk while streaming - see `requestBody`
  * above: this function always builds and sends a real `messages: [...]` request to that same
@@ -1040,8 +1042,9 @@ async function sendMistralAIRequest(request, response, persist) {
             // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
             // accumulate the OpenAI Chat-Completions-shaped `choices[0].delta.content` field for
             // raw-action persistence when `persist` is set - a no-op, byte-for-byte-identical-to-before
-            // pass-through otherwise (see `forwardAndPersistSseText()`'s own doc comment above).
-            await forwardAndPersistSseText(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content);
+            // pass-through otherwise (see `forwardAndPersistCompactStream()`'s own doc comment above).
+            await forwardAndPersistCompactStream(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content,
+                json => json.choices?.find(choice => choice?.delta?.content?.[0]?.thinking)?.delta?.content?.[0]?.thinking?.[0]?.text || undefined);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -1079,7 +1082,7 @@ async function sendMistralAIRequest(request, response, persist) {
  * @param {object|null} [persist] `pendingAssistantPersist` from the `/generate` route (`null`/`undefined`
  * for every non-raw-action call). When set, persists the ASSISTANT's real reply text onto the message
  * tree via the shared `persistAssistantReply()`, for both streaming (teed via
- * `forwardAndPersistSseText()`) and non-streaming. Cohere's `/v2/chat` endpoint (`apiUrl` below) is
+ * `forwardAndPersistCompactStream()`) and non-streaming. Cohere's `/v2/chat` endpoint (`apiUrl` below) is
  * genuinely NOT an OpenAI-Chat-Completions clone - verified against this function's own request body
  * (`messages`, not a `prompt`/legacy `chat_history` shape) and against the real Cohere v2 response
  * shape this codebase's own client already parses (`extractMessageFromData()` in public/script.js
@@ -1170,13 +1173,13 @@ async function sendCohereRequest(request, response, persist) {
             // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
             // accumulate the real reply text for raw-action persistence when `persist` is set - a
             // no-op, byte-for-byte-identical-to-before pass-through otherwise (see
-            // `forwardAndPersistSseText()`'s own doc comment above). Cohere v2's SSE events carry their
+            // `forwardAndPersistCompactStream()`'s own doc comment above). Cohere v2's SSE events carry their
             // own named `type` field (`message-start`/`content-start`/`content-delta`/`tool-plan-delta`/
             // `tool-call-start`/.../`message-end`, etc) - only `content-delta`/`tool-plan-delta` events'
             // own `delta.message.content.text` are real reply-text chunks (see this function's own doc
             // comment above for exactly where this shape is verified), so every other event type is
             // correctly ignored.
-            await forwardAndPersistSseText(stream, response, persist, json =>
+            await forwardAndPersistCompactStream(stream, response, persist, json =>
                 (typeof json?.delta === 'object' && typeof json?.delta?.message === 'object' && ['content-delta', 'tool-plan-delta'].includes(json?.type))
                     ? (json.delta.message.content?.text ?? '')
                     : undefined);
@@ -1222,7 +1225,7 @@ async function sendCohereRequest(request, response, persist) {
  * @param {object|null} [persist] `pendingAssistantPersist` from the `/generate` route (`null`/`undefined`
  * for every non-raw-action call). When set, persists the ASSISTANT's real reply text onto the message
  * tree via the shared `persistAssistantReply()`, for both streaming (teed via
- * `forwardAndPersistSseText()`) and non-streaming. DeepSeek's `/chat/completions` endpoint is
+ * `forwardAndPersistCompactStream()`) and non-streaming. DeepSeek's `/chat/completions` endpoint is
  * standard, verified OpenAI-Chat-Completions-shaped (`{choices: [{message: {content}}]}`
  * non-streaming, `{choices: [{delta: {content}}]}` per SSE chunk while streaming - see `requestBody`
  * above: this function always builds and sends a real `messages: [...]` request to that same
@@ -1322,11 +1325,12 @@ async function sendDeepSeekRequest(request, response, persist) {
             // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
             // accumulate the OpenAI Chat-Completions-shaped `choices[0].delta.content` field for
             // raw-action persistence when `persist` is set - a no-op, byte-for-byte-identical-to-before
-            // pass-through otherwise (see `forwardAndPersistSseText()`'s own doc comment above).
+            // pass-through otherwise (see `forwardAndPersistCompactStream()`'s own doc comment above).
             // Deliberately reads ONLY `delta.content`, never `delta.reasoning_content` (DeepSeek
             // reasoner models' separate reasoning-output field - see this function's own doc comment
             // above), so reasoning is never persisted as if it were the reply.
-            await forwardAndPersistSseText(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content);
+            await forwardAndPersistCompactStream(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content,
+                json => json.choices?.find(choice => choice?.delta?.reasoning_content)?.delta?.reasoning_content || undefined);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -1365,7 +1369,7 @@ async function sendDeepSeekRequest(request, response, persist) {
  * @param {object|null} [persist] `pendingAssistantPersist` from the `/generate` route (`null`/`undefined`
  * for every non-raw-action call). When set, persists the ASSISTANT's real reply text onto the message
  * tree via the shared `persistAssistantReply()`, for both streaming (teed via
- * `forwardAndPersistSseText()`) and non-streaming. xAI's `/chat/completions` endpoint is standard,
+ * `forwardAndPersistCompactStream()`) and non-streaming. xAI's `/chat/completions` endpoint is standard,
  * verified OpenAI-Chat-Completions-shaped (`{choices: [{message: {content}}]}` non-streaming,
  * `{choices: [{delta: {content}}]}` per SSE chunk while streaming - see `requestBody` above: this
  * function always builds and sends a real `messages: [...]` request to that same endpoint). Grok's
@@ -1456,8 +1460,9 @@ async function sendXaiRequest(request, response, persist) {
             // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
             // accumulate the OpenAI Chat-Completions-shaped `choices[0].delta.content` field for
             // raw-action persistence when `persist` is set - a no-op, byte-for-byte-identical-to-before
-            // pass-through otherwise (see `forwardAndPersistSseText()`'s own doc comment above).
-            await forwardAndPersistSseText(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content);
+            // pass-through otherwise (see `forwardAndPersistCompactStream()`'s own doc comment above).
+            await forwardAndPersistCompactStream(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content,
+                json => json.choices?.find(choice => choice?.delta?.reasoning_content)?.delta?.reasoning_content || undefined);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -1495,7 +1500,7 @@ async function sendXaiRequest(request, response, persist) {
  * @param {object|null} [persist] `pendingAssistantPersist` from the `/generate` route (`null`/`undefined`
  * for every non-raw-action call). When set, persists the ASSISTANT's real reply text onto the message
  * tree via the shared `persistAssistantReply()`, for both streaming (teed via
- * `forwardAndPersistSseText()`) and non-streaming. AI/ML API's `/chat/completions` endpoint is
+ * `forwardAndPersistCompactStream()`) and non-streaming. AI/ML API's `/chat/completions` endpoint is
  * standard, verified OpenAI-Chat-Completions-shaped (`{choices: [{message: {content}}]}`
  * non-streaming, `{choices: [{delta: {content}}]}` per SSE chunk while streaming - see `requestBody`
  * above: this function always builds and sends a real `messages: [...]` request to that same
@@ -1584,8 +1589,8 @@ async function sendAimlapiRequest(request, response, persist) {
             // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
             // accumulate the OpenAI Chat-Completions-shaped `choices[0].delta.content` field for
             // raw-action persistence when `persist` is set - a no-op, byte-for-byte-identical-to-before
-            // pass-through otherwise (see `forwardAndPersistSseText()`'s own doc comment above).
-            await forwardAndPersistSseText(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content);
+            // pass-through otherwise (see `forwardAndPersistCompactStream()`'s own doc comment above).
+            await forwardAndPersistCompactStream(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content, extractGenericReasoning);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -1623,7 +1628,7 @@ async function sendAimlapiRequest(request, response, persist) {
  * @param {object|null} [persist] `pendingAssistantPersist` from the `/generate` route (`null`/`undefined`
  * for every non-raw-action call). When set, persists the ASSISTANT's real reply text onto the message
  * tree via the shared `persistAssistantReply()`, for both streaming (teed via
- * `forwardAndPersistSseText()`) and non-streaming. Electron Hub's `/chat/completions` endpoint is a
+ * `forwardAndPersistCompactStream()`) and non-streaming. Electron Hub's `/chat/completions` endpoint is a
  * multi-model aggregator exposing a standard, verified OpenAI-Chat-Completions-shaped surface
  * (`{choices: [{message: {content}}]}` non-streaming, `{choices: [{delta: {content}}]}` per SSE chunk
  * while streaming - see `requestBody` above: this function always builds and sends a real
@@ -1720,8 +1725,8 @@ async function sendElectronHubRequest(request, response, persist) {
             // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
             // accumulate the OpenAI Chat-Completions-shaped `choices[0].delta.content` field for
             // raw-action persistence when `persist` is set - a no-op, byte-for-byte-identical-to-before
-            // pass-through otherwise (see `forwardAndPersistSseText()`'s own doc comment above).
-            await forwardAndPersistSseText(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content);
+            // pass-through otherwise (see `forwardAndPersistCompactStream()`'s own doc comment above).
+            await forwardAndPersistCompactStream(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content, extractGenericReasoning);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -1759,7 +1764,7 @@ async function sendElectronHubRequest(request, response, persist) {
  * @param {object|null} [persist] `pendingAssistantPersist` from the `/generate` route (`null`/`undefined`
  * for every non-raw-action call). When set, persists the ASSISTANT's real reply text onto the message
  * tree via the shared `persistAssistantReply()`, for both streaming (teed via
- * `forwardAndPersistSseText()`) and non-streaming. Chutes' `/chat/completions` endpoint is a
+ * `forwardAndPersistCompactStream()`) and non-streaming. Chutes' `/chat/completions` endpoint is a
  * multi-model aggregator exposing a standard, verified OpenAI-Chat-Completions-shaped surface
  * (`{choices: [{message: {content}}]}` non-streaming, `{choices: [{delta: {content}}]}` per SSE chunk
  * while streaming - see `requestBody` above: this function always builds and sends a real
@@ -1847,8 +1852,8 @@ async function sendChutesRequest(request, response, persist) {
             // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
             // accumulate the OpenAI Chat-Completions-shaped `choices[0].delta.content` field for
             // raw-action persistence when `persist` is set - a no-op, byte-for-byte-identical-to-before
-            // pass-through otherwise (see `forwardAndPersistSseText()`'s own doc comment above).
-            await forwardAndPersistSseText(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content);
+            // pass-through otherwise (see `forwardAndPersistCompactStream()`'s own doc comment above).
+            await forwardAndPersistCompactStream(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content, extractGenericReasoning);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -1886,7 +1891,7 @@ async function sendChutesRequest(request, response, persist) {
  * @param {object|null} [persist] `pendingAssistantPersist` from the `/generate` route (`null`/`undefined`
  * for every non-raw-action call). When set, persists the ASSISTANT's real reply text onto the message
  * tree via the shared `persistAssistantReply()`, for both streaming (teed via
- * `forwardAndPersistSseText()`) and non-streaming. This function targets MiniMax's own
+ * `forwardAndPersistCompactStream()`) and non-streaming. This function targets MiniMax's own
  * `/chat/completions` endpoint (`apiUrl` above, either the global or CN host) with a real
  * `messages: [...]` request body it builds itself (`requestBody` above) - it does NOT build a
  * MiniMax-native-shaped request, and does not reshape the response in any way before
@@ -1955,8 +1960,8 @@ async function sendMinimaxRequest(request, response, persist) {
             // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
             // accumulate the OpenAI Chat-Completions-shaped `choices[0].delta.content` field for
             // raw-action persistence when `persist` is set - a no-op, byte-for-byte-identical-to-before
-            // pass-through otherwise (see `forwardAndPersistSseText()`'s own doc comment above).
-            await forwardAndPersistSseText(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content);
+            // pass-through otherwise (see `forwardAndPersistCompactStream()`'s own doc comment above).
+            await forwardAndPersistCompactStream(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -1993,7 +1998,7 @@ async function sendMinimaxRequest(request, response, persist) {
  * @param {object|null} [persist] `pendingAssistantPersist` from the `/generate` route (`null`/`undefined`
  * for every non-raw-action call). When set, persists the ASSISTANT's real reply text onto the message
  * tree via the shared `persistAssistantReply()`, for both streaming (teed via
- * `forwardAndPersistSseText()`) and non-streaming. Azure OpenAI's deployment-based URL/auth scheme
+ * `forwardAndPersistCompactStream()`) and non-streaming. Azure OpenAI's deployment-based URL/auth scheme
  * (`azure_base_url`/`azure_deployment_name`/`azure_api_version`/`api-key` header - see `url`/`config`
  * above) only affects WHERE/HOW the request is sent, never the response shape: Azure serves Microsoft's
  * own hosted copy of the real OpenAI Chat Completions API, so the response body this function already
@@ -2075,8 +2080,8 @@ async function sendAzureOpenAIRequest(request, response, persist) {
             // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
             // accumulate the OpenAI Chat-Completions-shaped `choices[0].delta.content` field for
             // raw-action persistence when `persist` is set - a no-op, byte-for-byte-identical-to-before
-            // pass-through otherwise (see `forwardAndPersistSseText()`'s own doc comment above).
-            return await forwardAndPersistSseText(fetchResponse, response, persist, json => json?.choices?.[0]?.delta?.content);
+            // pass-through otherwise (see `forwardAndPersistCompactStream()`'s own doc comment above).
+            return await forwardAndPersistCompactStream(fetchResponse, response, persist, json => json?.choices?.[0]?.delta?.content);
         }
 
         if (fetchResponse.ok) {
@@ -2843,37 +2848,106 @@ export async function buildRawActionChatCompletionRequest(directories, {
 }
 
 /**
- * Forwards a fetch() response's live SSE stream line-by-line (not a raw byte pipe) so the literal
- * `data: [DONE]` sentinel line can be held back instead of forwarded immediately, exactly like
- * text-completions.js's own identically-named helper (kept as a separate local copy there too - see
- * this function's own history for why). Every other line is written to the client the instant it
- * arrives, unmodified. Once `[DONE]` itself is seen (meaning the full text is now known), persists
- * the reply and writes one more real frame - `data: {"assistant_node_id": "..."}` - ahead of the
- * (now released) `[DONE]` line, so the client learns the node id before it stops reading (a plain
- * trailing frame doesn't work: the client's own stream consumer returns immediately on `[DONE]`).
+ * Coalesces binary-frame writes for one response, guarding every `response.write()` against firing
+ * after `response.writableEnded` (a real client-disconnect race - the upstream body can still emit a
+ * final `data` event after the client's socket closed) and against backpressure (buffers while
+ * waiting for `drain`, as under a slow/lossy connection).
  *
- * JUDGMENT CALL: kept as a local, file-scoped copy rather than importing text-completions.js's own
- * (non-exported) version, for the same reason as always - see `git show fa4dd1163` for the original
- * rationale (pulling in one backend route file's entire module graph to share ~25 lines isn't worth
- * it for two otherwise-independent siblings).
+ * JUDGMENT CALL: a local, file-scoped copy rather than exporting/importing
+ * `createBackpressureWriter` from `./llamacpp-compact-stream.js` - that file is owned by a
+ * concurrently-running change in this same effort (extending the compact protocol for the
+ * text-completion path) and is out of scope to edit here; same "separate local copy" precedent this
+ * file already follows for its own `forwardAndPersistCompactStream` history.
+ * @param {import('express').Response} res
+ */
+function createChatCompactStreamWriter(res) {
+    /** @type {Buffer[]} */
+    let pending = [];
+    let waitingDrain = false;
+    let ended = false;
+
+    function flush() {
+        if (waitingDrain || ended || pending.length === 0 || res.writableEnded) return;
+        const chunk = pending.length === 1 ? pending[0] : Buffer.concat(pending);
+        pending = [];
+        const ok = res.write(chunk);
+        if (!ok) {
+            waitingDrain = true;
+            res.once('drain', () => {
+                waitingDrain = false;
+                flush();
+            });
+        }
+    }
+
+    return {
+        write(/** @type {Buffer} */ buf) {
+            if (ended || res.writableEnded || !buf || !buf.length) return;
+            pending.push(buf);
+            flush();
+        },
+        end() {
+            if (ended) return;
+            ended = true;
+            if (res.writableEnded) {
+                pending = [];
+                return;
+            }
+            if (pending.length) {
+                const chunk = Buffer.concat(pending);
+                pending = [];
+                res.end(chunk);
+            } else {
+                res.end();
+            }
+        },
+    };
+}
+
+/** Generic OpenAI-Chat-Completions-shaped `choices[0].delta.reasoning_content`/`.reasoning` fallback,
+ * matching `getStreamingReply()`'s own identical fallback in chat-completion-settings.js for every
+ * source that has no more specific reasoning field of its own. */
+function extractGenericReasoning(json) {
+    return json?.choices?.find(choice => choice?.delta?.reasoning_content)?.delta?.reasoning_content
+        ?? json?.choices?.find(choice => choice?.delta?.reasoning)?.delta?.reasoning
+        ?? undefined;
+}
+
+/**
+ * Forwards a fetch() response's live SSE stream as the compact binary protocol (see
+ * `./llamacpp-compact-stream.js` for the wire format) instead of the upstream SSE-JSON bytes
+ * verbatim - direct instruction from the user, server side forwards nothing raw to the client.
  *
  * Only ever called when `persist` (`pendingAssistantPersist`) is set (a raw-action request) - the
- * caller is expected to fall through to a PLAIN, untouched `forwardFetchResponse()` call otherwise,
- * so a non-raw-action stream is never rewritten this way.
+ * caller is expected to fall through to a PLAIN, untouched `forwardFetchResponse()` call otherwise
+ * (JUDGMENT CALL: the non-raw-action/legacy streaming path - quiet generations, connection-profile
+ * testing, group-member impersonation, etc - is intentionally left on raw SSE-JSON for now; it would
+ * additionally need images/tool-call-delta/thought-signature frames the binary protocol doesn't carry
+ * yet, well beyond this pass's scope).
  *
- * Each `data:` line's JSON is parsed and passed to `extractText(json)` to pull out the real
- * per-chunk text field. A line that isn't valid JSON (or isn't a `data:` line) is forwarded as-is
- * but skipped for accumulation - logged, not thrown, matching this file's own "warn and keep going"
- * convention for malformed stream chunks.
+ * Each `data:` line's JSON is parsed exactly like the previous SSE-line-forwarding implementation
+ * (line-buffered across TCP chunk boundaries) and passed to `extractText(json)`/`extractReasoning(json)`
+ * to pull out that provider's real per-chunk text/reasoning fields - the exact same per-provider shapes
+ * `getStreamingReply()` already uses client-side. Content is coalesced (first chunk flushed immediately
+ * for perceived responsiveness, then buffered up to ~256 bytes or ~40ms since the last flush, whichever
+ * comes first) into `encodeContent()` frames; a reasoning or swipe-index frame flushes any pending
+ * content first so frame order matches arrival order. Once the upstream stream ends, the accumulated
+ * text (if any) is persisted and its node id is sent as the final `encodeAssistantNodeIdFrame()` frame
+ * before `response.end()`.
  * @param {import('node-fetch').Response} fetchResponse
  * @param {import('express').Response} response
  * @param {object|null|undefined} persist `pendingAssistantPersist`, or a falsy value to skip
- * teeing/persistence entirely and just forward the bytes untouched.
+ * the binary rewrite entirely and just forward the upstream bytes untouched.
  * @param {(json: any) => string|undefined} extractText Pulls the real per-chunk generated-text
  * field out of one parsed SSE JSON payload.
+ * @param {((json: any) => string|undefined)|null} [extractReasoning] Pulls that provider's real
+ * per-chunk reasoning/thinking text out of one parsed SSE JSON payload, or `null` for a provider with
+ * no reasoning field of its own (Claude/Gemini/DeepSeek/xAI/Mistral pass their own; everything else
+ * OpenAI-Chat-Completions-shaped passes `extractGenericReasoning`; AI21/MiniMax/Azure pass `null`,
+ * matching `getStreamingReply()` never surfacing reasoning for those sources either).
  * @returns {Promise<void>}
  */
-async function forwardAndPersistSseText(fetchResponse, response, persist, extractText) {
+async function forwardAndPersistCompactStream(fetchResponse, response, persist, extractText, extractReasoning = null) {
     if (!persist || !fetchResponse.ok || !fetchResponse.body) {
         return forwardFetchResponse(fetchResponse, response);
     }
@@ -2882,58 +2956,101 @@ async function forwardAndPersistSseText(fetchResponse, response, persist, extrac
     if (statusCode === 401) statusCode = 400;
     response.statusCode = statusCode;
     response.statusMessage = fetchResponse.statusText;
+    // Distinct from the llama.cpp/text-completion path's own 'compact-v1' - same wire format, but
+    // kept as a separate value to avoid any ambiguity between the two independent conversions
+    // happening concurrently this session (see this function's own doc comment above).
+    response.setHeader('X-ST-Stream-Format', 'compact-v1-chat');
 
-    let buffer = '';
-    let text = '';
-    let pendingDoneLine = null;
-    let holdingDoneLine = false;
+    const writer = createChatCompactStreamWriter(response);
+    let sseBuffer = '';
+    let accumulatedText = '';
+    let lastIndex = 0;
+
+    let contentBuffer = '';
+    let firstContentSent = false;
+    let flushTimer = null;
+    const FLUSH_INTERVAL_MS = 40;
+    const FLUSH_BYTES = 256;
+
+    function clearFlushTimer() {
+        if (flushTimer) {
+            clearTimeout(flushTimer);
+            flushTimer = null;
+        }
+    }
+
+    function flushContentBuffer() {
+        clearFlushTimer();
+        if (!contentBuffer) return;
+        const text = contentBuffer;
+        contentBuffer = '';
+        writer.write(encodeContent(text));
+    }
+
+    function scheduleFlush() {
+        if (flushTimer) return;
+        flushTimer = setTimeout(() => {
+            flushTimer = null;
+            flushContentBuffer();
+        }, FLUSH_INTERVAL_MS);
+    }
+
+    function addContent(text) {
+        if (!text) return;
+        accumulatedText += text;
+        if (!firstContentSent) {
+            firstContentSent = true;
+            writer.write(encodeContent(text));
+            return;
+        }
+        contentBuffer += text;
+        if (Buffer.byteLength(contentBuffer, 'utf-8') >= FLUSH_BYTES) {
+            flushContentBuffer();
+        } else {
+            scheduleFlush();
+        }
+    }
+
+    function handleJson(json) {
+        const index = typeof json?.choices?.[0]?.index === 'number' ? json.choices[0].index : 0;
+        if (index !== lastIndex) {
+            flushContentBuffer();
+            writer.write(encodeIndexFrame(index));
+            lastIndex = index;
+        }
+
+        const reasoningText = extractReasoning ? extractReasoning(json) : undefined;
+        if (reasoningText) {
+            flushContentBuffer();
+            writer.write(encodeReasoningFrame(reasoningText));
+        }
+
+        addContent(extractText(json));
+    }
 
     const onSocketClose = () => {
         if (fetchResponse.body instanceof Readable) fetchResponse.body.destroy();
-        if (!response.writableEnded) response.end();
     };
     response.socket?.once('close', onSocketClose);
 
-    // The client can disconnect (firing onSocketClose, which ends `response`) at any point while
-    // this is still forwarding upstream bytes or persisting - every write after that point must be
-    // skipped, not attempted, or it throws (ERR_STREAM_WRITE_AFTER_END).
-    const safeWrite = (chunk) => {
-        if (!response.writableEnded) response.write(chunk);
-    };
-
     await new Promise((resolve) => {
         fetchResponse.body.on('data', (chunk) => {
-            buffer += chunk.toString('utf-8');
+            sseBuffer += chunk.toString('utf-8');
             let idx;
-            while ((idx = buffer.indexOf('\n')) !== -1) {
-                const rawLine = buffer.slice(0, idx);
-                buffer = buffer.slice(idx + 1);
-
-                if (holdingDoneLine) {
-                    holdingDoneLine = false;
-                    if (rawLine === '') {
-                        pendingDoneLine += '\n';
-                        continue;
-                    }
-                }
+            while ((idx = sseBuffer.indexOf('\n')) !== -1) {
+                const rawLine = sseBuffer.slice(0, idx);
+                sseBuffer = sseBuffer.slice(idx + 1);
 
                 const trimmed = rawLine.trim();
-                if (trimmed.startsWith('data:')) {
-                    const payload = trimmed.slice(5).trim();
-                    if (payload === '[DONE]') {
-                        pendingDoneLine = rawLine + '\n';
-                        holdingDoneLine = true;
-                        continue;
-                    }
-                    if (payload) {
-                        try {
-                            text += extractText(JSON.parse(payload)) ?? '';
-                        } catch (error) {
-                            console.warn('Failed to parse streamed SSE event while accumulating text for persistence:', error);
-                        }
-                    }
+                if (!trimmed.startsWith('data:')) continue;
+                const payload = trimmed.slice(5).trim();
+                if (!payload || payload === '[DONE]') continue;
+
+                try {
+                    handleJson(JSON.parse(payload));
+                } catch (error) {
+                    console.warn('Failed to parse streamed SSE event while accumulating text for persistence:', error);
                 }
-                safeWrite(rawLine + '\n');
             }
         });
         fetchResponse.body.once('end', resolve);
@@ -2941,23 +3058,17 @@ async function forwardAndPersistSseText(fetchResponse, response, persist, extrac
         fetchResponse.body.once('close', resolve);
     });
 
-    if (buffer) {
-        safeWrite(buffer);
-    }
+    flushContentBuffer();
 
-    if (text) {
-        const persisted = await persistAssistantReply(persist, text);
+    if (accumulatedText) {
+        const persisted = await persistAssistantReply(persist, accumulatedText);
         if (persisted) {
-            safeWrite(`data: ${JSON.stringify({ assistant_node_id: persisted.node_id })}\n\n`);
+            writer.write(encodeAssistantNodeIdFrame(persisted.node_id));
         }
     }
 
-    if (pendingDoneLine !== null) {
-        safeWrite(pendingDoneLine);
-    }
-
     response.socket?.off('close', onSocketClose);
-    if (!response.writableEnded) response.end();
+    writer.end();
 }
 
 /**
@@ -3015,16 +3126,16 @@ function applyServerToolCallDelta(target, delta) {
  * `/generate` route's shared default/legacy OpenAI-Chat-Completions-shaped dispatch block ONLY - the
  * one place chunk (b)/(c) wired tool execution into (see that function's own doc comment for the full
  * scope note: the ~12 provider-`switch` functions above are unaffected, unchanged, and still use the
- * plain `forwardAndPersistSseText()`).
+ * plain `forwardAndPersistCompactStream()`).
  *
  * ONLY ever called when `pendingServerToolLoop` is set (this request advertised at least one
  * server-native or client-advertised tool - identical gate to the non-streaming call site). A request
  * with no tools registered never reaches this function at all - it keeps using the untouched
- * `forwardAndPersistSseText()`, so its behavior is 100% byte-for-byte unaffected by this function's
+ * `forwardAndPersistCompactStream()`, so its behavior is 100% byte-for-byte unaffected by this function's
  * existence.
  *
  * DESIGN (this task's central question - see the accompanying report for the full writeup):
- * 1. Tees the first round's SSE stream exactly like `forwardAndPersistSseText()` does (a passive
+ * 1. Tees the first round's SSE stream exactly like `forwardAndPersistCompactStream()` does (a passive
  *    `'data'` listener attached before anything else touches the body), accumulating BOTH the real
  *    `choices[0].delta.content` text AND `choices[0].delta.tool_calls[]` (via
  *    `applyServerToolCallDelta()` above, index-keyed exactly like the client's own accumulator).
@@ -3043,7 +3154,7 @@ function applyServerToolCallDelta(target, delta) {
  *    client path naturally never sees them (its own trigger condition is never met), with no client-side
  *    gating needed for the common case.
  * 4. Once the first round's stream ends, if no tool calls were accumulated: behaves exactly like
- *    `forwardAndPersistSseText()` (persist the accumulated text, if any, and close the stream) - this
+ *    `forwardAndPersistCompactStream()` (persist the accumulated text, if any, and close the stream) - this
  *    is the common case for any tool-enabled conversation where the model didn't call a tool THIS turn.
  * 5. If tool calls WERE accumulated, reconstructs the exact `{choices: [{message: {content,
  *    tool_calls}}]}` shape `runServerToolRounds()` already consumes for a non-streaming round, and runs
@@ -3110,7 +3221,7 @@ async function forwardAndPersistSseWithServerTools(fetchResponse, response, pers
             if (!line.startsWith('data:')) {
                 // Not a `data:` line (an SSE comment, a keep-alive, a blank separator) - forward it
                 // untouched rather than dropping it. This function reconstructs what it forwards
-                // instead of piping raw bytes (unlike forwardAndPersistSseText()'s independent
+                // instead of piping raw bytes (unlike forwardAndPersistCompactStream()'s independent
                 // tee-and-parse-on-the-side design), so unlike that function, a parse/shape surprise
                 // here MUST fail open (still forward) rather than silently vanish from the client's
                 // stream - only a genuine, successfully-parsed `tool_calls` delta is ever suppressed
@@ -3669,14 +3780,14 @@ router.post('/generate', async function (request, response) {
     // unaffected by any of this.
     //
     // Streaming persistence status, precisely:
-    // - The shared default/legacy inline dispatch block (search `forwardAndPersistSseText` below):
+    // - The shared default/legacy inline dispatch block (search `forwardAndPersistCompactStream` below):
     //   PERSISTS FOR REAL, for both streaming and non-streaming. This block always builds a real
     //   OpenAI-Chat-Completions-shaped request (`/chat/completions`, `messages: [...]`) for every
     //   raw-action call (re-verified: the raw-action branch below always produces real chat
     //   messages, never a plain string prompt, so `isTextCompletion` - see that block's own
     //   derivation - is never true for a raw-action request) - its streamed SSE chunks are therefore
     //   genuinely OpenAI-chat-completions-delta-shaped (`data: {"choices":[{"delta":{"content":
-    //   "..."}}]}`), and `forwardAndPersistSseText()` tees the untouched byte pipe to accumulate
+    //   "..."}}]}`), and `forwardAndPersistCompactStream()` tees the untouched byte pipe to accumulate
     //   `choices[0].delta.content` per chunk, persisting the full text via the shared
     //   `persistAssistantReply()` (../../assistant-reply-persist.js) once the stream ends.
     // - ALL 12 provider-`switch` functions dispatched below (sendClaudeRequest/sendMakerSuiteRequest
@@ -3687,7 +3798,7 @@ router.post('/generate', async function (request, response) {
     //   streaming and non-streaming, each per its OWN verified response/stream shape:
     //   - sendClaudeRequest: non-streaming extracts every real `type: 'text'` block from the Messages
     //     API's `content` array (never a `type: 'thinking'`/`type: 'tool_use'` block); streaming tees
-    //     via `forwardAndPersistSseText()`, accumulating only `content_block_delta` events whose own
+    //     via `forwardAndPersistCompactStream()`, accumulating only `content_block_delta` events whose own
     //     `delta.type === 'text_delta'` (ignoring `thinking_delta`/`input_json_delta`/other event
     //     types).
     //   - sendMakerSuiteRequest: both modes reuse the exact same `!part.thought` filter over
@@ -3708,7 +3819,7 @@ router.post('/generate', async function (request, response) {
     //     every real `type: 'text'` block from `message.content` (falling back to `message.tool_plan`
     //     only for a tool-call-only reply with no real text content, mirroring the existing client-side
     //     `extractMessageFromData()` in public/script.js); streaming tees via
-    //     `forwardAndPersistSseText()`, accumulating `content-delta`/`tool-plan-delta` events' own
+    //     `forwardAndPersistCompactStream()`, accumulating `content-delta`/`tool-plan-delta` events' own
     //     `delta.message.content.text` field, the same event types/field public/scripts/sse-stream.js's
     //     own `parseStreamData()` already treats as real reply-text chunks.
     //
@@ -3920,7 +4031,7 @@ router.post('/generate', async function (request, response) {
 
             // Stash what's needed to persist the ASSISTANT's reply once a (streaming or
             // non-streaming) response is known - read both by the default/legacy-dispatch-block below
-            // (guarded by `if (pendingAssistantPersist)`/the `forwardAndPersistSseText()` call) AND,
+            // (guarded by `if (pendingAssistantPersist)`/the `forwardAndPersistCompactStream()` call) AND,
             // passed explicitly as each function's own third parameter, by ALL 12 provider-`switch`
             // cases (sendClaudeRequest/sendMakerSuiteRequest/sendAI21Request/sendMistralAIRequest/
             // sendCohereRequest/sendDeepSeekRequest/sendAimlapiRequest/sendXaiRequest/
@@ -4458,11 +4569,11 @@ router.post('/generate', async function (request, response) {
 
             // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
             // accumulate the OpenAI Chat-Completions-shaped `choices[0].delta.content` field for
-            // raw-action persistence - see `forwardAndPersistSseText()`'s own doc comment above for
+            // raw-action persistence - see `forwardAndPersistCompactStream()`'s own doc comment above for
             // the full teeing mechanism and the `choices[0].delta.content` shape verification. A
             // no-op, byte-for-byte-identical-to-before pass-through whenever `pendingAssistantPersist`
             // is `null` (every non-raw-action stream, i.e. connection_profile_id and legacy/default).
-            return await forwardAndPersistSseText(fetchResponse, response, pendingAssistantPersist, json => json?.choices?.[0]?.delta?.content);
+            return await forwardAndPersistCompactStream(fetchResponse, response, pendingAssistantPersist, json => json?.choices?.[0]?.delta?.content, extractGenericReasoning);
         }
 
         if (fetchResponse.ok) {

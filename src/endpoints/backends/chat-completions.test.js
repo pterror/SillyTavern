@@ -16,6 +16,7 @@ import { Jimp, JimpMime } from '../../jimp.js';
 // import time - the config path must be set before that import chain runs, same as
 // chat-completion-generation-input.test.js/text-completions.test.js.
 import { setConfigFilePath } from '../../util.js';
+import { CompactStreamDecoder } from '../../../public/scripts/llamacpp-compact-stream.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', '..', 'config.yaml'));
@@ -396,7 +397,14 @@ async function run() {
         }
     }
 
-    /** Like postGenerate(), but for a streaming request: returns the raw response status/body text, unparsed - so the test can assert on the literal bytes the client received. */
+    /**
+     * Like postGenerate(), but for a streaming request: returns the raw response status/body,
+     * unparsed - so the test can assert on the literal bytes the client received. `bodyBytes` (a
+     * `Buffer`) is for the compact binary stream format (raw-action requests -
+     * forwardAndPersistCompactStream() in chat-completions.js) - `res.text()` would corrupt it, since
+     * control-frame bytes like a bare 0xFF are not valid UTF-8 on their own. `bodyText` is kept for
+     * the non-raw-action legacy path, which still forwards real SSE-JSON text unchanged.
+     */
     async function postGenerateStream(app, body) {
         const server = app.listen(0, '127.0.0.1');
         await new Promise(resolve => server.once('listening', resolve));
@@ -407,8 +415,8 @@ async function run() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(body),
             });
-            const bodyText = await res.text();
-            return { status: res.status, bodyText };
+            const bodyBytes = Buffer.from(await res.arrayBuffer());
+            return { status: res.status, bodyBytes, bodyText: bodyBytes.toString('utf-8') };
         } finally {
             server.closeAllConnections?.();
             await new Promise(resolve => server.close(resolve));
@@ -434,21 +442,33 @@ async function run() {
         return { ...await startFakeBackend((_req, res) => {
             res.writeHead(200, { 'Content-Type': 'text/event-stream' });
             res.end(sseBody);
-        }), expectedBody: sseBody };
+        }), expectedBody: sseBody, expectedText: textChunks.join('') };
     }
 
     /**
-     * A raw-action stream holds `data: [DONE]` back and writes `data: {"assistant_node_id": "..."}`
-     * ahead of it (forwardAndPersistSseText()'s own doc comment in chat-completions.js) - everything
-     * else in the byte stream is untouched. Asserts that shape and returns the captured node id.
+     * Decodes a raw-action stream's compact binary bytes (`forwardAndPersistCompactStream()`'s own
+     * doc comment in chat-completions.js) and asserts: every real content frame reassembles to
+     * `expectedText`, in order; any reasoning frames reassemble to `options.expectedReasoning` when
+     * given; and an `assistantNodeId` frame is present and is the LAST decoded event (persistence
+     * only completes once the full text is known, so it can only ever be written last). Returns the
+     * captured node id.
      */
-    function assertStreamCarriesAssistantNodeId(bodyText, expectedBodyBeforeDone) {
-        const withoutDone = expectedBodyBeforeDone.replace(/data: \[DONE\]\n\n$/, '');
-        assert.ok(bodyText.startsWith(withoutDone), 'every real content frame reaches the client byte-for-byte identical, in order, before the injected frame');
-        const rest = bodyText.slice(withoutDone.length);
-        const match = /^data: (\{"assistant_node_id":"[^"]+"\})\n\ndata: \[DONE\]\n\n$/.exec(rest);
-        assert.ok(match, `the injected assistant_node_id frame lands ahead of [DONE], with [DONE] properly terminated - got: ${JSON.stringify(rest)}`);
-        return JSON.parse(match[1]).assistant_node_id;
+    function assertStreamCarriesAssistantNodeId(bodyBytes, expectedText, { expectedReasoning } = {}) {
+        const decoder = new CompactStreamDecoder();
+        const events = [...decoder.push(new Uint8Array(bodyBytes)), ...decoder.flush()];
+
+        const content = events.filter(event => 'content' in event).map(event => event.content).join('');
+        assert.equal(content, expectedText, 'every real content frame reassembles, in order, to the expected text');
+
+        if (expectedReasoning !== undefined) {
+            const reasoning = events.filter(event => 'reasoning' in event).map(event => event.reasoning).join('');
+            assert.equal(reasoning, expectedReasoning, 'every reasoning frame reassembles, in order, to the expected reasoning text');
+        }
+
+        const nodeIdEventIndex = events.findIndex(event => 'assistantNodeId' in event);
+        assert.notEqual(nodeIdEventIndex, -1, 'the compact stream carries an assistantNodeId frame');
+        assert.equal(nodeIdEventIndex, events.length - 1, 'the assistantNodeId frame is the LAST decoded event - persistence only completes once the full text is known');
+        return events[nodeIdEventIndex].assistantNodeId;
     }
 
     /**
@@ -1054,7 +1074,7 @@ async function run() {
     // (`data: {"choices":[{"delta":{"content":"..."}}]}`, ending `data: [DONE]`) is teed - the
     // client-facing bytes must be byte-for-byte identical to what the fake backend sent, AND the
     // full concatenated text must land on the tree afterward (persistence happens asynchronously,
-    // after the HTTP response to the client has already ended - see forwardAndPersistSseText()'s own
+    // after the HTTP response to the client has already ended - see forwardAndPersistCompactStream()'s own
     // doc comment in chat-completions.js - so this polls via waitFor() rather than asserting
     // immediately after the fetch resolves).
     {
@@ -1071,14 +1091,14 @@ async function run() {
         const messageCountBefore = branchBefore.messages.length;
 
         const app = buildTestApp();
-        const { status, bodyText } = await postGenerateStream(app, {
+        const { status, bodyBytes } = await postGenerateStream(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
             type: 'normal', user_message: 'Say hi, streamed.', stream: true,
         });
         fakeBackend.server.close();
 
         assert.equal(status, 200);
-        assertStreamCarriesAssistantNodeId(bodyText, fakeBackend.expectedBody);
+        assertStreamCarriesAssistantNodeId(bodyBytes, fakeBackend.expectedText);
 
         const branchAfter = await waitFor(async () => {
             const branch = await loadBranch(directories, ownerId, streamBranch);
@@ -1113,14 +1133,14 @@ async function run() {
         pointBackendAt(fakeBackend.url);
 
         const app = buildTestApp();
-        const { status, bodyText } = await postGenerateStream(app, {
+        const { status, bodyBytes } = await postGenerateStream(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
             type: 'swipe', is_swipe: true, stream: true,
         });
         fakeBackend.server.close();
 
         assert.equal(status, 200);
-        assertStreamCarriesAssistantNodeId(bodyText, fakeBackend.expectedBody);
+        assertStreamCarriesAssistantNodeId(bodyBytes, fakeBackend.expectedText);
 
         const branchAfter = await waitFor(async () => {
             const branch = await loadBranch(directories, ownerId, streamSwipeBranch);
@@ -1153,14 +1173,14 @@ async function run() {
         pointBackendAt(fakeBackend.url);
 
         const app = buildTestApp();
-        const { status, bodyText } = await postGenerateStream(app, {
+        const { status, bodyBytes } = await postGenerateStream(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
             type: 'continue', is_continue: true, stream: true,
         });
         fakeBackend.server.close();
 
         assert.equal(status, 200);
-        assertStreamCarriesAssistantNodeId(bodyText, fakeBackend.expectedBody);
+        assertStreamCarriesAssistantNodeId(bodyBytes, fakeBackend.expectedText);
 
         const branchAfter = await waitFor(async () => {
             const branch = await loadBranch(directories, ownerId, streamContinueBranch);
@@ -1172,7 +1192,7 @@ async function run() {
     }
 
     // (i-4) A NON-raw-action streaming request (a connection_profile_id-less, owner_id-less legacy
-    // request) must be COMPLETELY unaffected by the teeing mechanism: forwardAndPersistSseText()'s
+    // request) must be COMPLETELY unaffected by the teeing mechanism: forwardAndPersistCompactStream()'s
     // own top-of-function guard (`if (!persist || ...)`) falls straight through to a plain, untouched
     // forwardFetchResponse() call - no listener is even attached in this case. Verified here by
     // asserting the client-facing bytes are still byte-for-byte identical to the fake backend's own
@@ -1284,7 +1304,7 @@ async function run() {
         pointClaudeBackendAt(fakeBackend.url);
 
         const app = buildTestApp();
-        const { status, bodyText } = await postGenerateStream(app, {
+        const { status, bodyBytes } = await postGenerateStream(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
             type: 'normal', user_message: 'Say hi, streamed Claude.', stream: true,
         });
@@ -1294,9 +1314,11 @@ async function run() {
         // Claude's own stream has no [DONE] sentinel to hold back (it ends on message_stop, then the
         // connection just closes) - the injected frame lands as a trailing write instead, still ahead
         // of the connection actually closing.
-        assert.ok(bodyText.startsWith(claudeSseBody), 'every real content frame reaches the client byte-for-byte identical, in order, before the injected frame');
-        const claudeTrailer = /^data: (\{"assistant_node_id":"[^"]+"\})\n\n$/.exec(bodyText.slice(claudeSseBody.length));
-        assert.ok(claudeTrailer, `the injected assistant_node_id frame is appended after Claude's own stream ends - got: ${JSON.stringify(bodyText.slice(claudeSseBody.length))}`);
+        // Claude's own stream has no [DONE] sentinel - the trailing-write case (see
+        // forwardAndPersistCompactStream()'s own doc comment); its content is the concatenated
+        // text_delta chunks, and its reasoning is the thinking_delta chunk, neither reaches the
+        // client mixed with the other.
+        assertStreamCarriesAssistantNodeId(bodyBytes, 'Rex says hi, streamed via Claude.', { expectedReasoning: 'Thinking about a greeting...' });
 
         const branchAfter = await waitFor(async () => {
             const branch = await loadBranch(directories, ownerId, claudeStreamBranch);
@@ -1376,7 +1398,7 @@ async function run() {
         pointMakerSuiteBackendAt(fakeBackend.url);
 
         const app = buildTestApp();
-        const { status, bodyText } = await postGenerateStream(app, {
+        const { status, bodyBytes } = await postGenerateStream(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
             type: 'normal', user_message: 'Say hi, streamed Gemini.', stream: true,
         });
@@ -1384,9 +1406,8 @@ async function run() {
 
         assert.equal(status, 200);
         // Gemini's own stream has no [DONE] sentinel either - same trailing-write case as Claude.
-        assert.ok(bodyText.startsWith(geminiSseBody), 'every real content frame reaches the client byte-for-byte identical, in order, before the injected frame');
-        const geminiTrailer = /^data: (\{"assistant_node_id":"[^"]+"\})\n\n$/.exec(bodyText.slice(geminiSseBody.length));
-        assert.ok(geminiTrailer, `the injected assistant_node_id frame is appended after Gemini's own stream ends - got: ${JSON.stringify(bodyText.slice(geminiSseBody.length))}`);
+        // The thought-only chunk contributes to reasoning, never to content.
+        assertStreamCarriesAssistantNodeId(bodyBytes, 'Rex says hi, streamed via Gemini.', { expectedReasoning: 'Thinking about a greeting...' });
 
         const branchAfter = await waitFor(async () => {
             const branch = await loadBranch(directories, ownerId, makerSuiteStreamBranch);
@@ -1453,14 +1474,14 @@ async function run() {
         pointMistralBackendAt(fakeBackend.url);
 
         const app = buildTestApp();
-        const { status, bodyText } = await postGenerateStream(app, {
+        const { status, bodyBytes } = await postGenerateStream(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
             type: 'normal', user_message: 'Say hi, streamed Mistral.', stream: true,
         });
         fakeBackend.server.close();
 
         assert.equal(status, 200);
-        assertStreamCarriesAssistantNodeId(bodyText, fakeBackend.expectedBody);
+        assertStreamCarriesAssistantNodeId(bodyBytes, fakeBackend.expectedText);
 
         const branchAfter = await waitFor(async () => {
             const branch = await loadBranch(directories, ownerId, mistralStreamBranch);
@@ -1539,14 +1560,14 @@ async function run() {
         pointDeepSeekBackendAt(fakeBackend.url);
 
         const app = buildTestApp();
-        const { status, bodyText } = await postGenerateStream(app, {
+        const { status, bodyBytes } = await postGenerateStream(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
             type: 'normal', user_message: 'Say hi, streamed DeepSeek.', stream: true,
         });
         fakeBackend.server.close();
 
         assert.equal(status, 200);
-        assertStreamCarriesAssistantNodeId(bodyText, deepseekSseBody);
+        assertStreamCarriesAssistantNodeId(bodyBytes, 'Rex says hi, streamed via DeepSeek.', { expectedReasoning: 'Thinking about a greeting...' });
 
         const branchAfter = await waitFor(async () => {
             const branch = await loadBranch(directories, ownerId, deepseekStreamBranch);
@@ -1612,14 +1633,14 @@ async function run() {
         pointXaiBackendAt(fakeBackend.url);
 
         const app = buildTestApp();
-        const { status, bodyText } = await postGenerateStream(app, {
+        const { status, bodyBytes } = await postGenerateStream(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
             type: 'normal', user_message: 'Say hi, streamed xAI.', stream: true,
         });
         fakeBackend.server.close();
 
         assert.equal(status, 200);
-        assertStreamCarriesAssistantNodeId(bodyText, fakeBackend.expectedBody);
+        assertStreamCarriesAssistantNodeId(bodyBytes, fakeBackend.expectedText);
 
         const branchAfter = await waitFor(async () => {
             const branch = await loadBranch(directories, ownerId, xaiStreamBranch);
@@ -1696,7 +1717,7 @@ async function run() {
             pointAI21BackendAt(fakeBackend.url);
 
             const app = buildTestApp();
-            const { status, bodyText } = await postGenerateStream(app, {
+            const { status, bodyBytes } = await postGenerateStream(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
                 type: 'normal', user_message: 'Say hi, streamed AI21.', stream: true,
             });
@@ -1704,7 +1725,7 @@ async function run() {
             ai21FakeBackendUrl = null;
 
             assert.equal(status, 200);
-            assertStreamCarriesAssistantNodeId(bodyText, fakeBackend.expectedBody);
+            assertStreamCarriesAssistantNodeId(bodyBytes, fakeBackend.expectedText);
 
             const branchAfter = await waitFor(async () => {
                 const branch = await loadBranch(directories, ownerId, ai21StreamBranch);
@@ -1712,6 +1733,45 @@ async function run() {
             });
             const assistantMsg = branchAfter.messages[branchAfter.messages.length - 1];
             assert.equal(assistantMsg.mes, 'Rex says hi, streamed via AI21.');
+            assert.equal(assistantMsg.name, 'Rex');
+        }
+
+        // (m-3) streaming, TOKEN COALESCING: many single-character SSE chunks (well under the ~256
+        // byte/~40ms coalescing thresholds in forwardAndPersistCompactStream()) must still reassemble,
+        // in order, with nothing dropped or duplicated - proving the coalescing buffer doesn't corrupt
+        // ordering under a real burst of many small writes, and that the persisted tree message
+        // (accumulated server-side from the SAME per-chunk text, independent of how it was coalesced
+        // into frames) matches the reassembled client-visible stream exactly.
+        {
+            const ai21CoalesceBranch = 'ai21-coalesce-stream-chat';
+            await saveChatToTree(directories, ownerId, ai21CoalesceBranch, [
+                { chat_metadata: {} },
+                { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
+            ]);
+
+            const streamNodeId = (await loadBranch(directories, ownerId, ai21CoalesceBranch)).branch.leaf_id;
+
+            const fullText = 'Rex says hi in fifty tiny streamed pieces, one at a time!!';
+            const fakeBackend = await startFakeSseBackend(fullText.split(''));
+            pointAI21BackendAt(fakeBackend.url);
+
+            const app = buildTestApp();
+            const { status, bodyBytes } = await postGenerateStream(app, {
+                owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
+                type: 'normal', user_message: 'Say hi, coalesced AI21.', stream: true,
+            });
+            fakeBackend.server.close();
+            ai21FakeBackendUrl = null;
+
+            assert.equal(status, 200);
+            assertStreamCarriesAssistantNodeId(bodyBytes, fullText);
+
+            const branchAfter = await waitFor(async () => {
+                const branch = await loadBranch(directories, ownerId, ai21CoalesceBranch);
+                return branch.messages.length > 1 && branch.messages[branch.messages.length - 1].mes ? branch : null;
+            });
+            const assistantMsg = branchAfter.messages[branchAfter.messages.length - 1];
+            assert.equal(assistantMsg.mes, fullText, 'the persisted reply exactly matches the reassembled coalesced stream');
             assert.equal(assistantMsg.name, 'Rex');
         }
 
@@ -1792,7 +1852,7 @@ async function run() {
             pointCohereBackendAt(fakeBackend.url);
 
             const app = buildTestApp();
-            const { status, bodyText } = await postGenerateStream(app, {
+            const { status, bodyBytes } = await postGenerateStream(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
                 type: 'normal', user_message: 'Say hi, streamed Cohere.', stream: true,
             });
@@ -1801,9 +1861,7 @@ async function run() {
 
             assert.equal(status, 200);
             // Cohere's own stream has no [DONE] sentinel either - same trailing-write case as Claude/Gemini.
-            assert.ok(bodyText.startsWith(cohereSseBody), 'every real content frame reaches the client byte-for-byte identical, in order, before the injected frame');
-            const cohereTrailer = /^data: (\{"assistant_node_id":"[^"]+"\})\n\n$/.exec(bodyText.slice(cohereSseBody.length));
-            assert.ok(cohereTrailer, `the injected assistant_node_id frame is appended after Cohere's own stream ends - got: ${JSON.stringify(bodyText.slice(cohereSseBody.length))}`);
+            assertStreamCarriesAssistantNodeId(bodyBytes, 'Rex says hi, streamed via Cohere.');
 
             const branchAfter = await waitFor(async () => {
                 const branch = await loadBranch(directories, ownerId, cohereStreamBranch);
@@ -1870,7 +1928,7 @@ async function run() {
             pointAimlapiBackendAt(fakeBackend.url);
 
             const app = buildTestApp();
-            const { status, bodyText } = await postGenerateStream(app, {
+            const { status, bodyBytes } = await postGenerateStream(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
                 type: 'normal', user_message: 'Say hi, streamed AI/ML API.', stream: true,
             });
@@ -1878,7 +1936,7 @@ async function run() {
             aimlapiFakeBackendUrl = null;
 
             assert.equal(status, 200);
-            assertStreamCarriesAssistantNodeId(bodyText, fakeBackend.expectedBody);
+            assertStreamCarriesAssistantNodeId(bodyBytes, fakeBackend.expectedText);
 
             const branchAfter = await waitFor(async () => {
                 const branch = await loadBranch(directories, ownerId, aimlapiStreamBranch);
@@ -1945,7 +2003,7 @@ async function run() {
             pointChutesBackendAt(fakeBackend.url);
 
             const app = buildTestApp();
-            const { status, bodyText } = await postGenerateStream(app, {
+            const { status, bodyBytes } = await postGenerateStream(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
                 type: 'normal', user_message: 'Say hi, streamed Chutes.', stream: true,
             });
@@ -1953,7 +2011,7 @@ async function run() {
             chutesFakeBackendUrl = null;
 
             assert.equal(status, 200);
-            assertStreamCarriesAssistantNodeId(bodyText, fakeBackend.expectedBody);
+            assertStreamCarriesAssistantNodeId(bodyBytes, fakeBackend.expectedText);
 
             const branchAfter = await waitFor(async () => {
                 const branch = await loadBranch(directories, ownerId, chutesStreamBranch);
@@ -2021,7 +2079,7 @@ async function run() {
             pointMinimaxBackendAt(fakeBackend.url);
 
             const app = buildTestApp();
-            const { status, bodyText } = await postGenerateStream(app, {
+            const { status, bodyBytes } = await postGenerateStream(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
                 type: 'normal', user_message: 'Say hi, streamed MiniMax.', stream: true,
             });
@@ -2029,7 +2087,7 @@ async function run() {
             minimaxFakeBackendUrl = null;
 
             assert.equal(status, 200);
-            assertStreamCarriesAssistantNodeId(bodyText, fakeBackend.expectedBody);
+            assertStreamCarriesAssistantNodeId(bodyBytes, fakeBackend.expectedText);
 
             const branchAfter = await waitFor(async () => {
                 const branch = await loadBranch(directories, ownerId, minimaxStreamBranch);
@@ -2096,7 +2154,7 @@ async function run() {
             pointElectronHubBackendAt(fakeBackend.url);
 
             const app = buildTestApp();
-            const { status, bodyText } = await postGenerateStream(app, {
+            const { status, bodyBytes } = await postGenerateStream(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
                 type: 'normal', user_message: 'Say hi, streamed Electron Hub.', stream: true,
             });
@@ -2104,7 +2162,7 @@ async function run() {
             electronhubFakeBackendUrl = null;
 
             assert.equal(status, 200);
-            assertStreamCarriesAssistantNodeId(bodyText, fakeBackend.expectedBody);
+            assertStreamCarriesAssistantNodeId(bodyBytes, fakeBackend.expectedText);
 
             const branchAfter = await waitFor(async () => {
                 const branch = await loadBranch(directories, ownerId, electronhubStreamBranch);
@@ -2175,14 +2233,14 @@ async function run() {
         pointAzureOpenAIBackendAt(fakeBackend.url);
 
         const app = buildTestApp();
-        const { status, bodyText } = await postGenerateStream(app, {
+        const { status, bodyBytes } = await postGenerateStream(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
             type: 'normal', user_message: 'Say hi, streamed Azure.', stream: true,
         });
         fakeBackend.server.close();
 
         assert.equal(status, 200);
-        assertStreamCarriesAssistantNodeId(bodyText, fakeBackend.expectedBody);
+        assertStreamCarriesAssistantNodeId(bodyBytes, fakeBackend.expectedText);
 
         const branchAfter = await waitFor(async () => {
             const branch = await loadBranch(directories, ownerId, azureStreamBranch);
