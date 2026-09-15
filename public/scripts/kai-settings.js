@@ -15,6 +15,7 @@ import {
 } from '../script.js';
 import { t } from './i18n.js';
 import { autoSelectInstructPreset } from './instruct-mode.js';
+import { CompactStreamDecoder } from './llamacpp-compact-stream.js';
 
 import {
     power_user,
@@ -225,6 +226,39 @@ export async function generateKoboldWithStreaming(generate_data, signal) {
         tryParseStreamingError(response, await response.text());
         throw new Error(`Got response status ${response.status}`);
     }
+
+    // Raw-action Kobold streams are the compact binary protocol (see
+    // public/scripts/llamacpp-compact-stream.js for the wire format/decoder), same header value/wire
+    // format every other raw-action streaming path uses - src/endpoints/backends/kobold.js's
+    // forwardAndPersistCompactStream() call is the only thing that sets it. Every non-raw-action
+    // stream never sets it and keeps going through the old SSE-JSON branch below unchanged.
+    if (response.headers.get('X-ST-Stream-Format') === 'compact-v1') {
+        const reader = response.body.getReader();
+        return async function* streamData() {
+            const decoder = new CompactStreamDecoder();
+            let text = '';
+            const state = {};
+            while (true) {
+                const { done, value } = await reader.read();
+                const events = done ? decoder.flush() : decoder.push(value);
+
+                for (const event of events) {
+                    if ('content' in event) {
+                        text += event.content;
+                    } else if ('assistantNodeId' in event) {
+                        state.assistantNodeId = event.assistantNodeId;
+                    }
+                }
+
+                if (events.length) {
+                    yield { text, swipes: [], toolCalls: [], state };
+                }
+
+                if (done) return;
+            }
+        };
+    }
+
     const eventStream = getEventSourceStream();
     response.body.pipeThrough(eventStream);
     const reader = eventStream.readable.getReader();
@@ -236,6 +270,12 @@ export async function generateKoboldWithStreaming(generate_data, signal) {
             if (done) return;
 
             const data = JSON.parse(value.data);
+
+            if (typeof data?.assistant_node_id === 'string') {
+                yield { text, swipes: [], toolCalls: [], state: { assistantNodeId: data.assistant_node_id } };
+                continue;
+            }
+
             if (data?.token) {
                 text += data.token;
             }
