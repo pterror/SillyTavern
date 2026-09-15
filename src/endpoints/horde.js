@@ -4,7 +4,7 @@ import { AIHorde, ModelGenerationInputStableSamplers, ModelInterrogationFormType
 import { getVersion, delay, Cache } from '../util.js';
 import { readSecret, SECRET_KEYS } from './secrets.js';
 import { buildRawActionKoboldRequest } from './backends/kobold.js';
-import { appendMessages } from '../message-tree-db.js';
+import { appendMessages, sanitizeUserMessageExtra } from '../message-tree-db.js';
 
 const ANONYMOUS_KEY = '0000000000';
 const HORDE_TEXT_MODEL_METADATA_URL = 'https://raw.githubusercontent.com/db0/AI-Horde-text-model-reference/main/db.json';
@@ -239,6 +239,9 @@ async function buildRawActionHordePayload(request) {
         node_id: nodeId, type = 'normal',
         user_message: userMessageText, trusted_workers: trustedWorkers = false, models,
     } = request.body;
+    // Server-validated (NOT trusted verbatim) - see `sanitizeUserMessageExtra()`'s own doc comment
+    // (message-tree-db.js) and text-completions.js's identical raw-action branch.
+    const userMessageExtra = sanitizeUserMessageExtra(request.body.user_message_extra);
     // is_impersonate/is_continue/is_swipe are NOT read from the wire - see kobold.js's own identical
     // derivation/comment.
     const isImpersonate = type === 'impersonate';
@@ -249,7 +252,7 @@ async function buildRawActionHordePayload(request) {
 
     const built = await buildRawActionKoboldRequest(directories, {
         request, characterAvatar, groupId, ownerId, nodeId,
-        type, isImpersonate, isContinue, isSwipe, userMessageText,
+        type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra,
         macroExtras: { isHorde: true },
     });
 
@@ -262,7 +265,7 @@ async function buildRawActionHordePayload(request) {
     let replyAnchorNodeId = built.anchorNodeId;
     if (!skipPersistence && typeof userMessageText === 'string' && built.anchorNodeId) {
         const appendResult = await appendMessages(directories, ownerId, built.anchorNodeId, [
-            { name: built.name1, is_user: true, mes: userMessageText, extra: {}, send_date: Date.now() },
+            { name: built.name1, is_user: true, mes: userMessageText, extra: userMessageExtra, send_date: Date.now() },
         ]);
         if (!appendResult.ok) {
             console.error('Failed to persist user message onto the tree:', appendResult.reason);

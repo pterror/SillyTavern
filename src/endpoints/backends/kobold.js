@@ -9,7 +9,7 @@ import { readSettingsAtPaths } from '../../settings-store.js';
 import { resolveTokenizerType, encodeWithTokenizerType } from '../../tokenizer-resolve.js';
 import { resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
 import { assembleTextCompletionPrompt } from '../../text-completion-prompt-orchestrator.js';
-import { getAncestorPath, appendMessages } from '../../message-tree-db.js';
+import { getAncestorPath, appendMessages, sanitizeUserMessageExtra } from '../../message-tree-db.js';
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
 import { persistAssistantReply } from '../../assistant-reply-persist.js';
@@ -62,6 +62,12 @@ export const router = express.Router();
  * @param {boolean} [params.isContinue]
  * @param {boolean} [params.isSwipe]
  * @param {string} [params.userMessageText]
+ * @param {object} [params.userMessageExtra] Already-SERVER-VALIDATED `extra` (see
+ * `sanitizeUserMessageExtra()` in message-tree-db.js) for the new user message being appended -
+ * identical contract to buildRawActionTextCompletionRequest()'s own equivalent param. Kobold has no
+ * media/image inlining (that machinery is chat-completion-specific) - only `.files` is ever actually
+ * read downstream (file-attachment-inline.js, via resolveTextCompletionGenerationInput()); `.media`
+ * is harmlessly ignored if forwarded.
  * @param {object} [params.macroExtras] Forwarded verbatim to resolveTextCompletionGenerationInput()'s
  * own `macroExtras` (shallow-merged over its resolved input object, caller wins). Added so
  * src/endpoints/horde.js's own raw-action /generate-text branch can reuse this SAME builder for
@@ -73,7 +79,7 @@ export const router = express.Router();
  */
 export async function buildRawActionKoboldRequest(directories, {
     request, characterAvatar, groupId, ownerId, nodeId,
-    type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText,
+    type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText, userMessageExtra,
     tokenizerOptions = {}, macroExtras = {},
 } = {}) {
     if (!ownerId) {
@@ -127,7 +133,7 @@ export async function buildRawActionKoboldRequest(directories, {
 
     const orchestratorInput = await resolveTextCompletionGenerationInput(directories, {
         avatar: characterAvatar, groupId, mainApi: 'kobold', ownerId, nodeId,
-        type, isImpersonate, isContinue, isSwipe, userMessageText,
+        type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra,
         countTokens, encodeTokens, macroExtras,
     });
 
@@ -169,6 +175,11 @@ router.post('/generate', async function (request, response_generate) {
             user_message: userMessageText, streaming: streamingRequested = false,
             can_abort: canAbortRequested = false,
         } = request.body;
+        // Server-validated (NOT trusted verbatim) - see `sanitizeUserMessageExtra()`'s own doc
+        // comment (message-tree-db.js) and text-completions.js's identical raw-action branch. Only
+        // `.files` is meaningfully consumed downstream for Kobold (no media/image inlining here - see
+        // buildRawActionKoboldRequest()'s own doc comment on this param).
+        const userMessageExtra = sanitizeUserMessageExtra(request.body.user_message_extra);
         // is_impersonate/is_continue/is_swipe are NOT read from the wire - each is 100% derivable
         // from `type` alone - matching text-completions.js's/chat-completions.js's own identical
         // derivation (commit 4a79e197e), extended here to Kobold since the client-side cleanup
@@ -184,7 +195,7 @@ router.post('/generate', async function (request, response_generate) {
         try {
             built = await buildRawActionKoboldRequest(directories, {
                 request, characterAvatar, groupId, ownerId, nodeId,
-                type, isImpersonate, isContinue, isSwipe, userMessageText,
+                type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra,
             });
         } catch (error) {
             console.error('Failed to build raw-action Kobold request:', error);
@@ -200,7 +211,7 @@ router.post('/generate', async function (request, response_generate) {
         let replyAnchorNodeId = built.anchorNodeId;
         if (!skipPersistence && typeof userMessageText === 'string' && built.anchorNodeId) {
             const appendResult = await appendMessages(directories, ownerId, built.anchorNodeId, [
-                { name: built.name1, is_user: true, mes: userMessageText, extra: {}, send_date: Date.now() },
+                { name: built.name1, is_user: true, mes: userMessageText, extra: userMessageExtra, send_date: Date.now() },
             ]);
             if (!appendResult.ok) {
                 console.error('Failed to persist user message onto the tree:', appendResult.reason);

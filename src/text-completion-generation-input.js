@@ -192,6 +192,19 @@ import { resolveWorldInfoCandidates, world_info_insertion_strategy } from './wor
  * present. When `userMessageText` is omitted (e.g. a 'continue'/'swipe' generation that doesn't add a
  * new message), `chat` is exactly the loaded history, unchanged - matching this resolver's prior
  * behavior.
+ *
+ * UPDATE (this session): `extra` is no longer unconditionally `{}` - an OPTIONAL `userMessageExtra`
+ * param, when given alongside `userMessageText`, becomes that message's `extra` instead (still
+ * exactly `{}` when omitted, unchanged prior behavior). This is how a forwarded file/media
+ * attachment REFERENCE (`.files[]`/`.media[]`/`.media_index`/`.inline_image` - the client already
+ * uploaded the actual bytes before calling this generation, see public/scripts/chats.js's
+ * `populateFileAttachment()`) reaches the ALREADY-GENERIC inlining machinery
+ * (`file-attachment-inline.js`'s `appendFileAttachments()`, wired into
+ * `text-completion-prompt-orchestrator.js`) that already reads `.extra` off whatever chat entry it's
+ * given, tree-loaded or freshly in-memory alike - no change needed there. The caller (this module's
+ * own consumer, `buildRawActionTextCompletionRequest()`) is responsible for having already run any
+ * client-supplied value through `sanitizeUserMessageExtra()` (message-tree-db.js) - this resolver
+ * does not itself re-validate `userMessageExtra`'s shape.
  */
 
 const DEFAULT_STORY_STRING_POSITION = extension_prompt_types.IN_PROMPT;
@@ -364,6 +377,14 @@ async function resolveChatHistory(directories, { ownerId, branchName, nodeId }) 
  * text". When given, appended onto the resolved chat history as the newest message (see doc comment
  * UPDATE section for the exact shape). Omit for generation types that don't add a new message
  * (e.g. 'continue'/'swipe').
+ * @param {object} [params.userMessageExtra] Already-SERVER-VALIDATED `extra` for the newly-appended
+ * user message (see `sanitizeUserMessageExtra()` in message-tree-db.js - the caller is responsible
+ * for having already run any client-supplied value through that allowlist; this resolver trusts it
+ * verbatim). Carries a forwarded file/media attachment REFERENCE (`.files`/`.media`/`.media_index`/
+ * `.inline_image`) - the bytes were already uploaded by the client before this generation call (see
+ * public/scripts/chats.js's `populateFileAttachment()`), so this is just metadata pointing at them.
+ * Only meaningful together with `userMessageText`; ignored (the appended message's `extra` stays
+ * `{}`) when `userMessageText` is omitted.
  * @param {import('./world-info/activation.js').WIEntry[]} [params.worldInfoCandidates] Explicit
  * override/bypass for the auto-resolved candidates (see doc comment UPDATE section) - when omitted
  * (left `undefined`), this resolver calls `resolveWorldInfoCandidates()` for real; passing an
@@ -377,7 +398,7 @@ async function resolveChatHistory(directories, { ownerId, branchName, nodeId }) 
 export async function resolveTextCompletionGenerationInput(directories, {
     avatar, groupId, mainApi = 'textgenerationwebui', ownerId, branchName, nodeId,
     type, isImpersonate = false, isContinue = false, isSwipe = false,
-    textareaText = '', chatMetadata: chatMetadataOverride, userMessageText,
+    textareaText = '', chatMetadata: chatMetadataOverride, userMessageText, userMessageExtra,
     worldInfoCandidates: worldInfoCandidatesOverride, countTokens, encodeTokens, amountGen, macroExtras = {},
 } = {}) {
     if (typeof countTokens !== 'function') {
@@ -430,7 +451,7 @@ export async function resolveTextCompletionGenerationInput(directories, {
     // why `node_id` is intentionally omitted. Left as exactly the loaded history when
     // `userMessageText` isn't given (e.g. 'continue'/'swipe').
     const chat = typeof userMessageText === 'string'
-        ? [...loadedChat, { is_user: true, name: name1, mes: userMessageText, extra: {}, send_date: Date.now() }]
+        ? [...loadedChat, { is_user: true, name: name1, mes: userMessageText, extra: userMessageExtra && typeof userMessageExtra === 'object' ? userMessageExtra : {}, send_date: Date.now() }]
         : loadedChat;
 
     // Real world-info candidate resolution (see doc comment UPDATE section for the full field

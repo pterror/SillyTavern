@@ -9,6 +9,8 @@ import { mock } from 'node:test';
 import express from 'express';
 
 import { write as writeCard } from '../../character-card-parser.js';
+import '../../fetch-patch.js';
+import { Jimp, JimpMime } from '../../jimp.js';
 // chat-completions.js -> chat-completion-generation-input.js pulls in src/endpoints/characters.js
 // (via readCardContent) and src/endpoints/tokenizers.js, both of which read process-wide config at
 // import time - the config path must be set before that import chain runs, same as
@@ -127,11 +129,13 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-chat-completions-raw-acti
 const charactersDir = path.join(root, 'characters');
 const groupsDir = path.join(root, 'groups');
 const worldsDir = path.join(root, 'worlds');
+const filesDir = path.join(root, 'files');
 fs.mkdirSync(charactersDir, { recursive: true });
 fs.mkdirSync(groupsDir, { recursive: true });
 fs.mkdirSync(worldsDir, { recursive: true });
+fs.mkdirSync(filesDir, { recursive: true });
 
-const directories = { root, characters: charactersDir, groups: groupsDir, worlds: worldsDir };
+const directories = { root, characters: charactersDir, groups: groupsDir, worlds: worldsDir, files: filesDir };
 globalThis.DATA_ROOT = root;
 
 const baseImage = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'public', 'img', 'ai4.png'));
@@ -2133,6 +2137,130 @@ async function run() {
         });
         assert.equal(status, 400, 'node_id: null on an owner with real existing history is a real 400');
         assert.match(data.message, /already has an existing conversation/, 'the error explains why null was rejected here');
+    }
+
+    // --- file attachment reference, route-level (this task): PERSISTENCE ONLY. Unlike the
+    // text-completion/Kobold/NovelAI/Horde family, chat-completion's raw-action pipeline does NOT
+    // inline `.files` text-attachment content into the outgoing messages array - verified (not
+    // assumed) by grepping every `src/chat-completion-*.js` module: `appendFileAttachments()`/
+    // `file-attachment-inline.js` is wired ONLY into `text-completion-prompt-orchestrator.js`, never
+    // into `chat-completion-messages.js`'s `buildChatCompletionMessages()` or
+    // `chat-completion-prepare-messages.js`. This is a REAL, PRE-EXISTING gap in chat-completion's
+    // server-side pipeline (the legacy CLIENT-assembled chat-completion path DOES inline file text,
+    // via `coreChat`'s own `appendFileContent()` call in public/script.js, so this is a genuine
+    // functional difference from the client, not a deliberately-scoped omission this task introduces)
+    // - separate from, and NOT fixed by, this task's own file/media-REFERENCE-forwarding change. The
+    // forwarded reference still round-trips correctly into the persisted tree (asserted below), so a
+    // future fix to wire file-attachment-inline.js into the chat-completion pipeline would make this
+    // already work without any further client or route-level plumbing changes - only the
+    // INLINING-INTO-THIS-TURN'S-OWN-PROMPT step is what's currently missing here, unlike the media
+    // (image/video/audio) case just below, which IS fully wired and functional.
+    {
+        fs.writeFileSync(path.join(filesDir, 'raw-action-attach.txt'), 'The password is hunter2.');
+
+        const fakeBackend = await startFakeBackend((_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'Got your file.' } }] }));
+        });
+        pointBackendAt(fakeBackend.url);
+
+        const branchBefore = await loadBranch(directories, ownerId, branchName);
+        const app = buildTestApp();
+        const { status } = await postGenerate(app, {
+            owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+            type: 'normal', user_message: 'Check the attached file.', stream: false,
+            user_message_extra: { files: [{ url: '/user/files/raw-action-attach.txt', size: 25, name: 'raw-action-attach.txt', created: 1700000000000 }] },
+        });
+        fakeBackend.server.close();
+
+        assert.equal(status, 200);
+        const branchAfter = await loadBranch(directories, ownerId, branchName);
+        const persistedUserMsg = branchAfter.messages[branchAfter.messages.length - 2];
+        assert.equal(persistedUserMsg.mes, 'Check the attached file.');
+        assert.deepEqual(
+            persistedUserMsg.extra,
+            { files: [{ url: '/user/files/raw-action-attach.txt', size: 25, name: 'raw-action-attach.txt', created: 1700000000000 }] },
+            'the persisted user message node carries the (sanitized) forwarded extra, even though chat-completion does not yet inline it into this turn\'s own prompt (see comment above)',
+        );
+    }
+
+    // --- media (image) attachment, route-level: requires the real `oai_settings.media_inlining`
+    // toggle to be on (see buildRawActionChatCompletionRequest()'s own JUDGMENT CALL comment on why
+    // this is a real, narrower-than-the-client capability check, not a fabricated one). ---
+    {
+        const jpeg = await (async () => {
+            const image = new Jimp({ width: 8, height: 8, color: 0xffffffff });
+            return image.getBuffer(JimpMime.jpeg, { quality: 90, jpegColorSpace: 'ycbcr' });
+        })();
+        const dataUrl = `data:image/jpeg;base64,${jpeg.toString('base64')}`;
+
+        let capturedRequestBody = null;
+        const fakeBackend = await startFakeBackend((_req, res, body) => {
+            capturedRequestBody = JSON.parse(body);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'Nice picture.' } }] }));
+        });
+        const mediaSettings = buildSettingsFixture();
+        mediaSettings.oai_settings.custom_url = fakeBackend.url;
+        mediaSettings.oai_settings.media_inlining = true;
+        writeAllSettings(directories, mediaSettings);
+
+        const branchBefore = await loadBranch(directories, ownerId, branchName);
+        const app = buildTestApp();
+        const { status } = await postGenerate(app, {
+            owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+            type: 'normal', user_message: 'Look at this.', stream: false,
+            user_message_extra: { media: [{ url: dataUrl, type: 'image', source: 'upload' }], media_index: 0 },
+        });
+        fakeBackend.server.close();
+        pointBackendAt(fakeBackend.url); // restore the plain (non-media) fixture for anything after this block
+
+        assert.equal(status, 200);
+        assert.ok(capturedRequestBody, 'the fake backend actually received a request');
+        const outgoingMessages = capturedRequestBody.messages;
+        assert.ok(Array.isArray(outgoingMessages), 'the outgoing request carries a real messages array');
+        const turnWithImage = outgoingMessages.find(m => Array.isArray(m.content) && m.content.some(p => p.type === 'image_url'));
+        assert.ok(
+            turnWithImage,
+            `expected an outgoing message with a real image_url content part, got: ${JSON.stringify(outgoingMessages)}`,
+        );
+
+        const branchAfter = await loadBranch(directories, ownerId, branchName);
+        const persistedUserMsg = branchAfter.messages[branchAfter.messages.length - 2];
+        assert.equal(persistedUserMsg.mes, 'Look at this.');
+        assert.deepEqual(persistedUserMsg.extra, { media: [{ url: dataUrl, type: 'image', source: 'upload' }], media_index: 0 });
+    }
+
+    // --- rejection/sanitization, route-level: a garbage-shaped `user_message_extra` is dropped
+    // rather than stored verbatim or crashing the request - sanitizeUserMessageExtra()'s own
+    // allowlist (message-tree-db.js) is exercised through the real HTTP route. ---
+    {
+        const fakeBackend = await startFakeBackend((_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'Fine either way.' } }] }));
+        });
+        pointBackendAt(fakeBackend.url);
+
+        const branchBefore = await loadBranch(directories, ownerId, branchName);
+        const app = buildTestApp();
+        const { status } = await postGenerate(app, {
+            owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+            type: 'normal', user_message: 'This has a garbage attachment payload.', stream: false,
+            user_message_extra: {
+                evil_script: '<script>alert(1)</script>',
+                files: [{ url: 12345, name: 'not-a-real-url.txt' }],
+                media: [{ url: '/user/files/whatever.png', type: 'application/x-not-a-real-media-type' }],
+                media_index: 'not-a-number',
+                inline_image: 'yes',
+            },
+        });
+        fakeBackend.server.close();
+        assert.equal(status, 200, 'a garbage-shaped user_message_extra does not crash the request - it is sanitized, not rejected outright');
+
+        const branchAfter = await loadBranch(directories, ownerId, branchName);
+        const persistedUserMsg = branchAfter.messages[branchAfter.messages.length - 2];
+        assert.equal(persistedUserMsg.mes, 'This has a garbage attachment payload.');
+        assert.deepEqual(persistedUserMsg.extra, {}, 'every field of the garbage payload was dropped by the allowlist - nothing survived, not even partially');
     }
 
     console.log('chat-completions.test.js: all assertions passed');
