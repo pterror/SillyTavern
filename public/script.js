@@ -12067,12 +12067,10 @@ async function messageEditDone(div) {
     this_edit_mes_id = undefined;
     // Says the edit directly rather than letting the fallback save infer it from a snapshot diff.
     let editedViaOp = false;
-    if (chat_metadata?._tree_stored) {
-        try {
-            editedViaOp = await chatOpEdit(editedMesId);
-        } catch (error) {
-            console.error('Could not save the edit directly, falling back to the whole-chat save:', error);
-        }
+    try {
+        editedViaOp = await chatOpEdit(editedMesId);
+    } catch (error) {
+        console.error('Could not save the edit directly, falling back to the whole-chat save:', error);
     }
     if (!editedViaOp) {
         await saveChatConditional();
@@ -13149,7 +13147,7 @@ export async function deleteSwipe(swipeId = null, messageId = chat.length - 1) {
     // otherwise applies), by which point chat[messageId].node_id has already been overwritten.
     const isShownSwipe = swipeId === currentSwipeId;
     const deletedNodeId = isShownSwipe ? message.node_id : undefined;
-    if (chat_metadata?._tree_stored && !isShownSwipe) {
+    if (!isShownSwipe) {
         await chatOpDeleteAlternative(messageId, swipeId).catch(error =>
             console.error('Could not remove the deleted alternative from the tree:', error));
     }
@@ -13165,20 +13163,15 @@ export async function deleteSwipe(swipeId = null, messageId = chat.length - 1) {
         // old node no longer the current default child. If swipe() bailed out early for any reason
         // (chat[messageId] is still on deletedNodeId), chatOpDeleteAlternativeNode() refuses locally
         // without a server round-trip, same as chatOpDeleteAlternative() does for the non-shown case.
-        if (chat_metadata?._tree_stored) {
-            await chatOpDeleteAlternativeNode(deletedNodeId, chat[messageId]?.node_id).catch(error =>
-                console.error('Could not remove the deleted alternative from the tree:', error));
-        }
+        await chatOpDeleteAlternativeNode(deletedNodeId, chat[messageId]?.node_id).catch(error =>
+            console.error('Could not remove the deleted alternative from the tree:', error));
     } else {
         await updateSwipeCounter(messageId);
         if (messageId !== chat.length - 1) {
             await updateSwipeCounter(chat.length - 1);
         }
         refreshSwipeButtons();
-        saveChatDebounced();
     }
-
-    await saveChatConditional();
 
     return newSwipeId;
 }
@@ -14576,12 +14569,6 @@ export async function swipe(event, direction, { source, repeated, message = chat
                 console.trace(`Error! Recursion detected when reverting failed ${direction} swipe on message #${mesId}. Something has broken.`);
                 await reloadCurrentChat();
             }
-            //Out of bounds swipes should not be saved.
-        } else if (source != SWIPE_SOURCE.BACK && !_isBlankUnwrittenSwipe(chat[mesId])) {
-            // A tree-backed chat already recorded this via switchToAlternativePath(); a file-backed chat has no such op, so there the save IS the persistence.
-            if (!chat_metadata?._tree_stored) {
-                saveChatDebounced();
-            }
         }
 
         //Allow for another swipe.
@@ -15670,7 +15657,7 @@ function addDebugFunctions() {
 
         // One batch edit rather than something the fallback save has to work out from a diff.
         let editedViaOp = false;
-        if (chat_metadata?._tree_stored && editedIds.length) {
+        if (editedIds.length) {
             try {
                 await chatOpEditMany(editedIds);
                 editedViaOp = true;
