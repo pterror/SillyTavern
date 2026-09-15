@@ -65,7 +65,8 @@ const { router, buildRawActionNovelRequest } = await import('./novelai.js');
 const { writeAllSettings } = await import('../settings-store.js');
 const { writeSecret, SECRET_KEYS } = await import('./secrets.js');
 const { saveChatToTree, loadBranch, getAlternatives, disposeMessageTreeStores } = await import('../message-tree-db.js');
-const { forwardAndPersistSseText } = await import('./backends/text-completions.js');
+const { forwardAndPersistCompactStream } = await import('./backends/text-completions.js');
+const { CompactStreamDecoder } = await import('../../public/scripts/llamacpp-compact-stream.js');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-novelai-raw-action-test-'));
 const charactersDir = path.join(root, 'characters');
@@ -214,6 +215,25 @@ async function postGenerate(app, body) {
         server.closeAllConnections?.();
         await new Promise(resolve => server.close(resolve));
     }
+}
+
+/** Decodes a full compact-stream byte buffer (using the real client-side CompactStreamDecoder) into `{text, assistantNodeId, probabilities}`. */
+function decodeCompactStream(bytes) {
+    const decoder = new CompactStreamDecoder();
+    const events = [...decoder.push(new Uint8Array(bytes)), ...decoder.flush()];
+    let text = '';
+    let assistantNodeId = null;
+    const probabilities = [];
+    for (const event of events) {
+        if ('content' in event) {
+            text += event.content;
+        } else if ('assistantNodeId' in event) {
+            assistantNodeId = event.assistantNodeId;
+        } else if ('probabilities' in event) {
+            probabilities.push(event.probabilities);
+        }
+    }
+    return { text, assistantNodeId, probabilities };
 }
 
 async function waitFor(check, { timeoutMs = 2000, intervalMs = 10 } = {}) {
@@ -428,18 +448,20 @@ async function run() {
         const [, assistantMsg] = branchAfter.messages.slice(-2);
         assert.equal(assistantMsg.mes, 'Non-streamed despite stream:true.', 'persistence still worked correctly via the (only reachable) non-streaming path');
 
-        // Direct, unit-level exercise of the REAL forwardAndPersistSseText() function together with
-        // the route's own literal extractor lambda (`json => json?.token`, copied verbatim from
-        // novelai.js's real /generate handler - `git show 341d1dead:src/endpoints/novelai.js`)
-        // against a REAL SSE HTTP response - proves the real per-chunk accumulation and persistence
+        // Direct, unit-level exercise of the REAL forwardAndPersistCompactStream() function together
+        // with the route's own literal extractor lambdas (`json => json?.token` /
+        // `json => json?.logprobs`, copied verbatim from novelai.js's real /generate handler) against
+        // a REAL SSE HTTP response - proves the real per-chunk accumulation/re-encoding/persistence
         // logic for NovelAI's real `{"token": "...", "logprobs": {...}}` streaming shape (token is
         // already-decoded text, per novelai.js's own comment citing generateNovelWithStreaming() in
         // public/scripts/nai-settings.js) works correctly, even though the full HTTP route currently
-        // cannot reach this branch for raw-action requests.
+        // cannot reach this branch for raw-action requests (createNovelGenerationData() never sets a
+        // `streaming` field - see this test's own top-of-section comment).
         const sseChunks = ['Rex ', 'streams ', 'a ', 'reply.'];
+        const sseLogprobs = { chosen: [['Rex', -0.1]] };
         const sseBackend = await startFakeBackend((_req, res) => {
             res.writeHead(200, { 'Content-Type': 'text/event-stream' });
-            res.end(sseChunks.map(token => `data: ${JSON.stringify({ token, logprobs: null })}\n\n`).join('') + 'data: [DONE]\n\n');
+            res.end(sseChunks.map((token, i) => `data: ${JSON.stringify({ token, logprobs: i === 0 ? sseLogprobs : null })}\n\n`).join('') + 'data: [DONE]\n\n');
         });
         const directStreamBranch = 'novel-direct-forward-persist-chat';
         await saveChatToTree(directories, ownerId, directStreamBranch, [
@@ -449,7 +471,7 @@ async function run() {
         const branchBeforeDirect = await loadBranch(directories, ownerId, directStreamBranch);
         const anchorNodeId = branchBeforeDirect.branch.leaf_id;
 
-        // Uses `node-fetch` (NOT the global web-standard `fetch`) - forwardAndPersistSseText()
+        // Uses `node-fetch` (NOT the global web-standard `fetch`) - forwardAndPersistCompactStream()
         // requires the real node-fetch Response whose `.body` is a node Readable stream (`.on(...)`),
         // exactly what the real route's own `import fetch from 'node-fetch'` provides.
         const fetchResponse = await nodeFetch(sseBackend.url);
@@ -464,16 +486,20 @@ async function run() {
             end(chunk) { if (chunk) chunks.push(chunk); this.writableEnded = true; },
             on() {},
         };
-        await forwardAndPersistSseText(fetchResponse, fakeExpressResponse, {
+        await forwardAndPersistCompactStream(fetchResponse, fakeExpressResponse, {
             directories, ownerId, anchorNodeId, name2: 'Rex', isSwipe: false, isContinue: false, anchorContent: null,
-        }, json => json?.token);
+        }, json => json?.token, json => json?.logprobs);
         sseBackend.server.close();
+
+        const decodedDirect = decodeCompactStream(Buffer.concat(chunks.map(c => Buffer.isBuffer(c) ? c : Buffer.from(c))));
+        assert.equal(decodedDirect.text, sseChunks.join(''), 'the real forwardAndPersistCompactStream() + the route\'s own {"token":...} extractor correctly accumulated every chunk into the decoded compact stream');
+        assert.deepEqual(decodedDirect.probabilities, [sseLogprobs], 'the route\'s own {"logprobs":...} extractor re-encoded NovelAI\'s per-token logprobs as a 0x02 probabilities frame');
 
         const branchAfterDirect = await waitFor(async () => {
             const branch = await loadBranch(directories, ownerId, directStreamBranch);
             return branch.messages.length === 2 ? branch : null;
         });
-        assert.equal(branchAfterDirect.messages[1].mes, 'Rex streams a reply.', 'the real forwardAndPersistSseText() + the route\'s own {"token":...} extractor correctly accumulated and persisted every chunk (ignoring the separate logprobs field, matching the route\'s own extractor)');
+        assert.equal(branchAfterDirect.messages[1].mes, 'Rex streams a reply.', 'the real forwardAndPersistCompactStream() + the route\'s own extractors correctly accumulated and persisted every chunk');
         assert.equal(branchAfterDirect.messages[1].name, 'Rex');
         assert.equal(branchAfterDirect.messages[1].is_user, false);
     }

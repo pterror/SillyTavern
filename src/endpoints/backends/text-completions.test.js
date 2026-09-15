@@ -1025,8 +1025,9 @@ async function run() {
 
     // (i-4) STREAMING raw-action via OLLAMA: real Ollama-shaped JSON-lines chunks (`{"response":
     // "...","done":false}`, no SSE framing) through parseOllamaStream() - proves the per-chunk
-    // `json.response` text it already parses for its own SSE re-shaping is now also accumulated
-    // and persisted once the stream ends.
+    // `json.response` text it already parses is now re-encoded into the same compact binary wire
+    // format every other raw-action streaming path uses (instead of OpenAI-completions-style SSE),
+    // and accumulated/persisted once the stream ends.
     {
         const ollamaBranch = 'stream-ollama-chat';
         await saveChatToTree(directories, ownerId, ollamaBranch, [
@@ -1057,21 +1058,17 @@ async function run() {
         const messageCountBefore = branchBefore.messages.length;
 
         const app = buildTestApp();
-        const { status, bodyText } = await postGenerateStream(app, {
+        const { status, headers, bytes } = await postGenerateStreamBytes(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
             type: 'normal', user_message: 'Say hi via Ollama.', stream: true,
         });
         fakeBackend.server.close();
 
         assert.equal(status, 200);
-        // parseOllamaStream() re-shapes Ollama's own JSON-lines into OpenAI-completions-style SSE -
-        // this re-shaping is pre-existing/unmodified behavior, so the expected client body is built
-        // the same way it always was, independent of the persistence change under test.
-        // parseOllamaStream() re-shapes EVERY chunk it receives, including the final `done: true`
-        // sentinel (an empty-text event) - that's pre-existing, unmodified behavior, so the expected
-        // client body includes it too.
-        const expectedSse = [...ollamaChunks, ''].map(text => `data: ${JSON.stringify({ choices: [{ text, thinking: '' }] })}\n\n`).join('') + 'data: [DONE]\n\n';
-        assert.equal(bodyText, expectedSse, 'the client-facing re-shaped SSE bytes are unchanged by the persistence addition');
+        assert.equal(headers.get('X-ST-Stream-Format'), 'compact-v1', 'Ollama\'s raw-action stream now declares the same compact binary wire format as every other backend');
+        const decoded = decodeCompactStream(bytes);
+        assert.equal(decoded.text, ollamaChunks.join(''), 'the compact-format content frames reaching the client are exactly the concatenated Ollama chunks, with no empty trailing frame for the final done:true sentinel');
+        assert.ok(decoded.assistantNodeId, 'the assistant_node_id frame was sent as the final frame');
 
         const branchAfter = await waitFor(async () => {
             const branch = await loadBranch(directories, ownerId, ollamaBranch);
@@ -1082,6 +1079,7 @@ async function run() {
         assert.equal(assistantMsg.mes, 'Hello from Ollama, streamed.', 'the full text, accumulated across every Ollama JSON-lines chunk, was persisted');
         assert.equal(assistantMsg.is_user, false);
         assert.equal(assistantMsg.name, 'Rex');
+        assert.equal(assistantMsg.node_id, decoded.assistantNodeId, 'the node id sent to the client in the compact stream\'s assistant_node_id frame is the exact node the reply actually landed on');
     }
 
     // (i-5) STREAMING raw-action via LLAMACPP's own compact wire format: pipeLlamaCppCompactStream()
