@@ -3288,8 +3288,6 @@ async function doMesCut(args, text) {
         await deleteMessage(mesIDToCut, null, false, deleteToolCalls, false);
     }
 
-    await saveChatConditional();
-
     return cutText;
 }
 
