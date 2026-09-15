@@ -219,6 +219,11 @@ async function run() {
     // does the exact same strip from `avatar_url` - so both must agree on the SAME owner id for
     // test (a)'s two real routes to operate on the same tree row.
     const ownerId = avatar.replace(/\.png$/, '');
+    // `branchName` here is ONLY message-tree-db.js's own label/bookmark concept - a real, still-
+    // supported, unrelated primitive. It is NOT a raw-action request field anymore (see
+    // buildRawActionKoboldRequest()'s own ADDRESSING MODEL doc comment, reused verbatim here via
+    // buildRawActionHordePayload()) - every raw-action call below resolves and passes the real
+    // `node_id` (a leaf id from `loadBranch()`) instead.
     const branchName = 'main-chat';
     await saveChatToTree(directories, ownerId, branchName, [
         { chat_metadata: {} },
@@ -255,7 +260,7 @@ async function run() {
 
         const app = buildTestApp();
         const { status, data } = await postJson(app, '/api/horde/generate-text', {
-            owner_id: ownerId, character_avatar: avatar, branch_name: branchName,
+            owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
             type: 'normal', user_message: 'One more time, Rex?',
             trusted_workers: true, models: ['some-horde-model'],
         });
@@ -315,7 +320,7 @@ async function run() {
         const app = buildTestApp();
         const { status, data } = await postJson(app, '/api/horde/generate-text', {
             owner_id: 'NoSuchCharacter.png', character_avatar: 'NoSuchCharacter.png',
-            branch_name: branchName, type: 'normal', user_message: 'Hello?',
+            node_id: null, type: 'normal', user_message: 'Hello?',
             trusted_workers: false, models: [],
         });
 
@@ -325,6 +330,22 @@ async function run() {
         const branchAfter = await loadBranch(directories, ownerId, branchName);
         const branchNow = await loadBranch(directories, ownerId, branchName);
         assert.equal(branchAfter.messages.length, branchNow.messages.length, 'no persistence was attempted for a request that failed validation');
+    }
+
+    // (b2) validation error: node_id key entirely absent (not even explicit null) - loud failure
+    // instead of a silent wrong-guess (see buildRawActionKoboldRequest()'s own ADDRESSING MODEL doc
+    // comment, reused here via buildRawActionHordePayload()).
+    {
+        hordeFakeBackendUrl = null;
+        const app = buildTestApp();
+        const { status, data } = await postJson(app, '/api/horde/generate-text', {
+            owner_id: ownerId, character_avatar: avatar,
+            type: 'normal', user_message: 'Hello?',
+            trusted_workers: false, models: [],
+        });
+
+        assert.equal(status, 400);
+        assert.match(data.message, /node_id is required \(pass null explicitly for a brand-new, empty conversation\)/);
     }
 
     // (c) legacy, non-raw-action passthrough is unaffected: no `owner_id` field at all means the

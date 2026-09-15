@@ -242,6 +242,10 @@ async function run() {
     });
 
     const ownerId = avatar;
+    // `branchName` here is ONLY message-tree-db.js's own label/bookmark concept - a real, still-
+    // supported, unrelated primitive. It is NOT a raw-action request field anymore (see
+    // buildRawActionNovelRequest()'s own ADDRESSING MODEL doc comment) - every raw-action call below
+    // resolves and passes the real `node_id` (a leaf id from `loadBranch()`) instead.
     const branchName = 'main-chat';
     await saveChatToTree(directories, ownerId, branchName, [
         { chat_metadata: {} },
@@ -249,11 +253,12 @@ async function run() {
         { name: 'Tester', is_user: true, mes: 'Hi Rex, nice to meet you.', send_date: 2, extra: {} },
         { name: 'Rex', is_user: false, mes: 'Likewise!', send_date: 3, extra: {} },
     ]);
+    const mainLeafId = (await loadBranch(directories, ownerId, branchName)).branch.leaf_id;
 
     // --- buildRawActionNovelRequest(): basic real assembly ---
     {
         const built = await buildRawActionNovelRequest(directories, {
-            characterAvatar: avatar, ownerId, branchName,
+            characterAvatar: avatar, ownerId, nodeId: mainLeafId,
             type: 'normal', userMessageText: 'What happens next, Rex?',
             tokenizerOptions: fakeTokenizerOptions,
         });
@@ -270,7 +275,7 @@ async function run() {
     // --- error handling: missing owner_id ---
     await assert.rejects(
         () => buildRawActionNovelRequest(directories, {
-            characterAvatar: avatar, branchName,
+            characterAvatar: avatar, nodeId: mainLeafId,
             tokenizerOptions: fakeTokenizerOptions,
         }),
         /owner_id is required/,
@@ -279,20 +284,59 @@ async function run() {
     // --- error handling: unknown character ---
     await assert.rejects(
         () => buildRawActionNovelRequest(directories, {
-            characterAvatar: 'NoSuchCharacter.png', ownerId, branchName,
+            characterAvatar: 'NoSuchCharacter.png', ownerId, nodeId: mainLeafId,
             tokenizerOptions: fakeTokenizerOptions,
         }),
         /Character not found/,
     );
 
-    // --- error handling: unknown branch ---
+    // --- error handling: unknown node ---
     await assert.rejects(
         () => buildRawActionNovelRequest(directories, {
-            characterAvatar: avatar, ownerId, branchName: 'no-such-branch',
+            characterAvatar: avatar, ownerId, nodeId: 'no-such-node-id',
             tokenizerOptions: fakeTokenizerOptions,
         }),
-        /Chat branch not found/,
+        /Chat node not found/,
     );
+
+    // --- error handling: node_id key entirely absent (not even explicit null) - loud failure instead
+    // of a silent wrong-guess (see buildRawActionNovelRequest()'s own ADDRESSING MODEL doc comment). ---
+    await assert.rejects(
+        () => buildRawActionNovelRequest(directories, {
+            characterAvatar: avatar, ownerId,
+            tokenizerOptions: fakeTokenizerOptions,
+        }),
+        /node_id is required \(pass null explicitly for a brand-new, empty conversation\)/,
+    );
+
+    // --- error handling: node_id: null on an owner that ALREADY has real history - must be a real,
+    // reportable error, never a silent guess at "the current leaf". ---
+    await assert.rejects(
+        () => buildRawActionNovelRequest(directories, {
+            characterAvatar: avatar, ownerId, nodeId: null,
+            tokenizerOptions: fakeTokenizerOptions,
+        }),
+        /node_id is required: this character\/group already has an existing conversation/,
+    );
+
+    // --- happy path: node_id: null on a GENUINELY BRAND-NEW character with zero prior messages - the
+    // ONLY case where omitting a real node id is safe. Resolves via the owner's own anchor to an
+    // empty chat, and still produces a real, appendable anchorNodeId. ---
+    {
+        const freshAvatar = writeCharacter('NovelFresh.png', {
+            name: 'Fresh',
+            description: 'Fresh is a brand-new character with no chat history yet.',
+            data: { name: 'Fresh', description: 'Fresh is a brand-new character with no chat history yet.', first_mes: 'Hello, this is Fresh.' },
+        });
+        const builtFresh = await buildRawActionNovelRequest(directories, {
+            characterAvatar: freshAvatar, ownerId: freshAvatar, nodeId: null,
+            type: 'normal', userMessageText: 'Hi Fresh, this is our first message ever.',
+            tokenizerOptions: fakeTokenizerOptions,
+        });
+        assert.ok(builtFresh.anchorNodeId, 'a genuinely new, empty conversation still resolves to a real, appendable anchor node id');
+        assert.ok(builtFresh.params.input.includes('Hi Fresh, this is our first message ever.'), 'the raw user_message for this turn still made it into the prepared input even though the resolved prior history was empty');
+        assert.ok(!builtFresh.params.input.includes('Hello there, traveler.'), 'no unrelated prior history (Rex\'s) leaked into a brand-new character\'s resolved, empty chat');
+    }
 
     if (!canMockNovelBackend) {
         console.log('novelai.test.js: skipping all route-level /generate tests (a)-(e) - run with `node --experimental-test-module-mocks` to include them (see the canMockNovelBackend comment near the top of this file)');
@@ -317,7 +361,7 @@ async function run() {
 
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: branchName,
+            owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
             type: 'normal', user_message: 'One more time, Rex?', stream: false,
         });
         fakeBackend.server.close();
@@ -364,10 +408,11 @@ async function run() {
             { chat_metadata: {} },
             { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
         ]);
+        const streamNodeId = (await loadBranch(directories, ownerId, streamBranch)).branch.leaf_id;
 
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: streamBranch,
+            owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
             type: 'normal', user_message: 'Try to stream, Rex.', stream: true,
         });
         fakeBackend.server.close();
@@ -444,7 +489,7 @@ async function run() {
 
         const app = buildTestApp();
         const { status } = await postGenerate(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: branchName,
+            owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
             type: 'normal', user_message: 'Are you there, Rex?', stream: false,
         });
         fakeBackend.server.close();
