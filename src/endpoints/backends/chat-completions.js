@@ -2865,9 +2865,15 @@ router.post('/generate', async function (request, response) {
             const {
                 character_avatar: characterAvatar, group_id: groupId, owner_id: ownerId,
                 branch_name: branchName, node_id: nodeId, type = 'normal',
-                is_impersonate: isImpersonate = false, is_continue: isContinue = false, is_swipe: isSwipe = false,
                 user_message: userMessageText,
             } = request.body;
+            // is_impersonate/is_continue/is_swipe are NOT read from the wire - see the identical
+            // derivation and rationale in text-completions.js's own raw-action branch. Each is 100%
+            // derivable from `type` alone; sending them as separate fields was a redundant classification
+            // duplicating a fact already sent once.
+            const isImpersonate = type === 'impersonate';
+            const isContinue = type === 'continue';
+            const isSwipe = type === 'swipe' || type === 'regenerate';
 
             const directories = request.user.directories;
 

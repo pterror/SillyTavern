@@ -662,9 +662,18 @@ router.post('/generate', async function (request, response) {
             const {
                 character_avatar: characterAvatar, group_id: groupId, owner_id: ownerId,
                 branch_name: branchName, node_id: nodeId, type = 'normal',
-                is_impersonate: isImpersonate = false, is_continue: isContinue = false, is_swipe: isSwipe = false,
                 user_message: userMessageText,
             } = request.body;
+            // is_impersonate/is_continue/is_swipe are NOT read from the wire - each is 100% derivable
+            // from `type` alone (they used to be sent as separate, redundant boolean fields alongside
+            // it - the exact same "the client sends a derived classification instead of letting the
+            // server infer it from the one raw fact it already sent" anti-pattern this whole effort
+            // exists to eliminate). Derived here instead, matching the client's own real derivation
+            // (public/script.js): `isImpersonate = type == 'impersonate'`, `isContinue = type ==
+            // 'continue'`, `isSwipe = type == 'swipe' || type == 'regenerate'`.
+            const isImpersonate = type === 'impersonate';
+            const isContinue = type === 'continue';
+            const isSwipe = type === 'swipe' || type === 'regenerate';
 
             const directories = request.user.directories;
 
