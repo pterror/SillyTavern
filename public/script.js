@@ -5505,6 +5505,13 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // getBiasStrings() and chat-completion-generation-input.js's `promptChat`, both of which now also
     // treat 'swipe' and 'regenerate' identically for the identical reason) is the flag conflated.
     const isSwipe = type == 'swipe' || type == 'regenerate';
+    // UPDATE (this task): `isSwipe` is no longer forwarded on the wire as its own `is_swipe` field -
+    // the server now derives it from `type` alone (see the raw-action cutovers' own UPDATE comments
+    // below) - but the local is kept (mirroring `isImpersonate`/`isContinue` above) since it still
+    // documents the real "same anchor for 'swipe' and 'regenerate'" reasoning the comment above
+    // explains, and other, non-raw-action call sites reading `type === 'swipe'` directly may still
+    // want a byte-for-byte-identical named reference in the future.
+    void isSwipe;
 
     // Rewrite the generation timer to account for the time passed for all the continuations.
     if (isContinue && chat.length) {
@@ -5725,9 +5732,11 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // server now resolves the ENTIRE prompt (character, chat history, world info, sampler settings)
     // itself from its own stored state - see buildRawActionTextCompletionRequest() in
     // src/endpoints/backends/text-completions.js. Instead of sending the client-assembled
-    // finalPrompt/sampler settings, this sends only which character/branch and the literal text
+    // finalPrompt/sampler settings, this sends only which character/node and the literal text
     // typed, matching that endpoint's real, tested contract (character_avatar/group_id/owner_id/
-    // branch_name/node_id/type/is_impersonate/is_continue/is_swipe/user_message).
+    // node_id/type/user_message - there is no `branch_name` field anymore, and
+    // is_impersonate/is_continue/is_swipe are derived server-side from `type` alone - see this
+    // section's own UPDATE comment below).
     //
     // JUDGMENT CALL #1 (scope): `type === 'normal'`/undefined, `'impersonate'`, `'quiet'`, `'swipe'`,
     // `'regenerate'`, `'continue'`, AND NOW GROUP CHATS are cut over here, for this backend
@@ -5963,9 +5972,10 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // prompt assembly, when it still runs at all - i.e. whenever this gate is NOT satisfied - builds
     // the right context for 'regenerate' per its own existing, unchanged logic - see JUDGMENT CALL #2)
     // and has no bearing on whether this gate is reached, nor
-    // on the raw-action payload itself (`branch_name`/`type`/`is_swipe` are unaffected by local `chat`
-    // array length - the server resolves its own chat state fresh from the persisted tree, independent
-    // of anything the client did to its own copy).
+    // on the raw-action payload itself (`node_id`/`type` are unaffected by local `chat` array length -
+    // the raw-action `node_id` below is deliberately read off `lastMessage`, captured BEFORE this
+    // delete branch runs, not off `chat[chat.length - 1]` - and the server resolves its own chat state
+    // fresh from the persisted tree, independent of anything the client did to its own copy).
     //
     // ONE quiet-specific gap this scope restriction does NOT close (kept OUT of the raw-action path
     // rather than silently breaking it): `generateQuietPrompt()` can pass a non-null `jsonSchema` (its
@@ -5996,8 +6006,8 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // branches now exist for both (src/endpoints/backends/kobold.js's buildRawActionKoboldRequest(),
     // src/endpoints/novelai.js's buildRawActionNovelRequest()) - built the SAME way as the
     // textgenerationwebui one already wired here, reusing the exact same
-    // character_avatar/group_id/owner_id/branch_name/type/is_impersonate/is_continue/is_swipe/
-    // user_message payload shape (verified: neither builder needs anything backend-specific in the
+    // character_avatar/group_id/owner_id/node_id/type/user_message payload shape (verified: neither
+    // builder needs anything backend-specific in the
     // REQUEST shape itself - Kobold's own `kai_settings.api_server`/NovelAI's own `nai_settings.model_novel`
     // are both resolved SERVER-side from real, on-disk settings, not sent by the client). So this gate
     // now covers `main_api === 'kobold'` and `main_api === 'novel'` too, unchanged otherwise (same
@@ -6054,22 +6064,32 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         // card/prompt resolution. Falls back to the plain per-character ownerId when not in a group,
         // unchanged from before.
         const ownerId = groupId ? String(groupId) : (characterAvatar ? String(characterAvatar).replace('.png', '') : undefined);
-        // getCurrentChatId() (branch_name) is always assigned synchronously when a new chat is
-        // created (doNewChat()/replaceCurrentChat() for characters, createNewGroupChat() for groups),
-        // before the chat becomes interactive - verified by reading those call sites, not assumed - so
-        // there should be no reachable "brand new, unlabeled chat" state here. Kept as a real
-        // precondition check (documented fallback) rather than assumed, per
-        // buildRawActionTextCompletionRequest()'s own hard requirement for branch_name or node_id.
-        // getCurrentChatId() already resolves the GROUP's own chat_id when selected_group is set
-        // (getSelectionState() checks `selected_group` before `this_avatar`) - unchanged, no group-
-        // specific branch needed here either.
-        const branchName = getCurrentChatId();
+        // UPDATE (this task - node_id-only addressing cutover): `branch_name` is REMOVED from the wire
+        // payload entirely (see src/endpoints/backends/text-completions.js's own
+        // buildRawActionTextCompletionRequest() ADDRESSING MODEL doc comment) - the server now requires
+        // an explicit `node_id` instead: a real node id string addresses that specific node, or the
+        // literal `null` asserts "this is a genuinely new, empty conversation" (server-verified, not
+        // trusted blindly). The real node the client is generating from/replying to/replacing is
+        // `lastMessage` - captured near the top of this function, BEFORE the 'regenerate'-only "delete
+        // the last message from `chat`" branch a few hundred lines above (see that branch's own
+        // comment) - deliberately NOT re-read as `chat[chat.length - 1]` here, since for 'regenerate'
+        // specifically that array has already had its own last entry spliced out by then, which would
+        // resolve to the WRONG (parent) node instead of the one actually being regenerated. For every
+        // other type this gate covers (normal/continue/impersonate/quiet/swipe), `lastMessage` and
+        // `chat[chat.length - 1]` are identical anyway (nothing was deleted), so this is a strict
+        // generalization, not a behavior change for those types - matches `isSwipe`'s own established
+        // `type == 'swipe' || type == 'regenerate'` "same anchor either way" treatment (see the
+        // `isSwipe` local's own doc comment above). `isStoredNodeId()` (this file's own tree-row/
+        // provisional-greeting distinction) guards against sending a provisional (`card:`-prefixed) id
+        // for an unwritten opening greeting - the server would reject that as an unknown node, whereas
+        // `null` correctly asserts "no real history yet" for that same state.
+        const anchorNodeId = isStoredNodeId(lastMessage?.node_id) ? lastMessage.node_id : null;
         // `characterAvatar` is required unconditionally, group turn or not: even with `groupId` set,
         // a responding member's own avatar must resolve for real (defensively falls through to the
         // legacy path instead of assuming this, for the unlikely case `getCurrentCharacter()` were
         // ever unresolved mid-group-turn) - see JUDGMENT CALL #1 above for why this is verified to
         // always be true in practice for every type this gate covers.
-        if (ownerId && characterAvatar && branchName) {
+        if (ownerId && characterAvatar) {
             // Omitted (undefined) for any type that doesn't add a new message - matches the server's
             // own documented contract. In practice, given the scope above, this path is reached for
             // type 'normal'/undefined (where textareaText is the just-sent text, or '' for a depth>0
@@ -6089,11 +6109,13 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                 character_avatar: characterAvatar,
                 group_id: groupId,
                 owner_id: ownerId,
-                branch_name: branchName,
+                node_id: anchorNodeId,
                 type: type ?? 'normal',
-                is_impersonate: isImpersonate,
-                is_continue: isContinue,
-                is_swipe: isSwipe,
+                // is_impersonate/is_continue/is_swipe are NOT sent - the server derives all three from
+                // `type` alone (isImpersonate = type === 'impersonate', isContinue = type ===
+                // 'continue', isSwipe = type === 'swipe' || type === 'regenerate' - see
+                // src/endpoints/backends/text-completions.js's/kobold.js's own identical server-side
+                // derivation) - sending them too was sending the same fact twice in two encodings.
                 user_message: userMessageText,
                 // Kobold-only: mirrors the EXACT real condition getKoboldGenerationData() (public/
                 // scripts/kai-settings.js) and its server-side port createKoboldGenerationData()
@@ -6136,8 +6158,8 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                 can_abort: main_api === 'kobold' ? kai_flags.can_use_streaming : undefined,
             };
         }
-        // else: no resolvable branch_name (or other precondition) - fall through to the legacy
-        // client-assembled path below, unchanged.
+        // else: no resolvable ownerId/characterAvatar (other precondition) - fall through to the
+        // legacy client-assembled path below, unchanged.
     }
 
     // === Raw-action chat-completion cutover ===
@@ -6147,10 +6169,12 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // same name called a few lines below] + createGenerationParameters() [src/chat-completion-generation-data.js])
     // is wired into a real raw-action branch of /api/backends/chat-completions/generate - see
     // buildRawActionChatCompletionRequest() in src/endpoints/backends/chat-completions.js (commits de3696095,
-    // 6bd95de8e). Instead of the client-assembled oaiMessages/prompt, this sends only which character/branch and the
+    // 6bd95de8e). Instead of the client-assembled oaiMessages/prompt, this sends only which character/node and the
     // literal text typed, matching that endpoint's real, tested contract (character_avatar/group_id/owner_id/
-    // branch_name/node_id/type/is_impersonate/is_continue/is_swipe/user_message - field names deliberately verbatim
-    // from the text-completion precedent, per this session's own task instructions).
+    // node_id/type/user_message - field names deliberately verbatim from the text-completion precedent,
+    // per this session's own task instructions; there is no `branch_name` field anymore, and
+    // is_impersonate/is_continue/is_swipe are derived server-side from `type` alone - see the
+    // text-completion cutover's own identical UPDATE comment above).
     //
     // JUDGMENT CALL #1 (scope): IDENTICAL restriction to the text-completion cutover above, for the IDENTICAL
     // underlying reason - re-confirmed by reading the chat-completion side's OWN persistence code
@@ -6306,12 +6330,13 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         // card/prompt resolution. Falls back to the plain per-character ownerId when not in a group,
         // unchanged from before.
         const ownerId = groupId ? String(groupId) : (characterAvatar ? String(characterAvatar).replace('.png', '') : undefined);
-        // Same real precondition check as the text-completion cutover above (not assumed) - see that block's own
-        // comment for why a "brand new, unlabeled chat" state should not be reachable here.
-        const branchName = getCurrentChatId();
+        // Same node_id-only addressing as the text-completion cutover above (not assumed) - see that
+        // block's own UPDATE comment for the full rationale (`lastMessage`, captured before
+        // 'regenerate's own delete-last-message branch, not `chat[chat.length - 1]`).
+        const anchorNodeId = isStoredNodeId(lastMessage?.node_id) ? lastMessage.node_id : null;
         // `characterAvatar` is required unconditionally, group turn or not - see the text-completion
         // cutover's own identical precondition/rationale above.
-        if (ownerId && characterAvatar && branchName) {
+        if (ownerId && characterAvatar) {
             // Same rationale as the text-completion cutover above: omitted (undefined) for any type that doesn't add
             // a new message. Given the scope above, this path is reached for type 'normal'/undefined (where
             // textareaText is the just-sent text, or '' for a depth>0 tool-call follow-up generation, which likewise
@@ -6326,16 +6351,15 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                 character_avatar: characterAvatar,
                 group_id: groupId,
                 owner_id: ownerId,
-                branch_name: branchName,
+                node_id: anchorNodeId,
                 type: type ?? 'normal',
-                is_impersonate: isImpersonate,
-                is_continue: isContinue,
-                is_swipe: isSwipe,
+                // is_impersonate/is_continue/is_swipe are NOT sent - see the text-completion cutover's
+                // own identical UPDATE comment above (server derives all three from `type` alone).
                 user_message: userMessageText,
             };
         }
-        // else: no resolvable branch_name (or other precondition) - fall through to the legacy
-        // client-assembled path below, unchanged.
+        // else: no resolvable ownerId/characterAvatar (other precondition) - fall through to the
+        // legacy client-assembled path below, unchanged.
     }
 
     // === Hoisted locals for the (remaining, narrower) prompt-assembly block below ===

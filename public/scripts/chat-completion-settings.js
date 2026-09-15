@@ -3153,7 +3153,8 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, ra
         // Direct analog of the 'textgenerationwebui' raw-action cutover wired into Generate() (see that function's
         // own "Raw-action text-completion cutover"/"Raw-action chat-completion cutover" comment blocks for the full
         // scope rationale). `rawAction` is the already-built raw-action request object (character_avatar/owner_id/
-        // branch_name/type/is_impersonate/is_continue/is_swipe/user_message) - see Generate()'s `case 'openai':`
+        // node_id/type/user_message - there is no `branch_name` field, and is_impersonate/is_continue/is_swipe are
+        // derived server-side from `type` alone) - see Generate()'s `case 'openai':`
         // block. `messages` (what `prepareOpenAIMessages()` would otherwise have assembled) is deliberately IGNORED
         // here: the server resolves the ENTIRE chat-completion request itself (character, chat history, world info,
         // bias, sampler settings, model) via resolveChatCompletionGenerationInput() + prepareOpenAIMessages() +

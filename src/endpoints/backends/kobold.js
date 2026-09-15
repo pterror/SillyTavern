@@ -9,7 +9,7 @@ import { readSettingsAtPaths } from '../../settings-store.js';
 import { resolveTokenizerType, encodeWithTokenizerType } from '../../tokenizer-resolve.js';
 import { resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
 import { assembleTextCompletionPrompt } from '../../text-completion-prompt-orchestrator.js';
-import { loadBranch, getAncestorPath, appendMessages } from '../../message-tree-db.js';
+import { getAncestorPath, appendMessages } from '../../message-tree-db.js';
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
 import { persistAssistantReply } from '../../assistant-reply-persist.js';
@@ -50,8 +50,13 @@ export const router = express.Router();
  * @param {string} [params.characterAvatar]
  * @param {string} [params.groupId]
  * @param {string} params.ownerId
- * @param {string} [params.branchName]
- * @param {string} [params.nodeId]
+ * @param {string|null} params.nodeId REQUIRED (`undefined` throws) - see
+ * src/endpoints/backends/text-completions.js's `buildRawActionTextCompletionRequest()` own
+ * ADDRESSING MODEL doc comment for the full rationale this mirrors verbatim: a real node id string
+ * addresses that specific existing node; `null` asserts "this is a genuinely new, empty
+ * conversation" and only succeeds when that is actually true (checked via
+ * `resolveTextCompletionGenerationInput()`'s own `chatResolutionAmbiguous`/`resolvedNodeId`, read
+ * back below). There is no `branchName`/`branch_name` field in this raw-action surface anymore.
  * @param {string} [params.type]
  * @param {boolean} [params.isImpersonate]
  * @param {boolean} [params.isContinue]
@@ -67,7 +72,7 @@ export const router = express.Router();
  * @returns {Promise<{ params: object, anchorNodeId: string|null, anchorContent: object|null, name1: string, name2: string }>}
  */
 export async function buildRawActionKoboldRequest(directories, {
-    request, characterAvatar, groupId, ownerId, branchName, nodeId,
+    request, characterAvatar, groupId, ownerId, nodeId,
     type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText,
     tokenizerOptions = {}, macroExtras = {},
 } = {}) {
@@ -77,8 +82,11 @@ export async function buildRawActionKoboldRequest(directories, {
     if (!characterAvatar && !groupId) {
         throw new Error('character_avatar or group_id is required');
     }
-    if (!branchName && !nodeId) {
-        throw new Error('branch_name or node_id is required');
+    // See src/endpoints/backends/text-completions.js's `buildRawActionTextCompletionRequest()` own
+    // ADDRESSING MODEL doc comment - `undefined` means the request body never had the `node_id` key
+    // at all (JSON has no `undefined` literal, so this is distinguishable from an explicit `null`).
+    if (nodeId === undefined) {
+        throw new Error('node_id is required (pass null explicitly for a brand-new, empty conversation)');
     }
 
     if (characterAvatar) {
@@ -97,14 +105,12 @@ export async function buildRawActionKoboldRequest(directories, {
         }
     }
 
+    // Anchor resolution - a real given `nodeId` is verified directly; `nodeId === null` (the
+    // "genuinely new, empty conversation" assertion) is left unresolved here and read back off
+    // `orchestratorInput.resolvedNodeId`/`chatResolutionAmbiguous` once resolved below - identical
+    // pattern to buildRawActionTextCompletionRequest()'s own Step 2.
     let anchorNodeId = null;
-    if (branchName) {
-        const branch = await loadBranch(directories, ownerId, branchName);
-        if (!branch) {
-            throw new Error(`Chat branch not found: ${branchName}`);
-        }
-        anchorNodeId = branch.branch.leaf_id;
-    } else {
+    if (nodeId !== null) {
         const ancestorPath = await getAncestorPath(directories, nodeId);
         if (!ancestorPath) {
             throw new Error(`Chat node not found: ${nodeId}`);
@@ -120,10 +126,19 @@ export async function buildRawActionKoboldRequest(directories, {
     const countTokens = async (text) => (await encodeTokens(text)).length;
 
     const orchestratorInput = await resolveTextCompletionGenerationInput(directories, {
-        avatar: characterAvatar, groupId, mainApi: 'kobold', ownerId, branchName, nodeId,
+        avatar: characterAvatar, groupId, mainApi: 'kobold', ownerId, nodeId,
         type, isImpersonate, isContinue, isSwipe, userMessageText,
         countTokens, encodeTokens, macroExtras,
     });
+
+    // `nodeId === null` ("genuinely new, empty conversation") is only valid when this owner's
+    // conversation really is empty - see buildRawActionTextCompletionRequest()'s identical handling.
+    if (nodeId === null) {
+        if (orchestratorInput.chatResolutionAmbiguous) {
+            throw new Error('node_id is required: this character/group already has an existing conversation - resolve which node the client was looking at and pass its node_id (null is only valid for a genuinely new, empty conversation)');
+        }
+        anchorNodeId = orchestratorInput.resolvedNodeId;
+    }
 
     if ((isContinue || isSwipe) && orchestratorInput.chat.length === 0) {
         throw new Error('Cannot continue/swipe an empty chat.');
@@ -141,24 +156,34 @@ router.post('/generate', async function (request, response_generate) {
     // Real raw-action cutover - "generate for this character/group's chat" - see
     // buildRawActionKoboldRequest() above and src/endpoints/backends/text-completions.js's own
     // identically-shaped branch for the full design precedent this mirrors. Same trigger condition,
-    // same field names (character_avatar/group_id/owner_id/branch_name/node_id/type/is_impersonate/
-    // is_continue/is_swipe/user_message).
+    // same field names (character_avatar/group_id/owner_id/node_id/type/is_impersonate/
+    // is_continue/is_swipe/user_message) - there is no `branch_name` field (see
+    // buildRawActionKoboldRequest()'s own ADDRESSING MODEL doc comment). `node_id` is destructured
+    // straight off the parsed body, not defaulted, so the "key absent" (`undefined`) vs. "explicit
+    // null" distinction survives intact.
     let pendingAssistantPersist = null;
     if (request.body.owner_id && (request.body.character_avatar || request.body.group_id)) {
         const {
             character_avatar: characterAvatar, group_id: groupId, owner_id: ownerId,
-            branch_name: branchName, node_id: nodeId, type = 'normal',
-            is_impersonate: isImpersonate = false, is_continue: isContinue = false, is_swipe: isSwipe = false,
+            node_id: nodeId, type = 'normal',
             user_message: userMessageText, streaming: streamingRequested = false,
             can_abort: canAbortRequested = false,
         } = request.body;
+        // is_impersonate/is_continue/is_swipe are NOT read from the wire - each is 100% derivable
+        // from `type` alone - matching text-completions.js's/chat-completions.js's own identical
+        // derivation (commit 4a79e197e), extended here to Kobold since the client-side cleanup
+        // (job 2 of this task) removes these three redundant booleans for every raw-action backend,
+        // not just those two.
+        const isImpersonate = type === 'impersonate';
+        const isContinue = type === 'continue';
+        const isSwipe = type === 'swipe' || type === 'regenerate';
 
         const directories = request.user.directories;
 
         let built;
         try {
             built = await buildRawActionKoboldRequest(directories, {
-                request, characterAvatar, groupId, ownerId, branchName, nodeId,
+                request, characterAvatar, groupId, ownerId, nodeId,
                 type, isImpersonate, isContinue, isSwipe, userMessageText,
             });
         } catch (error) {

@@ -286,9 +286,10 @@ export async function generateHorde(prompt, params, signal, reportProgress) {
  * already proves this: a real, unavoidable client-side wait of up to 20 minutes, with live
  * signal-driven abort/cancellation only the client can perform. So raw action here only changes WHAT
  * gets submitted (the server resolves/assembles the whole prompt+params itself, from the real
- * character/chat/branch identity - `rawAction`'s own character_avatar/group_id/owner_id/branch_name/
- * node_id/type/is_impersonate/is_continue/is_swipe/user_message fields, the EXACT same shape
- * public/script.js's own `rawActionGenerateData` already builds for kobold/novel/textgenerationwebui)
+ * character/chat/node identity - `rawAction`'s own character_avatar/group_id/owner_id/node_id/type/
+ * user_message fields (there is no `branch_name` field, and is_impersonate/is_continue/is_swipe are
+ * derived server-side from `type` alone), the EXACT same shape public/script.js's own
+ * `rawActionGenerateData` already builds for kobold/novel/textgenerationwebui)
  * - the submit-then-poll-then-report mechanics are UNCHANGED, reusing submitHordeJob()/
  * pollHordeTask() rather than duplicating them.
  *

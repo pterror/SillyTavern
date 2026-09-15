@@ -11,7 +11,7 @@ import { encodeWithTokenizerType } from '../tokenizer-resolve.js';
 import { getTokenizerTypeForModel } from '../novel-generation-data.js';
 import { resolveTextCompletionGenerationInput } from '../text-completion-generation-input.js';
 import { assembleTextCompletionPrompt } from '../text-completion-prompt-orchestrator.js';
-import { loadBranch, getAncestorPath, appendMessages } from '../message-tree-db.js';
+import { getAncestorPath, appendMessages } from '../message-tree-db.js';
 import { readCardContent } from './characters.js';
 import { getGroupsByIds } from './groups.js';
 import { persistAssistantReply } from '../assistant-reply-persist.js';
@@ -198,8 +198,12 @@ router.post('/status', async function (req, res) {
  * @param {string} [params.characterAvatar]
  * @param {string} [params.groupId]
  * @param {string} params.ownerId
- * @param {string} [params.branchName]
- * @param {string} [params.nodeId]
+ * @param {string|null} params.nodeId REQUIRED (`undefined` throws) - see
+ * src/endpoints/backends/text-completions.js's `buildRawActionTextCompletionRequest()` own
+ * ADDRESSING MODEL doc comment for the full rationale this mirrors verbatim: a real node id string
+ * addresses that specific existing node; `null` asserts "this is a genuinely new, empty
+ * conversation" and only succeeds when that is actually true. There is no `branchName`/`branch_name`
+ * field in this raw-action surface anymore.
  * @param {string} [params.type]
  * @param {boolean} [params.isImpersonate]
  * @param {boolean} [params.isContinue]
@@ -208,7 +212,7 @@ router.post('/status', async function (req, res) {
  * @returns {Promise<{ params: object, anchorNodeId: string|null, anchorContent: object|null, name1: string, name2: string }>}
  */
 export async function buildRawActionNovelRequest(directories, {
-    request, characterAvatar, groupId, ownerId, branchName, nodeId,
+    request, characterAvatar, groupId, ownerId, nodeId,
     type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText,
     tokenizerOptions = {},
 } = {}) {
@@ -218,8 +222,11 @@ export async function buildRawActionNovelRequest(directories, {
     if (!characterAvatar && !groupId) {
         throw new Error('character_avatar or group_id is required');
     }
-    if (!branchName && !nodeId) {
-        throw new Error('branch_name or node_id is required');
+    // See buildRawActionTextCompletionRequest()'s own ADDRESSING MODEL doc comment - `undefined`
+    // means the request body never had the `node_id` key at all (JSON has no `undefined` literal, so
+    // this is distinguishable from an explicit `null`).
+    if (nodeId === undefined) {
+        throw new Error('node_id is required (pass null explicitly for a brand-new, empty conversation)');
     }
 
     if (characterAvatar) {
@@ -238,14 +245,12 @@ export async function buildRawActionNovelRequest(directories, {
         }
     }
 
+    // Anchor resolution - a real given `nodeId` is verified directly; `nodeId === null` (the
+    // "genuinely new, empty conversation" assertion) is left unresolved here and read back off
+    // `orchestratorInput.resolvedNodeId`/`chatResolutionAmbiguous` once resolved below - identical
+    // pattern to buildRawActionTextCompletionRequest()'s own Step 2.
     let anchorNodeId = null;
-    if (branchName) {
-        const branch = await loadBranch(directories, ownerId, branchName);
-        if (!branch) {
-            throw new Error(`Chat branch not found: ${branchName}`);
-        }
-        anchorNodeId = branch.branch.leaf_id;
-    } else {
+    if (nodeId !== null) {
         const ancestorPath = await getAncestorPath(directories, nodeId);
         if (!ancestorPath) {
             throw new Error(`Chat node not found: ${nodeId}`);
@@ -267,11 +272,20 @@ export async function buildRawActionNovelRequest(directories, {
     const encodeTokensByType = (tokenizerType, text) => encodeWithTokenizerType(tokenizerType ?? novelTokenizerType, text, { request, ...tokenizerOptions });
 
     const orchestratorInput = await resolveTextCompletionGenerationInput(directories, {
-        avatar: characterAvatar, groupId, mainApi: 'novel', ownerId, branchName, nodeId,
+        avatar: characterAvatar, groupId, mainApi: 'novel', ownerId, nodeId,
         type, isImpersonate, isContinue, isSwipe, userMessageText,
         countTokens, encodeTokens,
         macroExtras: { encodeTokensByType },
     });
+
+    // `nodeId === null` ("genuinely new, empty conversation") is only valid when this owner's
+    // conversation really is empty - see buildRawActionTextCompletionRequest()'s identical handling.
+    if (nodeId === null) {
+        if (orchestratorInput.chatResolutionAmbiguous) {
+            throw new Error('node_id is required: this character/group already has an existing conversation - resolve which node the client was looking at and pass its node_id (null is only valid for a genuinely new, empty conversation)');
+        }
+        anchorNodeId = orchestratorInput.resolvedNodeId;
+    }
 
     if ((isContinue || isSwipe) && orchestratorInput.chat.length === 0) {
         throw new Error('Cannot continue/swipe an empty chat.');
@@ -293,17 +307,22 @@ router.post('/generate', async function (req, res) {
     if (req.body.owner_id && (req.body.character_avatar || req.body.group_id)) {
         const {
             character_avatar: characterAvatar, group_id: groupId, owner_id: ownerId,
-            branch_name: branchName, node_id: nodeId, type = 'normal',
-            is_impersonate: isImpersonate = false, is_continue: isContinue = false, is_swipe: isSwipe = false,
+            node_id: nodeId, type = 'normal',
             user_message: userMessageText,
         } = req.body;
+        // is_impersonate/is_continue/is_swipe are NOT read from the wire - see kobold.js's own
+        // identical derivation/comment (extended there from text-completions.js's/
+        // chat-completions.js's original commit 4a79e197e).
+        const isImpersonate = type === 'impersonate';
+        const isContinue = type === 'continue';
+        const isSwipe = type === 'swipe' || type === 'regenerate';
 
         const directories = req.user.directories;
 
         let built;
         try {
             built = await buildRawActionNovelRequest(directories, {
-                request: req, characterAvatar, groupId, ownerId, branchName, nodeId,
+                request: req, characterAvatar, groupId, ownerId, nodeId,
                 type, isImpersonate, isContinue, isSwipe, userMessageText,
             });
         } catch (error) {

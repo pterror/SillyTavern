@@ -236,15 +236,19 @@ router.post('/task-status', async (request, response) => {
 async function buildRawActionHordePayload(request) {
     const {
         character_avatar: characterAvatar, group_id: groupId, owner_id: ownerId,
-        branch_name: branchName, node_id: nodeId, type = 'normal',
-        is_impersonate: isImpersonate = false, is_continue: isContinue = false, is_swipe: isSwipe = false,
+        node_id: nodeId, type = 'normal',
         user_message: userMessageText, trusted_workers: trustedWorkers = false, models,
     } = request.body;
+    // is_impersonate/is_continue/is_swipe are NOT read from the wire - see kobold.js's own identical
+    // derivation/comment.
+    const isImpersonate = type === 'impersonate';
+    const isContinue = type === 'continue';
+    const isSwipe = type === 'swipe' || type === 'regenerate';
 
     const directories = request.user.directories;
 
     const built = await buildRawActionKoboldRequest(directories, {
-        request, characterAvatar, groupId, ownerId, branchName, nodeId,
+        request, characterAvatar, groupId, ownerId, nodeId,
         type, isImpersonate, isContinue, isSwipe, userMessageText,
         macroExtras: { isHorde: true },
     });
