@@ -65,7 +65,7 @@ import { readSettingsAtPaths } from '../../settings-store.js';
 import { readPresetByName } from '../presets.js';
 import { resolveChatCompletionGenerationInput } from '../../chat-completion-generation-input.js';
 import { prepareOpenAIMessages } from '../../chat-completion-prepare-messages.js';
-import { getAncestorPath, appendMessages, sanitizeUserMessageExtra } from '../../message-tree-db.js';
+import { getAncestorPath, appendMessages, editMessage, sanitizeUserMessageExtra } from '../../message-tree-db.js';
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
 import { persistAssistantReply } from '../../assistant-reply-persist.js';
@@ -2546,17 +2546,20 @@ const SERVER_TOOL_ROUND_LIMIT = 5;
  *        anchor-resolved for a brand-new conversation - see this function's own ADDRESSING MODEL doc
  *        comment) IS that knowledge, so it's forwarded for real rather than left `undefined`.
  *      - `macroContext`: real, `orchestratorInput.macroContext` (already built by the resolver).
- *      - `toolsPayload`: NOW resolved here (this task) - real, from the server-native tool registry
- *        (`../../server-tools.js`, chunk (a)). `ctx = {directories, ownerId, characterAvatar,
- *        groupId}` (the exact tuple already resolved above for everything else in this function) is
- *        passed to `getEnabledServerTools(ctx)`; when it returns a non-empty list, `toolsPayload =
- *        {tools: enabledServerTools.map(toOpenAIToolSchema), tool_choice: 'auto'}` is forwarded into
- *        `createGenerationParameters()` - otherwise `toolsPayload` stays `undefined`, so a request
- *        with no server tools registered advertises no `tools` at all, byte-for-byte identical to
- *        this route's pre-chunk-(b) behavior. Client-only tools (the browser-extension `ToolManager`)
- *        are NOT included here - out of scope for this chunk (see the route handler's own comment on
- *        `SERVER_TOOL_ROUND_LIMIT`/the tool-execution loop for the full rationale and the documented
- *        "unrecognized tool name" failure mode this narrowing creates).
+ *      - `toolsPayload`: resolved here from TWO sources merged into one `tools` array -
+ *        (1) the server-native tool registry (`../../server-tools.js`, chunk (a)): `ctx =
+ *        {directories, ownerId, characterAvatar, groupId}` (the exact tuple already resolved above
+ *        for everything else in this function) is passed to `getEnabledServerTools(ctx)`; and
+ *        (2) chunk (c)'s `clientToolSchemas` param (the browser-extension `ToolManager`'s own
+ *        advertised tools, merged in with server tools taking priority on a name collision - see
+ *        this function's own `clientToolSchemas` doc comment above for the full policy). When the
+ *        combined list is non-empty, `toolsPayload = {tools: [...], tool_choice: 'auto'}` is
+ *        forwarded into `createGenerationParameters()` - otherwise `toolsPayload` stays `undefined`,
+ *        so a request with no server tool registered AND no `client_tools` sent advertises no
+ *        `tools` at all, byte-for-byte identical to this route's pre-chunk-(b) behavior. The route
+ *        handler's tool-execution loop (`runServerToolRounds()`) uses `enabledClientToolNames`
+ *        (this function's own return value) to tell a legitimate client-only tool call apart from a
+ *        genuinely unrecognized/hallucinated one - see that function's own doc comment.
  *      - `getStoppingStrings`/`groupNames`/`electronHubReasoningEfforts`/
  *        `reverseProxyValidated`/`jsonSchema`/`logitBias` override: still NOT resolved here - explicit,
  *        documented MVP scope boundaries per chat-completion-generation-data.js's own doc comment
@@ -2599,14 +2602,37 @@ const SERVER_TOOL_ROUND_LIMIT = 5;
  * forwarded verbatim to `resolveChatCompletionGenerationInput()`; the caller (route handler below) is
  * responsible for having already sanitized whatever the client sent. Ignored when `userMessageText`
  * is omitted.
- * @returns {Promise<{ params: object, settings: object, anchorNodeId: string|null, anchorContent: object|null, name1: string, name2: string, enabledServerTools: import('../../server-tools.js').ServerToolRegistration[] }>}
+ * @param {any[]} [params.clientToolSchemas] Chunk (c): the client's own `client_tools` array, exactly
+ * as sent on the wire (`ToolManager.registerFunctionToolsOpenAI()`'s computed
+ * `[{type:'function', function:{name, description, parameters}}, ...]` shape) - tools registered via
+ * the browser-extension `ToolManager` API (`public/scripts/tool-calling.js`) that genuinely cannot
+ * execute server-side. Untrusted, attacker-controlled input: only entries shaped
+ * `{type:'function', function:{name: non-empty string, ...}}` are kept, everything else is silently
+ * dropped (same "a bad/foreign field doesn't fail the whole request" convention as
+ * `sanitizeUserMessageExtra()`); duplicate `function.name`s within this same array keep only the
+ * first occurrence. NAME-COLLISION POLICY (this task's judgment call): a client tool whose name
+ * collides with an already-`enabledServerTools` name is DROPPED (with a logged warning), and the
+ * server-native tool wins - server tools are operator-configured (registered by a trusted server
+ * plugin via `registerServerTool()`, chunk (a)), while `clientToolSchemas` is arbitrary,
+ * unauthenticated-as-to-intent client input; letting an unprivileged client silently shadow an
+ * operator-configured tool by re-declaring its name would be a real privilege inversion. This
+ * mirrors `server-tools.js`'s own registry, which already throws on a same-name collision between
+ * two *trusted* registrations - dropping (not throwing) here because this collision involves
+ * untrusted input and must degrade gracefully, not fail the whole generation request.
+ * @returns {Promise<{ params: object, settings: object, anchorNodeId: string|null, anchorContent: object|null, name1: string, name2: string, enabledServerTools: import('../../server-tools.js').ServerToolRegistration[], enabledClientToolNames: Set<string> }>}
  * `enabledServerTools` is the same list used to build `params.tools` (empty when no server tool is
  * currently enabled for this request) - returned so the route handler's tool-execution loop doesn't
  * need to re-query the registry (and re-run every tool's own `shouldEnable(ctx)`) a second time.
+ * `enabledClientToolNames` (chunk (c)) is the set of `clientToolSchemas` names actually advertised to
+ * the backend after the collision policy above (i.e. excluding any dropped for colliding with a
+ * server tool name) - the route handler's tool-execution loop uses this to tell "hand off to the
+ * client" (name is here) apart from "hallucinated/unknown tool name" (name is in neither this set nor
+ * `enabledServerTools`).
  */
 export async function buildRawActionChatCompletionRequest(directories, {
     characterAvatar, groupId, ownerId, nodeId,
     type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText, userMessageExtra,
+    clientToolSchemas,
 } = {}) {
     if (!ownerId) {
         throw new Error('owner_id is required');
@@ -2709,8 +2735,33 @@ export async function buildRawActionChatCompletionRequest(directories, {
     // resolved for everything else here; nothing new is computed to build it.
     const serverToolCtx = { directories, ownerId, characterAvatar, groupId };
     const enabledServerTools = await getEnabledServerTools(serverToolCtx);
-    const toolsPayload = enabledServerTools.length > 0
-        ? { tools: enabledServerTools.map(toOpenAIToolSchema), tool_choice: 'auto' }
+    const serverToolNames = new Set(enabledServerTools.map(tool => tool.name));
+
+    // Chunk (c): merge in the client's own `client_tools` (see this function's own doc comment,
+    // `clientToolSchemas` param, for the full validation/collision rationale). Kept as a Map (not a
+    // plain array-dedupe) so a duplicate `function.name` WITHIN `clientToolSchemas` itself keeps only
+    // its first occurrence, matching the collision-drop convention below.
+    const clientToolsByName = new Map();
+    if (Array.isArray(clientToolSchemas)) {
+        for (const entry of clientToolSchemas) {
+            const name = entry?.function?.name;
+            if (entry?.type !== 'function' || typeof name !== 'string' || !name || typeof entry.function.description !== 'string') {
+                continue;
+            }
+            if (serverToolNames.has(name)) {
+                console.warn(color.yellow(`Dropping client-advertised tool "${name}": a server-native tool with this name is already registered and takes priority.`));
+                continue;
+            }
+            if (!clientToolsByName.has(name)) {
+                clientToolsByName.set(name, entry);
+            }
+        }
+    }
+    const enabledClientToolNames = new Set(clientToolsByName.keys());
+
+    const combinedToolSchemas = [...enabledServerTools.map(toOpenAIToolSchema), ...clientToolsByName.values()];
+    const toolsPayload = combinedToolSchemas.length > 0
+        ? { tools: combinedToolSchemas, tool_choice: 'auto' }
         : undefined;
     const { generate_data } = await createGenerationParameters(settings, orchestratorInput.model, type, messages, {
         macroContext: orchestratorInput.macroContext,
@@ -2737,7 +2788,7 @@ export async function buildRawActionChatCompletionRequest(directories, {
     const anchorChat = orchestratorInput.macroContext.chat;
     const anchorContent = anchorChat.length > 0 ? anchorChat[anchorChat.length - 1] : null;
 
-    return { params: generate_data, settings, anchorNodeId, anchorContent, name1: orchestratorInput.macroContext.name1, name2: orchestratorInput.name2, enabledServerTools };
+    return { params: generate_data, settings, anchorNodeId, anchorContent, name1: orchestratorInput.macroContext.name1, name2: orchestratorInput.name2, enabledServerTools, enabledClientToolNames };
 }
 
 /**
@@ -2864,49 +2915,72 @@ function parseServerToolArguments(rawArguments) {
  * covered: streaming, and every one of the 12 provider-`switch` functions above).
  *
  * Only ever invoked when the initial backend response already carries `tool_calls` AND at least one
- * server-native tool was advertised (`request.body.tools` non-empty) for this raw-action request -
- * the caller is expected to skip calling this entirely otherwise, so a request with no registered
- * server tools never even reaches this function (byte-for-byte the same behavior as before this
- * chunk landed).
+ * server-native OR client-advertised tool was in play for this raw-action request - the caller is
+ * expected to skip calling this entirely otherwise, so a request with neither ever reaches this
+ * function (byte-for-byte the same behavior as before chunk (b) landed).
  *
  * Each round:
  * 1. Reads `json.choices[0].message.tool_calls`. Empty/undefined -> done, return the final
  *    plain-text `json` as-is (the caller persists it via the existing `persistAssistantReply()` path,
  *    completely unchanged).
- * 2. Otherwise, looks up every tool call's `function.name` in the registry (case-sensitive exact
- *    match against the SAME `enabledTools` list this request already advertised - a tool that was
- *    enabled when the request was built but raced to disabled mid-request is not re-checked here,
- *    matching this route's general "resolve settings once per request" convention elsewhere). If ANY
- *    name isn't found, the WHOLE round fails immediately with a real, sane error - explicitly NOT
- *    executing the recognized calls from that same round first. This is a deliberate judgment call:
- *    a response mixing a real server tool with an unrecognized name is far more likely to be a
- *    hallucinated/mistargeted call (or a genuinely different provider default tool) than a
- *    legitimate multi-tool turn, and partially executing+persisting only some of a model-issued
- *    "batch" of tool calls would leave a confusing, semantically-broken turn on the tree (the model
- *    asked for N things, got results for only some, with no record of why). Since this chunk
- *    explicitly excludes client-tool support, there is no proxy fallback to try instead - see this
- *    same rationale on `buildRawActionChatCompletionRequest()`'s own doc comment (toolsPayload
- *    bullet).
- * 3. For every recognized tool call, parses `function.arguments` (`parseServerToolArguments()`
- *    above) and calls `tool.invoke(args, ctx)`. A thrown/rejected `invoke()` does NOT abort the
- *    round or the request - it is caught and turned into a normal (if `error`-flagged) invocation
- *    result, so the model sees the failure text and can retry/apologize/call something else, exactly
- *    matching `ToolManager.invokeFunctionTools()`'s own "still create an invocation so the model sees
- *    the failure, keep looping" behavior (public/scripts/tool-calling.js).
- * 4. Persists the whole round as ONE new tree node via `appendMessages()`, shaped
- *    `{is_system: true, is_user: false, extra: {tool_invocations: [...]}}` - the exact shape
- *    `populateChatHistory()` (src/chat-completion-history.js) and `buildChatCompletionMessages()`
- *    (src/chat-completion-messages.js) already expect for replay, mirroring the client's own
- *    `ToolManager.saveFunctionToolInvocations()`. Each invocation is `{id, name, parameters (a
- *    JSON-stringified string), result (a string), error}` - `parameters`/`result` are stored as
- *    strings, never live objects/values, matching that same replay contract.
- * 5. Advances the "current leaf" to the just-appended node, re-resolves the FULL prompt fresh via
- *    `buildRawActionChatCompletionRequest()` (so the newly-persisted tool turn is included exactly
- *    the way any other real tree node would be - no manual message-array patching here), and calls
- *    the backend again via the caller-supplied `refetch(messages)`.
+ * 2. Otherwise, partitions the calls into three buckets by `function.name`: SERVER (in `enabledTools`,
+ *    case-sensitive exact match against the SAME list this request already advertised - a tool that
+ *    was enabled when the request was built but raced to disabled mid-request is not re-checked here,
+ *    matching this route's general "resolve settings once per request" convention elsewhere),
+ *    CLIENT-ONLY (in `clientToolNames`, chunk (c) - a name the client itself advertised via
+ *    `client_tools` but that has no server-native registration), and UNKNOWN (neither). If ANY call is
+ *    UNKNOWN, the WHOLE round fails immediately with a real, sane 422 - explicitly NOT executing the
+ *    recognized calls from that same round first. This is unchanged from chunk (b)'s own judgment call
+ *    (a response mixing a real tool with an unrecognized name is far more likely to be a
+ *    hallucinated/mistargeted call than a legitimate multi-tool turn, and partially
+ *    executing+persisting only some of a model-issued "batch" would leave a confusing,
+ *    semantically-broken turn on the tree) - chunk (c) only widens what counts as "recognized" to
+ *    include the client's own advertised names, it does not relax this all-or-nothing rule.
+ * 3. For every SERVER call, parses `function.arguments` (`parseServerToolArguments()` above) and calls
+ *    `tool.invoke(args, ctx)`. A thrown/rejected `invoke()` does NOT abort the round or the request -
+ *    it is caught and turned into a normal (if `error`-flagged) invocation result, so the model sees
+ *    the failure text and can retry/apologize/call something else, exactly matching
+ *    `ToolManager.invokeFunctionTools()`'s own "still create an invocation so the model sees the
+ *    failure, keep looping" behavior (public/scripts/tool-calling.js). Every CLIENT-ONLY call instead
+ *    becomes an IN-FLIGHT invocation - `{id, name, parameters, result: null, error: null}` - `result`
+ *    stays `null` until the client's own `type: 'tool_result'` follow-up request resolves it (see
+ *    `resolvePendingToolResults()` below); no server tool's own `invoke()` result is ever `null` (it is
+ *    always coerced to a string), so `result === null` unambiguously means "still pending" wherever
+ *    this shape is read back (`resolvePendingToolResults()`, `populateChatHistory()`'s
+ *    `invocation.result || '[No content]'` fallback for the rare case a still-pending node is ever
+ *    read as history mid-flight).
+ * 4. Persists the WHOLE round (server results and client-pending calls together) as ONE new tree node
+ *    via `appendMessages()`, shaped `{is_system: true, is_user: false, extra: {tool_invocations:
+ *    [...]}}` - the exact shape `populateChatHistory()` (src/chat-completion-history.js) and
+ *    `buildChatCompletionMessages()` (src/chat-completion-messages.js) already expect for replay,
+ *    mirroring the client's own `ToolManager.saveFunctionToolInvocations()`. SINGLE-NODE JUDGMENT CALL
+ *    (this task): a mixed round (some server, some client-only calls) is persisted as ONE node with a
+ *    mixed `tool_invocations` array (some entries resolved, some `result: null`) rather than two
+ *    separate nodes. Reasoning: one backend response is one real, atomic model turn ("the model made
+ *    these N tool calls together, in one message") - splitting it into two tree nodes would fragment
+ *    that single turn into two history entries with no natural ordering between them (both would need
+ *    to attach at the same parent, becoming siblings/an ambiguous fork, not a sequence), and every
+ *    existing reader of this shape (`populateChatHistory()`, `runServerToolRounds()` itself on its next
+ *    round, `resolvePendingToolResults()`) already expects "one round = one node" - a single node with
+ *    some entries still pending is a strictly smaller extension of that existing contract (just widen
+ *    every reader to tolerate `result === null`) versus teaching every reader a new
+ *    two-nodes-per-round shape and a new ordering rule.
+ * 5. If any CLIENT-ONLY calls were in this round, STOPS here (does not advance/refetch) and returns
+ *    `{ok: 'pending', pendingToolCalls: [...], leafNodeId}` - one entry per client-only call, each
+ *    `{node_id: currentLeafId, tool_call_id, name, arguments}` (arguments as a parsed object, not a
+ *    JSON string, matching the wire example in this task's design doc) - so the caller (the route
+ *    handler) can hand this off to the client instead of trying to resolve it itself. Otherwise
+ *    (SERVER-only round), advances the "current leaf" to the just-appended node, re-resolves the FULL
+ *    prompt fresh via `buildRawActionChatCompletionRequest()` (so the newly-persisted tool turn is
+ *    included exactly the way any other real tree node would be - no manual message-array patching
+ *    here, and `clientToolNames`/`clientToolSchemas` are forwarded again so a LATER round can still
+ *    hand off to the client), and calls the backend again via the caller-supplied `refetch(messages)`.
  *
- * Bounded by `SERVER_TOOL_ROUND_LIMIT` rounds. Exhausting the limit without ever reaching a
- * plain-text reply returns a real error too - the tool-call/result turns already persisted along the
+ * Bounded by `SERVER_TOOL_ROUND_LIMIT` rounds (a `pending` return does not consume this bound further -
+ * it ends this function's own loop immediately; the CLIENT's own resumption is bounded separately, by
+ * its own recursion limit on the `tool_result` follow-up chain - see public/script.js's
+ * `resolveClientToolHandoffLoop()`). Exhausting the limit without ever reaching a plain-text reply (or
+ * a pending hand-off) returns a real error too - the tool-call/result turns already persisted along the
  * way stay on the tree (they're real facts that happened), only the client-facing response reports
  * failure.
  * @param {object} params
@@ -2917,14 +2991,25 @@ function parseServerToolArguments(rawArguments) {
  * @param {import('../../server-tools.js').ServerToolRegistration[]} params.enabledTools The exact
  *   list this request already advertised to the backend (`buildRawActionChatCompletionRequest()`'s
  *   own `enabledServerTools` return value).
+ * @param {Set<string>} params.clientToolNames Chunk (c): the exact set this request already advertised
+ *   to the backend as client-only tools (`buildRawActionChatCompletionRequest()`'s own
+ *   `enabledClientToolNames` return value).
+ * @param {any[]} [params.clientToolSchemas] The SAME raw `client_tools` array the request carried -
+ *   forwarded to each re-resolution's own `buildRawActionChatCompletionRequest()` call so a later
+ *   round can still detect/hand-off a further client-only call, exactly mirroring how `enabledTools`
+ *   is re-derived fresh from the registry every round rather than assumed static.
  * @param {string} params.leafNodeId The tree node the first tool-call round (if any) should attach
  *   after - the assistant-reply anchor already resolved for this request.
  * @param {any} params.initialJson The backend's first response body (already parsed JSON).
  * @param {(messages: object[]) => Promise<import('node-fetch').Response>} params.refetch Re-issues
  *   the backend request with a freshly-resolved `messages` array, everything else unchanged.
- * @returns {Promise<{ok: true, json: any, leafNodeId: string}|{ok: false, status: number, message: string}>}
+ * @returns {Promise<
+ *   {ok: true, json: any, leafNodeId: string} |
+ *   {ok: false, status: number, message: string} |
+ *   {ok: 'pending', pendingToolCalls: {node_id: string, tool_call_id: string, name: string, arguments: object}[], leafNodeId: string}
+ * >}
  */
-async function runServerToolRounds({ directories, ownerId, characterAvatar, groupId, enabledTools, leafNodeId, initialJson, refetch }) {
+async function runServerToolRounds({ directories, ownerId, characterAvatar, groupId, enabledTools, clientToolNames, clientToolSchemas, leafNodeId, initialJson, refetch }) {
     const toolsByName = new Map(enabledTools.map(tool => [tool.name, tool]));
     let json = initialJson;
     let currentLeafId = leafNodeId;
@@ -2935,21 +3020,34 @@ async function runServerToolRounds({ directories, ownerId, characterAvatar, grou
             return { ok: true, json, leafNodeId: currentLeafId };
         }
 
-        const unknownCall = toolCalls.find(toolCall => !toolsByName.has(toolCall?.function?.name));
+        const unknownCall = toolCalls.find(toolCall => {
+            const name = toolCall?.function?.name;
+            return !toolsByName.has(name) && !clientToolNames.has(name);
+        });
         if (unknownCall) {
             return {
                 ok: false,
                 status: 422,
-                message: `The backend called a tool named "${unknownCall?.function?.name}" that is not a registered server-native tool. Client-only tools are not yet supported on this route (chunk (c) - out of scope here); only tools registered via registerServerTool() can be advertised/executed for a raw-action request.`,
+                message: `The backend called a tool named "${unknownCall?.function?.name}" that is neither a registered server-native tool nor one of the tools this request's own "client_tools" advertised. Only tools registered via registerServerTool() or listed in "client_tools" can be advertised/executed for a raw-action request.`,
             };
         }
 
         const invocations = [];
+        const pendingToolCalls = [];
         for (const toolCall of toolCalls) {
-            const tool = toolsByName.get(toolCall.function.name);
+            const name = toolCall.function.name;
             const rawArguments = toolCall.function.arguments;
             const args = parseServerToolArguments(rawArguments);
             const parameters = typeof rawArguments === 'string' ? rawArguments : JSON.stringify(args);
+            const tool = toolsByName.get(name);
+
+            if (!tool) {
+                // Client-only (chunk (c)) - see this function's own doc comment, steps 3/5. Left
+                // unresolved (`result: null`) until the client's `type: 'tool_result'` follow-up.
+                invocations.push({ id: toolCall.id, name, parameters, result: null, error: null });
+                pendingToolCalls.push({ tool_call_id: toolCall.id, name, arguments: args });
+                continue;
+            }
 
             let result;
             let isError = false;
@@ -2975,18 +3073,31 @@ async function runServerToolRounds({ directories, ownerId, characterAvatar, grou
             },
         ]);
         if (!appendResult.ok || !appendResult.node_ids?.length) {
-            console.error('Failed to persist server tool invocation turn onto the tree:', appendResult.reason);
+            console.error('Failed to persist tool invocation turn onto the tree:', appendResult.reason);
             return { ok: false, status: 500, message: 'Failed to persist the tool invocation results onto the chat.' };
         }
         currentLeafId = appendResult.node_ids[appendResult.node_ids.length - 1];
+
+        if (pendingToolCalls.length > 0) {
+            // See this function's own doc comment, step 5 - stop here, hand off to the client. The
+            // `node_id` on each pending entry is the freshly-resolved `currentLeafId` (fixed up below
+            // since it was computed above using the PRE-append `currentLeafId`).
+            return {
+                ok: 'pending',
+                pendingToolCalls: pendingToolCalls.map(call => ({ ...call, node_id: currentLeafId })),
+                leafNodeId: currentLeafId,
+            };
+        }
 
         // Re-resolve the FULL prompt fresh from the tree (never hand-patch the previous messages
         // array) - see this function's own doc comment, step 5. `type: 'normal'`/no new user
         // message/no continue-or-swipe: a follow-up round never introduces a new user turn and
         // continue/swipe only ever apply to the FIRST round's own final reply (see the route
         // handler's own comment on `pendingAssistantPersist.anchorNodeId` for that interaction).
+        // `clientToolSchemas` is forwarded again so a LATER round can still detect/hand off a further
+        // client-only call (see this function's own `clientToolSchemas` param doc comment).
         const rebuilt = await buildRawActionChatCompletionRequest(directories, {
-            characterAvatar, groupId, ownerId, nodeId: currentLeafId, type: 'normal',
+            characterAvatar, groupId, ownerId, nodeId: currentLeafId, type: 'normal', clientToolSchemas,
         });
 
         const fetchResponse = await refetch(rebuilt.params.messages);
@@ -3006,6 +3117,90 @@ async function runServerToolRounds({ directories, ownerId, characterAvatar, grou
         status: 500,
         message: `Exceeded the maximum of ${SERVER_TOOL_ROUND_LIMIT} server tool-call rounds without receiving a final plain-text reply from the backend.`,
     };
+}
+
+/**
+ * Chunk (c), wire step 3: resolves a client's `type: 'tool_result'` follow-up request - the client
+ * submitting the result(s) of the tool call(s) `runServerToolRounds()` (above) had to hand off to it
+ * via `pending_tool_calls`, addressing the exact tree node that hand-off already persisted.
+ *
+ * Reuses the SAME `node_id`-required addressing model as every other raw-action request on this route
+ * (`buildRawActionChatCompletionRequest()`'s own ADDRESSING MODEL doc comment) - `nodeId` here is
+ * resolved via `getAncestorPath()`, the identical helper this file already uses to verify a given
+ * `node_id` (see that function's Step 2) - NOT `loadAtNode()` (which descends to the branch's current
+ * LEAF, the wrong node whenever a later message already exists under this one; `getAncestorPath()`
+ * resolves the exact node addressed, no more, no less, matching the read this route already performs
+ * for every non-`tool_result` raw-action request).
+ *
+ * Persistence is an IN-PLACE EDIT via `editMessage()` (src/message-tree-db.js), NOT a new appended
+ * node - identical pattern to `persistAssistantReply()`'s own `isContinue` branch
+ * (../../assistant-reply-persist.js): `editMessage()` replaces the WHOLE stored content object, so the
+ * full, current node content (read back via `getAncestorPath()`'s own last entry - the same technique
+ * `buildRawActionChatCompletionRequest()` already uses to read `anchorContent`) is spread and only
+ * `extra.tool_invocations` is touched, exactly mirroring `{...anchorContent, mes: oldText +
+ * generatedText}` there.
+ *
+ * Only the invocations still `result === null` (chunk (b)/(c)'s "in-flight" marker - see
+ * `runServerToolRounds()`'s own doc comment, step 3) are eligible to be filled in; an already-resolved
+ * invocation's `id` appearing again in `toolResults` is left untouched (a resubmission is not treated
+ * as a correction). ALL still-pending invocations on the node must be resolved by this one call - a
+ * partial submission (leaving some `result === null`) is refused with a 400 rather than silently
+ * resuming the tool-calling loop with a node that still has an unresolved invocation on it (which
+ * would either crash or silently mis-serialize once replayed into the backend's own tool-result
+ * message format, see `chat-completion-history.js`'s own `invocation.result || '[No content]'`
+ * fallback - a real but confusing degradation this function chooses to refuse up front instead).
+ * @param {import('../../users.js').UserDirectoryList} directories
+ * @param {string} ownerId
+ * @param {string} nodeId The pending tool-call node's own id (the `node_id` the client received on
+ *   each `pending_tool_calls` entry for this round).
+ * @param {any[]} toolResults Client-supplied `[{id, result, error}, ...]` - `id` is the tool call id
+ *   (`pending_tool_calls[].tool_call_id`), `result` is coerced to a string, `error` to a boolean.
+ * @returns {Promise<{ok: true}|{ok: false, status: number, message: string}>}
+ */
+async function resolvePendingToolResults(directories, ownerId, nodeId, toolResults) {
+    const ancestorPath = await getAncestorPath(directories, nodeId);
+    if (!ancestorPath || ancestorPath.length === 0) {
+        return { ok: false, status: 400, message: `Chat node not found: ${nodeId}` };
+    }
+    const nodeContent = ancestorPath[ancestorPath.length - 1];
+    if (!nodeContent || nodeContent.node_id !== nodeId) {
+        return { ok: false, status: 400, message: `Chat node not found: ${nodeId}` };
+    }
+
+    const invocations = nodeContent.extra?.tool_invocations;
+    if (!Array.isArray(invocations) || invocations.length === 0) {
+        return { ok: false, status: 400, message: `Chat node "${nodeId}" has no pending tool invocations to resolve.` };
+    }
+
+    const invocationsById = new Map(invocations.map(invocation => [invocation.id, invocation]));
+    const unknownIds = [];
+    for (const entry of (Array.isArray(toolResults) ? toolResults : [])) {
+        const id = entry?.id;
+        const invocation = typeof id === 'string' ? invocationsById.get(id) : undefined;
+        if (!invocation || invocation.result !== null) {
+            // Unknown id, or an already-resolved invocation being resubmitted - see this function's
+            // own doc comment for why a resubmission is silently ignored rather than re-applied.
+            if (!invocation) unknownIds.push(id);
+            continue;
+        }
+        invocation.result = typeof entry.result === 'string' ? entry.result : JSON.stringify(entry.result ?? '');
+        invocation.error = Boolean(entry.error);
+    }
+
+    if (unknownIds.length > 0) {
+        return { ok: false, status: 400, message: `tool_results referenced unknown tool_call id(s) on node "${nodeId}": ${unknownIds.join(', ')}` };
+    }
+    const stillPending = invocations.filter(invocation => invocation.result === null);
+    if (stillPending.length > 0) {
+        return { ok: false, status: 400, message: `Not all pending tool calls on node "${nodeId}" were resolved by this request: ${stillPending.map(invocation => invocation.id).join(', ')}` };
+    }
+
+    const editResult = await editMessage(directories, ownerId, nodeId, { ...nodeContent, extra: { ...nodeContent.extra, tool_invocations: invocations } });
+    if (!editResult.ok) {
+        console.error('Failed to persist tool_result onto the tree:', editResult.reason);
+        return { ok: false, status: 500, message: 'Failed to persist the submitted tool result onto the chat.' };
+    }
+    return { ok: true };
 }
 
 router.post('/generate', async function (request, response) {
@@ -3148,6 +3343,12 @@ router.post('/generate', async function (request, response) {
                 character_avatar: characterAvatar, group_id: groupId, owner_id: ownerId,
                 node_id: nodeId, type = 'normal',
                 user_message: userMessageText,
+                // Chunk (c): `client_tools` (the client's own advertised `ToolManager` tools, see
+                // `buildRawActionChatCompletionRequest()`'s own `clientToolSchemas` doc comment) and
+                // `tool_results` (only meaningful for `type === 'tool_result'`, see the `isToolResult`
+                // branch below).
+                client_tools: clientToolSchemas,
+                tool_results: toolResults,
             } = request.body;
             // Server-validated (NOT trusted verbatim) - identical rationale/allowlist to
             // text-completions.js's own raw-action branch (see `sanitizeUserMessageExtra()`'s own doc
@@ -3155,22 +3356,53 @@ router.post('/generate', async function (request, response) {
             // attachment it already uploaded (public/scripts/chats.js's `populateFileAttachment()`),
             // never bytes.
             const userMessageExtra = sanitizeUserMessageExtra(request.body.user_message_extra);
+
+            const directories = request.user.directories;
+
+            // Chunk (c), wire step 3: `type: 'tool_result'` is NOT one of the "generation types" this
+            // route otherwise dispatches on (normal/impersonate/continue/swipe/regenerate/quiet) - it
+            // never adds a new user message, is never an impersonate/continue/swipe of anything, and
+            // its OWN node_id already exists (it's the pending tool-call node the previous response
+            // handed off - see `resolvePendingToolResults()` above). Resolve+persist the submitted
+            // results FIRST (an in-place edit of that exact node, per `resolvePendingToolResults()`'s
+            // own doc comment), THEN fall through into the exact same "resolve the full request fresh
+            // from the tree and dispatch to the backend" code below, treated as a plain `type:
+            // 'normal'` continuation from that now-fully-resolved node - reusing
+            // `buildRawActionChatCompletionRequest()`/the dispatch/`runServerToolRounds()` machinery
+            // wholesale instead of duplicating any of it.
+            const isToolResult = type === 'tool_result';
+            if (isToolResult) {
+                if (typeof nodeId !== 'string' || !nodeId) {
+                    return response.status(400).send({ error: true, message: 'node_id is required for type: "tool_result" (the pending tool-call node being resolved).' });
+                }
+                if (!Array.isArray(toolResults) || toolResults.length === 0) {
+                    return response.status(400).send({ error: true, message: 'tool_results must be a non-empty array for type: "tool_result".' });
+                }
+                const resolved = await resolvePendingToolResults(directories, ownerId, nodeId, toolResults);
+                if (!resolved.ok) {
+                    return response.status(resolved.status).send({ error: true, message: resolved.message });
+                }
+            }
+
             // is_impersonate/is_continue/is_swipe are NOT read from the wire - see the identical
             // derivation and rationale in text-completions.js's own raw-action branch. Each is 100%
             // derivable from `type` alone; sending them as separate fields was a redundant classification
-            // duplicating a fact already sent once.
+            // duplicating a fact already sent once. `type: 'tool_result'` is none of these (see above).
             const isImpersonate = type === 'impersonate';
             const isContinue = type === 'continue';
             const isSwipe = type === 'swipe' || type === 'regenerate';
-
-            const directories = request.user.directories;
 
             /** @type {Awaited<ReturnType<typeof buildRawActionChatCompletionRequest>>} */
             let built;
             try {
                 built = await buildRawActionChatCompletionRequest(directories, {
                     characterAvatar, groupId, ownerId, nodeId,
-                    type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra,
+                    // `type: 'normal'`/no new user message for the `tool_result` case - see the
+                    // `isToolResult` comment above.
+                    type: isToolResult ? 'normal' : type, isImpersonate, isContinue, isSwipe,
+                    userMessageText: isToolResult ? undefined : userMessageText,
+                    userMessageExtra: isToolResult ? undefined : userMessageExtra,
+                    clientToolSchemas,
                 });
             } catch (error) {
                 console.error('Failed to build raw-action chat completion request:', error);
@@ -3203,9 +3435,13 @@ router.post('/generate', async function (request, response) {
             // this block - the just-appended user message's node when one was appended, otherwise
             // `built.anchorNodeId` unchanged (continue/swipe/regenerate, which add no new message - a
             // swipe/regenerate REPLACES the anchor with a sibling instead, see below).
+            // `isToolResult` never has a new user message to append (see the `isToolResult` comment
+            // above) - `built.anchorNodeId` for that case is just `nodeId` itself (the pending
+            // tool-call node, already resolved+edited above), which is exactly the node the eventual
+            // reply should attach after.
             const skipPersistence = isImpersonate || type === 'quiet';
             let replyAnchorNodeId = built.anchorNodeId;
-            if (!skipPersistence && typeof userMessageText === 'string' && built.anchorNodeId) {
+            if (!isToolResult && !skipPersistence && typeof userMessageText === 'string' && built.anchorNodeId) {
                 const appendResult = await appendMessages(directories, ownerId, built.anchorNodeId, [
                     { name: built.name1, is_user: true, mes: userMessageText, extra: userMessageExtra, send_date: Date.now() },
                 ]);
@@ -3251,14 +3487,23 @@ router.post('/generate', async function (request, response) {
                     isSwipe, isContinue, anchorContent: built.anchorContent,
                 };
                 // Only wired up when this request actually advertised at least one server-native
-                // tool (see `built.enabledServerTools`/`buildRawActionChatCompletionRequest()`'s own
+                // tool OR at least one client-advertised tool (chunk (c) - see `built.enabledServerTools`/
+                // `built.enabledClientToolNames`/`buildRawActionChatCompletionRequest()`'s own
                 // `toolsPayload` doc comment) - gated on the exact same conditions as
                 // `pendingAssistantPersist` above, since the tool-call loop only ever runs as a
                 // precursor to persisting a real final reply (never for impersonate/quiet, and never
                 // for the continue/user-text-conflict edge case, which skips assistant persistence
-                // entirely).
-                if (built.enabledServerTools.length > 0) {
-                    pendingServerToolLoop = { directories, ownerId, characterAvatar, groupId, enabledTools: built.enabledServerTools };
+                // entirely). A pure client-tools-only request (no server tool registered at all) still
+                // needs this wired up - otherwise a backend response calling one of those client tools
+                // would fall through to the "no pending tool loop" path below and be mishandled as a
+                // plain reply.
+                if (built.enabledServerTools.length > 0 || built.enabledClientToolNames.size > 0) {
+                    pendingServerToolLoop = {
+                        directories, ownerId, characterAvatar, groupId,
+                        enabledTools: built.enabledServerTools,
+                        clientToolNames: built.enabledClientToolNames,
+                        clientToolSchemas,
+                    };
                 }
             }
 
@@ -3735,16 +3980,16 @@ router.post('/generate', async function (request, response) {
             let json = await fetchResponse.json();
             console.debug('Chat Completion response:', json);
 
-            // Server-native tool-calling loop (chunk (b)) - ONLY when this raw-action request
-            // actually advertised at least one server tool (`pendingServerToolLoop` set - see its own
-            // declaration comment near the top of this route) AND the backend's first response
-            // already came back with real `tool_calls`. A request with no registered server tools
-            // never set `pendingServerToolLoop`, so `json`/the response-handling below is completely
-            // unaffected - byte-for-byte the same as before this chunk landed. See
+            // Server-native (chunk (b)) AND client-proxy (chunk (c)) tool-calling loop - ONLY when
+            // this raw-action request actually advertised at least one server tool OR client-advertised
+            // tool (`pendingServerToolLoop` set - see its own declaration comment near the top of this
+            // route) AND the backend's first response already came back with real `tool_calls`. A
+            // request with neither never set `pendingServerToolLoop`, so `json`/the response-handling
+            // below is completely unaffected - byte-for-byte the same as before chunk (b) landed. See
             // `runServerToolRounds()`'s own doc comment for the full per-round behavior (execute ->
             // persist -> re-resolve -> re-fetch, bounded by `SERVER_TOOL_ROUND_LIMIT`) and its
-            // documented "unrecognized tool name" failure mode (client-only tools are out of scope for
-            // this chunk - see that function's own doc comment, step 2).
+            // documented "unrecognized tool name" failure mode (still a 422 - now only for a name that
+            // matches NEITHER the server registry NOR this request's own `client_tools`).
             if (pendingServerToolLoop && Array.isArray(json?.choices?.[0]?.message?.tool_calls) && json.choices[0].message.tool_calls.length > 0) {
                 const roundResult = await runServerToolRounds({
                     ...pendingServerToolLoop,
@@ -3752,6 +3997,13 @@ router.post('/generate', async function (request, response) {
                     initialJson: json,
                     refetch: (messages) => fetch(endpointUrl, { ...config, body: JSON.stringify({ ...requestBody, messages }) }),
                 });
+                // Chunk (c): a client-only tool call was hit - hand off to the client instead of
+                // trying to resolve it here. This response shape is DISTINCT from a normal generation
+                // result (see `runServerToolRounds()`'s own doc comment, step 5) - nothing below this
+                // (persistence of a "final reply") applies, since there isn't one yet.
+                if (roundResult.ok === 'pending') {
+                    return response.send({ pending_tool_calls: roundResult.pendingToolCalls });
+                }
                 if (!roundResult.ok) {
                     return response.status(roundResult.status).send({ error: true, message: roundResult.message });
                 }

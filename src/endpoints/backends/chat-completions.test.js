@@ -2614,6 +2614,382 @@ async function run() {
         assert.ok(branchAfter.messages.length > messageCountBefore + 1, 'the tool-call turns persisted up to the limit remain on the tree even though the request errored');
     }
 
+    // --- client-proxy tool calling (chunk (c): client_tools / pending_tool_calls / type:
+    // 'tool_result') --- a "client-only" tool below just means a name advertised via `client_tools`
+    // on the request that is NOT registered via registerServerTool() - exactly what a real browser
+    // ToolManager tool looks like from this route's point of view.
+
+    // (f) Backend calls a tool that's ONLY in `client_tools` (no server registration at all): the
+    // route must hand off via `pending_tool_calls`, not 422, and must persist an in-flight
+    // (`result: null`) invocation node.
+    {
+        const toolBranch = 'tool-branch-client-only-pending';
+        await saveChatToTree(directories, ownerId, toolBranch, [
+            { chat_metadata: {} },
+            { name: 'Tester', is_user: true, mes: 'Hi Rex, client-only-pending branch.', send_date: 1, extra: {} },
+            { name: 'Rex', is_user: false, mes: 'Hello there, client-only-pending branch!', send_date: 2, extra: {} },
+        ]);
+        const branchBefore = await loadBranch(directories, ownerId, toolBranch);
+        const messageCountBefore = branchBefore.messages.length;
+
+        const clientTools = [{
+            type: 'function',
+            function: { name: 'open_curtains', description: 'Opens the curtains in the room (client-only, DOM access).', parameters: { type: 'object', properties: {} } },
+        }];
+
+        let callCount = 0;
+        const fakeBackend = await startFakeBackend((_req, res) => {
+            callCount++;
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+                choices: [{
+                    message: {
+                        role: 'assistant', content: null,
+                        tool_calls: [{ id: 'call_curtains', type: 'function', function: { name: 'open_curtains', arguments: JSON.stringify({ side: 'left' }) } }],
+                    },
+                }],
+            }));
+        });
+        pointBackendAtWithToolsEnabled(fakeBackend.url);
+
+        const app = buildTestApp();
+        let status, data;
+        try {
+            ({ status, data } = await postGenerate(app, {
+                owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+                type: 'normal', user_message: 'Open the curtains.', stream: false,
+                client_tools: clientTools,
+            }));
+        } finally {
+            fakeBackend.server.close();
+        }
+
+        assert.equal(callCount, 1, 'the backend is called exactly once - the client-only call is handed off, not looped on server-side');
+        assert.equal(status, 200, 'a client-tool hand-off is a normal 200, not an error');
+        assert.equal(data.error, undefined);
+        assert.ok(Array.isArray(data.pending_tool_calls), 'the distinct pending_tool_calls response shape is used instead of a normal generation result');
+        assert.equal(data.pending_tool_calls.length, 1);
+        assert.equal(data.pending_tool_calls[0].tool_call_id, 'call_curtains');
+        assert.equal(data.pending_tool_calls[0].name, 'open_curtains');
+        assert.deepEqual(data.pending_tool_calls[0].arguments, { side: 'left' }, 'arguments are the parsed object, not a JSON string');
+        assert.ok(typeof data.pending_tool_calls[0].node_id === 'string' && data.pending_tool_calls[0].node_id, 'a real node_id addressing the persisted tree node');
+
+        const branchAfter = await loadBranch(directories, ownerId, toolBranch);
+        assert.equal(branchAfter.messages.length, messageCountBefore + 2, 'user message + one in-flight tool-invocation node were persisted (no final reply yet)');
+        const toolMsg = branchAfter.messages[branchAfter.messages.length - 1];
+        assert.equal(toolMsg.node_id, data.pending_tool_calls[0].node_id, 'the response names the exact node that was persisted');
+        assert.ok(Array.isArray(toolMsg.extra?.tool_invocations));
+        assert.equal(toolMsg.extra.tool_invocations.length, 1);
+        assert.equal(toolMsg.extra.tool_invocations[0].id, 'call_curtains');
+        assert.equal(toolMsg.extra.tool_invocations[0].result, null, 'in-flight: not yet resolved by a tool_result follow-up');
+        assert.equal(toolMsg.extra.tool_invocations[0].error, null);
+    }
+
+    // (g) The type: 'tool_result' follow-up: resolves the exact pending node IN PLACE (no new node for
+    // the edit itself), then resumes the loop - the SECOND backend response (plain text) is persisted
+    // as a NEW node after the tool node.
+    {
+        const toolBranch = 'tool-branch-tool-result-followup';
+        await saveChatToTree(directories, ownerId, toolBranch, [
+            { chat_metadata: {} },
+            { name: 'Tester', is_user: true, mes: 'Hi Rex, tool-result-followup branch.', send_date: 1, extra: {} },
+            { name: 'Rex', is_user: false, mes: 'Hello there, tool-result-followup branch!', send_date: 2, extra: {} },
+        ]);
+        const branchBefore = await loadBranch(directories, ownerId, toolBranch);
+        const messageCountBefore = branchBefore.messages.length;
+
+        const clientTools = [{
+            type: 'function',
+            function: { name: 'get_local_time', description: 'Reads the local clock (client-only).', parameters: { type: 'object', properties: {} } },
+        }];
+
+        let callCount = 0;
+        const requestBodies = [];
+        const fakeBackend = await startFakeBackend((_req, res, body) => {
+            callCount++;
+            requestBodies.push(JSON.parse(body));
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            if (callCount === 1) {
+                res.end(JSON.stringify({
+                    choices: [{
+                        message: {
+                            role: 'assistant', content: null,
+                            tool_calls: [{ id: 'call_time', type: 'function', function: { name: 'get_local_time', arguments: '{}' } }],
+                        },
+                    }],
+                }));
+            } else {
+                res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'It is currently 3pm where you are.' } }] }));
+            }
+        });
+        pointBackendAtWithToolsEnabled(fakeBackend.url);
+
+        const app = buildTestApp();
+        const { status: status1, data: data1 } = await postGenerate(app, {
+            owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+            type: 'normal', user_message: 'What time is it?', stream: false,
+            client_tools: clientTools,
+        });
+        assert.equal(status1, 200);
+        assert.equal(data1.pending_tool_calls.length, 1);
+        const pendingNodeId = data1.pending_tool_calls[0].node_id;
+
+        const midBranch = await loadBranch(directories, ownerId, toolBranch);
+        assert.equal(midBranch.messages.length, messageCountBefore + 2, 'user message + in-flight tool node, no final reply yet');
+
+        let status2, data2;
+        try {
+            ({ status: status2, data: data2 } = await postGenerate(app, {
+                owner_id: ownerId, character_avatar: avatar, node_id: pendingNodeId, type: 'tool_result',
+                tool_results: [{ id: 'call_time', result: '15:00', error: false }],
+                client_tools: clientTools,
+            }));
+        } finally {
+            fakeBackend.server.close();
+        }
+
+        assert.equal(callCount, 2, 'the loop resumed and called the backend again after the result was submitted');
+        assert.equal(status2, 200);
+        assert.deepEqual(data2, { choices: [{ message: { role: 'assistant', content: 'It is currently 3pm where you are.' } }] });
+
+        // The SECOND backend request's own history must carry the real, submitted result - proving
+        // the loop really re-resolved the tree, not just that two requests happened.
+        const secondRequestDump = JSON.stringify(requestBodies[1].messages);
+        assert.ok(secondRequestDump.includes('get_local_time'), 'second request history includes the tool call by name');
+        assert.ok(secondRequestDump.includes('15:00'), 'second request history includes the submitted result text');
+
+        const branchAfter = await loadBranch(directories, ownerId, toolBranch);
+        assert.equal(branchAfter.messages.length, messageCountBefore + 3, 'exactly ONE new node was added by the tool_result follow-up (the final reply) - the pending node was edited in place, not duplicated');
+        const [, toolMsg, finalMsg] = branchAfter.messages.slice(-3);
+        assert.equal(toolMsg.node_id, pendingNodeId, 'the SAME node id - editMessage() edited it in place rather than appending a new one');
+        assert.equal(toolMsg.extra.tool_invocations[0].result, '15:00', 'the pending invocation was filled in with the real submitted result');
+        assert.equal(toolMsg.extra.tool_invocations[0].error, false);
+        assert.equal(finalMsg.mes, 'It is currently 3pm where you are.');
+        assert.equal(finalMsg.is_user, false);
+    }
+
+    // (h) A mixed round: one server-native call and one client-only call in the SAME backend
+    // response. The server-native one executes immediately; the client-only one comes back via
+    // pending_tool_calls; both invocations persist on the SAME tree node (this task's chosen
+    // single-node-per-round shape - see runServerToolRounds()'s own doc comment for the rationale).
+    // The mixed node then round-trips correctly once the client's result is submitted.
+    {
+        const toolBranch = 'tool-branch-mixed-round';
+        await saveChatToTree(directories, ownerId, toolBranch, [
+            { chat_metadata: {} },
+            { name: 'Tester', is_user: true, mes: 'Hi Rex, mixed-round branch.', send_date: 1, extra: {} },
+            { name: 'Rex', is_user: false, mes: 'Hello there, mixed-round branch!', send_date: 2, extra: {} },
+        ]);
+        const branchBefore = await loadBranch(directories, ownerId, toolBranch);
+        const messageCountBefore = branchBefore.messages.length;
+
+        registerServerTool({
+            id: 'test-tool:server_side_lookup',
+            name: 'server_side_lookup',
+            description: 'A real server-native tool.',
+            parameters: { type: 'object', properties: {} },
+            invoke: async () => 'server-side result',
+        });
+        const clientTools = [{
+            type: 'function',
+            function: { name: 'client_side_prompt', description: 'A client-only tool (DOM access).', parameters: { type: 'object', properties: {} } },
+        }];
+
+        let callCount = 0;
+        const requestBodies = [];
+        const fakeBackend = await startFakeBackend((_req, res, body) => {
+            callCount++;
+            requestBodies.push(JSON.parse(body));
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            if (callCount === 1) {
+                res.end(JSON.stringify({
+                    choices: [{
+                        message: {
+                            role: 'assistant', content: null,
+                            tool_calls: [
+                                { id: 'call_server', type: 'function', function: { name: 'server_side_lookup', arguments: '{}' } },
+                                { id: 'call_client', type: 'function', function: { name: 'client_side_prompt', arguments: '{}' } },
+                            ],
+                        },
+                    }],
+                }));
+            } else {
+                res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'Combined both results, thanks.' } }] }));
+            }
+        });
+        pointBackendAtWithToolsEnabled(fakeBackend.url);
+
+        const app = buildTestApp();
+        let status1, data1, status2, data2;
+        try {
+            ({ status: status1, data: data1 } = await postGenerate(app, {
+                owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+                type: 'normal', user_message: 'Do both things.', stream: false,
+                client_tools: clientTools,
+            }));
+
+            assert.equal(callCount, 1, 'the backend is only called once before the client-only call needs a hand-off');
+            assert.equal(status1, 200);
+            assert.equal(data1.pending_tool_calls.length, 1, 'only the client-only call is surfaced - the server-native one already executed');
+            assert.equal(data1.pending_tool_calls[0].tool_call_id, 'call_client');
+            const pendingNodeId = data1.pending_tool_calls[0].node_id;
+
+            const midBranch = await loadBranch(directories, ownerId, toolBranch);
+            const midToolMsg = midBranch.messages[midBranch.messages.length - 1];
+            assert.equal(midToolMsg.node_id, pendingNodeId, 'single shared node for the whole mixed round');
+            assert.equal(midToolMsg.extra.tool_invocations.length, 2, 'both invocations (resolved server + pending client) live on the SAME node');
+            const serverInvocation = midToolMsg.extra.tool_invocations.find(i => i.id === 'call_server');
+            const clientInvocation = midToolMsg.extra.tool_invocations.find(i => i.id === 'call_client');
+            assert.equal(serverInvocation.result, 'server-side result', 'the server-native call already executed for real');
+            assert.equal(serverInvocation.error, false);
+            assert.equal(clientInvocation.result, null, 'the client-only call is still pending on this same node');
+
+            ({ status: status2, data: data2 } = await postGenerate(app, {
+                owner_id: ownerId, character_avatar: avatar, node_id: pendingNodeId, type: 'tool_result',
+                tool_results: [{ id: 'call_client', result: 'client-side result', error: false }],
+                client_tools: clientTools,
+            }));
+        } finally {
+            fakeBackend.server.close();
+            unregisterServerTool('test-tool:server_side_lookup');
+        }
+
+        assert.equal(callCount, 2, 'the loop resumed with a second real backend call once the mixed node was fully resolved');
+        assert.equal(status2, 200);
+        assert.deepEqual(data2, { choices: [{ message: { role: 'assistant', content: 'Combined both results, thanks.' } }] });
+
+        const branchAfter = await loadBranch(directories, ownerId, toolBranch);
+        assert.equal(branchAfter.messages.length, messageCountBefore + 3, 'user message + the ONE mixed tool node (edited in place, not duplicated) + the final reply');
+        const [, toolMsg, finalMsg] = branchAfter.messages.slice(-3);
+        assert.equal(toolMsg.extra.tool_invocations.length, 2);
+        assert.equal(toolMsg.extra.tool_invocations.find(i => i.id === 'call_client').result, 'client-side result', 'the pending client invocation was filled in by the follow-up');
+        assert.equal(toolMsg.extra.tool_invocations.find(i => i.id === 'call_server').result, 'server-side result', 'the already-resolved server invocation is untouched by the edit');
+        assert.equal(finalMsg.mes, 'Combined both results, thanks.');
+    }
+
+    // (i) A tool name matching NEITHER a server tool NOR a client-advertised tool: still a clean 422,
+    // unchanged from chunk (b) - even when `client_tools` was sent (naming a DIFFERENT tool).
+    {
+        const toolBranch = 'tool-branch-neither-known';
+        await saveChatToTree(directories, ownerId, toolBranch, [
+            { chat_metadata: {} },
+            { name: 'Tester', is_user: true, mes: 'Hi Rex, neither-known branch.', send_date: 1, extra: {} },
+            { name: 'Rex', is_user: false, mes: 'Hello there, neither-known branch!', send_date: 2, extra: {} },
+        ]);
+        const branchBefore = await loadBranch(directories, ownerId, toolBranch);
+        const messageCountBefore = branchBefore.messages.length;
+
+        const clientTools = [{
+            type: 'function',
+            function: { name: 'a_real_client_tool', description: 'A real, advertised client tool - just not the one the fake backend calls.', parameters: { type: 'object', properties: {} } },
+        }];
+
+        let callCount = 0;
+        const fakeBackend = await startFakeBackend((_req, res) => {
+            callCount++;
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+                choices: [{
+                    message: {
+                        role: 'assistant', content: null,
+                        tool_calls: [{ id: 'call_ghost', type: 'function', function: { name: 'completely_hallucinated_tool', arguments: '{}' } }],
+                    },
+                }],
+            }));
+        });
+        pointBackendAtWithToolsEnabled(fakeBackend.url);
+
+        const app = buildTestApp();
+        let status, data;
+        try {
+            ({ status, data } = await postGenerate(app, {
+                owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+                type: 'normal', user_message: 'Call something imaginary.', stream: false,
+                client_tools: clientTools,
+            }));
+        } finally {
+            fakeBackend.server.close();
+        }
+
+        assert.equal(callCount, 1, 'no second backend call - the round fails immediately');
+        assert.ok(status >= 400 && status < 600, `expected a real error status, got ${status}`);
+        assert.equal(data.error, true);
+        assert.ok(typeof data.message === 'string' && data.message.includes('completely_hallucinated_tool'), 'the error names the unrecognized tool');
+        assert.equal(data.pending_tool_calls, undefined, 'a genuinely unrecognized name is a real error, never a hand-off');
+
+        const branchAfter = await loadBranch(directories, ownerId, toolBranch);
+        assert.equal(branchAfter.messages.length, messageCountBefore + 1, 'only the user message was appended - no tool-call turn for a wholly-unrecognized round');
+    }
+
+    // (j) Name collision between a server tool and a client-advertised tool: server-native wins (this
+    // task's chosen policy - server tools are operator-configured, the client cannot be trusted to
+    // not accidentally collide) - the client's colliding schema is dropped, and calling that name
+    // invokes the SERVER tool for real rather than being treated as a client hand-off.
+    {
+        const toolBranch = 'tool-branch-name-collision';
+        await saveChatToTree(directories, ownerId, toolBranch, [
+            { chat_metadata: {} },
+            { name: 'Tester', is_user: true, mes: 'Hi Rex, name-collision branch.', send_date: 1, extra: {} },
+            { name: 'Rex', is_user: false, mes: 'Hello there, name-collision branch!', send_date: 2, extra: {} },
+        ]);
+        const branchBefore = await loadBranch(directories, ownerId, toolBranch);
+
+        let serverToolInvoked = false;
+        registerServerTool({
+            id: 'test-tool:shared_name',
+            name: 'shared_tool_name',
+            description: 'The REAL, operator-configured server tool.',
+            parameters: { type: 'object', properties: {} },
+            invoke: async () => { serverToolInvoked = true; return 'server tool won'; },
+        });
+        const clientTools = [{
+            type: 'function',
+            function: { name: 'shared_tool_name', description: 'An unprivileged client tool trying to shadow the server one.', parameters: { type: 'object', properties: {} } },
+        }];
+
+        let callCount = 0;
+        const requestBodies = [];
+        const fakeBackend = await startFakeBackend((_req, res, body) => {
+            callCount++;
+            requestBodies.push(JSON.parse(body));
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            if (callCount === 1) {
+                res.end(JSON.stringify({
+                    choices: [{
+                        message: {
+                            role: 'assistant', content: null,
+                            tool_calls: [{ id: 'call_shared', type: 'function', function: { name: 'shared_tool_name', arguments: '{}' } }],
+                        },
+                    }],
+                }));
+            } else {
+                res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'Done.' } }] }));
+            }
+        });
+        pointBackendAtWithToolsEnabled(fakeBackend.url);
+
+        const app = buildTestApp();
+        let status, data;
+        try {
+            ({ status, data } = await postGenerate(app, {
+                owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+                type: 'normal', user_message: 'Trigger the shared name.', stream: false,
+                client_tools: clientTools,
+            }));
+        } finally {
+            fakeBackend.server.close();
+            unregisterServerTool('test-tool:shared_name');
+        }
+
+        assert.equal(requestBodies[0].tools.length, 1, 'only ONE tool named shared_tool_name is ever advertised - the colliding client schema was dropped, not sent twice');
+        assert.equal(requestBodies[0].tools[0].function.description, 'The REAL, operator-configured server tool.', 'the SERVER tool\'s schema won the collision, not the client\'s');
+        assert.equal(callCount, 2, 'the call resolved server-side (a second backend call happened), it was never treated as a client hand-off');
+        assert.equal(serverToolInvoked, true, 'the server-native tool actually executed for this name');
+        assert.equal(status, 200);
+        assert.deepEqual(data, { choices: [{ message: { role: 'assistant', content: 'Done.' } }] });
+        assert.equal(data.pending_tool_calls, undefined, 'never a hand-off for a name the server tool registry owns');
+    }
+
     console.log('chat-completions.test.js: all assertions passed');
 }
 
