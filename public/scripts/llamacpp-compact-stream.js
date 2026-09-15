@@ -238,3 +238,86 @@ export class CompactStreamDecoder {
         return out;
     }
 }
+
+/**
+ * Wraps a raw-action compact-stream fetch() Response's `body.getReader()` with automatic
+ * resume-on-drop, exposing the exact same `{done, value}` `read()` contract so an existing consumer
+ * loop (`while (true) { const {done, value} = await reader.read(); ... }`) needs no changes beyond
+ * constructing this instead of calling `response.body.getReader()` directly.
+ *
+ * The "sequence number" a reconnect needs is just the count of raw bytes already read from
+ * `response.body` - the server's generation buffer is indexed by that same byte offset (see
+ * src/endpoints/backends/llamacpp-compact-stream.js's module doc comment for the full design), so no
+ * wire-format change was needed to carry it.
+ *
+ * On a genuine drop (a network error from `reader.read()`, not the caller's own `AbortController`),
+ * this calls `GET <resumeUrlBase>/<generationId>?from=<bytesReceived>`, and - if that succeeds -
+ * keeps reading from its response body instead, transparently, so the SAME `CompactStreamDecoder`
+ * instance the caller is feeding continues mid-frame/mid-codepoint exactly as if nothing happened.
+ * If resume itself fails (expired/unknown generation buffer, server restarted, or the resume request
+ * also drops after exhausting `maxResumeAttempts`), the original read error is re-thrown so the
+ * caller's existing failure handling (today's "treat as a partial/failed generation" behavior) is
+ * unchanged.
+ */
+export class ResumableCompactStreamReader {
+    /**
+     * @param {Response} response The initial fetch() Response; its body starts being read immediately.
+     * @param {string} resumeUrlBase e.g. '/api/backends/text-completions/generate/resume' - the
+     * generation id and `?from=` offset are appended by this class.
+     * @param {() => Record<string, string>} [getRequestHeaders] Same auth/CSRF headers the original
+     * request used, re-sent on the resume GET. Omit if the resume endpoint needs none.
+     * @param {number} [maxResumeAttempts] Gives up (and re-throws the last read error) after this
+     * many consecutive successful-resume-but-dropped-again cycles, so a persistently bad connection
+     * can't loop forever.
+     */
+    constructor(response, resumeUrlBase, getRequestHeaders = null, maxResumeAttempts = 5) {
+        this.reader = response.body.getReader();
+        this.generationId = response.headers.get('X-Generation-Id');
+        this.resumeUrlBase = resumeUrlBase;
+        this.getRequestHeaders = getRequestHeaders;
+        this.maxResumeAttempts = maxResumeAttempts;
+        this.bytesReceived = 0;
+        this.resumeAttempts = 0;
+        this.gaveUp = false;
+    }
+
+    /** @returns {Promise<{done: boolean, value: Uint8Array | undefined}>} */
+    async read() {
+        for (; ;) {
+            try {
+                const result = await this.reader.read();
+                if (result.value) this.bytesReceived += result.value.length;
+                return result;
+            } catch (error) {
+                if (error?.name === 'AbortError' || !this.generationId || this.gaveUp) throw error;
+                if (this.resumeAttempts >= this.maxResumeAttempts) {
+                    this.gaveUp = true;
+                    throw error;
+                }
+                this.resumeAttempts++;
+                const resumed = await this.tryResume();
+                if (!resumed) {
+                    this.gaveUp = true;
+                    throw error;
+                }
+                // Loop back around and read from the newly-resumed reader.
+            }
+        }
+    }
+
+    /** @returns {Promise<boolean>} Whether the resume request succeeded and `this.reader` now reads its body. */
+    async tryResume() {
+        try {
+            const url = `${this.resumeUrlBase}/${encodeURIComponent(this.generationId)}?from=${this.bytesReceived}`;
+            const response = await fetch(url, {
+                method: 'GET',
+                headers: this.getRequestHeaders?.() ?? undefined,
+            });
+            if (!response.ok || !response.body) return false;
+            this.reader = response.body.getReader();
+            return true;
+        } catch (error) {
+            return false;
+        }
+    }
+}

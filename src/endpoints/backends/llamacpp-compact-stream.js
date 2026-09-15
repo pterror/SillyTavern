@@ -1,6 +1,7 @@
 import { Readable } from 'node:stream';
 import { StringDecoder } from 'node:string_decoder';
 import { randomUUID } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 
 import { forwardFetchResponse } from '../../util.js';
 import { persistAssistantReply } from '../../assistant-reply-persist.js';
@@ -40,6 +41,18 @@ import { persistAssistantReply } from '../../assistant-reply-persist.js';
  *                                                 `{error: {message}}`.
  *
  * Private contract with the bundled client; not a public/supported surface.
+ *
+ * RESUMABILITY: every raw-action generation is buffered server-side, keyed by its `X-Generation-Id`
+ * (see `createGenerationRecord()`/`withGenerationBuffer()` below), so a client that drops mid-stream
+ * can reconnect and ask for what it's missing. No new frame type or sequence-number field was added
+ * for this: the sequence number IS the raw byte offset into the compact-stream byte sequence the
+ * server already writes to the response, which the client already needs to count as it reads
+ * `response.body` chunks - a length-prefix/periodic-marker scheme would just be redundant with that.
+ * A reconnecting client calls `GET /generate/resume/:id?from=<bytesReceivedSoFar>`, which replays the
+ * exact buffered bytes from that offset (then keeps streaming live ones if the generation is still in
+ * flight) into the SAME decoder instance the dropped connection was feeding, so split multi-byte
+ * UTF-8 characters and control frames straddling the resume boundary decode correctly. See
+ * `streamGenerationResume()`.
  */
 export const FRAME_SENTINEL = 0xFF;
 export const FRAME_TYPE_INDEX = 0x01;
@@ -190,6 +203,183 @@ export function getLlamaCppStreamMeta(id) {
     return entry.data;
 }
 
+// Bounds how much of one generation's raw compact-stream bytes are kept around for a resume - once a
+// generation's buffered bytes exceed this, it's marked `truncated` and stops growing (the live stream
+// itself is completely unaffected; only the ability to resume past this point is lost). Mirrors
+// META_CACHE_MAX/META_TTL_MS's role above, for the same "don't buffer unboundedly" reason.
+const GENERATION_BUFFER_MAX_BYTES = 2 * 1024 * 1024;
+const GENERATION_CACHE_MAX = 50;
+const GENERATION_TTL_MS = 10 * 60 * 1000;
+
+/** One in-flight or recently-finished generation's buffered bytes, resumable by `id`. */
+class GenerationRecord extends EventEmitter {
+    constructor(id) {
+        super();
+        this.id = id;
+        /** @type {Buffer[]} */
+        this.chunks = [];
+        this.storedBytes = 0;
+        this.truncated = false;
+        this.finished = false;
+        this.storedAt = Date.now();
+    }
+
+    /** @param {Buffer} buf Exactly what was just written to the live response. */
+    append(buf) {
+        if (!buf || !buf.length) return;
+        this.storedAt = Date.now();
+        if (!this.truncated) {
+            if (this.storedBytes + buf.length > GENERATION_BUFFER_MAX_BYTES) {
+                this.truncated = true;
+            } else {
+                this.chunks.push(buf);
+                this.storedBytes += buf.length;
+            }
+        }
+        this.emit('data', buf);
+    }
+
+    finish() {
+        if (this.finished) return;
+        this.finished = true;
+        this.storedAt = Date.now();
+        this.emit('end');
+    }
+}
+
+/** @type {Map<string, GenerationRecord>} */
+const generationBuffers = new Map();
+
+function evictStaleGenerationRecords() {
+    const now = Date.now();
+    for (const [key, record] of generationBuffers) {
+        if (record.finished && now - record.storedAt > GENERATION_TTL_MS) {
+            generationBuffers.delete(key);
+        }
+    }
+    while (generationBuffers.size >= GENERATION_CACHE_MAX) {
+        const oldestKey = generationBuffers.keys().next().value;
+        if (oldestKey === undefined) break;
+        generationBuffers.delete(oldestKey);
+    }
+}
+
+/**
+ * Registers a new resumable generation buffer under `id` (the same id already sent as
+ * `X-Generation-Id`). Call once per raw-action stream, before the first byte is written.
+ * @param {string} id
+ * @returns {GenerationRecord}
+ */
+export function createGenerationRecord(id) {
+    evictStaleGenerationRecords();
+    const record = new GenerationRecord(id);
+    generationBuffers.set(id, record);
+    return record;
+}
+
+/** @returns {GenerationRecord | null} */
+export function getGenerationRecord(id) {
+    return generationBuffers.get(id) ?? null;
+}
+
+/**
+ * Wraps a writer (`createBackpressureWriter()`'s return value, or any `{write, end}` pair with that
+ * same contract) so every byte it actually writes is also appended to `record`, and `end()` also
+ * marks the generation finished. Purely additive - the wrapped writer's own behavior/timing toward
+ * `res` is completely unchanged.
+ * @param {{write: (buf: Buffer) => void, end: () => void}} writer
+ * @param {GenerationRecord} record
+ */
+export function withGenerationBuffer(writer, record) {
+    return {
+        write(/** @type {Buffer} */ buf) {
+            record.append(buf);
+            writer.write(buf);
+        },
+        end() {
+            record.finish();
+            writer.end();
+        },
+    };
+}
+
+/**
+ * Serves a resume request against `record`: replays whatever's buffered from byte offset `fromByte`
+ * onward, then - if the generation is still in flight - keeps forwarding new bytes live until it
+ * finishes, at which point it ends `writer` itself. The caller is responsible for ending `writer`
+ * only in the synchronous-completion case (`live: false`); for `live: true` it is ended for you.
+ * @param {GenerationRecord} record
+ * @param {number} fromByte
+ * @param {{write: (buf: Buffer) => void, end: () => void}} writer
+ * @returns {{ok: true, live: boolean, cancel?: () => void} | {ok: false, reason: string}}
+ */
+export function streamGenerationResume(record, fromByte, writer) {
+    if (!Number.isInteger(fromByte) || fromByte < 0 || fromByte > record.storedBytes) {
+        return { ok: false, reason: 'invalid_offset' };
+    }
+    if (record.truncated) {
+        // The buffer stopped growing before this generation finished - there is no way to guarantee
+        // a gap-free replay past the truncation point, so refuse the whole resume rather than risk
+        // silently dropping bytes. The client falls back to treating this as a failed generation.
+        return { ok: false, reason: 'buffer_truncated' };
+    }
+
+    let offset = 0;
+    for (const chunk of record.chunks) {
+        const chunkEnd = offset + chunk.length;
+        if (chunkEnd > fromByte) {
+            writer.write(chunk.subarray(Math.max(0, fromByte - offset)));
+        }
+        offset = chunkEnd;
+    }
+
+    if (record.finished) {
+        writer.end();
+        return { ok: true, live: false };
+    }
+
+    const onData = (/** @type {Buffer} */ buf) => writer.write(buf);
+    const onEnd = () => {
+        cancel();
+        writer.end();
+    };
+    function cancel() {
+        record.off('data', onData);
+        record.off('end', onEnd);
+    }
+    record.on('data', onData);
+    record.on('end', onEnd);
+
+    return { ok: true, live: true, cancel };
+}
+
+/**
+ * Express handler for `GET /generate/resume/:id?from=<byte offset>` - mounted identically by both
+ * text-completions.js and chat-completions.js's routers, since generation ids are unique regardless
+ * of which backend produced them (this module's `generationBuffers` map is shared process state).
+ * @param {import('express').Request} request
+ * @param {import('express').Response} response
+ */
+export function handleGenerationResume(request, response) {
+    const record = getGenerationRecord(request.params.id);
+    if (!record) {
+        return response.status(404).json({ error: 'unknown_generation' });
+    }
+
+    const fromByte = Number(request.query.from ?? 0);
+    const writer = createBackpressureWriter(response);
+    response.setHeader('X-ST-Stream-Format', 'compact-v1');
+
+    const result = streamGenerationResume(record, fromByte, writer);
+    if (!result.ok) {
+        return response.status(410).json({ error: result.reason });
+    }
+
+    if (result.live) {
+        response.socket?.once('close', () => result.cancel?.());
+    }
+}
+
 /** Coalesces writes while waiting for `drain` under backpressure. */
 export function createBackpressureWriter(res) {
     /** @type {Buffer[]} */
@@ -259,7 +449,7 @@ export async function pipeLlamaCppCompactStream(upstreamResponse, response, pers
         response.setHeader('X-ST-Stream-Format', 'compact-v1');
         response.setHeader('X-Generation-Id', id);
 
-        const writer = createBackpressureWriter(response);
+        const writer = withGenerationBuffer(createBackpressureWriter(response), createGenerationRecord(id));
         const decoder = new StringDecoder('utf8');
         let sseBuffer = '';
         let lastIndex = 0;

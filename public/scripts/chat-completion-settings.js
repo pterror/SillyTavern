@@ -46,7 +46,7 @@ import { forceCharacterEditorTokenize, getCustomStoppingStrings, persona_descrip
 import { SECRET_KEYS, secret_state, writeSecret } from './secrets.js';
 
 import { getEventSourceStream } from './sse-stream.js';
-import { CompactStreamDecoder } from './llamacpp-compact-stream.js';
+import { CompactStreamDecoder, ResumableCompactStreamReader } from './llamacpp-compact-stream.js';
 import {
     arraysEqual,
     clamp,
@@ -3223,7 +3223,10 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, ra
         // streaming path (non-raw-action, and the tool-calling forwardAndPersistCompactStreamWithServerTools()
         // round trips) never sets it and keeps going through the SSE-JSON branch below unchanged.
         if (response.headers.get('X-ST-Stream-Format') === 'compact-v1') {
-            const reader = response.body.getReader();
+            // Transparently resumes from the server's generation buffer on a real dropped connection
+            // instead of failing the generation outright - see ResumableCompactStreamReader's own
+            // doc comment. Falls back to today's throw-on-error behavior if resume itself fails.
+            const reader = new ResumableCompactStreamReader(response, '/api/backends/chat-completions/generate/resume', getRequestHeaders);
             return async function* streamData() {
                 const decoder = new CompactStreamDecoder();
                 let text = '';

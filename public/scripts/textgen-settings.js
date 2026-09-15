@@ -23,7 +23,7 @@ import { power_user, registerDebugFunction } from './power-user.js';
 import { getActiveManualApiSamplers, loadApiSelectedSamplers, isSamplerManualPriorityEnabled } from './samplerSelect.js';
 import { SECRET_KEYS, writeSecret } from './secrets.js';
 import { getEventSourceStream } from './sse-stream.js';
-import { CompactStreamDecoder } from './llamacpp-compact-stream.js';
+import { CompactStreamDecoder, ResumableCompactStreamReader } from './llamacpp-compact-stream.js';
 import { getCurrentDreamGenModelTokenizer, getCurrentOpenRouterModelTokenizer, loadAphroditeModels, loadDreamGenModels, loadFeatherlessModels, loadGenericModels, loadInfermaticAIModels, loadLlamaCppModels, loadMancerModels, loadOllamaModels, loadOpenRouterModels, loadTabbyModels, loadTogetherAIModels, loadVllmModels, updateOpenRouterProvidersWarning } from './textgen-models.js';
 import { ENCODE_TOKENIZERS, TEXTGEN_TOKENIZERS, TOKENIZER_SUPPORTED_KEY, getTextTokens, getTokenizerBestMatch, tokenizers } from './tokenizers.js';
 import { AbortReason } from './util/AbortReason.js';
@@ -1320,7 +1320,11 @@ export async function generateTextGenWithStreaming(generate_data, signal) {
     // llamacpp-compact-stream.js for the wire format itself.
     if (response.headers.get('X-ST-Stream-Format') === 'compact-v1') {
         return async function* streamData() {
-            const reader = response.body.getReader();
+            // Transparently resumes from the server's generation buffer on a real dropped
+            // connection (see ResumableCompactStreamReader's own doc comment) instead of failing the
+            // generation outright - falls back to today's throw-on-error behavior if resume itself
+            // doesn't work out.
+            const reader = new ResumableCompactStreamReader(response, '/api/backends/text-completions/generate/resume', getRequestHeaders);
             const decoder = new CompactStreamDecoder();
             let text = '';
             /** @type {import('./logprobs.js').TokenLogprobs | null} */
