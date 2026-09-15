@@ -5,7 +5,17 @@ import fetch from 'node-fetch';
 import express from 'express';
 
 import { readSecret, SECRET_KEYS } from './secrets.js';
-import { readAllChunks, extractFileFromZipBuffer, forwardFetchResponse } from '../util.js';
+import { readAllChunks, extractFileFromZipBuffer } from '../util.js';
+import { readSettingsAtPaths } from '../settings-store.js';
+import { encodeWithTokenizerType } from '../tokenizer-resolve.js';
+import { getTokenizerTypeForModel } from '../novel-generation-data.js';
+import { resolveTextCompletionGenerationInput } from '../text-completion-generation-input.js';
+import { assembleTextCompletionPrompt } from '../text-completion-prompt-orchestrator.js';
+import { loadBranch, getAncestorPath, appendMessages } from '../message-tree-db.js';
+import { readCardContent } from './characters.js';
+import { getGroupsByIds } from './groups.js';
+import { persistAssistantReply } from '../assistant-reply-persist.js';
+import { forwardAndPersistSseText } from './backends/text-completions.js';
 
 const API_NOVELAI = 'https://api.novelai.net';
 const TEXT_NOVELAI = 'https://text.novelai.net';
@@ -164,8 +174,173 @@ router.post('/status', async function (req, res) {
     }
 });
 
+/**
+ * Real, tested raw-action request builder for main_api === 'novel'. Directly mirrors
+ * src/endpoints/backends/text-completions.js's own `buildRawActionTextCompletionRequest()` (see
+ * `git show ac42ce8c9` for the original design) and src/endpoints/backends/kobold.js's own
+ * `buildRawActionKoboldRequest()` - same field names, same
+ * resolveTextCompletionGenerationInput()+assembleTextCompletionPrompt() pipeline, now dispatching to
+ * createNovelGenerationData() for real per text-completion-prompt-orchestrator.js's own Step 16
+ * update. No `resolveTextGenBackend()`/api_server concept here at all - NovelAI is always the same
+ * fixed API endpoint (`API_NOVELAI`/`TEXT_NOVELAI`, selected by model name, unchanged below), unlike
+ * Kobold's own connectable-server-URL model.
+ *
+ * `encodeTokensByType` (see text-completion-prompt-orchestrator.js's own doc comment on this exact
+ * parameter for the full "real, verified parameter-shape mismatch" rationale) is wired here to the
+ * REAL `getTokenizerTypeForModel()` + `encodeWithTokenizerType()` pair - `settings.model_novel`
+ * (read directly off `nai_settings` below, matching the model createNovelGenerationData() itself
+ * will use) decides which tokenizer id createNovelGenerationData() passes back into this function on
+ * each call, and this function then dispatches that SPECIFIC tokenizer type to the real encoder -
+ * exactly the shape createNovelGenerationData() needs, not the generic single-arg `encodeTokens`.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {object} params
+ * @param {import('express').Request} [params.request]
+ * @param {string} [params.characterAvatar]
+ * @param {string} [params.groupId]
+ * @param {string} params.ownerId
+ * @param {string} [params.branchName]
+ * @param {string} [params.nodeId]
+ * @param {string} [params.type]
+ * @param {boolean} [params.isImpersonate]
+ * @param {boolean} [params.isContinue]
+ * @param {boolean} [params.isSwipe]
+ * @param {string} [params.userMessageText]
+ * @returns {Promise<{ params: object, anchorNodeId: string|null, anchorContent: object|null, name1: string, name2: string }>}
+ */
+export async function buildRawActionNovelRequest(directories, {
+    request, characterAvatar, groupId, ownerId, branchName, nodeId,
+    type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText,
+    tokenizerOptions = {},
+} = {}) {
+    if (!ownerId) {
+        throw new Error('owner_id is required');
+    }
+    if (!characterAvatar && !groupId) {
+        throw new Error('character_avatar or group_id is required');
+    }
+    if (!branchName && !nodeId) {
+        throw new Error('branch_name or node_id is required');
+    }
+
+    if (characterAvatar) {
+        let raw;
+        try {
+            raw = await readCardContent(directories, characterAvatar);
+        } catch { /* treated as not-found below */ }
+        if (raw === undefined) {
+            throw new Error(`Character not found: ${characterAvatar}`);
+        }
+    }
+    if (groupId) {
+        const group = getGroupsByIds(directories, [groupId])[groupId];
+        if (!group) {
+            throw new Error(`Group not found: ${groupId}`);
+        }
+    }
+
+    let anchorNodeId = null;
+    if (branchName) {
+        const branch = await loadBranch(directories, ownerId, branchName);
+        if (!branch) {
+            throw new Error(`Chat branch not found: ${branchName}`);
+        }
+        anchorNodeId = branch.branch.leaf_id;
+    } else {
+        const ancestorPath = await getAncestorPath(directories, nodeId);
+        if (!ancestorPath) {
+            throw new Error(`Chat node not found: ${nodeId}`);
+        }
+        anchorNodeId = nodeId;
+    }
+
+    const { nai_settings: naiSettings = {} } = readSettingsAtPaths(directories, ['nai_settings']);
+    const modelNovel = naiSettings.model_novel ?? '';
+    const novelTokenizerType = getTokenizerTypeForModel(modelNovel);
+    // Generic single-arg encodeTokens (Step 1-15's own contract - see
+    // text-completion-prompt-orchestrator.js's plain `encodeTokens` doc comment) always uses the
+    // SAME real per-model tokenizer type NovelAI itself will use - a reasonable, real choice (not a
+    // guess) since this whole request is for that one fixed model either way.
+    const encodeTokens = (text) => encodeWithTokenizerType(novelTokenizerType, text, { request, ...tokenizerOptions });
+    const countTokens = async (text) => (await encodeTokens(text)).length;
+    // Real two-arg bridge for createNovelGenerationData()'s own EncodeTokensFn - see this function's
+    // own doc comment above.
+    const encodeTokensByType = (tokenizerType, text) => encodeWithTokenizerType(tokenizerType ?? novelTokenizerType, text, { request, ...tokenizerOptions });
+
+    const orchestratorInput = await resolveTextCompletionGenerationInput(directories, {
+        avatar: characterAvatar, groupId, mainApi: 'novel', ownerId, branchName, nodeId,
+        type, isImpersonate, isContinue, isSwipe, userMessageText,
+        countTokens, encodeTokens,
+        macroExtras: { encodeTokensByType },
+    });
+
+    if ((isContinue || isSwipe) && orchestratorInput.chat.length === 0) {
+        throw new Error('Cannot continue/swipe an empty chat.');
+    }
+
+    const assembled = await assembleTextCompletionPrompt(orchestratorInput);
+    const anchorContent = orchestratorInput.chat.length > 0 ? orchestratorInput.chat[orchestratorInput.chat.length - 1] : null;
+
+    return { params: assembled.generate_data, anchorNodeId, anchorContent, name1: orchestratorInput.name1, name2: orchestratorInput.name2 };
+}
+
 router.post('/generate', async function (req, res) {
     if (!req.body) return res.sendStatus(400);
+
+    // Real raw-action cutover - see buildRawActionNovelRequest() above and
+    // src/endpoints/backends/text-completions.js's/src/endpoints/backends/kobold.js's own
+    // identically-shaped branches for the full design precedent this mirrors.
+    let pendingAssistantPersist = null;
+    if (req.body.owner_id && (req.body.character_avatar || req.body.group_id)) {
+        const {
+            character_avatar: characterAvatar, group_id: groupId, owner_id: ownerId,
+            branch_name: branchName, node_id: nodeId, type = 'normal',
+            is_impersonate: isImpersonate = false, is_continue: isContinue = false, is_swipe: isSwipe = false,
+            user_message: userMessageText,
+        } = req.body;
+
+        const directories = req.user.directories;
+
+        let built;
+        try {
+            built = await buildRawActionNovelRequest(directories, {
+                request: req, characterAvatar, groupId, ownerId, branchName, nodeId,
+                type, isImpersonate, isContinue, isSwipe, userMessageText,
+            });
+        } catch (error) {
+            console.error('Failed to build raw-action NovelAI request:', error);
+            return res.status(400).send({ error: true, message: error?.message ?? 'Could not resolve this generation request' });
+        }
+
+        // Same three-mode persistence contract as text-completions.js's/kobold.js's own raw-action
+        // branches - see text-completions.js's own extensive comment on impersonate/quiet skipping,
+        // the swipe/regenerate sibling-vs-child distinction, and the continue/userMessageText
+        // tree-shape edge case. Not re-derived here; identical reasoning applies verbatim.
+        const skipPersistence = isImpersonate || type === 'quiet';
+        let replyAnchorNodeId = built.anchorNodeId;
+        if (!skipPersistence && typeof userMessageText === 'string' && built.anchorNodeId) {
+            const appendResult = await appendMessages(directories, ownerId, built.anchorNodeId, [
+                { name: built.name1, is_user: true, mes: userMessageText, extra: {}, send_date: Date.now() },
+            ]);
+            if (!appendResult.ok) {
+                console.error('Failed to persist user message onto the tree:', appendResult.reason);
+            } else if (appendResult.node_ids?.length) {
+                replyAnchorNodeId = appendResult.node_ids[appendResult.node_ids.length - 1];
+            }
+        }
+        const continueUserTextConflict = isContinue && replyAnchorNodeId !== built.anchorNodeId;
+        if (!skipPersistence && !continueUserTextConflict) {
+            pendingAssistantPersist = {
+                directories, ownerId, anchorNodeId: replyAnchorNodeId, name2: built.name2,
+                isSwipe, isContinue, anchorContent: built.anchorContent,
+            };
+        }
+
+        // Replace the body entirely - the existing dispatch code below (bad-words/logit-bias
+        // enrichment, `req.body.model`-keyed URL selection, streaming vs non-streaming) is completely
+        // unaware of which branch produced req.body, same as text-completions.js's/kobold.js's own
+        // pattern.
+        req.body = built.params;
+    }
 
     const api_key_novel = readSecret(req.user.directories, SECRET_KEYS.NOVEL);
 
@@ -271,8 +446,16 @@ router.post('/generate', async function (req, res) {
         const response = await fetch(url, { method: 'POST', ...args });
 
         if (req.body.streaming) {
-            // Pipe remote SSE stream to Express response
-            await forwardFetchResponse(response, res);
+            // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
+            // accumulate the real per-chunk generated text for raw-action persistence, exactly like
+            // text-completions.js's/kobold.js's own forwardAndPersistSseText() use. NovelAI's own SSE
+            // data payload shape is `{"token": "...", "logprobs": {...}}` (verified against
+            // generateNovelWithStreaming() in public/scripts/nai-settings.js: `if (data.token) { text
+            // += data.token; }` - `data.token` there is already DECODED text, not a raw token id,
+            // despite `parseNovelAILogprobs()`'s own unrelated "kept as raw token IDs" comment, which
+            // is about the SEPARATE `logprobs` field only). A no-op, byte-for-byte-identical
+            // pass-through whenever pendingAssistantPersist is null (every non-raw-action stream).
+            await forwardAndPersistSseText(response, res, pendingAssistantPersist, json => json?.token);
         } else {
             if (!response.ok) {
                 const text = await response.text();
@@ -292,6 +475,17 @@ router.post('/generate', async function (req, res) {
             /** @type {any} */
             const data = await response.json();
             console.info('NovelAI Output', data?.output);
+
+            // Persist the ASSISTANT's reply for the raw-action branch (see
+            // `pendingAssistantPersist`'s declaration above) - only reached for a real, successful
+            // (response.ok) NON-STREAMING generation. `/ai/generate`'s real response shape carries
+            // the generated text at `data.output` (verified against public/script.js's own
+            // `data.output` read of this exact endpoint).
+            if (pendingAssistantPersist) {
+                const generatedText = data?.output ?? '';
+                await persistAssistantReply(pendingAssistantPersist, generatedText);
+            }
+
             return res.send(data);
         }
     } catch (error) {

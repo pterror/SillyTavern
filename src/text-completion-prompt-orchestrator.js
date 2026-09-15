@@ -17,16 +17,31 @@ import { combineFinalPrompt } from './final-prompt-combination.js';
 import { getStoppingStrings } from './stopping-strings.js';
 import { getCustomTokenBans, calculateLogitBias } from './token-bans-and-bias.js';
 import { createTextGenGenerationData } from './textgen-generation-data.js';
+import { createKoboldGenerationData } from './kobold-generation-data.js';
+import { createNovelGenerationData } from './novel-generation-data.js';
 import { baseChatReplace } from './macro-substitution.js';
 import { formatInstructModeExamples } from './instruct-mode-examples.js';
 import { createExtensionPromptTable, setExtensionPrompt, getExtensionPrompt, doChatInject, extension_prompt_types } from './extension-prompt-table.js';
 
 /**
- * Server-side orchestrator that reproduces the TEXT-COMPLETION-ONLY prompt-assembly pipeline of
- * public/script.js's Generate() (main_api !== 'openai'), by wiring together the ~18 independently
- * ported/tested modules under src/ - each of those modules is a faithful, pure-computation port of
- * one stage of Generate(), and (before this file) none of them called each other. This is the
- * integration point.
+ * Server-side orchestrator that reproduces the TEXT-COMPLETION-FAMILY prompt-assembly pipeline of
+ * public/script.js's Generate() for `main_api` in `textgenerationwebui`/`kobold`/`novel`
+ * (`koboldhorde` is a separate, worker-routed main_api NOT handled by this orchestrator - see
+ * text-completion-generation-input.js's own doc comment for why), by wiring together the ~18
+ * independently ported/tested modules under src/ - each of those modules is a faithful,
+ * pure-computation port of one stage of Generate(), and (before this file) none of them called each
+ * other. This is the integration point.
+ *
+ * UPDATE (this task): Step 16 (the final generate_data wire payload) now dispatches on `mainApi`
+ * to createKoboldGenerationData() (src/kobold-generation-data.js) / createNovelGenerationData()
+ * (src/novel-generation-data.js) / createTextGenGenerationData() (src/textgen-generation-data.js),
+ * matching public/script.js's own `switch (main_api)` dispatch in Generate() exactly
+ * (`case 'kobold':`/`case 'novel':`/`case 'textgenerationwebui':`). Every OTHER step in this
+ * pipeline (1-15) was already `mainApi`-generic (assembleStoryString()/injectJailbreak()/
+ * combineFinalPrompt() etc. already take `mainApi`/`naiPreamble`/`chatStart` as real inputs and
+ * branch on them for real - see e.g. `force_name2`'s `mainApi === 'novel'` branch below) - Step 16
+ * was the only remaining hardcoded-to-textgenerationwebui piece, and is now the only step whose
+ * behavior differs by backend family.
  *
  * ============================================================================================
  * READ THIS BEFORE TRUSTING THE OUTPUT AS PRODUCTION-ACCURATE - remaining, DOCUMENTED gaps:
@@ -301,6 +316,24 @@ function parseMesExamplesBlocks(examplesStr, isInstruct, exampleSeparator = '') 
  *   May be async (e.g. src/tokenizer-resolve.js's encodeWithTokenizerType(), which can probe a
  *   remote backend) - both functions now await it, so a real async tokenizer can be wired in
  *   directly.
+ * @property {(tokenizerType: number, text: string) => number[] | Promise<number[]>} [encodeTokensByType]
+ *   REAL PARAMETER-SHAPE MISMATCH, DELIBERATELY BRIDGED (JUDGMENT CALL, flagged): createNovelGenerationData()'s
+ *   own `encodeTokens` param (src/novel-generation-data.js's `EncodeTokensFn`) is a DIFFERENT shape
+ *   from this orchestrator's own generic `encodeTokens` above - it takes a `tokenizerType` (a
+ *   `tokenizers` enum value, model-dependent - see getTokenizerTypeForModel()) as its FIRST argument,
+ *   not just `text`. Passing the plain single-arg `encodeTokens` straight through to
+ *   createNovelGenerationData() would silently misbind `tokenizerType` into that function's own
+ *   `text` parameter and drop the real text argument entirely - a real, verified bug this parameter
+ *   exists specifically to avoid, not a hypothetical one (caught by an over-shallow test assertion
+ *   during this task and fixed here, not left in). This orchestrator therefore calls
+ *   createNovelGenerationData() with `encodeTokensByType`, NOT the plain `encodeTokens`. Defaults to
+ *   `(tokenizerType, text) => encodeTokens(text)` (ignores `tokenizerType`, falls back to whatever
+ *   the plain `encodeTokens` already does) ONLY for backward-compatible callers that never supply a
+ *   real per-tokenizer-type encoder (e.g. existing tests) - this is an approximation, not a
+ *   correctness claim, and is irrelevant whenever `mainApi !== 'novel'` (nothing else calls this). A
+ *   real caller building a novel raw-action request (see src/endpoints/novelai.js's
+ *   buildRawActionNovelRequest()) supplies a real implementation via
+ *   `src/tokenizer-resolve.js`'s `encodeWithTokenizerType(tokenizerType, text, ...)`.
  * @property {number} [amountGen] Equivalent of `amount_gen` - max new tokens to request, forwarded
  *   to createTextGenGenerationData() as `maxTokens`.
  * @property {boolean} [requestTokenProbabilities] Equivalent of power_user.request_token_probabilities.
@@ -384,8 +417,43 @@ function parseMesExamplesBlocks(examplesStr, isInstruct, exampleSeparator = '') 
  * @property {import('./token-bans-and-bias.js').LogitBiasEntry[]} [logitBiasEntries]
  *
  * --- Final generation-data wire payload ---------------------------------------------------------------
- * @property {object} settings textgenerationwebui_settings-equivalent, forwarded to createTextGenGenerationData().
- * @property {string} [model] Already-resolved model name.
+ * @property {object} settings Backend-specific settings object matching `mainApi`
+ *   (textgenerationwebui_settings / kai_settings / nai_settings equivalent), forwarded to whichever
+ *   of createTextGenGenerationData()/createKoboldGenerationData()/createNovelGenerationData() Step
+ *   16 dispatches to.
+ * @property {string} [model] Already-resolved model name. Used by createTextGenGenerationData() and
+ *   (as `settings.model_novel`, already inside `settings` for the 'novel' case) createNovelGenerationData();
+ *   NOT used by createKoboldGenerationData() (Kobold has no per-request model selector - the
+ *   connected KoboldAI/KoboldCpp server itself decides what model is loaded).
+ *
+ * --- Backend-specific generation-data (kobold/novel dispatch only - see Step 16) -----------------------
+ * @property {import('./kobold-generation-data.js').KoboldGenerationFlags} [koboldFlags] Equivalent
+ *   of kai_flags - real values require a LIVE version-probe against the connected KoboldAI/KoboldCpp
+ *   server (public/scripts/kai-settings.js's checkStatusKobold(), via versionCompare() against the
+ *   probed version strings) - the SAME "don't trigger a live network call as a side effect of pure
+ *   settings resolution" concern already established for countTokens/encodeTokens (see
+ *   text-completion-generation-input.js's own doc comment). Defaults to all-`false` (the client's
+ *   own kai_flags module-level default before any status probe ever runs) - a caller with a real,
+ *   already-probed value should pass it explicitly via macroExtras. `isHorde` bypasses several of
+ *   these flags client-side, but this orchestrator's own `mainApi` is never 'koboldhorde' (see
+ *   text-completion-generation-input.js's doc comment for why), so `isHorde` below always defaults
+ *   `false` here too.
+ * @property {boolean} [isHorde] Equivalent of the client's `main_api === 'koboldhorde'` check inside
+ *   getKoboldGenerationData()'s call site. Always `false` by default - see `koboldFlags` above.
+ * @property {string} [apiServer] Equivalent of kai_settings.api_server, forwarded to
+ *   createKoboldGenerationData() verbatim (used only for koboldSettings' own `api_server` wire field,
+ *   NOT for actually dispatching the request - that remains the raw-action route's own job).
+ * @property {number} [novelDataTier] Equivalent of `novel_data?.tier` - the NovelAI account's own
+ *   subscription tier (1/2/3), used by createNovelGenerationData() to pick a max response length.
+ *   This is LIVE NovelAI-account data (from the `/api/novelai/status` subscription check), not a
+ *   settings.json field - left undefined unless a caller supplies it via macroExtras (the same
+ *   "external live data, caller resolves it" pattern as `worldInfoRandom`/`externalActivations`).
+ * @property {number[]} [presetOrder] Equivalent of createNovelGenerationData()'s own `presetOrder`
+ *   fallback param (a distinct preset-merge object's `.order`, used only when `settings.order` is
+ *   unset) - left undefined by default; `settings.order` (nai_settings.order) already covers the
+ *   common case.
+ * @property {boolean} [consoleLogPrompts] Equivalent of power_user.console_log_prompts, forwarded to
+ *   createNovelGenerationData() (logs the raw NovelAI prompt when true).
  */
 
 /**
@@ -405,7 +473,7 @@ export async function assembleTextCompletionPrompt(input) {
         alwaysForceName2 = false, forceName2Override,
         reasoningAddToPrompts = false, reasoningMaxAdditions = 999999, reasoningPrefix = '', reasoningSeparator = '', reasoningSuffix = '',
         regexScripts = [], regexExtensionEnabled = true,
-        tokenPadding = 0, countTokens, encodeTokens, amountGen = 0, requestTokenProbabilities = false,
+        tokenPadding = 0, countTokens, encodeTokens, encodeTokensByType, amountGen = 0, requestTokenProbabilities = false,
         chatGuidanceScale, groupchatIndividualChars = false, charaCfg, globalCfg, promptCombine = [], promptSeparator, promptInsertionDepth = 1, chatMetadataPrompts = {},
         worldInfoCandidates = [], worldInfoIncludeNames = false, worldInfoBudgetPercent = 25, worldInfoBudgetCap = 0,
         worldInfoDepth = 2, worldInfoRecursive = true, worldInfoMaxRecursionSteps = 0,
@@ -423,10 +491,18 @@ export async function assembleTextCompletionPrompt(input) {
         ephemeralStoppingStrings = [], groupMemberNames = [],
         bannedTokensRaw = '', globalBannedTokensRaw = '', sendBannedTokens = false, logitBiasEntries = [],
         settings = {}, model,
+        koboldFlags = {}, isHorde = false, apiServer, novelDataTier, presetOrder, consoleLogPrompts = false,
     } = input;
 
     if (typeof countTokens !== 'function') throw new Error('assembleTextCompletionPrompt: countTokens is required');
     if (typeof encodeTokens !== 'function') throw new Error('assembleTextCompletionPrompt: encodeTokens is required');
+    // See the `encodeTokensByType` JSDoc above for exactly why this bridge exists (a real, verified
+    // parameter-shape mismatch between this orchestrator's generic `encodeTokens` and
+    // createNovelGenerationData()'s own two-arg `EncodeTokensFn`) - only ever actually invoked for
+    // `mainApi === 'novel'`.
+    const resolvedEncodeTokensByType = typeof encodeTokensByType === 'function'
+        ? encodeTokensByType
+        : (_tokenizerType, text) => encodeTokens(text);
 
     // Shared side effect sink for the {{banned "..."}} macro, threaded through every substituteParams
     // call this orchestrator triggers (directly or via a downstream module), same as the client's
@@ -882,11 +958,30 @@ export async function assembleTextCompletionPrompt(input) {
     });
 
     // ---- Step 15: stopping strings, token bans, logit bias -------------------------------------------
-    const stoppingStrings = getStoppingStrings({
-        isImpersonate, isContinue, api: mainApi, namesAsStopStrings, name1, name2, chat, isGroup, groupMemberNames,
+    // `stoppingStringsParams` bundles the raw ingredients getStoppingStrings() needs, MINUS
+    // isImpersonate/isContinue/api - kept separate from the resolved `stoppingStrings` array below
+    // because createKoboldGenerationData()/createNovelGenerationData() each call getStoppingStrings()
+    // THEMSELVES (with their own api/isImpersonate/isContinue derivation - see their own module doc
+    // comments), rather than accepting a pre-resolved array the way createTextGenGenerationData() does.
+    const stoppingStringsParams = {
+        namesAsStopStrings, name1, name2, chat, isGroup, groupMemberNames,
         singleLine, instructPreset, contextSettings, customStoppingStringsRaw, customStoppingStringsMacro,
         ephemeralStoppingStrings, macroContext,
-    });
+    };
+    const stoppingStrings = getStoppingStrings({ ...stoppingStringsParams, isImpersonate, isContinue, api: mainApi });
+    // `getCustomTokenBans()`/`calculateLogitBias()` (src/token-bans-and-bias.js) are a
+    // textgenerationwebui_settings-SPECIFIC mechanism (banned_tokens/global_banned_tokens/
+    // send_banned_tokens/logit_bias, feeding createTextGenGenerationData()'s own bannedTokens/
+    // bannedStrings/logitBias params) - Kobold has no analog at all (its own ban mechanism is
+    // `use_default_badwordsids`, a boolean the connected backend applies itself, no token-id list is
+    // ever sent) and NovelAI has its OWN, differently-shaped mechanism (createNovelGenerationData()
+    // computes its own `bad_words_ids`/`logit_bias_exp` internally, straight from `settings.banned_tokens`/
+    // `settings.logit_bias`, via its own getBadWordIds()/calculateNovelLogitBias() - see that module's
+    // doc comment for why that's a SEPARATE port, not a reuse of this one). So this call is only ever
+    // actually USED by the textgenerationwebui dispatch branch below - still computed unconditionally
+    // here (cheap, and `bannedWordsSink`-consuming macro side effects must still run regardless of
+    // `mainApi`, matching the client's own unconditional module-level ban-list behavior) but its
+    // result is simply unused/inert for the kobold/novel dispatch branches.
     const { banned_tokens: bannedTokens, banned_strings: bannedStrings } = await getCustomTokenBans({
         bannedTokensRaw, globalBannedTokensRaw, sendBannedTokens, bannedWordsFromMacros: bannedWordsSink,
         encode: encodeTokens, macroContext,
@@ -894,10 +989,63 @@ export async function assembleTextCompletionPrompt(input) {
     const logitBias = await calculateLogitBias({ logitBiasEntries, encode: encodeTokens });
 
     // ---- Step 16: final generate_data wire payload ---------------------------------------------------
+    // Dispatches on `mainApi`, matching public/script.js's own `switch (main_api)` in Generate()
+    // exactly (`case 'kobold':`/`case 'novel':`/`case 'textgenerationwebui':`) - see module doc
+    // comment UPDATE note. `koboldhorde` is never reached here (this orchestrator's `mainApi` input
+    // is never that value - see text-completion-generation-input.js's own doc comment for why), so
+    // there is no third kobold-family branch to add.
     const cfgValues = { guidanceScale: cfgGuidanceScale, negativePrompt: negativePrompt?.value };
-    const generate_data = await createTextGenGenerationData(settings, model, combinedPrompt, amountGen, isImpersonate, isContinue, cfgValues, type, {
-        stoppingStrings, bannedTokens, bannedStrings, logitBias, maxContext: thisMaxContext, requestTokenProbabilities, macroContext,
-    });
+    let generate_data;
+    if (mainApi === 'kobold') {
+        // Mirrors public/script.js's own `getKoboldGenerationData(finalPrompt, presetSettings,
+        // maxLength, maxContext, isHorde, type)` call site: `presetSettings` (the client's merged
+        // kai_settings-shaped preset object) maps to BOTH this function's `settings` param (used only
+        // for the `sampler_order` fallback) and its `koboldSettings` param (the actual sampler
+        // fields) - the client passes the SAME object for both call-site roles (verified by reading
+        // kai-settings.js's real getKoboldGenerationData() signature: `settings` there IS
+        // presetSettings, not a separate merged-preset object), so `settings` (this orchestrator's own
+        // `settings` input, resolved by the caller as kai_settings-equivalent) is passed for both here
+        // too, matching that same "one object, two roles" shape rather than inventing a second one.
+        generate_data = createKoboldGenerationData({
+            finalPrompt: combinedPrompt,
+            settings,
+            maxLength: amountGen,
+            maxContextLength: thisMaxContext,
+            isHorde,
+            type,
+            koboldSettings: settings,
+            koboldFlags,
+            apiServer,
+            stoppingStringsParams,
+            macroContext,
+        });
+    } else if (mainApi === 'novel') {
+        // Mirrors public/script.js's own `getNovelGenerationData(finalPrompt, presetSettings,
+        // maxLength, isImpersonate, isContinue, cfgValues, type)` call site - note the real function
+        // (src/novel-generation-data.js's createNovelGenerationData(), verified against its own doc
+        // comment) never reads a `_cfgValues` argument at all (the client's own leading-underscore
+        // param name marks it unused in the ORIGINAL nai-settings.js function too - not a gap
+        // introduced by the port), so `cfgValues` is correctly NOT forwarded here.
+        generate_data = await createNovelGenerationData({
+            finalPrompt: combinedPrompt,
+            settings,
+            maxLength: amountGen,
+            isImpersonate,
+            isContinue,
+            type,
+            novelDataTier,
+            presetOrder,
+            consoleLogPrompts,
+            requestTokenProbabilities,
+            stoppingStringsParams,
+            encodeTokens: resolvedEncodeTokensByType,
+            macroContext,
+        });
+    } else {
+        generate_data = await createTextGenGenerationData(settings, model, combinedPrompt, amountGen, isImpersonate, isContinue, cfgValues, type, {
+            stoppingStrings, bannedTokens, bannedStrings, logitBias, maxContext: thisMaxContext, requestTokenProbabilities, macroContext,
+        });
+    }
 
     return {
         // Final outputs

@@ -151,7 +151,7 @@ async function parseOllamaStream(jsonStream, request, response, persist) {
  * generated-text field out of one parsed SSE JSON payload.
  * @returns {Promise<void>}
  */
-async function forwardAndPersistSseText(fetchResponse, response, persist, extractText) {
+export async function forwardAndPersistSseText(fetchResponse, response, persist, extractText) {
     if (!persist || !fetchResponse.ok || !fetchResponse.body) {
         return forwardFetchResponse(fetchResponse, response);
     }
