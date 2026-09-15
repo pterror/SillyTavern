@@ -12,7 +12,6 @@ import {
     name2,
     reloadCurrentChat,
     saveSettingsDebounced,
-    saveChatConditional,
     chatOpEdit,
     chatOpEditMany,
     updateMessage,
@@ -142,12 +141,8 @@ export async function hideChatMessageRange(start, end, unhide, nameFitler = null
     refreshSwipeButtons();
 
     // Save as one batched edit, not one per message
-    if (chat_metadata?._tree_stored) {
-        await chatOpEditMany(changed).catch(error =>
-            console.error('Could not save the hidden state for those messages:', error));
-    } else {
-        await saveChatConditional();
-    }
+    await chatOpEditMany(changed).catch(error =>
+        console.error('Could not save the hidden state for those messages:', error));
 }
 
 /** @deprecated Use hideChatMessageRange. */
@@ -363,12 +358,8 @@ async function deleteMessageFile(messageBlock, messageId, fileIndex) {
     const url = message.extra.files[fileIndex]?.url;
     const updated = updateIn(messageId, ['extra', 'files'], (list) => list.filter((_, i) => i !== fileIndex));
 
-    if (chat_metadata?._tree_stored) {
-        await chatOpEdit(messageId).catch(error =>
-            console.error('Could not save the file removal for that message:', error));
-    } else {
-        await saveChatConditional();
-    }
+    await chatOpEdit(messageId).catch(error =>
+        console.error('Could not save the file removal for that message:', error));
     await deleteFileFromServer(url);
 
     appendMediaToMessage(updated, messageBlock, SCROLL_BEHAVIOR.KEEP);
@@ -441,12 +432,8 @@ function embedMessageFile(messageId, messageBlock) {
         await populateFileAttachment(message, 'embed_file_input');
         await eventSource.emit(event_types.MESSAGE_FILE_EMBEDDED, messageId);
         appendMediaToMessage(message, messageBlock, SCROLL_BEHAVIOR.KEEP);
-        if (chat_metadata?._tree_stored) {
-            await chatOpEdit(messageId).catch(error =>
-                console.error('Could not save the embedded file for that message:', error));
-        } else {
-            await saveChatConditional();
-        }
+        await chatOpEdit(messageId).catch(error =>
+            console.error('Could not save the embedded file for that message:', error));
     }
 }
 
@@ -1072,12 +1059,8 @@ async function deleteMessageMedia(messageId, mediaIndex, messageBlock) {
         }
     }
 
-    if (chat_metadata?._tree_stored) {
-        await chatOpEdit(messageId).catch(error =>
-            console.error('Could not save the media removal for that message:', error));
-    } else {
-        await saveChatConditional();
-    }
+    await chatOpEdit(messageId).catch(error =>
+        console.error('Could not save the media removal for that message:', error));
     appendMediaToMessage(updatedMessage, messageBlock, SCROLL_BEHAVIOR.KEEP);
 }
 
@@ -1104,12 +1087,8 @@ async function switchMessageMediaDisplay(messageId, messageBlock, targetDisplay)
     updateMessage(messageId, { extra: { ...existingExtra, media_display: targetDisplay } });
     message = chat[messageId];
 
-    if (chat_metadata?._tree_stored) {
-        await chatOpEdit(messageId).catch(error =>
-            console.error('Could not save the media display mode for that message:', error));
-    } else {
-        await saveChatConditional();
-    }
+    await chatOpEdit(messageId).catch(error =>
+        console.error('Could not save the media display mode for that message:', error));
     appendMediaToMessage(message, messageBlock, SCROLL_BEHAVIOR.KEEP);
 }
 
@@ -2091,12 +2070,8 @@ async function onImageSwiped(messageId, element, direction) {
         updateIn(messageId, ['extra', 'media_index'], newIndex >= media.length ? 0 : newIndex);
     }
 
-    if (chat_metadata?._tree_stored) {
-        await chatOpEdit(messageId).catch(error =>
-            console.error('Could not save the swiped media index for that message:', error));
-    } else {
-        await saveChatConditional();
-    }
+    await chatOpEdit(messageId).catch(error =>
+        console.error('Could not save the swiped media index for that message:', error));
     appendMediaToMessage(chat[messageId], element);
 }
 
