@@ -6,18 +6,27 @@ import { forwardFetchResponse } from '../../util.js';
 import { persistAssistantReply } from '../../assistant-reply-persist.js';
 
 /**
- * Compact wire protocol for the llama.cpp raw-completions streaming path.
+ * Compact wire protocol, originally for the llama.cpp raw-completions streaming path, now also used
+ * by the general SSE-JSON text-completion path (forwardAndPersistSseText() below) - same encoder/
+ * decoder, since both are ultimately "content text plus a handful of out-of-band signals."
  *
  * Plain bytes = raw UTF-8 text, appended directly to accumulated content.
  * `0xFF 0xFF`                                   = literal content byte 0xFF (escape).
  * `0xFF 0x01 <1 byte index>`                    = target/swipe index changed.
  * `0xFF 0x02 <4-byte BE length><length bytes>`  = token-probabilities JSON payload.
+ * `0xFF 0x03 <4-byte BE length><length bytes>`  = reasoning/thinking text chunk (UTF-8), not content.
+ * `0xFF 0x04 <4-byte BE length><length bytes>`  = assistant_node_id (UTF-8 string), sent once, at the
+ *                                                 very end, once persistence is known - see
+ *                                                 forwardAndPersistSseText()'s own doc comment for why
+ *                                                 this must be the LAST frame before the stream ends.
  *
  * Private contract with the bundled client; not a public/supported surface.
  */
 export const FRAME_SENTINEL = 0xFF;
 export const FRAME_TYPE_INDEX = 0x01;
 export const FRAME_TYPE_PROBABILITIES = 0x02;
+export const FRAME_TYPE_REASONING = 0x03;
+export const FRAME_TYPE_ASSISTANT_NODE_ID = 0x04;
 
 /** Escapes any literal 0xFF byte so it can't be mistaken for a control frame. */
 export function encodeContent(text) {
@@ -53,6 +62,23 @@ export function encodeProbabilitiesFrame(probabilities) {
     header[1] = FRAME_TYPE_PROBABILITIES;
     header.writeUInt32BE(json.length, 2);
     return Buffer.concat([header, json]);
+}
+
+function encodeLengthPrefixedTextFrame(type, text) {
+    const body = Buffer.from(text, 'utf-8');
+    const header = Buffer.alloc(6);
+    header[0] = FRAME_SENTINEL;
+    header[1] = type;
+    header.writeUInt32BE(body.length, 2);
+    return Buffer.concat([header, body]);
+}
+
+export function encodeReasoningFrame(text) {
+    return encodeLengthPrefixedTextFrame(FRAME_TYPE_REASONING, text);
+}
+
+export function encodeAssistantNodeIdFrame(nodeId) {
+    return encodeLengthPrefixedTextFrame(FRAME_TYPE_ASSISTANT_NODE_ID, nodeId);
 }
 
 /** @returns {{bytes: Buffer, index: number}} */
