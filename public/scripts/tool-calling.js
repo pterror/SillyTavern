@@ -1,6 +1,6 @@
 import { DOMPurify } from '../lib.js';
 
-import { addOneMessage, chat, chat_metadata, chatOpAppend, event_types, eventSource, getGeneratingApi, getGeneratingModel, main_api, saveChatConditional, system_avatar, systemUserName } from '../script.js';
+import { addOneMessage, chat, chatOpAppend, event_types, eventSource, getGeneratingApi, getGeneratingModel, main_api, system_avatar, systemUserName } from '../script.js';
 import { chat_completion_sources, custom_prompt_post_processing_types, getChatCompletionModel, model_list, oai_settings } from './chat-completion-settings.js';
 import { Popup } from './popup.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
@@ -907,12 +907,8 @@ export class ToolManager {
         await eventSource.emit(event_types.TOOL_CALLS_PERFORMED, invocations);
         addOneMessage(message);
         await eventSource.emit(event_types.TOOL_CALLS_RENDERED, invocations);
-        if (chat_metadata?._tree_stored) {
-            await chatOpAppend(newIndex).catch(error =>
-                console.error('Could not save the tool invocation message:', error));
-        } else {
-            await saveChatConditional();
-        }
+        await chatOpAppend(newIndex).catch(error =>
+            console.error('Could not save the tool invocation message:', error));
     }
 
     /**
