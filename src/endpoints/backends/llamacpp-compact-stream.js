@@ -7,8 +7,9 @@ import { persistAssistantReply } from '../../assistant-reply-persist.js';
 
 /**
  * Compact wire protocol, originally for the llama.cpp raw-completions streaming path, now also used
- * by the general SSE-JSON text-completion path (forwardAndPersistSseText() below) - same encoder/
- * decoder, since both are ultimately "content text plus a handful of out-of-band signals."
+ * by every other raw-action streaming backend (text-completions.js's forwardAndPersistCompactStream(),
+ * chat-completions.js's own copy, kobold.js, novelai.js) - same encoder/decoder, since all of them are
+ * ultimately "content text plus a handful of out-of-band signals."
  *
  * Plain bytes = raw UTF-8 text, appended directly to accumulated content.
  * `0xFF 0xFF`                                   = literal content byte 0xFF (escape).
@@ -16,9 +17,10 @@ import { persistAssistantReply } from '../../assistant-reply-persist.js';
  * `0xFF 0x02 <4-byte BE length><length bytes>`  = token-probabilities JSON payload.
  * `0xFF 0x03 <4-byte BE length><length bytes>`  = reasoning/thinking text chunk (UTF-8), not content.
  * `0xFF 0x04 <4-byte BE length><length bytes>`  = assistant_node_id (UTF-8 string), sent once, at the
- *                                                 very end, once persistence is known - see
- *                                                 forwardAndPersistSseText()'s own doc comment for why
- *                                                 this must be the LAST frame before the stream ends.
+ *                                                 very end, once persistence is known - must be the
+ *                                                 LAST frame before the stream ends, since the
+ *                                                 client's stream reader stops at the natural end of
+ *                                                 the byte stream rather than a sentinel line.
  * `0xFF 0x05 <4-byte BE length><length bytes>`  = one tool-call delta (JSON, the same per-chunk shape
  *                                                 ToolManager.parseToolCalls() already accepts client-
  *                                                 side - {index, id?, type?, function:{name?,arguments?}}).
