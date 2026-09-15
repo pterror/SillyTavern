@@ -3221,7 +3221,7 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, ra
             let text = '';
             const swipes = [];
             const toolCalls = [];
-            const state = { reasoning: '', images: [], signature: '', toolSignatures: {} };
+            const state = { reasoning: '', images: [], signature: '', toolSignatures: {}, toolCallHandoff: null };
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) return;
@@ -3229,6 +3229,18 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, ra
                 if (rawData === '[DONE]') return;
                 tryParseStreamingError(response, rawData);
                 const parsed = JSON.parse(rawData);
+
+                // Streaming raw-action tool-calling cutover (chunk (b)/(c)'s streaming counterpart) -
+                // a `tool_call_handoff` trailer chunk carries no `.choices` key, so it is otherwise
+                // completely inert to every existing check below (getStreamingReply()/
+                // ToolManager.parseToolCalls() both no-op on it) - see
+                // forwardAndPersistSseWithServerTools()'s own doc comment in
+                // src/endpoints/backends/chat-completions.js for the full mechanism. Stashed on `state`
+                // (not yielded as its own field) so it survives to the FINAL yield the same way
+                // `state.reasoning`/`state.images` already do.
+                if (parsed?.tool_call_handoff) {
+                    state.toolCallHandoff = parsed.tool_call_handoff;
+                }
 
                 if (canMultiSwipe && Array.isArray(parsed?.choices) && parsed?.choices?.[0]?.index > 0) {
                     const swipeIndex = parsed.choices[0].index - 1;
