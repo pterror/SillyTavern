@@ -223,3 +223,32 @@ export async function migrateAllGroupChats() {
         }
     }
 }
+
+/**
+ * Migrates every character's JSONL chats into the tree for every user, synchronously at server
+ * startup - the character-side equivalent of migrateAllGroupChats() above, for the exact same
+ * reason: next-touch migration (migrateOwnerOnTouch, called from /save, /get, /rename) only fires
+ * when something actually opens that character, so a character nobody has opened since the tree DB
+ * shipped (including one imported after that point) would otherwise stay JSONL-backed indefinitely.
+ */
+export async function migrateAllCharacterChats() {
+    const directoriesList = await getUserDirectoriesList();
+
+    for (const directories of directoriesList) {
+        let entries;
+        try {
+            entries = fs.readdirSync(directories.chats, { withFileTypes: true });
+        } catch (err) {
+            console.error(color.red(`[message-tree] Failed to read chats directory for ${directories.root}:`), err);
+            continue;
+        }
+
+        for (const entry of entries) {
+            if (!entry.isDirectory()) continue;
+            await migrateOwnerOnTouch(directories, {
+                ownerId: entry.name,
+                chatDir: path.join(directories.chats, entry.name),
+            });
+        }
+    }
+}
