@@ -1355,6 +1355,92 @@ export async function degraftRange(directories, ownerId, firstNodeId, lastNodeId
 }
 
 /**
+ * Swaps two ADJACENT on-path messages: `upperNodeId` (closer to the anchor) and `lowerNodeId` (its
+ * current default child) trade places, fusing a degraft-then-graft into one atomic operation — the
+ * mid-chain-reorder primitive `messageEditMove()`'s array-slot swap was silently missing (both
+ * messages kept their own node_id, so the diff engine saw no change and never persisted the reorder).
+ * Refuses unless `lowerNodeId` is CURRENTLY parented under `upperNodeId` AND both are on the live
+ * default path (mirrors {@link graftMessage}/{@link degraftRange}'s own equivalent checks, for the
+ * same concurrent-edit-safety reason — e.g. another session swiped to a different alternative at
+ * either position since the caller last read it).
+ *
+ * Let G = upperNodeId's parent, C = lowerNodeId's default child (may be null, if lowerNodeId was the
+ * tail). Before: G -> upper -> lower -> C. After: G -> lower -> upper -> C.
+ *
+ * Ordering within the transaction: identity_hash only bakes in a node's OWN parent_id and OWN
+ * content, never anything about the parent row itself (see {@link identityHashOf}) — so recomputing
+ * lowerNodeId's hash against G, and upperNodeId's hash against lowerNodeId, has no dependency on
+ * doing those two updates in any particular order or on the other row already being written; there's
+ * no "stale hash read" hazard there the way there might be if hashes chained off a parent's hash.
+ * The REAL ordering hazard is `setDefaultChildSync()`'s own safety check, which reads the CHILD row's
+ * *current* `parent_id` from the database to confirm the pointer it's about to set is genuine
+ * (`child.parent_id !== parentId` -> refuse). That means both reparents (upperNodeId and lowerNodeId)
+ * MUST be written first; only once the database reflects the new parent_id for both nodes can the
+ * default_child_id pointers (G -> lower, lower -> upper, upper -> C) be set — setting any of them
+ * first would read the OLD parent_id and silently no-op (leaving a stale default path), since a swap,
+ * unlike a plain graft/degraft, reparents both endpoints of the edge being rewired instead of just
+ * one.
+ */
+export async function swapAdjacent(directories, ownerId, upperNodeId, lowerNodeId) {
+    const entry = await getEntry(directories);
+    if (!entry) return { ok: false, reason: 'unavailable' };
+
+    const upper = entry.db.get('SELECT id, parent_id, content, default_child_id FROM messages WHERE id = @id AND owner_id = @ownerId',
+        { id: upperNodeId, ownerId });
+    if (!upper) return { ok: false, reason: 'unknown node' };
+
+    const lower = entry.db.get('SELECT id, parent_id, content, default_child_id FROM messages WHERE id = @id AND owner_id = @ownerId',
+        { id: lowerNodeId, ownerId });
+    if (!lower) return { ok: false, reason: 'unknown node' };
+
+    if (lower.parent_id !== upperNodeId) return { ok: false, reason: 'not adjacent' };
+
+    const grandparent = upper.parent_id
+        ? entry.db.get('SELECT id, default_child_id FROM messages WHERE id = @id', { id: upper.parent_id })
+        : null;
+    if (!grandparent || grandparent.default_child_id !== upperNodeId) return { ok: false, reason: 'not on default path' };
+    if (upper.default_child_id !== lowerNodeId) return { ok: false, reason: 'not on default path' };
+
+    const grandparentId = upper.parent_id;
+    const childId = lower.default_child_id; // may be null — lowerNodeId was the tail
+
+    entry.db.transaction(() => {
+        // 1. Reparent both swapped endpoints (content untouched, only parent_id/identity_hash change) —
+        //    see the ordering note above for why this must happen before any default_child_id write.
+        entry.db.run('UPDATE messages SET parent_id = @grandparentId, identity_hash = @hash WHERE id = @id',
+            { id: lowerNodeId, grandparentId, hash: identityHashOf(grandparentId, lower.content) });
+        entry.db.run('UPDATE messages SET parent_id = @lowerNodeId, identity_hash = @hash WHERE id = @id',
+            { id: upperNodeId, lowerNodeId, hash: identityHashOf(lowerNodeId, upper.content) });
+
+        // 1b. childId (whatever followed lowerNodeId before the swap) also needs ITS OWN parent_id
+        //     reparented onto upperNodeId - the swap doesn't just move upper/lower, it moves the edge
+        //     childId sits on top of. Without this, childId's row still says parent_id = lowerNodeId,
+        //     and the setDefaultChildSync(upperNodeId, childId) call below would silently refuse (its
+        //     own "is this a genuine child" check reads childId's CURRENT parent_id, which would still
+        //     be the old one) - leaving upperNodeId.default_child_id stale and pointing back at
+        //     lowerNodeId, which would make the default path cycle (lower -> upper -> lower -> ...).
+        if (childId) {
+            const childRow = entry.db.get('SELECT content FROM messages WHERE id = @id', { id: childId });
+            entry.db.run('UPDATE messages SET parent_id = @upperNodeId, identity_hash = @hash WHERE id = @id',
+                { id: childId, upperNodeId, hash: identityHashOf(upperNodeId, childRow.content) });
+        }
+
+        // 2. Now rewire the default path, top-down: G -> lower -> upper -> C.
+        setDefaultChildSync(entry.db, grandparentId, lowerNodeId);
+        setDefaultChildSync(entry.db, lowerNodeId, upperNodeId);
+        if (childId) {
+            setDefaultChildSync(entry.db, upperNodeId, childId);
+        } else {
+            // upperNodeId used to point at lowerNodeId, which is no longer its child —
+            // setDefaultChildSync() no-ops on a null childId, so clear it explicitly.
+            entry.db.run('UPDATE messages SET default_child_id = NULL WHERE id = @id', { id: upperNodeId });
+        }
+    });
+
+    return { ok: true };
+}
+
+/**
  * Adds an alternative alongside an existing node. Named by SIBLING (not parent) so the caller never
  * needs to know about the synthetic anchor. Idempotent: a matching alternative resolves to the
  * existing row instead of duplicating, so a set can be asserted on every chat open safely.

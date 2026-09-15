@@ -35,7 +35,7 @@ import {
     isAvailable as isTreeAvailable, hasSavedChats,
     saveChatToTree, loadBranch, forkBranch, labelNode,
     deleteBranch, renameBranch as renameBranchInTree, listBranches, listRecentBranches, searchBranchesByContent,
-    renameCharacterInMessages, renameGroupMemberInMessages, getAlternatives, getContinuation, getAncestorPath, editMessage, editMessages, appendMessages, addAlternatives, setChatMetadata, getOpeningAlternatives, addOpeningAlternatives, loadAtNode, listLabels, setNodeMetadata, selectDefaultChild, endPathAt, graftMessage, degraftRange,
+    renameCharacterInMessages, renameGroupMemberInMessages, getAlternatives, getContinuation, getAncestorPath, editMessage, editMessages, appendMessages, addAlternatives, setChatMetadata, getOpeningAlternatives, addOpeningAlternatives, loadAtNode, listLabels, setNodeMetadata, selectDefaultChild, endPathAt, graftMessage, degraftRange, swapAdjacent,
 } from '../message-tree-db.js';
 
 const isBackupEnabled = !!getConfigValue('backups.chat.enabled', true, 'boolean');
@@ -1202,6 +1202,22 @@ router.post('/message/degraft', validateAvatarUrlMiddleware, async function (req
         return response.status(result.ok ? 200 : 409).send(result);
     } catch (error) {
         console.error('Error degrafting message:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/** Swaps two adjacent on-path messages — the mid-chain-reorder primitive (`messageEditMove()`'s array-slot swap was silently not persisting, since both messages keep their own node_id). */
+router.post('/message/swap-adjacent', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const upper = String(request.body.upper_node_id || '');
+        if (!upper) return response.status(400).send({ error: 'upper_node_id is required' });
+        const lower = String(request.body.lower_node_id || '');
+        if (!lower) return response.status(400).send({ error: 'lower_node_id is required' });
+
+        const result = await swapAdjacent(request.user.directories, ownerOf(request), upper, lower);
+        return response.status(result.ok ? 200 : 409).send(result);
+    } catch (error) {
+        console.error('Error swapping adjacent messages:', error);
         return response.status(500).send({ error: true });
     }
 });
