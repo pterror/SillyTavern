@@ -842,7 +842,8 @@ async function sendMakerSuiteRequest(request, response, persist) {
             // exact same `!part.thought` filter this persistence needs (Gemini's own "thought"/
             // reasoning parts excluded), so no separate extraction is needed here.
             if (persist) {
-                await persistAssistantReply(persist, responseText ?? '');
+                const persisted = await persistAssistantReply(persist, responseText ?? '');
+                if (persisted) reply.assistant_node_id = persisted.node_id;
             }
 
             return response.send(reply);
@@ -941,7 +942,8 @@ async function sendAI21Request(request, response, persist) {
             // no-op otherwise). Real, verified OpenAI-Chat-Completions-shaped body - see this
             // function's own doc comment above.
             if (persist) {
-                await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '');
+                const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '');
+                if (persisted) generateResponseJson.assistant_node_id = persisted.node_id;
             }
 
             return response.send(generateResponseJson);
@@ -1052,7 +1054,8 @@ async function sendMistralAIRequest(request, response, persist) {
             // no-op otherwise). Standard, verified OpenAI-Chat-Completions-shaped body - see this
             // function's own doc comment above.
             if (persist) {
-                await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '');
+                const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '');
+                if (persisted) generateResponseJson.assistant_node_id = persisted.node_id;
             }
 
             return response.send(generateResponseJson);
@@ -1194,7 +1197,8 @@ async function sendCohereRequest(request, response, persist) {
                 const contentText = Array.isArray(generateResponseJson?.message?.content)
                     ? generateResponseJson.message.content.filter(block => block?.type === 'text').map(block => block.text ?? '').join('')
                     : '';
-                await persistAssistantReply(persist, contentText || generateResponseJson?.message?.tool_plan || '');
+                const persisted = await persistAssistantReply(persist, contentText || generateResponseJson?.message?.tool_plan || '');
+                if (persisted) generateResponseJson.assistant_node_id = persisted.node_id;
             }
 
             return response.send(generateResponseJson);
@@ -1336,7 +1340,8 @@ async function sendDeepSeekRequest(request, response, persist) {
             // function's own doc comment above. Deliberately reads ONLY `message.content`, never
             // `message.reasoning_content`.
             if (persist) {
-                await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '');
+                const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '');
+                if (persisted) generateResponseJson.assistant_node_id = persisted.node_id;
             }
 
             return response.send(generateResponseJson);
@@ -1465,7 +1470,8 @@ async function sendXaiRequest(request, response, persist) {
             // no-op otherwise). Standard, verified OpenAI-Chat-Completions-shaped body - see this
             // function's own doc comment above.
             if (persist) {
-                await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '');
+                const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '');
+                if (persisted) generateResponseJson.assistant_node_id = persisted.node_id;
             }
 
             return response.send(generateResponseJson);
@@ -1592,7 +1598,8 @@ async function sendAimlapiRequest(request, response, persist) {
             // no-op otherwise). Standard, verified OpenAI-Chat-Completions-shaped body - see this
             // function's own doc comment above.
             if (persist) {
-                await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '');
+                const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '');
+                if (persisted) generateResponseJson.assistant_node_id = persisted.node_id;
             }
 
             return response.send(generateResponseJson);
@@ -1727,7 +1734,8 @@ async function sendElectronHubRequest(request, response, persist) {
             // no-op otherwise). Standard, verified OpenAI-Chat-Completions-shaped body - see this
             // function's own doc comment above.
             if (persist) {
-                await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '');
+                const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '');
+                if (persisted) generateResponseJson.assistant_node_id = persisted.node_id;
             }
 
             return response.send(generateResponseJson);
@@ -1853,7 +1861,8 @@ async function sendChutesRequest(request, response, persist) {
             // no-op otherwise). Standard, verified OpenAI-Chat-Completions-shaped body - see this
             // function's own doc comment above.
             if (persist) {
-                await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '');
+                const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '');
+                if (persisted) generateResponseJson.assistant_node_id = persisted.node_id;
             }
 
             return response.send(generateResponseJson);
@@ -1960,7 +1969,8 @@ async function sendMinimaxRequest(request, response, persist) {
             // no-op otherwise). Standard, verified OpenAI-Chat-Completions-shaped body - see this
             // function's own doc comment above.
             if (persist) {
-                await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '');
+                const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '');
+                if (persisted) generateResponseJson.assistant_node_id = persisted.node_id;
             }
 
             return response.send(generateResponseJson);
@@ -2076,7 +2086,8 @@ async function sendAzureOpenAIRequest(request, response, persist) {
             // no-op otherwise). Standard, verified OpenAI-Chat-Completions-shaped body - see this
             // function's own doc comment above.
             if (persist) {
-                await persistAssistantReply(persist, json?.choices?.[0]?.message?.content ?? '');
+                const persisted = await persistAssistantReply(persist, json?.choices?.[0]?.message?.content ?? '');
+                if (persisted) json.assistant_node_id = persisted.node_id;
             }
 
             return response.send(json);
@@ -4506,7 +4517,8 @@ router.post('/generate', async function (request, response) {
                 // `isTextCompletion` is never true for it - only the real chat-shaped
                 // `{choices: [{message: {content}}]}` response is ever extracted here.
                 const generatedText = json?.choices?.[0]?.message?.content ?? '';
-                await persistAssistantReply(pendingAssistantPersist, generatedText);
+                const persisted = await persistAssistantReply(pendingAssistantPersist, generatedText);
+                if (persisted) json.assistant_node_id = persisted.node_id;
             }
 
             return response.send(json);

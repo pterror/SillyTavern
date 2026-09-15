@@ -7846,6 +7846,26 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 
             // This relies on `saveReply` having been called to add the message to the chat, so it must be last.
             parseAndSaveLogprobs(data, continue_mag);
+
+            // Server already persisted this reply for raw-action responses; mark it clean so
+            // _saveTreeChat() doesn't write it again.
+            if (data.assistant_node_id) {
+                const mesId = chat.length - 1;
+                const msg = chat[mesId];
+                if (msg && !msg.is_user) {
+                    const selected = msg.swipe_id ?? 0;
+                    const updates = { node_id: data.assistant_node_id };
+                    if (Array.isArray(msg.swipe_info) && msg.swipe_info[selected] && !msg.swipe_info[selected].node_id) {
+                        const newSwipeInfo = [...msg.swipe_info];
+                        newSwipeInfo[selected] = { ...newSwipeInfo[selected], node_id: data.assistant_node_id };
+                        updates.swipe_info = newSwipeInfo;
+                    }
+                    updateMessage(mesId, updates);
+                    if (chat[mesId]?.node_id) {
+                        _messageSnapshots.set(chat[mesId].node_id, chat[mesId]);
+                    }
+                }
+            }
         }
 
         if (canPerformToolCalls) {
