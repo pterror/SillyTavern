@@ -1359,7 +1359,13 @@ function registerWorldInfoSlashCommands() {
             return '';
         }
 
-        const entry = createWorldInfoEntry(file, data);
+        const entry = await createWorldInfoEntry(file, data);
+
+        if (!entry) {
+            toastr.error('Failed to create a new World Info entry');
+            logSlashCommandWarn('createEntryCallback: Failed to create a new World Info entry', args);
+            return '';
+        }
 
         if (key) {
             entry.key.push(key);
@@ -2520,8 +2526,8 @@ async function displayWorldEntries(name, data, navigation = navigation_option.no
         });
     }
 
-    $('#world_popup_new').off('click').on('click', () => {
-        const entry = createWorldInfoEntry(name, data);
+    $('#world_popup_new').off('click').on('click', async () => {
+        const entry = await createWorldInfoEntry(name, data);
         if (entry) updateEditor(entry.uid);
     });
 
@@ -3535,7 +3541,7 @@ export async function getWorldEntry(name, data, entry) {
     // Duplicate/delete/move buttons
     headerTemplate.find('.duplicate_entry_button').data('uid', entry.uid).on('click', async function () {
         const uid = $(this).data('uid');
-        const entryDup = duplicateWorldInfoEntry(data, uid);
+        const entryDup = await duplicateWorldInfoEntry(name, data, uid);
         if (entryDup) {
             await saveWorldInfo(name, data);
             updateEditor(entryDup.uid);
@@ -4091,11 +4097,12 @@ function createEntryInputAutocomplete(input, callback, { allowMultiple = false }
 
 /**
  * Duplicate a WI entry by copying all of its properties and assigning a new uid
+ * @param {string} name - The name of the book
  * @param {*} data - The data of the book
  * @param {number} uid - The uid of the entry to copy in this book
- * @returns {*} The new WI duplicated entry
+ * @returns {Promise<*>} The new WI duplicated entry
  */
-export function duplicateWorldInfoEntry(data, uid) {
+export async function duplicateWorldInfoEntry(name, data, uid) {
     if (!data || !('entries' in data) || !data.entries[uid]) {
         return;
     }
@@ -4105,7 +4112,10 @@ export function duplicateWorldInfoEntry(data, uid) {
     delete originalData.uid;
 
     // Create new entry and copy over data
-    const entry = createWorldInfoEntry(data.name, data);
+    const entry = await createWorldInfoEntry(name, data);
+    if (!entry) {
+        return;
+    }
     Object.assign(entry, originalData);
 
     return entry;
@@ -4209,12 +4219,42 @@ export const newWorldInfoEntryTemplate = Object.fromEntries(
 
 /**
  * Creates a new world info entry from template.
- * @param {string} _name Name of the WI (unused)
+ *
+ * The uid is minted server-side (POST /api/worldinfo/entry/create), not computed by scanning this
+ * client's own cached copy of `data.entries` - that cache can be stale (another tab, or a concurrent
+ * move/copy into the same book, may have already taken a uid this client thinks is free), and a
+ * collision there would silently overwrite an existing entry on the next whole-book save. The server
+ * reserves the uid in the on-disk book immediately, before returning it, so no two concurrent creates
+ * against the same book can ever be handed the same uid.
+ * @param {string} name Name of the WI (must already exist on disk)
  * @param {any} data WI data
- * @returns {object | undefined} New entry object or undefined if failed
+ * @returns {Promise<object | undefined>} New entry object or undefined if failed
  */
-export function createWorldInfoEntry(_name, data) {
-    const newUid = getFreeWorldEntryUid(data);
+export async function createWorldInfoEntry(name, data) {
+    if (!name) {
+        console.error('Couldn\'t create a new entry: no lorebook name given');
+        return;
+    }
+
+    let result;
+    try {
+        const response = await fetch('/api/worldinfo/entry/create', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ name }),
+        });
+
+        if (!response.ok) {
+            throw new Error(`Server responded with ${response.status}`);
+        }
+
+        result = await response.json();
+    } catch (error) {
+        console.error('Couldn\'t assign UID to a new entry', error);
+        return;
+    }
+
+    const newUid = result?.entry?.uid;
 
     if (!Number.isInteger(newUid)) {
         console.error('Couldn\'t assign UID to a new entry');
@@ -4464,23 +4504,6 @@ export async function deleteWorldInfo(worldInfoName) {
 
     return true;
 }
-
-export function getFreeWorldEntryUid(data) {
-    if (!data || !('entries' in data)) {
-        return null;
-    }
-
-    const MAX_UID = 1_000_000; // <- should be safe enough :)
-    for (let uid = 0; uid < MAX_UID; uid++) {
-        if (uid in data.entries) {
-            continue;
-        }
-        return uid;
-    }
-
-    return null;
-}
-
 
 /**
  * Generates a free world name based on the given input name.

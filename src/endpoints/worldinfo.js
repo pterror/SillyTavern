@@ -134,13 +134,15 @@ function writeWorldInfoFile(directories, worldInfoName, data) {
 }
 
 /**
- * Finds the lowest non-negative integer uid not already used by an entry in `data`, matching the
- * allocation scheme `getFreeWorldEntryUid()` in public/scripts/world-info.js uses for entries minted
- * client-side - there is no other server-side uid-minting path for World Info entries to reuse.
+ * Finds the lowest non-negative integer uid not already used by an entry in `data`. This is the one
+ * server-side uid-minting primitive for World Info entries; both `/entry/transplant` (move/copy) and
+ * `/entry/create` (brand-new entry) call it against the book they're writing into, immediately before
+ * that write, so uid allocation always reflects the book's current on-disk state rather than a
+ * possibly-stale client-side copy.
  * @param {object} data World Info file contents (as read by {@link readWorldInfoFile})
  * @returns {number|null} A free uid, or null if none could be found (should not happen in practice)
  */
-function getFreeWorldEntryUid(data) {
+export function getFreeWorldEntryUid(data) {
     if (!data || typeof data.entries !== 'object' || data.entries === null) {
         return null;
     }
@@ -434,4 +436,44 @@ router.post('/entry/transplant', (request, response) => {
     }
 
     return response.send({ ok: true, entry: transplantedEntry });
+});
+
+/**
+ * Mints a uid for a brand-new World Info entry and reserves it in the given lorebook, server-side, in
+ * one request. Replaces the former client-side flow of scanning the client's own cached copy of
+ * `data.entries` for the lowest free integer and asserting it as the new entry's uid - a fabricated
+ * identifier that could collide if the client's cache were stale (e.g. another tab, or a concurrent
+ * move/copy into the same book, had already taken that uid on disk).
+ *
+ * This is structurally the same case `/entry/transplant` already solves (mint a free uid in a target
+ * book via {@link getFreeWorldEntryUid}, immediately before writing), just without a source book to
+ * pull from. Only a bare `{ uid }` placeholder is written here - the caller is expected to fill in the
+ * entry's real fields (key, content, comment, ...) locally and persist them via the existing whole-book
+ * `/edit` save shortly after, the same way a freshly-created entry's fields have always been populated.
+ * Reserving the uid on disk immediately (rather than merely computing and returning one) is what
+ * prevents two concurrent "create new entry" calls against the same book from ever being handed the
+ * same uid.
+ */
+router.post('/entry/create', (request, response) => {
+    const { name } = request.body ?? {};
+
+    if (typeof name !== 'string' || !name) {
+        return response.status(400).send({ error: 'name is required' });
+    }
+
+    const data = readWorldInfoFile(request.user.directories, name, false);
+    if (!data || typeof data.entries !== 'object' || data.entries === null) {
+        return response.status(404).send({ error: `Lorebook '${name}' not found` });
+    }
+
+    const newUid = getFreeWorldEntryUid(data);
+    if (newUid === null) {
+        return response.status(500).send({ error: `Could not allocate a free uid in lorebook '${name}'` });
+    }
+
+    const newEntry = { uid: newUid };
+    data.entries[newUid] = newEntry;
+    writeWorldInfoFile(request.user.directories, name, data);
+
+    return response.send({ ok: true, entry: newEntry });
 });

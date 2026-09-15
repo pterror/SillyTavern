@@ -328,3 +328,60 @@ describe('worldinfo /entry/transplant', () => {
         expect(res.status).toBe(400);
     });
 });
+
+describe('worldinfo /entry/create', () => {
+    test('mints a uid server-side for a brand-new entry and reserves it on disk', async () => {
+        await postJson('/api/worldinfo/edit', {
+            name: 'Book',
+            data: { entries: {} },
+        });
+
+        const res = await postJson('/api/worldinfo/entry/create', { name: 'Book' });
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.ok).toBe(true);
+        expect(Number.isInteger(body.entry.uid)).toBe(true);
+
+        const book = await (await postJson('/api/worldinfo/get', { name: 'Book' })).json();
+        expect(Object.keys(book.entries)).toEqual([String(body.entry.uid)]);
+    });
+
+    test('mints a uid that does not collide with existing entries in the book', async () => {
+        await postJson('/api/worldinfo/edit', {
+            name: 'Book',
+            data: { entries: { 0: makeEntry(0, 'Alpha'), 1: makeEntry(1, 'Beta') } },
+        });
+
+        const res = await postJson('/api/worldinfo/entry/create', { name: 'Book' });
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.entry.uid).toBe(2); // lowest free integer, matching getFreeWorldEntryUid's scheme
+
+        const book = await (await postJson('/api/worldinfo/get', { name: 'Book' })).json();
+        expect(Object.keys(book.entries).sort()).toEqual(['0', '1', '2']);
+    });
+
+    test('two sequential create calls against the same book never collide', async () => {
+        await postJson('/api/worldinfo/edit', {
+            name: 'Book',
+            data: { entries: {} },
+        });
+
+        const first = await (await postJson('/api/worldinfo/entry/create', { name: 'Book' })).json();
+        const second = await (await postJson('/api/worldinfo/entry/create', { name: 'Book' })).json();
+        expect(first.entry.uid).not.toBe(second.entry.uid);
+
+        const book = await (await postJson('/api/worldinfo/get', { name: 'Book' })).json();
+        expect(Object.keys(book.entries).sort()).toEqual([String(first.entry.uid), String(second.entry.uid)].sort());
+    });
+
+    test('rejects a nonexistent book', async () => {
+        const res = await postJson('/api/worldinfo/entry/create', { name: 'Ghost' });
+        expect(res.status).toBe(404);
+    });
+
+    test('rejects a missing name', async () => {
+        const res = await postJson('/api/worldinfo/entry/create', {});
+        expect(res.status).toBe(400);
+    });
+});
