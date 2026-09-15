@@ -11,7 +11,7 @@ import { encodeWithTokenizerType } from '../tokenizer-resolve.js';
 import { getTokenizerTypeForModel } from '../novel-generation-data.js';
 import { resolveTextCompletionGenerationInput } from '../text-completion-generation-input.js';
 import { assembleTextCompletionPrompt } from '../text-completion-prompt-orchestrator.js';
-import { getAncestorPath, appendMessages } from '../message-tree-db.js';
+import { getAncestorPath, appendMessages, sanitizeUserMessageExtra } from '../message-tree-db.js';
 import { readCardContent } from './characters.js';
 import { getGroupsByIds } from './groups.js';
 import { persistAssistantReply } from '../assistant-reply-persist.js';
@@ -209,11 +209,16 @@ router.post('/status', async function (req, res) {
  * @param {boolean} [params.isContinue]
  * @param {boolean} [params.isSwipe]
  * @param {string} [params.userMessageText]
+ * @param {object} [params.userMessageExtra] Already-SERVER-VALIDATED `extra` (see
+ * `sanitizeUserMessageExtra()` in message-tree-db.js) for the new user message being appended -
+ * identical contract to buildRawActionTextCompletionRequest()'s own equivalent param. NovelAI has no
+ * media/image inlining wired here - only `.files` is meaningfully consumed downstream
+ * (file-attachment-inline.js, via resolveTextCompletionGenerationInput()).
  * @returns {Promise<{ params: object, anchorNodeId: string|null, anchorContent: object|null, name1: string, name2: string }>}
  */
 export async function buildRawActionNovelRequest(directories, {
     request, characterAvatar, groupId, ownerId, nodeId,
-    type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText,
+    type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText, userMessageExtra,
     tokenizerOptions = {},
 } = {}) {
     if (!ownerId) {
@@ -273,7 +278,7 @@ export async function buildRawActionNovelRequest(directories, {
 
     const orchestratorInput = await resolveTextCompletionGenerationInput(directories, {
         avatar: characterAvatar, groupId, mainApi: 'novel', ownerId, nodeId,
-        type, isImpersonate, isContinue, isSwipe, userMessageText,
+        type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra,
         countTokens, encodeTokens,
         macroExtras: { encodeTokensByType },
     });
@@ -310,6 +315,9 @@ router.post('/generate', async function (req, res) {
             node_id: nodeId, type = 'normal',
             user_message: userMessageText,
         } = req.body;
+        // Server-validated (NOT trusted verbatim) - see `sanitizeUserMessageExtra()`'s own doc
+        // comment (message-tree-db.js) and text-completions.js's identical raw-action branch.
+        const userMessageExtra = sanitizeUserMessageExtra(req.body.user_message_extra);
         // is_impersonate/is_continue/is_swipe are NOT read from the wire - see kobold.js's own
         // identical derivation/comment (extended there from text-completions.js's/
         // chat-completions.js's original commit 4a79e197e).
@@ -323,7 +331,7 @@ router.post('/generate', async function (req, res) {
         try {
             built = await buildRawActionNovelRequest(directories, {
                 request: req, characterAvatar, groupId, ownerId, nodeId,
-                type, isImpersonate, isContinue, isSwipe, userMessageText,
+                type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra,
             });
         } catch (error) {
             console.error('Failed to build raw-action NovelAI request:', error);
@@ -338,7 +346,7 @@ router.post('/generate', async function (req, res) {
         let replyAnchorNodeId = built.anchorNodeId;
         if (!skipPersistence && typeof userMessageText === 'string' && built.anchorNodeId) {
             const appendResult = await appendMessages(directories, ownerId, built.anchorNodeId, [
-                { name: built.name1, is_user: true, mes: userMessageText, extra: {}, send_date: Date.now() },
+                { name: built.name1, is_user: true, mes: userMessageText, extra: userMessageExtra, send_date: Date.now() },
             ]);
             if (!appendResult.ok) {
                 console.error('Failed to persist user message onto the tree:', appendResult.reason);

@@ -5,6 +5,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { write as writeCard } from './character-card-parser.js';
+import './fetch-patch.js';
+import { Jimp, JimpMime } from './jimp.js';
 // chat-completion-generation-input.js pulls in src/endpoints/characters.js (via readCardContent) and
 // src/endpoints/tokenizers.js (via getTokenizerModel/getTiktokenTokenizer), both of which read
 // process-wide config at import time - set the config path before importing it, the same way
@@ -271,6 +273,31 @@ async function run() {
     assert.equal(appended.role, 'user');
     assert.equal(appended.content, 'What happens next, Rex?');
     assert.equal(input.messages.length, 3, 'omitting userMessageText leaves messages exactly as loaded, unchanged');
+
+    // --- userMessageExtra: a forwarded media-attachment reference becomes the appended message's
+    // real `extra`, and (with imageInlining forced on via macroExtras, mirroring how
+    // buildRawActionChatCompletionRequest() itself derives it from the real `oai_settings.media_inlining`
+    // toggle) is later actually inlined by the real prepareOpenAIMessages()/buildChatCompletionMessages()
+    // pipeline as a real image_url content part - not just carried through as inert data ---
+    const jpegBuffer = await (async () => {
+        const image = new Jimp({ width: 16, height: 16, color: 0xffffffff });
+        return image.getBuffer(JimpMime.jpeg, { quality: 90, jpegColorSpace: 'ycbcr' });
+    })();
+    const dataUrl = `data:image/jpeg;base64,${jpegBuffer.toString('base64')}`;
+    const withUserMessageExtra = await resolveChatCompletionGenerationInput(directories, {
+        avatar, ownerId, branchName,
+        userMessageText: 'Look at this.',
+        userMessageExtra: { media: [{ url: dataUrl, type: 'image', source: 'upload' }], media_index: 0 },
+        macroExtras: { imageInlining: true },
+    });
+    const appendedWithExtra = withUserMessageExtra.messages[0];
+    assert.deepEqual(appendedWithExtra.media, [{ url: dataUrl, type: 'image', source: 'upload' }]);
+    const resultWithMedia = await prepareOpenAIMessages(withUserMessageExtra);
+    const turnWithMedia = resultWithMedia.chat.find(m => Array.isArray(m.content));
+    assert.ok(turnWithMedia, `expected a message with array (multi-part) content once media is inlined, got: ${JSON.stringify(resultWithMedia.chat)}`);
+    const imagePart = turnWithMedia.content.find(p => p.type === 'image_url');
+    assert.ok(imagePart, 'a real media-attachment reference forwarded via userMessageExtra is actually inlined into the assembled chat-completion payload as a real image_url content part');
+    assert.ok(imagePart.image_url.url.startsWith('data:image/jpeg;base64,'));
 
     // --- tool-capability inputs are supplied, NOT pre-resolved by this resolver ---
     assert.equal(input.settings.chat_completion_source, 'openai', 'settings forwards the real oai_settings object for prepareOpenAIMessages() to resolve tool-capability values from internally');

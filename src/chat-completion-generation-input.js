@@ -381,6 +381,13 @@ import { getBiasStrings } from './prompt-line-formatting.js';
  * intentionally omitted - a pending, not-yet-saved message), BEFORE `buildChatCompletionMessages()`
  * ever runs, so the appended turn flows through the exact same role/content conversion as every real
  * loaded message. Omitted for generation types that don't add a new message (e.g. 'continue'/'swipe').
+ *
+ * UPDATE (this session): the appended message's `extra` is `userMessageExtra` when given (still `{}`
+ * otherwise) - identical mechanism/rationale to text-completion-generation-input.js's own identical
+ * UPDATE. This is how a forwarded file/media attachment reference reaches the already-generic
+ * `buildChatCompletionMessages()`/`inlineMediaAttachment()` machinery (src/chat-completion-messages.js,
+ * src/chat-completion-history.js) that already reads `.extra.media`/`.extra.media_index` off
+ * whichever chat entry it's given.
  */
 
 /** Mirrors PromptManager.js's `configuration.promptOrder.dummyId` - see FIELD-MAPPING NOTES above. */
@@ -659,6 +666,11 @@ async function resolveChatHistory(directories, { ownerId, branchName, nodeId }) 
  * equivalent param name/default exactly.
  * @param {object} [params.chatMetadata] Overrides the loaded branch's own metadata when given.
  * @param {string} [params.userMessageText] The raw user action for this turn - see doc comment.
+ * @param {object} [params.userMessageExtra] Already-SERVER-VALIDATED `extra` for the newly-appended
+ * user message (see `sanitizeUserMessageExtra()` in message-tree-db.js) - identical contract to
+ * text-completion-generation-input.js's own equivalent param: a forwarded file/media attachment
+ * REFERENCE, trusted verbatim here (the caller already ran it through the allowlist), ignored when
+ * `userMessageText` is omitted.
  * @param {import('./world-info/activation.js').WIEntry[]} [params.worldInfoCandidates] Explicit
  * override/bypass for the auto-resolved candidates - when omitted, this resolver calls
  * `resolveWorldInfoCandidates()` for real; passing an explicit array (including `[]`) always wins.
@@ -679,7 +691,7 @@ async function resolveChatHistory(directories, { ownerId, branchName, nodeId }) 
 export async function resolveChatCompletionGenerationInput(directories, {
     avatar, groupId, ownerId, branchName, nodeId,
     type, isImpersonate = false, isContinue = false, isSwipe = false, dryRun,
-    cyclePrompt = '', textareaText = '', chatMetadata: chatMetadataOverride, userMessageText,
+    cyclePrompt = '', textareaText = '', chatMetadata: chatMetadataOverride, userMessageText, userMessageExtra,
     worldInfoCandidates: worldInfoCandidatesOverride,
     regexScripts = [], regexExtensionEnabled = true,
     model: modelOverride, modelList, characterId = PROMPT_ORDER_DUMMY_ID,
@@ -722,7 +734,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
     // the last entry) - this is the shape getBiasStrings() below expects (it does its own
     // last-entry skip for 'swipe'/'regenerate' - see that function's own doc comment for why).
     const chat = typeof userMessageText === 'string'
-        ? [...loadedChat, { is_user: true, name: name1, mes: userMessageText, extra: {}, send_date: Date.now() }]
+        ? [...loadedChat, { is_user: true, name: name1, mes: userMessageText, extra: userMessageExtra && typeof userMessageExtra === 'object' ? userMessageExtra : {}, send_date: Date.now() }]
         : loadedChat;
 
     // Drops the message currently being swiped/regenerated from the context actually used to BUILD

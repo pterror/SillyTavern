@@ -65,7 +65,7 @@ import { readSettingsAtPaths } from '../../settings-store.js';
 import { readPresetByName } from '../presets.js';
 import { resolveChatCompletionGenerationInput } from '../../chat-completion-generation-input.js';
 import { prepareOpenAIMessages } from '../../chat-completion-prepare-messages.js';
-import { getAncestorPath, appendMessages } from '../../message-tree-db.js';
+import { getAncestorPath, appendMessages, sanitizeUserMessageExtra } from '../../message-tree-db.js';
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
 import { persistAssistantReply } from '../../assistant-reply-persist.js';
@@ -2571,11 +2571,16 @@ router.post('/bias', async function (request, response) {
  * @param {boolean} [params.isSwipe]
  * @param {string} [params.userMessageText] The literal text the user typed this turn. Omit for
  * generation types that don't add a new message (continue/swipe).
+ * @param {object} [params.userMessageExtra] Already-SERVER-VALIDATED `extra` (see
+ * `sanitizeUserMessageExtra()` in message-tree-db.js) for the new user message being appended -
+ * forwarded verbatim to `resolveChatCompletionGenerationInput()`; the caller (route handler below) is
+ * responsible for having already sanitized whatever the client sent. Ignored when `userMessageText`
+ * is omitted.
  * @returns {Promise<{ params: object, settings: object, anchorNodeId: string|null, anchorContent: object|null, name1: string, name2: string }>}
  */
 export async function buildRawActionChatCompletionRequest(directories, {
     characterAvatar, groupId, ownerId, nodeId,
-    type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText,
+    type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText, userMessageExtra,
 } = {}) {
     if (!ownerId) {
         throw new Error('owner_id is required');
@@ -2623,9 +2628,29 @@ export async function buildRawActionChatCompletionRequest(directories, {
     const { oai_settings: settings = {}, power_user: powerUser = {} } = readSettingsAtPaths(directories, ['oai_settings', 'power_user']);
 
     // Step 4
+    // `imageInlining`/`videoInlining`/`audioInlining` OVERRIDE via `macroExtras` (resolveChatCompletionGenerationInput()'s
+    // own doc comment: these three otherwise resolve to `false` - a documented, PRE-EXISTING MVP scope
+    // boundary from before this task, since the client's own real capability predicates
+    // (`isImageInliningSupported()`/etc., public/scripts/chat-completion-settings.js) are not ported
+    // server-side). Without this override, a `userMessageExtra.media` entry forwarded by this task's
+    // own new attachment-plumbing would be silently inert (present in `extra.media`, never inlined) -
+    // NOT a fabricated capability check, but a REAL, narrower one than the client's: just the user's own
+    // `oai_settings.media_inlining` on/off toggle (the single settings field that gates all three
+    // inlining kinds together - see that setting's own migration history merging former
+    // `image_inlining`/`video_inlining`/`audio_inlining` into one flag), WITHOUT also re-checking the
+    // client's per-model vision-capability allowlist (a large, hardcoded model-name list with no
+    // server-side port - porting THAT is out of this task's scope, left as its own real, addressable
+    // follow-up). Practical effect of the narrowing: a raw-action request MAY attempt to inline media
+    // even when the currently-selected model doesn't actually support vision, if the user has
+    // `media_inlining` enabled - `Message.addImage()`'s own real backend call would then fail/be
+    // ignored by that backend, not this server silently mis-behaving.
+    const mediaInliningEnabled = Boolean(settings.media_inlining);
     const orchestratorInput = await resolveChatCompletionGenerationInput(directories, {
         avatar: characterAvatar, groupId, ownerId, nodeId,
-        type, isImpersonate, isContinue, isSwipe, userMessageText,
+        type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra,
+        macroExtras: {
+            imageInlining: mediaInliningEnabled, videoInlining: mediaInliningEnabled, audioInlining: mediaInliningEnabled,
+        },
     });
 
     // `nodeId === null` is only valid when this owner's conversation is really empty - see this
@@ -2897,6 +2922,12 @@ router.post('/generate', async function (request, response) {
                 node_id: nodeId, type = 'normal',
                 user_message: userMessageText,
             } = request.body;
+            // Server-validated (NOT trusted verbatim) - identical rationale/allowlist to
+            // text-completions.js's own raw-action branch (see `sanitizeUserMessageExtra()`'s own doc
+            // comment, message-tree-db.js). The client only ever forwards a REFERENCE to a file/media
+            // attachment it already uploaded (public/scripts/chats.js's `populateFileAttachment()`),
+            // never bytes.
+            const userMessageExtra = sanitizeUserMessageExtra(request.body.user_message_extra);
             // is_impersonate/is_continue/is_swipe are NOT read from the wire - see the identical
             // derivation and rationale in text-completions.js's own raw-action branch. Each is 100%
             // derivable from `type` alone; sending them as separate fields was a redundant classification
@@ -2912,7 +2943,7 @@ router.post('/generate', async function (request, response) {
             try {
                 built = await buildRawActionChatCompletionRequest(directories, {
                     characterAvatar, groupId, ownerId, nodeId,
-                    type, isImpersonate, isContinue, isSwipe, userMessageText,
+                    type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra,
                 });
             } catch (error) {
                 console.error('Failed to build raw-action chat completion request:', error);
@@ -2949,7 +2980,7 @@ router.post('/generate', async function (request, response) {
             let replyAnchorNodeId = built.anchorNodeId;
             if (!skipPersistence && typeof userMessageText === 'string' && built.anchorNodeId) {
                 const appendResult = await appendMessages(directories, ownerId, built.anchorNodeId, [
-                    { name: built.name1, is_user: true, mes: userMessageText, extra: {}, send_date: Date.now() },
+                    { name: built.name1, is_user: true, mes: userMessageText, extra: userMessageExtra, send_date: Date.now() },
                 ]);
                 if (!appendResult.ok) {
                     console.error('Failed to persist user message onto the tree:', appendResult.reason);

@@ -27,7 +27,7 @@ import { readPresetByName } from '../presets.js';
 import { resolveTokenizerType, encodeWithTokenizerType } from '../../tokenizer-resolve.js';
 import { resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
 import { assembleTextCompletionPrompt } from '../../text-completion-prompt-orchestrator.js';
-import { getAncestorPath, appendMessages } from '../../message-tree-db.js';
+import { getAncestorPath, appendMessages, sanitizeUserMessageExtra } from '../../message-tree-db.js';
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
 import { persistAssistantReply } from '../../assistant-reply-persist.js';
@@ -472,11 +472,16 @@ router.post('/props', async function (request, response) {
  * @param {boolean} [params.isSwipe]
  * @param {string} [params.userMessageText] The literal text the user typed this turn. Omit for
  * generation types that don't add a new message (continue/swipe).
+ * @param {object} [params.userMessageExtra] Already-SERVER-VALIDATED `extra` (see
+ * `sanitizeUserMessageExtra()` in message-tree-db.js) for the new user message being appended -
+ * forwarded verbatim to `resolveTextCompletionGenerationInput()` and reused as-is for the real
+ * persisted append below (the route handler is responsible for having already sanitized whatever the
+ * client sent; this function does not re-validate it). Ignored when `userMessageText` is omitted.
  * @returns {Promise<{ params: object, backend: {type: string, serverUrl: string, model: string|undefined}, anchorNodeId: string|null, anchorContent: object|null, name1: string, name2: string }>}
  */
 export async function buildRawActionTextCompletionRequest(directories, {
     request, characterAvatar, groupId, ownerId, nodeId,
-    type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText,
+    type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText, userMessageExtra,
     // Test-only injection point, forwarded straight through to encodeWithTokenizerType()'s own
     // `encodeLocal`/`encodeTextgenRemote`/`fetchImpl` options (see that function's JSDoc) - lets a
     // test exercise this function end-to-end without real tokenizer model files or a live backend
@@ -556,7 +561,7 @@ export async function buildRawActionTextCompletionRequest(directories, {
         // `nodeId` passed as-is: `resolveChatHistory()`'s own checks are truthy-based, so `null`
         // already falls through to its anchor-resolution branch exactly like `undefined` would.
         avatar: characterAvatar, groupId, ownerId, nodeId,
-        type, isImpersonate, isContinue, isSwipe, userMessageText,
+        type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra,
         countTokens, encodeTokens,
     });
 
@@ -715,6 +720,14 @@ router.post('/generate', async function (request, response) {
                 node_id: nodeId, type = 'normal',
                 user_message: userMessageText,
             } = request.body;
+            // Server-validated (NOT trusted verbatim) - see `sanitizeUserMessageExtra()`'s own doc
+            // comment (message-tree-db.js) for the exact allowlisted shape. The client only ever sends
+            // a REFERENCE to a file/media attachment it already uploaded via the existing
+            // `/api/files/upload`/`saveBase64AsFile()` flow (public/scripts/chats.js's
+            // `populateFileAttachment()`) - never file bytes - but that reference is still
+            // client-controlled input from here on, so it goes through the same allowlist regardless
+            // of what the client actually sent.
+            const userMessageExtra = sanitizeUserMessageExtra(request.body.user_message_extra);
             // is_impersonate/is_continue/is_swipe are NOT read from the wire - each is 100% derivable
             // from `type` alone (they used to be sent as separate, redundant boolean fields alongside
             // it - the exact same "the client sends a derived classification instead of letting the
@@ -733,7 +746,7 @@ router.post('/generate', async function (request, response) {
             try {
                 built = await buildRawActionTextCompletionRequest(directories, {
                     request, characterAvatar, groupId, ownerId, nodeId,
-                    type, isImpersonate, isContinue, isSwipe, userMessageText,
+                    type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra,
                 });
             } catch (error) {
                 console.error('Failed to build raw-action text completion request:', error);
@@ -768,7 +781,7 @@ router.post('/generate', async function (request, response) {
             let replyAnchorNodeId = built.anchorNodeId;
             if (!skipPersistence && typeof userMessageText === 'string' && built.anchorNodeId) {
                 const appendResult = await appendMessages(directories, ownerId, built.anchorNodeId, [
-                    { name: built.name1, is_user: true, mes: userMessageText, extra: {}, send_date: Date.now() },
+                    { name: built.name1, is_user: true, mes: userMessageText, extra: userMessageExtra, send_date: Date.now() },
                 ]);
                 if (!appendResult.ok) {
                     console.error('Failed to persist user message onto the tree:', appendResult.reason);

@@ -42,11 +42,13 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-text-completions-raw-acti
 const charactersDir = path.join(root, 'characters');
 const groupsDir = path.join(root, 'groups');
 const worldsDir = path.join(root, 'worlds');
+const filesDir = path.join(root, 'files');
 fs.mkdirSync(charactersDir, { recursive: true });
 fs.mkdirSync(groupsDir, { recursive: true });
 fs.mkdirSync(worldsDir, { recursive: true });
+fs.mkdirSync(filesDir, { recursive: true });
 
-const directories = { root, characters: charactersDir, groups: groupsDir, worlds: worldsDir };
+const directories = { root, characters: charactersDir, groups: groupsDir, worlds: worldsDir, files: filesDir };
 globalThis.DATA_ROOT = root;
 
 const baseImage = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'public', 'img', 'ai4.png'));
@@ -1086,6 +1088,86 @@ async function run() {
         });
         assert.equal(status, 400, 'node_id: null on an owner with real existing history is a real 400');
         assert.match(data.message, /already has an existing conversation/, 'the error explains why null was rejected here');
+    }
+
+    // (i-9) ROUTE-LEVEL: a real `user_message_extra` file-attachment reference, forwarded on a raw-
+    // action request, is (a) persisted onto the new user message's real `extra` (via loadBranch(),
+    // matching this file's own existing convention) and (b) actually inlined - via the already-
+    // generic file-attachment-inline.js machinery - into the real prompt text the fake backend
+    // receives, not just carried through as inert data.
+    {
+        fs.writeFileSync(path.join(filesDir, 'raw-action-attach.txt'), 'The password is hunter2.');
+
+        let capturedRequestBody = null;
+        const fakeBackend = await startFakeBackend((_req, res, body) => {
+            capturedRequestBody = JSON.parse(body);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ choices: [{ text: 'Got your file.' }] }));
+        });
+        pointBackendAt(fakeBackend.url);
+
+        const branchBefore = await loadBranch(directories, ownerId, branchName);
+        const app = buildTestApp();
+        const { status } = await postGenerate(app, {
+            owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+            type: 'normal', user_message: 'Check the attached file.', stream: false,
+            user_message_extra: { files: [{ url: '/user/files/raw-action-attach.txt', size: 25, name: 'raw-action-attach.txt', created: 1700000000000 }] },
+        });
+        fakeBackend.server.close();
+
+        assert.equal(status, 200);
+        assert.ok(capturedRequestBody, 'the fake backend actually received a request');
+        const promptField = JSON.stringify(capturedRequestBody);
+        assert.ok(
+            promptField.includes('The password is hunter2.'),
+            'the real file-attachment content, resolved via the forwarded user_message_extra reference, was inlined into the prompt actually sent to the backend',
+        );
+
+        const branchAfter = await loadBranch(directories, ownerId, branchName);
+        const persistedUserMsg = branchAfter.messages[branchAfter.messages.length - 2];
+        assert.equal(persistedUserMsg.mes, 'Check the attached file.');
+        assert.deepEqual(
+            persistedUserMsg.extra,
+            { files: [{ url: '/user/files/raw-action-attach.txt', size: 25, name: 'raw-action-attach.txt', created: 1700000000000 }] },
+            'the persisted user message node carries the (sanitized) forwarded extra',
+        );
+    }
+
+    // (i-10) ROUTE-LEVEL: a garbage-shaped `user_message_extra` (unexpected top-level field, a
+    // non-string url, an out-of-enum media type) is dropped/sanitized rather than stored verbatim or
+    // crashing the request - sanitizeUserMessageExtra()'s own allowlist (message-tree-db.js) is
+    // exercised through the real HTTP route, not called directly.
+    {
+        const fakeBackend = await startFakeBackend((_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ choices: [{ text: 'Fine either way.' }] }));
+        });
+        pointBackendAt(fakeBackend.url);
+
+        const branchBefore = await loadBranch(directories, ownerId, branchName);
+        const app = buildTestApp();
+        const { status } = await postGenerate(app, {
+            owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+            type: 'normal', user_message: 'This has a garbage attachment payload.', stream: false,
+            user_message_extra: {
+                // Not a real allowlisted field - must be dropped entirely, not stored.
+                evil_script: '<script>alert(1)</script>',
+                // A file entry missing `url` (wrong type) - the whole entry must be dropped, not
+                // partially kept.
+                files: [{ url: 12345, name: 'not-a-real-url.txt' }],
+                // A media entry with an out-of-enum `type` - the whole entry must be dropped.
+                media: [{ url: '/user/files/whatever.png', type: 'application/x-not-a-real-media-type' }],
+                media_index: 'not-a-number',
+                inline_image: 'yes',
+            },
+        });
+        fakeBackend.server.close();
+        assert.equal(status, 200, 'a garbage-shaped user_message_extra does not crash the request - it is sanitized, not rejected outright');
+
+        const branchAfter = await loadBranch(directories, ownerId, branchName);
+        const persistedUserMsg = branchAfter.messages[branchAfter.messages.length - 2];
+        assert.equal(persistedUserMsg.mes, 'This has a garbage attachment payload.');
+        assert.deepEqual(persistedUserMsg.extra, {}, 'every field of the garbage payload was dropped by the allowlist - nothing survived, not even partially');
     }
 
     // NOTE: a dedicated test for the "continue/swipe on an empty chat" guard (see

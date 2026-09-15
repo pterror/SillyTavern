@@ -23,11 +23,13 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-text-completion-generatio
 const charactersDir = path.join(root, 'characters');
 const groupsDir = path.join(root, 'groups');
 const worldsDir = path.join(root, 'worlds');
+const filesDir = path.join(root, 'files');
 fs.mkdirSync(charactersDir, { recursive: true });
 fs.mkdirSync(groupsDir, { recursive: true });
 fs.mkdirSync(worldsDir, { recursive: true });
+fs.mkdirSync(filesDir, { recursive: true });
 
-const directories = { root, characters: charactersDir, groups: groupsDir, worlds: worldsDir };
+const directories = { root, characters: charactersDir, groups: groupsDir, worlds: worldsDir, files: filesDir };
 globalThis.DATA_ROOT = root;
 
 /** Minimal real on-disk lorebook, matching src/world-info/candidate-resolution.test.js's own fixture shape. */
@@ -300,6 +302,23 @@ async function run() {
     assert.equal(appended.mes, 'What happens next, Rex?');
     assert.deepEqual(appended.extra, {});
     assert.equal(input.chat.length, 3, 'omitting userMessageText leaves chat exactly as loaded, unchanged');
+
+    // --- userMessageExtra: a forwarded file-attachment reference becomes the appended message's
+    // real `extra`, and is later actually inlined by the real orchestrator (not just carried through
+    // as inert data) ---
+    fs.writeFileSync(path.join(filesDir, 'notes.txt'), 'The tower key is hidden under the loose stone.');
+    const withUserMessageExtra = await resolveTextCompletionGenerationInput(directories, {
+        avatar, ownerId, branchName, countTokens, encodeTokens,
+        userMessageText: 'Check my notes.',
+        userMessageExtra: { files: [{ url: '/user/files/notes.txt', size: 42, name: 'notes.txt', created: 1700000000000 }] },
+    });
+    const appendedWithExtra = withUserMessageExtra.chat[withUserMessageExtra.chat.length - 1];
+    assert.deepEqual(appendedWithExtra.extra, { files: [{ url: '/user/files/notes.txt', size: 42, name: 'notes.txt', created: 1700000000000 }] });
+    const resultWithFile = await assembleTextCompletionPrompt(withUserMessageExtra);
+    assert.ok(
+        resultWithFile.combinedPrompt.includes('The tower key is hidden under the loose stone.'),
+        'a real file-attachment reference forwarded via userMessageExtra is actually inlined into the assembled prompt, via the already-generic file-attachment-inline.js machinery',
+    );
 
     // world_info_settings is nested (NOT top-level world_info_depth) - this is the field-mapping
     // correction the task specifically asked to verify against real settings.json.

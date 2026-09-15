@@ -5543,17 +5543,26 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         'quiet',
         'continue',
     ];
+    // Set only when this call actually appends a brand-new user message to `chat` via
+    // sendMessageAsUser() below (the ONLY place in this function that can - `lastMessage`, captured
+    // above, is deliberately the PRE-existing last message, e.g. for the raw-action addressing
+    // model's own anchorNodeId, so it does NOT refer to this new message; this local is the only real
+    // reference to it). Consumed by the raw-action cutovers below to forward this message's already-
+    // uploaded file/media attachment REFERENCE (`extra.files`/`extra.media`/etc, populated by
+    // populateFileAttachment() inside sendMessageAsUser() - see that function - BEFORE this Generate()
+    // call ever runs any backend request) - see JUDGMENT CALL on hasPendingFileAttachment() below.
+    let sentUserMessage;
     //for normal messages sent from user..
     if ((textareaText != '' || (hasPendingFileAttachment() && !noAttachTypes.includes(type))) && !automatic_trigger && type !== 'quiet' && !dryRun && !depth) {
         // If user message contains no text other than bias - send as a system message
         if (messageBias && !removeMacros(textareaText)) {
             sendSystemMessage(system_message_types.GENERIC, ' ', { bias: messageBias });
         } else {
-            await sendMessageAsUser(textareaText, messageBias);
+            sentUserMessage = await sendMessageAsUser(textareaText, messageBias);
         }
     } else if (textareaText == '' && !automatic_trigger && !dryRun && [undefined, 'normal'].includes(type) && main_api == 'openai' && oai_settings.send_if_empty.trim().length > 0 && !depth) {
         // Use send_if_empty if set and the user message is empty. Only when sending messages normally
-        await sendMessageAsUser(oai_settings.send_if_empty.trim(), messageBias);
+        sentUserMessage = await sendMessageAsUser(oai_settings.send_if_empty.trim(), messageBias);
     }
 
     const canUseTools = ToolManager.isToolCallingSupported();
@@ -6043,10 +6052,28 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // still produces a valid request from the user's own configured settings, just without shrinking
     // it to fit whatever a currently-available worker can handle, so Horde may reject/retry more
     // often on an unadjusted size. Basic raw-action Horde generation works correctly without it.
+    // UPDATE (this task - file/media attachment cutover): `!hasPendingFileAttachment()` REMOVED from
+    // this gate's own preconditions. That check was gating on the WRONG signal - whether a file input
+    // element still has a File object staged in the DOM - when what actually matters is whether the
+    // bytes have already reached the server, which they always have by this point for the one type
+    // that can ever have a fresh attachment here ('normal'): `populateFileAttachment()` (public/
+    // scripts/chats.js), called from `sendMessageAsUser()` a few hundred lines above (`sentUserMessage`
+    // local, captured there), already uploaded the file (`saveBase64AsFile()`/`/api/files/upload`) and
+    // attached the result onto that message's own `extra.files`/`extra.media` BEFORE this gate ever
+    // runs. Verified (not assumed) that server-side `resolveTextCompletionGenerationInput()`'s already-
+    // generic file-attachment inlining (`file-attachment-inline.js`, wired into
+    // `text-completion-prompt-orchestrator.js`) reads `.extra` off whatever chat entry it's given,
+    // tree-loaded or freshly in-memory alike - so forwarding just the REFERENCE (`user_message_extra`
+    // below, sourced from `sentUserMessage.extra`) is sufficient; no re-upload, no client-side
+    // re-read of the file, needed. Media/image inlining is chat-completion-specific (no vision-style
+    // inlining exists for these four backends), so `.media`/`.media_index`/`.inline_image` are
+    // harmlessly forwarded-but-unused here - only `.files` is ever actually read for Kobold/NovelAI/
+    // Horde/textgenerationwebui. See buildRawActionKoboldRequest()'s/buildRawActionNovelRequest()'s
+    // own doc comments (src/endpoints/backends/kobold.js, src/endpoints/novelai.js) for the
+    // server-side confirmation this was extended to all three, not just textgenerationwebui.
     let rawActionGenerateData = null;
     if (!dryRun && (main_api === 'textgenerationwebui' || main_api === 'kobold' || main_api === 'novel' || main_api === 'koboldhorde')
         && [undefined, 'normal', 'impersonate', 'quiet', 'swipe', 'regenerate', 'continue'].includes(type)
-        && !hasPendingFileAttachment()
         && !canPerformToolCalls
     ) {
         // `getCurrentCharacter()?.avatar` is unchanged from the single-character case - see JUDGMENT
@@ -6105,6 +6132,17 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             // and the server-side `continueUserTextConflict` guard this required. Sent through unchanged
             // either way (`user_message` below); the server decides what to do with it.
             const userMessageText = textareaText !== '' ? textareaText : undefined;
+            // Only meaningful alongside a real `userMessageText` (the server ignores it otherwise -
+            // see buildRawActionTextCompletionRequest()'s own doc comment) - `sentUserMessage` (set a
+            // few hundred lines above, inside the SAME "for normal messages sent from user.." block
+            // whose `sendMessageAsUser()` call is the only thing that can populate a fresh
+            // `extra.files`/`extra.media` before this gate runs) is undefined whenever no message was
+            // actually appended this call (e.g. a plain continue/swipe/impersonate/quiet), in which
+            // case this is simply `undefined` too - a real, verified "nothing to forward" case, not a
+            // dropped value. The server re-validates this regardless of what's sent here (see
+            // `sanitizeUserMessageExtra()`, message-tree-db.js) - this is a REFERENCE to an attachment
+            // already uploaded by `populateFileAttachment()`, never the file itself.
+            const userMessageExtra = userMessageText !== undefined ? sentUserMessage?.extra : undefined;
             rawActionGenerateData = {
                 character_avatar: characterAvatar,
                 group_id: groupId,
@@ -6117,6 +6155,9 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                 // src/endpoints/backends/text-completions.js's/kobold.js's own identical server-side
                 // derivation) - sending them too was sending the same fact twice in two encodings.
                 user_message: userMessageText,
+                // See JUDGMENT CALL above this gate (`!hasPendingFileAttachment()` removal) for the
+                // full rationale - a forwarded REFERENCE, not a re-upload.
+                user_message_extra: userMessageExtra,
                 // Kobold-only: mirrors the EXACT real condition getKoboldGenerationData() (public/
                 // scripts/kai-settings.js) and its server-side port createKoboldGenerationData()
                 // (src/kobold-generation-data.js) both use for their own `streaming` field -
@@ -6305,11 +6346,24 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // does. Same real edge case applies too (see the text-completion cutover's own JUDGMENT CALL #1 above): a
     // continue's `userMessageText` CAN be non-empty (leftover send-box text), handled by the identical
     // `continueUserTextConflict` guard in chat-completions.js's own route handler.
+    // UPDATE (this task - file/media attachment cutover): `!hasPendingFileAttachment()` REMOVED -
+    // identical rationale to the text-completion cutover's own removal above. Chat-completion is
+    // additionally the ONE backend family with real media/image inlining (`inlineMediaAttachment()`,
+    // src/chat-completion-history.js, backed by src/chat-completion-budget.js's `addImage`/`addVideo`/
+    // `addAudio`) - already generic over `.extra.media`/`.media_index`/`.inline_image` on whatever
+    // chat entry it's given (verified via `buildChatCompletionMessages()`, src/chat-completion-
+    // messages.js, which reads those straight off `chat[j].extra` for the in-memory injected turn
+    // exactly like a tree-loaded one) - so `.media` (image/video/audio) is fully inlined into this
+    // turn's own prompt. `.files` (text attachments) is forwarded and correctly PERSISTED here too,
+    // but NOT currently inlined into this turn's prompt - `file-attachment-inline.js` is wired only
+    // into the text-completion pipeline, not chat-completion's (verified by grep, not assumed) - a
+    // real, pre-existing gap versus the legacy client-assembled path (which DOES inline file text via
+    // `coreChat`'s own `appendFileContent()`), not something this task fixes. See the route-level
+    // test in chat-completions.test.js for the full accounting.
     let rawActionChatCompletionData = null;
     if (!dryRun && main_api === 'openai'
         && [undefined, 'normal', 'impersonate', 'quiet', 'swipe', 'regenerate', 'continue'].includes(type)
         && !jsonSchema
-        && !hasPendingFileAttachment()
         && !canPerformToolCalls
     ) {
         // `getCurrentCharacter()?.avatar`/`groupId`/`ownerId` derivation is IDENTICAL to the
@@ -6347,6 +6401,10 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             // exception (same as the text-completion cutover above): it CAN be non-empty - sent through unchanged
             // regardless, handled server-side by `continueUserTextConflict`.
             const userMessageText = textareaText !== '' ? textareaText : undefined;
+            // Identical mechanism/rationale to the text-completion cutover's own `userMessageExtra`
+            // local above - `sentUserMessage` is the same single local, set at most once per
+            // `Generate()` call, shared by both raw-action gates.
+            const userMessageExtra = userMessageText !== undefined ? sentUserMessage?.extra : undefined;
             rawActionChatCompletionData = {
                 character_avatar: characterAvatar,
                 group_id: groupId,
@@ -6356,6 +6414,11 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                 // is_impersonate/is_continue/is_swipe are NOT sent - see the text-completion cutover's
                 // own identical UPDATE comment above (server derives all three from `type` alone).
                 user_message: userMessageText,
+                // See JUDGMENT CALL above this gate (`!hasPendingFileAttachment()` removal) for the
+                // full rationale - a forwarded REFERENCE, not a re-upload. Unlike the text-completion
+                // cutover, chat-completion's server-side pipeline actually inlines `.media` too, not
+                // just `.files`.
+                user_message_extra: userMessageExtra,
             };
         }
         // else: no resolvable ownerId/characterAvatar (other precondition) - fall through to the
