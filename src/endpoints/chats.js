@@ -26,6 +26,7 @@ import {
 } from '../util.js';
 import { bumpCharacterDateLastChat, bumpGroupChatStats } from '../character-metadata-db.js';
 import { resolveGroupOwner } from '../character-shallow.js';
+import { readGroupFile, writeGroupFile } from './groups.js';
 import { readCardContent } from './characters.js';
 import { cardToGreetingsModel } from '../greeting-list.js';
 import { migrateOwnerOnTouch } from '../message-tree-migration.js';
@@ -1774,6 +1775,32 @@ function pickUniqueGroupChatId(existingIds, baseId) {
 }
 
 /**
+ * Registers a chat id in the group's own persisted `chats` list, if it isn't already there. A fresh
+ * branch/bookmark save (or the `unique` minting above) introduces an id the group descriptor has never
+ * heard of; without this, the caller previously had to follow up with a whole separate
+ * /api/groups/save-partial request just to append one string to `chats` - two requests to persist what
+ * is, from the user's perspective, one action (create a branch/bookmark). `group` here is the shallow
+ * `{id, chats}` view from `resolveGroupOwner()`/`touchGroupOwner()`, so the full descriptor is re-read
+ * before writing back - writing the shallow view would silently drop every other group field.
+ * Ordinary chat saves (the hot path - every message of an ongoing group chat) hit the early return: the
+ * id was already registered when the group/chat was created, so no extra read or write happens.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {{id: string, chats: string[]}} group Shallow group view already resolved by the caller.
+ * @param {string} chatId The id this save is actually writing under (post `unique` minting).
+ */
+async function registerGroupChatIdIfNew(directories, group, chatId) {
+    if (group.chats.includes(chatId)) {
+        return;
+    }
+    const fullGroup = readGroupFile(directories, group.id);
+    if (!fullGroup) {
+        return;
+    }
+    fullGroup.chats = Array.isArray(fullGroup.chats) ? [...fullGroup.chats, chatId] : [chatId];
+    await writeGroupFile(directories, fullGroup);
+}
+
+/**
  * Fills in `extra.gen_id` for character messages missing one before a group chat is written to disk.
  * Group regeneration/swipe tracking depends on every character message carrying *some* gen_id; minting
  * the fallback here means callers that hand the server a whole chat array in one request (e.g. converting
@@ -1834,6 +1861,8 @@ router.post('/group/save', async function (request, response) {
                 groupId: group.id,
                 stats: { dateLastChat: Date.now(), chatSize: Buffer.byteLength(JSON.stringify(chatData), 'utf8') },
             }).catch(err => console.error(`Could not update group chat stats for ${id}:`, err));
+            await registerGroupChatIdIfNew(request.user.directories, group, id).catch(err =>
+                console.error(`Could not register new chat id "${id}" on group ${group.id}:`, err));
 
             return response.send({
                 ok: true,
@@ -1848,6 +1877,8 @@ router.post('/group/save', async function (request, response) {
         const integrity = await trySaveChat(chatData, chatFilePath, request.body.force, handle, id, request.user.directories.backups, request.user.directories);
         await bumpGroupChatStats(request.user.directories, id, { groupId: request.body.group_id }).catch(err =>
             console.error(`Could not update group chat stats for ${id}:`, err));
+        await registerGroupChatIdIfNew(request.user.directories, group, id).catch(err =>
+            console.error(`Could not register new chat id "${id}" on group ${group.id}:`, err));
 
         return response.send({ ok: true, integrity, chat_id: id });
     } catch (error) {

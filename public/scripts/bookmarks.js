@@ -19,6 +19,7 @@ import {
     hydrateSwipes,
     ensureOpeningRow,
     switchToNode,
+    isStoredNodeId,
 } from '../script.js';
 import {
     DEFAULT_AUTO_MODE_DELAY,
@@ -221,13 +222,26 @@ export async function createBranch(mesId, { swipeId = null } = {}) {
     const branchNodeId = await ensureOpeningRow(mesId);
 
     if (isTreeStored() && !selected_group && branchNodeId) {
+        // Default to the currently-selected swipe's node; an alt-swipe branch resolves its own node
+        // below instead. A swipe alternative that already exists is *already a row in the tree* (it was
+        // generated and persisted, or fetched from /api/chats/alternatives) - branching it is naming
+        // that row, the same "nothing to copy" case as the non-alt-swipe path just below. There is no
+        // snapshot to build or save here: doing so used to send a plain-array chatData through saveChat(),
+        // which saveChat() itself only recognizes as tree-shaped when chatData is NOT an array - so it
+        // silently fell through to the legacy whole-chat /api/chats/save route for a chat that is in fact
+        // tree-stored, and it labeled the wrong node besides (the pre-computed branchNodeId, i.e. the
+        // *currently selected* swipe, never the alternate one actually requested).
+        let targetNodeId = branchNodeId;
         if (selectedSwipeId !== null) {
-            const snapshot = await getBranchChatSnapshot(mesId, { swipeId: selectedSwipeId });
-            if (!snapshot) {
+            // The alternative may still be a hole (never fetched into swipe_info) - hydrate before
+            // resolving its node id, same as getBranchChatSnapshot() did for the old snapshot-swap.
+            await hydrateSwipes(Number(mesId), { index: selectedSwipeId });
+            const swipeNodeId = chat[mesId]?.swipe_info?.[selectedSwipeId]?.node_id;
+            if (!isStoredNodeId(swipeNodeId)) {
                 toastr.warning('Could not prepare the selected swipe for branching.', 'Branch creation failed');
                 return;
             }
-            await saveChat({ mesId, chatData: snapshot });
+            targetNodeId = swipeNodeId;
         }
 
         // Nothing to copy - the node already exists, so branching is just naming it.
@@ -237,7 +251,7 @@ export async function createBranch(mesId, { swipeId = null } = {}) {
             headers: getRequestHeaders(),
             body: JSON.stringify({
                 avatar_url: character?.avatar,
-                node_id: branchNodeId,
+                node_id: targetNodeId,
                 label: mainChatName,
                 unique: true,
             }),

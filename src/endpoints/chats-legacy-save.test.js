@@ -198,6 +198,52 @@ test('POST /api/chats/group/save with unique:true mints "<id> - Branch #N" again
     assert.equal(data.chat_id, 'Team Chat - Branch #1');
     assert.ok(fs.existsSync(path.join(groupChatsDir, 'Team Chat - Branch #1.jsonl')));
     assert.ok(!fs.existsSync(path.join(groupChatsDir, 'Team Chat.jsonl')));
+
+    // The new id must already be registered in the group's own persisted `chats` list from this single
+    // request - a caller that used to need a second /api/groups/save-partial round trip just to append
+    // one string here (createBranch()'s/createNewBookmark()'s group case, "one action, one request")
+    // should have nothing left to do but update its own in-memory mirror.
+    const groupOnDisk = JSON.parse(fs.readFileSync(path.join(groupsDir, 'group-1.json'), 'utf8'));
+    assert.deepEqual(groupOnDisk.chats, ['Team Chat', 'Team Chat - Branch #1']);
+    // Every other field on the descriptor must survive untouched - registration re-reads and rewrites
+    // the FULL descriptor (not the shallow {id, chats} view resolveGroupOwner() hands the route), or it
+    // would silently wipe the rest of the group's config.
+    assert.equal(groupOnDisk.name, 'Group group-1');
+});
+
+test('POST /api/chats/group/save with a fresh (non-unique) id also registers it in the group\'s chats list', { skip: !canMockSqliteEngine }, async () => {
+    const app = buildTestApp();
+    writeGroupFixture('group-3', []);
+
+    const { status, data } = await postJson(app, '/api/chats/group/save', {
+        id: 'Checkpoint #1',
+        group_id: 'group-3',
+        chat: [chatHeader(), userMsg('hi')],
+    });
+
+    assert.equal(status, 200);
+    assert.equal(data.chat_id, 'Checkpoint #1');
+    const groupOnDisk = JSON.parse(fs.readFileSync(path.join(groupsDir, 'group-3.json'), 'utf8'));
+    assert.deepEqual(groupOnDisk.chats, ['Checkpoint #1']);
+});
+
+test('POST /api/chats/group/save with an already-registered id does not rewrite the group descriptor', { skip: !canMockSqliteEngine }, async () => {
+    const app = buildTestApp();
+    writeGroupFixture('group-4', ['Ongoing Chat']);
+    const groupFilePath = path.join(groupsDir, 'group-4.json');
+    const before = fs.readFileSync(groupFilePath, 'utf8');
+
+    const { status } = await postJson(app, '/api/chats/group/save', {
+        id: 'Ongoing Chat',
+        group_id: 'group-4',
+        chat: [chatHeader(), userMsg('another message')],
+    });
+
+    assert.equal(status, 200);
+    // The hot path (every message of an ongoing group chat) must not pay for a group-descriptor
+    // read+write on every save - only a genuinely new id should trigger one.
+    const after = fs.readFileSync(groupFilePath, 'utf8');
+    assert.equal(after, before);
 });
 
 test('POST /api/chats/group/save mints gen_id only for character messages missing one, leaving existing values and user messages untouched', { skip: !canMockSqliteEngine }, async () => {
