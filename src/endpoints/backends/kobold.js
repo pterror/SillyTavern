@@ -143,6 +143,7 @@ router.post('/generate', async function (request, response_generate) {
             branch_name: branchName, node_id: nodeId, type = 'normal',
             is_impersonate: isImpersonate = false, is_continue: isContinue = false, is_swipe: isSwipe = false,
             user_message: userMessageText, streaming: streamingRequested = false,
+            can_abort: canAbortRequested = false,
         } = request.body;
 
         const directories = request.user.directories;
@@ -206,7 +207,22 @@ router.post('/generate', async function (request, response_generate) {
         // : '.../v1/generate'`) would ALWAYS pick the non-streaming endpoint for every raw-action
         // request, even one whose client-computed `streaming` field (see public/script.js's
         // `rawActionGenerateData` construction) correctly said `true`.
-        request.body = { ...built.params, streaming: !!streamingRequested };
+        //
+        // `can_abort` is overridden here for the identical reason and via the identical pattern -
+        // captured from the client's real requested value (`canAbortRequested`, destructured above
+        // alongside `streamingRequested`) BEFORE this same reassignment would otherwise discard it.
+        // built.params.can_abort (from createKoboldGenerationData()) is computed as JUST
+        // `koboldFlags.can_use_streaming` (verified by reading that file - a SIMPLER real condition
+        // than `streaming`'s three terms, with no `koboldSettings.streaming_kobold` or `type !==
+        // 'quiet'` term), but since buildRawActionKoboldRequest() never passes a real `koboldFlags`
+        // value through (same as for `streaming`), it defaults to `{}` and built.params.can_abort is
+        // unconditionally `false`. Without this override, the socket-close handler a few lines below
+        // (`if (request.body.can_abort && !response_generate.writableEnded) { ... }`) would never fire
+        // its abort-on-disconnect call to the real Kobold backend for ANY raw-action request, even one
+        // whose client-computed `can_abort` (see public/script.js's `rawActionGenerateData`
+        // construction) correctly said `true` - leaving the backend generating uselessly after the
+        // client has already gone away.
+        request.body = { ...built.params, streaming: !!streamingRequested, can_abort: !!canAbortRequested };
     }
 
     if (request.body.api_server.indexOf('localhost') != -1) {
