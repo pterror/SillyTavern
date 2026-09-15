@@ -11843,7 +11843,12 @@ function messageEditAuto(div) {
     ));
     mesBlock.find('.mes_bias').empty();
     mesBlock.find('.mes_bias').append(messageFormatting(bias, '', false, false, -1, {}, false));
-    saveChatDebounced();
+    if (chat_metadata?._tree_stored) {
+        chatOpEdit(this_edit_mes_id).catch(error =>
+            console.error('Could not save the edited message:', error));
+    } else {
+        saveChatDebounced();
+    }
 }
 
 /**
