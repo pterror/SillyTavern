@@ -65,7 +65,7 @@ import { readSettingsAtPaths } from '../../settings-store.js';
 import { readPresetByName } from '../presets.js';
 import { resolveChatCompletionGenerationInput } from '../../chat-completion-generation-input.js';
 import { prepareOpenAIMessages } from '../../chat-completion-prepare-messages.js';
-import { getAncestorPath, appendMessages, editMessage, sanitizeUserMessageExtra } from '../../message-tree-db.js';
+import { getAncestorPath, appendMessages, editMessage, sanitizeUserMessageExtra, addAlternatives, selectDefaultChild } from '../../message-tree-db.js';
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
 import { persistAssistantReply } from '../../assistant-reply-persist.js';
@@ -3119,6 +3119,7 @@ async function forwardAndPersistSseWithServerTools(fetchResponse, response, pers
     const roundResult = await runServerToolRounds({
         ...pendingServerToolLoop,
         leafNodeId: persist.anchorNodeId,
+        isSwipe: persist.isSwipe,
         initialJson,
         refetch,
     });
@@ -3143,7 +3144,15 @@ async function forwardAndPersistSseWithServerTools(fetchResponse, response, pers
     response.write('data: [DONE]\n\n');
     response.end();
 
+    // See runServerToolRounds()'s own doc comment and the non-streaming call site's identical
+    // comment above: once any round has run (guaranteed here - this function is only reached when
+    // the first round's own accumulated deltas included tool_calls), isSwipe/isContinue are
+    // downgraded to a plain append onto roundResult.leafNodeId - the sibling-alternative slot (swipe)
+    // was already claimed at round 0, and continue's edit-in-place has no meaningful target once a
+    // real tool-call node exists on the tree.
     persist.anchorNodeId = roundResult.leafNodeId;
+    persist.isSwipe = false;
+    persist.isContinue = false;
     if (finalText) {
         await persistAssistantReply(persist, finalText);
     }
@@ -3252,6 +3261,33 @@ function parseServerToolArguments(rawArguments) {
  * a pending hand-off) returns a real error too - the tool-call/result turns already persisted along the
  * way stay on the tree (they're real facts that happened), only the client-facing response reports
  * failure.
+ *
+ * FORMERLY-DOCUMENTED LIMITATION, NOW FIXED: `isSwipe`/`isContinue` interleaved with a server tool-call
+ * round used to be unreconciled - `leafNodeId` always attached the first round's tool-call turn as a
+ * plain CHILD of the pre-loop anchor (via `appendMessages()`), and the caller then reassigned
+ * `persistAssistantReply()`'s own `anchorNodeId` to `roundResult.leafNodeId` (the tool turn's node) -
+ * correct for the plain-append case, but wrong for `isSwipe`/`isContinue`, whose persistence modes treat
+ * `anchorNodeId` as the node being REPLACED-BY-A-SIBLING/EDITED-IN-PLACE, not "appended after". Feeding
+ * the tool-call node in as that anchor turned a swipe into "add a new child two levels under the ORIGINAL
+ * anchor's parent" (nested one level too deep - a sibling of the tool turn, not of the original message)
+ * and turned a continue into "overwrite the tool-call turn's own `tool_invocations` with concatenated
+ * text at the wrong node" (destroying the tool-call record).
+ *
+ * Fix, verified against `addAlternatives()`/`appendMessages()`'s real tree-mutation semantics
+ * (message-tree-db.js): `isSwipe` now attaches ONLY the very first round's tool-call turn as a REAL
+ * SIBLING of the pre-loop anchor (`addAlternatives()` + `selectDefaultChild()` instead of
+ * `appendMessages()`) - the sibling-alternative slot a swipe is supposed to occupy is claimed by the
+ * FIRST real thing that happened during this swipe attempt (a tool call), preserving true event order;
+ * everything after round 0 (further rounds, and the caller's own final-reply append) chains onward from
+ * there via ordinary `appendMessages()`, exactly like the plain-append case, since by round 1 the sibling
+ * slot is already spoken for. The caller (the route handler, both streaming and non-streaming) then
+ * downgrades its own `isSwipe`/`isContinue` flags to `false` before calling `persistAssistantReply()` for
+ * the FINAL reply, once any round has actually run - `roundResult.leafNodeId` at that point already sits
+ * exactly where a plain append belongs (a descendant of the just-claimed sibling for swipe; a descendant
+ * of the unmoved, unedited original anchor for continue, which never needed the sibling-claim step since
+ * continue has no sibling concept - editing text in place across a genuine tool-call boundary isn't
+ * meaningful once a real intervening tree node exists, so continue-with-a-tool-call degrades to "the
+ * continuation text lands as its own new node after the tool call", not a merged edit).
  * @param {object} params
  * @param {import('../../users.js').UserDirectoryList} params.directories
  * @param {string} params.ownerId
@@ -3269,6 +3305,9 @@ function parseServerToolArguments(rawArguments) {
  *   is re-derived fresh from the registry every round rather than assumed static.
  * @param {string} params.leafNodeId The tree node the first tool-call round (if any) should attach
  *   after - the assistant-reply anchor already resolved for this request.
+ * @param {boolean} [params.isSwipe] See this function's own doc comment above - when true, round 0's
+ *   tool-call turn claims the sibling-alternative slot (`addAlternatives()`+`selectDefaultChild()`)
+ *   instead of being appended as a child of `leafNodeId`. Every later round appends normally.
  * @param {any} params.initialJson The backend's first response body (already parsed JSON).
  * @param {(messages: object[]) => Promise<import('node-fetch').Response>} params.refetch Re-issues
  *   the backend request with a freshly-resolved `messages` array, everything else unchanged.
@@ -3278,7 +3317,7 @@ function parseServerToolArguments(rawArguments) {
  *   {ok: 'pending', pendingToolCalls: {node_id: string, tool_call_id: string, name: string, arguments: object}[], leafNodeId: string}
  * >}
  */
-async function runServerToolRounds({ directories, ownerId, characterAvatar, groupId, enabledTools, clientToolNames, clientToolSchemas, leafNodeId, initialJson, refetch }) {
+async function runServerToolRounds({ directories, ownerId, characterAvatar, groupId, enabledTools, clientToolNames, clientToolSchemas, leafNodeId, isSwipe = false, initialJson, refetch }) {
     const toolsByName = new Map(enabledTools.map(tool => [tool.name, tool]));
     let json = initialJson;
     let currentLeafId = leafNodeId;
@@ -3333,19 +3372,34 @@ async function runServerToolRounds({ directories, ownerId, characterAvatar, grou
         }
 
         const toolNames = invocations.map(invocation => invocation.name).join(', ');
-        const appendResult = await appendMessages(directories, ownerId, currentLeafId, [
-            {
-                name: 'System', is_system: true, is_user: false,
-                mes: `Tool calls: ${toolNames}`,
-                extra: { tool_invocations: invocations },
-                send_date: Date.now(),
-            },
-        ]);
+        const toolTurnContent = {
+            name: 'System', is_system: true, is_user: false,
+            mes: `Tool calls: ${toolNames}`,
+            extra: { tool_invocations: invocations },
+            send_date: Date.now(),
+        };
+
+        // Round 0 of an `isSwipe` request claims the sibling-alternative slot itself (see this
+        // function's own doc comment above) - the tool call is the first real thing that happened
+        // during this swipe attempt, so IT becomes the new alternative alongside the message being
+        // swiped, not a child buried one level under it. Every later round (round > 0) has no sibling
+        // slot left to claim - the slot was already taken by round 0's own tool turn - so it just
+        // chains on as an ordinary child, identical to the plain-append case.
+        const claimsSiblingSlot = round === 0 && isSwipe;
+        const appendResult = claimsSiblingSlot
+            ? await addAlternatives(directories, ownerId, currentLeafId, [toolTurnContent])
+            : await appendMessages(directories, ownerId, currentLeafId, [toolTurnContent]);
         if (!appendResult.ok || !appendResult.node_ids?.length) {
             console.error('Failed to persist tool invocation turn onto the tree:', appendResult.reason);
             return { ok: false, status: 500, message: 'Failed to persist the tool invocation results onto the chat.' };
         }
         currentLeafId = appendResult.node_ids[appendResult.node_ids.length - 1];
+        if (claimsSiblingSlot) {
+            const selected = await selectDefaultChild(directories, currentLeafId);
+            if (!selected) {
+                console.error('Failed to select the new tool-call sibling alternative as current (swipe interleaved with a server tool call).');
+            }
+        }
 
         if (pendingToolCalls.length > 0) {
             // See this function's own doc comment, step 5 - stop here, hand off to the client. The
@@ -4290,6 +4344,7 @@ router.post('/generate', async function (request, response) {
                 const roundResult = await runServerToolRounds({
                     ...pendingServerToolLoop,
                     leafNodeId: pendingAssistantPersist.anchorNodeId,
+                    isSwipe: pendingAssistantPersist.isSwipe,
                     initialJson: json,
                     refetch: (messages) => fetch(endpointUrl, { ...config, body: JSON.stringify({ ...requestBody, messages }) }),
                 });
@@ -4306,14 +4361,17 @@ router.post('/generate', async function (request, response) {
                 json = roundResult.json;
                 // Advance the persistence anchor to whatever the tool-call loop's last-appended node
                 // was, so the FINAL plain-text reply (persisted just below) chains after the real
-                // tool-call/result turns instead of the stale pre-loop anchor. JUDGMENT CALL /
-                // documented limitation: for `isSwipe`/`isContinue`, `persistAssistantReply()` uses
-                // this same `anchorNodeId` as the node being REPLACED/edited-in-place, not merely
-                // "appended after" - if tool-call rounds ran in between, that specific combination
-                // (continue/swipe interleaved with server tool calls) is not specially reconciled here
-                // and is considered out of scope for this chunk; the common case (`type: 'normal'`,
-                // plain append) is unaffected.
+                // tool-call/result turns instead of the stale pre-loop anchor. Once ANY round has run
+                // (guaranteed here - this block is only reached when the backend's first response
+                // already carried tool_calls, so round 0 always executes), `isSwipe`/`isContinue` are
+                // downgraded to a plain append: `runServerToolRounds()` already claimed the
+                // sibling-alternative slot for `isSwipe` at round 0 (see its own doc comment), and
+                // `isContinue`'s "edit in place" has no meaningful target anymore once a real
+                // intervening tool-call node exists on the tree - see `runServerToolRounds()`'s own doc
+                // comment for the full rationale (was previously a documented, out-of-scope limitation).
                 pendingAssistantPersist.anchorNodeId = roundResult.leafNodeId;
+                pendingAssistantPersist.isSwipe = false;
+                pendingAssistantPersist.isContinue = false;
             }
 
             // Persist the ASSISTANT's reply for the raw-action branch (see
