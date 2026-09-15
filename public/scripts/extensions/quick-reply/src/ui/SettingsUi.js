@@ -381,7 +381,7 @@ export class SettingsUi {
                     await this.doDeleteQrSet(oldQrs);
                     const qrs = new QuickReplySet();
                     qrs.name = name;
-                    qrs.addQuickReply();
+                    qrs.addQuickReply({}, { dispatch: false });
                     await qrs.performFullSave();
                     QuickReplySet.list.splice(idx, 0, qrs);
                     this.rerender();
@@ -394,7 +394,7 @@ export class SettingsUi {
             } else {
                 const qrs = new QuickReplySet();
                 qrs.name = name;
-                qrs.addQuickReply();
+                qrs.addQuickReply({}, { dispatch: false });
                 await qrs.performFullSave();
                 const idx = QuickReplySet.list.findIndex(it => it.name.toLowerCase().localeCompare(name.toLowerCase()) == 1);
                 if (idx > -1) {

@@ -1762,7 +1762,9 @@ export class QuickReply {
             }
             this.message = value;
             this.updateRender();
-            this.onUpdate(this);
+            // Triggered per keystroke while typing - a continuous edit, so let the set coalesce it
+            // (see QuickReplySet.saveQrUpdate's immediate=false path) instead of firing a request now.
+            this.onUpdate(this, { immediate: false });
         }
     }
 
@@ -1817,7 +1819,9 @@ export class QuickReply {
             }
             this.label = value;
             this.updateRender();
-            this.onUpdate(this);
+            // Triggered per keystroke while typing - a continuous edit, so let the set coalesce it
+            // (see QuickReplySet.saveQrUpdate's immediate=false path) instead of firing a request now.
+            this.onUpdate(this, { immediate: false });
         }
     }
 
@@ -1828,7 +1832,9 @@ export class QuickReply {
         if (this.onUpdate) {
             this.title = value;
             this.updateRender();
-            this.onUpdate(this);
+            // Triggered per keystroke while typing - a continuous edit, so let the set coalesce it
+            // (see QuickReplySet.saveQrUpdate's immediate=false path) instead of firing a request now.
+            this.onUpdate(this, { immediate: false });
         }
     }
 

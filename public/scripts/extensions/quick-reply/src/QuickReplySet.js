@@ -3,7 +3,7 @@ import { Popup, POPUP_RESULT, POPUP_TYPE } from '../../../popup.js';
 import { executeSlashCommandsOnChatInput, executeSlashCommandsWithOptions } from '../../../slash-commands.js';
 import { SlashCommandScope } from '../../../slash-commands/SlashCommandScope.js';
 import { SlashCommandParser } from '../../../slash-commands/SlashCommandParser.js';
-import { debounceAsync, warn } from '../index.js';
+import { warn } from '../index.js';
 import { QuickReply } from './QuickReply.js';
 
 export class QuickReplySet {
@@ -37,57 +37,100 @@ export class QuickReplySet {
     /**@type {QuickReply[]}*/ qrList = [];
     /**@type {number}*/ idIndex = 0;
     /**@type {boolean}*/ isDeleted = false;
-    /**@type {function}*/ save;
     /**@type {HTMLElement}*/ dom;
     /**@type {HTMLElement}*/ settingsDom;
 
-    /** @type {Object|null} */ _pendingSetProps = null;
-    /** @type {Map|null} */ _pendingQrUpdates = null;
-    /** @type {Array|null} */ _pendingQrAdds = null;
-    /** @type {Set|null} */ _pendingQrDeletes = null;
-    /** @type {Array|null} */ _pendingQrOrder = null;
+    /**
+     * Per-QR-entry debounce timers, used ONLY to coalesce a single CONTINUOUS edit (e.g. typing
+     * into a label/message/title field, one 'input' event per keystroke) into one request once
+     * the edit settles - matching this codebase's messageEditAuto/saveChatDebounced precedent for
+     * textarea auto-save. Every other user action (add, delete, reorder, a set-level property
+     * toggle, or a discrete per-entry change like an icon pick or checkbox click) is a single,
+     * instantaneous gesture and is dispatched to the server immediately, with no accumulation
+     * across separate actions - see performSave's removal and the design note above performSave's
+     * former call sites for the reasoning.
+     * @type {Map<number, ReturnType<typeof setTimeout>>}
+     */
+    _qrUpdateTimers = new Map();
 
-    constructor() {
-        this.save = debounceAsync(() => this.performSave(), 200);
+    /**
+     * Low-level immediate dispatch to /save-partial. Every save*() method below builds its own
+     * one-shot payload for exactly the ONE user action it represents, instead of accumulating
+     * multiple distinct actions into one shared, debounced bundle. The server route already
+     * applies each bucket (setProps/qrUpdates/qrAdds/qrDeletes/qrOrder) as a named op against its
+     * own stored state, so nothing stops a caller from populating more than one bucket in a single
+     * call when a single action genuinely has multiple facets (e.g. adding a QR also bumps
+     * idIndex - see saveQrAdd) - the requirement is "one real user action -> one request", not
+     * "one bucket -> one request".
+     */
+    async _dispatchSave(partial) {
+        const response = await fetch('/api/quick-replies/save-partial', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ name: this.name, ...partial }),
+        });
+
+        if (response.ok) {
+            this.rerender();
+            return response.json().catch(() => null);
+        } else {
+            warn(`Failed to save Quick Reply Set: ${this.name}`);
+            console.error('QR could not be saved', response);
+            return null;
+        }
     }
 
-    /** Save a changed set-level property (color, disableSend, etc.) */
+    /** Save a changed set-level property (color, disableSend, etc.) - a single discrete action, dispatched immediately. */
     saveSetProp(prop, value) {
-        if (!this._pendingSetProps) this._pendingSetProps = {};
-        this._pendingSetProps[prop] = value;
-        this.save();
+        return this._dispatchSave({ setProps: { [prop]: value } });
     }
 
-    /** Save a changed QR entry (full entry, merged by stable id) */
-    saveQrUpdate(qr) {
-        if (!this._pendingQrUpdates) this._pendingQrUpdates = new Map();
-        this._pendingQrUpdates.set(qr.id, qr);
-        this.save();
+    /**
+     * Save a changed QR entry (full entry, merged by stable id).
+     * @param {QuickReply} qr the changed entry
+     * @param {boolean} [immediate] true (default) for a single discrete action (an icon pick, a
+     *   checkbox click, a context-menu toggle) - dispatched right away. false for a CONTINUOUS,
+     *   in-progress edit (typing into a text field, one call per keystroke) - coalesced via a
+     *   per-entry debounce so a whole burst of keystrokes to the SAME entry becomes one request
+     *   once typing settles, without ever merging with a different entry or a different kind of
+     *   action.
+     */
+    saveQrUpdate(qr, immediate = true) {
+        if (immediate) {
+            clearTimeout(this._qrUpdateTimers.get(qr.id));
+            this._qrUpdateTimers.delete(qr.id);
+            return this._dispatchSave({ qrUpdates: [qr] });
+        }
+        clearTimeout(this._qrUpdateTimers.get(qr.id));
+        this._qrUpdateTimers.set(qr.id, setTimeout(() => {
+            this._qrUpdateTimers.delete(qr.id);
+            this._dispatchSave({ qrUpdates: [qr] });
+        }, 300));
     }
 
-    /** Save a new QR entry addition */
+    /**
+     * Save a new QR entry addition - a single discrete action. idIndex is bumped as part of the
+     * very same action (not a separate one), so it's sent in the same request.
+     */
     saveQrAdd(qr) {
-        if (!this._pendingQrAdds) this._pendingQrAdds = [];
-        this._pendingQrAdds.push(qr);
-        // idIndex changes when QRs are added
-        this.saveSetProp('idIndex', this.idIndex);
-        // Track order since the new entry needs positioning
-        this._pendingQrOrder = this.qrList.map(q => q.id);
-        // save() already called by saveSetProp above
+        return this._dispatchSave({ qrAdds: [qr], setProps: { idIndex: this.idIndex } });
     }
 
-    /** Save a QR entry deletion by stable id */
+    /** Save a QR entry deletion by stable id - a single discrete action, dispatched immediately. */
     saveQrDelete(id) {
-        if (!this._pendingQrDeletes) this._pendingQrDeletes = new Set();
-        this._pendingQrDeletes.add(id);
-        this._pendingQrUpdates?.delete(id);
-        this.save();
+        clearTimeout(this._qrUpdateTimers.get(id));
+        this._qrUpdateTimers.delete(id);
+        return this._dispatchSave({ qrDeletes: [id] });
     }
 
-    /** Save a reorder of QR entries */
+    /**
+     * Save a reorder of QR entries - a drag-and-drop (or insert-before) reorder is ONE user action
+     * even though it touches every item's position, so it's legitimately sent as one bulk request
+     * with the whole new order, matching tags.js's saveTagsNow() precedent for its own drag-reorder
+     * case.
+     */
     saveOrder() {
-        this._pendingQrOrder = this.qrList.map(qr => qr.id);
-        this.save();
+        return this._dispatchSave({ qrOrder: this.qrList.map(qr => qr.id) });
     }
 
     init() {
@@ -267,13 +310,21 @@ export class QuickReplySet {
      * Adds a quick reply with a client-picked id. Safe when the whole set is about to be saved
      * atomically right after (e.g. a brand new set); otherwise prefer addQuickReplyRemote(), since
      * this id is only ever asserted, never confirmed by the server.
+     * @param {object} [data]
+     * @param {object} [options]
+     * @param {boolean} [options.dispatch] (true) whether to persist the addition right away. Pass
+     *   false when the caller is about to immediately supersede or combine this with another
+     *   request for the SAME user action (e.g. a full-save that follows right after for a brand
+     *   new set, or an insert-before that also needs to reposition the entry in one combined
+     *   request) - firing an immediate add here as well would either race the follow-up request or
+     *   double up on what is really a single action.
      */
-    addQuickReply(data = {}) {
+    addQuickReply(data = {}, { dispatch = true } = {}) {
         const id = Math.max(this.idIndex, this.qrList.reduce((max, qr) => Math.max(max, qr.id), 0)) + 1;
         data.id = this.idIndex = id + 1;
         const qr = QuickReply.from(data);
         this.registerNewQuickReply(qr);
-        this.saveQrAdd(qr);
+        if (dispatch) this.saveQrAdd(qr);
         return qr;
     }
 
@@ -302,7 +353,7 @@ export class QuickReplySet {
         return qr;
     }
 
-    async addQuickReplyFromText(qrJson, { remote = false } = {}) {
+    async addQuickReplyFromText(qrJson, { remote = false, dispatch = true } = {}) {
         let data;
         if (qrJson) {
             try {
@@ -322,7 +373,7 @@ export class QuickReplySet {
         } else {
             data = {};
         }
-        const newQr = remote ? await this.addQuickReplyRemote(data) : this.addQuickReply(data);
+        const newQr = remote ? await this.addQuickReplyRemote(data) : this.addQuickReply(data, { dispatch });
         return newQr;
     }
 
@@ -335,15 +386,26 @@ export class QuickReplySet {
         qr.onDebug = () => this.debug(qr);
         qr.onExecute = (_, options) => this.executeWithOptions(qr, options);
         qr.onDelete = () => this.removeQuickReply(qr);
-        qr.onUpdate = (qr) => this.saveQrUpdate(qr);
-        qr.onInsertBefore = (qrJson) => {
-            this.addQuickReplyFromText(qrJson);
-            const newQr = this.qrList.pop();
+        qr.onUpdate = (qr, options) => this.saveQrUpdate(qr, options?.immediate ?? true);
+        qr.onInsertBefore = async (qrJson) => {
+            // "Insert a QR before this one" is a single user action with two facets - minting the
+            // new entry and placing it at a specific position - that both need to land in the SAME
+            // request: dispatching the add on its own first (as addQuickReplyFromText would do by
+            // default) and the reorder a moment later would race two independent requests against
+            // the same stored file. So the add is created locally without dispatching (dispatch:
+            // false), repositioned, and then both facets are sent together in one call.
+            const newQr = await this.addQuickReplyFromText(qrJson, { dispatch: false });
+            if (!newQr) return;
+            this.qrList.splice(this.qrList.indexOf(newQr), 1);
             this.qrList.splice(this.qrList.indexOf(qr), 0, newQr);
             if (qr.settingsDom) {
                 qr.settingsDom.insertAdjacentElement('beforebegin', newQr.settingsDom);
             }
-            this.saveOrder();
+            this._dispatchSave({
+                qrAdds: [newQr],
+                setProps: { idIndex: this.idIndex },
+                qrOrder: this.qrList.map(q => q.id),
+            });
         };
         qr.onTransfer = async () => {
             /**@type {HTMLSelectElement} */
@@ -449,66 +511,12 @@ export class QuickReplySet {
         };
     }
 
-    async performSave() {
-        const setProps = this._pendingSetProps;
-        const qrUpdates = this._pendingQrUpdates;
-        const qrAdds = this._pendingQrAdds;
-        const qrDeletes = this._pendingQrDeletes;
-        const qrOrder = this._pendingQrOrder;
-
-        this._pendingSetProps = null;
-        this._pendingQrUpdates = null;
-        this._pendingQrAdds = null;
-        this._pendingQrDeletes = null;
-        this._pendingQrOrder = null;
-
-        const body = { name: this.name };
-        let hasChanges = false;
-
-        if (setProps && Object.keys(setProps).length > 0) {
-            body.setProps = setProps;
-            hasChanges = true;
-        }
-        if (qrUpdates && qrUpdates.size > 0) {
-            body.qrUpdates = [...qrUpdates.values()];
-            hasChanges = true;
-        }
-        if (qrAdds && qrAdds.length > 0) {
-            body.qrAdds = qrAdds;
-            hasChanges = true;
-        }
-        if (qrDeletes && qrDeletes.size > 0) {
-            body.qrDeletes = [...qrDeletes];
-            hasChanges = true;
-        }
-        if (qrOrder) {
-            body.qrOrder = qrOrder;
-            hasChanges = true;
-        }
-
-        if (!hasChanges) return;
-
-        const response = await fetch('/api/quick-replies/save-partial', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify(body),
-        });
-
-        if (response.ok) {
-            this.rerender();
-        } else {
-            warn(`Failed to save Quick Reply Set: ${this.name}`);
-            console.error('QR could not be saved', response);
-        }
-    }
-
     async performFullSave() {
-        // Clear any pending partial state - this full save supersedes it
-        this._pendingSetProps = null;
-        this._pendingQrUpdates = null;
-        this._pendingQrAdds = null;
-        this._pendingQrDeletes = null;
-        this._pendingQrOrder = null;
+        // Cancel any pending per-entry debounced edit (see _qrUpdateTimers) - this full save
+        // supersedes it, and letting a stale debounced qrUpdates request land afterwards would
+        // clobber part of what this full save just wrote.
+        for (const timer of this._qrUpdateTimers.values()) clearTimeout(timer);
+        this._qrUpdateTimers.clear();
 
         const response = await fetch('/api/quick-replies/save', {
             method: 'POST',
