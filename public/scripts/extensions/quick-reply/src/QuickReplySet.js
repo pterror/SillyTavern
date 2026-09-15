@@ -307,17 +307,32 @@ export class QuickReplySet {
     }
 
     /**
-     * Adds a quick reply with a client-picked id. Safe when the whole set is about to be saved
-     * atomically right after (e.g. a brand new set); otherwise prefer addQuickReplyRemote(), since
-     * this id is only ever asserted, never confirmed by the server.
+     * Adds a quick reply with a client-picked id, only ever asserted, never confirmed by the
+     * server. Prefer addQuickReplyRemote() in new code - it blocks on a network round trip but
+     * lets the server mint the id, so it can never collide with an id another tab/client is
+     * concurrently minting for the same set.
+     *
+     * The new-quick-reply-set creation flow (SettingsUi.js's addQrSet()) used to be the one
+     * legitimate synchronous case here ("the whole set, including this id, is about to be saved
+     * atomically right after"), but that flow was changed to performFullSave() the (empty) set
+     * first and then addQuickReplyRemote() the first entry against the now-real, server-confirmed
+     * set - so it no longer needs a client-picked id at all. The two cases that remain genuinely
+     * synchronous:
+     *   1. QuickReplyApi.createQuickReply() - a public, documented, synchronous extension API
+     *      (`@returns {QuickReply}`, not a Promise) that existing third-party callers may depend
+     *      on getting the new entry back immediately. Changing its return type would be a breaking
+     *      API change out of scope here; createQuickReplyRemoteAsync() already exists alongside it
+     *      as the recommended async alternative for new callers.
+     *   2. onInsertBefore below - inserting a QR before another is one user action with two facets
+     *      (mint the entry, place it at a specific position) that must land in a single combined
+     *      request; the id has to be known synchronously to build that request's qrOrder list.
      * @param {object} [data]
      * @param {object} [options]
      * @param {boolean} [options.dispatch] (true) whether to persist the addition right away. Pass
      *   false when the caller is about to immediately supersede or combine this with another
-     *   request for the SAME user action (e.g. a full-save that follows right after for a brand
-     *   new set, or an insert-before that also needs to reposition the entry in one combined
-     *   request) - firing an immediate add here as well would either race the follow-up request or
-     *   double up on what is really a single action.
+     *   request for the SAME user action (e.g. onInsertBefore's combined add+reposition request) -
+     *   firing an immediate add here as well would either race the follow-up request or double up
+     *   on what is really a single action.
      */
     addQuickReply(data = {}, { dispatch = true } = {}) {
         const id = Math.max(this.idIndex, this.qrList.reduce((max, qr) => Math.max(max, qr.id), 0)) + 1;
