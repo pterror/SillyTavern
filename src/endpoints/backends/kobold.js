@@ -386,7 +386,8 @@ router.post('/generate', async function (request, response_generate) {
                 // public/script.js's own `data.results[0].text` read of this exact endpoint).
                 if (pendingAssistantPersist) {
                     const generatedText = data?.results?.[0]?.text ?? '';
-                    await persistAssistantReply(pendingAssistantPersist, generatedText);
+                    const persisted = await persistAssistantReply(pendingAssistantPersist, generatedText);
+                    if (persisted) data.assistant_node_id = persisted.node_id;
                 }
 
                 return response_generate.send(data);

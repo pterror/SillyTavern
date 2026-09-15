@@ -1049,7 +1049,10 @@ router.post('/generate', async function (request, response) {
                         ? (data?.response ?? '')
                         : (data?.choices?.[0]?.text ?? '');
 
-                    await persistAssistantReply(pendingAssistantPersist, generatedText);
+                    const persisted = await persistAssistantReply(pendingAssistantPersist, generatedText);
+                    if (persisted) {
+                        data.assistant_node_id = persisted.node_id;
+                    }
                 }
 
                 return response.send(data);
