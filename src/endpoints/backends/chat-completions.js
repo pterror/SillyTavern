@@ -65,7 +65,7 @@ import { readSettingsAtPaths } from '../../settings-store.js';
 import { readPresetByName } from '../presets.js';
 import { resolveChatCompletionGenerationInput } from '../../chat-completion-generation-input.js';
 import { prepareOpenAIMessages } from '../../chat-completion-prepare-messages.js';
-import { loadBranch, getAncestorPath, appendMessages } from '../../message-tree-db.js';
+import { getAncestorPath, appendMessages } from '../../message-tree-db.js';
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
 import { persistAssistantReply } from '../../assistant-reply-persist.js';
@@ -2497,8 +2497,10 @@ router.post('/bias', async function (request, response) {
  * 1. Real existence checks for the named character/group (identical pattern to
  *    `buildRawActionTextCompletionRequest()` - `readCardContent`/`getGroupsByIds`, tolerating a
  *    missing/unreadable card as "not found" rather than letting an ENOENT bubble up as an unrelated 500).
- * 2. Real anchor-node resolution (`loadBranch()`'s `branch.leaf_id` for a `branchName`, or a given
- *    `nodeId` verified via `getAncestorPath()`) - identical logic to the text-completion helper.
+ * 2. Real anchor-node resolution (a given `nodeId` verified via `getAncestorPath()`, or - only when
+ *    `nodeId` is explicitly `null` AND this owner's conversation is genuinely empty - the owner's
+ *    own anchor) - identical logic to the text-completion helper; see this function's own ADDRESSING
+ *    MODEL doc comment below.
  * 3. Read real `oai_settings`/`power_user` via `readSettingsAtPaths()` - JUDGMENT CALL: unlike
  *    text-completion (which needs a separate `resolveTextGenBackend()` step - see
  *    src/textgen-backend-resolve.js), chat completion has no separate "resolve the active backend
@@ -2525,10 +2527,11 @@ router.post('/bias', async function (request, response) {
  *        public/scripts/chat-completion-settings.js's own `const useLogprobs =
  *        !!power_user.request_token_probabilities` (~line 2851), a plain, simple settings-path
  *        mapping this module's own doc comment explicitly says a caller may resolve directly.
- *      - `chatId`: real, `branchName ?? nodeId` - chat-completion-generation-data.js's own doc comment
- *        says this is only ever `getCurrentChatId()` because "the caller already knows which chat this
- *        generation belongs to"; this raw action's caller-supplied `branchName`/`nodeId` IS that
- *        knowledge, so it's forwarded for real rather than left `undefined`.
+ *      - `chatId`: real, the resolved `anchorNodeId` - chat-completion-generation-data.js's own doc
+ *        comment says this is only ever `getCurrentChatId()` because "the caller already knows which
+ *        chat this generation belongs to"; the real, resolved node id (whether caller-given or
+ *        anchor-resolved for a brand-new conversation - see this function's own ADDRESSING MODEL doc
+ *        comment) IS that knowledge, so it's forwarded for real rather than left `undefined`.
  *      - `macroContext`: real, `orchestratorInput.macroContext` (already built by the resolver).
  *      - `getStoppingStrings`/`groupNames`/`electronHubReasoningEfforts`/`toolsPayload`/
  *        `reverseProxyValidated`/`jsonSchema`/`logitBias` override: NOT resolved here - explicit,
@@ -2541,13 +2544,27 @@ router.post('/bias', async function (request, response) {
  * `stream`/`chat_completion_source`/`secret_id` on the returned `params` (also the caller's job,
  * mirroring the `connection_profile_id` branch's own final-assignment shape).
  *
+ * ADDRESSING MODEL (this task's correction) - identical rule to
+ * `buildRawActionTextCompletionRequest()` (src/endpoints/backends/text-completions.js) - see that
+ * function's own doc comment for the full rationale (label vs. node-address are different concepts;
+ * a real client always already has the concrete `node_id` it's looking at by the time it's about to
+ * generate). There is no `branchName`/`branch_name` field in this raw-action surface. `nodeId` is
+ * the ONLY addressing input and is REQUIRED, but `null` is a valid, meaningful value:
+ * - A real `nodeId` string: address that specific existing node - unchanged prior behavior.
+ * - `nodeId === null`: valid ONLY when this owner's conversation is genuinely empty - resolved via
+ *   the owner's anchor. If the owner already has real history, this is a real 400, not a silent guess.
+ * - `nodeId === undefined` (the key was absent from the request body entirely): throws - a caller
+ *   that doesn't know whether it has real history yet must say so explicitly (`null`), not omit the
+ *   field and have the server guess.
+ *
  * @param {import('../../users.js').UserDirectoryList} directories
  * @param {object} params
  * @param {string} [params.characterAvatar] Character avatar filename. One of this or `groupId` is required.
  * @param {string} [params.groupId] Group id. One of this or `characterAvatar` is required.
  * @param {string} params.ownerId message-tree-db.js owner id.
- * @param {string} [params.branchName] message-tree-db.js labeled chat name. One of this or `nodeId` is required.
- * @param {string} [params.nodeId] Alternative to `branchName` - generate from this existing tree node.
+ * @param {string|null} params.nodeId REQUIRED (`undefined` throws) - see ADDRESSING MODEL above. A
+ * real node id string addresses that node; `null` asserts "this is a genuinely new, empty
+ * conversation" and only succeeds when that is actually true.
  * @param {string} [params.type] Generation type ('normal'/'impersonate'/'continue'/'swipe'/...).
  * @param {boolean} [params.isImpersonate]
  * @param {boolean} [params.isContinue]
@@ -2557,7 +2574,7 @@ router.post('/bias', async function (request, response) {
  * @returns {Promise<{ params: object, settings: object, anchorNodeId: string|null, anchorContent: object|null, name1: string, name2: string }>}
  */
 export async function buildRawActionChatCompletionRequest(directories, {
-    characterAvatar, groupId, ownerId, branchName, nodeId,
+    characterAvatar, groupId, ownerId, nodeId,
     type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText,
 } = {}) {
     if (!ownerId) {
@@ -2566,8 +2583,10 @@ export async function buildRawActionChatCompletionRequest(directories, {
     if (!characterAvatar && !groupId) {
         throw new Error('character_avatar or group_id is required');
     }
-    if (!branchName && !nodeId) {
-        throw new Error('branch_name or node_id is required');
+    // See ADDRESSING MODEL above - `undefined` means the request body never had the `node_id` key at
+    // all (real JSON has no `undefined` literal, so this is distinguishable from an explicit `null`).
+    if (nodeId === undefined) {
+        throw new Error('node_id is required (pass null explicitly for a brand-new, empty conversation)');
     }
 
     // Step 1 (existence checks) - identical convention to buildRawActionTextCompletionRequest().
@@ -2587,15 +2606,12 @@ export async function buildRawActionChatCompletionRequest(directories, {
         }
     }
 
-    // Step 2 (anchor resolution) - identical logic to buildRawActionTextCompletionRequest().
+    // Step 2 (anchor resolution) - identical logic to buildRawActionTextCompletionRequest(): a real
+    // given `nodeId` is verified directly; `nodeId === null` is left unresolved here and read back
+    // off `orchestratorInput.resolvedNodeId`/`chatResolutionAmbiguous` once Step 4 has computed it,
+    // rather than re-deriving "does this owner have real history" a second, independent way.
     let anchorNodeId = null;
-    if (branchName) {
-        const branch = await loadBranch(directories, ownerId, branchName);
-        if (!branch) {
-            throw new Error(`Chat branch not found: ${branchName}`);
-        }
-        anchorNodeId = branch.branch.leaf_id;
-    } else {
+    if (nodeId !== null) {
         const ancestorPath = await getAncestorPath(directories, nodeId);
         if (!ancestorPath) {
             throw new Error(`Chat node not found: ${nodeId}`);
@@ -2608,9 +2624,19 @@ export async function buildRawActionChatCompletionRequest(directories, {
 
     // Step 4
     const orchestratorInput = await resolveChatCompletionGenerationInput(directories, {
-        avatar: characterAvatar, groupId, ownerId, branchName, nodeId,
+        avatar: characterAvatar, groupId, ownerId, nodeId,
         type, isImpersonate, isContinue, isSwipe, userMessageText,
     });
+
+    // `nodeId === null` is only valid when this owner's conversation is really empty - see this
+    // function's own ADDRESSING MODEL doc comment and buildRawActionTextCompletionRequest()'s
+    // identical handling.
+    if (nodeId === null) {
+        if (orchestratorInput.chatResolutionAmbiguous) {
+            throw new Error('node_id is required: this character/group already has an existing conversation - resolve which node the client was looking at and pass its node_id (null is only valid for a genuinely new, empty conversation)');
+        }
+        anchorNodeId = orchestratorInput.resolvedNodeId;
+    }
 
     // Checked against the RAW (pre-drop) history length, not `orchestratorInput.macroContext.chat`
     // (which, for a swipe/regenerate, has already had the message being replaced dropped - see
@@ -2631,7 +2657,7 @@ export async function buildRawActionChatCompletionRequest(directories, {
         macroContext: orchestratorInput.macroContext,
         biasPresetEntries,
         useLogprobs,
-        chatId: branchName ?? nodeId,
+        chatId: anchorNodeId,
     });
 
     // JUDGMENT CALL: unlike buildRawActionTextCompletionRequest() (which gets `name1` back directly
@@ -2860,11 +2886,15 @@ router.post('/generate', async function (request, response) {
         // pipeline - the direct chat-completion analog of buildRawActionTextCompletionRequest() in
         // src/endpoints/backends/text-completions.js (commit ac42ce8c9). Field names deliberately
         // match that precedent's raw-action field names verbatim (character_avatar/group_id/
-        // owner_id/branch_name/node_id/type/is_impersonate/is_continue/is_swipe/user_message).
+        // owner_id/node_id/type/is_impersonate/is_continue/is_swipe/user_message) - there is no
+        // `branch_name` field (see buildRawActionChatCompletionRequest()'s own ADDRESSING MODEL doc
+        // comment). `node_id` is destructured straight off the parsed body, not defaulted, so the
+        // "key absent" (`undefined`) vs. "explicit null" distinction survives intact - see that same
+        // doc comment for why the two must stay distinguishable.
         } else if (request.body.owner_id && (request.body.character_avatar || request.body.group_id)) {
             const {
                 character_avatar: characterAvatar, group_id: groupId, owner_id: ownerId,
-                branch_name: branchName, node_id: nodeId, type = 'normal',
+                node_id: nodeId, type = 'normal',
                 user_message: userMessageText,
             } = request.body;
             // is_impersonate/is_continue/is_swipe are NOT read from the wire - see the identical
@@ -2881,7 +2911,7 @@ router.post('/generate', async function (request, response) {
             let built;
             try {
                 built = await buildRawActionChatCompletionRequest(directories, {
-                    characterAvatar, groupId, ownerId, branchName, nodeId,
+                    characterAvatar, groupId, ownerId, nodeId,
                     type, isImpersonate, isContinue, isSwipe, userMessageText,
                 });
             } catch (error) {

@@ -125,6 +125,11 @@ async function run() {
     });
 
     const ownerId = avatar;
+    // `branchName` here is ONLY message-tree-db.js's own label/bookmark concept (saveChatToTree()'s
+    // `chatName` param, loadBranch()'s lookup key) - a real, still-supported, unrelated primitive.
+    // It is NOT a raw-action request field anymore (see buildRawActionTextCompletionRequest()'s own
+    // ADDRESSING MODEL doc comment) - every raw-action call below resolves and passes the real
+    // `node_id` (a leaf id from `loadBranch()`) instead.
     const branchName = 'main-chat';
     await saveChatToTree(directories, ownerId, branchName, [
         { chat_metadata: {} },
@@ -132,10 +137,12 @@ async function run() {
         { name: 'Tester', is_user: true, mes: 'Hi Rex, nice to meet you.', send_date: 2, extra: {} },
         { name: 'Rex', is_user: false, mes: 'Likewise!', send_date: 3, extra: {} },
     ]);
+    const mainBranchInfo = await loadBranch(directories, ownerId, branchName);
+    const mainLeafId = mainBranchInfo.branch.leaf_id;
 
-    // --- happy path: a new user message on an existing branch ---
+    // --- happy path: a new user message on an existing conversation, addressed by its real node_id ---
     const built = await buildRawActionTextCompletionRequest(directories, {
-        characterAvatar: avatar, ownerId, branchName,
+        characterAvatar: avatar, ownerId, nodeId: mainLeafId,
         type: 'normal', userMessageText: 'What happens next, Rex?',
         tokenizerOptions: fakeTokenizerOptions,
     });
@@ -146,7 +153,8 @@ async function run() {
     assert.ok(built.anchorNodeId, 'anchorNodeId resolves to the real leaf of the loaded branch');
 
     const branchBeforeAppend = await loadBranch(directories, ownerId, branchName);
-    assert.equal(built.anchorNodeId, branchBeforeAppend.branch.leaf_id, 'anchorNodeId is exactly the loaded branch\'s real leaf_id');
+    assert.equal(built.anchorNodeId, branchBeforeAppend.branch.leaf_id, 'anchorNodeId is exactly the given node_id\'s real leaf_id');
+    assert.equal(built.anchorNodeId, mainLeafId, 'anchorNodeId is exactly the given node_id, unchanged from before');
 
     assert.ok(built.params && typeof built.params === 'object', 'params (generate_data) is a real object');
     assert.equal(built.params.model, 'test-model-7b', 'params.model is the resolved backend model, matching assembleTextCompletionPrompt()\'s own generate_data.model');
@@ -163,9 +171,10 @@ async function run() {
     assert.equal(branchAfterAppend.messages.length, 4, 'the persisted user message is now part of the real loaded branch');
     assert.equal(branchAfterAppend.messages[3].mes, 'What happens next, Rex?');
 
-    // --- continue/swipe: no userMessageText, still resolves and assembles from the real history ---
+    // --- continue/swipe: no userMessageText, still resolves and assembles from the real history,
+    // addressed by the real current leaf's node_id ---
     const continued = await buildRawActionTextCompletionRequest(directories, {
-        characterAvatar: avatar, ownerId, branchName, type: 'continue', isContinue: true,
+        characterAvatar: avatar, ownerId, nodeId: branchAfterAppend.branch.leaf_id, type: 'continue', isContinue: true,
         tokenizerOptions: fakeTokenizerOptions,
     });
     assert.ok(continued.params.prompt.includes('Likewise!'), 'continue resolves from the real existing history with no new message appended');
@@ -175,34 +184,71 @@ async function run() {
     // --- error handling: unknown character ---
     await assert.rejects(
         () => buildRawActionTextCompletionRequest(directories, {
-            characterAvatar: 'NoSuchCharacter.png', ownerId, branchName,
+            characterAvatar: 'NoSuchCharacter.png', ownerId, nodeId: mainLeafId,
             tokenizerOptions: fakeTokenizerOptions,
         }),
         /Character not found/,
     );
 
-    // --- error handling: unknown branch ---
+    // --- error handling: unknown node ---
     await assert.rejects(
         () => buildRawActionTextCompletionRequest(directories, {
-            characterAvatar: avatar, ownerId, branchName: 'no-such-branch',
+            characterAvatar: avatar, ownerId, nodeId: 'no-such-node-id',
             tokenizerOptions: fakeTokenizerOptions,
         }),
-        /Chat branch not found/,
+        /Chat node not found/,
     );
 
-    // --- error handling: missing branch/node identity ---
+    // --- error handling: node_id key entirely absent (not even explicit null) - the corrected
+    // model's own "loud failure instead of a silent wrong-guess" requirement: `undefined` (the
+    // route handler's stand-in for "the JSON body never had this key at all") must be rejected,
+    // distinctly from an explicit `null`. ---
     await assert.rejects(
         () => buildRawActionTextCompletionRequest(directories, {
             characterAvatar: avatar, ownerId,
             tokenizerOptions: fakeTokenizerOptions,
         }),
-        /branch_name or node_id is required/,
+        /node_id is required \(pass null explicitly for a brand-new, empty conversation\)/,
     );
 
-    // --- error handling: missing character/group ---
+    // --- error handling: node_id: null on an owner that ALREADY has real history - the corrected
+    // model's central safety rule: the server must NOT silently guess "the current leaf" once real,
+    // possibly-since-changed history exists; this must be a real, reportable error instead. ---
     await assert.rejects(
         () => buildRawActionTextCompletionRequest(directories, {
-            ownerId, branchName,
+            characterAvatar: avatar, ownerId, nodeId: null,
+            tokenizerOptions: fakeTokenizerOptions,
+        }),
+        /node_id is required: this character\/group already has an existing conversation/,
+    );
+
+    // --- happy path: node_id: null on a GENUINELY BRAND-NEW character with zero prior messages -
+    // the ONLY case where omitting a real node id is safe, since there is no real point for the
+    // caller to have disagreed about. Resolves via the owner's own anchor (auto-created, no name
+    // required at all) to an empty chat, and still produces a real, appendable anchorNodeId. ---
+    const freshAvatar = writeCharacter('Fresh.png', {
+        name: 'Fresh',
+        description: 'Fresh is a brand-new character with no chat history yet.',
+        data: { name: 'Fresh', description: 'Fresh is a brand-new character with no chat history yet.', first_mes: 'Hello, this is Fresh.' },
+    });
+    const builtFresh = await buildRawActionTextCompletionRequest(directories, {
+        characterAvatar: freshAvatar, ownerId: freshAvatar, nodeId: null,
+        type: 'normal', userMessageText: 'Hi Fresh, this is our first message ever.',
+        tokenizerOptions: fakeTokenizerOptions,
+    });
+    assert.ok(builtFresh.anchorNodeId, 'a genuinely new, empty conversation still resolves to a real, appendable anchor node id (the owner\'s own anchor)');
+    assert.ok(!builtFresh.params.prompt.includes('Hello there, traveler.'), 'no unrelated prior history (Rex\'s) leaked into a brand-new character\'s resolved, empty chat');
+    assert.ok(builtFresh.params.prompt.includes('Hi Fresh, this is our first message ever.'), 'the raw user_message for this turn still made it into the assembled prompt even though the resolved prior history was empty');
+    const freshAppendResult = await appendMessages(directories, freshAvatar, builtFresh.anchorNodeId, [
+        { name: builtFresh.name1, is_user: true, mes: 'Hi Fresh, this is our first message ever.', extra: {}, send_date: Date.now() },
+    ]);
+    assert.equal(freshAppendResult.ok, true, 'the anchor-resolved node id for a brand-new conversation is a real, appendable node - not a fake/synthetic id');
+
+    // --- error handling: missing character/group (nodeId irrelevant here - the character/group
+    // check runs first) ---
+    await assert.rejects(
+        () => buildRawActionTextCompletionRequest(directories, {
+            ownerId, nodeId: mainLeafId,
             tokenizerOptions: fakeTokenizerOptions,
         }),
         /character_avatar or group_id is required/,
@@ -336,7 +382,7 @@ async function run() {
 
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: branchName,
+            owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
             type: 'normal', user_message: 'One more time, Rex?', stream: false,
         });
         fakeBackend.server.close();
@@ -368,7 +414,7 @@ async function run() {
 
         const app = buildTestApp();
         const { status } = await postGenerate(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: branchName,
+            owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
             type: 'normal', user_message: 'Are you there, Rex?', stream: false,
         });
         fakeBackend.server.close();
@@ -397,7 +443,7 @@ async function run() {
 
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: branchName,
+            owner_id: ownerId, character_avatar: avatar, node_id: leafBefore,
             type: 'impersonate', is_impersonate: true,
             // Deliberately included even though a real client never sends this for impersonate - the
             // route must defensively ignore it regardless.
@@ -429,7 +475,7 @@ async function run() {
 
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: branchName,
+            owner_id: ownerId, character_avatar: avatar, node_id: leafBefore,
             type: 'quiet',
             // Also deliberately included to verify the defensive skip - a real quiet call has no
             // fresh user text to send either.
@@ -472,7 +518,7 @@ async function run() {
 
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: swipeBranch,
+            owner_id: ownerId, character_avatar: avatar, node_id: swipedNodeId,
             type: 'swipe', is_swipe: true, stream: false,
         });
         fakeBackend.server.close();
@@ -525,7 +571,7 @@ async function run() {
 
         const app = buildTestApp();
         const { status } = await postGenerate(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: regenBranch,
+            owner_id: ownerId, character_avatar: avatar, node_id: swipedNodeId,
             type: 'regenerate', is_swipe: true, stream: false,
         });
         fakeBackend.server.close();
@@ -561,7 +607,7 @@ async function run() {
 
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: continueBranch,
+            owner_id: ownerId, character_avatar: avatar, node_id: leafBefore,
             type: 'continue', is_continue: true, stream: false,
         });
         fakeBackend.server.close();
@@ -606,7 +652,7 @@ async function run() {
 
         const app = buildTestApp();
         const { status } = await postGenerate(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: continueWithUserTextBranch,
+            owner_id: ownerId, character_avatar: avatar, node_id: originalLeafId,
             type: 'continue', is_continue: true,
             user_message: 'Wait, actually - tell me about dragons instead.',
             stream: false,
@@ -689,11 +735,13 @@ async function run() {
             { name: 'Tester', is_user: true, mes: 'Hello, party!', send_date: 1, extra: {} },
             { name: 'Zephyr', is_user: false, mes: 'Winds are shifting!', send_date: 2, extra: {}, original_avatar: zephyr },
         ]);
+        const groupLeafId = (await loadBranch(directories, groupId, groupChatId)).branch.leaf_id;
 
         // --- assembly: buildRawActionTextCompletionRequest() with BOTH characterAvatar (Nova, the
-        // member actually responding this turn) AND groupId (the group) set together. ---
+        // member actually responding this turn) AND groupId (the group) set together, addressed by
+        // the group chat's real node_id. ---
         const builtGroup = await buildRawActionTextCompletionRequest(directories, {
-            characterAvatar: nova, groupId, ownerId: groupId, branchName: groupChatId,
+            characterAvatar: nova, groupId, ownerId: groupId, nodeId: groupLeafId,
             type: 'normal', userMessageText: 'Nova, status report?',
             tokenizerOptions: fakeTokenizerOptions,
         });
@@ -730,7 +778,7 @@ async function run() {
 
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
-            owner_id: groupId, character_avatar: nova, group_id: groupId, branch_name: groupChatId,
+            owner_id: groupId, character_avatar: nova, group_id: groupId, node_id: branchBeforeGroup.branch.leaf_id,
             type: 'normal', user_message: 'Nova, status report?', stream: false,
         });
         fakeBackend.server.close();
@@ -775,7 +823,7 @@ async function run() {
 
         const app = buildTestApp();
         const { status, bodyText } = await postGenerateStream(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: streamBranch,
+            owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
             type: 'normal', user_message: 'Say hi, streamed.', stream: true,
         });
         fakeBackend.server.close();
@@ -822,7 +870,7 @@ async function run() {
 
         const app = buildTestApp();
         const { status, bodyText } = await postGenerateStream(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: streamSwipeBranch,
+            owner_id: ownerId, character_avatar: avatar, node_id: swipedNodeId,
             type: 'swipe', is_swipe: true, stream: true,
         });
         fakeBackend.server.close();
@@ -862,7 +910,7 @@ async function run() {
 
         const app = buildTestApp();
         const { status, bodyText } = await postGenerateStream(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: streamContinueBranch,
+            owner_id: ownerId, character_avatar: avatar, node_id: leafBefore,
             type: 'continue', is_continue: true, stream: true,
         });
         fakeBackend.server.close();
@@ -914,7 +962,7 @@ async function run() {
 
         const app = buildTestApp();
         const { status, bodyText } = await postGenerateStream(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: ollamaBranch,
+            owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
             type: 'normal', user_message: 'Say hi via Ollama.', stream: true,
         });
         fakeBackend.server.close();
@@ -970,7 +1018,7 @@ async function run() {
 
         const app = buildTestApp();
         const { status, bodyText } = await postGenerateStream(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: llamaCppBranch,
+            owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
             type: 'normal', user_message: 'Say hi via llama.cpp.', stream: true,
         });
         fakeBackend.server.close();
@@ -1011,6 +1059,33 @@ async function run() {
 
         assert.equal(status, 200);
         assert.equal(bodyText, fakeBackend.expectedBody, 'a non-raw-action stream is forwarded byte-for-byte unchanged - pendingAssistantPersist stays null, so no teeing/accumulation/persistence logic ever runs for it');
+    }
+
+    // (i-7) ROUTE-LEVEL: a raw-action request whose body never includes the `node_id` key at all
+    // gets a real 400, distinct from an explicit `node_id: null` - proving the "absent key" vs.
+    // "explicit null" distinction survives all the way from the real HTTP JSON body, through
+    // Express's own body-parser, to buildRawActionTextCompletionRequest()'s own validation (not just
+    // when calling that function directly, as the earlier in-process assertion already covers).
+    {
+        const app = buildTestApp();
+        const { status, data } = await postGenerate(app, {
+            owner_id: ownerId, character_avatar: avatar,
+            type: 'normal', user_message: 'This should be rejected.', stream: false,
+        });
+        assert.equal(status, 400, 'a request body with no node_id key at all is a real 400, not a silent guess');
+        assert.match(data.message, /node_id is required/, 'the error names the real, specific problem');
+    }
+
+    // (i-8) ROUTE-LEVEL: `node_id: null` on a character that already has real history is a real 400 -
+    // the server does not silently pick "the current leaf" once real, possibly-stale history exists.
+    {
+        const app = buildTestApp();
+        const { status, data } = await postGenerate(app, {
+            owner_id: ownerId, character_avatar: avatar, node_id: null,
+            type: 'normal', user_message: 'This should also be rejected.', stream: false,
+        });
+        assert.equal(status, 400, 'node_id: null on an owner with real existing history is a real 400');
+        assert.match(data.message, /already has an existing conversation/, 'the error explains why null was rejected here');
     }
 
     // NOTE: a dedicated test for the "continue/swipe on an empty chat" guard (see

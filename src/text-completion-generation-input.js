@@ -1,6 +1,6 @@
 import { readSettingsAtPaths } from './settings-store.js';
 import { resolveTextGenBackend } from './textgen-backend-resolve.js';
-import { loadBranch, getAncestorPath } from './message-tree-db.js';
+import { loadBranch, getAncestorPath, getOrCreateAnchor, loadAtNode } from './message-tree-db.js';
 import { readCardContent } from './endpoints/characters.js';
 import { getGroupsByIds } from './endpoints/groups.js';
 import { extension_prompt_types, extension_prompt_roles } from './extension-prompt-table.js';
@@ -273,27 +273,57 @@ async function resolveName2AndGroupMemberNames(directories, { avatar, groupId })
  * matching `loadBranch()`'s message order) - this is this resolver's own judgment call on "the
  * exact identity shape needed" the task left open, covering the common case of generating from an
  * arbitrary tree node (e.g. mid-branch) without a saved chat label.
+ *
+ * When NEITHER `branchName` nor `nodeId` is given (and `ownerId` is), this does NOT silently guess
+ * "whatever the tree's current default leaf happens to be" once real messages already exist -
+ * `node_id` is a genuine, non-fabricated fact the client already has for any turn that isn't the
+ * very first ("the node I was actually looking at/replying to"), and resolving to a stale leaf
+ * behind the caller's back would risk a real lost-update race if the tree moved since the caller
+ * last loaded it (another tab, another concurrent request). The ONLY identifier-free case that is
+ * genuinely safe is a brand-new owner with NO prior real messages at all - there is no "point the
+ * caller meant" to disagree about when no real point has ever existed - so this resolves via the
+ * owner's anchor (`getOrCreateAnchor()`/`loadAtNode()`, no name required, auto-created on first
+ * touch) ONLY when that anchor's own default-child chain is genuinely empty. When the anchor
+ * already has a real default-child chain (i.e. this owner DOES have prior messages) but neither
+ * identifier was given, `ambiguous: true` is returned instead of a resolved history/node - the
+ * caller (`buildRawActionTextCompletionRequest()`) turns that into a real, reportable error rather
+ * than ever picking a leaf the caller didn't ask for.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {object} params
  * @param {string} [params.ownerId]
  * @param {string} [params.branchName]
  * @param {string} [params.nodeId]
- * @returns {Promise<{ chat: object[], metadata: object }>}
+ * @returns {Promise<{ chat: object[], metadata: object, resolvedNodeId: string|null, ambiguous?: boolean }>}
  */
 async function resolveChatHistory(directories, { ownerId, branchName, nodeId }) {
     if (ownerId && branchName) {
         const result = await loadBranch(directories, ownerId, branchName);
         if (result) {
-            return { chat: result.messages, metadata: result.metadata ?? {} };
+            return { chat: result.messages, metadata: result.metadata ?? {}, resolvedNodeId: result.branch.leaf_id };
         }
     }
     if (nodeId) {
         const messages = await getAncestorPath(directories, nodeId);
         if (messages) {
-            return { chat: messages, metadata: {} };
+            return { chat: messages, metadata: {}, resolvedNodeId: nodeId };
         }
     }
-    return { chat: [], metadata: {} };
+    if (ownerId && !branchName && !nodeId) {
+        const anchorId = await getOrCreateAnchor(directories, ownerId);
+        if (anchorId) {
+            const result = await loadAtNode(directories, ownerId, anchorId);
+            // A non-empty result means this owner already has a real, established conversation -
+            // neither identifier was given, so which point the caller meant is genuinely ambiguous;
+            // do not silently pick "the current leaf" for a caller that never said that's what it wanted.
+            if (result && result.messages.length > 0) {
+                return { chat: [], metadata: {}, resolvedNodeId: null, ambiguous: true };
+            }
+            if (result) {
+                return { chat: result.messages, metadata: result.metadata ?? {}, resolvedNodeId: result.node_id };
+            }
+        }
+    }
+    return { chat: [], metadata: {}, resolvedNodeId: null };
 }
 
 /**
@@ -316,8 +346,14 @@ async function resolveChatHistory(directories, { ownerId, branchName, nodeId }) 
  * module doc comment's FIELD-MAPPING NOTES for the exact per-value settings-namespace mapping.
  * 'koboldhorde' is NOT accepted (throws) - see module doc comment for why.
  * @param {string} [params.ownerId] message-tree-db.js owner id for chat resolution.
- * @param {string} [params.branchName] message-tree-db.js labeled chat name.
- * @param {string} [params.nodeId] Alternative to `branchName` - resolve history up to this tree node.
+ * @param {string} [params.branchName] message-tree-db.js labeled chat name. LEGACY input, kept only
+ * for callers outside this task's scope (src/endpoints/backends/kobold.js, src/endpoints/novelai.js)
+ * that still address chats by label - NOT part of the raw-action addressing model this task
+ * corrected (see `resolveChatHistory()`'s own doc comment); a new caller should use `nodeId` instead.
+ * @param {string|null} [params.nodeId] Resolve history up to this tree node. `null` (as opposed to
+ * omitted) resolves via the owner's anchor - see `resolveChatHistory()`'s own doc comment for the
+ * "only safe when genuinely empty" rule and how a non-empty case is signalled back
+ * (`resolvedNodeId`/`chatResolutionAmbiguous` on this function's own return object).
  * @param {string} [params.type] Generation type ('normal'/'impersonate'/'continue'/'swipe'/...).
  * @param {boolean} [params.isImpersonate]
  * @param {boolean} [params.isContinue]
@@ -382,7 +418,8 @@ export async function resolveTextCompletionGenerationInput(directories, {
     const isGroup = Boolean(groupId);
     const hasCharacterOrGroup = Boolean(avatar) || Boolean(groupId);
 
-    const { chat: loadedChat, metadata: loadedChatMetadata } = await resolveChatHistory(directories, { ownerId, branchName, nodeId });
+    const { chat: loadedChat, metadata: loadedChatMetadata, resolvedNodeId, ambiguous: chatResolutionAmbiguous } =
+        await resolveChatHistory(directories, { ownerId, branchName, nodeId });
     const chatMetadata = chatMetadataOverride ?? loadedChatMetadata ?? {};
 
     const { name2, groupMemberNames, character } = await resolveName2AndGroupMemberNames(directories, { avatar, groupId });
@@ -434,6 +471,16 @@ export async function resolveTextCompletionGenerationInput(directories, {
 
         // --- Character/persona/chat resolution ---
         directories, avatar, groupId,
+        // Exposed so a caller (buildRawActionTextCompletionRequest()) that resolved `chat` via this
+        // SAME call can read back which real tree node it resolved to, instead of re-deriving
+        // "the current leaf" independently and risking the two disagreeing. `null` when nothing
+        // could be safely resolved - see `chatResolutionAmbiguous` below for why.
+        resolvedNodeId,
+        // True only for the "neither branchName nor nodeId given, but this owner already has a real,
+        // established conversation" case - see resolveChatHistory()'s own doc comment. The caller
+        // must treat this as a real error (an explicit branch_name/node_id was required), not silently
+        // pick a leaf.
+        chatResolutionAmbiguous: Boolean(chatResolutionAmbiguous),
         personaDescription: powerUser.persona_description,
         chatMetadata, chat, textareaText,
         userPromptBias: powerUser.user_prompt_bias,

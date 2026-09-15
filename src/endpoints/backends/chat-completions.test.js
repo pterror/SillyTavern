@@ -218,6 +218,10 @@ async function run() {
     });
 
     const ownerId = avatar;
+    // `branchName` here is ONLY message-tree-db.js's own label/bookmark concept - a real, still-
+    // supported, unrelated primitive. It is NOT a raw-action request field anymore (see
+    // buildRawActionChatCompletionRequest()'s own ADDRESSING MODEL doc comment) - every raw-action
+    // call below resolves and passes the real `node_id` (a leaf id from `loadBranch()`) instead.
     const branchName = 'main-chat';
     await saveChatToTree(directories, ownerId, branchName, [
         { chat_metadata: {} },
@@ -225,10 +229,12 @@ async function run() {
         { name: 'Tester', is_user: true, mes: 'Hi Rex, nice to meet you.', send_date: 2, extra: {} },
         { name: 'Rex', is_user: false, mes: 'Likewise!', send_date: 3, extra: {} },
     ]);
+    const mainBranchInfo = await loadBranch(directories, ownerId, branchName);
+    const mainLeafId = mainBranchInfo.branch.leaf_id;
 
-    // --- happy path: a new user message on an existing branch ---
+    // --- happy path: a new user message on an existing conversation, addressed by its real node_id ---
     const built = await buildRawActionChatCompletionRequest(directories, {
-        characterAvatar: avatar, ownerId, branchName,
+        characterAvatar: avatar, ownerId, nodeId: mainLeafId,
         type: 'normal', userMessageText: 'What happens next, Rex?',
     });
 
@@ -238,7 +244,8 @@ async function run() {
     assert.ok(built.anchorNodeId, 'anchorNodeId resolves to the real leaf of the loaded branch');
 
     const branchBeforeAppend = await loadBranch(directories, ownerId, branchName);
-    assert.equal(built.anchorNodeId, branchBeforeAppend.branch.leaf_id, 'anchorNodeId is exactly the loaded branch\'s real leaf_id');
+    assert.equal(built.anchorNodeId, branchBeforeAppend.branch.leaf_id, 'anchorNodeId is exactly the given node_id\'s real leaf_id');
+    assert.equal(built.anchorNodeId, mainLeafId, 'anchorNodeId is exactly the given node_id, unchanged from before');
 
     assert.ok(built.params && typeof built.params === 'object', 'params (generate_data) is a real object');
     assert.equal(built.params.model, 'test-model', 'params.model is the resolved chat-completion model, matching getChatCompletionModel()');
@@ -257,9 +264,10 @@ async function run() {
     assert.equal(branchAfterAppend.messages.length, 4, 'the persisted user message is now part of the real loaded branch');
     assert.equal(branchAfterAppend.messages[3].mes, 'What happens next, Rex?');
 
-    // --- continue: no userMessageText, still resolves and assembles from the real history ---
+    // --- continue: no userMessageText, still resolves and assembles from the real history,
+    // addressed by the real current leaf's node_id ---
     const continued = await buildRawActionChatCompletionRequest(directories, {
-        characterAvatar: avatar, ownerId, branchName, type: 'continue', isContinue: true,
+        characterAvatar: avatar, ownerId, nodeId: branchAfterAppend.branch.leaf_id, type: 'continue', isContinue: true,
     });
     const continuedJoined = continued.params.messages.map(m => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content))).join('\n');
     assert.ok(continuedJoined.includes('Likewise!'), 'continue resolves from the real existing history with no new message appended');
@@ -269,7 +277,7 @@ async function run() {
     // --- error handling: missing owner_id ---
     await assert.rejects(
         () => buildRawActionChatCompletionRequest(directories, {
-            characterAvatar: avatar, branchName,
+            characterAvatar: avatar, nodeId: mainLeafId,
         }),
         /owner_id is required/,
     );
@@ -277,31 +285,64 @@ async function run() {
     // --- error handling: unknown character ---
     await assert.rejects(
         () => buildRawActionChatCompletionRequest(directories, {
-            characterAvatar: 'NoSuchCharacter.png', ownerId, branchName,
+            characterAvatar: 'NoSuchCharacter.png', ownerId, nodeId: mainLeafId,
         }),
         /Character not found/,
     );
 
-    // --- error handling: unknown branch ---
+    // --- error handling: unknown node ---
     await assert.rejects(
         () => buildRawActionChatCompletionRequest(directories, {
-            characterAvatar: avatar, ownerId, branchName: 'no-such-branch',
+            characterAvatar: avatar, ownerId, nodeId: 'no-such-node-id',
         }),
-        /Chat branch not found/,
+        /Chat node not found/,
     );
 
-    // --- error handling: missing branch/node identity ---
+    // --- error handling: node_id key entirely absent (not even explicit null) - loud failure
+    // instead of a silent wrong-guess (see buildRawActionChatCompletionRequest()'s own ADDRESSING
+    // MODEL doc comment). ---
     await assert.rejects(
         () => buildRawActionChatCompletionRequest(directories, {
             characterAvatar: avatar, ownerId,
         }),
-        /branch_name or node_id is required/,
+        /node_id is required \(pass null explicitly for a brand-new, empty conversation\)/,
     );
 
-    // --- error handling: missing character/group ---
+    // --- error handling: node_id: null on an owner that ALREADY has real history - must be a real,
+    // reportable error, never a silent guess at "the current leaf". ---
     await assert.rejects(
         () => buildRawActionChatCompletionRequest(directories, {
-            ownerId, branchName,
+            characterAvatar: avatar, ownerId, nodeId: null,
+        }),
+        /node_id is required: this character\/group already has an existing conversation/,
+    );
+
+    // --- happy path: node_id: null on a GENUINELY BRAND-NEW character with zero prior messages -
+    // the ONLY case where omitting a real node id is safe. Resolves via the owner's own anchor to an
+    // empty chat, and still produces a real, appendable anchorNodeId. ---
+    const freshAvatar = writeCharacter('Fresh.png', {
+        name: 'Fresh',
+        description: 'Fresh is a brand-new character with no chat history yet.',
+        data: { name: 'Fresh', description: 'Fresh is a brand-new character with no chat history yet.', first_mes: 'Hello, this is Fresh.' },
+    });
+    const builtFresh = await buildRawActionChatCompletionRequest(directories, {
+        characterAvatar: freshAvatar, ownerId: freshAvatar, nodeId: null,
+        type: 'normal', userMessageText: 'Hi Fresh, this is our first message ever.',
+    });
+    assert.ok(builtFresh.anchorNodeId, 'a genuinely new, empty conversation still resolves to a real, appendable anchor node id');
+    const freshJoined = builtFresh.params.messages.map(m => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content))).join('\n');
+    assert.ok(!freshJoined.includes('Hello there, traveler.'), 'no unrelated prior history (Rex\'s) leaked into a brand-new character\'s resolved, empty chat');
+    assert.ok(freshJoined.includes('Hi Fresh, this is our first message ever.'), 'the raw user_message for this turn still made it into the prepared messages even though the resolved prior history was empty');
+    const freshAppendResult = await appendMessages(directories, freshAvatar, builtFresh.anchorNodeId, [
+        { name: builtFresh.name1, is_user: true, mes: 'Hi Fresh, this is our first message ever.', extra: {}, send_date: Date.now() },
+    ]);
+    assert.equal(freshAppendResult.ok, true, 'the anchor-resolved node id for a brand-new conversation is a real, appendable node');
+
+    // --- error handling: missing character/group (nodeId irrelevant - the character/group check
+    // runs first) ---
+    await assert.rejects(
+        () => buildRawActionChatCompletionRequest(directories, {
+            ownerId, nodeId: mainLeafId,
         }),
         /character_avatar or group_id is required/,
     );
@@ -582,7 +623,7 @@ async function run() {
 
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: branchName,
+            owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
             type: 'normal', user_message: 'One more time, Rex?', stream: false,
         });
         fakeBackend.server.close();
@@ -614,7 +655,7 @@ async function run() {
 
         const app = buildTestApp();
         const { status } = await postGenerate(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: branchName,
+            owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
             type: 'normal', user_message: 'Are you there, Rex?', stream: false,
         });
         fakeBackend.server.close();
@@ -643,7 +684,7 @@ async function run() {
 
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: branchName,
+            owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
             type: 'impersonate', is_impersonate: true,
             // Deliberately included even though a real client never sends this for impersonate - the
             // route must defensively ignore it regardless.
@@ -675,7 +716,7 @@ async function run() {
 
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: branchName,
+            owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
             type: 'quiet',
             // Also deliberately included to verify the defensive skip - a real quiet call has no
             // fresh user text to send either.
@@ -717,7 +758,7 @@ async function run() {
 
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: swipeBranch,
+            owner_id: ownerId, character_avatar: avatar, node_id: swipedNodeId,
             type: 'swipe', is_swipe: true, stream: false,
         });
         fakeBackend.server.close();
@@ -768,7 +809,7 @@ async function run() {
 
         const app = buildTestApp();
         const { status } = await postGenerate(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: regenBranch,
+            owner_id: ownerId, character_avatar: avatar, node_id: swipedNodeId,
             type: 'regenerate', is_swipe: true, stream: false,
         });
         fakeBackend.server.close();
@@ -802,7 +843,7 @@ async function run() {
 
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: continueBranch,
+            owner_id: ownerId, character_avatar: avatar, node_id: leafBefore,
             type: 'continue', is_continue: true, stream: false,
         });
         fakeBackend.server.close();
@@ -843,7 +884,7 @@ async function run() {
 
         const app = buildTestApp();
         const { status } = await postGenerate(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: continueWithUserTextBranch,
+            owner_id: ownerId, character_avatar: avatar, node_id: originalLeafId,
             type: 'continue', is_continue: true,
             user_message: 'Wait, actually - tell me about dragons instead.',
             stream: false,
@@ -913,10 +954,13 @@ async function run() {
             { name: 'Zephyr', is_user: false, mes: 'Winds are shifting!', send_date: 2, extra: {} },
         ]);
 
+        const groupLeafId = (await loadBranch(directories, groupId, groupChatId)).branch.leaf_id;
+
         // --- assembly: buildRawActionChatCompletionRequest() with BOTH characterAvatar (Nova, the
-        // member actually responding this turn) AND groupId (the group) set together. ---
+        // member actually responding this turn) AND groupId (the group) set together, addressed by
+        // the group chat's real node_id. ---
         const builtGroup = await buildRawActionChatCompletionRequest(directories, {
-            characterAvatar: nova, groupId, ownerId: groupId, branchName: groupChatId,
+            characterAvatar: nova, groupId, ownerId: groupId, nodeId: groupLeafId,
             type: 'normal', userMessageText: 'Nova, status report?',
         });
 
@@ -941,7 +985,7 @@ async function run() {
 
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
-            owner_id: groupId, character_avatar: nova, group_id: groupId, branch_name: groupChatId,
+            owner_id: groupId, character_avatar: nova, group_id: groupId, node_id: branchBeforeGroup.branch.leaf_id,
             type: 'normal', user_message: 'Nova, status report?', stream: false,
         });
         fakeBackend.server.close();
@@ -985,7 +1029,7 @@ async function run() {
 
         const app = buildTestApp();
         const { status, bodyText } = await postGenerateStream(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: streamBranch,
+            owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
             type: 'normal', user_message: 'Say hi, streamed.', stream: true,
         });
         fakeBackend.server.close();
@@ -1027,7 +1071,7 @@ async function run() {
 
         const app = buildTestApp();
         const { status, bodyText } = await postGenerateStream(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: streamSwipeBranch,
+            owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
             type: 'swipe', is_swipe: true, stream: true,
         });
         fakeBackend.server.close();
@@ -1067,7 +1111,7 @@ async function run() {
 
         const app = buildTestApp();
         const { status, bodyText } = await postGenerateStream(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: streamContinueBranch,
+            owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
             type: 'continue', is_continue: true, stream: true,
         });
         fakeBackend.server.close();
@@ -1142,7 +1186,7 @@ async function run() {
 
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: claudeBranch,
+            owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
             type: 'normal', user_message: 'Say hi, Claude.', stream: false,
         });
         fakeBackend.server.close();
@@ -1169,6 +1213,8 @@ async function run() {
             { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
         ]);
 
+        const streamNodeId = (await loadBranch(directories, ownerId, claudeStreamBranch)).branch.leaf_id;
+
         const claudeSseEvents = [
             { type: 'message_start', message: { id: 'msg_1', role: 'assistant', content: [] } },
             { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } },
@@ -1192,7 +1238,7 @@ async function run() {
 
         const app = buildTestApp();
         const { status, bodyText } = await postGenerateStream(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: claudeStreamBranch,
+            owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
             type: 'normal', user_message: 'Say hi, streamed Claude.', stream: true,
         });
         fakeBackend.server.close();
@@ -1235,7 +1281,7 @@ async function run() {
 
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: makerSuiteBranch,
+            owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
             type: 'normal', user_message: 'Say hi, Gemini.', stream: false,
         });
         fakeBackend.server.close();
@@ -1262,6 +1308,8 @@ async function run() {
             { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
         ]);
 
+        const streamNodeId = (await loadBranch(directories, ownerId, makerSuiteStreamBranch)).branch.leaf_id;
+
         const geminiChunks = [
             { candidates: [{ content: { parts: [{ thought: true, text: 'Thinking about a greeting...' }], role: 'model' } }] },
             { candidates: [{ content: { parts: [{ text: 'Rex ' }], role: 'model' } }] },
@@ -1277,7 +1325,7 @@ async function run() {
 
         const app = buildTestApp();
         const { status, bodyText } = await postGenerateStream(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: makerSuiteStreamBranch,
+            owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
             type: 'normal', user_message: 'Say hi, streamed Gemini.', stream: true,
         });
         fakeBackend.server.close();
@@ -1316,7 +1364,7 @@ async function run() {
 
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: mistralBranch,
+            owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
             type: 'normal', user_message: 'Say hi, Mistral.', stream: false,
         });
         fakeBackend.server.close();
@@ -1340,12 +1388,14 @@ async function run() {
             { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
         ]);
 
+        const streamNodeId = (await loadBranch(directories, ownerId, mistralStreamBranch)).branch.leaf_id;
+
         const fakeBackend = await startFakeSseBackend(['Rex ', 'says hi, ', 'streamed via Mistral.']);
         pointMistralBackendAt(fakeBackend.url);
 
         const app = buildTestApp();
         const { status, bodyText } = await postGenerateStream(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: mistralStreamBranch,
+            owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
             type: 'normal', user_message: 'Say hi, streamed Mistral.', stream: true,
         });
         fakeBackend.server.close();
@@ -1385,7 +1435,7 @@ async function run() {
 
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: deepseekBranch,
+            owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
             type: 'normal', user_message: 'Say hi, DeepSeek.', stream: false,
         });
         fakeBackend.server.close();
@@ -1410,6 +1460,8 @@ async function run() {
             { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
         ]);
 
+        const streamNodeId = (await loadBranch(directories, ownerId, deepseekStreamBranch)).branch.leaf_id;
+
         const deepseekSseBody = [
             `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: 'Thinking about a greeting...' } }] })}\n\n`,
             `data: ${JSON.stringify({ choices: [{ delta: { content: 'Rex ' } }] })}\n\n`,
@@ -1425,7 +1477,7 @@ async function run() {
 
         const app = buildTestApp();
         const { status, bodyText } = await postGenerateStream(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: deepseekStreamBranch,
+            owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
             type: 'normal', user_message: 'Say hi, streamed DeepSeek.', stream: true,
         });
         fakeBackend.server.close();
@@ -1463,7 +1515,7 @@ async function run() {
 
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: xaiBranch,
+            owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
             type: 'normal', user_message: 'Say hi, xAI.', stream: false,
         });
         fakeBackend.server.close();
@@ -1487,12 +1539,14 @@ async function run() {
             { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
         ]);
 
+        const streamNodeId = (await loadBranch(directories, ownerId, xaiStreamBranch)).branch.leaf_id;
+
         const fakeBackend = await startFakeSseBackend(['Rex ', 'says hi, ', 'streamed via xAI.']);
         pointXaiBackendAt(fakeBackend.url);
 
         const app = buildTestApp();
         const { status, bodyText } = await postGenerateStream(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: xaiStreamBranch,
+            owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
             type: 'normal', user_message: 'Say hi, streamed xAI.', stream: true,
         });
         fakeBackend.server.close();
@@ -1540,7 +1594,7 @@ async function run() {
 
             const app = buildTestApp();
             const { status, data } = await postGenerate(app, {
-                owner_id: ownerId, character_avatar: avatar, branch_name: ai21Branch,
+                owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
                 type: 'normal', user_message: 'Say hi, AI21.', stream: false,
             });
             fakeBackend.server.close();
@@ -1565,12 +1619,14 @@ async function run() {
                 { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
             ]);
 
+            const streamNodeId = (await loadBranch(directories, ownerId, ai21StreamBranch)).branch.leaf_id;
+
             const fakeBackend = await startFakeSseBackend(['Rex ', 'says hi, ', 'streamed via AI21.']);
             pointAI21BackendAt(fakeBackend.url);
 
             const app = buildTestApp();
             const { status, bodyText } = await postGenerateStream(app, {
-                owner_id: ownerId, character_avatar: avatar, branch_name: ai21StreamBranch,
+                owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
                 type: 'normal', user_message: 'Say hi, streamed AI21.', stream: true,
             });
             fakeBackend.server.close();
@@ -1614,7 +1670,7 @@ async function run() {
 
             const app = buildTestApp();
             const { status, data } = await postGenerate(app, {
-                owner_id: ownerId, character_avatar: avatar, branch_name: cohereBranch,
+                owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
                 type: 'normal', user_message: 'Say hi, Cohere.', stream: false,
             });
             fakeBackend.server.close();
@@ -1642,6 +1698,8 @@ async function run() {
                 { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
             ]);
 
+            const streamNodeId = (await loadBranch(directories, ownerId, cohereStreamBranch)).branch.leaf_id;
+
             const cohereSseEvents = [
                 { type: 'message-start', delta: { message: { role: 'assistant' } } },
                 { type: 'content-start', index: 0, delta: { message: { content: { type: 'text', text: '' } } } },
@@ -1660,7 +1718,7 @@ async function run() {
 
             const app = buildTestApp();
             const { status, bodyText } = await postGenerateStream(app, {
-                owner_id: ownerId, character_avatar: avatar, branch_name: cohereStreamBranch,
+                owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
                 type: 'normal', user_message: 'Say hi, streamed Cohere.', stream: true,
             });
             fakeBackend.server.close();
@@ -1699,7 +1757,7 @@ async function run() {
 
             const app = buildTestApp();
             const { status, data } = await postGenerate(app, {
-                owner_id: ownerId, character_avatar: avatar, branch_name: aimlapiBranch,
+                owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
                 type: 'normal', user_message: 'Say hi, AI/ML API.', stream: false,
             });
             fakeBackend.server.close();
@@ -1724,12 +1782,14 @@ async function run() {
                 { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
             ]);
 
+            const streamNodeId = (await loadBranch(directories, ownerId, aimlapiStreamBranch)).branch.leaf_id;
+
             const fakeBackend = await startFakeSseBackend(['Rex ', 'says hi, ', 'streamed via AI/ML API.']);
             pointAimlapiBackendAt(fakeBackend.url);
 
             const app = buildTestApp();
             const { status, bodyText } = await postGenerateStream(app, {
-                owner_id: ownerId, character_avatar: avatar, branch_name: aimlapiStreamBranch,
+                owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
                 type: 'normal', user_message: 'Say hi, streamed AI/ML API.', stream: true,
             });
             fakeBackend.server.close();
@@ -1768,7 +1828,7 @@ async function run() {
 
             const app = buildTestApp();
             const { status, data } = await postGenerate(app, {
-                owner_id: ownerId, character_avatar: avatar, branch_name: chutesBranch,
+                owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
                 type: 'normal', user_message: 'Say hi, Chutes.', stream: false,
             });
             fakeBackend.server.close();
@@ -1793,12 +1853,14 @@ async function run() {
                 { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
             ]);
 
+            const streamNodeId = (await loadBranch(directories, ownerId, chutesStreamBranch)).branch.leaf_id;
+
             const fakeBackend = await startFakeSseBackend(['Rex ', 'says hi, ', 'streamed via Chutes.']);
             pointChutesBackendAt(fakeBackend.url);
 
             const app = buildTestApp();
             const { status, bodyText } = await postGenerateStream(app, {
-                owner_id: ownerId, character_avatar: avatar, branch_name: chutesStreamBranch,
+                owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
                 type: 'normal', user_message: 'Say hi, streamed Chutes.', stream: true,
             });
             fakeBackend.server.close();
@@ -1838,7 +1900,7 @@ async function run() {
 
             const app = buildTestApp();
             const { status, data } = await postGenerate(app, {
-                owner_id: ownerId, character_avatar: avatar, branch_name: minimaxBranch,
+                owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
                 type: 'normal', user_message: 'Say hi, MiniMax.', stream: false,
             });
             fakeBackend.server.close();
@@ -1863,12 +1925,14 @@ async function run() {
                 { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
             ]);
 
+            const streamNodeId = (await loadBranch(directories, ownerId, minimaxStreamBranch)).branch.leaf_id;
+
             const fakeBackend = await startFakeSseBackend(['Rex ', 'says hi, ', 'streamed via MiniMax.']);
             pointMinimaxBackendAt(fakeBackend.url);
 
             const app = buildTestApp();
             const { status, bodyText } = await postGenerateStream(app, {
-                owner_id: ownerId, character_avatar: avatar, branch_name: minimaxStreamBranch,
+                owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
                 type: 'normal', user_message: 'Say hi, streamed MiniMax.', stream: true,
             });
             fakeBackend.server.close();
@@ -1907,7 +1971,7 @@ async function run() {
 
             const app = buildTestApp();
             const { status, data } = await postGenerate(app, {
-                owner_id: ownerId, character_avatar: avatar, branch_name: electronhubBranch,
+                owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
                 type: 'normal', user_message: 'Say hi, Electron Hub.', stream: false,
             });
             fakeBackend.server.close();
@@ -1932,12 +1996,14 @@ async function run() {
                 { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
             ]);
 
+            const streamNodeId = (await loadBranch(directories, ownerId, electronhubStreamBranch)).branch.leaf_id;
+
             const fakeBackend = await startFakeSseBackend(['Rex ', 'says hi, ', 'streamed via Electron Hub.']);
             pointElectronHubBackendAt(fakeBackend.url);
 
             const app = buildTestApp();
             const { status, bodyText } = await postGenerateStream(app, {
-                owner_id: ownerId, character_avatar: avatar, branch_name: electronhubStreamBranch,
+                owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
                 type: 'normal', user_message: 'Say hi, streamed Electron Hub.', stream: true,
             });
             fakeBackend.server.close();
@@ -1981,7 +2047,7 @@ async function run() {
 
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: azureBranch,
+            owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
             type: 'normal', user_message: 'Say hi, Azure.', stream: false,
         });
         fakeBackend.server.close();
@@ -2005,12 +2071,14 @@ async function run() {
             { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
         ]);
 
+        const streamNodeId = (await loadBranch(directories, ownerId, azureStreamBranch)).branch.leaf_id;
+
         const fakeBackend = await startFakeSseBackend(['Rex ', 'says hi, ', 'streamed via Azure.']);
         pointAzureOpenAIBackendAt(fakeBackend.url);
 
         const app = buildTestApp();
         const { status, bodyText } = await postGenerateStream(app, {
-            owner_id: ownerId, character_avatar: avatar, branch_name: azureStreamBranch,
+            owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
             type: 'normal', user_message: 'Say hi, streamed Azure.', stream: true,
         });
         fakeBackend.server.close();
@@ -2039,6 +2107,33 @@ async function run() {
     // so it reaches the default dispatch code below with whatever fields the client actually sent.
     // Not asserted further here - this is the same "not a raw action" byte-for-byte-unchanged path the
     // connection_profile_id branch and legacy default path already exercise elsewhere.
+
+    // --- CORRECTED ADDRESSING MODEL (this task), route-level: a raw-action body whose `node_id` key
+    // is entirely absent gets a real 400, distinct from an explicit `node_id: null` - proving the
+    // "absent key" vs. "explicit null" distinction survives through Express's own JSON body-parser,
+    // not just when calling buildRawActionChatCompletionRequest() directly. ---
+    {
+        const app = buildTestApp();
+        const { status, data } = await postGenerate(app, {
+            owner_id: ownerId, character_avatar: avatar,
+            type: 'normal', user_message: 'This should be rejected.', stream: false,
+        });
+        assert.equal(status, 400, 'a request body with no node_id key at all is a real 400, not a silent guess');
+        assert.match(data.message, /node_id is required/, 'the error names the real, specific problem');
+    }
+
+    // --- CORRECTED ADDRESSING MODEL (this task), route-level: `node_id: null` on a character that
+    // already has real history is a real 400 - the server does not silently pick "the current leaf"
+    // once real, possibly-stale history exists. ---
+    {
+        const app = buildTestApp();
+        const { status, data } = await postGenerate(app, {
+            owner_id: ownerId, character_avatar: avatar, node_id: null,
+            type: 'normal', user_message: 'This should also be rejected.', stream: false,
+        });
+        assert.equal(status, 400, 'node_id: null on an owner with real existing history is a real 400');
+        assert.match(data.message, /already has an existing conversation/, 'the error explains why null was rejected here');
+    }
 
     console.log('chat-completions.test.js: all assertions passed');
 }
