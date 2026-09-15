@@ -13,6 +13,7 @@ import {
 import { MAX_CONTEXT_DEFAULT, MAX_RESPONSE_DEFAULT, power_user } from './power-user.js';
 import { getTextTokens, tokenizers } from './tokenizers.js';
 import { getEventSourceStream } from './sse-stream.js';
+import { CompactStreamDecoder } from './llamacpp-compact-stream.js';
 import {
     getSortableDelay,
     getStringHash,
@@ -716,6 +717,44 @@ export async function generateNovelWithStreaming(generate_data, signal) {
         tryParseStreamingError(response, await response.text());
         throw new Error(`Got response status ${response.status}`);
     }
+
+    // Raw-action NovelAI streams are the shared compact binary protocol (see
+    // public/scripts/llamacpp-compact-stream.js) - src/endpoints/novelai.js's own
+    // forwardAndPersistCompactStream() call is the only thing that sets this header. Every
+    // non-raw-action stream never sets it and keeps going through the old SSE-JSON branch below.
+    if (response.headers.get('X-ST-Stream-Format') === 'compact-v1') {
+        const reader = response.body.getReader();
+        return async function* streamData() {
+            const decoder = new CompactStreamDecoder();
+            let text = '';
+            let logprobs = null;
+            let pendingProbabilities = null;
+            const state = {};
+            while (true) {
+                const { done, value } = await reader.read();
+                const events = done ? decoder.flush() : decoder.push(value);
+
+                for (const event of events) {
+                    if ('probabilities' in event) {
+                        pendingProbabilities = event.probabilities;
+                    } else if ('content' in event) {
+                        text += event.content;
+                        logprobs = parseNovelAILogprobs(pendingProbabilities);
+                        pendingProbabilities = null;
+                    } else if ('assistantNodeId' in event) {
+                        state.assistantNodeId = event.assistantNodeId;
+                    }
+                }
+
+                if (events.length) {
+                    yield { text, swipes: [], logprobs, toolCalls: [], state };
+                }
+
+                if (done) return;
+            }
+        };
+    }
+
     const eventStream = getEventSourceStream();
     response.body.pipeThrough(eventStream);
     const reader = eventStream.readable.getReader();
@@ -727,6 +766,11 @@ export async function generateNovelWithStreaming(generate_data, signal) {
             if (done) return;
 
             const data = JSON.parse(value.data);
+
+            if (typeof data?.assistant_node_id === 'string') {
+                yield { text, swipes: [], logprobs: null, toolCalls: [], state: { assistantNodeId: data.assistant_node_id } };
+                continue;
+            }
 
             if (data.token) {
                 text += data.token;

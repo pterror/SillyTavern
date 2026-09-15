@@ -15,7 +15,7 @@ import { getAncestorPath, appendMessages, sanitizeUserMessageExtra } from '../me
 import { readCardContent } from './characters.js';
 import { getGroupsByIds } from './groups.js';
 import { persistAssistantReply } from '../assistant-reply-persist.js';
-import { forwardAndPersistSseText } from './backends/text-completions.js';
+import { forwardAndPersistCompactStream } from './backends/text-completions.js';
 
 const API_NOVELAI = 'https://api.novelai.net';
 const TEXT_NOVELAI = 'https://text.novelai.net';
@@ -473,16 +473,15 @@ router.post('/generate', async function (req, res) {
         const response = await fetch(url, { method: 'POST', ...args });
 
         if (req.body.streaming) {
-            // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
-            // accumulate the real per-chunk generated text for raw-action persistence, exactly like
-            // text-completions.js's/kobold.js's own forwardAndPersistSseText() use. NovelAI's own SSE
-            // data payload shape is `{"token": "...", "logprobs": {...}}` (verified against
-            // generateNovelWithStreaming() in public/scripts/nai-settings.js: `if (data.token) { text
-            // += data.token; }` - `data.token` there is already DECODED text, not a raw token id,
-            // despite `parseNovelAILogprobs()`'s own unrelated "kept as raw token IDs" comment, which
-            // is about the SEPARATE `logprobs` field only). A no-op, byte-for-byte-identical
-            // pass-through whenever pendingAssistantPersist is null (every non-raw-action stream).
-            await forwardAndPersistSseText(response, res, pendingAssistantPersist, json => json?.token);
+            // Re-encode NovelAI's own SSE data payload shape (`{"token": "...", "logprobs": {...}}`,
+            // verified against generateNovelWithStreaming() in public/scripts/nai-settings.js -
+            // `data.token` is already decoded text, not a raw token id) into the same compact binary
+            // wire format every other raw-action streaming path now uses (see
+            // forwardAndPersistCompactStream()'s own doc comment) - `data.logprobs` is carried through
+            // as a `0x02` probabilities frame so per-token logprob display keeps working. A no-op,
+            // byte-for-byte-identical-to-before (forwardFetchResponse()) pass-through whenever
+            // pendingAssistantPersist is null (every non-raw-action stream).
+            await forwardAndPersistCompactStream(response, res, pendingAssistantPersist, json => json?.token, json => json?.logprobs);
         } else {
             if (!response.ok) {
                 const text = await response.text();

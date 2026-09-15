@@ -13,7 +13,7 @@ import { getAncestorPath, appendMessages, sanitizeUserMessageExtra } from '../..
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
 import { persistAssistantReply } from '../../assistant-reply-persist.js';
-import { forwardAndPersistSseText } from './text-completions.js';
+import { forwardAndPersistCompactStream } from './text-completions.js';
 
 export const router = express.Router();
 
@@ -354,14 +354,13 @@ router.post('/generate', async function (request, response_generate) {
             const response = await fetch(url, { method: 'POST', ...args });
 
             if (request.body.streaming) {
-                // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
-                // accumulate the real per-chunk generated text for raw-action persistence, exactly
-                // like text-completions.js's own forwardAndPersistSseText() - Kobold's own SSE data
-                // payload shape is `{"token": "..."}` (verified against generateKoboldWithStreaming()
-                // in public/scripts/kai-settings.js: `if (data?.token) { text += data.token; }`). A
-                // no-op, byte-for-byte-identical pass-through whenever pendingAssistantPersist is
-                // null (every non-raw-action stream).
-                await forwardAndPersistSseText(response, response_generate, pendingAssistantPersist, json => json?.token);
+                // Re-encode Kobold's own SSE data payload shape (`{"token": "..."}`, verified against
+                // generateKoboldWithStreaming() in public/scripts/kai-settings.js) into the same
+                // compact binary wire format every other raw-action streaming path now uses (see
+                // text-completions.js's forwardAndPersistCompactStream() doc comment) - a no-op,
+                // byte-for-byte-identical-to-before (forwardFetchResponse()) pass-through whenever
+                // pendingAssistantPersist is null (every non-raw-action stream).
+                await forwardAndPersistCompactStream(response, response_generate, pendingAssistantPersist, json => json?.token);
                 return;
             } else {
                 if (!response.ok) {

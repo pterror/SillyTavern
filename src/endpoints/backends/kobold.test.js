@@ -25,6 +25,12 @@ setConfigFilePath(path.join(__dirname, '..', '..', '..', 'config.yaml'));
 // on-disk fixtures (writeCharacter/buildSettingsFixture/saveChatToTree/writeAllSettings), and
 // loadBranch()-based tree-persistence assertions.
 //
+// Kobold's own /extra/generate/stream SSE shape (`data: {"token": "..."}`) is now re-encoded into
+// the same compact binary wire format every other raw-action streaming path uses
+// (forwardAndPersistCompactStream(), text-completions.js) instead of forwarded as raw SSE-JSON - see
+// that function's own doc comment for the wire format/rationale. Test (b) below decodes the real
+// compact-stream bytes with the real client-side CompactStreamDecoder.
+//
 // JUDGMENT CALL (read this before the streaming tests below): Kobold's own backend URL IS
 // genuinely settings-driven, unlike NovelAI - CONFIRMED, not assumed, by reading
 // src/text-completion-generation-input.js's own `apiServer: mainApi === 'kobold' ?
@@ -69,16 +75,17 @@ setConfigFilePath(path.join(__dirname, '..', '..', '..', 'config.yaml'));
 // `request.body` with `built.params`, then re-applies it: `request.body = { ...built.params,
 // streaming: !!streamingRequested };` - the exact same "trust the client's own streaming
 // preference" pattern text-completions.js's own raw-action branch already uses for
-// `stream: !!request.body.stream`. So the SSE branch (`forwardAndPersistSseText()`,
+// `stream: !!request.body.stream`. So the SSE branch (`forwardAndPersistCompactStream()`,
 // `/extra/generate/stream`) IS reachable for a real raw-action request that asks for it. Test (b)
 // below now proves this positively (a request with `streaming: true` really reaches
-// `/extra/generate/stream` and its SSE response is correctly relayed/persisted), and a separate,
-// clearly-labeled unit-level test still directly exercises the real `forwardAndPersistSseText()` +
-// the route's own literal `json => json?.token` extractor lambda (copied verbatim from kobold.js)
-// against a real SSE stream, for extra coverage of the per-chunk accumulation/persistence logic in
-// isolation.
+// `/extra/generate/stream` and its SSE response is correctly re-encoded/relayed/persisted), and a
+// separate, clearly-labeled unit-level test still directly exercises the real
+// `forwardAndPersistCompactStream()` + the route's own literal `json => json?.token` extractor
+// lambda (copied verbatim from kobold.js) against a real SSE stream, for extra coverage of the
+// per-chunk accumulation/persistence logic in isolation.
 const { router, buildRawActionKoboldRequest } = await import('./kobold.js');
-const { forwardAndPersistSseText } = await import('./text-completions.js');
+const { forwardAndPersistCompactStream } = await import('./text-completions.js');
+const { CompactStreamDecoder } = await import('../../../public/scripts/llamacpp-compact-stream.js');
 const { writeAllSettings } = await import('../../settings-store.js');
 const { saveChatToTree, loadBranch, getAlternatives, disposeMessageTreeStores } = await import('../../message-tree-db.js');
 
@@ -212,8 +219,8 @@ async function postGenerate(app, body) {
     }
 }
 
-/** Like postGenerate(), but reads the raw response body as text instead of parsing it as JSON - for the streaming (SSE) case, where the response is `text/event-stream`, not JSON. */
-async function postGenerateRaw(app, body) {
+/** Like postGenerate(), but returns the raw response bytes (not decoded as UTF-8 text) - required for the compact binary protocol, whose control-frame bytes are not valid UTF-8 on their own. */
+async function postGenerateStreamBytes(app, body) {
     const server = app.listen(0, '127.0.0.1');
     await new Promise(resolve => server.once('listening', resolve));
     const port = server.address().port;
@@ -223,15 +230,31 @@ async function postGenerateRaw(app, body) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
         });
-        const text = await res.text();
-        return { status: res.status, headers: res.headers, text };
+        const bytes = Buffer.from(await res.arrayBuffer());
+        return { status: res.status, headers: res.headers, bytes };
     } finally {
         server.closeAllConnections?.();
         await new Promise(resolve => server.close(resolve));
     }
 }
 
-/** Polls `check()` until it returns truthy or `timeoutMs` elapses - persistence for the non-streaming path happens synchronously (awaited before `response_generate.send()`), but this is kept for symmetry/robustness with the direct forwardAndPersistSseText() unit test below. */
+/** Decodes a full compact-stream byte buffer (using the real client-side CompactStreamDecoder) into `{text, assistantNodeId}`. */
+function decodeCompactStream(bytes) {
+    const decoder = new CompactStreamDecoder();
+    const events = [...decoder.push(new Uint8Array(bytes)), ...decoder.flush()];
+    let text = '';
+    let assistantNodeId = null;
+    for (const event of events) {
+        if ('content' in event) {
+            text += event.content;
+        } else if ('assistantNodeId' in event) {
+            assistantNodeId = event.assistantNodeId;
+        }
+    }
+    return { text, assistantNodeId };
+}
+
+/** Polls `check()` until it returns truthy or `timeoutMs` elapses - persistence for the non-streaming path happens synchronously (awaited before `response_generate.send()`), but this is kept for symmetry/robustness with the direct forwardAndPersistCompactStream() unit test below. */
 async function waitFor(check, { timeoutMs = 2000, intervalMs = 10 } = {}) {
     const deadline = Date.now() + timeoutMs;
     for (; ;) {
@@ -404,7 +427,10 @@ async function run() {
     // sends, computed the same way getKoboldGenerationData() computes its own `streaming` field)
     // really reaches Kobold's STREAMING endpoint (`/extra/generate/stream`), never the non-streaming
     // `/v1/generate`, and the real SSE response is correctly relayed back to the client (raw bytes,
-    // `text/event-stream`) AND persisted as the assistant's reply via forwardAndPersistSseText().
+    // `text/event-stream`) AND persisted as the assistant's reply - now re-encoded into the shared
+    // compact binary wire format (forwardAndPersistCompactStream(), text-completions.js) instead of
+    // forwarded as raw SSE-JSON, matching every other raw-action streaming path in this session's
+    // unification pass.
     {
         const settings = buildSettingsFixture();
         settings.kai_settings.streaming_kobold = true; // matches what a real client would have used to compute `streaming: true`
@@ -441,7 +467,7 @@ async function run() {
         const streamNodeId = streamBranchInfo.branch.leaf_id;
 
         const app = buildTestApp();
-        const { status, headers, text } = await postGenerateRaw(app, {
+        const { status, headers, bytes } = await postGenerateStreamBytes(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
             type: 'normal', user_message: 'Try to stream, Rex.', streaming: true,
         });
@@ -449,41 +475,28 @@ async function run() {
 
         assert.equal(status, 200);
         assert.equal(sawNonStreamRequest, false, '/v1/generate was never requested - the streaming request correctly reached /extra/generate/stream instead');
-        // Note: forwardFetchResponse() (src/util.js) - the function that ultimately pipes this
-        // response - forwards the upstream body/status but does NOT copy the upstream's
-        // Content-Type header (verified by reading it: it only ever sets `to.statusCode`/
-        // `to.statusMessage`, never a header), so the response is genuinely headerless here rather
-        // than lying about being `text/event-stream` - not asserted on for that reason. The raw SSE
-        // body bytes (checked below) are what actually distinguishes this from the JSON path.
-        void headers;
-        // forwardAndPersistSseText() holds back the literal `data: [DONE]` line and writes
-        // `data: {"assistant_node_id": "..."}` ahead of it, once persistence completes - see its own
-        // doc comment in text-completions.js. Every real token frame still reaches the client
-        // byte-for-byte identical, in order, before the injected frame.
-        const expectedTokens = sseTokens.map(token => `data: ${JSON.stringify({ token })}\n\n`).join('');
-        assert.ok(text.startsWith(expectedTokens), 'every real token frame reaches the client byte-for-byte identical, in order, before the injected frame');
-        const trailer = /^data: (\{"assistant_node_id":"[^"]+"\})\n\ndata: \[DONE\]\n\n$/.exec(text.slice(expectedTokens.length));
-        assert.ok(trailer, `the injected assistant_node_id frame lands ahead of [DONE], with [DONE] properly terminated - got: ${JSON.stringify(text.slice(expectedTokens.length))}`);
-        const streamedNodeId = JSON.parse(trailer[1]).assistant_node_id;
+        assert.equal(headers.get('X-ST-Stream-Format'), 'compact-v1', 'Kobold\'s raw-action stream now declares the same compact binary wire format every other raw-action streaming path uses');
+        const decoded = decodeCompactStream(bytes);
+        assert.equal(decoded.text, sseTokens.join(''), 'the decoded compact stream reconstructs the exact text, accumulated across every real {"token": "..."} SSE chunk');
+        assert.ok(decoded.assistantNodeId, 'the assistant_node_id frame was sent as the final frame');
 
         const branchAfter = await waitFor(async () => {
             const branch = await loadBranch(directories, ownerId, streamBranch);
             return branch.messages.length === messageCountBefore + 2 ? branch : null;
         });
         const [, assistantMsg] = branchAfter.messages.slice(-2);
-        assert.equal(assistantMsg.mes, sseTokens.join(''), 'the assistant reply was accumulated from the real SSE stream (via forwardAndPersistSseText()) and persisted correctly');
+        assert.equal(assistantMsg.mes, sseTokens.join(''), 'the assistant reply was accumulated from the real SSE stream (via forwardAndPersistCompactStream()) and persisted correctly');
         assert.equal(assistantMsg.is_user, false);
-        assert.equal(assistantMsg.node_id, streamedNodeId, 'the node id sent to the client ahead of [DONE] is the exact node the reply actually landed on');
+        assert.equal(assistantMsg.node_id, decoded.assistantNodeId, 'the node id sent to the client in the compact stream\'s assistant_node_id frame is the exact node the reply actually landed on');
         assert.equal(assistantMsg.name, 'Rex');
 
-        // Direct, unit-level exercise of the REAL forwardAndPersistSseText() function together with
-        // the route's own literal extractor lambda (`json => json?.token`, copied verbatim from
-        // kobold.js's real /generate handler - `git show 341d1dead:src/endpoints/backends/kobold.js`)
-        // against a REAL SSE HTTP response from a real node:http server (the same fake backend
-        // pattern used everywhere else in this file) - proves the real per-chunk accumulation and
-        // persistence logic for Kobold's real `{"token": "..."}` streaming shape works correctly,
-        // even though the full HTTP route currently cannot reach this branch for raw-action requests
-        // (see this file's top-of-file doc comment).
+        // Direct, unit-level exercise of the REAL forwardAndPersistCompactStream() function together
+        // with the route's own literal extractor lambda (`json => json?.token`, copied verbatim from
+        // kobold.js's real /generate handler) against a REAL SSE HTTP response from a real node:http
+        // server (the same fake backend pattern used everywhere else in this file) - proves the real
+        // per-chunk accumulation/re-encoding/persistence logic for Kobold's real `{"token": "..."}`
+        // streaming shape works correctly, even though the full HTTP route currently cannot reach
+        // this branch for raw-action requests (see this file's top-of-file doc comment).
         const sseChunks = ['Rex ', 'streams ', 'a ', 'reply.'];
         const sseBackend = await startFakeBackend((_req, res) => {
             res.writeHead(200, { 'Content-Type': 'text/event-stream' });
@@ -497,12 +510,12 @@ async function run() {
         const branchBeforeDirect = await loadBranch(directories, ownerId, directStreamBranch);
         const anchorNodeId = branchBeforeDirect.branch.leaf_id;
 
-        // Uses `node-fetch` (NOT the global web-standard `fetch`) - forwardAndPersistSseText()
+        // Uses `node-fetch` (NOT the global web-standard `fetch`) - forwardAndPersistCompactStream()
         // requires the real node-fetch Response whose `.body` is a node Readable stream (`.on(...)`),
         // exactly what the real route's own `import fetch from 'node-fetch'` provides - the global
         // fetch's body is a web ReadableStream with no `.on()` method.
         const fetchResponse = await nodeFetch(sseBackend.url);
-        /** Minimal fake Express response, capturing exactly what forwardFetchResponse()/forwardAndPersistSseText() write to it. */
+        /** Minimal fake Express response, capturing exactly what forwardFetchResponse()/forwardAndPersistCompactStream() write to it. */
         const chunks = [];
         const fakeExpressResponse = {
             statusCode: 200,
@@ -514,7 +527,7 @@ async function run() {
             end(chunk) { if (chunk) chunks.push(chunk); this.writableEnded = true; },
             on() {},
         };
-        await forwardAndPersistSseText(fetchResponse, fakeExpressResponse, {
+        await forwardAndPersistCompactStream(fetchResponse, fakeExpressResponse, {
             directories, ownerId, anchorNodeId, name2: 'Rex', isSwipe: false, isContinue: false, anchorContent: null,
         }, json => json?.token);
         sseBackend.server.close();
@@ -523,7 +536,7 @@ async function run() {
             const branch = await loadBranch(directories, ownerId, directStreamBranch);
             return branch.messages.length === 2 ? branch : null;
         });
-        assert.equal(branchAfterDirect.messages[1].mes, 'Rex streams a reply.', 'the real forwardAndPersistSseText() + the route\'s own {"token":...} extractor correctly accumulated and persisted every chunk');
+        assert.equal(branchAfterDirect.messages[1].mes, 'Rex streams a reply.', 'the real forwardAndPersistCompactStream() + the route\'s own {"token":...} extractor correctly accumulated and persisted every chunk');
         assert.equal(branchAfterDirect.messages[1].name, 'Rex');
         assert.equal(branchAfterDirect.messages[1].is_user, false);
     }

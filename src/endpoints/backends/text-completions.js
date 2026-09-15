@@ -16,7 +16,7 @@ import {
 import { forwardFetchResponse, trimV1, getConfigValue } from '../../util.js';
 import { setAdditionalHeaders } from '../../additional-headers.js';
 import { createHash } from 'node:crypto';
-import { pipeLlamaCppCompactStream, getLlamaCppStreamMeta, createBackpressureWriter, encodeContent, encodeIndexFrame, encodeReasoningFrame, encodeAssistantNodeIdFrame } from './llamacpp-compact-stream.js';
+import { pipeLlamaCppCompactStream, getLlamaCppStreamMeta, createBackpressureWriter, encodeContent, encodeIndexFrame, encodeReasoningFrame, encodeAssistantNodeIdFrame, encodeProbabilitiesFrame } from './llamacpp-compact-stream.js';
 import { resolveTextGenBackend, resolveServerUrl } from '../../textgen-backend-resolve.js';
 import { resolveConnectionProfile } from '../../connection-profile-resolve.js';
 import { mergeTextGenPreset } from '../../textgen-preset-merge.js';
@@ -263,9 +263,14 @@ export async function forwardAndPersistSseText(fetchResponse, response, persist,
  * @param {(json: any) => string|undefined} extractText Pulls this api_type's own real per-chunk
  * generated-text field out of one parsed SSE JSON payload - see forwardAndPersistSseText()'s own doc
  * comment for the two real shapes this covers at the call sites below.
+ * @param {((json: any) => any)|null} [extractProbabilities] Pulls this api_type's own real per-chunk
+ * token-probabilities payload (if any) out of one parsed SSE JSON payload - re-encoded as a `0x02`
+ * probabilities frame ahead of the content frame it belongs to, same ordering
+ * llamacpp-compact-stream.js's own encodeEvent() uses. `null` (the default) for an api_type with no
+ * such field - NovelAI's `data.logprobs` is the only current caller.
  * @returns {Promise<void>}
  */
-export async function forwardAndPersistCompactStream(fetchResponse, response, persist, extractText) {
+export async function forwardAndPersistCompactStream(fetchResponse, response, persist, extractText, extractProbabilities = null) {
     if (!persist || !fetchResponse.ok || !fetchResponse.body) {
         return forwardFetchResponse(fetchResponse, response);
     }
@@ -338,6 +343,12 @@ export async function forwardAndPersistCompactStream(fetchResponse, response, pe
         if (reasoning) {
             flushPendingContent();
             safeWrite(encodeReasoningFrame(reasoning));
+        }
+
+        const probabilities = extractProbabilities?.(json);
+        if (probabilities) {
+            flushPendingContent();
+            safeWrite(encodeProbabilitiesFrame(probabilities));
         }
 
         const chunkText = extractText(json) ?? '';
