@@ -78,7 +78,7 @@ import {
 import { getVertexAIAuth, getProjectIdFromServiceAccount } from '../google.js';
 import { getCookieSecret } from '../../users.js';
 import { fetchGoogleModels, GoogleModelsHttpError } from './google-models.js';
-import { encodeContent, encodeIndexFrame, encodeReasoningFrame, encodeAssistantNodeIdFrame } from './llamacpp-compact-stream.js';
+import { encodeContent, encodeIndexFrame, encodeReasoningFrame, encodeAssistantNodeIdFrame, encodeToolCallDeltaFrame, encodeControlFrame } from './llamacpp-compact-stream.js';
 
 const API_OPENAI = 'https://api.openai.com/v1';
 const API_CLAUDE = 'https://api.anthropic.com/v1';
@@ -3132,33 +3132,31 @@ function applyServerToolCallDelta(target, delta) {
  * plain `forwardAndPersistCompactStream()`).
  *
  * ONLY ever called when `pendingServerToolLoop` is set (this request advertised at least one
- * server-native or client-advertised tool - identical gate to the non-streaming call site). A request
+ * server-native or client-advertised tool - identical gate to the non-streaming call site, which also
+ * guarantees `persist`/`pendingAssistantPersist` is set - see its own declaration comment). A request
  * with no tools registered never reaches this function at all - it keeps using the untouched
- * `forwardAndPersistCompactStream()`, so its behavior is 100% byte-for-byte unaffected by this function's
- * existence.
+ * `forwardAndPersistCompactStream()`, so its behavior is 100% unaffected by this function's existence.
  *
- * DESIGN (this task's central question - see the accompanying report for the full writeup):
- * 1. Tees the first round's SSE stream exactly like `forwardAndPersistCompactStream()` does (a passive
- *    `'data'` listener attached before anything else touches the body), accumulating BOTH the real
- *    `choices[0].delta.content` text AND `choices[0].delta.tool_calls[]` (via
- *    `applyServerToolCallDelta()` above, index-keyed exactly like the client's own accumulator).
- * 2. Real content deltas are forwarded to the client LIVE, chunk-by-chunk, exactly as they arrive - no
- *    buffering, no added latency - preserving real-time streaming UX for the overwhelmingly common
- *    case (a normal reply, tool-enabled or not, that doesn't end up calling a tool this turn).
- * 3. Tool-call deltas are deliberately NEVER forwarded to the client for this round. This is the one
- *    real, justified deviation from "forward every byte unmodified": if they were forwarded, the
- *    client's OWN generic, pre-existing `ToolManager.parseToolCalls()` accumulation (which runs on
- *    every streamed chat-completion response, raw-action or not - see
- *    public/scripts/chat-completion-settings.js) would independently populate
- *    `streamingProcessor.toolCalls`, and the LEGACY (pre-cutover) client-side tool-calling path
- *    (public/script.js, the `canPerformToolCalls && isStreamFinished && isStreamWithToolCalls` block)
- *    would fire IN ADDITION to this server-side loop - a double-execution/mis-routing hazard for
- *    exactly the tool calls this route is now responsible for. Suppressing them here means that legacy
- *    client path naturally never sees them (its own trigger condition is never met), with no client-side
- *    gating needed for the common case.
+ * Emits the same compact binary wire format (`./llamacpp-compact-stream.js`, `X-ST-Stream-Format:
+ * compact-v1`) as every other raw-action streaming path, instead of the old hand-reconstructed
+ * SSE-JSON this function used to write directly (see `git log -- <this file>` for that version):
+ * 1. Tees the first round's SSE stream, accumulating BOTH the real `choices[0].delta.content` text
+ *    AND `choices[0].delta.tool_calls[]` (via `applyServerToolCallDelta()` above, index-keyed exactly
+ *    like the client's own accumulator) - needed either way, to know whether a tool was called and to
+ *    reconstruct the round for `runServerToolRounds()` below.
+ * 2. Real content deltas are forwarded to the client LIVE, chunk-by-chunk, as `encodeContent()` frames
+ *    - no buffering, no added latency - preserving real-time streaming UX for the overwhelmingly
+ *    common case (a normal reply, tool-enabled or not, that doesn't end up calling a tool this turn).
+ * 3. Tool-call deltas ARE forwarded, as `encodeToolCallDeltaFrame()` (`0x05`) frames, one per delta -
+ *    unlike the old SSE-JSON version, which had to suppress them entirely to avoid double-processing
+ *    by the client's generic SSE-JSON `ToolManager.parseToolCalls()`/legacy tool-calling path. Neither
+ *    of those runs against a compact-v1 stream (chat-completion-settings.js branches on the response
+ *    header before choosing a consumer at all), so there is no such hazard here - a dedicated compact-
+ *    stream consumer accumulates `0x05` deltas the same way, and is solely responsible for them.
  * 4. Once the first round's stream ends, if no tool calls were accumulated: behaves exactly like
- *    `forwardAndPersistCompactStream()` (persist the accumulated text, if any, and close the stream) - this
- *    is the common case for any tool-enabled conversation where the model didn't call a tool THIS turn.
+ *    `forwardAndPersistCompactStream()` (persist the accumulated text, if any, write the
+ *    `assistant_node_id` frame, and close the stream) - this is the common case for any tool-enabled
+ *    conversation where the model didn't call a tool THIS turn.
  * 5. If tool calls WERE accumulated, reconstructs the exact `{choices: [{message: {content,
  *    tool_calls}}]}` shape `runServerToolRounds()` already consumes for a non-streaming round, and runs
  *    that SAME function - reused entirely unchanged, not duplicated - which executes server-native
@@ -3166,34 +3164,34 @@ function applyServerToolCallDelta(target, delta) {
  *    the first always re-calls the backend non-streamingly regardless of the original request's own
  *    `stream` flag - see `runServerToolRounds()`'s own `refetch` calls) re-resolves and re-calls the
  *    backend for as many further rounds as needed, bounded by the same `SERVER_TOOL_ROUND_LIMIT`.
- * 6. Once `runServerToolRounds()` settles, the ALREADY-OPEN SSE connection (headers were sent as
- *    `text/event-stream` the moment the first byte was forwarded - a JSON response body, the
- *    non-streaming `{pending_tool_calls: [...]}` mechanism, is no longer possible at this point) is
- *    completed by writing ONE final synthetic `data:` line, then `[DONE]`, then ending the response:
- *    - `ok: 'pending'` (chunk (c) client-only hand-off): the line carries `{tool_call_handoff:
- *      {node_id, pending_tool_calls}}` - a shape with no `.choices` key, so it is silently ignored by
- *      every EXISTING per-chunk content/tool-call parser on the client (none of them read this key) -
- *      the client's streaming generator (`sendOpenAIRequest()` in chat-completion-settings.js) is
- *      taught to stash `parsed.tool_call_handoff` into its own `state` object, and the end-of-stream
- *      handler (public/script.js, `isStreamFinished` block) is taught to recognize it and hand off to
- *      the EXACT SAME `resolveClientToolHandoffLoop()` chunk (c) already shipped for the non-streaming
- *      case, completely unchanged - the tree node addressed by `node_id` was ALREADY persisted
- *      server-side by `runServerToolRounds()` before this line is even written, so there is nothing left
- *      for the client to persist, only to resolve.
- *    - `ok: false` (a real error mid-loop, e.g. round limit exceeded or an unrecognized tool name): the
- *      line carries `{error: {message}}` - the best available error-surfacing mechanism once headers are
- *      already committed as a 200 `text/event-stream` response (the status code itself can no longer
- *      change).
+ * 6. Once `runServerToolRounds()` settles, the stream is completed by writing ONE final control
+ *    (`0x08`) frame, then ending the response (there is no `[DONE]` sentinel to hold back in the
+ *    compact protocol - the natural end of the byte stream IS the end signal):
+ *    - `ok: 'pending'` (chunk (c) client-only hand-off): `{tool_call_handoff: {node_id,
+ *      pending_tool_calls}}` - the client's streaming generator (`sendOpenAIRequest()` in
+ *      chat-completion-settings.js) stashes it on `state.toolCallHandoff`, and the end-of-stream
+ *      handler (public/script.js, `isStreamFinished` block) recognizes it and hands off to the SAME
+ *      `resolveClientToolHandoffLoop()` chunk (c) already shipped for the non-streaming case,
+ *      completely unchanged - the tree node addressed by `node_id` was ALREADY persisted server-side
+ *      by `runServerToolRounds()` before this frame is even written, so there is nothing left for the
+ *      client to persist, only to resolve.
+ *    - `ok: false` (a real error mid-loop, e.g. round limit exceeded or an unrecognized tool name):
+ *      `{error: {message}}` - the best available error-surfacing mechanism once the stream is already
+ *      committed (the HTTP status code itself can no longer change).
+ *    - `ok === 'aborted'` (an all-stealth round - matching legacy's `shouldStopGeneration` branch,
+ *      "generation stops, nothing new appears"): `{tool_call_aborted: true}` - the client's streaming
+ *      generator stashes it on `state.toolCallAborted` the same way, and `finishGenerating()`
+ *      recognizes it to unblock generation cleanly with no persisted reply. Any real narrative text
+ *      generated in the SAME round as the stealth call is also not forwarded/persisted (see
+ *      `runServerToolRounds()`'s own step 2b doc comment for why this narrower behavior was chosen).
  *    - `ok: true` (a final plain-text reply was reached, possibly after several further non-streaming
- *      rounds): the line carries a completely NORMAL-shaped `{choices: [{delta: {content}}]}` chunk, so
- *      every EXISTING client content-accumulation code path appends it exactly as if it were one more
- *      ordinary streaming chunk - no client-side special-casing needed for this branch at all. The
- *      assistant reply is persisted via the shared `persistAssistantReply()`, anchored at
- *      `roundResult.leafNodeId` (mirroring the non-streaming call site's own `pendingAssistantPersist.
- *      anchorNodeId = roundResult.leafNodeId` reassignment before persisting).
+ *      rounds): the final text is sent as an ordinary `encodeContent()` frame (no client-side
+ *      special-casing needed for this branch at all), persisted via the shared
+ *      `persistAssistantReply()` anchored at `roundResult.leafNodeId` (mirroring the non-streaming call
+ *      site's own `pendingAssistantPersist.anchorNodeId = roundResult.leafNodeId` reassignment), and
+ *      its node id sent as the final `encodeAssistantNodeIdFrame()` frame before `response.end()`.
  * @param {import('node-fetch').Response} fetchResponse The first round's upstream fetch response.
- * @param {import('express').Response} response The client-facing Express response (already implied
- * `text/event-stream` by the caller having chosen to stream).
+ * @param {import('express').Response} response The client-facing Express response.
  * @param {object} persist `pendingAssistantPersist` - always truthy whenever this function is called
  * (same gate as `pendingServerToolLoop`, see the route handler).
  * @param {object} pendingServerToolLoop The route handler's own `pendingServerToolLoop` object
@@ -3202,13 +3200,16 @@ function applyServerToolCallDelta(target, delta) {
  * request with a freshly-resolved `messages` array - forwarded straight through to `runServerToolRounds()`.
  * @returns {Promise<void>}
  */
-async function forwardAndPersistSseWithServerTools(fetchResponse, response, persist, pendingServerToolLoop, refetch) {
+async function forwardAndPersistCompactStreamWithServerTools(fetchResponse, response, persist, pendingServerToolLoop, refetch) {
     if (!fetchResponse.ok || !fetchResponse.body) {
         return forwardFetchResponse(fetchResponse, response);
     }
 
     response.statusCode = fetchResponse.status;
     response.statusMessage = fetchResponse.statusText;
+    response.setHeader('X-ST-Stream-Format', 'compact-v1');
+
+    const writer = createChatCompactStreamWriter(response);
 
     let buffer = '';
     let text = '';
@@ -3221,17 +3222,12 @@ async function forwardAndPersistSseWithServerTools(fetchResponse, response, pers
         while ((idx = buffer.indexOf('\n')) !== -1) {
             const line = buffer.slice(0, idx).trim();
             buffer = buffer.slice(idx + 1);
-            if (!line.startsWith('data:')) {
-                // Not a `data:` line (an SSE comment, a keep-alive, a blank separator) - forward it
-                // untouched rather than dropping it. This function reconstructs what it forwards
-                // instead of piping raw bytes (unlike forwardAndPersistCompactStream()'s independent
-                // tee-and-parse-on-the-side design), so unlike that function, a parse/shape surprise
-                // here MUST fail open (still forward) rather than silently vanish from the client's
-                // stream - only a genuine, successfully-parsed `tool_calls` delta is ever suppressed
-                // (see below).
-                if (line) response.write(`${line}\n\n`);
-                continue;
-            }
+            // Unlike the old SSE-JSON version, there is no "forward the raw line" fallback for a
+            // non-`data:` line (an SSE comment, a keep-alive, a blank separator) or a parse failure -
+            // the compact protocol has no concept of forwarding opaque upstream bytes, only real
+            // content/frame events, matching forwardAndPersistCompactStream()'s own established
+            // "drop and warn" precedent for the exact same situation.
+            if (!line.startsWith('data:')) continue;
             const payload = line.slice(5).trim();
             if (!payload || payload === '[DONE]') continue;
 
@@ -3239,15 +3235,15 @@ async function forwardAndPersistSseWithServerTools(fetchResponse, response, pers
             try {
                 json = JSON.parse(payload);
             } catch (error) {
-                console.warn('Failed to parse streamed SSE event while accumulating tool calls for persistence - forwarding it to the client unaccumulated (fail open, same rationale as the non-data-line branch above):', error);
-                response.write(`${line}\n\n`);
+                console.warn('Failed to parse streamed SSE event while accumulating tool calls for persistence (compact stream):', error);
                 continue;
             }
 
             const delta = json?.choices?.[0]?.delta;
             const contentDelta = delta?.content;
-            if (typeof contentDelta === 'string') {
+            if (typeof contentDelta === 'string' && contentDelta) {
                 text += contentDelta;
+                writer.write(encodeContent(contentDelta));
             }
 
             const toolCallDeltas = delta?.tool_calls;
@@ -3259,19 +3255,9 @@ async function forwardAndPersistSseWithServerTools(fetchResponse, response, pers
                         toolCallsByIndex[toolCallIndex] = {};
                     }
                     applyServerToolCallDelta(toolCallsByIndex[toolCallIndex], toolCallDelta);
+                    writer.write(encodeToolCallDeltaFrame(toolCallDelta));
                 }
-                // See this function's own doc comment, step 3 - tool-call deltas are never forwarded.
-                // Real content in the SAME chunk (a hybrid "thinking out loud, then calling a tool"
-                // reply) is still forwarded live below.
-                if (typeof contentDelta === 'string' && contentDelta) {
-                    response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: contentDelta } }] })}\n\n`);
-                }
-                continue;
             }
-
-            // No tool-call delta in this chunk - forward it live, unmodified in substance (see this
-            // function's own doc comment, step 2).
-            response.write(`${line}\n\n`);
         }
     });
 
@@ -3286,10 +3272,11 @@ async function forwardAndPersistSseWithServerTools(fetchResponse, response, pers
     if (toolCalls.length === 0) {
         // No tool calls this round - see this function's own doc comment, step 4.
         if (text) {
-            await persistAssistantReply(persist, text);
+            const persisted = await persistAssistantReply(persist, text);
+            if (persisted) writer.write(encodeAssistantNodeIdFrame(persisted.node_id));
         }
-        response.write('data: [DONE]\n\n');
-        return response.end();
+        writer.end();
+        return;
     }
 
     // See this function's own doc comment, step 5 - reuse runServerToolRounds() wholesale.
@@ -3302,47 +3289,29 @@ async function forwardAndPersistSseWithServerTools(fetchResponse, response, pers
         refetch,
     });
 
-    // THIS TASK (stealth-tool parity, runServerToolRounds()'s own doc comment step 2b) - matching
-    // legacy's `shouldStopGeneration` branch ("generation stops, nothing new appears"). Nothing was
-    // persisted for this round, so there is no further content chunk to forward - but a bare `[DONE]`
-    // alone is NOT enough: the client's own generic stream-end handling (public/script.js's
-    // `isStreamFinished` path) would then see an ordinary, empty-content stream and persist an empty
-    // placeholder message, exactly the outcome this is supposed to prevent. So, mirroring the
-    // `tool_call_handoff` trailer immediately below (a shape with no `.choices` key, silently ignored
-    // by every existing parser), one synthetic `data: {"tool_call_aborted": true}` line is written
-    // first - the client's streaming generator stashes it on `state` the same way it stashes
-    // `tool_call_handoff`, and `finishGenerating()` recognizes it to unblock generation cleanly with no
-    // persisted reply (see public/script.js's own `isStreamWithToolCallAborted` doc comment).
-    // Simplification, documented: any real narrative text the model generated in the SAME round as the
-    // stealth call is also not forwarded/persisted (legacy, by contrast, keeps already-persisted
-    // visible text and only discards the tool-invocation record - see `runServerToolRounds()`'s own
-    // step 2b doc comment for why this narrower, simpler behavior was chosen over exactly replicating
-    // that edge case).
+    // See this function's own doc comment, step 6.
     if (roundResult.ok === 'aborted') {
-        response.write(`data: ${JSON.stringify({ tool_call_aborted: true })}\n\n`);
-        response.write('data: [DONE]\n\n');
-        return response.end();
+        writer.write(encodeControlFrame({ tool_call_aborted: true }));
+        writer.end();
+        return;
     }
 
-    // See this function's own doc comment, step 6.
     if (roundResult.ok === 'pending') {
-        response.write(`data: ${JSON.stringify({ tool_call_handoff: { node_id: roundResult.leafNodeId, pending_tool_calls: roundResult.pendingToolCalls } })}\n\n`);
-        response.write('data: [DONE]\n\n');
-        return response.end();
+        writer.write(encodeControlFrame({ tool_call_handoff: { node_id: roundResult.leafNodeId, pending_tool_calls: roundResult.pendingToolCalls } }));
+        writer.end();
+        return;
     }
 
     if (!roundResult.ok) {
-        response.write(`data: ${JSON.stringify({ error: { message: roundResult.message } })}\n\n`);
-        response.write('data: [DONE]\n\n');
-        return response.end();
+        writer.write(encodeControlFrame({ error: { message: roundResult.message } }));
+        writer.end();
+        return;
     }
 
     const finalText = roundResult.json?.choices?.[0]?.message?.content ?? '';
     if (finalText) {
-        response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: finalText } }] })}\n\n`);
+        writer.write(encodeContent(finalText));
     }
-    response.write('data: [DONE]\n\n');
-    response.end();
 
     // See runServerToolRounds()'s own doc comment and the non-streaming call site's identical
     // comment above: once any round has run (guaranteed here - this function is only reached when
@@ -3354,8 +3323,10 @@ async function forwardAndPersistSseWithServerTools(fetchResponse, response, pers
     persist.isSwipe = false;
     persist.isContinue = false;
     if (finalText) {
-        await persistAssistantReply(persist, finalText);
+        const persisted = await persistAssistantReply(persist, finalText);
+        if (persisted) writer.write(encodeAssistantNodeIdFrame(persisted.node_id));
     }
+    writer.end();
 }
 
 /**
@@ -4553,9 +4524,10 @@ router.post('/generate', async function (request, response) {
             // counterpart of the non-streaming branch below - ONLY when this raw-action request
             // actually advertised at least one server tool OR client-advertised tool
             // (`pendingServerToolLoop` set, identical gate to the non-streaming call site below). See
-            // `forwardAndPersistSseWithServerTools()`'s own doc comment for the full design (tee +
-            // accumulate tool_calls, suppress forwarding them, reuse `runServerToolRounds()` once the
-            // round ends, and the `tool_call_handoff` SSE trailer mechanism for a client-only hand-off).
+            // `forwardAndPersistCompactStreamWithServerTools()`'s own doc comment for the full design
+            // (tee + accumulate tool_calls, forward them as 0x05 frames, reuse `runServerToolRounds()`
+            // once the round ends, and the `tool_call_handoff` control-frame mechanism for a
+            // client-only hand-off).
             if (pendingServerToolLoop) {
                 // `stream: false` is forced for every round AFTER the first - matching the EXISTING,
                 // already-shipped non-streaming call site's own precedent a few lines below (every
@@ -4564,7 +4536,7 @@ router.post('/generate', async function (request, response) {
                 // here is `true` (this is the streaming branch), so it must be explicitly overridden,
                 // or a real backend would honor it and return another SSE stream that
                 // `runServerToolRounds()`'s own `fetchResponse.json()` call cannot parse.
-                return await forwardAndPersistSseWithServerTools(
+                return await forwardAndPersistCompactStreamWithServerTools(
                     fetchResponse, response, pendingAssistantPersist, pendingServerToolLoop,
                     (messages) => fetch(endpointUrl, { ...config, body: JSON.stringify({ ...requestBody, stream: false, messages }) }),
                 );

@@ -14,6 +14,11 @@
  * `0xFF 0x05 <4-byte BE length><length bytes>`    = one tool-call delta (JSON).
  * `0xFF 0x06 <4-byte BE length><length bytes>`    = one generated image (JSON {mimeType, data}).
  * `0xFF 0x07 <4-byte BE length><length bytes>`    = thought signature (UTF-8 string).
+ * `0xFF 0x08 <4-byte BE length><length bytes>`    = control JSON - an out-of-band signal with no
+ *                                                   dedicated frame of its own (currently only the
+ *                                                   server-tool-calling stream's end-of-round
+ *                                                   signals: `{tool_call_handoff}`/
+ *                                                   `{tool_call_aborted}`/`{error}`).
  *
  * This is a private contract between ST's own server and ST's own client, not a public/supported surface.
  */
@@ -25,9 +30,10 @@ export const FRAME_TYPE_ASSISTANT_NODE_ID = 0x04;
 export const FRAME_TYPE_TOOL_CALL_DELTA = 0x05;
 export const FRAME_TYPE_IMAGE = 0x06;
 export const FRAME_TYPE_THOUGHT_SIGNATURE = 0x07;
+export const FRAME_TYPE_CONTROL = 0x08;
 
 /**
- * @typedef {{content: string} | {index: number} | {probabilities: any} | {reasoning: string} | {assistantNodeId: string} | {toolCallDelta: any} | {image: {mimeType: string, data: string}} | {thoughtSignature: string}} CompactStreamEvent
+ * @typedef {{content: string} | {index: number} | {probabilities: any} | {reasoning: string} | {assistantNodeId: string} | {toolCallDelta: any} | {image: {mimeType: string, data: string}} | {thoughtSignature: string} | {control: any}} CompactStreamEvent
  */
 
 /**
@@ -166,7 +172,7 @@ export class CompactStreamDecoder {
                 continue;
             }
 
-            if (type === FRAME_TYPE_TOOL_CALL_DELTA || type === FRAME_TYPE_IMAGE) {
+            if (type === FRAME_TYPE_TOOL_CALL_DELTA || type === FRAME_TYPE_IMAGE || type === FRAME_TYPE_CONTROL) {
                 if (i + 6 > buf.length) {
                     flushContent();
                     this.pending = buf.subarray(i);
@@ -183,9 +189,15 @@ export class CompactStreamDecoder {
                 const jsonBytes = buf.subarray(i + 6, i + total);
                 try {
                     const parsed = JSON.parse(new TextDecoder('utf-8').decode(jsonBytes));
-                    events.push(type === FRAME_TYPE_TOOL_CALL_DELTA ? { toolCallDelta: parsed } : { image: parsed });
+                    if (type === FRAME_TYPE_TOOL_CALL_DELTA) {
+                        events.push({ toolCallDelta: parsed });
+                    } else if (type === FRAME_TYPE_IMAGE) {
+                        events.push({ image: parsed });
+                    } else {
+                        events.push({ control: parsed });
+                    }
                 } catch (error) {
-                    console.warn('Failed to parse compact stream tool-call/image frame:', error);
+                    console.warn('Failed to parse compact stream tool-call/image/control frame:', error);
                 }
                 i += total;
                 continue;

@@ -3220,7 +3220,7 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, ra
         // SSE-JSON, signaled by this response header - the same header value/wire format the
         // text-completion streaming path uses (src/endpoints/backends/chat-completions.js's and
         // text-completions.js's own forwardAndPersistCompactStream() both set it). Every other
-        // streaming path (non-raw-action, and the tool-calling forwardAndPersistSseWithServerTools()
+        // streaming path (non-raw-action, and the tool-calling forwardAndPersistCompactStreamWithServerTools()
         // round trips) never sets it and keeps going through the SSE-JSON branch below unchanged.
         if (response.headers.get('X-ST-Stream-Format') === 'compact-v1') {
             const reader = response.body.getReader();
@@ -3228,6 +3228,9 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, ra
                 const decoder = new CompactStreamDecoder();
                 let text = '';
                 const swipes = [];
+                // Deliberately never populated from `toolCallDelta` events (see below) - kept as a
+                // permanently-empty array (not removed from the yielded shape) only so every existing
+                // consumer of this generator's output that reads `.toolCalls` keeps working unchanged.
                 const toolCalls = [];
                 const state = { reasoning: '', images: [], signature: '', toolSignatures: {}, toolCallHandoff: null, toolCallAborted: false };
                 let swipeIndex = 0;
@@ -3251,6 +3254,26 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, ra
                             }
                         } else if ('assistantNodeId' in event) {
                             state.assistantNodeId = event.assistantNodeId;
+                        } else if ('toolCallDelta' in event) {
+                            // forwardAndPersistCompactStreamWithServerTools() (chat-completions.js)
+                            // sends these purely so the wire format is complete/inspectable - the
+                            // server ALREADY executes and persists the tool call itself for a
+                            // raw-action stream, so accumulating these into `toolCalls` here would feed
+                            // the LEGACY (non-raw-action) client-side tool-invocation path further down
+                            // this same streaming turn's handling (public/script.js's
+                            // `isStreamWithToolCalls` block, which is not itself raw-action-gated) and
+                            // cause the same call to be invoked/resolved a second time. Intentionally
+                            // discarded here; `tool_call_handoff`/`tool_call_aborted` control events
+                            // below are how a raw-action tool-calling round's outcome actually reaches
+                            // the client.
+                        } else if ('control' in event) {
+                            if (event.control?.tool_call_handoff) {
+                                state.toolCallHandoff = event.control.tool_call_handoff;
+                            } else if (event.control?.tool_call_aborted) {
+                                state.toolCallAborted = true;
+                            } else if (event.control?.error) {
+                                tryParseStreamingError(response, JSON.stringify(event.control));
+                            }
                         }
                     }
 
@@ -3279,32 +3302,12 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, ra
                 tryParseStreamingError(response, rawData);
                 const parsed = JSON.parse(rawData);
 
-                // Streaming raw-action tool-calling cutover (chunk (b)/(c)'s streaming counterpart) -
-                // a `tool_call_handoff` trailer chunk carries no `.choices` key, so it is otherwise
-                // completely inert to every existing check below (getStreamingReply()/
-                // ToolManager.parseToolCalls() both no-op on it) - see
-                // forwardAndPersistSseWithServerTools()'s own doc comment in
-                // src/endpoints/backends/chat-completions.js for the full mechanism. Stashed on `state`
-                // (not yielded as its own field) so it survives to the FINAL yield the same way
-                // `state.reasoning`/`state.images` already do.
-                if (parsed?.tool_call_handoff) {
-                    state.toolCallHandoff = parsed.tool_call_handoff;
-                }
-
-                // THIS TASK (stealth-tool parity) - same mechanism/rationale as `tool_call_handoff`
-                // immediately above (a shape with no `.choices` key, otherwise completely inert to
-                // every check below) - see forwardAndPersistSseWithServerTools()'s own `aborted` branch
-                // doc comment (src/endpoints/backends/chat-completions.js) for the full mechanism.
-                if (parsed?.tool_call_aborted) {
-                    state.toolCallAborted = true;
-                }
-
-                // Raw-action persistence teed this stream server-side and, once it knew the full
-                // text, wrote this ahead of [DONE] - not real generated content, just the node the
-                // reply landed on.
-                if (typeof parsed?.assistant_node_id === 'string') {
-                    state.assistantNodeId = parsed.assistant_node_id;
-                }
+                // No `tool_call_handoff`/`tool_call_aborted`/`assistant_node_id` handling here -
+                // every raw-action stream (tool-calling or plain) now always declares
+                // X-ST-Stream-Format: compact-v1 and is handled by the branch above instead; this
+                // SSE-JSON path is only ever reached for a non-raw-action stream, which never
+                // produces those fields (they're ST's own synthetic raw-action signals, not
+                // something a real upstream provider would ever send).
 
                 if (canMultiSwipe && Array.isArray(parsed?.choices) && parsed?.choices?.[0]?.index > 0) {
                     const swipeIndex = parsed.choices[0].index - 1;
