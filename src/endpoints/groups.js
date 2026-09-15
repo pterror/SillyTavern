@@ -277,7 +277,15 @@ router.post('/edit', getFileNameValidationFunction('id'), async (request, respon
  * @param {string} id
  * @returns {object|null}
  */
-function readGroupFile(directories, id) {
+/**
+ * Reads a group's full descriptor from disk (not the shallow `{id, chats}` view `resolveGroupOwner()`
+ * returns) - needed by anything that writes the descriptor back, since a shallow object would clobber
+ * every other field on save.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {string} id
+ * @returns {object?}
+ */
+export function readGroupFile(directories, id) {
     const pathToFile = path.join(directories.groups, sanitize(`${id}.json`));
     if (!fs.existsSync(pathToFile)) {
         return null;
@@ -289,7 +297,7 @@ function readGroupFile(directories, id) {
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {object} group
  */
-async function writeGroupFile(directories, group) {
+export async function writeGroupFile(directories, group) {
     const pathToFile = path.join(directories.groups, sanitize(`${group.id}.json`));
     writeFileAtomicSync(pathToFile, JSON.stringify(group, null, 4));
     await upsertGroupRow(directories, group.id, group.name, { fav: group.fav, group }).catch(err =>

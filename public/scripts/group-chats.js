@@ -2669,9 +2669,12 @@ export async function saveGroupBookmarkChat(groupId, name, metadata, mesId, chat
     // it actually saved under instead of assuming the id this call proposed.
     const savedId = (data && typeof data.chat_id === 'string' && data.chat_id) ? data.chat_id : name;
 
+    // /api/chats/group/save already registered savedId in the group's own persisted `chats` list
+    // server-side (it's the one place that knows whether the id was actually new) - only the local
+    // reactive mirror needs updating here, not a second /api/groups/save-partial round trip to persist
+    // what the server has already written.
     group.chats.push(savedId);
     groupsStore.update(group.id, { chats: group.chats });
-    await saveGroupField(groupId, { chats: group.chats }, true, false);
 
     return savedId;
 }
