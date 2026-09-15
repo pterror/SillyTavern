@@ -1378,7 +1378,6 @@ function setReasoningEventHandlers() {
 
         details.attr('open', '');
         messageBlock.find('.mes_reasoning_edit').trigger('click');
-        await saveChatConditional();
     });
 
     $(document).on('click', '.mes_reasoning_delete', async function (e) {

@@ -8002,7 +8002,12 @@ export async function sendMessageAsUser(messageText, messageBias, insertAt = nul
         await eventSource.emit(event_types.USER_MESSAGE_RENDERED, chat_id);
 
         // Awaited, not fire-and-forget: otherwise the next save can miss the isChatSaving window and drop the AI message.
-        await saveChatConditional();
+        if (chat_metadata?._tree_stored) {
+            await chatOpAppend(chat_id).catch(error =>
+                console.error('Could not save the new user message:', error));
+        } else {
+            await saveChatConditional();
+        }
     }
 
     return message;
@@ -16242,8 +16247,9 @@ jQuery(async function () {
             if (chat_metadata?._tree_stored && chat.length > 0) {
                 await chatOpEndPath(chat.length - 1).catch(error =>
                     console.error('Could not cut the conversation back:', error));
+            } else {
+                await saveChatConditional();
             }
-            await saveChatConditional();
             chatElement.scrollTop(chatElement[0].scrollHeight);
             await eventSource.emit(event_types.MESSAGE_DELETED, chat.length);
             chatElement.find('.mes').removeClass('last_mes');
