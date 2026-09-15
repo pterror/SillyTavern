@@ -982,6 +982,15 @@ router.post('/generate', async function (request, response) {
         const controller = new AbortController();
         request.socket.removeAllListeners('close');
         request.socket.on('close', async function () {
+            // A raw-action (persisted) generation deliberately keeps running/buffering after the
+            // client disconnects instead of being aborted here - see llamacpp-compact-stream.js's
+            // module doc comment and forwardAndPersistCompactStream()'s own onSocketClose above for
+            // why: it's what makes GET /generate/resume/:id able to serve a live continuation rather
+            // than just a truncated partial. Only a non-raw-action stream (pendingAssistantPersist
+            // unset - quiet generations, connection-profile tests, etc., none of which are
+            // resumable) still aborts the upstream request immediately on disconnect.
+            if (pendingAssistantPersist) return;
+
             if (request.body.api_type === TEXTGEN_TYPES.KOBOLDCPP && !response.writableEnded) {
                 await abortKoboldCppRequest(request, trimV1(baseUrl));
             }

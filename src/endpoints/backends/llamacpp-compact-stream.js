@@ -406,7 +406,7 @@ export function createBackpressureWriter(res) {
     let ended = false;
 
     function flush() {
-        if (waitingDrain || ended || pending.length === 0) return;
+        if (waitingDrain || ended || pending.length === 0 || res.writableEnded) return;
 
         const chunk = pending.length === 1 ? pending[0] : Buffer.concat(pending);
         pending = [];
@@ -423,12 +423,21 @@ export function createBackpressureWriter(res) {
 
     return {
         write(/** @type {Buffer} */ buf) {
-            if (buf && buf.length) pending.push(buf);
+            // `res.writableEnded` guards against a real client-disconnect race: the underlying
+            // socket can close (and this writer's caller may not yet have reacted to that) between
+            // one write() call and the next, and writing to an already-ended response throws
+            // ERR_STREAM_WRITE_AFTER_END.
+            if (ended || res.writableEnded || !buf || !buf.length) return;
+            pending.push(buf);
             flush();
         },
         end() {
             if (ended) return;
             ended = true;
+            if (res.writableEnded) {
+                pending = [];
+                return;
+            }
             if (pending.length) {
                 const chunk = Buffer.concat(pending);
                 pending = [];
