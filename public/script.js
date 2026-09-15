@@ -3064,10 +3064,6 @@ export async function deleteMessage(id, swipeDeletionIndex = undefined, askConfi
 
     const startIndex = firstMessageId <= minId ? firstMessageId : null;
     updateViewMessageIds(startIndex);
-    if (!persist) {
-        // eslint-disable-next-line no-restricted-syntax -- caller explicitly opted out of the direct ops above.
-        saveChatDebounced();
-    }
 
     refreshSwipeButtons();
 
@@ -7873,7 +7869,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         }
 
         console.debug('/api/chats/save called by /Generate');
-        // eslint-disable-next-line no-restricted-syntax -- still the sole persister whenever willUseRawAction was false for this generation (type outside the raw-action set, or no owner/character context); the raw-action reply is already stamped clean by this point when it wasn't.
+        // eslint-disable-next-line no-restricted-syntax -- willUseRawAction is only ever false here for the neutral/no-character chat, and saveChat() already no-ops the tree/legacy write for that state; kept for its unconditional token-cache/itemized-prompts flush, unrelated to persistence.
         await saveChatConditional();
         unblockGeneration(type);
         streamingProcessor = null;
