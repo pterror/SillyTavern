@@ -296,6 +296,19 @@ async function writeGroupFile(directories, group) {
         console.error(`Could not update group metadata store for ${group.id}:`, err));
 }
 
+// Top-level Group fields (see public/global.d.ts's `Group` interface) that /save-partial is allowed to
+// merge into the stored group. `id` is deliberately excluded (a group's id is its filename - merging a
+// caller-supplied `id` would silently retarget/duplicate the write). This is an allowlist rather than a
+// denylist so an unrecognized/stray key (a client bug, or something like `__proto__`/`constructor`
+// riding along in a JSON body - Object.assign happily "merges" those into a live object's prototype
+// chain) is dropped instead of silently applied.
+const GROUP_PARTIAL_ALLOWED_FIELDS = new Set([
+    'name', 'members', 'disabled_members', 'chat_id', 'chats',
+    'generation_mode', 'generation_mode_join_prefix', 'generation_mode_join_suffix',
+    'activation_strategy', 'auto_mode_delay', 'allow_self_responses',
+    'avatar_url', 'hideMutedSprites', 'fav', 'date_last_chat',
+]);
+
 // Field-level counterpart to /edit for single-property changes (e.g. toggling one member) - avoids
 // a whole-object last-write-wins save clobbering unrelated concurrent edits.
 router.post('/save-partial', getFileNameValidationFunction('id'), async (request, response) => {
@@ -310,7 +323,13 @@ router.post('/save-partial', getFileNameValidationFunction('id'), async (request
     }
 
     warnOnGroupMetadata(props);
-    const { id: _id, ...safeProps } = props;
+    /** @type {Record<string, any>} */
+    const safeProps = {};
+    for (const [key, value] of Object.entries(props)) {
+        if (GROUP_PARTIAL_ALLOWED_FIELDS.has(key)) {
+            safeProps[key] = value;
+        }
+    }
     Object.assign(group, safeProps);
 
     await writeGroupFile(request.user.directories, group);

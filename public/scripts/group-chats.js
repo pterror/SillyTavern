@@ -166,7 +166,6 @@ export const DEFAULT_AUTO_MODE_DELAY = 5;
 export const groupCandidatesFilter = new FilterHelper(debounce(printGroupCandidates, debounce_timeout.quick));
 export const groupMembersFilter = new FilterHelper(debounce(printGroupMembers, debounce_timeout.quick));
 let autoModeWorker = null;
-const saveGroupDebounced = debounce(async (group, reload, options) => await _save(group, reload, options), debounce_timeout.relaxed);
 /** @type {Map<string, number>} */
 let groupChatQueueOrder = new Map();
 
@@ -174,26 +173,6 @@ function setAutoModeWorker() {
     clearInterval(autoModeWorker);
     const autoModeDelay = groupsStore.get(selected_group)?.auto_mode_delay ?? DEFAULT_AUTO_MODE_DELAY;
     autoModeWorker = setInterval(groupChatAutoModeWorker, autoModeDelay * 1000);
-}
-
-/**
- * Saves a group to the server.
- * @param {Group} group Group object to save
- * @param {boolean} reload Whether to reload characters after saving
- * @param {object} [options]
- * @param {boolean} [options.silentGroups=false] - If true and `reload` is true, suppresses the reload's
- * generic groupsStore.reset() - pass this when the caller already reported the specific field change itself
- * via groupsStore.update() before calling save (see editGroup()).
- */
-async function _save(group, reload = true, { silentGroups = false } = {}) {
-    await fetch('/api/groups/edit', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify(group),
-    });
-    if (reload) {
-        await getCharacters({ silentGroups });
-    }
 }
 
 /**
@@ -208,6 +187,50 @@ async function saveGroupProperty(id, props) {
         headers: getRequestHeaders(),
         body: JSON.stringify({ id, props }),
     });
+}
+
+/**
+ * Saves a single group property via saveGroupProperty(), then optionally reloads characters.
+ * @param {string} id Group ID
+ * @param {object} props Properties to merge into the stored group
+ * @param {boolean} reload Whether to reload characters after saving
+ * @param {object} [options]
+ * @param {boolean} [options.silentGroups=false] - If true and `reload` is true, suppresses the reload's
+ * generic groupsStore.reset() - pass this when the caller already reported the specific field change itself
+ * via groupsStore.update() before calling save (see saveGroupField()).
+ */
+async function _saveProperty(id, props, reload = true, { silentGroups = false } = {}) {
+    await saveGroupProperty(id, props);
+    if (reload) {
+        await getCharacters({ silentGroups });
+    }
+}
+
+const savePropertyDebounced = debounce(async (id, props, reload, options) => await _saveProperty(id, props, reload, options), debounce_timeout.relaxed);
+
+/**
+ * Field-level replacement for the retired whole-object editGroup()/_save() path: saves only `props` via
+ * saveGroupProperty() (POST /api/groups/save-partial, a true server-side merge) instead of resolving and
+ * re-uploading the entire group object. Debouncing/reload/silentGroups semantics match the old editGroup().
+ * @param {string} id Group ID to save fields for
+ * @param {object} props Properties to merge into the stored group
+ * @param {boolean} immediately Whether to save immediately (true) or debounce (false)
+ * @param {boolean} [reload=true] Whether to reload the groups after saving
+ * @param {object} [options]
+ * @param {boolean} [options.silentGroups=false] - See _saveProperty() - pass true when the caller already
+ * reported the specific field change itself via groupsStore.update() before calling this.
+ * @returns {Promise<void>}
+ */
+async function saveGroupField(id, props, immediately, reload = true, { silentGroups = false } = {}) {
+    if (!id) {
+        return;
+    }
+
+    if (immediately) {
+        return await _saveProperty(id, props, reload, { silentGroups });
+    }
+
+    savePropertyDebounced(id, props, reload, { silentGroups });
 }
 
 // Group chats
@@ -329,7 +352,7 @@ export async function validateGroup(group) {
         existsResult = null;
     }
 
-    let dirty = false;
+    let membersDirty = false;
     if (existsResult !== null) {
         const filtered = membersArray.filter(member => {
             if (findGroupMemberCharacter(member)) return true;
@@ -337,26 +360,32 @@ export async function validateGroup(group) {
             const msg = t`Warning: Listed member ${member} does not exist as a character. It will be removed from the group.`;
             toastr.warning(msg, t`Group Validation`);
             console.warn(msg);
-            dirty = true;
+            membersDirty = true;
             return false;
         });
-        if (dirty) {
+        if (membersDirty) {
             group.members = filtered;
         }
     }
 
     // Remove duplicate chat ids
+    let chatsDirty = false;
     if (Array.isArray(group.chats)) {
         const lengthBefore = group.chats.length;
         group.chats = group.chats.filter(onlyUnique);
         const lengthAfter = group.chats.length;
         if (lengthBefore !== lengthAfter) {
-            dirty = true;
+            chatsDirty = true;
         }
     }
 
-    if (dirty) {
-        await editGroup(group.id, true, false);
+    if (membersDirty || chatsDirty) {
+        // One user-triggered validation pass, so one request even when both fields changed.
+        /** @type {Record<string, any>} */
+        const props = {};
+        if (membersDirty) props.members = group.members;
+        if (chatsDirty) props.chats = group.chats;
+        await saveGroupField(group.id, props, true, false);
     }
 }
 
@@ -795,7 +824,7 @@ async function saveGroupChat(groupId, shouldSaveGroup, force = false) {
     }
 
     if (shouldSaveGroup) {
-        await editGroup(groupId, false, false);
+        await saveGroupField(groupId, { date_last_chat: group.date_last_chat }, false, false);
     }
 }
 
@@ -820,7 +849,7 @@ export async function renameGroupMember(oldAvatar, newAvatar, newName) {
             // Replace group member avatar id and save the changes
             group.members[memberIndex] = newAvatar;
             groupsStore.update(group.id, { members: group.members });
-            await editGroup(group.id, true, false);
+            await saveGroupField(group.id, { members: group.members }, true, false);
             console.log(`Renamed character ${newName} in group: ${group.name}`);
 
             // Every group is tree-stored (forced-migrated at server startup) - one server-side
@@ -1444,30 +1473,6 @@ async function deleteGroup(id) {
 }
 
 /**
- * Edits a group by ID.
- * @param {string} id Group ID to edit
- * @param {boolean} immediately Whether to save immediately
- * @param {boolean} reload Whether to reload the groups after saving
- * @param {object} [options]
- * @param {boolean} [options.silentGroups=false] - See _save() - pass true when the caller already reported
- * the specific field change itself via groupsStore.update() before calling this.
- * @returns {Promise<void>} Promise that resolves when the group is edited
- */
-export async function editGroup(id, immediately, reload = true, { silentGroups = false } = {}) {
-    let group = groupsStore.get(id);
-
-    if (!group) {
-        return;
-    }
-
-    if (immediately) {
-        return await _save(group, reload, { silentGroups });
-    }
-
-    saveGroupDebounced(group, reload, { silentGroups });
-}
-
-/**
  * Unshallows all definitions of group members.
  * @param {string} groupId Id of the group
  * @returns {Promise<void>} Promise that resolves when all group members are unshallowed
@@ -1541,7 +1546,7 @@ async function modifyGroupMember(groupId, groupMember, isDelete) {
 
     if (openGroupId) {
         await unshallowGroupMembers(openGroupId);
-        await editGroup(openGroupId, false, false);
+        await saveGroupField(openGroupId, { members: thisGroup.members }, false, false);
         updateGroupAvatar(thisGroup);
     }
 
@@ -1594,22 +1599,24 @@ async function reorderGroupMember(groupId, groupMember, direction) {
 
     // Existing groups need to modify members list
     if (openGroupId) {
-        await editGroup(groupId, false, false);
+        await saveGroupField(groupId, { members: memberArray }, false, false);
         updateGroupAvatar(thisGroup);
     }
 }
 
 async function onGroupActivationStrategyInput(e) {
     if (openGroupId) {
-        groupsStore.update(openGroupId, { activation_strategy: Number(e.target.value) });
-        await editGroup(openGroupId, false, false);
+        const activation_strategy = Number(e.target.value);
+        groupsStore.update(openGroupId, { activation_strategy });
+        await saveGroupField(openGroupId, { activation_strategy }, false, false);
     }
 }
 
 async function onGroupGenerationModeInput(e) {
     if (openGroupId) {
-        const change = groupsStore.update(openGroupId, { generation_mode: Number(e.target.value) });
-        await editGroup(openGroupId, false, false);
+        const generation_mode = Number(e.target.value);
+        const change = groupsStore.update(openGroupId, { generation_mode });
+        await saveGroupField(openGroupId, { generation_mode }, false, false);
 
         toggleHiddenControls(change?.entity);
     }
@@ -1617,8 +1624,9 @@ async function onGroupGenerationModeInput(e) {
 
 async function onGroupAutoModeDelayInput(e) {
     if (openGroupId) {
-        groupsStore.update(openGroupId, { auto_mode_delay: Number(e.target.value) });
-        await editGroup(openGroupId, false, false);
+        const auto_mode_delay = Number(e.target.value);
+        groupsStore.update(openGroupId, { auto_mode_delay });
+        await saveGroupField(openGroupId, { auto_mode_delay }, false, false);
         setAutoModeWorker();
     }
 }
@@ -1626,16 +1634,18 @@ async function onGroupAutoModeDelayInput(e) {
 async function onGroupGenerationModeTemplateInput(e) {
     if (openGroupId) {
         const prop = $(e.target).attr('setting');
-        groupsStore.update(openGroupId, { [prop]: String(e.target.value) });
-        await editGroup(openGroupId, false, false);
+        const value = String(e.target.value);
+        groupsStore.update(openGroupId, { [prop]: value });
+        await saveGroupField(openGroupId, { [prop]: value }, false, false);
     }
 }
 
 async function onGroupNameInput() {
     if (openGroupId) {
-        const change = groupsStore.update(openGroupId, { name: $(this).val() });
+        const name = $(this).val();
+        const change = groupsStore.update(openGroupId, { name });
         $('#rm_button_selected_ch').children('h2').text(change?.entity?.name);
-        await editGroup(openGroupId, false, true, { silentGroups: true });
+        await saveGroupField(openGroupId, { name }, false, true, { silentGroups: true });
     }
 }
 
@@ -1909,7 +1919,7 @@ async function onFavoriteGroupClick() {
     updateFavButtonState(!fav_grp_checked);
     if (openGroupId) {
         groupsStore.update(openGroupId, { fav: fav_grp_checked });
-        await editGroup(openGroupId, false, false);
+        await saveGroupField(openGroupId, { fav: fav_grp_checked }, false, false);
         favsToHotswap();
     }
 }
@@ -1918,14 +1928,14 @@ async function onGroupSelfResponsesClick() {
     if (openGroupId) {
         const value = $(this).prop('checked');
         groupsStore.update(openGroupId, { allow_self_responses: value });
-        await editGroup(openGroupId, false, false);
+        await saveGroupField(openGroupId, { allow_self_responses: value }, false, false);
     }
 }
 
 async function onHideMutedSpritesClick(value) {
     if (openGroupId) {
         groupsStore.update(openGroupId, { hideMutedSprites: value });
-        await editGroup(openGroupId, false, false);
+        await saveGroupField(openGroupId, { hideMutedSprites: value }, false, false);
         await eventSource.emit(event_types.GROUP_UPDATED);
     }
 }
@@ -2081,7 +2091,7 @@ async function uploadGroupAvatar(event) {
     groupsStore.update(openGroupId, { avatar_url: thumbnailUrl });
     $('#group_avatar_preview').empty().append(getGroupAvatar(_thisGroup));
     $('#rm_group_restore_avatar').show();
-    await editGroup(openGroupId, true, true, { silentGroups: true });
+    await saveGroupField(openGroupId, { avatar_url: thumbnailUrl }, true, true, { silentGroups: true });
 }
 
 async function restoreGroupAvatar() {
@@ -2100,7 +2110,7 @@ async function restoreGroupAvatar() {
     groupsStore.update(openGroupId, { avatar_url: '' });
     $('#group_avatar_preview').empty().append(getGroupAvatar(_thisGroup));
     $('#rm_group_restore_avatar').hide();
-    await editGroup(openGroupId, true, true, { silentGroups: true });
+    await saveGroupField(openGroupId, { avatar_url: '' }, true, true, { silentGroups: true });
 }
 
 async function onGroupActionClick(event) {
@@ -2371,7 +2381,7 @@ export async function openGroupChat(groupId, chatId) {
 
     groupsStore.update(group.id, { chat_id: group.chat_id, date_last_chat: group.date_last_chat });
 
-    await editGroup(groupId, true, false);
+    await saveGroupField(groupId, { chat_id: group.chat_id, date_last_chat: group.date_last_chat }, true, false);
     await getGroupChat(groupId);
 }
 
@@ -2398,7 +2408,7 @@ export async function renameGroupChat(groupId, oldChatId, newChatId) {
 
     groupsStore.update(group.id, { chats: group.chats, chat_id: group.chat_id });
 
-    await editGroup(groupId, true, true, { silentGroups: true });
+    await saveGroupField(groupId, { chats: group.chats, chat_id: group.chat_id }, true, true, { silentGroups: true });
 }
 
 /**
@@ -2532,7 +2542,7 @@ export async function importGroupChat(formData, { refresh = true } = {}) {
             if (group) {
                 group.chats.push(chatId);
                 groupsStore.update(group.id, { chats: group.chats });
-                await editGroup(selected_group, true, true, { silentGroups: true });
+                await saveGroupField(selected_group, { chats: group.chats }, true, true, { silentGroups: true });
                 if (refresh) {
                     await displayPastChats();
                 }
@@ -2580,7 +2590,7 @@ export async function saveGroupBookmarkChat(groupId, name, metadata, mesId, chat
             ? chat.slice(0, Number(mesId) + 1)
             : chat;
 
-    await editGroup(groupId, true, false);
+    await saveGroupField(groupId, { chats: group.chats }, true, false);
 
     const saveChatRequest = await compressRequest({
         method: 'POST',
