@@ -3163,6 +3163,179 @@ async function run() {
         assert.equal(resolvedToolMsg.extra.tool_invocations[0].result, 'Curtains opened on the left.', 'the in-place edit resolving the pending node still happened even though the follow-up round\'s own backend call then failed');
     }
 
+    // --- isSwipe/isContinue interleaved with a server tool-call round (this task: fixes the
+    // previously-documented, out-of-scope limitation on runServerToolRounds()'s own doc comment -
+    // see that function's "FORMERLY-DOCUMENTED LIMITATION, NOW FIXED" section for the full design) ---
+
+    // (l) type: 'swipe' where the FIRST backend response is a tool call, not text: the tool-call turn
+    // must claim the sibling-alternative slot alongside the ORIGINAL swiped message (not be buried as
+    // a plain child of it), and the SECOND backend response's final text must land as the terminal
+    // node of that same new alternative branch - proving a swipe-with-a-tool-call still produces "a
+    // new alternative at the same tree position as the message being swiped", not a nested append.
+    {
+        const swipeToolBranch = 'swipe-tool-branch';
+        await saveChatToTree(directories, ownerId, swipeToolBranch, [
+            { chat_metadata: {} },
+            { name: 'Tester', is_user: true, mes: 'Hi Rex, swipe-with-tool branch.', send_date: 1, extra: {} },
+            { name: 'Rex', is_user: false, mes: 'Hello there, swipe-with-tool branch!', send_date: 2, extra: {} },
+        ]);
+        const branchBefore = await loadBranch(directories, ownerId, swipeToolBranch);
+        const swipedNodeId = branchBefore.branch.leaf_id;
+        const swipedAncestry = await getAncestorPath(directories, swipedNodeId);
+        const parentNodeId = swipedAncestry[swipedAncestry.length - 2].node_id;
+
+        registerServerTool({
+            id: 'test-tool:swipe_get_weather',
+            name: 'get_weather',
+            description: 'Gets the current weather for a city.',
+            parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] },
+            invoke: async (args) => `Sunny in ${args.city}`,
+        });
+
+        let callCount = 0;
+        const requestBodies = [];
+        const fakeBackend = await startFakeBackend((_req, res, body) => {
+            callCount++;
+            requestBodies.push(JSON.parse(body));
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            if (callCount === 1) {
+                res.end(JSON.stringify({
+                    choices: [{
+                        message: {
+                            role: 'assistant', content: null,
+                            tool_calls: [{ id: 'call_swipe_1', type: 'function', function: { name: 'get_weather', arguments: JSON.stringify({ city: 'Swiptown' }) } }],
+                        },
+                    }],
+                }));
+            } else {
+                res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'General Kenobi! (checked: sunny in Swiptown)' } }] }));
+            }
+        });
+        pointBackendAtWithToolsEnabled(fakeBackend.url);
+
+        const app = buildTestApp();
+        let status, data;
+        try {
+            ({ status, data } = await postGenerate(app, {
+                owner_id: ownerId, character_avatar: avatar, node_id: swipedNodeId,
+                type: 'swipe', is_swipe: true, stream: false,
+            }));
+        } finally {
+            fakeBackend.server.close();
+            unregisterServerTool('test-tool:swipe_get_weather');
+        }
+
+        assert.equal(status, 200, 'the swipe-with-tool-call request completes normally');
+        assert.deepEqual(data, { choices: [{ message: { role: 'assistant', content: 'General Kenobi! (checked: sunny in Swiptown)' } }] });
+        assert.equal(callCount, 2, 'backend called twice: once producing the tool call, once with the final swipe text');
+        assert.ok(JSON.stringify(requestBodies[1].messages).includes('Sunny in Swiptown'), 'the second request\'s history really was re-resolved through the tool-call turn');
+
+        // (a) the tool-call turn claimed the SIBLING-ALTERNATIVE slot alongside the swiped message -
+        // not a plain child buried one level under it.
+        const alternatives = await getAlternatives(directories, swipedNodeId);
+        assert.equal(alternatives.total, 2, 'the swiped message and the tool-call turn are real siblings under the same parent');
+        const toolAlt = alternatives.alternatives.find(a => a.node_id !== swipedNodeId);
+        assert.ok(toolAlt, 'a second alternative alongside the swiped message exists');
+        assert.ok(Array.isArray(toolAlt.extra?.tool_invocations), 'that second alternative IS the tool-call turn, not the final text');
+        assert.equal(toolAlt.extra.tool_invocations[0].name, 'get_weather');
+        assert.equal(toolAlt.extra.tool_invocations[0].result, 'Sunny in Swiptown');
+        // Proof that the tool-call turn (not the original message) is now selected as current comes
+        // from the branch's own leaf path below (`loadBranch()` follows `default_child_id`) -
+        // `getAlternatives()`'s own `selected` field only ever reports the index of whichever
+        // node_id was passed in, it does not read `default_child_id` itself.
+
+        // (b) the original swiped message is completely unchanged.
+        assert.ok(alternatives.alternatives.some(a => a.node_id === swipedNodeId && a.mes === 'Hello there, swipe-with-tool branch!'), 'the swiped message\'s own original content is untouched');
+
+        // (c) the final swipe text is the TERMINAL node of that same new alternative branch (a child
+        // of the tool-call turn), one level deeper than the tool-call turn itself - NOT a second
+        // sibling under the tool-call turn's own parent (which would be the swiped message's parent,
+        // already asserted to hold exactly 2 alternatives above).
+        const branchAfter = await loadBranch(directories, ownerId, swipeToolBranch);
+        const finalNodeId = branchAfter.branch.leaf_id;
+        assert.notEqual(finalNodeId, toolAlt.node_id, 'the final text is its own node, not stored on the tool-call turn itself');
+        const finalAncestry = await getAncestorPath(directories, finalNodeId);
+        assert.equal(finalAncestry.length, swipedAncestry.length + 1, 'the final text sits exactly one level deeper than the swiped message\'s own depth - a child of the tool-call turn, which itself occupies the swiped message\'s sibling depth');
+        assert.equal(finalAncestry[finalAncestry.length - 2].node_id, toolAlt.node_id, 'the final text\'s real parent is the tool-call turn');
+        assert.equal(finalAncestry[finalAncestry.length - 3].node_id, parentNodeId, 'the tool-call turn\'s own parent is the SAME real parent the swiped message has - confirming the sibling relationship, not a nested-under-the-original-message one');
+        assert.equal(branchAfter.messages[branchAfter.messages.length - 1].mes, 'General Kenobi! (checked: sunny in Swiptown)');
+    }
+
+    // (m) type: 'continue' where the FIRST backend response is a tool call: continuing "in place"
+    // across a genuine intervening tool-call node isn't structurally meaningful (a real new tree node
+    // now exists between "before" and "after"), so this degrades to a plain append - the ORIGINAL
+    // message's own text must stay byte-for-byte unedited, the tool-call turn must persist as a real
+    // child of it, and the final generated text must land as ITS OWN new node after the tool-call turn
+    // (not merged/concatenated into any other node's text).
+    {
+        const continueToolBranch = 'continue-tool-branch';
+        await saveChatToTree(directories, ownerId, continueToolBranch, [
+            { chat_metadata: {} },
+            { name: 'Tester', is_user: true, mes: 'Hi Rex, continue-with-tool branch.', send_date: 1, extra: {} },
+            { name: 'Rex', is_user: false, mes: 'The weather today is', send_date: 2, extra: {} },
+        ]);
+        const branchBefore = await loadBranch(directories, ownerId, continueToolBranch);
+        const continuedNodeId = branchBefore.branch.leaf_id;
+        const messageCountBefore = branchBefore.messages.length;
+
+        registerServerTool({
+            id: 'test-tool:continue_get_weather',
+            name: 'get_weather',
+            description: 'Gets the current weather for a city.',
+            parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] },
+            invoke: async (args) => `Sunny in ${args.city}`,
+        });
+
+        let callCount = 0;
+        const fakeBackend = await startFakeBackend((_req, res, body) => {
+            callCount++;
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            if (callCount === 1) {
+                res.end(JSON.stringify({
+                    choices: [{
+                        message: {
+                            role: 'assistant', content: null,
+                            tool_calls: [{ id: 'call_continue_1', type: 'function', function: { name: 'get_weather', arguments: JSON.stringify({ city: 'Continuetown' }) } }],
+                        },
+                    }],
+                }));
+            } else {
+                void body;
+                res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: ' sunny, according to the tool.' } }] }));
+            }
+        });
+        pointBackendAtWithToolsEnabled(fakeBackend.url);
+
+        const app = buildTestApp();
+        let status, data;
+        try {
+            ({ status, data } = await postGenerate(app, {
+                owner_id: ownerId, character_avatar: avatar, node_id: continuedNodeId,
+                type: 'continue', is_continue: true, stream: false,
+            }));
+        } finally {
+            fakeBackend.server.close();
+            unregisterServerTool('test-tool:continue_get_weather');
+        }
+
+        assert.equal(status, 200);
+        assert.deepEqual(data, { choices: [{ message: { role: 'assistant', content: ' sunny, according to the tool.' } }] });
+        assert.equal(callCount, 2);
+
+        const branchAfter = await loadBranch(directories, ownerId, continueToolBranch);
+        assert.equal(branchAfter.messages.length, messageCountBefore + 2, 'two new nodes were appended (the tool-call turn and the final text) - continue-in-place across a real tool call degrades to append, it does not silently drop the tool-call record');
+
+        const originalNode = (await getAlternatives(directories, continuedNodeId)).alternatives.find(a => a.node_id === continuedNodeId);
+        assert.equal(originalNode.mes, 'The weather today is', 'the original message the user asked to continue is completely UNEDITED - it was never a valid edit target once a real tool call intervened');
+
+        const [toolMsg, finalMsg] = branchAfter.messages.slice(-2);
+        assert.equal(toolMsg.is_system, true, 'the tool-call turn is a real child of the original message');
+        assert.equal(toolMsg.extra.tool_invocations[0].result, 'Sunny in Continuetown');
+        assert.equal(finalMsg.is_user, false);
+        assert.equal(finalMsg.mes, ' sunny, according to the tool.', 'the final generated text is its own new node, holding just the newly generated text - not concatenated onto the original message\'s text, and not lost');
+        assert.equal(finalMsg.name, 'Rex');
+    }
+
     // --- json_schema threading (this task): a raw-action `type: 'quiet'` request carrying a
     // `json_schema` field must actually reach the backend as a real `response_format`/`json_schema`
     // constraint, exactly like the legacy client-assembled path already produces via
