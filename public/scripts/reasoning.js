@@ -1434,12 +1434,8 @@ function setReasoningEventHandlers() {
 
         updateReasoningFromValue(messageId, message, String($(this).val()));
         updateReasoningUI(messageBlock);
-        if (chat_metadata?._tree_stored) {
-            chatOpEdit(messageId).catch(error =>
-                console.error('Could not save the edited reasoning:', error));
-        } else {
-            saveChatDebounced();
-        }
+        chatOpEdit(messageId).catch(error =>
+            console.error('Could not save the edited reasoning:', error));
     });
 }
 
