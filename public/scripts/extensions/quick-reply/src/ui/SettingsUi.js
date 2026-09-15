@@ -381,8 +381,11 @@ export class SettingsUi {
                     await this.doDeleteQrSet(oldQrs);
                     const qrs = new QuickReplySet();
                     qrs.name = name;
-                    qrs.addQuickReply({}, { dispatch: false });
+                    // Create the (empty) set on the server first, then mint the first entry's id
+                    // remotely against that now-real set, instead of asserting a client-picked id
+                    // and bundling it into the full save. See addQuickReply()'s doc comment.
                     await qrs.performFullSave();
+                    await qrs.addQuickReplyRemote();
                     QuickReplySet.list.splice(idx, 0, qrs);
                     this.rerender();
                     this.currentSet.value = name;
@@ -394,8 +397,11 @@ export class SettingsUi {
             } else {
                 const qrs = new QuickReplySet();
                 qrs.name = name;
-                qrs.addQuickReply({}, { dispatch: false });
+                // Create the (empty) set on the server first, then mint the first entry's id
+                // remotely against that now-real set, instead of asserting a client-picked id
+                // and bundling it into the full save. See addQuickReply()'s doc comment.
                 await qrs.performFullSave();
+                await qrs.addQuickReplyRemote();
                 const idx = QuickReplySet.list.findIndex(it => it.name.toLowerCase().localeCompare(name.toLowerCase()) == 1);
                 if (idx > -1) {
                     QuickReplySet.list.splice(idx, 0, qrs);
