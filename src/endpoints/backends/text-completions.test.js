@@ -370,6 +370,20 @@ async function run() {
         }), expectedBody: sseBody };
     }
 
+    /**
+     * A raw-action stream holds `data: [DONE]` back and writes `data: {"assistant_node_id": "..."}`
+     * ahead of it (forwardAndPersistSseText()'s own doc comment in text-completions.js) - everything
+     * else in the byte stream is untouched. Asserts that shape and returns the captured node id.
+     */
+    function assertStreamCarriesAssistantNodeId(bodyText, expectedBodyBeforeDone) {
+        const withoutDone = expectedBodyBeforeDone.replace(/data: \[DONE\]\n\n$/, '');
+        assert.ok(bodyText.startsWith(withoutDone), 'every real content frame reaches the client byte-for-byte identical, in order, before the injected frame');
+        const rest = bodyText.slice(withoutDone.length);
+        const match = /^data: (\{"assistant_node_id":"[^"]+"\})\n\ndata: \[DONE\]\n\n$/.exec(rest);
+        assert.ok(match, `the injected assistant_node_id frame lands ahead of [DONE], with [DONE] properly terminated - got: ${JSON.stringify(rest)}`);
+        return JSON.parse(match[1]).assistant_node_id;
+    }
+
     // (a) a real non-streaming generation appends the assistant's reply onto the tree, chained
     // after the just-persisted user message, with the correct name/is_user.
     {
@@ -390,7 +404,8 @@ async function run() {
         fakeBackend.server.close();
 
         assert.equal(status, 200, 'the (unchanged) response is forwarded to the client');
-        assert.deepEqual(data, { choices: [{ text: 'Rex says hello back.' }] }, 'response body reaches the client unmodified');
+        assert.equal(data.choices?.[0]?.text, 'Rex says hello back.', 'response body reaches the client unmodified');
+        assert.equal(typeof data.assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
 
         const branchAfter = await loadBranch(directories, ownerId, branchName);
         assert.equal(branchAfter.messages.length, messageCountBefore + 2, 'both the user message and the assistant reply were appended');
@@ -526,7 +541,8 @@ async function run() {
         fakeBackend.server.close();
 
         assert.equal(status, 200, 'the (unchanged) response is forwarded to the client');
-        assert.deepEqual(data, { choices: [{ text: 'Greetings, traveler!' }] }, 'the generated text still reaches the client unmodified');
+        assert.equal(data.choices?.[0]?.text, 'Greetings, traveler!', 'the generated text still reaches the client unmodified');
+        assert.equal(typeof data.assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
 
         const branchAfter = await loadBranch(directories, ownerId, swipeBranch);
         assert.equal(branchAfter.messages.length, messageCountBefore, 'a swipe replaces the leaf position - it does not add DEPTH to the default path');
@@ -615,7 +631,8 @@ async function run() {
         fakeBackend.server.close();
 
         assert.equal(status, 200, 'the (unchanged) response is forwarded to the client');
-        assert.deepEqual(data, { choices: [{ text: ' there was a brave adventurer.' }] }, 'the generated text still reaches the client unmodified');
+        assert.equal(data.choices?.[0]?.text, ' there was a brave adventurer.', 'the generated text still reaches the client unmodified');
+        assert.equal(typeof data.assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
 
         const branchAfter = await loadBranch(directories, ownerId, continueBranch);
         assert.equal(branchAfter.messages.length, messageCountBefore, 'no new node (user or assistant) was created - continue only edits the existing leaf');
@@ -786,7 +803,8 @@ async function run() {
         fakeBackend.server.close();
 
         assert.equal(status, 200, 'the group raw-action generation succeeds');
-        assert.deepEqual(data, { choices: [{ text: 'All systems nominal, Captain.' }] }, 'response body reaches the client unmodified');
+        assert.equal(data.choices?.[0]?.text, 'All systems nominal, Captain.', 'response body reaches the client unmodified');
+        assert.equal(typeof data.assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
 
         const branchAfterGroup = await loadBranch(directories, groupId, groupChatId);
         assert.equal(branchAfterGroup.messages.length, messageCountBeforeGroup + 2, 'both the user message and the assistant reply were persisted under the GROUP\'s own owner_id');
@@ -831,7 +849,7 @@ async function run() {
         fakeBackend.server.close();
 
         assert.equal(status, 200);
-        assert.equal(bodyText, fakeBackend.expectedBody, 'the client-facing SSE bytes are byte-for-byte identical to what the fake backend sent - the teeing did not alter, buffer, or reorder anything');
+        const streamedNodeId = assertStreamCarriesAssistantNodeId(bodyText, fakeBackend.expectedBody);
 
         const branchAfter = await waitFor(async () => {
             const branch = await loadBranch(directories, ownerId, streamBranch);
@@ -843,6 +861,7 @@ async function run() {
         assert.equal(assistantMsg.mes, 'Rex says hello back, streamed.', 'the full text, accumulated across every SSE chunk, was persisted - not just the last chunk');
         assert.equal(assistantMsg.is_user, false);
         assert.equal(assistantMsg.name, 'Rex');
+        assert.equal(assistantMsg.node_id, streamedNodeId, 'the node id sent to the client ahead of [DONE] is the exact node the reply actually landed on');
     }
 
     // (i-2) STREAMING raw-action, is_swipe: true - same SSE teeing, but must land as a real
@@ -878,13 +897,14 @@ async function run() {
         fakeBackend.server.close();
 
         assert.equal(status, 200);
-        assert.equal(bodyText, fakeBackend.expectedBody, 'the client-facing SSE bytes are byte-for-byte identical to what the fake backend sent');
+        const streamedNodeId = assertStreamCarriesAssistantNodeId(bodyText, fakeBackend.expectedBody);
 
         const branchAfter = await waitFor(async () => {
             const branch = await loadBranch(directories, ownerId, streamSwipeBranch);
             return branch.branch.leaf_id !== swipedNodeId ? branch : null;
         });
         assert.equal(branchAfter.messages[branchAfter.messages.length - 1].mes, 'Greetings, traveler, streamed!');
+        assert.equal(branchAfter.messages[branchAfter.messages.length - 1].node_id, streamedNodeId, 'the node id sent to the client ahead of [DONE] is the exact node the swipe actually landed on');
         const alternatives = await getAlternatives(directories, swipedNodeId);
         assert.equal(alternatives.total, 2, 'the streamed swipe produced a real sibling alternative, not a chained child');
         assert.ok(alternatives.alternatives.some(a => a.mes === 'Hello there, streaming swipe test!'), 'the original swiped message is unchanged');
@@ -918,7 +938,8 @@ async function run() {
         fakeBackend.server.close();
 
         assert.equal(status, 200);
-        assert.equal(bodyText, fakeBackend.expectedBody, 'the client-facing SSE bytes are byte-for-byte identical to what the fake backend sent');
+        const streamedNodeId = assertStreamCarriesAssistantNodeId(bodyText, fakeBackend.expectedBody);
+        assert.equal(streamedNodeId, leafBefore, 'a continue edits in place - the node id sent to the client ahead of [DONE] is the SAME node it started at, not a new one');
 
         const branchAfter = await waitFor(async () => {
             const branch = await loadBranch(directories, ownerId, streamContinueBranch);
