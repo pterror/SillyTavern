@@ -4758,7 +4758,7 @@ class StreamingProcessor {
         /** @type {{node_id: string, pending_tool_calls: any[]}?} */
         this.toolCallHandoff = null;
         // THIS TASK (stealth-tool parity) - see this class's end-of-stream call site
-        // (finishGenerating()) and forwardAndPersistSseWithServerTools()'s `aborted` branch doc
+        // (finishGenerating()) and forwardAndPersistCompactStreamWithServerTools()'s `aborted` branch doc
         // comment (src/endpoints/backends/chat-completions.js) for the full mechanism. Mirrors
         // `toolCallHandoff` above exactly, for the distinct "abort, nothing persisted" trailer.
         this.toolCallAborted = false;
@@ -5096,7 +5096,7 @@ class StreamingProcessor {
                 this.toolCalls = toolCalls;
                 // Streaming raw-action tool-calling cutover - see StreamingProcessor.toolCallHandoff's
                 // own use at this class's end-of-stream call site (finishGenerating()) and
-                // forwardAndPersistSseWithServerTools()'s doc comment (src/endpoints/backends/
+                // forwardAndPersistCompactStreamWithServerTools()'s doc comment (src/endpoints/backends/
                 // chat-completions.js) for the full mechanism. `state` is the SAME object reused across
                 // every yield of this generator, so once set it stays set for every later iteration.
                 this.toolCallHandoff = state?.toolCallHandoff ?? this.toolCallHandoff;
@@ -7601,7 +7601,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 
             const isStreamFinished = streamingProcessor && !streamingProcessor.isStopped && streamingProcessor.isFinished;
             // Streaming raw-action tool-calling cutover (chunk (b)/(c)'s streaming counterpart) - see
-            // forwardAndPersistSseWithServerTools()'s own doc comment (src/endpoints/backends/
+            // forwardAndPersistCompactStreamWithServerTools()'s own doc comment (src/endpoints/backends/
             // chat-completions.js) for the full mechanism. Only ever set for a raw-action request whose
             // server-side loop hit a CLIENT-only tool call (`generate_data?.rawAction` truthy - the
             // exact same field the non-streaming branch below reads for its own, non-streaming
@@ -7623,7 +7623,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                 const handoff = streamingProcessor.toolCallHandoff;
                 streamingProcessor = null;
                 // Reuses chunk (c)'s EXISTING resolveClientToolHandoffLoop() unchanged - see
-                // forwardAndPersistSseWithServerTools()'s own doc comment for why this is safe: the
+                // forwardAndPersistCompactStreamWithServerTools()'s own doc comment for why this is safe: the
                 // pending tree node was already persisted server-side before this trailer chunk was
                 // ever sent, so there is nothing left for the client to persist, only to resolve.
                 const resolved = await resolveClientToolHandoffLoop({ pending_tool_calls: handoff.pending_tool_calls }, generate_data.rawAction);
@@ -7646,7 +7646,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             // call was stealth"), discarding the WHOLE round (even an already-succeeded non-stealth
             // invocation in the same round) and stopping generation with nothing persisted -
             // `unblockGeneration(type)` then a plain `return`, no toast, no error. The server (see
-            // `forwardAndPersistSseWithServerTools()`'s own `aborted` branch,
+            // `forwardAndPersistCompactStreamWithServerTools()`'s own `aborted` branch,
             // src/endpoints/backends/chat-completions.js) already decided not to persist anything for
             // this round and signaled that via the `tool_call_aborted` SSE trailer
             // (`streamingProcessor.toolCallAborted`, stashed off `state` the same way

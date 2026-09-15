@@ -29,6 +29,15 @@ import { persistAssistantReply } from '../../assistant-reply-persist.js';
  *                                                 expect as a data: URL body).
  * `0xFF 0x07 <4-byte BE length><length bytes>`  = thought signature (UTF-8 string) - Gemini's opaque
  *                                                 token for continuing a thinking turn across requests.
+ * `0xFF 0x08 <4-byte BE length><length bytes>`  = control JSON - an out-of-band signal that isn't
+ *                                                 generated content, a tool-call delta, or any of the
+ *                                                 above, and has no dedicated frame type of its own.
+ *                                                 Used by chat-completions.js's server-tool-calling
+ *                                                 stream loop (forwardAndPersistCompactStreamWithServerTools())
+ *                                                 for its three end-of-round signals - the payload is
+ *                                                 always one of `{tool_call_handoff: {node_id,
+ *                                                 pending_tool_calls}}`, `{tool_call_aborted: true}`, or
+ *                                                 `{error: {message}}`.
  *
  * Private contract with the bundled client; not a public/supported surface.
  */
@@ -40,6 +49,7 @@ export const FRAME_TYPE_ASSISTANT_NODE_ID = 0x04;
 export const FRAME_TYPE_TOOL_CALL_DELTA = 0x05;
 export const FRAME_TYPE_IMAGE = 0x06;
 export const FRAME_TYPE_THOUGHT_SIGNATURE = 0x07;
+export const FRAME_TYPE_CONTROL = 0x08;
 
 /** Escapes any literal 0xFF byte so it can't be mistaken for a control frame. */
 export function encodeContent(text) {
@@ -113,6 +123,10 @@ export function encodeToolCallDeltaFrame(delta) {
 
 export function encodeImageFrame(image) {
     return encodeLengthPrefixedJsonFrame(FRAME_TYPE_IMAGE, image);
+}
+
+export function encodeControlFrame(data) {
+    return encodeLengthPrefixedJsonFrame(FRAME_TYPE_CONTROL, data);
 }
 
 /** @returns {{bytes: Buffer, index: number}} */

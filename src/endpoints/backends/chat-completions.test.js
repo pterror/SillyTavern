@@ -472,6 +472,27 @@ async function run() {
     }
 
     /**
+     * Decodes a raw-action tool-calling stream's compact binary bytes
+     * (`forwardAndPersistCompactStreamWithServerTools()`'s own doc comment in chat-completions.js)
+     * into `{content, toolCallDeltas, control, assistantNodeId}` - `toolCallDeltas` is every decoded
+     * `0x05` frame's JSON payload, in order; `control` is the LAST decoded `0x08` frame's JSON payload
+     * (there is at most one per stream - the trailer that ends the round), or `null` if none was sent.
+     */
+    function decodeCompactToolStream(bodyBytes) {
+        const decoder = new CompactStreamDecoder();
+        const events = [...decoder.push(new Uint8Array(bodyBytes)), ...decoder.flush()];
+        const content = events.filter(event => 'content' in event).map(event => event.content).join('');
+        const toolCallDeltas = events.filter(event => 'toolCallDelta' in event).map(event => event.toolCallDelta);
+        const controlEvents = events.filter(event => 'control' in event).map(event => event.control);
+        const assistantNodeIdEvent = events.find(event => 'assistantNodeId' in event);
+        return {
+            content, toolCallDeltas,
+            control: controlEvents.length ? controlEvents[controlEvents.length - 1] : null,
+            assistantNodeId: assistantNodeIdEvent ? assistantNodeIdEvent.assistantNodeId : null,
+        };
+    }
+
+    /**
      * Like pointBackendAt(), but also flips on `oai_settings.function_calling` (and a real, allowed
      * `custom_prompt_post_processing` value) so `isToolCallingSupported()`
      * (src/chat-completion-tool-capabilities.js) - and therefore `canUseTools` inside
@@ -3191,9 +3212,9 @@ async function run() {
         pointBackendAtWithToolsEnabled(fakeBackend.url);
 
         const app = buildTestApp();
-        let status, bodyText;
+        let status, bodyBytes;
         try {
-            ({ status, bodyText } = await postGenerateStream(app, {
+            ({ status, bodyBytes } = await postGenerateStream(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
                 type: 'normal', user_message: 'What is the weather in Booktown, streamed?', stream: true,
             }));
@@ -3207,9 +3228,16 @@ async function run() {
         assert.equal(requestBodies[1].stream, false, 'round 2+ is forced non-streaming regardless of the original request\'s own stream:true');
         assert.deepEqual(invokeArgs, { city: 'Booktown' }, 'the split-across-chunks arguments string was reassembled correctly before parsing');
 
-        assert.ok(!bodyText.includes('tool_calls'), 'raw tool_calls deltas are never forwarded to the client for this gated case');
-        assert.ok(bodyText.includes('It is sunny in Booktown, streamed.'), 'the final round\'s content reaches the client as an ordinary-looking SSE content chunk');
-        assert.ok(bodyText.trim().endsWith('data: [DONE]'), 'the stream still ends with the normal [DONE] sentinel');
+        const decoded = decodeCompactToolStream(bodyBytes);
+        assert.deepEqual(decoded.toolCallDeltas, [
+            { index: 0, id: 'call_stream_1', type: 'function', function: { name: 'get_weather', arguments: '' } },
+            { index: 0, function: { arguments: '{"ci' } },
+            { index: 0, function: { arguments: 'ty": "Bo' } },
+            { index: 0, function: { arguments: 'oktown"}' } },
+        ], 'every real tool_calls delta from round 1 is forwarded to the client as its own 0x05 frame, in order');
+        assert.equal(decoded.content, 'It is sunny in Booktown, streamed.', 'the final round\'s content reaches the client as an ordinary compact content frame');
+        assert.equal(decoded.control, null, 'a plain final reply carries no control (0x08) trailer');
+        assert.ok(decoded.assistantNodeId, 'the assistant_node_id frame was sent as the final frame once the final reply was persisted');
 
         const branchAfter = await waitFor(async () => {
             const branch = await loadBranch(directories, ownerId, toolBranch);
@@ -3222,6 +3250,7 @@ async function run() {
         assert.equal(toolMsg.extra.tool_invocations[0].result, 'Sunny in Booktown');
         assert.equal(finalMsg.mes, 'It is sunny in Booktown, streamed.');
         assert.equal(finalMsg.name, 'Rex');
+        assert.equal(finalMsg.node_id, decoded.assistantNodeId, 'the node id sent to the client in the compact stream\'s assistant_node_id frame is the exact node the final reply actually landed on');
     }
 
     // (k) STREAMING, client-only tool call: the fake backend streams a `tool_calls` delta for a name
@@ -3252,9 +3281,9 @@ async function run() {
         pointBackendAtWithToolsEnabled(fakeBackend.url);
 
         const app = buildTestApp();
-        let status, bodyText;
+        let status, bodyBytes;
         try {
-            ({ status, bodyText } = await postGenerateStream(app, {
+            ({ status, bodyBytes } = await postGenerateStream(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
                 type: 'normal', user_message: 'Open the curtains, streamed.', stream: true,
                 client_tools: [{ type: 'function', function: { name: 'open_curtains', description: 'Opens the curtains.', parameters: { type: 'object', properties: { side: { type: 'string' } } } } }],
@@ -3265,11 +3294,15 @@ async function run() {
 
         assert.equal(status, 200);
         assert.equal(callCount, 1, 'the backend is never re-called for a client-only hand-off - there is nothing left for the server to resolve');
-        assert.ok(!bodyText.includes('"tool_calls"'), 'the raw tool_calls delta is never forwarded to the client');
 
-        const handoffLine = bodyText.split('\n').map(line => line.trim()).find(line => line.startsWith('data:') && line.includes('tool_call_handoff'));
-        assert.ok(handoffLine, 'a tool_call_handoff trailer event was sent before the stream closed');
-        const handoffPayload = JSON.parse(handoffLine.slice(5).trim());
+        const decoded = decodeCompactToolStream(bodyBytes);
+        assert.deepEqual(decoded.toolCallDeltas, [
+            { index: 0, id: 'call_curtains_stream', type: 'function', function: { name: 'open_curtains', arguments: '' } },
+            { index: 0, function: { arguments: '{"side": "left"}' } },
+        ], 'the real tool_calls deltas ARE forwarded as 0x05 frames (the compact-stream client never runs the legacy accumulation those used to have to be hidden from)');
+
+        const handoffPayload = decoded.control;
+        assert.ok(handoffPayload?.tool_call_handoff, 'a tool_call_handoff control (0x08) frame was sent before the stream closed');
         assert.ok(Array.isArray(handoffPayload.tool_call_handoff.pending_tool_calls) && handoffPayload.tool_call_handoff.pending_tool_calls.length === 1);
         assert.equal(handoffPayload.tool_call_handoff.pending_tool_calls[0].tool_call_id, 'call_curtains_stream');
         assert.equal(handoffPayload.tool_call_handoff.pending_tool_calls[0].name, 'open_curtains');
@@ -3453,9 +3486,9 @@ async function run() {
         pointBackendAtWithToolsEnabled(fakeBackend.url);
 
         const app = buildTestApp();
-        let status, bodyText;
+        let status, bodyBytes;
         try {
-            ({ status, bodyText } = await postGenerateStream(app, {
+            ({ status, bodyBytes } = await postGenerateStream(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
                 type: 'normal', user_message: 'Think something, streamed.', stream: true,
                 client_tools: [{ type: 'function', function: { name: 'log_secret_thought', description: 'Silently records a thought (client-only, stealth).', parameters: { type: 'object', properties: {} } } }],
@@ -3467,14 +3500,14 @@ async function run() {
 
         assert.equal(callCount, 1, 'the backend is never re-called for an aborted round');
         assert.equal(status, 200);
-        assert.ok(!bodyText.includes('"tool_calls"'), 'the raw tool_calls delta is never forwarded to the client');
-        assert.ok(!bodyText.includes('tool_call_handoff'), 'an aborted round is NOT a hand-off');
 
-        const abortedLine = bodyText.split('\n').map(line => line.trim()).find(line => line.startsWith('data:') && line.includes('tool_call_aborted'));
-        assert.ok(abortedLine, 'a tool_call_aborted trailer event was sent before the stream closed');
-        const abortedPayload = JSON.parse(abortedLine.slice(5).trim());
-        assert.equal(abortedPayload.tool_call_aborted, true);
-        assert.ok(bodyText.trim().endsWith('data: [DONE]'), 'the stream still ends with the normal [DONE] sentinel, with no further content chunk after the trailer');
+        const decoded = decodeCompactToolStream(bodyBytes);
+        assert.deepEqual(decoded.toolCallDeltas, [
+            { index: 0, id: 'call_stealth_stream', type: 'function', function: { name: 'log_secret_thought', arguments: '{}' } },
+        ], 'the real tool_calls delta is forwarded as a 0x05 frame');
+        assert.equal(decoded.content, '', 'no further content chunk after the round was aborted');
+        assert.deepEqual(decoded.control, { tool_call_aborted: true }, 'a tool_call_aborted control frame was sent - an aborted round is NOT a hand-off');
+        assert.equal(decoded.assistantNodeId, null, 'nothing was persisted, so no assistant_node_id frame either');
 
         const branchAfter = await loadBranch(directories, ownerId, toolBranch);
         assert.equal(branchAfter.messages.length, messageCountBefore + 1, 'only the user\'s own message was persisted - no tool-invocation node, no assistant reply');
