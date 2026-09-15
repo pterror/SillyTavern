@@ -4762,6 +4762,8 @@ class StreamingProcessor {
         // comment (src/endpoints/backends/chat-completions.js) for the full mechanism. Mirrors
         // `toolCallHandoff` above exactly, for the distinct "abort, nothing persisted" trailer.
         this.toolCallAborted = false;
+        /** @type {string?} The node persistAssistantReply() wrote, if the server sent one ahead of [DONE]. */
+        this.assistantNodeId = null;
         // Initialize reasoning in its own handler
         this.reasoningHandler = new ReasoningHandler(timeStarted);
         /** @type {PromptReasoning} */
@@ -5014,8 +5016,12 @@ class StreamingProcessor {
         if (!isAborted && power_user.auto_swipe && generatedTextFiltered(text)) {
             return await swipe(null, SWIPE_DIRECTION.RIGHT, { source: SWIPE_SOURCE.AUTO_SWIPE, repeated: true, forceMesId: chat.length - 1 });
         }
-        // eslint-disable-next-line no-restricted-syntax -- streaming can't return the persisted node_id in time to stamp the reply clean; see assistant-reply-persist.js's own doc comment.
-        await saveChatConditional();
+        if (this.assistantNodeId) {
+            _stampAssistantNodeId(this.assistantNodeId);
+        } else {
+            // eslint-disable-next-line no-restricted-syntax -- backend/path didn't send assistant_node_id (not a raw-action stream, or the server-side persist itself failed).
+            await saveChatConditional();
+        }
 
         playMessageSound();
     }
@@ -5097,6 +5103,7 @@ class StreamingProcessor {
                 // THIS TASK (stealth-tool parity) - see StreamingProcessor.toolCallAborted's own
                 // declaration comment above.
                 this.toolCallAborted = state?.toolCallAborted ?? this.toolCallAborted;
+                this.assistantNodeId = state?.assistantNodeId ?? this.assistantNodeId;
                 this.result = text;
                 this.swipes = Array.from(swipes ?? []);
                 if (logprobs) {
@@ -7817,24 +7824,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 
             // This relies on `saveReply` having been called to add the message to the chat, so it must be last.
             parseAndSaveLogprobs(data, continue_mag);
-
-            if (data.assistant_node_id) {
-                const mesId = chat.length - 1;
-                const msg = chat[mesId];
-                if (msg && !msg.is_user) {
-                    const selected = msg.swipe_id ?? 0;
-                    const updates = { node_id: data.assistant_node_id };
-                    if (Array.isArray(msg.swipe_info) && msg.swipe_info[selected] && !msg.swipe_info[selected].node_id) {
-                        const newSwipeInfo = [...msg.swipe_info];
-                        newSwipeInfo[selected] = { ...newSwipeInfo[selected], node_id: data.assistant_node_id };
-                        updates.swipe_info = newSwipeInfo;
-                    }
-                    updateMessage(mesId, updates);
-                    if (chat[mesId]?.node_id) {
-                        _messageSnapshots.set(chat[mesId].node_id, chat[mesId]);
-                    }
-                }
-            }
+            _stampAssistantNodeId(data.assistant_node_id);
         }
 
         if (canPerformToolCalls) {
@@ -10375,6 +10365,27 @@ export function saveChatDebounced() {
     }, DEFAULT_SAVE_EDIT_TIMEOUT);
 }
 
+
+// Stamps a server-persisted assistant_node_id onto the just-saved reply and marks it clean in
+// _messageSnapshots, so the generic save (still reachable through getContext().saveChat() for
+// extensions, and through StreamingProcessor's own fallback below) sees nothing to write again.
+function _stampAssistantNodeId(nodeId) {
+    if (!nodeId) return;
+    const mesId = chat.length - 1;
+    const msg = chat[mesId];
+    if (!msg || msg.is_user) return;
+    const selected = msg.swipe_id ?? 0;
+    const updates = { node_id: nodeId };
+    if (Array.isArray(msg.swipe_info) && msg.swipe_info[selected] && !msg.swipe_info[selected].node_id) {
+        const newSwipeInfo = [...msg.swipe_info];
+        newSwipeInfo[selected] = { ...newSwipeInfo[selected], node_id: nodeId };
+        updates.swipe_info = newSwipeInfo;
+    }
+    updateMessage(mesId, updates);
+    if (chat[mesId]?.node_id) {
+        _messageSnapshots.set(chat[mesId].node_id, chat[mesId]);
+    }
+}
 
 // Retries the SAME direct op on a transient failure (network error, 5xx) instead of falling through
 // to a different, generic persistence mechanism - a dropped write is still that exact write. A 4xx

@@ -1386,6 +1386,15 @@ export async function generateTextGenWithStreaming(generate_data, signal) {
 
             let data = JSON.parse(value.data);
 
+            // Raw-action persistence teed this stream server-side (text-completions.js's
+            // forwardAndPersistSseText()) and, once it knew the full text, wrote this ahead of
+            // [DONE] - not real generated content, just the node the reply landed on.
+            if (typeof data?.assistant_node_id === 'string') {
+                state.assistantNodeId = data.assistant_node_id;
+                yield { text, swipes, logprobs, toolCalls, state };
+                continue;
+            }
+
             if (data?.choices?.[0]?.index > 0) {
                 const swipeIndex = data.choices[0].index - 1;
                 swipes[swipeIndex] = (swipes[swipeIndex] || '') + data.choices[0].text;
