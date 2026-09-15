@@ -19,7 +19,6 @@ import {
     name1,
     name2,
     reloadCurrentChat,
-    saveChatConditional,
     saveMetadata,
     saveSettingsDebounced,
     setUserName,
@@ -1931,15 +1930,9 @@ async function syncUserNameToPersona({ start = 0, end = chat.length - 1, quiet =
         }
     }
 
-    // One act, one request. Attributing a run of messages to a persona is a single thing the reader
-    // decided, and it used to go out as one edit per message: the whole-conversation save has no idea
-    // this was one decision, so it worked it out afterwards by comparing, and sent N of them.
-    if (chat_metadata?._tree_stored) {
-        await chatOpEditMany(changed).catch(error =>
-            console.error('Could not attribute those messages to this persona:', error));
-    } else {
-        await saveChatConditional();
-    }
+    // Attributing a run of messages to a persona is one decision - one batched edit, not N.
+    await chatOpEditMany(changed).catch(error =>
+        console.error('Could not attribute those messages to this persona:', error));
     await reloadCurrentChat();
 }
 
