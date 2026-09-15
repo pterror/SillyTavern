@@ -510,7 +510,10 @@ router.post('/generate', async function (req, res) {
             // `data.output` read of this exact endpoint).
             if (pendingAssistantPersist) {
                 const generatedText = data?.output ?? '';
-                await persistAssistantReply(pendingAssistantPersist, generatedText);
+                const persisted = await persistAssistantReply(pendingAssistantPersist, generatedText);
+                if (persisted) {
+                    data.assistant_node_id = persisted.node_id;
+                }
             }
 
             return res.send(data);

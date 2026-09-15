@@ -368,7 +368,8 @@ async function run() {
         pointNovelBackendAt(null);
 
         assert.equal(status, 200);
-        assert.deepEqual(data, { output: 'Rex says hello back.' }, 'the real NovelAI response body reaches the client byte-for-byte unmodified');
+        assert.equal(data.output, 'Rex says hello back.', 'the real NovelAI response body reaches the client unmodified');
+        assert.equal(typeof data.assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
 
         const branchAfter = await loadBranch(directories, ownerId, branchName);
         assert.equal(branchAfter.messages.length, messageCountBefore + 2, 'both the user message and the assistant reply were appended');
@@ -420,7 +421,8 @@ async function run() {
 
         assert.equal(status, 200);
         assert.equal(sawStreamRequest, false, '/ai/generate-stream was never actually requested - built.params has no streaming field at all for raw-action requests');
-        assert.deepEqual(data, { output: 'Non-streamed despite stream:true.' });
+        assert.equal(data.output, 'Non-streamed despite stream:true.');
+        assert.equal(typeof data.assistant_node_id, 'string', 'this is still a raw-action request (real owner_id/character_avatar), so the reply is persisted and its node_id echoed back');
 
         const branchAfter = await loadBranch(directories, ownerId, streamBranch);
         const [, assistantMsg] = branchAfter.messages.slice(-2);
