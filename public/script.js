@@ -10376,6 +10376,27 @@ export function saveChatDebounced() {
 }
 
 
+// Retries the SAME direct op on a transient failure (network error, 5xx) instead of falling through
+// to a different, generic persistence mechanism - a dropped write is still that exact write. A 4xx
+// is a real, immediate refusal and is never retried, since a retry can't change it. Mirrors
+// chat-store.js's own _retryTransient(), for the one caller here (saveMetadata()) that posts
+// directly instead of going through a chatOp*().
+async function _retryOp(fn, { attempts = 3, baseDelayMs = 500 } = {}) {
+    let lastError;
+    for (let i = 0; i < attempts; i++) {
+        try {
+            return await fn();
+        } catch (error) {
+            lastError = error;
+            if (error?.status >= 400 && error.status < 500) throw error;
+            if (i < attempts - 1) {
+                await delay(baseDelayMs * Math.pow(2, i));
+            }
+        }
+    }
+    throw lastError;
+}
+
 // Overswiping opens an empty slot to type into; nothing exists for it yet, so there is nothing to save, and
 // trying anyway means asking the server to blank the row the message still names, which it refuses.
 function _isBlankUnwrittenSwipe(message) {
@@ -12022,15 +12043,12 @@ async function messageEditDone(div) {
     const editedMesId = this_edit_mes_id;
     this_edit_mes_id = undefined;
     // Says the edit directly rather than letting the fallback save infer it from a snapshot diff.
-    let editedViaOp = false;
+    // chatOpEdit() already retries transient failures itself (chat-store.js's _chatOpPost).
     try {
-        editedViaOp = await chatOpEdit(editedMesId);
+        await chatOpEdit(editedMesId);
     } catch (error) {
-        console.error('Could not save the edit directly, falling back to the whole-chat save:', error);
-    }
-    if (!editedViaOp) {
-        // eslint-disable-next-line no-restricted-syntax -- fallback after chatOpEdit() above already failed/didn't apply.
-        await saveChatConditional();
+        console.error('Could not save the edited message:', error);
+        toastr.error(t`Could not save the edited message. Check your connection and try again.`, t`Save failed`);
     }
     showSwipeButtons();
 }
@@ -13145,41 +13163,54 @@ function _handleMetadataIntegrityConflict() {
 // Persists chat_metadata alone, without dragging the per-message diff a full tree save would do. Falls back to the whole-chat save for anything it can't address directly.
 export async function saveMetadata() {
     const metadata = chat_metadata;
-    const avatar = getCurrentCharacter()?.avatar;
-    if (!selected_group && avatar && metadata?._tree_stored) {
-        const position = getCurrentCharacter()?.chat;
-        const target = chat.some(m => m.node_id === position) ? position : null;
-        if (!target) {
-            console.warn('[saveMetadata] Current chat pointer not found among loaded messages, falling back to the whole-chat save');
-        } else {
-            try {
-                const response = await fetch('/api/chats/metadata', {
-                    method: 'POST',
-                    headers: getRequestHeaders(),
-                    body: JSON.stringify({ avatar_url: avatar, file_name: target, metadata, expected_integrity: metadata?.integrity }),
-                });
-                if (response.status === 409) {
-                    _handleMetadataIntegrityConflict();
-                    return;
-                }
-                if (response.ok) {
-                    const result = await response.json().catch(() => ({}));
-                    if (typeof result.integrity === 'string') {
-                        chat_metadata.integrity = result.integrity;
-                    }
-                    // Keep _saveTreeChat's own dirty check in sync, so a subsequent tree op doesn't
-                    // needlessly re-POST metadata this call already saved.
-                    _lastSavedMetadataJSON = _metadataContentJSON(metadata);
-                    return;
-                }
-                console.warn(`[saveMetadata] /api/chats/metadata responded ${response.status}, falling back to the whole-chat save`);
-            } catch (error) {
-                console.warn('[saveMetadata] Failed to save metadata directly, falling back to the whole-chat save:', error);
-            }
-        }
+
+    if (selected_group) {
+        return await saveGroupChat(selected_group, true);
     }
-    // eslint-disable-next-line no-restricted-syntax -- fallback after the direct metadata POST above already failed/didn't apply.
-    return await saveChatConditional();
+
+    const avatar = getCurrentCharacter()?.avatar;
+    if (!avatar || !metadata?._tree_stored) {
+        return;
+    }
+
+    const position = getCurrentCharacter()?.chat;
+    const opening = chat[0]?.node_id;
+    const target = chat.some(m => m.node_id === position) ? position : (isStoredNodeId(opening) ? opening : null);
+    if (!target) {
+        console.warn('[saveMetadata] No valid node to address this chat by - nothing to save metadata onto yet.');
+        return;
+    }
+
+    const postMetadata = async () => {
+        const response = await fetch('/api/chats/metadata', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ avatar_url: avatar, file_name: target, metadata, expected_integrity: metadata?.integrity }),
+        });
+        if (response.status === 409) {
+            _handleMetadataIntegrityConflict();
+            return null;
+        }
+        if (!response.ok) {
+            const error = new Error(`/api/chats/metadata responded ${response.status}`);
+            error.status = response.status;
+            throw error;
+        }
+        return response.json().catch(() => ({}));
+    };
+
+    try {
+        const result = await _retryOp(postMetadata);
+        if (result && typeof result.integrity === 'string') {
+            chat_metadata.integrity = result.integrity;
+        }
+        if (result) {
+            _lastSavedMetadataJSON = _metadataContentJSON(metadata);
+        }
+    } catch (error) {
+        console.error('[saveMetadata] Failed to save metadata after retrying:', error);
+        toastr.error(t`Could not save chat metadata. Check your connection and try again.`, t`Save failed`);
+    }
 }
 
 export async function saveChatConditional() {
@@ -15620,18 +15651,14 @@ function addDebugFunctions() {
         }
 
         // One batch edit rather than something the fallback save has to work out from a diff.
-        let editedViaOp = false;
+        // chatOpEditMany() already retries transient failures itself (chat-store.js's _chatOpPost).
         if (editedIds.length) {
             try {
                 await chatOpEditMany(editedIds);
-                editedViaOp = true;
             } catch (error) {
-                console.error('Could not save the token count backfill directly, falling back to the whole-chat save:', error);
+                console.error('Could not save the token count backfill:', error);
+                toastr.error(t`Could not save the token count backfill. Check your connection and try again.`, t`Save failed`);
             }
-        }
-        if (!editedViaOp) {
-            // eslint-disable-next-line no-restricted-syntax -- fallback after chatOpEditMany() above already failed/didn't apply.
-            await saveChatConditional();
         }
         await reloadCurrentChat();
     };

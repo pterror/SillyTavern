@@ -296,17 +296,44 @@ export function _isBlankSlot(message, at) {
 
 // Named actions for writes a chat can make — prefer these over _saveTreeChat's snapshot-diff guessing.
 
+/**
+ * Retries the SAME request on a transient failure (network error, 5xx) instead of asking something
+ * else to guess what changed - a dropped write is still that exact write. A 4xx is a real, immediate
+ * refusal (bad request, not found, conflict) and is never retried, since a retry can't change it.
+ */
+async function _retryTransient(fn, { attempts = 3, baseDelayMs = 500 } = {}) {
+    let lastError;
+    for (let i = 0; i < attempts; i++) {
+        try {
+            return await fn();
+        } catch (error) {
+            lastError = error;
+            if (error?.status >= 400 && error.status < 500) throw error;
+            if (i < attempts - 1) {
+                await new Promise(resolve => setTimeout(resolve, baseDelayMs * Math.pow(2, i)));
+            }
+        }
+    }
+    throw lastError;
+}
+
 /** Posts one operation. Throws on refusal, so a caller cannot mistake a refusal for a write. */
 async function _chatOpPost(path, body) {
     const avatar = getCurrentCharacter()?.avatar;
     if (!avatar) throw new Error('no character is selected');
-    const response = await fetch(path, {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({ avatar_url: avatar, ...body }),
+    return _retryTransient(async () => {
+        const response = await fetch(path, {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ avatar_url: avatar, ...body }),
+        });
+        if (!response.ok) {
+            const error = new Error(`${path} responded ${response.status}`);
+            error.status = response.status;
+            throw error;
+        }
+        return response.json().catch(() => ({}));
     });
-    if (!response.ok) throw new Error(`${path} responded ${response.status}`);
-    return response.json().catch(() => ({}));
 }
 
 // Reads the live object, not the caller's copy — updateMessage() may have replaced it.
