@@ -1131,20 +1131,17 @@ async function run() {
     }
 
     // (i-6) A NON-raw-action streaming request (no owner_id/character_avatar, so neither raw-action
-    // branch runs and pendingAssistantPersist stays null throughout) must be COMPLETELY unaffected
-    // by the teeing/re-encoding mechanism: forwardAndPersistCompactStream()'s own top-of-function
-    // guard (`if (!persist || ...)`) falls straight through to a plain, untouched
-    // forwardFetchResponse() call (still plain SSE-JSON, not the compact binary format) - no listener
-    // is even attached in this case. Verified here by asserting the client-facing bytes are still
-    // byte-for-byte identical to the fake backend's own SSE stream, exactly as they were before this
-    // session's change (this exact scenario - a stream with no raw-action fields - already exercised
-    // the SAME forwardFetchResponse() call prior to this session).
+    // branch runs and pendingAssistantPersist stays null throughout) still goes through
+    // forwardAndPersistCompactStream()'s compact-v1 re-encoding - only persistence is skipped, per
+    // this session's gap-1 conversion. Verified here by decoding the client-facing bytes as a compact
+    // stream and asserting the reconstructed text matches the fake backend's SSE chunks exactly, with
+    // no assistantNodeId frame (nothing was persisted).
     {
         const fakeBackend = await startFakeSseBackend(['This ', 'is ', 'a ', 'plain ', 'legacy ', 'stream.']);
         pointBackendAt(fakeBackend.url);
 
         const app = buildTestApp();
-        const { status, bodyText } = await postGenerateStream(app, {
+        const { status, headers, bytes } = await postGenerateStreamBytes(app, {
             // No owner_id/character_avatar/group_id/connection_profile_id - falls through to the
             // legacy/default branch, which only resolves api_type/api_server from settings and
             // otherwise dispatches request.body completely unchanged.
@@ -1153,7 +1150,10 @@ async function run() {
         fakeBackend.server.close();
 
         assert.equal(status, 200);
-        assert.equal(bodyText, fakeBackend.expectedBody, 'a non-raw-action stream is forwarded byte-for-byte unchanged - pendingAssistantPersist stays null, so no teeing/accumulation/persistence logic ever runs for it');
+        assert.equal(headers.get('x-st-stream-format'), 'compact-v1', 'a non-raw-action stream is now also re-encoded into the compact binary wire format');
+        const decoded = decodeCompactStream(bytes);
+        assert.equal(decoded.text, 'This is a plain legacy stream.');
+        assert.equal(decoded.assistantNodeId, null, 'nothing is persisted for a non-raw-action stream, so no assistant_node_id frame is emitted');
     }
 
     // (i-6b) STREAMING raw-action, TOKEN COALESCING + reasoning: a real fake backend emits many small

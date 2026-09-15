@@ -45,7 +45,6 @@ import {
 import { forceCharacterEditorTokenize, getCustomStoppingStrings, persona_description_positions, power_user } from './power-user.js';
 import { SECRET_KEYS, secret_state, writeSecret } from './secrets.js';
 
-import { getEventSourceStream } from './sse-stream.js';
 import { CompactStreamDecoder, ResumableCompactStreamReader } from './llamacpp-compact-stream.js';
 import {
     arraysEqual,
@@ -3289,42 +3288,7 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, ra
             };
         }
 
-        const eventStream = getEventSourceStream();
-        response.body.pipeThrough(eventStream);
-        const reader = eventStream.readable.getReader();
-        return async function* streamData() {
-            let text = '';
-            const swipes = [];
-            const toolCalls = [];
-            const state = { reasoning: '', images: [], signature: '', toolSignatures: {}, toolCallHandoff: null, toolCallAborted: false };
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) return;
-                const rawData = value.data;
-                if (rawData === '[DONE]') return;
-                tryParseStreamingError(response, rawData);
-                const parsed = JSON.parse(rawData);
-
-                // No `tool_call_handoff`/`tool_call_aborted`/`assistant_node_id` handling here -
-                // every raw-action stream (tool-calling or plain) now always declares
-                // X-ST-Stream-Format: compact-v1 and is handled by the branch above instead; this
-                // SSE-JSON path is only ever reached for a non-raw-action stream, which never
-                // produces those fields (they're ST's own synthetic raw-action signals, not
-                // something a real upstream provider would ever send).
-
-                if (canMultiSwipe && Array.isArray(parsed?.choices) && parsed?.choices?.[0]?.index > 0) {
-                    const swipeIndex = parsed.choices[0].index - 1;
-                    // FIXME: state.reasoning should be an array to support multi-swipe
-                    swipes[swipeIndex] = (swipes[swipeIndex] || '') + getStreamingReply(parsed, state, { overrideShowThoughts: false });
-                } else {
-                    text += getStreamingReply(parsed, state);
-                }
-
-                ToolManager.parseToolCalls(toolCalls, parsed, state.toolSignatures);
-
-                yield { text, swipes: swipes, logprobs: parseChatCompletionLogprobs(parsed), toolCalls: toolCalls, state: state };
-            }
-        };
+        throw new Error('Expected X-ST-Stream-Format: compact-v1 - every streaming response from this route uses the compact binary protocol.');
     } else {
         const data = await response.json();
 
@@ -3345,101 +3309,6 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, ra
         }
 
         return data;
-    }
-}
-
-/**
- * Extracts the reply from the response data from a chat completions-like source
- * @param {object} data Response data from the chat completions-like source
- * @param {object} state Additional state to keep track of
- * @param {object} [options] Additional options
- * @param {string?} [options.chatCompletionSource] Chat completion source
- * @param {boolean?} [options.overrideShowThoughts] Override show thoughts
- * @returns {string} The reply extracted from the response data
- */
-export function getStreamingReply(data, state, { chatCompletionSource = null, overrideShowThoughts = null } = {}) {
-    const chat_completion_source = chatCompletionSource ?? oai_settings.chat_completion_source;
-    const show_thoughts = overrideShowThoughts ?? oai_settings.show_thoughts;
-
-    if (chat_completion_source === chat_completion_sources.CLAUDE) {
-        if (show_thoughts) {
-            state.reasoning += data?.delta?.thinking || '';
-        }
-        return data?.delta?.text || '';
-    } else if ([chat_completion_sources.MAKERSUITE, chat_completion_sources.VERTEXAI].includes(chat_completion_source)) {
-        const inlineData = data?.candidates?.[0]?.content?.parts?.filter(x => x.inlineData && !x.thought)?.map(x => x.inlineData) || [];
-        if (Array.isArray(inlineData) && inlineData.length > 0) {
-            state.images.push(...inlineData.map(x => `data:${x.mimeType};base64,${x.data}`).filter(isDataURL));
-        }
-        if (show_thoughts) {
-            state.reasoning += (data?.candidates?.[0]?.content?.parts?.filter(x => x.thought)?.map(x => x.text)?.[0] || '');
-        }
-        // Extract thought signatures from streaming chunks (typically in final chunk)
-        const parts = data?.candidates?.[0]?.content?.parts || [];
-        parts.forEach((part) => {
-            if (part.thoughtSignature && typeof part.text === 'string') {
-                state.signature = part.thoughtSignature;
-            }
-        });
-        return data?.candidates?.[0]?.content?.parts?.filter(x => !x.thought)?.map(x => x.text)?.[0] || '';
-    } else if (chat_completion_source === chat_completion_sources.COHERE) {
-        return data?.delta?.message?.content?.text || data?.delta?.message?.tool_plan || '';
-    } else if (chat_completion_source === chat_completion_sources.DEEPSEEK) {
-        if (show_thoughts) {
-            state.reasoning += (data.choices?.filter(x => x?.delta?.reasoning_content)?.[0]?.delta?.reasoning_content || '');
-        }
-        return data.choices?.[0]?.delta?.content || '';
-    } else if (chat_completion_source === chat_completion_sources.XAI) {
-        if (show_thoughts) {
-            state.reasoning += (data.choices?.filter(x => x?.delta?.reasoning_content)?.[0]?.delta?.reasoning_content || '');
-        }
-        return data.choices?.[0]?.delta?.content || '';
-    } else if (chat_completion_source === chat_completion_sources.OPENROUTER) {
-        const imageUrls = data?.choices?.[0]?.delta?.images?.filter(x => x.type === 'image_url')?.map(x => x?.image_url?.url) || [];
-        if (Array.isArray(imageUrls) && imageUrls.length > 0) {
-            state.images.push(...imageUrls.filter(isDataURL));
-        }
-        if (show_thoughts) {
-            state.reasoning +=
-                data.choices?.filter(x => x?.delta?.reasoning)?.[0]?.delta?.reasoning ??
-                data.choices?.filter(x => x?.delta?.reasoning_content)?.[0]?.delta?.reasoning_content ??
-                data.choices?.filter(x => x?.message?.reasoning)?.[0]?.message?.reasoning ??
-                data.choices?.filter(x => x?.message?.reasoning_content)?.[0]?.message?.reasoning_content ??
-                '';
-        }
-        // Extract thought signatures from OpenRouter streaming.
-        const reasoningDetails = [
-            ...(data?.choices?.[0]?.delta?.reasoning_details || []),
-            ...(data?.choices?.[0]?.message?.reasoning_details || []),
-        ];
-        reasoningDetails.forEach((detail) => {
-            if (detail.type === 'reasoning.encrypted' && detail.data) {
-                const isToolLikeId = typeof detail.id === 'string' && /^(tool_|call_)/.test(detail.id);
-                if (typeof detail.id === 'string' && detail.id.length > 0) {
-                    state.toolSignatures[detail.id] = detail.data;
-                }
-                if (!isToolLikeId) {
-                    state.signature = detail.data;
-                }
-            }
-        });
-        return data.choices?.[0]?.delta?.content ?? data.choices?.[0]?.message?.content ?? data.choices?.[0]?.text ?? '';
-    } else if ([chat_completion_sources.CUSTOM, chat_completion_sources.POLLINATIONS, chat_completion_sources.AIMLAPI, chat_completion_sources.MOONSHOT, chat_completion_sources.COMETAPI, chat_completion_sources.ELECTRONHUB, chat_completion_sources.NANOGPT, chat_completion_sources.ZAI, chat_completion_sources.SILICONFLOW, chat_completion_sources.CHUTES, chat_completion_sources.WORKERS_AI, chat_completion_sources.FIREWORKS].includes(chat_completion_source)) {
-        if (show_thoughts) {
-            state.reasoning +=
-                data.choices?.filter(x => x?.delta?.reasoning_content)?.[0]?.delta?.reasoning_content ??
-                data.choices?.filter(x => x?.delta?.reasoning)?.[0]?.delta?.reasoning ??
-                '';
-        }
-        return data.choices?.[0]?.delta?.content ?? data.choices?.[0]?.message?.content ?? data.choices?.[0]?.text ?? '';
-    } else if (chat_completion_source === chat_completion_sources.MISTRALAI) {
-        if (show_thoughts) {
-            state.reasoning += (data.choices?.filter(x => x?.delta?.content?.[0]?.thinking)?.[0]?.delta?.content?.[0]?.thinking?.[0]?.text || '');
-        }
-        const content = data.choices?.[0]?.delta?.content ?? data.choices?.[0]?.message?.content ?? data.choices?.[0]?.text ?? '';
-        return Array.isArray(content) ? content.map(x => x.text).filter(x => x).join('') : content;
-    } else {
-        return data.choices?.[0]?.delta?.content ?? data.choices?.[0]?.message?.content ?? data.choices?.[0]?.text ?? '';
     }
 }
 

@@ -1213,11 +1213,10 @@ async function run() {
     }
 
     // (i-4) A NON-raw-action streaming request (a connection_profile_id-less, owner_id-less legacy
-    // request) must be COMPLETELY unaffected by the teeing mechanism: forwardAndPersistCompactStream()'s
-    // own top-of-function guard (`if (!persist || ...)`) falls straight through to a plain, untouched
-    // forwardFetchResponse() call - no listener is even attached in this case. Verified here by
-    // asserting the client-facing bytes are still byte-for-byte identical to the fake backend's own
-    // SSE stream, and that nothing was persisted anywhere.
+    // request) still goes through forwardAndPersistCompactStream()'s compact-v1 re-encoding - only
+    // persistence is skipped, per this session's gap-1 conversion. Verified here by decoding the
+    // client-facing bytes as a compact stream and asserting the reconstructed text matches the fake
+    // backend's SSE chunks exactly, with no assistantNodeId frame and nothing persisted anywhere.
     {
         const fakeBackend = await startFakeSseBackend(['This ', 'is ', 'a ', 'plain ', 'legacy ', 'stream.']);
         pointBackendAt(fakeBackend.url);
@@ -1226,7 +1225,7 @@ async function run() {
         const messageCountBefore = branchBefore.messages.length;
 
         const app = buildTestApp();
-        const { status, bodyText } = await postGenerateStream(app, {
+        const { status, bodyBytes } = await postGenerateStream(app, {
             // No owner_id/character_avatar/group_id/connection_profile_id - falls through to the
             // legacy/default branch, which only dispatches request.body through the shared block
             // completely unchanged.
@@ -1236,7 +1235,11 @@ async function run() {
         fakeBackend.server.close();
 
         assert.equal(status, 200);
-        assert.equal(bodyText, fakeBackend.expectedBody, 'a non-raw-action stream is forwarded byte-for-byte unchanged - pendingAssistantPersist stays null, so no teeing/accumulation/persistence logic ever runs for it');
+        const decoder = new CompactStreamDecoder();
+        const events = [...decoder.push(new Uint8Array(bodyBytes)), ...decoder.flush()];
+        const content = events.filter(event => 'content' in event).map(event => event.content).join('');
+        assert.equal(content, fakeBackend.expectedText, 'a non-raw-action stream is now also re-encoded into the compact binary wire format');
+        assert.equal(events.some(event => 'assistantNodeId' in event), false, 'nothing is persisted for a non-raw-action stream, so no assistant_node_id frame is emitted');
 
         const branchAfter = await loadBranch(directories, ownerId, branchName);
         assert.equal(branchAfter.messages.length, messageCountBefore, 'nothing was persisted onto any tree for a non-raw-action stream');

@@ -22,7 +22,6 @@ import { BIAS_CACHE, createNewLogitBiasEntry, displayLogitBias, getLogitBiasList
 import { power_user, registerDebugFunction } from './power-user.js';
 import { getActiveManualApiSamplers, loadApiSelectedSamplers, isSamplerManualPriorityEnabled } from './samplerSelect.js';
 import { SECRET_KEYS, writeSecret } from './secrets.js';
-import { getEventSourceStream } from './sse-stream.js';
 import { CompactStreamDecoder, ResumableCompactStreamReader } from './llamacpp-compact-stream.js';
 import { getCurrentDreamGenModelTokenizer, getCurrentOpenRouterModelTokenizer, loadAphroditeModels, loadDreamGenModels, loadFeatherlessModels, loadGenericModels, loadInfermaticAIModels, loadLlamaCppModels, loadMancerModels, loadOllamaModels, loadOpenRouterModels, loadTabbyModels, loadTogetherAIModels, loadVllmModels, updateOpenRouterProvidersWarning } from './textgen-models.js';
 import { ENCODE_TOKENIZERS, TEXTGEN_TOKENIZERS, TOKENIZER_SUPPORTED_KEY, getTextTokens, getTokenizerBestMatch, tokenizers } from './tokenizers.js';
@@ -1378,54 +1377,7 @@ export async function generateTextGenWithStreaming(generate_data, signal) {
         };
     }
 
-    const eventStream = getEventSourceStream();
-    response.body.pipeThrough(eventStream);
-    const reader = eventStream.readable.getReader();
-
-    return async function* streamData() {
-        let text = '';
-        /** @type {import('./logprobs.js').TokenLogprobs | null} */
-        let logprobs = null;
-        const swipes = [];
-        const toolCalls = [];
-        const state = { reasoning: '' };
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) return;
-            if (value.data === '[DONE]') return;
-
-            tryParseStreamingError(response, value.data);
-
-            let data = JSON.parse(value.data);
-
-            // Historical: server-side raw-action persistence used to tee this SSE-JSON stream and
-            // inject this line ahead of [DONE] once it knew the full text. Every raw-action
-            // streaming backend now uses the compact binary protocol instead (the branch above), so
-            // this SSE-JSON path only ever carries non-raw-action streams, which never set this field -
-            // kept as a harmless no-op rather than removed without full verification.
-            if (typeof data?.assistant_node_id === 'string') {
-                state.assistantNodeId = data.assistant_node_id;
-                yield { text, swipes, logprobs, toolCalls, state };
-                continue;
-            }
-
-            if (data?.choices?.[0]?.index > 0) {
-                const swipeIndex = data.choices[0].index - 1;
-                swipes[swipeIndex] = (swipes[swipeIndex] || '') + data.choices[0].text;
-            } else if (data?.index > 0) {
-                // llama.cpp streaming swipe
-                const swipeIndex = data.index - 1;
-                swipes[swipeIndex] = (swipes[swipeIndex] || '') + data.content;
-            } else {
-                const newText = data?.choices?.[0]?.text || data?.content || '';
-                text += newText;
-                logprobs = parseTextgenLogprobs(newText, data.choices?.[0]?.logprobs || data?.completion_probabilities);
-                state.reasoning += data?.choices?.[0]?.reasoning ?? data?.choices?.[0]?.thinking ?? '';
-            }
-
-            yield { text, swipes, logprobs, toolCalls, state };
-        }
-    };
+    throw new Error('Expected X-ST-Stream-Format: compact-v1 - every streaming response from this route uses the compact binary protocol.');
 }
 
 /**

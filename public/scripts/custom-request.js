@@ -3,8 +3,8 @@ import { extractJsonFromData, extractMessageFromData, getGenerateUrl, getRequest
 import { getTextGenServer, createTextGenGenerationData, setting_names, textgenerationwebui_settings } from './textgen-settings.js';
 import { extractReasoningFromData } from './reasoning.js';
 import { formatInstructModeChat, formatInstructModePrompt, getInstructStoppingSequences } from './instruct-mode.js';
-import { getStreamingReply, tryParseStreamingError, createGenerationParameters, settingsToUpdate, oai_settings } from './chat-completion-settings.js';
-import EventSourceStream from './sse-stream.js';
+import { tryParseStreamingError, createGenerationParameters, settingsToUpdate, oai_settings } from './chat-completion-settings.js';
+import { CompactStreamDecoder, ResumableCompactStreamReader } from './llamacpp-compact-stream.js';
 
 // #region Type Definitions
 /**
@@ -158,32 +158,43 @@ export class TextCompletionService {
             throw new Error(`Got response status ${response.status}`);
         }
 
-        const eventStream = new EventSourceStream();
-        response.body.pipeThrough(eventStream);
-        const reader = eventStream.readable.getReader();
+        // Every /api/backends/text-completions/generate streaming response is the compact binary
+        // protocol (see llamacpp-compact-stream.js for the wire format/decoder) - raw-action or not,
+        // matching every other caller of this same route (textgen-settings.js's
+        // generateTextGenWithStreaming()).
+        const reader = new ResumableCompactStreamReader(response, '/api/backends/text-completions/generate/resume', getRequestHeaders);
         return async function* streamData() {
+            const decoder = new CompactStreamDecoder();
             let text = '';
             const swipes = [];
             const state = { reasoning: '' };
+            let currentIndex = 0;
             while (true) {
                 const { done, value } = await reader.read();
-                if (done) return;
-                if (value.data === '[DONE]') return;
+                const events = done ? decoder.flush() : decoder.push(value);
 
-                tryParseStreamingError(response, value.data, { quiet: true });
-
-                let data = JSON.parse(value.data);
-
-                if (data?.choices?.[0]?.index > 0) {
-                    const swipeIndex = data.choices[0].index - 1;
-                    swipes[swipeIndex] = (swipes[swipeIndex] || '') + data.choices[0].text;
-                } else {
-                    const newText = data?.choices?.[0]?.text || data?.content || '';
-                    text += newText;
-                    state.reasoning += data?.choices?.[0]?.reasoning ?? '';
+                for (const event of events) {
+                    if ('index' in event) {
+                        currentIndex = event.index;
+                    } else if ('content' in event) {
+                        if (currentIndex > 0) {
+                            const swipeIndex = currentIndex - 1;
+                            swipes[swipeIndex] = (swipes[swipeIndex] || '') + event.content;
+                        } else {
+                            text += event.content;
+                        }
+                    } else if ('reasoning' in event) {
+                        state.reasoning += event.reasoning;
+                    } else if ('assistantNodeId' in event) {
+                        state.assistantNodeId = event.assistantNodeId;
+                    }
                 }
 
-                yield { text, swipes, state };
+                if (events.length) {
+                    yield { text, swipes, state };
+                }
+
+                if (done) return;
             }
         };
     }
@@ -484,33 +495,45 @@ export class ChatCompletionService {
             throw new Error(`Got response status ${response.status}`);
         }
 
-        const eventStream = new EventSourceStream();
-        response.body.pipeThrough(eventStream);
-        const reader = eventStream.readable.getReader();
+        // Every /api/backends/chat-completions/generate streaming response is the compact binary
+        // protocol (see llamacpp-compact-stream.js for the wire format/decoder) - raw-action or not,
+        // matching every other caller of this same route (chat-completion-settings.js's
+        // sendOpenAIRequest()).
+        const reader = new ResumableCompactStreamReader(response, '/api/backends/chat-completions/generate/resume', getRequestHeaders);
         return async function* streamData() {
+            const decoder = new CompactStreamDecoder();
             let text = '';
             const swipes = [];
             const state = { reasoning: '', images: [], signature: '', toolSignatures: {} };
+            let currentIndex = 0;
             while (true) {
                 const { done, value } = await reader.read();
-                if (done) return;
-                const rawData = value.data;
-                if (rawData === '[DONE]') return;
-                tryParseStreamingError(response, rawData, { quiet: true });
-                const parsed = JSON.parse(rawData);
+                const events = done ? decoder.flush() : decoder.push(value);
 
-                const reply = getStreamingReply(parsed, state, {
-                    chatCompletionSource: data.chat_completion_source,
-                    overrideShowThoughts: true,
-                });
-                if (Array.isArray(parsed?.choices) && parsed?.choices?.[0]?.index > 0) {
-                    const swipeIndex = parsed.choices[0].index - 1;
-                    swipes[swipeIndex] = (swipes[swipeIndex] || '') + reply;
-                } else {
-                    text += reply;
+                for (const event of events) {
+                    if ('index' in event) {
+                        currentIndex = event.index;
+                    } else if ('content' in event) {
+                        if (currentIndex > 0) {
+                            const swipeIndex = currentIndex - 1;
+                            swipes[swipeIndex] = (swipes[swipeIndex] || '') + event.content;
+                        } else {
+                            text += event.content;
+                        }
+                    } else if ('reasoning' in event) {
+                        state.reasoning += event.reasoning;
+                    } else if ('assistantNodeId' in event) {
+                        state.assistantNodeId = event.assistantNodeId;
+                    } else if ('control' in event && event.control?.error) {
+                        tryParseStreamingError(response, JSON.stringify(event.control), { quiet: true });
+                    }
                 }
 
-                yield { text, swipes: swipes, state };
+                if (events.length) {
+                    yield { text, swipes: swipes, state };
+                }
+
+                if (done) return;
             }
         };
     }
