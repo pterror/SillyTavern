@@ -8216,12 +8216,10 @@ export function removeMacros(str) {
  * @param {string} [name] Name of the user sending the message. Defaults to name1.
  * @param {string} [avatar] Avatar of the user sending the message. Defaults to user_avatar.
  * @param {boolean} [skipTreePersistence] When true, skip this function's own tree-store
- *  append/graft call (chatOpAppend()/chatOpGraft(), public/scripts/chat-store.js) even when
- *  `chat_metadata?._tree_stored`. Set by Generate() (public/script.js) when a raw-action generate
- *  call is about to independently persist this SAME message server-side via its own
- *  appendMessages() call (src/message-tree-db.js) - see Generate()'s own `willUseRawAction` local
- *  for the full rationale. Does not affect the legacy (non-tree) `saveChatConditional()` fallback,
- *  which is unrelated to the double-append this exists to prevent.
+ *  append/graft call (chatOpAppend()/chatOpGraft(), public/scripts/chat-store.js). Set by
+ *  Generate() (public/script.js) when a raw-action generate call is about to independently
+ *  persist this SAME message server-side via its own appendMessages() call
+ *  (src/message-tree-db.js) - see Generate()'s own `willUseRawAction` local for the full rationale.
  * @returns {Promise<any>} A promise that resolves to the message when it is inserted.
  */
 export async function sendMessageAsUser(messageText, messageBias, insertAt = null, compact = false, name = name1, avatar = user_avatar, skipTreePersistence = false) {
