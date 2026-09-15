@@ -2,7 +2,6 @@
 import { createHmac, randomUUID } from 'node:crypto';
 import process from 'node:process';
 import util from 'node:util';
-import { Readable } from 'node:stream';
 import express from 'express';
 import fetch from 'node-fetch';
 import urlJoin from 'url-join';
@@ -78,7 +77,7 @@ import {
 import { getVertexAIAuth, getProjectIdFromServiceAccount } from '../google.js';
 import { getCookieSecret } from '../../users.js';
 import { fetchGoogleModels, GoogleModelsHttpError } from './google-models.js';
-import { encodeContent, encodeIndexFrame, encodeReasoningFrame, encodeAssistantNodeIdFrame, encodeToolCallDeltaFrame, encodeControlFrame, createGenerationRecord, withGenerationBuffer, handleGenerationResume } from './llamacpp-compact-stream.js';
+import { encodeContent, encodeIndexFrame, encodeReasoningFrame, encodeAssistantNodeIdFrame, encodeToolCallDeltaFrame, encodeControlFrame, createGenerationRecord, withGenerationBuffer, detachFromResponse, handleGenerationResume } from './llamacpp-compact-stream.js';
 
 const API_OPENAI = 'https://api.openai.com/v1';
 const API_CLAUDE = 'https://api.anthropic.com/v1';
@@ -2966,7 +2965,8 @@ async function forwardAndPersistCompactStream(fetchResponse, response, persist, 
     const generationId = randomUUID();
     response.setHeader('X-Generation-Id', generationId);
 
-    const writer = withGenerationBuffer(createChatCompactStreamWriter(response), createGenerationRecord(generationId));
+    const generationRecord = createGenerationRecord(generationId);
+    let writer = withGenerationBuffer(createChatCompactStreamWriter(response), generationRecord);
     let sseBuffer = '';
     let accumulatedText = '';
     let lastIndex = 0;
@@ -3034,7 +3034,10 @@ async function forwardAndPersistCompactStream(fetchResponse, response, persist, 
     }
 
     const onSocketClose = () => {
-        if (fetchResponse.body instanceof Readable) fetchResponse.body.destroy();
+        // Client dropped - keep buffering the still-in-flight upstream generation for a possible
+        // resume (see llamacpp-compact-stream.js's module doc comment) instead of tearing it down;
+        // the persist-and-end logic below still runs once fetchResponse.body ends on its own.
+        writer = detachFromResponse(generationRecord);
     };
     response.socket?.once('close', onSocketClose);
 

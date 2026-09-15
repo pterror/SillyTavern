@@ -1,4 +1,3 @@
-import { Readable } from 'node:stream';
 import { StringDecoder } from 'node:string_decoder';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
@@ -304,6 +303,25 @@ export function withGenerationBuffer(writer, record) {
 }
 
 /**
+ * A `{write, end}` writer that only appends to `record` - no longer touches a real response at all.
+ * Swapped in for the real writer once the client's own connection has genuinely gone, so the
+ * still-in-flight upstream generation can keep running and buffering into `record` (for a later
+ * `/generate/resume/:id` call, and for normal persistence once it completes) without writing to, or
+ * erroring on, a dead socket.
+ * @param {GenerationRecord} record
+ */
+export function detachFromResponse(record) {
+    return {
+        write(/** @type {Buffer} */ buf) {
+            record.append(buf);
+        },
+        end() {
+            record.finish();
+        },
+    };
+}
+
+/**
  * Serves a resume request against `record`: replays whatever's buffered from byte offset `fromByte`
  * onward, then - if the generation is still in flight - keeps forwarding new bytes live until it
  * finishes, at which point it ends `writer` itself. The caller is responsible for ending `writer`
@@ -449,7 +467,8 @@ export async function pipeLlamaCppCompactStream(upstreamResponse, response, pers
         response.setHeader('X-ST-Stream-Format', 'compact-v1');
         response.setHeader('X-Generation-Id', id);
 
-        const writer = withGenerationBuffer(createBackpressureWriter(response), createGenerationRecord(id));
+        const generationRecord = createGenerationRecord(id);
+        let writer = withGenerationBuffer(createBackpressureWriter(response), generationRecord);
         const decoder = new StringDecoder('utf8');
         let sseBuffer = '';
         let lastIndex = 0;
@@ -526,8 +545,12 @@ export async function pipeLlamaCppCompactStream(upstreamResponse, response, pers
         });
 
         response.socket?.on('close', () => {
-            if (upstreamResponse.body instanceof Readable) upstreamResponse.body.destroy();
-            finish();
+            // The client's own connection dropped - keep consuming the still-in-flight upstream
+            // generation into the resumable buffer (module doc comment above) instead of tearing it
+            // down, so a client that reconnects via GET /generate/resume/:id gets the live
+            // continuation rather than just whatever streamed before the drop. `finish()` still runs,
+            // persisting the full reply, once the upstream body actually ends on its own below.
+            writer = detachFromResponse(generationRecord);
         });
     });
 }

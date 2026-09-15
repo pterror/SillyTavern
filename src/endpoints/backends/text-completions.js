@@ -1,4 +1,3 @@
-import { Readable } from 'node:stream';
 import fetch from 'node-fetch';
 import express from 'express';
 import _ from 'lodash';
@@ -16,7 +15,7 @@ import {
 import { forwardFetchResponse, trimV1, getConfigValue } from '../../util.js';
 import { setAdditionalHeaders } from '../../additional-headers.js';
 import { createHash, randomUUID } from 'node:crypto';
-import { pipeLlamaCppCompactStream, getLlamaCppStreamMeta, createBackpressureWriter, createGenerationRecord, withGenerationBuffer, handleGenerationResume, encodeContent, encodeIndexFrame, encodeReasoningFrame, encodeAssistantNodeIdFrame, encodeProbabilitiesFrame } from './llamacpp-compact-stream.js';
+import { pipeLlamaCppCompactStream, getLlamaCppStreamMeta, createBackpressureWriter, createGenerationRecord, withGenerationBuffer, detachFromResponse, handleGenerationResume, encodeContent, encodeIndexFrame, encodeReasoningFrame, encodeAssistantNodeIdFrame, encodeProbabilitiesFrame } from './llamacpp-compact-stream.js';
 import { resolveTextGenBackend, resolveServerUrl } from '../../textgen-backend-resolve.js';
 import { resolveConnectionProfile } from '../../connection-profile-resolve.js';
 import { mergeTextGenPreset } from '../../textgen-preset-merge.js';
@@ -62,7 +61,8 @@ async function parseOllamaStream(jsonStream, request, response, persist) {
         response.setHeader('X-ST-Stream-Format', 'compact-v1');
         const generationId = randomUUID();
         response.setHeader('X-Generation-Id', generationId);
-        const writer = withGenerationBuffer(createBackpressureWriter(response), createGenerationRecord(generationId));
+        const generationRecord = createGenerationRecord(generationId);
+        let writer = withGenerationBuffer(createBackpressureWriter(response), generationRecord);
 
         let partialData = '';
         let accumulatedText = '';
@@ -103,8 +103,10 @@ async function parseOllamaStream(jsonStream, request, response, persist) {
         });
 
         request.socket.on('close', function () {
-            if (jsonStream.body instanceof Readable) jsonStream.body.destroy();
-            finishPersist();
+            // Client dropped - keep buffering the still-in-flight upstream generation for a possible
+            // resume (see llamacpp-compact-stream.js's module doc comment) instead of tearing it
+            // down; `finishPersist()` still runs once jsonStream.body actually ends on its own below.
+            writer = detachFromResponse(generationRecord);
         });
 
         jsonStream.body.on('end', () => {
@@ -175,12 +177,15 @@ export async function forwardAndPersistCompactStream(fetchResponse, response, pe
     // to call after a client disconnect without an explicit response.writableEnded check at each
     // call site here. Wrapped so every byte is also retained for a resume (see
     // llamacpp-compact-stream.js's withGenerationBuffer()/handleGenerationResume()).
-    const writer = withGenerationBuffer(createBackpressureWriter(response), createGenerationRecord(generationId));
+    const generationRecord = createGenerationRecord(generationId);
+    let writer = withGenerationBuffer(createBackpressureWriter(response), generationRecord);
     const safeWrite = (chunk) => writer.write(chunk);
 
     const onSocketClose = () => {
-        if (fetchResponse.body instanceof Readable) fetchResponse.body.destroy();
-        writer.end();
+        // Client dropped - keep buffering the still-in-flight upstream generation for a possible
+        // resume instead of tearing it down; the persist-and-end logic below still runs once
+        // fetchResponse.body actually ends on its own.
+        writer = detachFromResponse(generationRecord);
     };
     response.socket?.once('close', onSocketClose);
 
