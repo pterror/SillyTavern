@@ -37,6 +37,10 @@ setConfigFilePath(path.join(__dirname, '..', '..', '..', 'config.yaml'));
 const { router, buildRawActionTextCompletionRequest } = await import('./text-completions.js');
 const { writeAllSettings } = await import('../../settings-store.js');
 const { saveChatToTree, loadBranch, appendMessages, getAncestorPath, getAlternatives, disposeMessageTreeStores } = await import('../../message-tree-db.js');
+// The client-side compact-stream decoder (public/scripts/llamacpp-compact-stream.js) has no browser-
+// only dependencies (just TextDecoder/Uint8Array, both real Node globals), so it's imported directly
+// here rather than re-implementing a second copy of the decode logic for this test file.
+const { CompactStreamDecoder } = await import('../../../public/scripts/llamacpp-compact-stream.js');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-text-completions-raw-action-test-'));
 const charactersDir = path.join(root, 'characters');
@@ -371,17 +375,76 @@ async function run() {
     }
 
     /**
-     * A raw-action stream holds `data: [DONE]` back and writes `data: {"assistant_node_id": "..."}`
-     * ahead of it (forwardAndPersistSseText()'s own doc comment in text-completions.js) - everything
-     * else in the byte stream is untouched. Asserts that shape and returns the captured node id.
+     * Starts a fake backend emitting `choices[0].text`/`choices[0].reasoning` SSE chunks with a real
+     * delay between each `res.write()` (forcing them to arrive as separate TCP reads instead of racing
+     * to find out whether Node coalesces same-tick writes into one segment - same rationale as the
+     * pre-existing Ollama fake backend below), so the server's own coalescing/timer logic actually has
+     * more than one upstream event to coalesce across.
      */
-    function assertStreamCarriesAssistantNodeId(bodyText, expectedBodyBeforeDone) {
-        const withoutDone = expectedBodyBeforeDone.replace(/data: \[DONE\]\n\n$/, '');
-        assert.ok(bodyText.startsWith(withoutDone), 'every real content frame reaches the client byte-for-byte identical, in order, before the injected frame');
-        const rest = bodyText.slice(withoutDone.length);
-        const match = /^data: (\{"assistant_node_id":"[^"]+"\})\n\ndata: \[DONE\]\n\n$/.exec(rest);
-        assert.ok(match, `the injected assistant_node_id frame lands ahead of [DONE], with [DONE] properly terminated - got: ${JSON.stringify(rest)}`);
-        return JSON.parse(match[1]).assistant_node_id;
+    async function startFakeSseBackendPaced(chunks, delayMs = 3) {
+        return await startFakeBackend((_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+            (async () => {
+                for (const { text, reasoning } of chunks) {
+                    const choice = { text };
+                    if (reasoning) choice.reasoning = reasoning;
+                    res.write(`data: ${JSON.stringify({ choices: [choice] })}\n\n`);
+                    await new Promise(resolve => setTimeout(resolve, delayMs));
+                }
+                res.end('data: [DONE]\n\n');
+            })();
+        });
+    }
+
+    /** Like postGenerateStream(), but returns the raw response bytes (not decoded as UTF-8 text) - required for the compact binary protocol, whose control-frame bytes are not valid UTF-8 on their own. */
+    async function postGenerateStreamBytes(app, body) {
+        const server = app.listen(0, '127.0.0.1');
+        await new Promise(resolve => server.once('listening', resolve));
+        const port = server.address().port;
+        try {
+            const res = await fetch(`http://127.0.0.1:${port}/generate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            const bytes = Buffer.from(await res.arrayBuffer());
+            return { status: res.status, headers: res.headers, bytes };
+        } finally {
+            server.closeAllConnections?.();
+            await new Promise(resolve => server.close(resolve));
+        }
+    }
+
+    /**
+     * Decodes a full compact-stream byte buffer (using the real client-side CompactStreamDecoder) into
+     * the same shape public/scripts/textgen-settings.js's own streamData() consumer builds: the main
+     * `text`, any `swipes[]` (index > 0), accumulated `reasoning`, and the final `assistantNodeId`.
+     */
+    function decodeCompactStream(bytes) {
+        const decoder = new CompactStreamDecoder();
+        const events = [...decoder.push(new Uint8Array(bytes)), ...decoder.flush()];
+        let text = '';
+        let reasoning = '';
+        const swipes = [];
+        let currentIndex = 0;
+        let assistantNodeId = null;
+        for (const event of events) {
+            if ('index' in event) {
+                currentIndex = event.index;
+            } else if ('reasoning' in event) {
+                reasoning += event.reasoning;
+            } else if ('assistantNodeId' in event) {
+                assistantNodeId = event.assistantNodeId;
+            } else if ('content' in event) {
+                if (currentIndex > 0) {
+                    const swipeIndex = currentIndex - 1;
+                    swipes[swipeIndex] = (swipes[swipeIndex] || '') + event.content;
+                } else {
+                    text += event.content;
+                }
+            }
+        }
+        return { text, reasoning, swipes, assistantNodeId };
     }
 
     // (a) a real non-streaming generation appends the assistant's reply onto the tree, chained
@@ -821,13 +884,15 @@ async function run() {
         assert.ok(rexBranchUnaffected.messages.every(m => m.mes !== 'All systems nominal, Captain.'), 'the group turn did not leak into an unrelated single-character owner namespace');
     }
 
-    // (i) STREAMING raw-action, plain reply: a real OpenAI-text-completions-shaped SSE stream
-    // (`data: {"choices":[{"text":"..."}]}`, ending `data: [DONE]`) is teed - the client-facing
-    // bytes must be byte-for-byte identical to what the fake backend sent, AND the full
-    // concatenated text must land on the tree afterward (persistence happens asynchronously, after
-    // the HTTP response to the client has already ended - see forwardAndPersistSseText()'s own doc
-    // comment in text-completions.js - so this polls via waitFor() rather than asserting
-    // immediately after the fetch resolves).
+    // (i) STREAMING raw-action, plain reply: the GENERIC api_type is now routed through
+    // forwardAndPersistCompactStream() (text-completions.js), which re-encodes the upstream OpenAI-
+    // text-completions-shaped SSE stream (`data: {"choices":[{"text":"..."}]}`) into the compact
+    // binary wire format instead of forwarding the SSE-JSON bytes as-is. Asserts the response
+    // declares `X-ST-Stream-Format: compact-v1`, the decoded byte stream reconstructs the exact
+    // original text, AND the full concatenated text lands on the tree afterward (persistence happens
+    // asynchronously, after the HTTP response to the client has already ended - see
+    // forwardAndPersistCompactStream()'s own doc comment in text-completions.js - so this polls via
+    // waitFor() rather than asserting immediately after the fetch resolves).
     {
         const streamBranch = 'stream-plain-chat';
         await saveChatToTree(directories, ownerId, streamBranch, [
@@ -842,14 +907,17 @@ async function run() {
         const messageCountBefore = branchBefore.messages.length;
 
         const app = buildTestApp();
-        const { status, bodyText } = await postGenerateStream(app, {
+        const { status, headers, bytes } = await postGenerateStreamBytes(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
             type: 'normal', user_message: 'Say hi, streamed.', stream: true,
         });
         fakeBackend.server.close();
 
         assert.equal(status, 200);
-        const streamedNodeId = assertStreamCarriesAssistantNodeId(bodyText, fakeBackend.expectedBody);
+        assert.equal(headers.get('X-ST-Stream-Format'), 'compact-v1', 'the general raw-action streaming path now declares the compact binary wire format');
+        const decoded = decodeCompactStream(bytes);
+        assert.equal(decoded.text, 'Rex says hello back, streamed.', 'the decoded compact stream reconstructs the exact text, accumulated across every SSE chunk - not just the last chunk');
+        assert.ok(decoded.assistantNodeId, 'the assistant_node_id frame was sent as the final frame');
 
         const branchAfter = await waitFor(async () => {
             const branch = await loadBranch(directories, ownerId, streamBranch);
@@ -858,10 +926,10 @@ async function run() {
         const [userMsg, assistantMsg] = branchAfter.messages.slice(-2);
         assert.equal(userMsg.mes, 'Say hi, streamed.');
         assert.equal(userMsg.is_user, true);
-        assert.equal(assistantMsg.mes, 'Rex says hello back, streamed.', 'the full text, accumulated across every SSE chunk, was persisted - not just the last chunk');
+        assert.equal(assistantMsg.mes, 'Rex says hello back, streamed.', 'the persisted tree message matches the decoded compact-stream text exactly');
         assert.equal(assistantMsg.is_user, false);
         assert.equal(assistantMsg.name, 'Rex');
-        assert.equal(assistantMsg.node_id, streamedNodeId, 'the node id sent to the client ahead of [DONE] is the exact node the reply actually landed on');
+        assert.equal(assistantMsg.node_id, decoded.assistantNodeId, 'the node id sent to the client in the compact stream\'s assistant_node_id frame is the exact node the reply actually landed on');
     }
 
     // (i-2) STREAMING raw-action, is_swipe: true - same SSE teeing, but must land as a real
@@ -890,21 +958,24 @@ async function run() {
         pointBackendAt(fakeBackend.url);
 
         const app = buildTestApp();
-        const { status, bodyText } = await postGenerateStream(app, {
+        const { status, headers, bytes } = await postGenerateStreamBytes(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: swipedNodeId,
             type: 'swipe', is_swipe: true, stream: true,
         });
         fakeBackend.server.close();
 
         assert.equal(status, 200);
-        const streamedNodeId = assertStreamCarriesAssistantNodeId(bodyText, fakeBackend.expectedBody);
+        assert.equal(headers.get('X-ST-Stream-Format'), 'compact-v1');
+        const decoded = decodeCompactStream(bytes);
+        assert.equal(decoded.text, 'Greetings, traveler, streamed!', 'the decoded compact stream reconstructs the exact swiped text');
+        assert.ok(decoded.assistantNodeId);
 
         const branchAfter = await waitFor(async () => {
             const branch = await loadBranch(directories, ownerId, streamSwipeBranch);
             return branch.branch.leaf_id !== swipedNodeId ? branch : null;
         });
         assert.equal(branchAfter.messages[branchAfter.messages.length - 1].mes, 'Greetings, traveler, streamed!');
-        assert.equal(branchAfter.messages[branchAfter.messages.length - 1].node_id, streamedNodeId, 'the node id sent to the client ahead of [DONE] is the exact node the swipe actually landed on');
+        assert.equal(branchAfter.messages[branchAfter.messages.length - 1].node_id, decoded.assistantNodeId, 'the node id sent to the client in the compact stream\'s assistant_node_id frame is the exact node the swipe actually landed on');
         const alternatives = await getAlternatives(directories, swipedNodeId);
         assert.equal(alternatives.total, 2, 'the streamed swipe produced a real sibling alternative, not a chained child');
         assert.ok(alternatives.alternatives.some(a => a.mes === 'Hello there, streaming swipe test!'), 'the original swiped message is unchanged');
@@ -931,15 +1002,17 @@ async function run() {
         pointBackendAt(fakeBackend.url);
 
         const app = buildTestApp();
-        const { status, bodyText } = await postGenerateStream(app, {
+        const { status, headers, bytes } = await postGenerateStreamBytes(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: leafBefore,
             type: 'continue', is_continue: true, stream: true,
         });
         fakeBackend.server.close();
 
         assert.equal(status, 200);
-        const streamedNodeId = assertStreamCarriesAssistantNodeId(bodyText, fakeBackend.expectedBody);
-        assert.equal(streamedNodeId, leafBefore, 'a continue edits in place - the node id sent to the client ahead of [DONE] is the SAME node it started at, not a new one');
+        assert.equal(headers.get('X-ST-Stream-Format'), 'compact-v1');
+        const decoded = decodeCompactStream(bytes);
+        assert.equal(decoded.text, ' there was a brave, streamed adventurer.', 'the decoded compact stream reconstructs the exact continued text');
+        assert.equal(decoded.assistantNodeId, leafBefore, 'a continue edits in place - the node id sent in the compact stream\'s assistant_node_id frame is the SAME node it started at, not a new one');
 
         const branchAfter = await waitFor(async () => {
             const branch = await loadBranch(directories, ownerId, streamContinueBranch);
@@ -1061,12 +1134,13 @@ async function run() {
 
     // (i-6) A NON-raw-action streaming request (no owner_id/character_avatar, so neither raw-action
     // branch runs and pendingAssistantPersist stays null throughout) must be COMPLETELY unaffected
-    // by the teeing mechanism: forwardAndPersistSseText()'s own top-of-function guard
-    // (`if (!persist || ...)`) falls straight through to a plain, untouched forwardFetchResponse()
-    // call - no listener is even attached in this case. Verified here by asserting the client-facing
-    // bytes are still byte-for-byte identical to the fake backend's own SSE stream, exactly as they
-    // were before this session's change (this exact scenario - a stream with no raw-action fields -
-    // already exercised the SAME forwardFetchResponse() call prior to this session).
+    // by the teeing/re-encoding mechanism: forwardAndPersistCompactStream()'s own top-of-function
+    // guard (`if (!persist || ...)`) falls straight through to a plain, untouched
+    // forwardFetchResponse() call (still plain SSE-JSON, not the compact binary format) - no listener
+    // is even attached in this case. Verified here by asserting the client-facing bytes are still
+    // byte-for-byte identical to the fake backend's own SSE stream, exactly as they were before this
+    // session's change (this exact scenario - a stream with no raw-action fields - already exercised
+    // the SAME forwardFetchResponse() call prior to this session).
     {
         const fakeBackend = await startFakeSseBackend(['This ', 'is ', 'a ', 'plain ', 'legacy ', 'stream.']);
         pointBackendAt(fakeBackend.url);
@@ -1082,6 +1156,157 @@ async function run() {
 
         assert.equal(status, 200);
         assert.equal(bodyText, fakeBackend.expectedBody, 'a non-raw-action stream is forwarded byte-for-byte unchanged - pendingAssistantPersist stays null, so no teeing/accumulation/persistence logic ever runs for it');
+    }
+
+    // (i-6b) STREAMING raw-action, TOKEN COALESCING + reasoning: a real fake backend emits many small
+    // `choices[0].text`/`choices[0].reasoning` SSE chunks with a real delay between each write (see
+    // startFakeSseBackendPaced()'s own comment), giving forwardAndPersistCompactStream()'s ~40ms/
+    // ~256-byte coalescing logic more than one real upstream event to actually coalesce across. Proves
+    // (a) the decoded text AND reasoning reconstruct exactly despite the coalescing, (b) the client
+    // received meaningfully fewer network reads than upstream chunks were sent (the whole point of
+    // coalescing over one binary frame per token), and (c) the reasoning/content ordering survives -
+    // the reasoning chunks were interleaved with the FIRST few text chunks upstream, so a bug that
+    // reordered a reasoning frame relative to already-buffered content would show up as garbled text.
+    {
+        const coalesceBranch = 'stream-compact-coalesce-chat';
+        await saveChatToTree(directories, ownerId, coalesceBranch, [
+            { chat_metadata: {} },
+            { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
+        ]);
+        const branchBefore = await loadBranch(directories, ownerId, coalesceBranch);
+
+        const textChunks = Array.from({ length: 12 }, (_, i) => `tok${i} `);
+        const reasoningByIndex = { 0: 'think0 ', 1: 'think1 ', 2: 'think2 ' };
+        const chunks = textChunks.map((text, i) => ({ text, reasoning: reasoningByIndex[i] }));
+        const fakeBackend = await startFakeSseBackendPaced(chunks);
+        pointBackendAt(fakeBackend.url);
+
+        const app = buildTestApp();
+        const server = app.listen(0, '127.0.0.1');
+        await new Promise(resolve => server.once('listening', resolve));
+        const port = server.address().port;
+
+        let status, headers, readChunkCount = 0, bytes;
+        try {
+            const res = await fetch(`http://127.0.0.1:${port}/generate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+                    type: 'normal', user_message: 'Coalesce test.', stream: true,
+                }),
+            });
+            status = res.status;
+            headers = res.headers;
+            const reader = res.body.getReader();
+            const received = [];
+            for (; ;) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                if (value && value.length) {
+                    received.push(Buffer.from(value));
+                    readChunkCount++;
+                }
+            }
+            bytes = Buffer.concat(received);
+        } finally {
+            fakeBackend.server.close();
+            server.closeAllConnections?.();
+            await new Promise(resolve => server.close(resolve));
+        }
+
+        assert.equal(status, 200);
+        assert.equal(headers.get('X-ST-Stream-Format'), 'compact-v1');
+        const decoded = decodeCompactStream(bytes);
+        assert.equal(decoded.text, textChunks.join(''), 'the coalesced compact stream reconstructs the exact text across many small, separately-received upstream chunks');
+        assert.equal(decoded.reasoning, 'think0 think1 think2 ', 'reasoning deltas reconstruct exactly too, correctly ordered relative to the content they were interleaved with');
+        assert.ok(decoded.assistantNodeId);
+        assert.ok(readChunkCount < textChunks.length, `expected fewer network reads (${readChunkCount}) than upstream chunks (${textChunks.length}) - proves content was coalesced into fewer, larger writes instead of one frame per upstream chunk`);
+
+        const branchAfter = await waitFor(async () => {
+            const branch = await loadBranch(directories, ownerId, coalesceBranch);
+            const leaf = branch.messages[branch.messages.length - 1];
+            return leaf.mes === textChunks.join('') ? branch : null;
+        });
+        assert.equal(branchAfter.messages[branchAfter.messages.length - 1].node_id, decoded.assistantNodeId);
+    }
+
+    // (i-6c) STREAMING raw-action, CLIENT DISCONNECT MID-STREAM: mirrors kobold.test.js's own real-
+    // TCP-close disconnect test (see that file's comment on the same pattern) - a real AbortController
+    // closes the real client-side TCP socket while the fake backend still has more (unsent) content
+    // queued up. Proves forwardAndPersistCompactStream()'s safeWrite()-via-createBackpressureWriter()
+    // guard actually prevents the write-after-end crash class this session already found and fixed
+    // once elsewhere (kobold.js) - if that guard were missing/broken, the attempted write to the
+    // already-closed socket after disconnect would throw/emit an unhandled error and take this whole
+    // test process down, not just fail one assertion. Also proves the partial text received BEFORE the
+    // disconnect is still persisted (a real, if partial, reply - not nothing).
+    {
+        const disconnectBranch = 'stream-compact-disconnect-chat';
+        await saveChatToTree(directories, ownerId, disconnectBranch, [
+            { chat_metadata: {} },
+            { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
+        ]);
+        const branchBefore = await loadBranch(directories, ownerId, disconnectBranch);
+
+        let releaseStream = () => { };
+        const streamGate = new Promise(resolve => { releaseStream = resolve; });
+        const fakeBackend = await startFakeBackend((_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+            res.write(`data: ${JSON.stringify({ choices: [{ text: 'Partial before disconnect.' }] })}\n\n`);
+            // Deliberately NOT res.end()'d yet - a real in-progress generation, giving the test a real
+            // window to disconnect the client before the upstream response completes on its own.
+            streamGate.then(() => {
+                try {
+                    res.write(`data: ${JSON.stringify({ choices: [{ text: ' Should never reach the client.' }] })}\n\n`);
+                    res.end('data: [DONE]\n\n');
+                } catch {
+                    // The fake backend's own socket may already be gone too by this point - not what's under test.
+                }
+            });
+        });
+        pointBackendAt(fakeBackend.url);
+
+        const app = buildTestApp();
+        const server = app.listen(0, '127.0.0.1');
+        await new Promise(resolve => server.once('listening', resolve));
+        const port = server.address().port;
+
+        const controller = new AbortController();
+        try {
+            const res = await fetch(`http://127.0.0.1:${port}/generate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+                    type: 'normal', user_message: 'Disconnect me, Rex.', stream: true,
+                }),
+                signal: controller.signal,
+            });
+            assert.equal(res.headers.get('X-ST-Stream-Format'), 'compact-v1');
+
+            const reader = res.body.getReader();
+            const { value: firstChunk } = await reader.read();
+            assert.ok(firstChunk && firstChunk.length > 0, 'a real chunk was received before the client disconnects, proving generation was genuinely underway');
+
+            // Closes the real TCP socket between this test's fetch() and the route's server, firing
+            // the route's real response.socket 'close' handler under completely real conditions.
+            controller.abort();
+        } finally {
+            releaseStream();
+            fakeBackend.server.close();
+            server.closeAllConnections?.();
+            await new Promise(resolve => server.close(resolve));
+        }
+
+        // If the process is still alive to run this assertion at all, no write-after-end exception
+        // escaped uncaught - that's the primary thing this test proves. The partial text received
+        // before the disconnect must still have been persisted.
+        const branchAfter = await waitFor(async () => {
+            const branch = await loadBranch(directories, ownerId, disconnectBranch);
+            return branch.messages.length > branchBefore.messages.length + 1 ? branch : null;
+        });
+        const assistantMsg = branchAfter.messages[branchAfter.messages.length - 1];
+        assert.equal(assistantMsg.mes, 'Partial before disconnect.', 'only the text received before the disconnect was persisted - not the text the backend tried to send afterward');
     }
 
     // (i-7) ROUTE-LEVEL: a raw-action request whose body never includes the `node_id` key at all
