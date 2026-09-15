@@ -27,7 +27,7 @@ import { readPresetByName } from '../presets.js';
 import { resolveTokenizerType, encodeWithTokenizerType } from '../../tokenizer-resolve.js';
 import { resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
 import { assembleTextCompletionPrompt } from '../../text-completion-prompt-orchestrator.js';
-import { loadBranch, getAncestorPath, appendMessages } from '../../message-tree-db.js';
+import { getAncestorPath, appendMessages } from '../../message-tree-db.js';
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
 import { persistAssistantReply } from '../../assistant-reply-persist.js';
@@ -401,8 +401,8 @@ router.post('/props', async function (request, response) {
  *    `resolveTextGenBackend()`.
  * 2. Verify the named character/group actually exists (a real 400-worthy failure, not a garbage
  *    generation) and resolve which existing tree node any new user message must be appended after
- *    (`anchorNodeId` - the leaf of the loaded branch when `branchName` is given, or the given
- *    `nodeId` itself, verified to exist).
+ *    (`anchorNodeId` - the given `nodeId` itself, verified to exist, or - only when `nodeId` is
+ *    explicitly `null` AND this owner's conversation is genuinely empty - the owner's own anchor).
  * 3. Build real `countTokens`/`encodeTokens` closures via `resolveTokenizerType()`/
  *    `encodeWithTokenizerType()`, resolving the SAME tokenizer the resolved backend would actually
  *    use (`power_user.tokenizer` is the user's manual override, exactly like
@@ -422,6 +422,30 @@ router.post('/props', async function (request, response) {
  * set `stream`/`api_type`/`api_server` on the returned `params` (also the caller's job, mirroring
  * the existing `connection_profile_id` branch's own final-assignment shape).
  *
+ * ADDRESSING MODEL (this task's correction): there is no `branchName`/`branch_name` field in this
+ * raw-action surface at all - a label is a human-facing bookmark on a tree node (bookmarks.js, out
+ * of scope here), a DIFFERENT concept from "which node this generate call continues from". By the
+ * time a real client is about to send a raw-action generate request for ANY chat - including one
+ * resumed via a label in a "past chats" picker - it has ALREADY LOADED that chat to display it, so
+ * it already has the real, concrete `node_id` of the leaf it's showing; a label never carries
+ * addressing information `node_id` doesn't already carry, and only `node_id` is exact (no name
+ * lookup, no staleness/collision risk). So `nodeId` is now the ONLY addressing input, and it is a
+ * REQUIRED param - but `null` is a valid, meaningful value for it (see below), so "required" means
+ * "the caller must pass the key with a value that is a real node id string OR the literal `null`",
+ * NOT "must be a non-empty string". Passing `undefined` (the route handler's stand-in for the JSON
+ * key being absent entirely) throws - see the route handler's own real-JSON-semantics comment on
+ * exactly why "absent" and "explicit null" must stay distinguishable rather than both collapsing to
+ * "resolve however you like": a caller that silently failed to attach the node id it was actually
+ * looking at must get a loud 400, not a quiet wrong-guess.
+ * - A real `nodeId` string: address that specific existing node - unchanged prior behavior.
+ * - `nodeId === null`: valid ONLY when this owner's conversation is genuinely empty (the anchor has
+ *   no real default-child chain yet, i.e. no real message has ever been committed for this owner) -
+ *   resolves via the owner's own anchor (`getOrCreateAnchor()`/the shared `resolveChatHistory()`
+ *   inside `resolveTextCompletionGenerationInput()` - see that function's own doc comment). If the
+ *   owner ALREADY has real history, `null` here is a real, reportable error (400) - the caller
+ *   should have sent the node id it was actually looking at; the server does not silently guess
+ *   which point was meant once a real point could disagree with a concurrently-changed tree.
+ *
  * @param {import('../../users.js').UserDirectoryList} directories
  * @param {object} params
  * @param {import('express').Request} [params.request] Original request - forwarded only for the
@@ -439,8 +463,9 @@ router.post('/props', async function (request, response) {
  * @param {string} [params.groupId] Group id. One of this or `characterAvatar` is required. See
  *   `characterAvatar`'s own doc comment above for the "both together, for a group turn" case.
  * @param {string} params.ownerId message-tree-db.js owner id.
- * @param {string} [params.branchName] message-tree-db.js labeled chat name. One of this or `nodeId` is required.
- * @param {string} [params.nodeId] Alternative to `branchName` - generate from this existing tree node.
+ * @param {string|null} params.nodeId REQUIRED (`undefined` throws) - see this function's own doc
+ * comment ADDRESSING MODEL section. A real node id string addresses that node; `null` asserts "this
+ * is a genuinely brand-new, empty conversation" and only succeeds when that is actually true.
  * @param {string} [params.type] Generation type ('normal'/'impersonate'/'continue'/'swipe'/...).
  * @param {boolean} [params.isImpersonate]
  * @param {boolean} [params.isContinue]
@@ -450,7 +475,7 @@ router.post('/props', async function (request, response) {
  * @returns {Promise<{ params: object, backend: {type: string, serverUrl: string, model: string|undefined}, anchorNodeId: string|null, anchorContent: object|null, name1: string, name2: string }>}
  */
 export async function buildRawActionTextCompletionRequest(directories, {
-    request, characterAvatar, groupId, ownerId, branchName, nodeId,
+    request, characterAvatar, groupId, ownerId, nodeId,
     type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText,
     // Test-only injection point, forwarded straight through to encodeWithTokenizerType()'s own
     // `encodeLocal`/`encodeTextgenRemote`/`fetchImpl` options (see that function's JSDoc) - lets a
@@ -464,8 +489,13 @@ export async function buildRawActionTextCompletionRequest(directories, {
     if (!characterAvatar && !groupId) {
         throw new Error('character_avatar or group_id is required');
     }
-    if (!branchName && !nodeId) {
-        throw new Error('branch_name or node_id is required');
+    // `nodeId` must be an explicitly-present field: a real node id string, or the literal `null` to
+    // assert "genuinely new, empty conversation". `undefined` means the caller's request body never
+    // had the key at all (JSON has no `undefined` literal, so after JSON.parse a present `node_id:
+    // null` and an absent key are the only two ways to reach here without a string, and they land on
+    // `null` vs `undefined` respectively - see this function's own ADDRESSING MODEL doc comment).
+    if (nodeId === undefined) {
+        throw new Error('node_id is required (pass null explicitly for a brand-new, empty conversation)');
     }
 
     // Step 1
@@ -491,19 +521,16 @@ export async function buildRawActionTextCompletionRequest(directories, {
         }
     }
 
-    // Step 2 (anchor resolution) - real disk reads via message-tree-db.js, using the SAME
-    // resolution rule text-completion-generation-input.js's own (private) resolveChatHistory()
-    // uses: a labeled branch's leaf when `branchName` is given, else the given `nodeId` itself.
-    // Resolved independently of the orchestrator input's own `chat` array, since that array (once
-    // `userMessageText` is folded in) no longer carries a clean "last EXISTING node" marker.
+    // Step 2 (anchor resolution) - a real given `nodeId` is verified directly, exactly as before.
+    // `nodeId === null` (the "genuinely new, empty conversation" assertion) can't be verified yet
+    // independently of the chat-history resolution below - it's the SAME "does this owner already
+    // have real history" question `resolveTextCompletionGenerationInput()`'s own (private)
+    // `resolveChatHistory()` already has to answer, and re-deriving it a second, separate way here
+    // would risk the two disagreeing (see this function's own doc comment). So for `nodeId === null`
+    // this is left unresolved here and instead read back off `orchestratorInput.resolvedNodeId` /
+    // `orchestratorInput.chatResolutionAmbiguous` once Step 4 has already computed it for real.
     let anchorNodeId = null;
-    if (branchName) {
-        const branch = await loadBranch(directories, ownerId, branchName);
-        if (!branch) {
-            throw new Error(`Chat branch not found: ${branchName}`);
-        }
-        anchorNodeId = branch.branch.leaf_id;
-    } else {
+    if (nodeId !== null) {
         const ancestorPath = await getAncestorPath(directories, nodeId);
         if (!ancestorPath) {
             throw new Error(`Chat node not found: ${nodeId}`);
@@ -526,10 +553,26 @@ export async function buildRawActionTextCompletionRequest(directories, {
 
     // Step 4
     const orchestratorInput = await resolveTextCompletionGenerationInput(directories, {
-        avatar: characterAvatar, groupId, ownerId, branchName, nodeId,
+        // `nodeId` passed as-is: `resolveChatHistory()`'s own checks are truthy-based, so `null`
+        // already falls through to its anchor-resolution branch exactly like `undefined` would.
+        avatar: characterAvatar, groupId, ownerId, nodeId,
         type, isImpersonate, isContinue, isSwipe, userMessageText,
         countTokens, encodeTokens,
     });
+
+    // `nodeId === null` ("genuinely new, empty conversation") is only valid when this owner's
+    // conversation really is empty - `resolveChatHistory()` (inside the resolver just called) already
+    // determined this for real, via the SAME anchor resolution, and reports it back here rather than
+    // this function re-deriving it independently (see Step 2's own comment above for why that would
+    // risk disagreement). `chatResolutionAmbiguous` means real prior history exists but neither a
+    // node id nor (now-removed) branch name was given to say which point was meant - a real error,
+    // not a silent guess at "the current leaf".
+    if (nodeId === null) {
+        if (orchestratorInput.chatResolutionAmbiguous) {
+            throw new Error('node_id is required: this character/group already has an existing conversation - resolve which node the client was looking at and pass its node_id (null is only valid for a genuinely new, empty conversation)');
+        }
+        anchorNodeId = orchestratorInput.resolvedNodeId;
+    }
 
     if ((isContinue || isSwipe) && orchestratorInput.chat.length === 0) {
         throw new Error('Cannot continue/swipe an empty chat.');
@@ -659,9 +702,17 @@ router.post('/generate', async function (request, response) {
         // name1/name2 here) - this is the first real instance of this effort's target shape, so
         // names match what these fields literally are.
         } else if (request.body.owner_id && (request.body.character_avatar || request.body.group_id)) {
+            // `node_id` is destructured straight off the parsed JSON body (not defaulted) so its
+            // "absent key" vs "explicit null" distinction survives intact: real JSON has no
+            // `undefined` literal, so a request that never included `node_id` at all yields
+            // `undefined` here, while `"node_id": null` yields `null` - these two are NOT the same
+            // thing (see buildRawActionTextCompletionRequest()'s own ADDRESSING MODEL doc comment) and
+            // that function itself validates/rejects `undefined`, rather than this route handler
+            // pre-filtering it, so a caller that invokes it directly (e.g. tests) gets the same
+            // validation. There is no `branch_name` field anymore - see that same doc comment for why.
             const {
                 character_avatar: characterAvatar, group_id: groupId, owner_id: ownerId,
-                branch_name: branchName, node_id: nodeId, type = 'normal',
+                node_id: nodeId, type = 'normal',
                 user_message: userMessageText,
             } = request.body;
             // is_impersonate/is_continue/is_swipe are NOT read from the wire - each is 100% derivable
@@ -681,7 +732,7 @@ router.post('/generate', async function (request, response) {
             let built;
             try {
                 built = await buildRawActionTextCompletionRequest(directories, {
-                    request, characterAvatar, groupId, ownerId, branchName, nodeId,
+                    request, characterAvatar, groupId, ownerId, nodeId,
                     type, isImpersonate, isContinue, isSwipe, userMessageText,
                 });
             } catch (error) {

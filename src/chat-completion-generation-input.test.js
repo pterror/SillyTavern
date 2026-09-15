@@ -443,6 +443,43 @@ async function run() {
         assert.ok(groupFlattened.includes('Zephyr is a chaotic weather spirit.'), 'the OTHER member\'s combined-card description also made it into the final assembled chat-completion payload');
     }
 
+    // --- CORRECTED ADDRESSING MODEL (this task): resolveChatHistory()'s new "neither branchName nor
+    // nodeId given" branch - see that function's own doc comment. `branchName` itself stays a real,
+    // still-supported LEGACY input here (kobold.js/novelai.js still use it) - only the raw-action
+    // builder (buildRawActionChatCompletionRequest()) stopped accepting it; this resolver's own
+    // behavior for an explicit branchName/nodeId is completely unchanged (regression, not just
+    // "still passes" - reasserted below against the same real fixture used throughout this file). ---
+    {
+        // (a) explicit nodeId resolves identically to the equivalent explicit branchName.
+        const mainLeafId = input.macroContext.chat[input.macroContext.chat.length - 1].node_id;
+        const viaNodeId = await resolveChatCompletionGenerationInput(directories, {
+            avatar, ownerId, nodeId: mainLeafId,
+        });
+        assert.deepEqual(viaNodeId.macroContext.chat, input.macroContext.chat, 'an explicit node_id resolves the exact same chat history as the equivalent explicit branch_name');
+        assert.equal(viaNodeId.resolvedNodeId, mainLeafId, 'resolvedNodeId echoes back the given node_id');
+        assert.equal(viaNodeId.chatResolutionAmbiguous, false);
+
+        // (b) neither branchName nor nodeId given, on an owner that ALREADY has real history -
+        // ambiguous: true, empty chat - never a silent guess at "the current leaf".
+        const ambiguous = await resolveChatCompletionGenerationInput(directories, {
+            avatar, ownerId,
+        });
+        assert.equal(ambiguous.chatResolutionAmbiguous, true, 'an owner with real existing history and no given identifier is reported as ambiguous, not silently resolved');
+        assert.equal(ambiguous.resolvedNodeId, null);
+        assert.equal(ambiguous.rawChatLength, 0, 'the ambiguous case resolves to an empty chat rather than guessing the current leaf');
+
+        // (c) neither branchName nor nodeId given, on a GENUINELY BRAND-NEW owner with zero prior
+        // messages - the only safe identifier-free case: resolves via the owner's own anchor to a
+        // real node id and an empty chat.
+        const freshOwnerId = 'fresh-owner-with-no-history';
+        const fresh = await resolveChatCompletionGenerationInput(directories, {
+            avatar, ownerId: freshOwnerId,
+        });
+        assert.equal(fresh.chatResolutionAmbiguous, false, 'a genuinely empty owner is not ambiguous');
+        assert.ok(fresh.resolvedNodeId, 'a genuinely empty owner still resolves to a real anchor node id');
+        assert.equal(fresh.rawChatLength, 0, 'a genuinely new owner correctly resolves to an empty chat, not an error');
+    }
+
     console.log('chat-completion-generation-input.test.js: all assertions passed');
 }
 

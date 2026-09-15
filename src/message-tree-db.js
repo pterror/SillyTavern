@@ -1301,6 +1301,25 @@ export async function addOpeningAlternatives(directories, ownerId, contents) {
     return { ok: true, node_ids: nodeIds, added, total };
 }
 
+/**
+ * Returns this owner's synthetic anchor row id, creating the anchor (with no name/label required at
+ * all) if this is the owner's very first-ever touch. The async, `directories`-taking counterpart to
+ * `ensureAnchorSync` — every other exported op in this file resolves its own `entry` this same way.
+ * Wrapped in a transaction for the same reason `addOpeningAlternatives()` wraps its own
+ * `ensureAnchorSync()` call: `ensureAnchorSync` itself is a plain get-then-insert-if-missing, not
+ * atomic on its own.
+ */
+export async function getOrCreateAnchor(directories, ownerId) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    let anchor;
+    entry.db.transaction(() => {
+        anchor = ensureAnchorSync(entry.db, ownerId, Date.now());
+    });
+    return anchor.id;
+}
+
 /** Reads the tree at a node: everything above it plus the continuation below it. Node-addressed since `label` isn't unique per owner. */
 export async function loadAtNode(directories, ownerId, nodeId) {
     const entry = await getEntry(directories);
