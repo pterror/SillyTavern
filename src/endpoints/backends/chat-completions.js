@@ -2560,8 +2560,16 @@ const SERVER_TOOL_ROUND_LIMIT = 5;
  *        handler's tool-execution loop (`runServerToolRounds()`) uses `enabledClientToolNames`
  *        (this function's own return value) to tell a legitimate client-only tool call apart from a
  *        genuinely unrecognized/hallucinated one - see that function's own doc comment.
+ *      - `jsonSchema`: real, forwarded verbatim from this function's own `jsonSchema` param straight
+ *        into `createGenerationParameters()` (which already turns it into `generate_data.json_schema` -
+ *        see that function's own doc comment/implementation, src/chat-completion-generation-data.js).
+ *        NOT a new capability: every provider branch below (`sendClaudeRequest`/the default dispatch's
+ *        own `request.body.json_schema` handling/etc.) already reads `request.body.json_schema` and
+ *        turns it into that provider's own `response_format`/`json_schema` shape - this was purely a
+ *        raw-action-specific gap (this function never accepted the param at all) fixed by this task, not
+ *        a fresh subsystem.
  *      - `getStoppingStrings`/`groupNames`/`electronHubReasoningEfforts`/
- *        `reverseProxyValidated`/`jsonSchema`/`logitBias` override: still NOT resolved here - explicit,
+ *        `reverseProxyValidated`/`logitBias` override: still NOT resolved here - explicit,
  *        documented MVP scope boundaries per chat-completion-generation-data.js's own doc comment
  *        (each needs a genuinely separate subsystem - live model lists, a reverse-proxy confirmation
  *        UI, etc. - not guessed at here). Left at `createGenerationParameters()`'s own defaults.
@@ -2619,6 +2627,13 @@ const SERVER_TOOL_ROUND_LIMIT = 5;
  * mirrors `server-tools.js`'s own registry, which already throws on a same-name collision between
  * two *trusted* registrations - dropping (not throwing) here because this collision involves
  * untrusted input and must degrade gracefully, not fail the whole generation request.
+ * @param {object} [params.jsonSchema] JSON schema for a structured/JSON-schema-constrained generation -
+ * same shape `generateQuietPrompt()`/the legacy client-assembled chat-completion path already use and
+ * every provider branch in this file already reads off `request.body.json_schema`: `{name: string,
+ * description?: string, value: object, strict?: boolean, returnInvalid?: boolean}` (`value` is the
+ * actual JSON schema object; `returnInvalid` is client-side-only, read by `extractJsonFromData()` in
+ * public/script.js, never by this server). Forwarded verbatim into `createGenerationParameters()` - see
+ * this function's own doc comment, item 6, `jsonSchema` bullet.
  * @returns {Promise<{ params: object, settings: object, anchorNodeId: string|null, anchorContent: object|null, name1: string, name2: string, enabledServerTools: import('../../server-tools.js').ServerToolRegistration[], enabledClientToolNames: Set<string> }>}
  * `enabledServerTools` is the same list used to build `params.tools` (empty when no server tool is
  * currently enabled for this request) - returned so the route handler's tool-execution loop doesn't
@@ -2632,7 +2647,7 @@ const SERVER_TOOL_ROUND_LIMIT = 5;
 export async function buildRawActionChatCompletionRequest(directories, {
     characterAvatar, groupId, ownerId, nodeId,
     type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText, userMessageExtra,
-    clientToolSchemas,
+    clientToolSchemas, jsonSchema = null,
 } = {}) {
     if (!ownerId) {
         throw new Error('owner_id is required');
@@ -2769,6 +2784,7 @@ export async function buildRawActionChatCompletionRequest(directories, {
         useLogprobs,
         chatId: anchorNodeId,
         toolsPayload,
+        jsonSchema,
     });
 
     // JUDGMENT CALL: unlike buildRawActionTextCompletionRequest() (which gets `name1` back directly
@@ -3602,6 +3618,11 @@ router.post('/generate', async function (request, response) {
                 // branch below).
                 client_tools: clientToolSchemas,
                 tool_results: toolResults,
+                // Structured/JSON-schema-constrained generation - see
+                // `buildRawActionChatCompletionRequest()`'s own `jsonSchema` param doc comment for the
+                // exact shape (identical to the legacy path's `request.body.json_schema` every provider
+                // branch below already reads).
+                json_schema: jsonSchema,
             } = request.body;
             // Server-validated (NOT trusted verbatim) - identical rationale/allowlist to
             // text-completions.js's own raw-action branch (see `sanitizeUserMessageExtra()`'s own doc
@@ -3656,6 +3677,7 @@ router.post('/generate', async function (request, response) {
                     userMessageText: isToolResult ? undefined : userMessageText,
                     userMessageExtra: isToolResult ? undefined : userMessageExtra,
                     clientToolSchemas,
+                    jsonSchema,
                 });
             } catch (error) {
                 console.error('Failed to build raw-action chat completion request:', error);

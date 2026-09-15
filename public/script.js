@@ -2871,6 +2871,18 @@ export function cancelDebouncedChatSave() {
 }
 
 /**
+ * True when a debounced chat save is currently queued, i.e. some chat-mutating action has happened
+ * since the last save and hasn't been flushed to the server yet. Every mutating code path either
+ * saves immediately (saveChatConditional()) or schedules one via saveChatDebounced() - so when this
+ * is false, whatever is on screen is already exactly what the server has, and pure-read actions
+ * (reloading the current chat, exporting it) have nothing to gain by forcing another save first.
+ * @returns {boolean} Whether a chat save is currently scheduled.
+ */
+export function isChatSaveScheduled() {
+    return !!chatSaveTimeout;
+}
+
+/**
  * Visually removes all chat message elements.
  * @param {object} [options] Options
  * @param {boolean} [options.clearData=false] Optionally clear the chat array's contents.
@@ -2909,7 +2921,16 @@ export async function deleteLastMessage() {
     await eventSource.emit(event_types.MESSAGE_DELETED, chat.length);
 }
 
-function getMessageDeletionStartId(id, deleteToolCalls = true) {
+/**
+ * Widens a single message id backward to include any preceding tool-invocation system messages,
+ * so deleting an assistant message also removes the tool-call preamble that produced it.
+ * Exported so bulk-delete callers (e.g. doMesCut()) can precompute the true removal range once,
+ * against the still-intact `chat[]`, instead of relying on deleteMessage()'s own per-call widening.
+ * @param {number} id The ID of the message that is about to be deleted.
+ * @param {boolean} [deleteToolCalls=true] Whether to widen over preceding tool-call messages.
+ * @returns {number} The actual first message ID to delete.
+ */
+export function getMessageDeletionStartId(id, deleteToolCalls = true) {
     const message = chat[id];
     if (!deleteToolCalls || message?.is_user || message?.is_system) {
         return id;
@@ -2933,8 +2954,12 @@ function getMessageDeletionStartId(id, deleteToolCalls = true) {
  * @param {number} [swipeDeletionIndex] Deletes the swipe with that index.
  * @param {boolean} [askConfirmation=false] Whether to ask for confirmation before deleting.
  * @param {boolean} [deleteToolCalls=true] Whether to delete preceding tool-call messages.
+ * @param {boolean} [persist=true] Whether to persist this deletion to the tree (chatOpDegraft/chatOpEndPath).
+ * Pass false when a caller is deleting several messages in one user action and will persist the
+ * whole range itself in a single call - this still performs every local effect (splice, DOM removal,
+ * tainting, view update, event emission), it just skips the per-call network round trip.
  */
-export async function deleteMessage(id, swipeDeletionIndex = undefined, askConfirmation = false, deleteToolCalls = true) {
+export async function deleteMessage(id, swipeDeletionIndex = undefined, askConfirmation = false, deleteToolCalls = true, persist = true) {
     const canDeleteSwipe = swipeDeletionIndex !== undefined && swipeDeletionIndex !== null;
     if (canDeleteSwipe) {
         if (swipeDeletionIndex < 0) {
@@ -2988,7 +3013,7 @@ export async function deleteMessage(id, swipeDeletionIndex = undefined, askConfi
     const preSpliceLength = chat.length;
     const postSpliceLength = preSpliceLength - messageIds.length;
     const isTailDeletion = postSpliceLength > 0 && firstMessageId === postSpliceLength;
-    if (chat_metadata?._tree_stored && !isTailDeletion) {
+    if (persist && chat_metadata?._tree_stored && !isTailDeletion) {
         await chatOpDegraft(firstMessageId, id).catch(error =>
             console.error('Could not remove the deleted message(s) from the tree:', error));
     }
@@ -3003,7 +3028,7 @@ export async function deleteMessage(id, swipeDeletionIndex = undefined, askConfi
     chat_metadata.tainted = true;
 
     // Only meaningful for a removal reaching the end - the tree-backed store otherwise has no way to learn where the conversation now ends.
-    if (chat_metadata?._tree_stored && isTailDeletion) {
+    if (persist && chat_metadata?._tree_stored && isTailDeletion) {
         await chatOpEndPath(chat.length - 1).catch(error =>
             console.error('Could not end the conversation at the last remaining message:', error));
     }
@@ -6424,6 +6449,20 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // existing gate (`toolsPayload` <-> `canPerformToolCalls`, already excluded above) - `jsonSchema` was the one
     // real gap specific to this narrow scope, verified by reading every consumer of this function's own `jsonSchema`
     // parameter, not assumed absent.
+    // UPDATE (this task - jsonSchema threading, gap closed): the doc-comment-listed exclusion this JUDGMENT CALL
+    // relied on was checked again, not assumed still true - `buildRawActionChatCompletionRequest()`'s own doc
+    // comment previously listed `jsonSchema` under "NOT resolved here" alongside `getStoppingStrings`/`groupNames`/
+    // `electronHubReasoningEfforts`/`reverseProxyValidated`/`logitBias`, but unlike those (each a genuinely separate
+    // subsystem - live model lists, a reverse-proxy confirmation UI, etc.), `createGenerationParameters()`
+    // (src/chat-completion-generation-data.js) ALREADY accepted a `jsonSchema` param and turned it into
+    // `generate_data.json_schema` - every provider branch in chat-completions.js already reads
+    // `request.body.json_schema` off that. `buildRawActionChatCompletionRequest()` itself simply never accepted
+    // or forwarded the param - a small, mechanical gap, not missing subsystem design. Fixed by adding a
+    // `jsonSchema` param to `buildRawActionChatCompletionRequest()` (forwarded straight into its own
+    // `createGenerationParameters()` call) and a `json_schema` field on this function's own raw-action payload
+    // below (identical shape - `{name, value, description?, strict?, returnInvalid?}` - no new shape invented).
+    // The `!jsonSchema` exclusion on this gate is REMOVED accordingly - see that removal's own UPDATE comment
+    // above for the mechanical detail.
     // JUDGMENT CALL #4 ('continue' does reach this gate too, verified not assumed): identical trace to the
     // text-completion cutover's own JUDGMENT CALL #6 above - none of this function's early returns between its
     // start and here exclude 'continue' by name (only 'regenerate'/'swipe'/'quiet'/dryRun/depth are named in
@@ -6448,7 +6487,14 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     let rawActionChatCompletionData = null;
     if (!dryRun && main_api === 'openai'
         && [undefined, 'normal', 'impersonate', 'quiet', 'swipe', 'regenerate', 'continue'].includes(type)
-        && !jsonSchema
+        // UPDATE (this task - jsonSchema threading): `!jsonSchema` REMOVED - see JUDGMENT CALL #3
+        // above for the full history of why this was excluded, and the UPDATE note appended to it for
+        // why it no longer needs to be. `buildRawActionChatCompletionRequest()` (src/endpoints/backends/
+        // chat-completions.js) now accepts a `jsonSchema` param and forwards it verbatim into
+        // `createGenerationParameters()`'s existing `json_schema`/`response_format` support - the same
+        // support the legacy path already relied on. `jsonSchema` is sent below exactly as this
+        // function received it (its own `JsonSchema`-typedef shape - `name`/`value`/`description`/
+        // `strict`/`returnInvalid` - unchanged, no new schema shape invented).
         // UPDATE (chunk (c) - client-proxy tool calling): `!canPerformToolCalls` REMOVED - this is
         // the actual point of this chunk. A tool-calling-capable connection is no longer excluded
         // from the raw-action cutover wholesale; `client_tools` (below) advertises the client's own
@@ -6533,6 +6579,10 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                 user_message_extra: userMessageExtra,
                 // Chunk (c) - see this block's own comment on `clientToolsPayload` immediately above.
                 client_tools: clientToolsPayload,
+                // See the removed `!jsonSchema` exclusion's own UPDATE comment above this gate - sent
+                // exactly as this function received it (`JsonSchema` typedef shape), `undefined` (thus
+                // dropped by `JSON.stringify`) when this call has no schema.
+                json_schema: jsonSchema,
             };
         }
         // else: no resolvable ownerId/characterAvatar (other precondition) - fall through to the
@@ -16154,7 +16204,11 @@ jQuery(async function () {
     $(document).on('click', '.exportChatButton, .exportRawChatButton', async function (e) {
         e.stopPropagation();
         const format = $(this).data('format') || 'txt';
-        await saveChatConditional();
+        // Exporting is a pure read of the currently-displayed chat - only flush a save first if
+        // there's actually something unsaved that the export would otherwise miss.
+        if (isChatSaveScheduled()) {
+            await saveChatConditional();
+        }
         const filename = $(this).closest('.select_chat_block_wrapper').find('.select_chat_block_filename').text();
         console.log(`exporting ${filename} in ${format} format`);
 

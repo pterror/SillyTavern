@@ -20,6 +20,7 @@ import {
     getFirstDisplayedMessageId,
     showMoreMessages,
     saveChatConditional,
+    isChatSaveScheduled,
     setAnimationDuration,
     ANIMATION_DURATION_DEFAULT,
     setActiveGroup,
@@ -32,12 +33,18 @@ import {
     extension_prompt_roles,
     deleteMessage,
     settingsReady,
+    chat_metadata,
+    getMessageDeletionStartId,
 } from '../script.js';
 import { isMobile, initMovingUI, favsToHotswap } from './RossAscends-mods.js';
 import {
     groups,
     resetSelectedGroup,
 } from './group-chats.js';
+import {
+    chatOpDegraft,
+    chatOpEndPath,
+} from './chat-store.js';
 import {
     instruct_presets,
     loadInstructMode,
@@ -3231,6 +3238,32 @@ async function doMesCut(args, text) {
     const messagesToCut = chat.slice(range.start, range.end + 1);
     let cutText = '';
 
+    // Persist the whole cut as ONE tree op instead of relying on deleteMessage()'s own per-message
+    // persistence (which would fire one chatOpDegraft/chatOpEndPath request per cut message).
+    // deleteMessage()'s widening (getMessageDeletionStartId) can pull extra preceding tool-call
+    // messages into the deletion, but that can only happen on the FIRST message it's asked to delete,
+    // since it walks the *entire* contiguous run of preceding tool-call messages in one pass - by the
+    // time the loop below reaches later messages in the range, that whole prefix has already been
+    // resolved (removed if it matched, otherwise a guaranteed non-match), so nothing after the first
+    // call can widen any further. Computing it once here, against the still-intact chat[], therefore
+    // reproduces exactly the range the old per-message loop would have removed - just in one request.
+    if (chat_metadata?._tree_stored && messagesToCut.length > 0) {
+        const firstMessageId = getMessageDeletionStartId(range.start, deleteToolCalls);
+        const preCutLength = chat.length;
+        const removedCount = range.end - firstMessageId + 1;
+        const postCutLength = preCutLength - removedCount;
+        const isTailDeletion = postCutLength > 0 && firstMessageId === postCutLength;
+        try {
+            if (isTailDeletion) {
+                await chatOpEndPath(firstMessageId - 1);
+            } else {
+                await chatOpDegraft(firstMessageId, range.end);
+            }
+        } catch (error) {
+            console.error('Could not remove the cut message range from the tree:', error);
+        }
+    }
+
     for (const message of messagesToCut) {
         const mesIDToCut = chat.indexOf(message);
         if (mesIDToCut === -1) {
@@ -3249,7 +3282,10 @@ async function doMesCut(args, text) {
         }
 
         setEditedMessageId(mesIDToCut);
-        await deleteMessage(mesIDToCut, null, false, deleteToolCalls);
+        // The tree persistence for this whole range was already handled above in one call - this
+        // still performs every local effect (splice, DOM removal, tainting, view update, event
+        // emission) for this one message, it just skips the per-call network round trip.
+        await deleteMessage(mesIDToCut, null, false, deleteToolCalls, false);
     }
 
     await saveChatConditional();
@@ -4070,7 +4106,11 @@ jQuery(() => {
     $('#reload_chat').on('click', async function () {
         const currentChatId = getCurrentChatId();
         if (currentChatId !== undefined && currentChatId !== null) {
-            await saveChatConditional();
+            // Reloading is a pure read of the persisted chat - only flush a save first if there's
+            // actually something unsaved that the reload would otherwise discard.
+            if (isChatSaveScheduled()) {
+                await saveChatConditional();
+            }
             await reloadCurrentChat();
         }
     });
