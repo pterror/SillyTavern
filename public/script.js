@@ -307,12 +307,12 @@ export { messageFormatting };
 // Lives in chat-store.js, the only module allowed to write messages; re-exported for existing importers.
 import {
     updateMessage, updateIn, deepFreeze,
-    ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath, chatOpSelect, chatOpGraft, chatOpDegraft, chatOpSwapAdjacent,
+    ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath, chatOpSelect, chatOpGraft, chatOpDegraft, chatOpSwapAdjacent, chatOpDeleteAlternative,
     _mergeCardGreetingsIntoOpening, _restoreContinuation, _isBlankSlot, _markMessageSaved,
 } from './scripts/chat-store.js';
 export {
     updateMessage, updateIn,
-    ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath, chatOpSelect, chatOpGraft, chatOpDegraft, chatOpSwapAdjacent,
+    ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath, chatOpSelect, chatOpGraft, chatOpDegraft, chatOpSwapAdjacent, chatOpDeleteAlternative,
 };
 import { MacroEngine } from './scripts/macros/engine/MacroEngine.js';
 import { addChatBackupsBrowser } from './scripts/chat-backups.js';
@@ -12781,10 +12781,21 @@ export async function deleteSwipe(swipeId = null, messageId = chat.length - 1) {
 
     messageId = Number(messageId);
     swipeId = Number(swipeId);
+
+    // The shown-swipe branch below already persists correctly via swipe() -> the selection-change
+    // path. This only ever covers the non-shown case: an alternative nobody is currently looking at.
+    // Read off `chat[]` BEFORE updateMessage() below replaces its swipe_info with the already-spliced
+    // copy — chatOpDeleteAlternative needs the alternative's own node_id, not the spliced result.
+    const isShownSwipe = swipeId === currentSwipeId;
+    if (chat_metadata?._tree_stored && !isShownSwipe) {
+        await chatOpDeleteAlternative(messageId, swipeId).catch(error =>
+            console.error('Could not remove the deleted alternative from the tree:', error));
+    }
+
     updateMessage(messageId, { swipe_id: newSwipeId, swipes: newSwipes, swipe_info: newSwipeInfo });
     await eventSource.emit(event_types.MESSAGE_SWIPE_DELETED, { messageId, swipeId, newSwipeId });
 
-    if (swipeId === currentSwipeId) {
+    if (isShownSwipe) {
         const direction = (swipeId <= newSwipeId) ? SWIPE_DIRECTION.RIGHT : SWIPE_DIRECTION.LEFT;
         // Animate swipe and swap displayed message when the currently visible swipe was deleted.
         await swipe(null, direction, { source: SWIPE_SOURCE.DELETE, repeated: false, forceMesId: messageId, forceSwipeId: newSwipeId });

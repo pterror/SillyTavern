@@ -1441,6 +1441,73 @@ export async function swapAdjacent(directories, ownerId, upperNodeId, lowerNodeI
 }
 
 /**
+ * Deletes an unused alternative (swipe) outright — the ONE genuine `DELETE FROM messages` this file
+ * has ever needed. Every other "removal" here (`deleteBranch`, `endPathAt`, `degraftRange`) is
+ * non-destructive: it clears a label or moves a pointer, but the row itself always stays addressable
+ * by raw node_id. That's only safe because those operations only ever make a subtree unreachable from
+ * a label or the default path, never actually erase it. This one is different in kind: an alternative
+ * nobody ever continued the conversation from carries no other row pointing at it (verified against
+ * this file's own schema — `messages` only ever references a node by `parent_id`, `default_child_id`,
+ * or `label`, all three checked below; the only other table, `meta`, is an unrelated key/value store),
+ * so once it's confirmed to have no descendants, no label, and isn't the currently-shown default, an
+ * actual delete is genuinely safe and leaves nothing dangling.
+ *
+ * Refuses (never cascades, never reparents descendants elsewhere as a workaround):
+ * - `unknown node` — doesn't exist, or belongs to a different owner.
+ * - `is default` — currently `nodeId`'s parent's `default_child_id`. You cannot delete what's
+ *   currently shown; the caller must swipe away from it FIRST via `selectDefaultChild` (which already
+ *   persists the selection change on its own).
+ * - `has descendants` — the alternative was once continued from and has its own subtree. Deleting it
+ *   would permanently strand that subtree with no path back to it (no label, no default-path pointer
+ *   reachable from anywhere) — unlike every other refusal in this file, this loss would be
+ *   irreversible, so it is never cascaded or worked around, only refused outright.
+ * - `labeled` — has a bookmark/checkpoint on it. Matches this file's existing convention (see
+ *   `deleteBranch`) that a labeled node needs its label cleared or moved first, not silently deleted
+ *   out from under it.
+ *
+ * The "has descendants" check and the `DELETE` itself run inside the SAME transaction. Unlike
+ * graft/degraft/swap — whose pre-transaction checks only ever gate a reparent, so a check that goes
+ * stale before the transaction commits just means the reparent's own `setDefaultChildSync` guard
+ * refuses it, no harm done — a stale check here would gate an irreversible delete: a concurrent
+ * add-alternative or continue landing between the check and the `DELETE` could create a child row
+ * that this call would then delete out from under, silently destroying it with no refusal ever
+ * raised. Running both inside one synchronous `transaction()` callback closes that window, since no
+ * other request's writes can interleave with it.
+ */
+export async function deleteAlternative(directories, ownerId, nodeId) {
+    const entry = await getEntry(directories);
+    if (!entry) return { ok: false, reason: 'unavailable' };
+
+    let result;
+    entry.db.transaction(() => {
+        const node = entry.db.get('SELECT id, parent_id, label FROM messages WHERE id = @id AND owner_id = @ownerId',
+            { id: nodeId, ownerId });
+        if (!node) { result = { ok: false, reason: 'unknown node' }; return; }
+
+        // A null parent_id is exactly how this schema identifies the owner's synthetic anchor row
+        // (see getAnchorSync()/isAnchorRow() - no real message is ever inserted with a null parent).
+        // The anchor has no "parent's default_child_id" to check against, which would otherwise let an
+        // anchor with zero children and no label fall through every other check below and get deleted
+        // outright - destroying the owner's entire message tree, not just one alternative. Refuse
+        // explicitly rather than relying on the (accidental) shape of the checks that follow.
+        if (!node.parent_id) { result = { ok: false, reason: 'is anchor' }; return; }
+
+        const parent = entry.db.get('SELECT default_child_id FROM messages WHERE id = @id', { id: node.parent_id });
+        if (parent && parent.default_child_id === nodeId) { result = { ok: false, reason: 'is default' }; return; }
+
+        if (node.label) { result = { ok: false, reason: 'labeled' }; return; }
+
+        const child = entry.db.get('SELECT 1 FROM messages WHERE parent_id = @id LIMIT 1', { id: nodeId });
+        if (child) { result = { ok: false, reason: 'has descendants' }; return; }
+
+        entry.db.run('DELETE FROM messages WHERE id = @id', { id: nodeId });
+        result = { ok: true };
+    });
+
+    return result;
+}
+
+/**
  * Adds an alternative alongside an existing node. Named by SIBLING (not parent) so the caller never
  * needs to know about the synthetic anchor. Idempotent: a matching alternative resolves to the
  * existing row instead of duplicating, so a set can be asserted on every chat open safely.

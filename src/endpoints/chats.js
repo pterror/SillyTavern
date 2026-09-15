@@ -35,7 +35,7 @@ import {
     isAvailable as isTreeAvailable, hasSavedChats,
     saveChatToTree, loadBranch, forkBranch, labelNode,
     deleteBranch, renameBranch as renameBranchInTree, listBranches, listRecentBranches, searchBranchesByContent,
-    renameCharacterInMessages, renameGroupMemberInMessages, getAlternatives, getContinuation, getAncestorPath, editMessage, editMessages, appendMessages, addAlternatives, setChatMetadata, getOpeningAlternatives, addOpeningAlternatives, loadAtNode, listLabels, setNodeMetadata, selectDefaultChild, endPathAt, graftMessage, degraftRange, swapAdjacent,
+    renameCharacterInMessages, renameGroupMemberInMessages, getAlternatives, getContinuation, getAncestorPath, editMessage, editMessages, appendMessages, addAlternatives, setChatMetadata, getOpeningAlternatives, addOpeningAlternatives, loadAtNode, listLabels, setNodeMetadata, selectDefaultChild, endPathAt, graftMessage, degraftRange, swapAdjacent, deleteAlternative,
 } from '../message-tree-db.js';
 
 const isBackupEnabled = !!getConfigValue('backups.chat.enabled', true, 'boolean');
@@ -1218,6 +1218,20 @@ router.post('/message/swap-adjacent', validateAvatarUrlMiddleware, async functio
         return response.status(result.ok ? 200 : 409).send(result);
     } catch (error) {
         console.error('Error swapping adjacent messages:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/** Deletes an unused alternative (swipe) outright — the mid-chain-delete-a-leaf primitive. Refused (409) if it's currently shown, has its own descendants, or is labeled — see {@link deleteAlternative}'s doc comment for why each of those is non-negotiable. */
+router.post('/message/alternative/delete', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const node = String(request.body.node_id || '');
+        if (!node) return response.status(400).send({ error: 'node_id is required' });
+
+        const result = await deleteAlternative(request.user.directories, ownerOf(request), node);
+        return response.status(result.ok ? 200 : 409).send(result);
+    } catch (error) {
+        console.error('Error deleting alternative:', error);
         return response.status(500).send({ error: true });
     }
 });

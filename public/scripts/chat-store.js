@@ -491,3 +491,18 @@ export async function chatOpSelect(mesId, swipeId) {
     _markMessageSaved(mesId, nodeId);
     return true;
 }
+
+// Deletes an unused alternative (swipe) outright. This only ever handles the NON-shown case: if
+// `swipeId` names the currently-selected swipe (`msg.node_id`, not the swipe-specific id this reads
+// off `swipe_info`), it refuses WITHOUT contacting the server — the caller (deleteSwipe()) is
+// responsible for calling chatOpSelect() FIRST to swipe away from it, which already persists that
+// selection change on its own. On success, the caller is also responsible for updating its own local
+// `swipes`/`swipe_info` arrays for display — this function's only job is the persistence call.
+export async function chatOpDeleteAlternative(mesId, swipeId) {
+    const msg = chat[mesId];
+    const nodeId = msg?.swipe_info?.[swipeId]?.node_id;
+    if (!isStoredNodeId(nodeId) || nodeId === msg.node_id) return false;
+
+    await _chatOpPost('/api/chats/message/alternative/delete', { node_id: nodeId });
+    return true;
+}

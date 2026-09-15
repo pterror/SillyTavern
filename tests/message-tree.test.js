@@ -731,6 +731,138 @@ describe('swapAdjacent (mid-chain reorder)', () => {
     });
 });
 
+describe('deleteAlternative (delete-a-swipe)', () => {
+    /** Builds a chain m0 -> m1 -> ... under `owner` and returns their node ids in order. */
+    async function makeChain(directories, owner = 'owner', texts = ['m0', 'm1', 'm2']) {
+        const chatData = [{ chat_metadata: {} }, ...texts.map((mes, i) => makeMessage({ mes, sendDate: `d${i}` }))];
+        await treeDb.saveChatToTree(directories, owner, 'chat', chatData, false);
+        const loaded = await treeDb.loadBranch(directories, owner, 'chat');
+        return loaded.messages.map(m => m.node_id);
+    }
+
+    test('deletes a genuine leaf alternative (unselected sibling, no children) and leaves the default path untouched', async () => {
+        const directories = makeDirectories();
+        const [n0, n1, n2] = await makeChain(directories);
+
+        // A sibling alternative to n1, never made default — nothing was ever continued from it.
+        const alt = await treeDb.addAlternatives(directories, 'owner', n1, [makeMessage({ mes: 'unused-alt', sendDate: 'da' })]);
+        const altId = alt.node_ids[0];
+        expect(altId).not.toBe(n1);
+
+        const result = await treeDb.deleteAlternative(directories, 'owner', altId);
+        expect(result).toEqual({ ok: true });
+
+        const db = await treeDb.getDbHandle(directories);
+        expect(db.get('SELECT id FROM messages WHERE id = @id', { id: altId })).toBeFalsy();
+
+        // The still-default sibling/path is completely untouched.
+        const loaded = await treeDb.loadBranch(directories, 'owner', 'chat');
+        expect(loaded.messages.map(m => m.mes)).toEqual(['m0', 'm1', 'm2']);
+        expect(loaded.messages.map(m => m.node_id)).toEqual([n0, n1, n2]);
+    });
+
+    test('refuses to delete the node that is currently its parent\'s default child', async () => {
+        const directories = makeDirectories();
+        const [, n1] = await makeChain(directories);
+
+        const result = await treeDb.deleteAlternative(directories, 'owner', n1);
+        expect(result).toEqual({ ok: false, reason: 'is default' });
+
+        const db = await treeDb.getDbHandle(directories);
+        expect(db.get('SELECT id FROM messages WHERE id = @id', { id: n1 })).toBeTruthy();
+    });
+
+    test('refuses to delete an alternative that has its own child (would strand the subtree) — the critical safety case', async () => {
+        const directories = makeDirectories();
+        const [, n1] = await makeChain(directories);
+
+        // A sibling alternative to n1, once continued from — it has its own child, then got abandoned.
+        const alt = await treeDb.addAlternatives(directories, 'owner', n1, [makeMessage({ mes: 'once-continued-alt', sendDate: 'da' })]);
+        const altId = alt.node_ids[0];
+        const appended = await treeDb.appendMessages(directories, 'owner', altId, [makeMessage({ mes: 'child-of-alt', sendDate: 'dc' })]);
+        expect(appended.ok).toBe(true);
+        const childId = appended.node_ids[0];
+
+        const result = await treeDb.deleteAlternative(directories, 'owner', altId);
+        expect(result).toEqual({ ok: false, reason: 'has descendants' });
+
+        // Neither the alternative nor its child was touched.
+        const db = await treeDb.getDbHandle(directories);
+        expect(db.get('SELECT id FROM messages WHERE id = @id', { id: altId })).toBeTruthy();
+        expect(db.get('SELECT id FROM messages WHERE id = @id', { id: childId })).toBeTruthy();
+    });
+
+    test('refuses to delete the owner\'s anchor row, even for a genuinely empty conversation with no children/label', async () => {
+        const directories = makeDirectories();
+        // Touch the owner so an anchor row gets created, but add no real messages under it - the
+        // anchor itself then has zero children and no label, so it would otherwise fall through every
+        // other check (it has no parent, so no "is default" check applies to it) and be deleted
+        // outright, destroying the owner's entire message tree.
+        const anchorId = await treeDb.getOrCreateAnchor(directories, 'owner');
+        expect(typeof anchorId).toBe('string');
+
+        const result = await treeDb.deleteAlternative(directories, 'owner', anchorId);
+        expect(result.ok).toBe(false);
+
+        const db = await treeDb.getDbHandle(directories);
+        expect(db.get('SELECT id FROM messages WHERE id = @id', { id: anchorId })).toBeTruthy();
+    });
+
+    test('refuses to delete a labeled alternative', async () => {
+        const directories = makeDirectories();
+        const [, n1] = await makeChain(directories);
+
+        const alt = await treeDb.addAlternatives(directories, 'owner', n1, [makeMessage({ mes: 'bookmarked-alt', sendDate: 'da' })]);
+        const altId = alt.node_ids[0];
+        const labelResult = await treeDb.labelNode(directories, altId, 'checkpoint-on-alt');
+        expect(labelResult.ok).toBe(true);
+
+        const result = await treeDb.deleteAlternative(directories, 'owner', altId);
+        expect(result).toEqual({ ok: false, reason: 'labeled' });
+
+        const db = await treeDb.getDbHandle(directories);
+        const row = db.get('SELECT id, label FROM messages WHERE id = @id', { id: altId });
+        expect(row).toBeTruthy();
+        expect(row.label).toBe('checkpoint-on-alt');
+    });
+
+    test('refuses when the node does not exist', async () => {
+        const directories = makeDirectories();
+        await makeChain(directories);
+
+        const result = await treeDb.deleteAlternative(directories, 'owner', 'not-a-real-node-id');
+        expect(result).toEqual({ ok: false, reason: 'unknown node' });
+    });
+
+    test('end-to-end: message with 3 swipes, select swipe 2 as default, delete swipe 1 (a genuine no-children alternative)', async () => {
+        const directories = makeDirectories();
+        // n0 carries the branch's own label ("chat", set by saveChatToTree/createBranchSync) — the
+        // 3-swipe leaf message under test is n1 instead, so the "labeled" refusal doesn't fire here.
+        const [n0, swipe1] = await makeChain(directories, 'owner', ['m0', 'm1']);
+
+        const alts = await treeDb.addAlternatives(directories, 'owner', swipe1, [
+            makeMessage({ mes: 'swipe-2', sendDate: 'd1' }),
+            makeMessage({ mes: 'swipe-3', sendDate: 'd2' }),
+        ]);
+        const [swipe2, swipe3] = alts.node_ids;
+
+        const selectResult = await treeDb.selectDefaultChild(directories, swipe2);
+        expect(selectResult).toBe(true);
+
+        const deleteResult = await treeDb.deleteAlternative(directories, 'owner', swipe1);
+        expect(deleteResult).toEqual({ ok: true });
+
+        const db = await treeDb.getDbHandle(directories);
+        expect(db.get('SELECT id FROM messages WHERE id = @id', { id: swipe1 })).toBeFalsy();
+
+        // Swipe 2 remains selected/untouched (the default path now runs n0 -> swipe2), and swipe 3
+        // remains present, just off the default path.
+        const loaded = await treeDb.loadBranch(directories, 'owner', 'chat');
+        expect(loaded.messages.map(m => m.node_id)).toEqual([n0, swipe2]);
+        expect(db.get('SELECT id FROM messages WHERE id = @id', { id: swipe3 })).toBeTruthy();
+    });
+});
+
 // ---------------------------------------------------------------------------
 //  Stub wire protocol tests: stubs, edits, deletes, swipes
 // ---------------------------------------------------------------------------

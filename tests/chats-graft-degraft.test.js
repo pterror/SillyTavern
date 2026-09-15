@@ -288,3 +288,136 @@ describe('POST /api/chats/message/swap-adjacent', () => {
         expect(messages.map(m => m.node_id)).toEqual([n0, n1, n2]);
     });
 });
+
+describe('POST /api/chats/message/alternative/delete', () => {
+    let counter = 0;
+    function nextAvatar() {
+        counter += 1;
+        return `delete-alt-owner-${counter}.png`;
+    }
+
+    test('deletes a genuine leaf alternative (unselected sibling, no children)', async () => {
+        const avatar = nextAvatar();
+        const [, n1] = await seedChain(avatar);
+
+        const altRes = await postJson('/api/chats/message/alternative', {
+            avatar_url: avatar, sibling_node_id: n1, contents: [makeMessage('unused-alt')],
+        });
+        const altId = altRes.body.node_ids[0];
+        expect(altId).not.toBe(n1);
+
+        const res = await postJson('/api/chats/message/alternative/delete', { avatar_url: avatar, node_id: altId });
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual({ ok: true });
+
+        // The default path is completely untouched.
+        const loaded = await postJson('/api/chats/get', { avatar_url: avatar, ch_name: avatar, file_name: 'chat' });
+        const messages = loaded.body.filter(m => m.mes !== undefined);
+        expect(messages.map(m => m.mes)).toEqual(['m0', 'm1', 'm2']);
+    });
+
+    test('400s when node_id is missing', async () => {
+        const avatar = nextAvatar();
+        await seedChain(avatar);
+        const res = await postJson('/api/chats/message/alternative/delete', { avatar_url: avatar });
+        expect(res.status).toBe(400);
+    });
+
+    test('409s and refuses when the node is currently its parent\'s default child', async () => {
+        const avatar = nextAvatar();
+        const [, n1] = await seedChain(avatar);
+
+        const res = await postJson('/api/chats/message/alternative/delete', { avatar_url: avatar, node_id: n1 });
+        expect(res.status).toBe(409);
+        expect(res.body).toEqual({ ok: false, reason: 'is default' });
+
+        // n1 is still there, untouched.
+        const loaded = await postJson('/api/chats/get', { avatar_url: avatar, ch_name: avatar, file_name: 'chat' });
+        const messages = loaded.body.filter(m => m.mes !== undefined);
+        expect(messages.map(m => m.mes)).toEqual(['m0', 'm1', 'm2']);
+    });
+
+    test('409s and refuses an alternative that has its own child — the critical safety case', async () => {
+        const avatar = nextAvatar();
+        const [, n1] = await seedChain(avatar);
+
+        const altRes = await postJson('/api/chats/message/alternative', {
+            avatar_url: avatar, sibling_node_id: n1, contents: [makeMessage('once-continued-alt')],
+        });
+        const altId = altRes.body.node_ids[0];
+
+        // Once continued from, then abandoned via a later swipe — altId now has its own child row.
+        const appendRes = await postJson('/api/chats/message/append', {
+            avatar_url: avatar, after_node_id: altId, messages: [makeMessage('child-of-alt')],
+        });
+        expect(appendRes.body.ok).toBe(true);
+        const childId = appendRes.body.node_ids[0];
+
+        const res = await postJson('/api/chats/message/alternative/delete', { avatar_url: avatar, node_id: altId });
+        expect(res.status).toBe(409);
+        expect(res.body).toEqual({ ok: false, reason: 'has descendants' });
+
+        // Neither the alternative nor its child was deleted — editMessage() only succeeds against a
+        // row that still exists, so a successful no-op edit (re-asserting the same content) proves it.
+        const altStillThere = await postJson('/api/chats/message/edit', { avatar_url: avatar, node_id: altId, content: makeMessage('once-continued-alt') });
+        expect(altStillThere.body.ok).toBe(true);
+        const childStillThere = await postJson('/api/chats/message/edit', { avatar_url: avatar, node_id: childId, content: makeMessage('child-of-alt') });
+        expect(childStillThere.body.ok).toBe(true);
+    });
+
+    test('409s and refuses a labeled alternative', async () => {
+        const avatar = nextAvatar();
+        const [, n1] = await seedChain(avatar);
+
+        const altRes = await postJson('/api/chats/message/alternative', {
+            avatar_url: avatar, sibling_node_id: n1, contents: [makeMessage('bookmarked-alt')],
+        });
+        const altId = altRes.body.node_ids[0];
+
+        const labelRes = await postJson('/api/chats/label', { avatar_url: avatar, node_id: altId, label: 'checkpoint-on-alt' });
+        expect(labelRes.body.ok).toBe(true);
+
+        const res = await postJson('/api/chats/message/alternative/delete', { avatar_url: avatar, node_id: altId });
+        expect(res.status).toBe(409);
+        expect(res.body).toEqual({ ok: false, reason: 'labeled' });
+    });
+
+    test('409s when the node does not exist', async () => {
+        const avatar = nextAvatar();
+        await seedChain(avatar);
+        const res = await postJson('/api/chats/message/alternative/delete', { avatar_url: avatar, node_id: 'not-a-real-node-id' });
+        expect(res.status).toBe(409);
+        expect(res.body).toEqual({ ok: false, reason: 'unknown node' });
+    });
+
+    test('end-to-end: 3 swipes, select swipe 2 as default, delete swipe 1', async () => {
+        const avatar = nextAvatar();
+        // n2 is the leaf message (nothing follows it) — its swipes carry no downstream conversation,
+        // unlike n1's, which would still have n2 hanging off it as a real child.
+        const [, , n2] = await seedChain(avatar);
+
+        const altsRes = await postJson('/api/chats/message/alternative', {
+            avatar_url: avatar, sibling_node_id: n2, contents: [makeMessage('swipe-2'), makeMessage('swipe-3')],
+        });
+        const [swipe2, swipe3] = altsRes.body.node_ids;
+
+        const selectRes = await postJson('/api/chats/message/select', { avatar_url: avatar, node_id: swipe2 });
+        expect(selectRes.body.ok).toBe(true);
+
+        const deleteRes = await postJson('/api/chats/message/alternative/delete', { avatar_url: avatar, node_id: n2 });
+        expect(deleteRes.status).toBe(200);
+        expect(deleteRes.body).toEqual({ ok: true });
+
+        const loaded = await postJson('/api/chats/get', { avatar_url: avatar, ch_name: avatar, file_name: 'chat' });
+        const messages = loaded.body.filter(m => m.mes !== undefined);
+        expect(messages.map(m => m.mes)).toEqual(['m0', 'm1', 'swipe-2']);
+        expect(messages.map(m => m.node_id)).toContain(swipe2);
+
+        // swipe3 still exists, just off the default path — confirmed by re-adding the same content and
+        // getting the same id back (addAlternatives is idempotent on identity).
+        const reAddRes = await postJson('/api/chats/message/alternative', {
+            avatar_url: avatar, sibling_node_id: swipe2, contents: [makeMessage('swipe-3')],
+        });
+        expect(reAddRes.body.node_ids[0]).toBe(swipe3);
+    });
+});
