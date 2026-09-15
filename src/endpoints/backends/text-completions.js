@@ -114,35 +114,30 @@ async function parseOllamaStream(jsonStream, request, response, persist) {
 }
 
 /**
- * Tees a fetch() response's live SSE byte stream so the generated text can be accumulated for
- * raw-action persistence WHILE forwarding the exact same bytes to the client, unmodified, via the
- * existing, untouched `forwardFetchResponse()`.
+ * Forwards a fetch() response's live SSE stream line-by-line (not a raw byte pipe) so the literal
+ * `data: [DONE]` sentinel line can be held back instead of forwarded immediately. Every other line
+ * is written to the client the instant it arrives - unmodified, same latency as a raw pipe. Only
+ * once `[DONE]` itself is seen (meaning the full text is now known) does this persist the reply and
+ * write one more real content frame - `data: {"assistant_node_id": "..."}` - ahead of the (now
+ * released) `[DONE]` line, so the client learns the node id BEFORE it stops reading, instead of
+ * after (a plain trailing frame doesn't work: the client's own stream consumer returns immediately
+ * upon seeing `[DONE]`, before anything sent after it would ever be read).
  *
- * Mechanism: a plain `.on('data', ...)` listener is attached to `fetchResponse.body` BEFORE
- * `forwardFetchResponse()` runs (and internally calls `.pipe(to)` on that same stream). Node fans
- * every `'data'` event out to EVERY registered listener - `.pipe()` itself is just another `'data'`
- * listener under the hood - so this listener observes exactly the same chunks, in exactly the same
- * order, with zero buffering/latency added to what `forwardFetchResponse()` forwards; it does not
- * consume, delay, or alter the stream `forwardFetchResponse()` sees.
+ * This adds real latency, but only between the last content token being displayed and the
+ * connection formally closing - a single local persistAssistantReply() call (a SQLite write), not a
+ * buffer-the-whole-response delay. Nothing the user perceives as "waiting for the reply."
  *
  * Only ever called when `persist` (`pendingAssistantPersist`) is set (a raw-action request) - the
  * caller is expected to fall through to a PLAIN, untouched `forwardFetchResponse()` call otherwise,
- * so a non-raw-action stream never even attaches this listener.
+ * so a non-raw-action stream is never rewritten this way.
  *
- * Each accumulated SSE `data:` line is parsed as JSON and passed to `extractText(json)` to pull out
- * that api_type's own real per-chunk text field - see the two real, DIFFERENT on-wire shapes this
- * covers at the call site below (`choices[0].text` for the `/v1/completions`-style api_types vs.
+ * Each `data:` line's JSON is parsed and passed to `extractText(json)` to pull out that api_type's
+ * own real per-chunk text field - see the two real, DIFFERENT on-wire shapes this covers at the call
+ * site below (`choices[0].text` for the `/v1/completions`-style api_types vs.
  * `choices[0].delta.content` for OPENROUTER's `/v1/chat/completions`-style stream). A line that
- * isn't valid JSON (or isn't a `data:` line, or is the literal `[DONE]` sentinel) is skipped -
+ * isn't valid JSON (or isn't a `data:` line) is forwarded as-is but skipped for accumulation -
  * logged, not thrown, matching this file's/llamacpp-compact-stream.js's own "warn and keep going"
  * convention for malformed stream chunks.
- *
- * Resolves only once the upstream stream has genuinely ended (or errored/closed) AND, if any text
- * was accumulated, `persistAssistantReply()` has completed - unlike `forwardFetchResponse()` itself
- * (which resolves as soon as the pipe is wired up, not when the stream finishes). This does not add
- * latency to the client-visible byte stream (those bytes are already flushed via
- * `forwardFetchResponse()`'s own `to.end()`, called from ITS OWN `'end'` listener, independent of
- * this function's own await chain) - it only delays when the ROUTE HANDLER's own promise settles.
  * @param {import('node-fetch').Response} fetchResponse
  * @param {import('express').Response} response
  * @param {object|null|undefined} persist `pendingAssistantPersist`, or a falsy value to skip
@@ -156,38 +151,90 @@ export async function forwardAndPersistSseText(fetchResponse, response, persist,
         return forwardFetchResponse(fetchResponse, response);
     }
 
+    let statusCode = fetchResponse.status;
+    if (statusCode === 401) statusCode = 400;
+    response.statusCode = statusCode;
+    response.statusMessage = fetchResponse.statusText;
+
     let buffer = '';
     let text = '';
+    let pendingDoneLine = null;
 
-    fetchResponse.body.on('data', (chunk) => {
-        buffer += chunk.toString('utf-8');
-        let idx;
-        while ((idx = buffer.indexOf('\n')) !== -1) {
-            const line = buffer.slice(0, idx).trim();
-            buffer = buffer.slice(idx + 1);
-            if (!line.startsWith('data:')) continue;
-            const payload = line.slice(5).trim();
-            if (!payload || payload === '[DONE]') continue;
-            try {
-                text += extractText(JSON.parse(payload)) ?? '';
-            } catch (error) {
-                console.warn('Failed to parse streamed SSE event while accumulating text for persistence:', error);
+    const onSocketClose = () => {
+        if (fetchResponse.body instanceof Readable) fetchResponse.body.destroy();
+        if (!response.writableEnded) response.end();
+    };
+    response.socket?.once('close', onSocketClose);
+
+    // The client can disconnect (firing onSocketClose, which ends `response`) at any point while
+    // this is still forwarding upstream bytes or persisting - every write after that point must be
+    // skipped, not attempted, or it throws (ERR_STREAM_WRITE_AFTER_END).
+    const safeWrite = (chunk) => {
+        if (!response.writableEnded) response.write(chunk);
+    };
+
+    let holdingDoneLine = false;
+
+    await new Promise((resolve) => {
+        fetchResponse.body.on('data', (chunk) => {
+            buffer += chunk.toString('utf-8');
+            let idx;
+            while ((idx = buffer.indexOf('\n')) !== -1) {
+                const rawLine = buffer.slice(0, idx);
+                buffer = buffer.slice(idx + 1);
+
+                // The blank line right after a held-back `data: [DONE]` is that event's own
+                // terminator (the `\n\n` separator), not a new event - it must stay held back WITH
+                // it, or [DONE] would forward without the blank line that properly ends it.
+                if (holdingDoneLine) {
+                    holdingDoneLine = false;
+                    if (rawLine === '') {
+                        pendingDoneLine += '\n';
+                        continue;
+                    }
+                }
+
+                const trimmed = rawLine.trim();
+                if (trimmed.startsWith('data:')) {
+                    const payload = trimmed.slice(5).trim();
+                    if (payload === '[DONE]') {
+                        pendingDoneLine = rawLine + '\n';
+                        holdingDoneLine = true;
+                        continue;
+                    }
+                    if (payload) {
+                        try {
+                            text += extractText(JSON.parse(payload)) ?? '';
+                        } catch (error) {
+                            console.warn('Failed to parse streamed SSE event while accumulating text for persistence:', error);
+                        }
+                    }
+                }
+                safeWrite(rawLine + '\n');
             }
-        }
-    });
-
-    const ended = new Promise((resolve) => {
+        });
         fetchResponse.body.once('end', resolve);
         fetchResponse.body.once('error', resolve);
         fetchResponse.body.once('close', resolve);
     });
 
-    await forwardFetchResponse(fetchResponse, response);
-    await ended;
+    if (buffer) {
+        safeWrite(buffer);
+    }
 
     if (text) {
-        await persistAssistantReply(persist, text);
+        const persisted = await persistAssistantReply(persist, text);
+        if (persisted) {
+            safeWrite(`data: ${JSON.stringify({ assistant_node_id: persisted.node_id })}\n\n`);
+        }
     }
+
+    if (pendingDoneLine !== null) {
+        safeWrite(pendingDoneLine);
+    }
+
+    response.socket?.off('close', onSocketClose);
+    if (!response.writableEnded) response.end();
 }
 
 /**

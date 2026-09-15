@@ -3250,6 +3250,13 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, ra
                     state.toolCallAborted = true;
                 }
 
+                // Raw-action persistence teed this stream server-side (chat-completions.js's
+                // forwardAndPersistSseText()) and, once it knew the full text, wrote this ahead of
+                // [DONE] - not real generated content, just the node the reply landed on.
+                if (typeof parsed?.assistant_node_id === 'string') {
+                    state.assistantNodeId = parsed.assistant_node_id;
+                }
+
                 if (canMultiSwipe && Array.isArray(parsed?.choices) && parsed?.choices?.[0]?.index > 0) {
                     const swipeIndex = parsed.choices[0].index - 1;
                     // FIXME: state.reasoning should be an array to support multi-swipe
