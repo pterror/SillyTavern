@@ -3163,6 +3163,186 @@ async function run() {
         assert.equal(resolvedToolMsg.extra.tool_invocations[0].result, 'Curtains opened on the left.', 'the in-place edit resolving the pending node still happened even though the follow-up round\'s own backend call then failed');
     }
 
+    // --- stealth-tool parity (this task) --- see runServerToolRounds()'s own doc comment, step 2b,
+    // for the full legacy-verified semantics this replicates: ANY client-only call in a round whose
+    // name is in `stealth_tool_names` aborts the WHOLE round (unconditionally - not merely "every call
+    // was stealth"), with NOTHING invoked or persisted for that round at all.
+
+    // (m) NON-STREAMING, an all-client-stealth round: the one call in the round is both client-only
+    // AND named in `stealth_tool_names` - the route must return the distinct `{aborted: true}` outcome
+    // (not `pending_tool_calls`, not a normal generation result), and NOTHING beyond the user's own
+    // message may be persisted - no tool-invocation node, no assistant reply.
+    {
+        const toolBranch = 'tool-branch-all-stealth-abort';
+        await saveChatToTree(directories, ownerId, toolBranch, [
+            { chat_metadata: {} },
+            { name: 'Tester', is_user: true, mes: 'Hi Rex, all-stealth-abort branch.', send_date: 1, extra: {} },
+            { name: 'Rex', is_user: false, mes: 'Hello there, all-stealth-abort branch!', send_date: 2, extra: {} },
+        ]);
+        const branchBefore = await loadBranch(directories, ownerId, toolBranch);
+        const messageCountBefore = branchBefore.messages.length;
+
+        const clientTools = [{
+            type: 'function',
+            function: { name: 'log_secret_thought', description: 'Silently records a thought (client-only, stealth).', parameters: { type: 'object', properties: {} } },
+        }];
+
+        let callCount = 0;
+        const fakeBackend = await startFakeBackend((_req, res) => {
+            callCount++;
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+                choices: [{
+                    message: {
+                        role: 'assistant', content: null,
+                        tool_calls: [{ id: 'call_stealth_1', type: 'function', function: { name: 'log_secret_thought', arguments: '{}' } }],
+                    },
+                }],
+            }));
+        });
+        pointBackendAtWithToolsEnabled(fakeBackend.url);
+
+        const app = buildTestApp();
+        let status, data;
+        try {
+            ({ status, data } = await postGenerate(app, {
+                owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+                type: 'normal', user_message: 'Think something.', stream: false,
+                client_tools: clientTools,
+                stealth_tool_names: ['log_secret_thought'],
+            }));
+        } finally {
+            fakeBackend.server.close();
+        }
+
+        assert.equal(callCount, 1, 'the backend is called exactly once - an aborted round never refetches');
+        assert.equal(status, 200, 'an aborted round is a normal 200, not an error');
+        assert.equal(data.error, undefined);
+        assert.equal(data.aborted, true, 'the distinct aborted outcome is used instead of pending_tool_calls or a normal generation result');
+        assert.equal(data.pending_tool_calls, undefined, 'never a hand-off for an all-stealth round');
+
+        const branchAfter = await loadBranch(directories, ownerId, toolBranch);
+        assert.equal(branchAfter.messages.length, messageCountBefore + 1, 'only the user\'s own message was persisted - no tool-invocation node, no assistant reply, matching legacy\'s "nothing new appears"');
+        assert.equal(branchAfter.messages[branchAfter.messages.length - 1].mes, 'Think something.');
+    }
+
+    // (n) NON-STREAMING, a MIXED round: one stealth client-only call and one non-stealth client-only
+    // call in the SAME backend response. This task's investigation (see runServerToolRounds()'s own
+    // doc comment, step 2b) found legacy's real mechanics - not the narrower "every call was stealth"
+    // reading the old doc comment implied - abort the WHOLE round whenever ANY call is stealth, even
+    // discarding an already-succeeded non-stealth invocation from the same round
+    // (`ToolManager.invokeFunctionTools()`'s `shouldStopGeneration` is a plain `||` on
+    // `stealthCalls.length`, unconditional). So this mixed round must ALSO abort entirely - it must
+    // NOT partially hand off the non-stealth call - matching that verified behavior exactly.
+    {
+        const toolBranch = 'tool-branch-mixed-stealth-abort';
+        await saveChatToTree(directories, ownerId, toolBranch, [
+            { chat_metadata: {} },
+            { name: 'Tester', is_user: true, mes: 'Hi Rex, mixed-stealth-abort branch.', send_date: 1, extra: {} },
+            { name: 'Rex', is_user: false, mes: 'Hello there, mixed-stealth-abort branch!', send_date: 2, extra: {} },
+        ]);
+        const branchBefore = await loadBranch(directories, ownerId, toolBranch);
+        const messageCountBefore = branchBefore.messages.length;
+
+        const clientTools = [
+            { type: 'function', function: { name: 'log_secret_thought', description: 'Silently records a thought (client-only, stealth).', parameters: { type: 'object', properties: {} } } },
+            { type: 'function', function: { name: 'open_curtains', description: 'Opens the curtains (client-only, not stealth).', parameters: { type: 'object', properties: {} } } },
+        ];
+
+        let callCount = 0;
+        const fakeBackend = await startFakeBackend((_req, res) => {
+            callCount++;
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+                choices: [{
+                    message: {
+                        role: 'assistant', content: null,
+                        tool_calls: [
+                            { id: 'call_stealth_2', type: 'function', function: { name: 'log_secret_thought', arguments: '{}' } },
+                            { id: 'call_curtains_mixed', type: 'function', function: { name: 'open_curtains', arguments: '{}' } },
+                        ],
+                    },
+                }],
+            }));
+        });
+        pointBackendAtWithToolsEnabled(fakeBackend.url);
+
+        const app = buildTestApp();
+        let status, data;
+        try {
+            ({ status, data } = await postGenerate(app, {
+                owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+                type: 'normal', user_message: 'Think something and open the curtains.', stream: false,
+                client_tools: clientTools,
+                stealth_tool_names: ['log_secret_thought'],
+            }));
+        } finally {
+            fakeBackend.server.close();
+        }
+
+        assert.equal(callCount, 1);
+        assert.equal(status, 200);
+        assert.equal(data.aborted, true, 'a stealth call anywhere in the round aborts the WHOLE round, including the non-stealth call alongside it');
+        assert.equal(data.pending_tool_calls, undefined, 'the non-stealth call is NOT partially handed off');
+
+        const branchAfter = await loadBranch(directories, ownerId, toolBranch);
+        assert.equal(branchAfter.messages.length, messageCountBefore + 1, 'only the user\'s own message was persisted - the non-stealth call\'s own in-flight node was never created either');
+    }
+
+    // (o) STREAMING, an all-client-stealth round: the fake backend streams a `tool_calls` delta for a
+    // stealth-only name - the server must send the `tool_call_aborted` SSE trailer (not
+    // `tool_call_handoff`) and end the stream with no further content chunk, and must NOT have
+    // persisted anything beyond the user's own message.
+    {
+        const toolBranch = 'stream-tool-branch-all-stealth-abort';
+        await saveChatToTree(directories, ownerId, toolBranch, [
+            { chat_metadata: {} },
+            { name: 'Tester', is_user: true, mes: 'Hi Rex, streaming all-stealth-abort branch.', send_date: 1, extra: {} },
+            { name: 'Rex', is_user: false, mes: 'Hello there, streaming all-stealth-abort branch!', send_date: 2, extra: {} },
+        ]);
+        const branchBefore = await loadBranch(directories, ownerId, toolBranch);
+        const messageCountBefore = branchBefore.messages.length;
+
+        let callCount = 0;
+        const fakeBackend = await startFakeBackend((_req, res) => {
+            callCount++;
+            const deltaChunks = [
+                { choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_stealth_stream', type: 'function', function: { name: 'log_secret_thought', arguments: '{}' } }] } }] },
+            ];
+            const sseBody = deltaChunks.map(json => `data: ${JSON.stringify(json)}\n\n`).join('') + 'data: [DONE]\n\n';
+            res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+            res.end(sseBody);
+        });
+        pointBackendAtWithToolsEnabled(fakeBackend.url);
+
+        const app = buildTestApp();
+        let status, bodyText;
+        try {
+            ({ status, bodyText } = await postGenerateStream(app, {
+                owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+                type: 'normal', user_message: 'Think something, streamed.', stream: true,
+                client_tools: [{ type: 'function', function: { name: 'log_secret_thought', description: 'Silently records a thought (client-only, stealth).', parameters: { type: 'object', properties: {} } } }],
+                stealth_tool_names: ['log_secret_thought'],
+            }));
+        } finally {
+            fakeBackend.server.close();
+        }
+
+        assert.equal(callCount, 1, 'the backend is never re-called for an aborted round');
+        assert.equal(status, 200);
+        assert.ok(!bodyText.includes('"tool_calls"'), 'the raw tool_calls delta is never forwarded to the client');
+        assert.ok(!bodyText.includes('tool_call_handoff'), 'an aborted round is NOT a hand-off');
+
+        const abortedLine = bodyText.split('\n').map(line => line.trim()).find(line => line.startsWith('data:') && line.includes('tool_call_aborted'));
+        assert.ok(abortedLine, 'a tool_call_aborted trailer event was sent before the stream closed');
+        const abortedPayload = JSON.parse(abortedLine.slice(5).trim());
+        assert.equal(abortedPayload.tool_call_aborted, true);
+        assert.ok(bodyText.trim().endsWith('data: [DONE]'), 'the stream still ends with the normal [DONE] sentinel, with no further content chunk after the trailer');
+
+        const branchAfter = await loadBranch(directories, ownerId, toolBranch);
+        assert.equal(branchAfter.messages.length, messageCountBefore + 1, 'only the user\'s own message was persisted - no tool-invocation node, no assistant reply');
+    }
+
     // --- isSwipe/isContinue interleaved with a server tool-call round (this task: fixes the
     // previously-documented, out-of-scope limitation on runServerToolRounds()'s own doc comment -
     // see that function's "FORMERLY-DOCUMENTED LIMITATION, NOW FIXED" section for the full design) ---

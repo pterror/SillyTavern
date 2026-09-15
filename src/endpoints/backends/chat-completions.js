@@ -2634,7 +2634,17 @@ const SERVER_TOOL_ROUND_LIMIT = 5;
  * actual JSON schema object; `returnInvalid` is client-side-only, read by `extractJsonFromData()` in
  * public/script.js, never by this server). Forwarded verbatim into `createGenerationParameters()` - see
  * this function's own doc comment, item 6, `jsonSchema` bullet.
- * @returns {Promise<{ params: object, settings: object, anchorNodeId: string|null, anchorContent: object|null, name1: string, name2: string, enabledServerTools: import('../../server-tools.js').ServerToolRegistration[], enabledClientToolNames: Set<string> }>}
+ * @param {string[]} [params.stealthClientToolNames] THIS TASK (stealth-tool parity): the wire's new
+ * `stealth_tool_names` field - the subset of the client's OWN `clientToolSchemas` names that
+ * `ToolManager.isStealthTool()` says are stealth (public/scripts/tool-calling.js - a per-TOOL
+ * registration flag, "a tool call result will not be shown in the chat, no follow-up generation is
+ * performed"). Untrusted, attacker-controlled input like `clientToolSchemas` itself: only string
+ * entries are kept, and only those that also survived into `enabledClientToolNames` matter (see the
+ * `enabledStealthClientToolNames` return value below) - a name that isn't even an advertised
+ * `client_tools` entry (typo, or a name that lost the name-collision policy to a server tool) is
+ * simply inert, never treated as "this round should abort" for a name that was never really
+ * client-only to begin with.
+ * @returns {Promise<{ params: object, settings: object, anchorNodeId: string|null, anchorContent: object|null, name1: string, name2: string, enabledServerTools: import('../../server-tools.js').ServerToolRegistration[], enabledClientToolNames: Set<string>, enabledStealthClientToolNames: Set<string> }>}
  * `enabledServerTools` is the same list used to build `params.tools` (empty when no server tool is
  * currently enabled for this request) - returned so the route handler's tool-execution loop doesn't
  * need to re-query the registry (and re-run every tool's own `shouldEnable(ctx)`) a second time.
@@ -2642,12 +2652,15 @@ const SERVER_TOOL_ROUND_LIMIT = 5;
  * the backend after the collision policy above (i.e. excluding any dropped for colliding with a
  * server tool name) - the route handler's tool-execution loop uses this to tell "hand off to the
  * client" (name is here) apart from "hallucinated/unknown tool name" (name is in neither this set nor
- * `enabledServerTools`).
+ * `enabledServerTools`). `enabledStealthClientToolNames` (this task) is the subset of
+ * `enabledClientToolNames` that `stealthClientToolNames` marked stealth - see
+ * `runServerToolRounds()`'s own doc comment for how this is used to abort a round instead of handing
+ * it off.
  */
 export async function buildRawActionChatCompletionRequest(directories, {
     characterAvatar, groupId, ownerId, nodeId,
     type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText, userMessageExtra,
-    clientToolSchemas, jsonSchema = null,
+    clientToolSchemas, stealthClientToolNames, jsonSchema = null,
 } = {}) {
     if (!ownerId) {
         throw new Error('owner_id is required');
@@ -2774,6 +2787,15 @@ export async function buildRawActionChatCompletionRequest(directories, {
     }
     const enabledClientToolNames = new Set(clientToolsByName.keys());
 
+    // THIS TASK (stealth-tool parity): only names that are BOTH advertised (`enabledClientToolNames`)
+    // AND flagged stealth by the client survive - see this function's own `stealthClientToolNames`
+    // param doc comment for why a name outside `enabledClientToolNames` must not count.
+    const enabledStealthClientToolNames = new Set(
+        Array.isArray(stealthClientToolNames)
+            ? stealthClientToolNames.filter(name => typeof name === 'string' && enabledClientToolNames.has(name))
+            : [],
+    );
+
     const combinedToolSchemas = [...enabledServerTools.map(toOpenAIToolSchema), ...clientToolsByName.values()];
     const toolsPayload = combinedToolSchemas.length > 0
         ? { tools: combinedToolSchemas, tool_choice: 'auto' }
@@ -2804,7 +2826,7 @@ export async function buildRawActionChatCompletionRequest(directories, {
     const anchorChat = orchestratorInput.macroContext.chat;
     const anchorContent = anchorChat.length > 0 ? anchorChat[anchorChat.length - 1] : null;
 
-    return { params: generate_data, settings, anchorNodeId, anchorContent, name1: orchestratorInput.macroContext.name1, name2: orchestratorInput.name2, enabledServerTools, enabledClientToolNames };
+    return { params: generate_data, settings, anchorNodeId, anchorContent, name1: orchestratorInput.macroContext.name1, name2: orchestratorInput.name2, enabledServerTools, enabledClientToolNames, enabledStealthClientToolNames };
 }
 
 /**
@@ -3124,6 +3146,28 @@ async function forwardAndPersistSseWithServerTools(fetchResponse, response, pers
         refetch,
     });
 
+    // THIS TASK (stealth-tool parity, runServerToolRounds()'s own doc comment step 2b) - matching
+    // legacy's `shouldStopGeneration` branch ("generation stops, nothing new appears"). Nothing was
+    // persisted for this round, so there is no further content chunk to forward - but a bare `[DONE]`
+    // alone is NOT enough: the client's own generic stream-end handling (public/script.js's
+    // `isStreamFinished` path) would then see an ordinary, empty-content stream and persist an empty
+    // placeholder message, exactly the outcome this is supposed to prevent. So, mirroring the
+    // `tool_call_handoff` trailer immediately below (a shape with no `.choices` key, silently ignored
+    // by every existing parser), one synthetic `data: {"tool_call_aborted": true}` line is written
+    // first - the client's streaming generator stashes it on `state` the same way it stashes
+    // `tool_call_handoff`, and `finishGenerating()` recognizes it to unblock generation cleanly with no
+    // persisted reply (see public/script.js's own `isStreamWithToolCallAborted` doc comment).
+    // Simplification, documented: any real narrative text the model generated in the SAME round as the
+    // stealth call is also not forwarded/persisted (legacy, by contrast, keeps already-persisted
+    // visible text and only discards the tool-invocation record - see `runServerToolRounds()`'s own
+    // step 2b doc comment for why this narrower, simpler behavior was chosen over exactly replicating
+    // that edge case).
+    if (roundResult.ok === 'aborted') {
+        response.write(`data: ${JSON.stringify({ tool_call_aborted: true })}\n\n`);
+        response.write('data: [DONE]\n\n');
+        return response.end();
+    }
+
     // See this function's own doc comment, step 6.
     if (roundResult.ok === 'pending') {
         response.write(`data: ${JSON.stringify({ tool_call_handoff: { node_id: roundResult.leafNodeId, pending_tool_calls: roundResult.pendingToolCalls } })}\n\n`);
@@ -3214,6 +3258,33 @@ function parseServerToolArguments(rawArguments) {
  *    executing+persisting only some of a model-issued "batch" would leave a confusing,
  *    semantically-broken turn on the tree) - chunk (c) only widens what counts as "recognized" to
  *    include the client's own advertised names, it does not relax this all-or-nothing rule.
+ * 2b. STEALTH-TOOL PARITY (this task). Legacy semantics, precisely verified by reading
+ *     `ToolManager.invokeFunctionTools()`/`finishGenerating()`'s `onSuccess()` in full
+ *     (public/script.js, public/scripts/tool-calling.js) rather than assumed from the older doc
+ *     comment this fixes (`resolveClientToolHandoffLoop()`'s "KNOWN LIMITATION" note, which describes
+ *     only the ALL-stealth case): `shouldStopGeneration = (!invocationResult.invocations.length &&
+ *     shouldDeleteMessage) || invocationResult.stealthCalls.length` - the `||` means ANY stealth call
+ *     present in a round stops generation entirely, UNCONDITIONALLY, even when the SAME round also has
+ *     real non-stealth calls that were already invoked and succeeded - `saveFunctionToolInvocations()`
+ *     is never reached for that round, so even a successful non-stealth invocation's result is
+ *     silently discarded, not partially handed off. This is NOT "abort only if every call is stealth" -
+ *     it is "abort if at least one call is stealth", full stop. That is the precise rule this function
+ *     replicates below: if ANY call in this round's tool_calls has a `function.name` in
+ *     `stealthToolNames` (a client-only tool name the client itself marked stealth - stealth is a
+ *     per-TOOL registration property, `ToolManager.registerFunctionTool()`'s own `stealth` param -
+ *     never per-call), the WHOLE round returns `{ok: 'aborted'}` - see this function's own return-type
+ *     doc below - and nothing in this function's steps 3/4/5 below ever runs for that round: no tool
+ *     (server-native OR client-only) is invoked, no tree node is persisted, no hand-off is returned.
+ *     JUDGMENT CALL, explicitly narrower than legacy where legacy has no equivalent at all: legacy's
+ *     literal mechanics execute every non-stealth call first (real side effects happen) and only THEN
+ *     discard the round: this function instead never invokes anything once a stealth name is detected,
+ *     rather than running a real server-native tool's `invoke()` (a genuine side-effecting operation,
+ *     unlike a discarded chat-UI toast) purely to throw its result away - the user-visible outcome is
+ *     identical ("nothing new appears, generation stops"), which is the property that actually matters
+ *     for parity; only the "does a side-effecting call still fire" question is a deliberate, documented
+ *     divergence for the one case (stealth mixed with a server-native call) legacy has no precedent for
+ *     at all (legacy never had server-native tools). A stealth call mixed only with OTHER client-only
+ *     calls (stealth or not) is exact, verified parity, not a narrowing.
  * 3. For every SERVER call, parses `function.arguments` (`parseServerToolArguments()` above) and calls
  *    `tool.invoke(args, ctx)`. A thrown/rejected `invoke()` does NOT abort the round or the request -
  *    it is caught and turned into a normal (if `error`-flagged) invocation result, so the model sees
@@ -3303,6 +3374,11 @@ function parseServerToolArguments(rawArguments) {
  *   forwarded to each re-resolution's own `buildRawActionChatCompletionRequest()` call so a later
  *   round can still detect/hand-off a further client-only call, exactly mirroring how `enabledTools`
  *   is re-derived fresh from the registry every round rather than assumed static.
+ * @param {Set<string>} [params.stealthToolNames] THIS TASK (stealth-tool parity) - see this function's
+ *   own doc comment, step 2b. `buildRawActionChatCompletionRequest()`'s own
+ *   `enabledStealthClientToolNames` return value: the subset of `clientToolNames` the client itself
+ *   marked stealth. Defaults to an empty set (no stealth tools in play) so every pre-existing caller
+ *   that doesn't pass this is completely unaffected.
  * @param {string} params.leafNodeId The tree node the first tool-call round (if any) should attach
  *   after - the assistant-reply anchor already resolved for this request.
  * @param {boolean} [params.isSwipe] See this function's own doc comment above - when true, round 0's
@@ -3314,10 +3390,14 @@ function parseServerToolArguments(rawArguments) {
  * @returns {Promise<
  *   {ok: true, json: any, leafNodeId: string} |
  *   {ok: false, status: number, message: string} |
- *   {ok: 'pending', pendingToolCalls: {node_id: string, tool_call_id: string, name: string, arguments: object}[], leafNodeId: string}
- * >}
+ *   {ok: 'pending', pendingToolCalls: {node_id: string, tool_call_id: string, name: string, arguments: object}[], leafNodeId: string} |
+ *   {ok: 'aborted', leafNodeId: string}
+ * >} `ok: 'aborted'` (this task) - see step 2b above: a stealth client-only call was present in this
+ * round. Nothing was invoked or persisted for the round that triggered this - `leafNodeId` is simply
+ * whatever it already was BEFORE this round (unchanged), returned only so a caller that logs/asserts
+ * on it has something real, never a node this round itself created.
  */
-async function runServerToolRounds({ directories, ownerId, characterAvatar, groupId, enabledTools, clientToolNames, clientToolSchemas, leafNodeId, isSwipe = false, initialJson, refetch }) {
+async function runServerToolRounds({ directories, ownerId, characterAvatar, groupId, enabledTools, clientToolNames, clientToolSchemas, stealthToolNames = new Set(), leafNodeId, isSwipe = false, initialJson, refetch }) {
     const toolsByName = new Map(enabledTools.map(tool => [tool.name, tool]));
     let json = initialJson;
     let currentLeafId = leafNodeId;
@@ -3338,6 +3418,16 @@ async function runServerToolRounds({ directories, ownerId, characterAvatar, grou
                 status: 422,
                 message: `The backend called a tool named "${unknownCall?.function?.name}" that is neither a registered server-native tool nor one of the tools this request's own "client_tools" advertised. Only tools registered via registerServerTool() or listed in "client_tools" can be advertised/executed for a raw-action request.`,
             };
+        }
+
+        // THIS TASK (stealth-tool parity) - see this function's own doc comment, step 2b, for the full
+        // legacy-verification and the deliberate "abort before invoking anything" narrowing versus
+        // legacy's own "invoke everything, then discard" mechanics. Checked AFTER the unknown-name 422
+        // above (a hallucinated name alongside a stealth call is still treated as the hallucination
+        // error, not silently swallowed by an abort) and BEFORE any invocation below.
+        const hasStealthCall = toolCalls.some(toolCall => stealthToolNames.has(toolCall?.function?.name));
+        if (hasStealthCall) {
+            return { ok: 'aborted', leafNodeId: currentLeafId };
         }
 
         const invocations = [];
@@ -3671,6 +3761,10 @@ router.post('/generate', async function (request, response) {
                 // `tool_results` (only meaningful for `type === 'tool_result'`, see the `isToolResult`
                 // branch below).
                 client_tools: clientToolSchemas,
+                // THIS TASK (stealth-tool parity): the subset of `client_tools` names the client
+                // itself marked stealth (`ToolManager.isStealthTool()`) - see
+                // `buildRawActionChatCompletionRequest()`'s own `stealthClientToolNames` doc comment.
+                stealth_tool_names: stealthClientToolNames,
                 tool_results: toolResults,
                 // Structured/JSON-schema-constrained generation - see
                 // `buildRawActionChatCompletionRequest()`'s own `jsonSchema` param doc comment for the
@@ -3731,6 +3825,7 @@ router.post('/generate', async function (request, response) {
                     userMessageText: isToolResult ? undefined : userMessageText,
                     userMessageExtra: isToolResult ? undefined : userMessageExtra,
                     clientToolSchemas,
+                    stealthClientToolNames,
                     jsonSchema,
                 });
             } catch (error) {
@@ -3831,6 +3926,9 @@ router.post('/generate', async function (request, response) {
                         directories, ownerId, characterAvatar, groupId,
                         enabledTools: built.enabledServerTools,
                         clientToolNames: built.enabledClientToolNames,
+                        // THIS TASK (stealth-tool parity) - forwarded into runServerToolRounds()'s own
+                        // `stealthToolNames` param, see that function's doc comment step 2b.
+                        stealthToolNames: built.enabledStealthClientToolNames,
                         clientToolSchemas,
                     };
                 }
@@ -4352,6 +4450,15 @@ router.post('/generate', async function (request, response) {
                 // trying to resolve it here. This response shape is DISTINCT from a normal generation
                 // result (see `runServerToolRounds()`'s own doc comment, step 5) - nothing below this
                 // (persistence of a "final reply") applies, since there isn't one yet.
+                // THIS TASK (stealth-tool parity, runServerToolRounds()'s own doc comment step 2b) -
+                // nothing was invoked/persisted for this round; matching legacy's `shouldStopGeneration`
+                // branch, respond with a distinct, non-`choices`-shaped outcome the client recognizes
+                // (see public/script.js's raw-action gate) instead of a normal generation result or the
+                // `pending_tool_calls` hand-off shape - there is no pending tool call for the client to
+                // resolve, only "this generation produced nothing".
+                if (roundResult.ok === 'aborted') {
+                    return response.send({ aborted: true });
+                }
                 if (roundResult.ok === 'pending') {
                     return response.send({ pending_tool_calls: roundResult.pendingToolCalls });
                 }

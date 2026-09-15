@@ -3221,7 +3221,7 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, ra
             let text = '';
             const swipes = [];
             const toolCalls = [];
-            const state = { reasoning: '', images: [], signature: '', toolSignatures: {}, toolCallHandoff: null };
+            const state = { reasoning: '', images: [], signature: '', toolSignatures: {}, toolCallHandoff: null, toolCallAborted: false };
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) return;
@@ -3240,6 +3240,14 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, ra
                 // `state.reasoning`/`state.images` already do.
                 if (parsed?.tool_call_handoff) {
                     state.toolCallHandoff = parsed.tool_call_handoff;
+                }
+
+                // THIS TASK (stealth-tool parity) - same mechanism/rationale as `tool_call_handoff`
+                // immediately above (a shape with no `.choices` key, otherwise completely inert to
+                // every check below) - see forwardAndPersistSseWithServerTools()'s own `aborted` branch
+                // doc comment (src/endpoints/backends/chat-completions.js) for the full mechanism.
+                if (parsed?.tool_call_aborted) {
+                    state.toolCallAborted = true;
                 }
 
                 if (canMultiSwipe && Array.isArray(parsed?.choices) && parsed?.choices?.[0]?.index > 0) {
