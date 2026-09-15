@@ -1170,6 +1170,127 @@ async function run() {
         assert.deepEqual(persistedUserMsg.extra, {}, 'every field of the garbage payload was dropped by the allowlist - nothing survived, not even partially');
     }
 
+    // --- REGRESSION: the "double-append on raw-action sends" bug this session fixed (see
+    // public/script.js's Generate() - specifically its `willUseRawAction`/`skipTreePersistence`
+    // fix, threaded into sendMessageAsUser()) ---
+    // Root cause: for a real send, sendMessageAsUser() (public/script.js) used to UNCONDITIONALLY
+    // call chatOpAppend() (public/scripts/chat-store.js) whenever `chat_metadata?._tree_stored`,
+    // which POSTs the client's own message object (built via `_messageContent()`'s shallow spread
+    // - `{...msg, mes: text}`) to /api/chats/message/append -> this SAME appendMessages() function.
+    // That client message object carries `persona: avatar` (an avatar id/filename, set on
+    // `message` inside sendMessageAsUser() itself). Separately, whenever the raw-action gate in
+    // Generate() fires for that same send, this route's own handler (buildRawActionTextCompletion-
+    // Request()'s caller) ALSO independently calls appendMessages() for the SAME logical message,
+    // built server-side as `{ name: built.name1, is_user: true, mes: userMessageText, ... }` -
+    // built.name1 being a DISPLAY NAME (e.g. "Tester"), and crucially with NO `persona` field at
+    // all. Both calls target the exact SAME anchor: Generate() captures `lastMessage`/its
+    // `node_id` at the very top of the function, BEFORE sendMessageAsUser() ever runs, and passes
+    // that same pre-existing leaf as the raw-action request's own `node_id` - so this isn't a
+    // parent/child relationship, it's two independent appendMessages() calls at the identical
+    // parent for what a human would call "one message".
+    // appendMessages()'s own dedup-by-identity_hash exists precisely to make a retry/double-send
+    // land on the same row (see its "a retry/double-send that matches an existing sibling lands on
+    // that row instead of duplicating" comment above) - but nodeIdentityKey() computes a user
+    // message's speaker as `'u' + (o?.persona ?? o?.name ?? '')`. The client's own append has a
+    // real `persona` (an avatar id); the server's re-append has none, so it falls back to
+    // `o?.name` (a display name) - two different strings almost always - so the identity hashes
+    // essentially NEVER match in a real setup, the "twin" lookup fails, and a genuine duplicate
+    // sibling node is created under the same parent for one logical user turn.
+    //
+    // This is a CLIENT-behavior bug (sendMessageAsUser() deciding whether to persist at all) - no
+    // route-level test alone can invoke the real public/script.js browser code (there is no
+    // browser test harness in this repo), so it was invisible to this file's own existing
+    // route/request-builder tests, which only ever exercise the SERVER's one appendMessages()
+    // call in isolation and never modeled the client's own separate, concurrent append. What CAN
+    // be verified here, and is verified below, is both halves of the real bug:
+    //   1. Reproduce the ORIGINAL failure mode exactly: the client's own append (with `persona`)
+    //      and the server's own raw-action re-append (with no `persona`, `name` fallback) at the
+    //      SAME anchor produce two DIFFERENT identity hashes and therefore two sibling nodes.
+    //   2. Prove the fix's actual server-observable guarantee: once the client's own append is
+    //      skipped (the real fix - a client-only change, see Generate()'s own `willUseRawAction`
+    //      doc comment in public/script.js), the raw-action route's own appendMessages() call is
+    //      the SOLE writer, and by itself it produces exactly ONE user-message node for one
+    //      logical send - trivially true of a single call, but this documents precisely what the
+    //      fix relies on server-side, and is exactly what this file's other route-level tests
+    //      already implicitly exercise (a single append per real send) once the client stops
+    //      making its own redundant, differently-keyed append call.
+    {
+        const dupAvatar = writeCharacter('DupBug.png', {
+            name: 'DupBug',
+            data: { name: 'DupBug', description: '', first_mes: 'Hi.' },
+        });
+        const dupOwnerId = dupAvatar;
+        const dupBranchName = 'dup-bug-chat';
+        await saveChatToTree(directories, dupOwnerId, dupBranchName, [
+            { chat_metadata: {} },
+            { name: 'DupBug', is_user: false, mes: 'Hi.', send_date: 1, extra: {} },
+        ]);
+        const dupBranchInfo = await loadBranch(directories, dupOwnerId, dupBranchName);
+        const dupParentLeafId = dupBranchInfo.branch.leaf_id;
+
+        // (1) Simulates the client's own sendMessageAsUser() -> chatOpAppend() call, BEFORE this
+        // session's fix - a real `persona` field, a display `name`, same text.
+        const clientSideAppend = await appendMessages(directories, dupOwnerId, dupParentLeafId, [
+            { name: 'Tester', is_user: true, mes: 'What happens next?', persona: 'user-default.png', extra: {}, send_date: Date.now() },
+        ]);
+        assert.equal(clientSideAppend.ok, true);
+
+        // Simulates the raw-action route independently resolving the SAME anchor for the SAME send
+        // (exactly buildRawActionTextCompletionRequest()'s own real resolution, exercised for real).
+        const dupBuilt = await buildRawActionTextCompletionRequest(directories, {
+            characterAvatar: dupAvatar, ownerId: dupOwnerId, nodeId: dupParentLeafId,
+            type: 'normal', userMessageText: 'What happens next?',
+            tokenizerOptions: fakeTokenizerOptions,
+        });
+        assert.equal(dupBuilt.anchorNodeId, dupParentLeafId, 'the raw-action route resolves the SAME pre-existing leaf as its anchor - not the client\'s just-appended node - reproducing the real concurrent-append shape');
+
+        // (2) Simulates this SAME route handler's own re-append of the identical logical message -
+        // `built.name1`, no `persona` - this is the exact call the real route handler makes.
+        const serverSideAppend = await appendMessages(directories, dupOwnerId, dupBuilt.anchorNodeId, [
+            { name: dupBuilt.name1, is_user: true, mes: 'What happens next?', extra: {}, send_date: Date.now() },
+        ]);
+        assert.equal(serverSideAppend.ok, true);
+
+        assert.notEqual(
+            clientSideAppend.node_ids[0], serverSideAppend.node_ids[0],
+            'ORIGINAL BUG reproduced: the persona-keyed (client) and name-keyed (server) identity hashes differ, so the server\'s own re-append does NOT converge onto the client\'s already-persisted node - it creates a genuine duplicate sibling instead',
+        );
+        const dupAlternatives = await getAlternatives(directories, clientSideAppend.node_ids[0]);
+        assert.equal(dupAlternatives.total, 2, 'ORIGINAL BUG: two sibling user-message nodes now exist under the same parent for what a user experiences as one single message send');
+
+        // --- THE FIX, verified: once sendMessageAsUser() is told to skip its own tree-append
+        // (`skipTreePersistence: true`, set from Generate()'s hoisted `willUseRawAction` - see
+        // public/script.js), the raw-action route's own appendMessages() call above becomes the
+        // ONLY writer for this message. Proven here on a fresh anchor: with only that ONE append
+        // performed (never the client-side one), exactly one node exists - no duplicate sibling. ---
+        const fixedAvatar = writeCharacter('FixedBug.png', {
+            name: 'FixedBug',
+            data: { name: 'FixedBug', description: '', first_mes: 'Hi.' },
+        });
+        const fixedOwnerId = fixedAvatar;
+        const fixedBranchName = 'fixed-bug-chat';
+        await saveChatToTree(directories, fixedOwnerId, fixedBranchName, [
+            { chat_metadata: {} },
+            { name: 'FixedBug', is_user: false, mes: 'Hi.', send_date: 1, extra: {} },
+        ]);
+        const fixedBranchInfo = await loadBranch(directories, fixedOwnerId, fixedBranchName);
+        const fixedParentLeafId = fixedBranchInfo.branch.leaf_id;
+
+        const fixedBuilt = await buildRawActionTextCompletionRequest(directories, {
+            characterAvatar: fixedAvatar, ownerId: fixedOwnerId, nodeId: fixedParentLeafId,
+            type: 'normal', userMessageText: 'What happens next?',
+            tokenizerOptions: fakeTokenizerOptions,
+        });
+        // Post-fix reality: this is the ONLY appendMessages() call for this send - the client's own
+        // chatOpAppend() never ran (skipped by sendMessageAsUser()'s `skipTreePersistence`).
+        const onlyAppend = await appendMessages(directories, fixedOwnerId, fixedBuilt.anchorNodeId, [
+            { name: fixedBuilt.name1, is_user: true, mes: 'What happens next?', extra: {}, send_date: Date.now() },
+        ]);
+        assert.equal(onlyAppend.ok, true);
+        const fixedAlternatives = await getAlternatives(directories, onlyAppend.node_ids[0]);
+        assert.equal(fixedAlternatives.total, 1, 'THE FIX: exactly one user-message node exists for one logical send once the client no longer makes its own redundant, differently-keyed append');
+    }
+
     // NOTE: a dedicated test for the "continue/swipe on an empty chat" guard (see
     // buildRawActionTextCompletionRequest()'s own `if ((isContinue || isSwipe) && ...chat.length
     // === 0)` check) is deliberately NOT included here - message-tree-db.js's own invariants make a
