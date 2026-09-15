@@ -142,7 +142,7 @@ router.post('/generate', async function (request, response_generate) {
             character_avatar: characterAvatar, group_id: groupId, owner_id: ownerId,
             branch_name: branchName, node_id: nodeId, type = 'normal',
             is_impersonate: isImpersonate = false, is_continue: isContinue = false, is_swipe: isSwipe = false,
-            user_message: userMessageText,
+            user_message: userMessageText, streaming: streamingRequested = false,
         } = request.body;
 
         const directories = request.user.directories;
@@ -187,7 +187,26 @@ router.post('/generate', async function (request, response_generate) {
         // (createKoboldGenerationData()'s own wire field, sourced from the orchestrator's real
         // `kai_settings.api_server` resolution) - the existing dispatch code below is completely
         // unaware of which branch produced request.body, same as text-completions.js's own pattern.
-        request.body = built.params;
+        //
+        // `streaming` is overridden here from the CLIENT's own originally-requested value
+        // (`streamingRequested`, captured above BEFORE this reassignment discards the rest of the
+        // original request.body) - same "trust the client's own streaming preference" pattern
+        // text-completions.js's own raw-action branch already uses for `stream: !!request.body.stream`
+        // (see `const stream = !!request.body.stream; request.body = { ...built.params, stream, ... }`
+        // there). This is REQUIRED, not just belt-and-suspenders: `built.params.streaming` (from
+        // createKoboldGenerationData(), src/kobold-generation-data.js) computes
+        // `koboldSettings.streaming_kobold && koboldFlags.can_use_streaming && type !== 'quiet'`, but
+        // buildRawActionKoboldRequest() above never passes a `koboldFlags` argument through to
+        // resolveTextCompletionGenerationInput()/assembleTextCompletionPrompt() at all, so it defaults
+        // to `{}` - meaning `built.params.streaming` is ALWAYS `false` server-side, regardless of the
+        // client's real setting (there is no live "can this Kobold backend stream" probe result
+        // available server-side to compute this correctly - it only exists client-side, as
+        // `kai_flags.can_use_streaming`, from the client's own connection-time version probe). Without
+        // this override, the dispatch check a few lines below (`request.body.streaming ? '.../stream'
+        // : '.../v1/generate'`) would ALWAYS pick the non-streaming endpoint for every raw-action
+        // request, even one whose client-computed `streaming` field (see public/script.js's
+        // `rawActionGenerateData` construction) correctly said `true`.
+        request.body = { ...built.params, streaming: !!streamingRequested };
     }
 
     if (request.body.api_server.indexOf('localhost') != -1) {
