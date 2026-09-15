@@ -332,6 +332,51 @@ router.post('/import', (request, response) => {
     }
 });
 
+/**
+ * Creates a brand-new, empty World Info file, minting the real unique name server-side against
+ * on-disk state instead of trusting a client-computed one against a possibly-stale cached copy of
+ * `world_names` - the same "server owns identity" principle as /entry/create's uid minting above.
+ * Mirrors this codebase's existing "<name> (<N>)" numbered-suffix convention for World Info names
+ * (see the client's own getUniqueName()/getFreeWorldName() helpers), not the unrelated
+ * "<name> - Branch #<N>" scheme used for chat branches.
+ *
+ * - `name` omitted or blank: defaults to "New World", then uniquified as below.
+ * - `name` given and `unique` is not explicitly `false` (the default): uniquified against real
+ *   on-disk names by appending " (<N>)" - the right behavior whenever the client is generating a
+ *   name behind the scenes with no user-visible collision prompt of its own.
+ * - `name` given and `unique === false`: the caller already has its own explicit-name semantics
+ *   (e.g. a name a user typed with its own overwrite-confirmation UI) and wants an exact name or a
+ *   clear error, not a silent rename - a taken name 409s instead.
+ */
+router.post('/create', (request, response) => {
+    const { name, unique = true } = request.body ?? {};
+    if (name !== undefined && typeof name !== 'string') {
+        return response.status(400).send({ error: 'name must be a string' });
+    }
+
+    const baseName = (typeof name === 'string' && name.trim()) ? name.trim() : 'New World';
+    const exists = (candidate) => fs.existsSync(getWorldInfoPaths(request.user.directories, candidate).pathToWorldInfo);
+
+    let finalName = baseName;
+    if (unique === false) {
+        if (exists(finalName)) {
+            return response.status(409).send({ error: `World Info file '${finalName}' already exists` });
+        }
+    } else {
+        const MAX_TRIES = 100_000;
+        for (let i = 1; exists(finalName); i++) {
+            if (i > MAX_TRIES) {
+                return response.status(500).send({ error: 'Could not allocate a unique World Info name' });
+            }
+            finalName = `${baseName} (${i})`;
+        }
+    }
+
+    writeWorldInfoFile(request.user.directories, finalName, { entries: {} });
+
+    return response.send({ ok: true, name: finalName });
+});
+
 router.post('/edit', (request, response) => {
     if (!request.body) {
         return response.sendStatus(400);

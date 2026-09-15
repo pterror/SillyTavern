@@ -385,3 +385,74 @@ describe('worldinfo /entry/create', () => {
         expect(res.status).toBe(400);
     });
 });
+
+describe('worldinfo /create', () => {
+    test('creates a brand-new, empty book with the given name when it is free', async () => {
+        const res = await postJson('/api/worldinfo/create', { name: 'Fresh Book' });
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ ok: true, name: 'Fresh Book' });
+
+        const book = await (await postJson('/api/worldinfo/get', { name: 'Fresh Book' })).json();
+        expect(book.entries).toEqual({});
+    });
+
+    test('defaults to "New World" when no name is given', async () => {
+        const res = await postJson('/api/worldinfo/create', {});
+        expect(res.status).toBe(200);
+        expect((await res.json()).name).toBe('New World');
+    });
+
+    test('defaults to "New World" when the name is blank', async () => {
+        const res = await postJson('/api/worldinfo/create', { name: '   ' });
+        expect(res.status).toBe(200);
+        expect((await res.json()).name).toBe('New World');
+    });
+
+    test('silently mints "<name> (<N>)" against real on-disk state when the name is taken (default unique:true)', async () => {
+        await postJson('/api/worldinfo/create', { name: 'Taken' });
+
+        const res = await postJson('/api/worldinfo/create', { name: 'Taken' });
+        expect(res.status).toBe(200);
+        expect((await res.json()).name).toBe('Taken (1)');
+
+        // A third call skips past both now-taken names.
+        const res2 = await postJson('/api/worldinfo/create', { name: 'Taken' });
+        expect(res2.status).toBe(200);
+        expect((await res2.json()).name).toBe('Taken (2)');
+
+        expect(fs.existsSync(path.join(worldsDir, 'Taken.json'))).toBe(true);
+        expect(fs.existsSync(path.join(worldsDir, 'Taken (1).json'))).toBe(true);
+        expect(fs.existsSync(path.join(worldsDir, 'Taken (2).json'))).toBe(true);
+    });
+
+    test('uniquifies against a book that only exists on disk, not a client-supplied list', async () => {
+        // Written straight to disk, bypassing any endpoint - simulates another tab/client having
+        // already created this book, which a client-side cache of world_names could miss.
+        fs.writeFileSync(path.join(worldsDir, 'External.json'), JSON.stringify({ entries: {} }));
+
+        const res = await postJson('/api/worldinfo/create', { name: 'External' });
+        expect(res.status).toBe(200);
+        expect((await res.json()).name).toBe('External (1)');
+    });
+
+    test('unique:false rejects a taken name instead of renaming it', async () => {
+        await postJson('/api/worldinfo/create', { name: 'Exact', unique: false });
+
+        const res = await postJson('/api/worldinfo/create', { name: 'Exact', unique: false });
+        expect(res.status).toBe(409);
+
+        // Only the first book exists - the rejected call created nothing.
+        expect(fs.readdirSync(worldsDir).filter(f => f.endsWith('.json'))).toEqual(['Exact.json']);
+    });
+
+    test('unique:false creates the exact name when it is free', async () => {
+        const res = await postJson('/api/worldinfo/create', { name: 'Exact Free', unique: false });
+        expect(res.status).toBe(200);
+        expect((await res.json()).name).toBe('Exact Free');
+    });
+
+    test('rejects a non-string name', async () => {
+        const res = await postJson('/api/worldinfo/create', { name: 42 });
+        expect(res.status).toBe(400);
+    });
+});
