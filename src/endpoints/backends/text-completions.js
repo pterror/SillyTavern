@@ -35,22 +35,22 @@ import { persistAssistantReply } from '../../assistant-reply-persist.js';
 export const router = express.Router();
 
 /**
- * Special boy's steaming routine. Wrap this abomination into proper SSE stream.
+ * Re-shapes Ollama's own JSON-lines generation stream (`{"response": "...", "thinking": "..."}` per
+ * line, NOT SSE) into the same compact binary wire format (llamacpp-compact-stream.js,
+ * X-ST-Stream-Format: compact-v1) every other raw-action streaming path in this file uses - unlike
+ * those, this always re-encodes (there is no "forward the upstream bytes untouched" fallback here:
+ * Ollama's own wire shape was never SSE-JSON to begin with, so a caller with `persist` unset still
+ * gets the exact same compact re-shaping, just without the persistence side effect).
  *
- * `persist` (`pendingAssistantPersist`, see the `/generate` route below - `null`/`undefined` for
- * every non-raw-action call, which is the only path that reaches this function today anyway) is
- * OPTIONAL and additive only: when set, this accumulates `json.response` (the same real per-chunk
- * text this function already parses out of Ollama's own JSON-lines stream for the `{choices:
- * [{text, thinking}]}` SSE re-shaping it was already doing) into a running buffer, and persists it
- * via `persistAssistantReply()` once the stream ends (or the client disconnects early - whatever
- * was generated so far is still a real, if partial, reply, not nothing). This adds a plain string
- * concatenation per chunk and nothing else to the existing per-chunk work; the bytes actually
- * written to `response` are completely unchanged either way.
+ * `persist` (`pendingAssistantPersist`, see the `/generate` route below) is OPTIONAL: when set, this
+ * accumulates `json.response` into a running buffer and persists it via `persistAssistantReply()`
+ * once the stream ends (or the client disconnects early - whatever was generated so far is still a
+ * real, if partial, reply, not nothing), writing the resulting `assistant_node_id` frame last, same
+ * as `forwardAndPersistCompactStream()`.
  * @param {import('node-fetch').Response} jsonStream JSON stream
  * @param {import('express').Request} request Express request
  * @param {import('express').Response} response Express response
- * @param {object} [persist] `pendingAssistantPersist` - see above. Omit/pass `null` to leave this
- * function's behavior byte-for-byte identical to before.
+ * @param {object} [persist] `pendingAssistantPersist` - see above.
  * @returns {Promise<any>} Nothing valuable
  */
 async function parseOllamaStream(jsonStream, request, response, persist) {
@@ -58,6 +58,9 @@ async function parseOllamaStream(jsonStream, request, response, persist) {
         if (!jsonStream.body) {
             throw new Error('No body in the response');
         }
+
+        response.setHeader('X-ST-Stream-Format', 'compact-v1');
+        const writer = createBackpressureWriter(response);
 
         let partialData = '';
         let accumulatedText = '';
@@ -67,9 +70,14 @@ async function parseOllamaStream(jsonStream, request, response, persist) {
             if (settled) return;
             settled = true;
             if (persist && accumulatedText) {
-                persistAssistantReply(persist, accumulatedText).catch(error => {
-                    console.error('Failed to persist streamed Ollama assistant reply:', error);
-                });
+                persistAssistantReply(persist, accumulatedText)
+                    .then(persisted => {
+                        if (persisted) writer.write(encodeAssistantNodeIdFrame(persisted.node_id));
+                    })
+                    .catch(error => console.error('Failed to persist streamed Ollama assistant reply:', error))
+                    .finally(() => writer.end());
+            } else {
+                writer.end();
             }
         };
 
@@ -86,8 +94,8 @@ async function parseOllamaStream(jsonStream, request, response, persist) {
                 const text = json.response || '';
                 const thinking = json.thinking || '';
                 if (persist) accumulatedText += text;
-                const chunk = { choices: [{ text, thinking }] };
-                response.write(`data: ${JSON.stringify(chunk)}\n\n`);
+                if (thinking) writer.write(encodeReasoningFrame(thinking));
+                if (text) writer.write(encodeContent(text));
                 partialData = '';
             }
         });
@@ -95,13 +103,10 @@ async function parseOllamaStream(jsonStream, request, response, persist) {
         request.socket.on('close', function () {
             if (jsonStream.body instanceof Readable) jsonStream.body.destroy();
             finishPersist();
-            response.end();
         });
 
         jsonStream.body.on('end', () => {
             finishPersist();
-            response.write('data: [DONE]\n\n');
-            response.end();
         });
     } catch (error) {
         console.error('Error forwarding streaming response:', error);
