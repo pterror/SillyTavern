@@ -380,7 +380,8 @@ async function run() {
         fakeBackend.server.close();
 
         assert.equal(status, 200);
-        assert.deepEqual(data, { results: [{ text: 'Rex says hello back.' }] }, 'the real Kobold response body reaches the client byte-for-byte unmodified');
+        assert.equal(data.results?.[0]?.text, 'Rex says hello back.', 'the real Kobold response body reaches the client byte-for-byte unmodified');
+        assert.equal(typeof data.assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
 
         const branchAfter = await loadBranch(directories, ownerId, branchName);
         assert.equal(branchAfter.messages.length, messageCountBefore + 2, 'both the user message and the assistant reply were appended');
@@ -455,7 +456,15 @@ async function run() {
         // than lying about being `text/event-stream` - not asserted on for that reason. The raw SSE
         // body bytes (checked below) are what actually distinguishes this from the JSON path.
         void headers;
-        assert.equal(text, sseTokens.map(token => `data: ${JSON.stringify({ token })}\n\n`).join('') + 'data: [DONE]\n\n', 'the raw SSE bytes from the fake Kobold backend reach the client byte-for-byte unmodified');
+        // forwardAndPersistSseText() holds back the literal `data: [DONE]` line and writes
+        // `data: {"assistant_node_id": "..."}` ahead of it, once persistence completes - see its own
+        // doc comment in text-completions.js. Every real token frame still reaches the client
+        // byte-for-byte identical, in order, before the injected frame.
+        const expectedTokens = sseTokens.map(token => `data: ${JSON.stringify({ token })}\n\n`).join('');
+        assert.ok(text.startsWith(expectedTokens), 'every real token frame reaches the client byte-for-byte identical, in order, before the injected frame');
+        const trailer = /^data: (\{"assistant_node_id":"[^"]+"\})\n\ndata: \[DONE\]\n\n$/.exec(text.slice(expectedTokens.length));
+        assert.ok(trailer, `the injected assistant_node_id frame lands ahead of [DONE], with [DONE] properly terminated - got: ${JSON.stringify(text.slice(expectedTokens.length))}`);
+        const streamedNodeId = JSON.parse(trailer[1]).assistant_node_id;
 
         const branchAfter = await waitFor(async () => {
             const branch = await loadBranch(directories, ownerId, streamBranch);
@@ -464,6 +473,7 @@ async function run() {
         const [, assistantMsg] = branchAfter.messages.slice(-2);
         assert.equal(assistantMsg.mes, sseTokens.join(''), 'the assistant reply was accumulated from the real SSE stream (via forwardAndPersistSseText()) and persisted correctly');
         assert.equal(assistantMsg.is_user, false);
+        assert.equal(assistantMsg.node_id, streamedNodeId, 'the node id sent to the client ahead of [DONE] is the exact node the reply actually landed on');
         assert.equal(assistantMsg.name, 'Rex');
 
         // Direct, unit-level exercise of the REAL forwardAndPersistSseText() function together with

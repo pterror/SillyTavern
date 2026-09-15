@@ -438,6 +438,20 @@ async function run() {
     }
 
     /**
+     * A raw-action stream holds `data: [DONE]` back and writes `data: {"assistant_node_id": "..."}`
+     * ahead of it (forwardAndPersistSseText()'s own doc comment in chat-completions.js) - everything
+     * else in the byte stream is untouched. Asserts that shape and returns the captured node id.
+     */
+    function assertStreamCarriesAssistantNodeId(bodyText, expectedBodyBeforeDone) {
+        const withoutDone = expectedBodyBeforeDone.replace(/data: \[DONE\]\n\n$/, '');
+        assert.ok(bodyText.startsWith(withoutDone), 'every real content frame reaches the client byte-for-byte identical, in order, before the injected frame');
+        const rest = bodyText.slice(withoutDone.length);
+        const match = /^data: (\{"assistant_node_id":"[^"]+"\})\n\ndata: \[DONE\]\n\n$/.exec(rest);
+        assert.ok(match, `the injected assistant_node_id frame lands ahead of [DONE], with [DONE] properly terminated - got: ${JSON.stringify(rest)}`);
+        return JSON.parse(match[1]).assistant_node_id;
+    }
+
+    /**
      * Like pointBackendAt(), but also flips on `oai_settings.function_calling` (and a real, allowed
      * `custom_prompt_post_processing` value) so `isToolCallingSupported()`
      * (src/chat-completion-tool-capabilities.js) - and therefore `canUseTools` inside
@@ -654,7 +668,8 @@ async function run() {
         fakeBackend.server.close();
 
         assert.equal(status, 200, 'the (unchanged) response is forwarded to the client');
-        assert.deepEqual(data, { choices: [{ message: { role: 'assistant', content: 'Rex says hello back.' } }] }, 'response body reaches the client unmodified');
+        assert.equal(data.choices?.[0]?.message?.content, 'Rex says hello back.', 'response body reaches the client unmodified');
+        assert.equal(typeof data.assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
 
         const branchAfter = await loadBranch(directories, ownerId, branchName);
         assert.equal(branchAfter.messages.length, messageCountBefore + 2, 'both the user message and the assistant reply were appended');
@@ -789,7 +804,8 @@ async function run() {
         fakeBackend.server.close();
 
         assert.equal(status, 200, 'the (unchanged) response is forwarded to the client');
-        assert.deepEqual(data, { choices: [{ message: { role: 'assistant', content: 'Greetings, traveler!' } }] }, 'the generated text still reaches the client unmodified');
+        assert.equal(data.choices?.[0]?.message?.content, 'Greetings, traveler!', 'the generated text still reaches the client unmodified');
+        assert.equal(typeof data.assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
 
         const branchAfter = await loadBranch(directories, ownerId, swipeBranch);
         assert.notEqual(branchAfter.branch.leaf_id, swipedNodeId, 'the branch is now positioned on a DIFFERENT node - the new alternative');
@@ -874,7 +890,8 @@ async function run() {
         fakeBackend.server.close();
 
         assert.equal(status, 200, 'the (unchanged) response is forwarded to the client');
-        assert.deepEqual(data, { choices: [{ message: { role: 'assistant', content: ' there was a brave adventurer.' } }] }, 'the generated text still reaches the client unmodified');
+        assert.equal(data.choices?.[0]?.message?.content, ' there was a brave adventurer.', 'the generated text still reaches the client unmodified');
+        assert.equal(typeof data.assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
 
         const branchAfter = await loadBranch(directories, ownerId, continueBranch);
         assert.equal(branchAfter.messages.length, messageCountBefore, 'no new node (user or assistant) was created - continue only edits the existing leaf');
@@ -1016,7 +1033,8 @@ async function run() {
         fakeBackend.server.close();
 
         assert.equal(status, 200, 'the group raw-action generation succeeds');
-        assert.deepEqual(data, { choices: [{ message: { role: 'assistant', content: 'All systems nominal, Captain.' } }] }, 'response body reaches the client unmodified');
+        assert.equal(data.choices?.[0]?.message?.content, 'All systems nominal, Captain.', 'response body reaches the client unmodified');
+        assert.equal(typeof data.assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
 
         const branchAfterGroup = await loadBranch(directories, groupId, groupChatId);
         assert.equal(branchAfterGroup.messages.length, messageCountBeforeGroup + 2, 'both the user message and the assistant reply were persisted under the GROUP\'s own owner_id');
@@ -1060,7 +1078,7 @@ async function run() {
         fakeBackend.server.close();
 
         assert.equal(status, 200);
-        assert.equal(bodyText, fakeBackend.expectedBody, 'the client-facing SSE bytes are byte-for-byte identical to what the fake backend sent - the teeing did not alter, buffer, or reorder anything');
+        assertStreamCarriesAssistantNodeId(bodyText, fakeBackend.expectedBody);
 
         const branchAfter = await waitFor(async () => {
             const branch = await loadBranch(directories, ownerId, streamBranch);
@@ -1102,7 +1120,7 @@ async function run() {
         fakeBackend.server.close();
 
         assert.equal(status, 200);
-        assert.equal(bodyText, fakeBackend.expectedBody, 'the client-facing SSE bytes are byte-for-byte identical to what the fake backend sent');
+        assertStreamCarriesAssistantNodeId(bodyText, fakeBackend.expectedBody);
 
         const branchAfter = await waitFor(async () => {
             const branch = await loadBranch(directories, ownerId, streamSwipeBranch);
@@ -1142,7 +1160,7 @@ async function run() {
         fakeBackend.server.close();
 
         assert.equal(status, 200);
-        assert.equal(bodyText, fakeBackend.expectedBody, 'the client-facing SSE bytes are byte-for-byte identical to what the fake backend sent');
+        assertStreamCarriesAssistantNodeId(bodyText, fakeBackend.expectedBody);
 
         const branchAfter = await waitFor(async () => {
             const branch = await loadBranch(directories, ownerId, streamContinueBranch);
@@ -1217,7 +1235,11 @@ async function run() {
         fakeBackend.server.close();
 
         assert.equal(status, 200);
-        assert.deepEqual(data, { choices: [{ message: { content: claudeContent[0].text ?? '' } }], content: claudeContent }, 'the client-facing reply shape is exactly this function\'s own pre-existing (unmodified) content[0]-only wrapping');
+        {
+            const { assistant_node_id, ...rest } = data;
+            assert.deepEqual(rest, { choices: [{ message: { content: claudeContent[0].text ?? '' } }], content: claudeContent }, 'the client-facing reply shape is exactly this function\'s own pre-existing (unmodified) content[0]-only wrapping');
+            assert.equal(typeof assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
+        }
 
         const branchAfter = await loadBranch(directories, ownerId, claudeBranch);
         assert.equal(branchAfter.messages.length, messageCountBefore + 2);
@@ -1269,7 +1291,12 @@ async function run() {
         fakeBackend.server.close();
 
         assert.equal(status, 200);
-        assert.equal(bodyText, claudeSseBody, 'the client-facing SSE bytes are byte-for-byte identical to what the fake backend sent - the teeing did not alter, buffer, or reorder anything');
+        // Claude's own stream has no [DONE] sentinel to hold back (it ends on message_stop, then the
+        // connection just closes) - the injected frame lands as a trailing write instead, still ahead
+        // of the connection actually closing.
+        assert.ok(bodyText.startsWith(claudeSseBody), 'every real content frame reaches the client byte-for-byte identical, in order, before the injected frame');
+        const claudeTrailer = /^data: (\{"assistant_node_id":"[^"]+"\})\n\n$/.exec(bodyText.slice(claudeSseBody.length));
+        assert.ok(claudeTrailer, `the injected assistant_node_id frame is appended after Claude's own stream ends - got: ${JSON.stringify(bodyText.slice(claudeSseBody.length))}`);
 
         const branchAfter = await waitFor(async () => {
             const branch = await loadBranch(directories, ownerId, claudeStreamBranch);
@@ -1356,7 +1383,10 @@ async function run() {
         fakeBackend.server.close();
 
         assert.equal(status, 200);
-        assert.equal(bodyText, geminiSseBody, 'the client-facing SSE bytes are byte-for-byte identical to what the fake backend sent');
+        // Gemini's own stream has no [DONE] sentinel either - same trailing-write case as Claude.
+        assert.ok(bodyText.startsWith(geminiSseBody), 'every real content frame reaches the client byte-for-byte identical, in order, before the injected frame');
+        const geminiTrailer = /^data: (\{"assistant_node_id":"[^"]+"\})\n\n$/.exec(bodyText.slice(geminiSseBody.length));
+        assert.ok(geminiTrailer, `the injected assistant_node_id frame is appended after Gemini's own stream ends - got: ${JSON.stringify(bodyText.slice(geminiSseBody.length))}`);
 
         const branchAfter = await waitFor(async () => {
             const branch = await loadBranch(directories, ownerId, makerSuiteStreamBranch);
@@ -1395,7 +1425,11 @@ async function run() {
         fakeBackend.server.close();
 
         assert.equal(status, 200);
-        assert.deepEqual(data, mistralBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
+        {
+            const { assistant_node_id, ...rest } = data;
+            assert.deepEqual(rest, mistralBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
+            assert.equal(typeof assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
+        }
 
         const branchAfter = await loadBranch(directories, ownerId, mistralBranch);
         assert.equal(branchAfter.messages.length, messageCountBefore + 2);
@@ -1426,7 +1460,7 @@ async function run() {
         fakeBackend.server.close();
 
         assert.equal(status, 200);
-        assert.equal(bodyText, fakeBackend.expectedBody, 'the client-facing SSE bytes are byte-for-byte identical to what the fake backend sent');
+        assertStreamCarriesAssistantNodeId(bodyText, fakeBackend.expectedBody);
 
         const branchAfter = await waitFor(async () => {
             const branch = await loadBranch(directories, ownerId, mistralStreamBranch);
@@ -1466,7 +1500,11 @@ async function run() {
         fakeBackend.server.close();
 
         assert.equal(status, 200);
-        assert.deepEqual(data, deepseekBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
+        {
+            const { assistant_node_id, ...rest } = data;
+            assert.deepEqual(rest, deepseekBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
+            assert.equal(typeof assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
+        }
 
         const branchAfter = await loadBranch(directories, ownerId, deepseekBranch);
         assert.equal(branchAfter.messages.length, messageCountBefore + 2);
@@ -1508,7 +1546,7 @@ async function run() {
         fakeBackend.server.close();
 
         assert.equal(status, 200);
-        assert.equal(bodyText, deepseekSseBody, 'the client-facing SSE bytes are byte-for-byte identical to what the fake backend sent');
+        assertStreamCarriesAssistantNodeId(bodyText, deepseekSseBody);
 
         const branchAfter = await waitFor(async () => {
             const branch = await loadBranch(directories, ownerId, deepseekStreamBranch);
@@ -1546,7 +1584,11 @@ async function run() {
         fakeBackend.server.close();
 
         assert.equal(status, 200);
-        assert.deepEqual(data, xaiBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
+        {
+            const { assistant_node_id, ...rest } = data;
+            assert.deepEqual(rest, xaiBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
+            assert.equal(typeof assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
+        }
 
         const branchAfter = await loadBranch(directories, ownerId, xaiBranch);
         assert.equal(branchAfter.messages.length, messageCountBefore + 2);
@@ -1577,7 +1619,7 @@ async function run() {
         fakeBackend.server.close();
 
         assert.equal(status, 200);
-        assert.equal(bodyText, fakeBackend.expectedBody, 'the client-facing SSE bytes are byte-for-byte identical to what the fake backend sent');
+        assertStreamCarriesAssistantNodeId(bodyText, fakeBackend.expectedBody);
 
         const branchAfter = await waitFor(async () => {
             const branch = await loadBranch(directories, ownerId, xaiStreamBranch);
@@ -1626,7 +1668,11 @@ async function run() {
             ai21FakeBackendUrl = null;
 
             assert.equal(status, 200);
-            assert.deepEqual(data, ai21Body, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
+            {
+                const { assistant_node_id, ...rest } = data;
+                assert.deepEqual(rest, ai21Body, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
+                assert.equal(typeof assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
+            }
 
             const branchAfter = await loadBranch(directories, ownerId, ai21Branch);
             assert.equal(branchAfter.messages.length, messageCountBefore + 2);
@@ -1658,7 +1704,7 @@ async function run() {
             ai21FakeBackendUrl = null;
 
             assert.equal(status, 200);
-            assert.equal(bodyText, fakeBackend.expectedBody, 'the client-facing SSE bytes are byte-for-byte identical to what the fake backend sent');
+            assertStreamCarriesAssistantNodeId(bodyText, fakeBackend.expectedBody);
 
             const branchAfter = await waitFor(async () => {
                 const branch = await loadBranch(directories, ownerId, ai21StreamBranch);
@@ -1702,7 +1748,11 @@ async function run() {
             cohereFakeBackendUrl = null;
 
             assert.equal(status, 200);
-            assert.deepEqual(data, cohereBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
+            {
+                const { assistant_node_id, ...rest } = data;
+                assert.deepEqual(rest, cohereBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
+                assert.equal(typeof assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
+            }
 
             const branchAfter = await loadBranch(directories, ownerId, cohereBranch);
             assert.equal(branchAfter.messages.length, messageCountBefore + 2);
@@ -1750,7 +1800,10 @@ async function run() {
             cohereFakeBackendUrl = null;
 
             assert.equal(status, 200);
-            assert.equal(bodyText, cohereSseBody, 'the client-facing SSE bytes are byte-for-byte identical to what the fake backend sent');
+            // Cohere's own stream has no [DONE] sentinel either - same trailing-write case as Claude/Gemini.
+            assert.ok(bodyText.startsWith(cohereSseBody), 'every real content frame reaches the client byte-for-byte identical, in order, before the injected frame');
+            const cohereTrailer = /^data: (\{"assistant_node_id":"[^"]+"\})\n\n$/.exec(bodyText.slice(cohereSseBody.length));
+            assert.ok(cohereTrailer, `the injected assistant_node_id frame is appended after Cohere's own stream ends - got: ${JSON.stringify(bodyText.slice(cohereSseBody.length))}`);
 
             const branchAfter = await waitFor(async () => {
                 const branch = await loadBranch(directories, ownerId, cohereStreamBranch);
@@ -1789,7 +1842,11 @@ async function run() {
             aimlapiFakeBackendUrl = null;
 
             assert.equal(status, 200);
-            assert.deepEqual(data, aimlapiBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
+            {
+                const { assistant_node_id, ...rest } = data;
+                assert.deepEqual(rest, aimlapiBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
+                assert.equal(typeof assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
+            }
 
             const branchAfter = await loadBranch(directories, ownerId, aimlapiBranch);
             assert.equal(branchAfter.messages.length, messageCountBefore + 2);
@@ -1821,7 +1878,7 @@ async function run() {
             aimlapiFakeBackendUrl = null;
 
             assert.equal(status, 200);
-            assert.equal(bodyText, fakeBackend.expectedBody, 'the client-facing SSE bytes are byte-for-byte identical to what the fake backend sent');
+            assertStreamCarriesAssistantNodeId(bodyText, fakeBackend.expectedBody);
 
             const branchAfter = await waitFor(async () => {
                 const branch = await loadBranch(directories, ownerId, aimlapiStreamBranch);
@@ -1860,7 +1917,11 @@ async function run() {
             chutesFakeBackendUrl = null;
 
             assert.equal(status, 200);
-            assert.deepEqual(data, chutesBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
+            {
+                const { assistant_node_id, ...rest } = data;
+                assert.deepEqual(rest, chutesBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
+                assert.equal(typeof assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
+            }
 
             const branchAfter = await loadBranch(directories, ownerId, chutesBranch);
             assert.equal(branchAfter.messages.length, messageCountBefore + 2);
@@ -1892,7 +1953,7 @@ async function run() {
             chutesFakeBackendUrl = null;
 
             assert.equal(status, 200);
-            assert.equal(bodyText, fakeBackend.expectedBody, 'the client-facing SSE bytes are byte-for-byte identical to what the fake backend sent');
+            assertStreamCarriesAssistantNodeId(bodyText, fakeBackend.expectedBody);
 
             const branchAfter = await waitFor(async () => {
                 const branch = await loadBranch(directories, ownerId, chutesStreamBranch);
@@ -1932,7 +1993,11 @@ async function run() {
             minimaxFakeBackendUrl = null;
 
             assert.equal(status, 200);
-            assert.deepEqual(data, minimaxBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
+            {
+                const { assistant_node_id, ...rest } = data;
+                assert.deepEqual(rest, minimaxBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
+                assert.equal(typeof assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
+            }
 
             const branchAfter = await loadBranch(directories, ownerId, minimaxBranch);
             assert.equal(branchAfter.messages.length, messageCountBefore + 2);
@@ -1964,7 +2029,7 @@ async function run() {
             minimaxFakeBackendUrl = null;
 
             assert.equal(status, 200);
-            assert.equal(bodyText, fakeBackend.expectedBody, 'the client-facing SSE bytes are byte-for-byte identical to what the fake backend sent');
+            assertStreamCarriesAssistantNodeId(bodyText, fakeBackend.expectedBody);
 
             const branchAfter = await waitFor(async () => {
                 const branch = await loadBranch(directories, ownerId, minimaxStreamBranch);
@@ -2003,7 +2068,11 @@ async function run() {
             electronhubFakeBackendUrl = null;
 
             assert.equal(status, 200);
-            assert.deepEqual(data, electronhubBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
+            {
+                const { assistant_node_id, ...rest } = data;
+                assert.deepEqual(rest, electronhubBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
+                assert.equal(typeof assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
+            }
 
             const branchAfter = await loadBranch(directories, ownerId, electronhubBranch);
             assert.equal(branchAfter.messages.length, messageCountBefore + 2);
@@ -2035,7 +2104,7 @@ async function run() {
             electronhubFakeBackendUrl = null;
 
             assert.equal(status, 200);
-            assert.equal(bodyText, fakeBackend.expectedBody, 'the client-facing SSE bytes are byte-for-byte identical to what the fake backend sent');
+            assertStreamCarriesAssistantNodeId(bodyText, fakeBackend.expectedBody);
 
             const branchAfter = await waitFor(async () => {
                 const branch = await loadBranch(directories, ownerId, electronhubStreamBranch);
@@ -2078,7 +2147,11 @@ async function run() {
         fakeBackend.server.close();
 
         assert.equal(status, 200);
-        assert.deepEqual(data, azureBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
+        {
+            const { assistant_node_id, ...rest } = data;
+            assert.deepEqual(rest, azureBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
+            assert.equal(typeof assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
+        }
 
         const branchAfter = await loadBranch(directories, ownerId, azureBranch);
         assert.equal(branchAfter.messages.length, messageCountBefore + 2);
@@ -2109,7 +2182,7 @@ async function run() {
         fakeBackend.server.close();
 
         assert.equal(status, 200);
-        assert.equal(bodyText, fakeBackend.expectedBody, 'the client-facing SSE bytes are byte-for-byte identical to what the fake backend sent');
+        assertStreamCarriesAssistantNodeId(bodyText, fakeBackend.expectedBody);
 
         const branchAfter = await waitFor(async () => {
             const branch = await loadBranch(directories, ownerId, azureStreamBranch);
@@ -2325,7 +2398,8 @@ async function run() {
         fakeBackend.server.close();
 
         assert.equal(status, 200);
-        assert.deepEqual(data, { choices: [{ message: { role: 'assistant', content: 'No tools here.' } }] });
+        assert.equal(data.choices?.[0]?.message?.content, 'No tools here.');
+        assert.equal(typeof data.assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
         assert.ok(capturedBody, 'the fake backend actually received a request');
         assert.equal(capturedBody.tools, undefined, 'no `tools` field is sent when no server tools are registered - unchanged from before this chunk');
         assert.equal(capturedBody.tool_choice, undefined);
@@ -2396,7 +2470,8 @@ async function run() {
         }
 
         assert.equal(status, 200, 'the (unchanged) final response is forwarded to the client');
-        assert.deepEqual(data, { choices: [{ message: { role: 'assistant', content: 'It is sunny in Booktown.' } }] });
+        assert.equal(data.choices?.[0]?.message?.content, 'It is sunny in Booktown.');
+        assert.equal(typeof data.assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
         assert.equal(callCount, 2, 'backend was called twice: once producing tool_calls, once with the final plain-text reply');
 
         assert.ok(Array.isArray(requestBodies[0].tools) && requestBodies[0].tools.length === 1, 'the FIRST request actually advertised the registered tool');
@@ -2488,7 +2563,8 @@ async function run() {
         }
 
         assert.equal(status, 200, 'a thrown invoke() does not crash the request');
-        assert.deepEqual(data, { choices: [{ message: { role: 'assistant', content: 'Sorry, that failed.' } }] });
+        assert.equal(data.choices?.[0]?.message?.content, 'Sorry, that failed.');
+        assert.equal(typeof data.assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
         assert.equal(callCount, 2, 'the loop continued to a second backend call after the tool error, instead of aborting');
 
         const secondRequestDump = JSON.stringify(requestBodies[1].messages);
@@ -2760,7 +2836,8 @@ async function run() {
 
         assert.equal(callCount, 2, 'the loop resumed and called the backend again after the result was submitted');
         assert.equal(status2, 200);
-        assert.deepEqual(data2, { choices: [{ message: { role: 'assistant', content: 'It is currently 3pm where you are.' } }] });
+        assert.equal(data2.choices?.[0]?.message?.content, 'It is currently 3pm where you are.');
+        assert.equal(typeof data2.assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
 
         // The SECOND backend request's own history must carry the real, submitted result - proving
         // the loop really re-resolved the tree, not just that two requests happened.
@@ -2866,7 +2943,8 @@ async function run() {
 
         assert.equal(callCount, 2, 'the loop resumed with a second real backend call once the mixed node was fully resolved');
         assert.equal(status2, 200);
-        assert.deepEqual(data2, { choices: [{ message: { role: 'assistant', content: 'Combined both results, thanks.' } }] });
+        assert.equal(data2.choices?.[0]?.message?.content, 'Combined both results, thanks.');
+        assert.equal(typeof data2.assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
 
         const branchAfter = await loadBranch(directories, ownerId, toolBranch);
         assert.equal(branchAfter.messages.length, messageCountBefore + 3, 'user message + the ONE mixed tool node (edited in place, not duplicated) + the final reply');
@@ -2996,7 +3074,8 @@ async function run() {
         assert.equal(callCount, 2, 'the call resolved server-side (a second backend call happened), it was never treated as a client hand-off');
         assert.equal(serverToolInvoked, true, 'the server-native tool actually executed for this name');
         assert.equal(status, 200);
-        assert.deepEqual(data, { choices: [{ message: { role: 'assistant', content: 'Done.' } }] });
+        assert.equal(data.choices?.[0]?.message?.content, 'Done.');
+        assert.equal(typeof data.assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
         assert.equal(data.pending_tool_calls, undefined, 'never a hand-off for a name the server tool registry owns');
     }
 
@@ -3406,7 +3485,8 @@ async function run() {
         }
 
         assert.equal(status, 200, 'the swipe-with-tool-call request completes normally');
-        assert.deepEqual(data, { choices: [{ message: { role: 'assistant', content: 'General Kenobi! (checked: sunny in Swiptown)' } }] });
+        assert.equal(data.choices?.[0]?.message?.content, 'General Kenobi! (checked: sunny in Swiptown)');
+        assert.equal(typeof data.assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
         assert.equal(callCount, 2, 'backend called twice: once producing the tool call, once with the final swipe text');
         assert.ok(JSON.stringify(requestBodies[1].messages).includes('Sunny in Swiptown'), 'the second request\'s history really was re-resolved through the tool-call turn');
 
@@ -3499,7 +3579,8 @@ async function run() {
         }
 
         assert.equal(status, 200);
-        assert.deepEqual(data, { choices: [{ message: { role: 'assistant', content: ' sunny, according to the tool.' } }] });
+        assert.equal(data.choices?.[0]?.message?.content, ' sunny, according to the tool.');
+        assert.equal(typeof data.assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
         assert.equal(callCount, 2);
 
         const branchAfter = await loadBranch(directories, ownerId, continueToolBranch);
