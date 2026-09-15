@@ -143,7 +143,10 @@ async function parseOllamaStream(jsonStream, request, response, persist) {
  * @param {import('node-fetch').Response} fetchResponse
  * @param {import('express').Response} response
  * @param {object|null|undefined} persist `pendingAssistantPersist`, or a falsy value to skip
- * teeing/persistence entirely and just forward the bytes untouched.
+ * persistence only - the compact binary re-encoding itself always happens (there is no "forward the
+ * upstream bytes untouched" fallback based on `persist` alone anymore: every stream reaching this
+ * function, raw-action or not, is re-shaped into the same compact-v1 wire format the client always
+ * decodes).
  * @param {(json: any) => string|undefined} extractText Pulls this api_type's own real per-chunk
  * generated-text field out of one parsed SSE JSON payload - see the two real, DIFFERENT on-wire
  * shapes this covers at the call sites below (`choices[0].text` for the `/v1/completions`-style
@@ -156,7 +159,7 @@ async function parseOllamaStream(jsonStream, request, response, persist) {
  * @returns {Promise<void>}
  */
 export async function forwardAndPersistCompactStream(fetchResponse, response, persist, extractText, extractProbabilities = null) {
-    if (!persist || !fetchResponse.ok || !fetchResponse.body) {
+    if (!fetchResponse.ok || !fetchResponse.body) {
         return forwardFetchResponse(fetchResponse, response);
     }
 
@@ -282,7 +285,7 @@ export async function forwardAndPersistCompactStream(fetchResponse, response, pe
 
     flushPendingContent();
 
-    if (text) {
+    if (persist && text) {
         const persisted = await persistAssistantReply(persist, text);
         if (persisted) {
             safeWrite(encodeAssistantNodeIdFrame(persisted.node_id));
@@ -711,8 +714,9 @@ router.post('/generate', async function (request, response) {
     // meant to be persisted - see that branch's own comment for the `is_impersonate`/`type ===
     // 'quiet'` exclusion). Read by the non-streaming response branch AND by the streaming branches
     // further down - every other branch (connection-profile, default/legacy) never sets this, so it
-    // stays `null` and every persistence call below stays a no-op for them; the byte stream those
-    // requests receive is completely unaffected by any of this.
+    // stays `null` and every persistence call below stays a no-op for them. The wire format itself
+    // (compact-v1, every streaming branch below) is unaffected either way - `null` only means
+    // nothing gets written to the message tree once the stream ends.
     //
     // Streaming persistence status, precisely, per api_type (see `persistAssistantReply()` in
     // ../../assistant-reply-persist.js for the shared plain/continue/swipe persistence logic all of
@@ -1124,10 +1128,9 @@ router.post('/generate', async function (request, response) {
             } else {
                 // Pipe remote SSE stream to Express response as the compact binary wire format,
                 // tapping the OpenAI TEXT-completions-shaped `choices[0].text` field for raw-action
-                // persistence - see forwardAndPersistCompactStream()'s own doc comment above. A no-op,
-                // byte-for-byte-identical-to-before (forwardFetchResponse()) pass-through whenever
-                // pendingAssistantPersist is null (every non-raw-action stream, i.e.
-                // connection_profile_id and legacy/default).
+                // persistence - see forwardAndPersistCompactStream()'s own doc comment above.
+                // `pendingAssistantPersist` being null (connection_profile_id and legacy/default
+                // calls) only skips persistence; the client still gets the same compact-v1 stream.
                 await forwardAndPersistCompactStream(completionsStream, response, pendingAssistantPersist, json => json?.choices?.[0]?.text);
             }
         } else {

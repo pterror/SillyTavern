@@ -433,8 +433,8 @@ async function sendClaudeRequest(request, response, persist) {
 
         if (request.body.stream) {
             // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
-            // accumulate the real reply text for raw-action persistence when `persist` is set - a
-            // no-op, byte-for-byte-identical-to-before pass-through otherwise (see
+            // accumulate the real reply text for persistence when `persist` is set - the compact re-encoding itself always
+            // happens; a falsy `persist` only skips persistence (see
             // `forwardAndPersistCompactStream()`'s own doc comment above for the full teeing mechanism).
             // Claude's SSE stream is a sequence of named events (`message_start`/`content_block_start`/
             // `content_block_delta`/`ping`/`message_delta`/`message_stop`, etc) whose payload JSON
@@ -789,8 +789,8 @@ async function sendMakerSuiteRequest(request, response, persist) {
         if (stream) {
             try {
                 // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
-                // accumulate the real reply text for raw-action persistence when `persist` is set - a
-                // no-op, byte-for-byte-identical-to-before pass-through otherwise (see
+                // accumulate the real reply text for persistence when `persist` is set - the compact re-encoding itself always
+                // happens; a falsy `persist` only skips persistence (see
                 // `forwardAndPersistCompactStream()`'s own doc comment above). Each `alt=sse` `data:` event
                 // is a real, full GenerateContentResponse-shaped JSON payload (the same shape as the
                 // non-streaming `generateResponseJson` parsed below), just carrying that CHUNK's own
@@ -937,8 +937,9 @@ async function sendAI21Request(request, response, persist) {
         if (request.body.stream) {
             // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
             // accumulate the OpenAI Chat-Completions-shaped `choices[0].delta.content` field for
-            // raw-action persistence when `persist` is set - a no-op, byte-for-byte-identical-to-before
-            // pass-through otherwise (see `forwardAndPersistCompactStream()`'s own doc comment above).
+            // persistence when `persist` is set - the compact re-encoding itself always happens;
+            // a falsy `persist` only skips persistence (see `forwardAndPersistCompactStream()`'s
+            // own doc comment above).
             await forwardAndPersistCompactStream(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content);
         } else {
             if (!generateResponse.ok) {
@@ -1050,8 +1051,9 @@ async function sendMistralAIRequest(request, response, persist) {
         if (request.body.stream) {
             // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
             // accumulate the OpenAI Chat-Completions-shaped `choices[0].delta.content` field for
-            // raw-action persistence when `persist` is set - a no-op, byte-for-byte-identical-to-before
-            // pass-through otherwise (see `forwardAndPersistCompactStream()`'s own doc comment above).
+            // persistence when `persist` is set - the compact re-encoding itself always happens;
+            // a falsy `persist` only skips persistence (see `forwardAndPersistCompactStream()`'s
+            // own doc comment above).
             await forwardAndPersistCompactStream(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content,
                 json => json.choices?.find(choice => choice?.delta?.content?.[0]?.thinking)?.delta?.content?.[0]?.thinking?.[0]?.text || undefined);
         } else {
@@ -1181,8 +1183,8 @@ async function sendCohereRequest(request, response, persist) {
         if (request.body.stream) {
             const stream = await fetch(apiUrl, config);
             // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
-            // accumulate the real reply text for raw-action persistence when `persist` is set - a
-            // no-op, byte-for-byte-identical-to-before pass-through otherwise (see
+            // accumulate the real reply text for persistence when `persist` is set - the compact re-encoding itself always
+            // happens; a falsy `persist` only skips persistence (see
             // `forwardAndPersistCompactStream()`'s own doc comment above). Cohere v2's SSE events carry their
             // own named `type` field (`message-start`/`content-start`/`content-delta`/`tool-plan-delta`/
             // `tool-call-start`/.../`message-end`, etc) - only `content-delta`/`tool-plan-delta` events'
@@ -1335,8 +1337,9 @@ async function sendDeepSeekRequest(request, response, persist) {
         if (request.body.stream) {
             // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
             // accumulate the OpenAI Chat-Completions-shaped `choices[0].delta.content` field for
-            // raw-action persistence when `persist` is set - a no-op, byte-for-byte-identical-to-before
-            // pass-through otherwise (see `forwardAndPersistCompactStream()`'s own doc comment above).
+            // persistence when `persist` is set - the compact re-encoding itself always happens;
+            // a falsy `persist` only skips persistence (see `forwardAndPersistCompactStream()`'s
+            // own doc comment above).
             // Deliberately reads ONLY `delta.content`, never `delta.reasoning_content` (DeepSeek
             // reasoner models' separate reasoning-output field - see this function's own doc comment
             // above), so reasoning is never persisted as if it were the reply.
@@ -1471,8 +1474,9 @@ async function sendXaiRequest(request, response, persist) {
         if (request.body.stream) {
             // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
             // accumulate the OpenAI Chat-Completions-shaped `choices[0].delta.content` field for
-            // raw-action persistence when `persist` is set - a no-op, byte-for-byte-identical-to-before
-            // pass-through otherwise (see `forwardAndPersistCompactStream()`'s own doc comment above).
+            // persistence when `persist` is set - the compact re-encoding itself always happens;
+            // a falsy `persist` only skips persistence (see `forwardAndPersistCompactStream()`'s
+            // own doc comment above).
             await forwardAndPersistCompactStream(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content,
                 json => json.choices?.find(choice => choice?.delta?.reasoning_content)?.delta?.reasoning_content || undefined);
         } else {
@@ -1601,8 +1605,9 @@ async function sendAimlapiRequest(request, response, persist) {
         if (request.body.stream) {
             // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
             // accumulate the OpenAI Chat-Completions-shaped `choices[0].delta.content` field for
-            // raw-action persistence when `persist` is set - a no-op, byte-for-byte-identical-to-before
-            // pass-through otherwise (see `forwardAndPersistCompactStream()`'s own doc comment above).
+            // persistence when `persist` is set - the compact re-encoding itself always happens;
+            // a falsy `persist` only skips persistence (see `forwardAndPersistCompactStream()`'s
+            // own doc comment above).
             await forwardAndPersistCompactStream(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content, extractGenericReasoning);
         } else {
             if (!generateResponse.ok) {
@@ -1738,8 +1743,9 @@ async function sendElectronHubRequest(request, response, persist) {
         if (request.body.stream) {
             // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
             // accumulate the OpenAI Chat-Completions-shaped `choices[0].delta.content` field for
-            // raw-action persistence when `persist` is set - a no-op, byte-for-byte-identical-to-before
-            // pass-through otherwise (see `forwardAndPersistCompactStream()`'s own doc comment above).
+            // persistence when `persist` is set - the compact re-encoding itself always happens;
+            // a falsy `persist` only skips persistence (see `forwardAndPersistCompactStream()`'s
+            // own doc comment above).
             await forwardAndPersistCompactStream(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content, extractGenericReasoning);
         } else {
             if (!generateResponse.ok) {
@@ -1866,8 +1872,9 @@ async function sendChutesRequest(request, response, persist) {
         if (request.body.stream) {
             // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
             // accumulate the OpenAI Chat-Completions-shaped `choices[0].delta.content` field for
-            // raw-action persistence when `persist` is set - a no-op, byte-for-byte-identical-to-before
-            // pass-through otherwise (see `forwardAndPersistCompactStream()`'s own doc comment above).
+            // persistence when `persist` is set - the compact re-encoding itself always happens;
+            // a falsy `persist` only skips persistence (see `forwardAndPersistCompactStream()`'s
+            // own doc comment above).
             await forwardAndPersistCompactStream(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content, extractGenericReasoning);
         } else {
             if (!generateResponse.ok) {
@@ -1975,8 +1982,9 @@ async function sendMinimaxRequest(request, response, persist) {
         if (request.body.stream) {
             // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
             // accumulate the OpenAI Chat-Completions-shaped `choices[0].delta.content` field for
-            // raw-action persistence when `persist` is set - a no-op, byte-for-byte-identical-to-before
-            // pass-through otherwise (see `forwardAndPersistCompactStream()`'s own doc comment above).
+            // persistence when `persist` is set - the compact re-encoding itself always happens;
+            // a falsy `persist` only skips persistence (see `forwardAndPersistCompactStream()`'s
+            // own doc comment above).
             await forwardAndPersistCompactStream(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content);
         } else {
             if (!generateResponse.ok) {
@@ -2095,8 +2103,9 @@ async function sendAzureOpenAIRequest(request, response, persist) {
         if (request.body.stream) {
             // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
             // accumulate the OpenAI Chat-Completions-shaped `choices[0].delta.content` field for
-            // raw-action persistence when `persist` is set - a no-op, byte-for-byte-identical-to-before
-            // pass-through otherwise (see `forwardAndPersistCompactStream()`'s own doc comment above).
+            // persistence when `persist` is set - the compact re-encoding itself always happens;
+            // a falsy `persist` only skips persistence (see `forwardAndPersistCompactStream()`'s
+            // own doc comment above).
             return await forwardAndPersistCompactStream(fetchResponse, response, persist, json => json?.choices?.[0]?.delta?.content);
         }
 
@@ -2934,12 +2943,11 @@ function extractGenericReasoning(json) {
  * `./llamacpp-compact-stream.js` for the wire format) instead of the upstream SSE-JSON bytes
  * verbatim - direct instruction from the user, server side forwards nothing raw to the client.
  *
- * Only ever called when `persist` (`pendingAssistantPersist`) is set (a raw-action request) - the
- * caller is expected to fall through to a PLAIN, untouched `forwardFetchResponse()` call otherwise
- * (JUDGMENT CALL: the non-raw-action/legacy streaming path - quiet generations, connection-profile
- * testing, group-member impersonation, etc - is intentionally left on raw SSE-JSON for now; it would
- * additionally need images/tool-call-delta/thought-signature frames the binary protocol doesn't carry
- * yet, well beyond this pass's scope).
+ * Called for every streaming request reaching one of the provider-specific `sendXRequest()`
+ * functions, raw-action or not - `persist` (`pendingAssistantPersist`) only gates whether the
+ * accumulated text is persisted once the stream ends; a falsy `persist` (quiet generations,
+ * connection-profile testing, group-member impersonation preview) still gets the same compact-v1
+ * re-encoding, just with the persistence step skipped.
  *
  * Each `data:` line's JSON is parsed exactly like the previous SSE-line-forwarding implementation
  * (line-buffered across TCP chunk boundaries) and passed to `extractText(json)`/`extractReasoning(json)`
@@ -2948,12 +2956,12 @@ function extractGenericReasoning(json) {
  * for perceived responsiveness, then buffered up to ~256 bytes or ~40ms since the last flush, whichever
  * comes first) into `encodeContent()` frames; a reasoning or swipe-index frame flushes any pending
  * content first so frame order matches arrival order. Once the upstream stream ends, the accumulated
- * text (if any) is persisted and its node id is sent as the final `encodeAssistantNodeIdFrame()` frame
- * before `response.end()`.
+ * text (if any) is persisted (when `persist` is set) and its node id is sent as the final
+ * `encodeAssistantNodeIdFrame()` frame before `response.end()`.
  * @param {import('node-fetch').Response} fetchResponse
  * @param {import('express').Response} response
  * @param {object|null|undefined} persist `pendingAssistantPersist`, or a falsy value to skip
- * the binary rewrite entirely and just forward the upstream bytes untouched.
+ * persistence only - the compact binary re-encoding itself always happens.
  * @param {(json: any) => string|undefined} extractText Pulls the real per-chunk generated-text
  * field out of one parsed SSE JSON payload.
  * @param {((json: any) => string|undefined)|null} [extractReasoning] Pulls that provider's real
@@ -2964,7 +2972,7 @@ function extractGenericReasoning(json) {
  * @returns {Promise<void>}
  */
 async function forwardAndPersistCompactStream(fetchResponse, response, persist, extractText, extractReasoning = null) {
-    if (!persist || !fetchResponse.ok || !fetchResponse.body) {
+    if (!fetchResponse.ok || !fetchResponse.body) {
         return forwardFetchResponse(fetchResponse, response);
     }
 
@@ -3085,7 +3093,7 @@ async function forwardAndPersistCompactStream(fetchResponse, response, persist, 
 
     flushContentBuffer();
 
-    if (accumulatedText) {
+    if (persist && accumulatedText) {
         const persisted = await persistAssistantReply(persist, accumulatedText);
         if (persisted) {
             writer.write(encodeAssistantNodeIdFrame(persisted.node_id));
@@ -4569,10 +4577,10 @@ router.post('/generate', async function (request, response) {
 
             // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
             // accumulate the OpenAI Chat-Completions-shaped `choices[0].delta.content` field for
-            // raw-action persistence - see `forwardAndPersistCompactStream()`'s own doc comment above for
-            // the full teeing mechanism and the `choices[0].delta.content` shape verification. A
-            // no-op, byte-for-byte-identical-to-before pass-through whenever `pendingAssistantPersist`
-            // is `null` (every non-raw-action stream, i.e. connection_profile_id and legacy/default).
+            // persistence - see `forwardAndPersistCompactStream()`'s own doc comment above for
+            // the full teeing mechanism and the `choices[0].delta.content` shape verification. The
+            // compact re-encoding itself always happens; `pendingAssistantPersist` being `null`
+            // (connection_profile_id and legacy/default calls) only skips persistence.
             return await forwardAndPersistCompactStream(fetchResponse, response, pendingAssistantPersist, json => json?.choices?.[0]?.delta?.content, extractGenericReasoning);
         }
 

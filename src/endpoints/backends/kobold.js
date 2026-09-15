@@ -356,10 +356,9 @@ router.post('/generate', async function (request, response_generate) {
             if (request.body.streaming) {
                 // Re-encode Kobold's own SSE data payload shape (`{"token": "..."}`, verified against
                 // generateKoboldWithStreaming() in public/scripts/kai-settings.js) into the same
-                // compact binary wire format every other raw-action streaming path now uses (see
-                // text-completions.js's forwardAndPersistCompactStream() doc comment) - a no-op,
-                // byte-for-byte-identical-to-before (forwardFetchResponse()) pass-through whenever
-                // pendingAssistantPersist is null (every non-raw-action stream).
+                // compact binary wire format every streaming path uses, raw-action or not (see
+                // text-completions.js's forwardAndPersistCompactStream() doc comment) -
+                // `pendingAssistantPersist` only gates whether the final text also gets persisted.
                 await forwardAndPersistCompactStream(response, response_generate, pendingAssistantPersist, json => json?.token);
                 return;
             } else {

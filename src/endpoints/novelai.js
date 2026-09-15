@@ -476,11 +476,10 @@ router.post('/generate', async function (req, res) {
             // Re-encode NovelAI's own SSE data payload shape (`{"token": "...", "logprobs": {...}}`,
             // verified against generateNovelWithStreaming() in public/scripts/nai-settings.js -
             // `data.token` is already decoded text, not a raw token id) into the same compact binary
-            // wire format every other raw-action streaming path now uses (see
+            // wire format every streaming path uses, raw-action or not (see
             // forwardAndPersistCompactStream()'s own doc comment) - `data.logprobs` is carried through
-            // as a `0x02` probabilities frame so per-token logprob display keeps working. A no-op,
-            // byte-for-byte-identical-to-before (forwardFetchResponse()) pass-through whenever
-            // pendingAssistantPersist is null (every non-raw-action stream).
+            // as a `0x02` probabilities frame so per-token logprob display keeps working.
+            // `pendingAssistantPersist` only gates whether the final text also gets persisted.
             await forwardAndPersistCompactStream(response, res, pendingAssistantPersist, json => json?.token, json => json?.logprobs);
         } else {
             if (!response.ok) {
