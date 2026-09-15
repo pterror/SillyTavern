@@ -3217,11 +3217,12 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, ra
     if (stream) {
         // Raw-action chat-completion streams are the compact binary protocol (see
         // public/scripts/llamacpp-compact-stream.js for the wire format/decoder) instead of raw
-        // SSE-JSON, signaled by this response header - src/endpoints/backends/chat-completions.js's
-        // forwardAndPersistCompactStream() is the only thing that sets it. Every other streaming
-        // path (non-raw-action, and the tool-calling forwardAndPersistSseWithServerTools() round
-        // trips) never sets it and keeps going through the SSE-JSON branch below unchanged.
-        if (response.headers.get('X-ST-Stream-Format') === 'compact-v1-chat') {
+        // SSE-JSON, signaled by this response header - the same header value/wire format the
+        // text-completion streaming path uses (src/endpoints/backends/chat-completions.js's and
+        // text-completions.js's own forwardAndPersistCompactStream() both set it). Every other
+        // streaming path (non-raw-action, and the tool-calling forwardAndPersistSseWithServerTools()
+        // round trips) never sets it and keeps going through the SSE-JSON branch below unchanged.
+        if (response.headers.get('X-ST-Stream-Format') === 'compact-v1') {
             const reader = response.body.getReader();
             return async function* streamData() {
                 const decoder = new CompactStreamDecoder();
