@@ -307,7 +307,7 @@ export { messageFormatting };
 // Lives in chat-store.js, the only module allowed to write messages; re-exported for existing importers.
 import {
     updateMessage, updateIn, deepFreeze,
-    ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath, chatOpEndPathAtAnchor, chatOpSelect, chatOpGraft, chatOpDegraft, chatOpSwapAdjacent, chatOpDeleteAlternative, chatOpDeleteAlternativeNode,
+    ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath, chatOpEndPathAtAnchor, chatOpSelect, chatOpGraft, chatOpDegraft, chatOpSwapAdjacent, chatOpDeleteAlternative, chatOpDeleteAlternativeNode, healDirtyMessages,
     _mergeCardGreetingsIntoOpening, _restoreContinuation, _isBlankSlot,
 } from './scripts/chat-store.js';
 export {
@@ -10431,7 +10431,7 @@ function _isBlankUnwrittenSwipe(message) {
  * @returns {Promise<string|void>} The chat name actually saved under (may differ from `chatName` when
  * `unique` caused a rename), or void when nothing was saved.
  */
-export async function saveChat({ chatName, withMetadata, mesId, force = false, chatData = undefined, unique = false } = {}) {
+export async function saveChat({ chatName, withMetadata, mesId, force = false, chatData = undefined, unique = false, heal = false } = {}) {
     if (selected_group) {
         toastr.error(t`Operation was aborted to prevent data corruption.`, t`saveChat called for a group chat`);
         throw new Error('saveChat called for a group chat');
@@ -10477,16 +10477,21 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
 
     try {
         if (isTreeChat) {
-            // Diffing/healing `chat[]` against chatOp*() is chat-store.js's healDirtyMessages() - not
-            // this function's job. It's reached ONLY via getContext().saveChat() (st-context.js), the
-            // one truly generic entry point where an extension may have mutated `chat[]` without
-            // stating any chatOp*() of its own; that wrapper heals first, then calls
-            // saveChatConditional(), which reaches this function. An ordinary first-party save (send,
-            // edit, swipe) never needs it: every mutation already persisted itself directly via its own
-            // chatOp*() call, and a write that fails now says so immediately (_chatOpPost()'s own
-            // failure reporting) instead of relying on this function to notice later. So all that's left
-            // for this function to do is post whatever chat_metadata changed, addressed at whichever
-            // node is already known to be real.
+            // `heal` is true only when this call arrived via getContext().saveChat() (st-context.js) -
+            // the one truly generic entry point where a third-party extension may have mutated `chat[]`
+            // directly, without stating any chatOp*() of its own, and so can't be assumed to already be
+            // in sync. An ordinary first-party save (send, edit, swipe reaching this function via
+            // saveChatConditional()) never sets it: every mutation already persisted itself directly via
+            // its own chatOp*() call, and a write that fails now says so immediately (_chatOpPost()'s own
+            // failure reporting) instead of relying on this function to notice later. chat-store.js's
+            // healDirtyMessages() is that diff; it's owner-agnostic, but this function is solo-only (see
+            // the guard at the top), so it only ever runs it for the solo case here - see
+            // saveChatConditional() for where the identical `heal` flag applies to a group instead.
+            if (heal) {
+                await healDirtyMessages().catch(error =>
+                    console.error('[saveChat] Could not sync unstated changes:', error));
+            }
+
             const addressedByName = chatName !== undefined;
             const treeAvatar = getCurrentCharacter()?.avatar;
             let treeResult = null;
@@ -13158,7 +13163,17 @@ export async function saveMetadata() {
     return await _postChatMetadata({ avatar_url: avatar }, target, metadata);
 }
 
-export async function saveChatConditional() {
+/**
+ * @param {object} [options]
+ * @param {boolean} [options.heal] Whether to reconcile `chat[]` against chatOp*() before saving - true
+ * only for getContext().saveChat() (st-context.js), the one generic entry point a third-party extension
+ * can reach without having stated any chatOp*() of its own. An ordinary first-party call (every other
+ * caller of this function) never needs it: every mutation already persisted itself directly at its own
+ * call site. See saveChat()'s own use of this same flag for the solo case; healDirtyMessages()
+ * (chat-store.js) is owner-agnostic, so the group branch below applies it identically, just without a
+ * dedicated function of its own to pass it through to.
+ */
+export async function saveChatConditional({ heal = false } = {}) {
     try {
         await waitUntilCondition(() => !isChatSaving, DEFAULT_SAVE_EDIT_TIMEOUT, 100);
     } catch {
@@ -13172,18 +13187,20 @@ export async function saveChatConditional() {
         isChatSaving = true;
 
         if (selected_group) {
+            if (heal) {
+                await healDirtyMessages().catch(error =>
+                    console.error('[saveChatConditional] Could not sync unstated changes:', error));
+            }
             // Every message mutation already persisted itself directly via chatOp*() (chat-store.js) at
             // its own call site - this is metadata catch-up only, mirroring what saveChat()'s tree
-            // branch does for solo below. (Diffing/healing chat[] against chatOp*() for a generic
-            // caller that bypassed them - e.g. an extension - is getContext().saveChat()'s job, not
-            // this function's: see healDirtyMessages()'s own doc comment.)
+            // branch does for solo below.
             await saveMetadata();
             // saveGroupChat()'s old shouldSaveGroup=true path bumped this same field the same way
             // (debounced, no reload) after every whole-array resave; keep that bump on its own now that
             // the resave it rode along with is gone.
             await saveGroupField(selected_group, { date_last_chat: Date.now() }, false, false);
         } else {
-            await saveChat();
+            await saveChat({ heal });
         }
 
         // Save token and prompts cache to IndexedDB storage
@@ -15632,9 +15649,12 @@ function addDebugFunctions() {
 
         // One batch edit rather than something the fallback save has to work out from a diff.
         // chatOpEditMany() already retries transient failures itself (chat-store.js's _chatOpPost).
+        // silent: true - this catch already reports failure with its own, more specific message, so the
+        // generic one _chatOpPost() would otherwise show for the same failure is suppressed instead of
+        // shown alongside it.
         if (editedIds.length) {
             try {
-                await chatOpEditMany(editedIds);
+                await chatOpEditMany(editedIds, true);
             } catch (error) {
                 console.error('Could not save the token count backfill:', error);
                 toastr.error(t`Could not save the token count backfill. Check your connection and try again.`, t`Save failed`);
