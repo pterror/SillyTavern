@@ -43,6 +43,7 @@ import {
 } from './users.js';
 
 import { migrateAllGroupChats, migrateAllCharacterChats } from './message-tree-migration.js';
+import { getSqliteEngine } from './endpoints/sqlite-engine.js';
 import getWebpackServeMiddleware from './middleware/webpack-serve.js';
 import basicAuthMiddleware from './middleware/basicAuth.js';
 import getWhitelistMiddleware from './middleware/whitelist.js';
@@ -498,6 +499,23 @@ async function postSetupTasks(result) {
 }
 
 /**
+ * Chat data is stored as a message tree in SQLite (see message-tree-db.js). Without a usable engine,
+ * every tree-storage function there silently returns null and every route in chats.js falls back to
+ * legacy JSONL files instead - refusing to boot here means that degraded mode can never happen
+ * silently at runtime.
+ */
+async function verifySqliteBackend() {
+    const engine = await getSqliteEngine();
+    if (engine) {
+        return;
+    }
+    console.error(color.red('FATAL: No usable SQLite backend is available on this install.'));
+    console.error(color.red('Both the native (better-sqlite3) and WebAssembly (node-sqlite3-wasm) SQLite engines failed to load - see the errors logged above by sqlite-engine.js for the specific cause.'));
+    console.error(color.red('SillyTavern stores chat data as a message tree in SQLite and cannot run without one of these engines.'));
+    process.exit(1);
+}
+
+/**
  * Registers a not-found error response if a not-found error page exists. Should only be called after all other middlewares have been registered.
  */
 function apply404Middleware() {
@@ -533,6 +551,7 @@ initUserStorage(globalThis.DATA_ROOT)
     .then(migratePublicOverrides)
     .then(migrateAllGroupChats)
     .then(migrateAllCharacterChats)
+    .then(verifySqliteBackend)
     .then(verifySecuritySettings)
     .then(preSetupTasks)
     .then(apply404Middleware)
