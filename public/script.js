@@ -7923,7 +7923,6 @@ async function getChatResult() {
         if (message?.node_id) {
             _snapshotMessages();
         }
-        await ensureOpeningRow(0);
     }
     await loadItemizedPrompts(getCurrentChatId());
     await printMessages();
