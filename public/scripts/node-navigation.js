@@ -1,5 +1,5 @@
 import {
-    chat, chat_metadata,
+    chat,
     getRequestHeaders, getCurrentChatId, getCurrentCharacter, charactersStore,
     redisplayChat, updateViewMessageIds, refreshSwipeButtons,
 } from '../script.js';
@@ -106,7 +106,7 @@ async function _persistNodeSelection(targetNodeId) {
  * @returns {Promise<boolean>}
  */
 export async function switchToNode(targetNodeId) {
-    if (selected_group != null || !chat_metadata._tree_stored || chat.length === 0) {
+    if (selected_group != null || chat.length === 0) {
         return false;
     }
 

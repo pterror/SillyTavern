@@ -1,7 +1,7 @@
 // Writer side of the chat store: writes should go through the named actions below rather than
 // mutating `chat` directly and asking for a whole-conversation save.
 
-import { chat, chat_metadata, getCurrentCharacter, getCurrentChatId, getRequestHeaders, isStoredNodeId, isProvisionalNodeId, provisionalNodeId, charactersStore, redisplayChat, updateViewMessageIds, refreshSwipeButtons, updateMessageBlock, _messageSnapshots } from '../script.js';
+import { chat, getCurrentCharacter, getCurrentChatId, getRequestHeaders, isStoredNodeId, isProvisionalNodeId, provisionalNodeId, charactersStore, redisplayChat, updateViewMessageIds, refreshSwipeButtons, updateMessageBlock, _messageSnapshots } from '../script.js';
 import { getMessageTimeStamp } from './RossAscends-mods.js';
 // A group has no avatar of its own - while one is open it, not getCurrentCharacter(), is the tree
 // owner for every chatOp*() below. See _currentOwner().
@@ -215,8 +215,6 @@ export async function ensureOpeningRow(mesId = 0) {
 // written here: an appended slot carries a provisional id, marking it as card-only text; it gains a
 // row only if someone uses it.
 export async function _mergeCardGreetingsIntoOpening() {
-    if (!chat_metadata._tree_stored) return;
-
     const opening = _chatAt(0);
     const character = getCurrentCharacter();
     if (opening?.node_id == null || opening.node_id === '' || character?.avatar == null || character.avatar === '') return;
@@ -342,7 +340,6 @@ export async function _mergeCardGreetingsIntoOpening() {
 /** @param {number} mesId */
 export async function _restoreContinuation(mesId) {
     const message = _chatAt(mesId);
-    if (!chat_metadata._tree_stored) return;
     // A provisional-id opening has no row, so nothing can follow it.
     if (!isStoredNodeId(message?.node_id)) return;
 

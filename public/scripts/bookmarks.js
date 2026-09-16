@@ -186,15 +186,6 @@ async function getBranchChatSnapshot(mesId, { swipeId = null } = {}) {
     return snapshot;
 }
 
-/**
- * Checks if the current chat is stored in the message tree DB (vs flat JSONL files).
- * Tree-stored chats support O(1) forking and node labeling.
- * @returns {boolean}
- */
-function isTreeStored() {
-    return !!chat_metadata?._tree_stored;
-}
-
 /** The tree owner for /api/chats/label while a group is open: its own id, never getCurrentCharacter() - see chat-store.js's _currentOwner() for why a mid-generation "current character" is the wrong owner for a group. */
 function _labelOwner() {
     return selected_group ? { group_id: selected_group } : { avatar_url: getCurrentCharacter()?.avatar };
@@ -225,7 +216,7 @@ export async function createBranch(mesId, { swipeId = null } = {}) {
     // A card-only greeting has no node yet - being branched at is what earns it one.
     const branchNodeId = await ensureOpeningRow(mesId);
 
-    if (isTreeStored() && branchNodeId) {
+    if (branchNodeId) {
         // Default to the currently-selected swipe's node; an alt-swipe branch resolves its own node
         // below instead. A swipe alternative that already exists is *already a row in the tree* (it was
         // generated and persisted, or fetched from /api/chats/alternatives) - branching it is naming
@@ -517,7 +508,7 @@ export async function createNewBookmark(mesId, { forceName = null } = {}) {
 
     const bookmarkNodeId = await ensureOpeningRow(mesId);
 
-    if (isTreeStored() && bookmarkNodeId) {
+    if (bookmarkNodeId) {
         const response = await fetch('/api/chats/label', {
             method: 'POST',
             headers: getRequestHeaders(),
@@ -772,7 +763,7 @@ export async function forkChat(mesId, { swipeId = null } = {}) {
     // array instead, same as createNewBookmark() does with its own label response. Forking an
     // alternate swipe labels THAT swipe's own node instead (see createBranch()'s targetNodeId), so
     // nodeId - the currently-viewed row - still needs its own checkpoint label in that case.
-    if (isTreeStored() && !selected_group && nodeId) {
+    if (!selected_group && nodeId) {
         if (swipeId !== null) {
             const character = getCurrentCharacter();
             await fetch('/api/chats/label', {
