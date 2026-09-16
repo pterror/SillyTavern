@@ -13,8 +13,19 @@ import { isStoredNodeId } from './node-identity.js';
 /** @type {string|null} */
 let _lastSavedMetadataJSON = null;
 
+/** @typedef {Error & {status: number}} HttpError */
+
+/**
+ * @param {unknown} error
+ * @returns {error is HttpError}
+ */
+function _hasHttpStatus(error) {
+    return error instanceof Error && typeof (/** @type {*} */ (error).status) === 'number';
+}
+
 // `integrity` is excluded on purpose: the server rotates it on every metadata write (even a true
 // no-op one), so comparing it would make every save look "dirty" and defeat the whole point.
+/** @param {ChatMetadata|null|undefined} metadata */
 function _metadataContentJSON(metadata) {
     if (!metadata || typeof metadata !== 'object') {
         return JSON.stringify(metadata);
@@ -36,14 +47,21 @@ export function _resetMetadataSaveSnapshot() {
 // is a real, immediate refusal and is never retried, since a retry can't change it. Mirrors
 // chat-store.js's own _retryTransient(), for the one caller here (_postChatMetadata()) that posts
 // directly instead of going through a chatOp*().
+/**
+ * @template T
+ * @param {() => Promise<T>} fn
+ * @param {{attempts?: number, baseDelayMs?: number}} [options]
+ * @returns {Promise<T>}
+ */
 async function _retryOp(fn, { attempts = 3, baseDelayMs = 500 } = {}) {
+    /** @type {unknown} */
     let lastError;
     for (let i = 0; i < attempts; i++) {
         try {
             return await fn();
         } catch (error) {
             lastError = error;
-            if (error?.status >= 400 && error.status < 500) throw error;
+            if (_hasHttpStatus(error) && error.status >= 400 && error.status < 500) throw error;
             if (i < attempts - 1) {
                 await delay(baseDelayMs * Math.pow(2, i));
             }
@@ -78,7 +96,7 @@ let _metadataSaveChain = Promise.resolve();
  * that variable's own doc comment above.
  * @param {{avatar_url: string}|{group_id: string}} owner
  * @param {string} target The node/label this chat is addressed by (character.chat, or group.chat_id).
- * @param {object} metadata
+ * @param {ChatMetadata} metadata
  */
 export async function _postChatMetadata(owner, target, metadata) {
     const run = async () => {
@@ -93,6 +111,7 @@ export async function _postChatMetadata(owner, target, metadata) {
             return;
         }
 
+        /** @returns {Promise<{integrity?: string}|null>} */
         const postMetadata = async () => {
             const response = await fetch('/api/chats/metadata', {
                 method: 'POST',
@@ -104,7 +123,7 @@ export async function _postChatMetadata(owner, target, metadata) {
                 return null;
             }
             if (!response.ok) {
-                const error = new Error(`/api/chats/metadata responded ${response.status}`);
+                const error = /** @type {HttpError} */ (new Error(`/api/chats/metadata responded ${response.status}`));
                 error.status = response.status;
                 throw error;
             }
