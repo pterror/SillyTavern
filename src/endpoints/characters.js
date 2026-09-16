@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { promises as fsPromises } from 'node:fs';
 import { Buffer } from 'node:buffer';
 import crypto from 'node:crypto';
+import { once } from 'node:events';
 
 import express from 'express';
 import sanitize from 'sanitize-filename';
@@ -15,7 +16,7 @@ import storage from 'node-persist';
 
 import { AVATAR_WIDTH, AVATAR_HEIGHT, DEFAULT_AVATAR_PATH } from '../constants.js';
 import { default as validateAvatarUrlMiddleware, getFileNameValidationFunction, forbiddenRegExp } from '../middleware/validateFileName.js';
-import { deepMerge, humanizedDateTime, tryParse, getConfigValue, mutateJsonString, clientRelativePath, getUniqueName, sanitizeSafeCharacterReplacements, getArrayBufferSlice, uuidv7, color } from '../util.js';
+import { deepMerge, humanizedDateTime, tryParse, getConfigValue, mutateJsonString, clientRelativePath, getUniqueName, sanitizeSafeCharacterReplacements, getArrayBufferSlice, uuidv7, color, mapWithConcurrency } from '../util.js';
 import { TavernCardValidator } from '../validator/TavernCardValidator.js';
 import { parse, read, write, writeCardToFile, computeAvatarIdentityHashFromImageBuffer } from '../character-card-parser.js';
 import { getCharaCardV2, convertToV2, readFromV2, charaFormatData, unsetPrivateFields, omitInstallLocalFields, omitFavField, omitChatField, computeContentIdentityHash } from '../character-card-normalize.js';
@@ -1839,6 +1840,24 @@ function paginateSearchResults(characterResults, groupResults, { offset, limit, 
 // Requests that omit `limit` still need a bound - unbounded search/includeGroups on a large library can OOM.
 const DEFAULT_PAGE_LIMIT = 500;
 
+// The no-param branch of `/all` streams the whole library to the client instead of materializing it - these
+// bound how much of it is ever in memory at once (mirrors characters-search-index.js's readCharacterBatches()).
+const STREAM_ALL_BATCH_SIZE = 500;
+const STREAM_ALL_READ_CONCURRENCY = getConfigValue('performance.characterStreamAllReadConcurrency', 64, 'number');
+
+/**
+ * Writes `chunk` to `response`, awaiting the real Node/Express backpressure signal ('drain') when the socket's
+ * write buffer is full, instead of blasting further writes in regardless of whether the client is keeping up.
+ * @param {import('express').Response} response
+ * @param {string} chunk
+ * @returns {Promise<void>}
+ */
+async function writeBackpressured(response, chunk) {
+    if (!response.write(chunk)) {
+        await once(response, 'drain');
+    }
+}
+
 /**
  * Overwrites each character's `.fav` with the metadata store's own value, in place. A character not yet tracked is left untouched.
  * @param {import('../users.js').UserDirectoryList} directories
@@ -1913,17 +1932,40 @@ router.post('/all', async function (request, response) {
         const favOnly = fav === true;
 
         if (sortField === undefined && offset === undefined && limit === undefined && !search && !includeGroups) {
+            // No pagination params at all: preserve the exact pre-existing response shape (a bare array), but
+            // stream it - a real library's worth of characters (300k+ rows) can't be held in memory as one array
+            // nor buffered whole before response.send(). Everything that can fail without having written a byte
+            // yet (reading the directory, resolving stale cards) still happens before any write, so it still
+            // reaches the catch block below and gets a normal 500; a failure after that point can't un-send the
+            // 200 and partial body already on the wire, so it just ends the connection and logs server-side.
             const files = fs.readdirSync(request.user.directories.characters);
             const pngFiles = files.filter(file => file.endsWith('.png'));
             const staleCards = await getStaleCardJsonMap(request.user.directories);
-            const processingPromises = pngFiles.map(file => processCharacter(file, request.user.directories, { shallow: useShallowCharacters, cardJson: staleCards.get(file) ?? null }));
-            const data = (await Promise.all(processingPromises)).filter(c => 'name' in c);
-            await stampDbFav(request.user.directories, data);
-            await stampDbActiveChat(request.user.directories, data);
-            await stampDbTagIds(request.user.directories, data);
-            await stampDbAllowGlobalStyles(request.user.directories, data);
-            // No pagination params at all: preserve the exact pre-existing response shape (a bare array).
-            return response.send(data);
+
+            response.set('Content-Type', 'application/json');
+            response.status(200);
+            let wroteAny = false;
+            try {
+                await writeBackpressured(response, '[');
+                for (let i = 0; i < pngFiles.length; i += STREAM_ALL_BATCH_SIZE) {
+                    const batchFiles = pngFiles.slice(i, i + STREAM_ALL_BATCH_SIZE);
+                    const processed = await mapWithConcurrency(batchFiles, STREAM_ALL_READ_CONCURRENCY, file =>
+                        processCharacter(file, request.user.directories, { shallow: useShallowCharacters, cardJson: staleCards.get(file) ?? null }));
+                    const batch = processed.filter(c => 'name' in c);
+                    await stampDbFav(request.user.directories, batch);
+                    await stampDbActiveChat(request.user.directories, batch);
+                    await stampDbTagIds(request.user.directories, batch);
+                    await stampDbAllowGlobalStyles(request.user.directories, batch);
+                    for (const character of batch) {
+                        await writeBackpressured(response, (wroteAny ? ',' : '') + JSON.stringify(character));
+                        wroteAny = true;
+                    }
+                }
+                await writeBackpressured(response, ']');
+            } catch (streamErr) {
+                console.error('[characters/all] Streaming response failed mid-flight; ending the connection:', streamErr);
+            }
+            return response.end();
         }
 
         const numericOffset = Number.isFinite(Number(offset)) ? Number(offset) : 0;

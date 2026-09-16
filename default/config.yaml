@@ -258,6 +258,10 @@ performance:
   # the real ceiling long before this number is, so there's little reason to set it low - raise it further if
   # profiling on your own hardware shows this is the bottleneck rather than disk.
   characterIndexBuildConcurrency: 64
+  # How many character files get read concurrently while streaming a bare `POST /api/characters/all` (no
+  # pagination params) response - same tradeoff as characterIndexBuildConcurrency above, just for that route's
+  # own batch-and-stream loop instead of the search index build.
+  characterStreamAllReadConcurrency: 64
   # Forward-looking groundwork for a not-yet-built library-wide duplicate scan (see character-metadata-db.js's
   # content_identity_hash/import_poisoned columns): whether such a scan would be allowed to fall back to an
   # expensive normalized parse-and-compare for a character whose import_poisoned flag is set (its cheap indexed
