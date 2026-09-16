@@ -592,6 +592,11 @@ export async function convertSoloToGroupChat() {
 
     const character = getCurrentCharacter();
 
+    // Snapshot now, before the getCharacters() reload below runs - that reload can itself react to a
+    // changed character list (e.g. resetChatState()/clearChat() on a resident character disappearing),
+    // and `chat` is the live, mutable array the rest of the app reads/writes - not a copy already in hand.
+    const groupChat = [...chat].map(m => structuredClone(m));
+
     // Populate group required fields. A plain, non-unique default name - same as group-chats.js's
     // createGroup() - the server's /api/groups/create doesn't key groups by name (it mints its own
     // Date.now()-based id), so there's nothing to uniquify against.
@@ -642,11 +647,22 @@ export async function convertSoloToGroupChat() {
     // Update chars list
     await getCharacters();
 
-    // Convert chat to group format
-    const groupChat = [...chat].map(m => structuredClone(m));
-
     for (let index = 0; index < groupChat.length; index++) {
         const message = groupChat[index];
+
+        // These node_id/swipe_info[].node_id values name rows in the CHARACTER's own tree (owner_id =
+        // character.avatar) - the new group is a different owner entirely. saveChatToTree()'s node-id
+        // matching only ever reuses a claimed id when its stored parent_id equals the id this write is
+        // currently building against, so in practice a brand-new group's freshly-minted anchor/chain
+        // never collides with the old chain's real parents and fresh rows get created regardless - but
+        // that safety is incidental to id-namespace divergence, not a stated contract. Strip them so this
+        // write is unambiguously "new rows, new owner" the same way _messageContent() (chat-store.js)
+        // strips them from every other write that means the same thing.
+        delete message.node_id;
+        if (Array.isArray(message.swipe_info)) {
+            message.swipe_info = message.swipe_info.map(info =>
+                (info && typeof info === 'object') ? { ...info, node_id: undefined } : info);
+        }
 
         // Skip messages we don't care about
         if (message.is_user || message.is_system || message.extra?.type === system_message_types.NARRATOR || message.force_avatar !== undefined) {
@@ -670,7 +686,7 @@ export async function convertSoloToGroupChat() {
     const createChatRequest = await compressRequest({
         method: 'POST',
         headers: getRequestHeaders(),
-        body: JSON.stringify({ id: group.chat_id, chat: [chatHeader, ...groupChat] }),
+        body: JSON.stringify({ id: group.chat_id, group_id: group.id, chat: [chatHeader, ...groupChat] }),
     });
     const createChatResponse = await fetch('/api/chats/group/save', createChatRequest);
 
