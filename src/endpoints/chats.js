@@ -39,6 +39,12 @@ import {
     renameCharacterInMessages, renameGroupMemberInMessages, getAlternatives, getContinuation, getAncestorPath, editMessage, editMessages, appendMessages, addAlternatives, setChatMetadata, getOpeningAlternatives, addOpeningAlternatives, loadAtNode, listLabels, setNodeMetadata, selectDefaultChild, endPathAt, endPathAtAnchor, graftMessage, degraftRange, swapAdjacent, deleteAlternative,
 } from '../message-tree-db.js';
 
+/**
+ * @typedef {import('../message-tree-db.js').Directories} Directories
+ * @typedef {import('../message-tree-db.js').TreeChatMessage} TreeChatMessage
+ * @typedef {import('../message-tree-db.js').ChatHeaderLike} ChatHeaderLike
+ */
+
 const isBackupEnabled = !!getConfigValue('backups.chat.enabled', true, 'boolean');
 const maxTotalChatBackups = Number(getConfigValue('backups.chat.maxTotalBackups', -1, 'number'));
 const throttleInterval = Number(getConfigValue('backups.chat.throttleInterval', 10_000, 'number'));
@@ -46,7 +52,11 @@ const checkIntegrity = !!getConfigValue('backups.chat.checkIntegrity', true, 'bo
 
 export const CHAT_BACKUPS_PREFIX = 'chat_';
 
-/** Non-ASCII names would otherwise all collapse to the same sanitized key; a hash suffix keeps them distinct. */
+/**
+ * Non-ASCII names would otherwise all collapse to the same sanitized key; a hash suffix keeps them distinct.
+ * @param {string} name The chat/backup name to derive a filesystem-safe key from.
+ * @returns {string} The sanitized key.
+ */
 export function getBackupKey(name) {
     const sanitized = sanitize(name).replace(/[^a-z0-9]/gi, '_').toLowerCase();
     if (/[^\x20-\x7E]/.test(name)) {
@@ -92,6 +102,8 @@ const backupFunctions = new Map();
 
 /**
  * Keyed per user and chat, so rapid saves in one chat can't swallow the throttled backup of another.
+ * @param {string} handle
+ * @param {string} name
  * @returns {typeof backupChat} Backup function
  */
 function getBackupFunction(handle, name) {
@@ -126,10 +138,15 @@ process.on('exit', () => {
 });
 
 /**
+ * @typedef {object} OobaChatData
+ * @property {string[][]} data_visible Each entry is a `[userTurn, characterTurn]` pair of message text.
+ */
+
+/**
  * Imports a chat from Ooba's format.
  * @param {string} userName User name
  * @param {string} characterName Character name
- * @param {object} jsonData JSON data
+ * @param {OobaChatData} jsonData JSON data
  * @returns {string} Chat data
  */
 function importOobaChat(userName, characterName, jsonData) {
@@ -167,10 +184,15 @@ function importOobaChat(userName, characterName, jsonData) {
 }
 
 /**
+ * @typedef {object} AgnaiChatData
+ * @property {{ userId?: string, msg: string }[]} messages
+ */
+
+/**
  * Imports a chat from Agnai's format.
  * @param {string} userName User name
  * @param {string} characterName Character name
- * @param {object} jsonData Chat data
+ * @param {AgnaiChatData} jsonData Chat data
  * @returns {string} Chat data
  */
 function importAgnaiChat(userName, characterName, jsonData) {
@@ -196,16 +218,26 @@ function importAgnaiChat(userName, characterName, jsonData) {
 }
 
 /**
+ * @typedef {object} CAIChatHistory
+ * @property {{ src: { is_human: boolean }, text: string }[]} msgs
+ */
+
+/**
+ * @typedef {object} CAIChatData
+ * @property {{ histories?: CAIChatHistory[] }} histories
+ */
+
+/**
  * Imports a chat from CAI Tools format.
  * @param {string} userName User name
  * @param {string} characterName Character name
- * @param {object} jsonData JSON data
- * @returns {string[]} Converted data
+ * @param {CAIChatData} jsonData JSON data
+ * @returns {string[]} Converted data, one serialized chat (joined JSONL) per history
  */
 function importCAIChat(userName, characterName, jsonData) {
     /**
      * Converts the chat data to suitable format.
-     * @param {object} history Imported chat data
+     * @param {CAIChatHistory} history Imported chat data
      * @returns {object[]} Converted chat data
      */
     function convert(history) {
@@ -226,22 +258,33 @@ function importCAIChat(userName, characterName, jsonData) {
         return [starter, ...historyData];
     }
 
-    const newChats = (jsonData.histories.histories ?? []).map(history => newChats.push(convert(history).map(obj => JSON.stringify(obj)).join('\n')));
+    // BEHAVIOR CHANGE (bug fix, flagged per task instructions): this previously read `newChats` from
+    // inside the very `.map()` callback building it, which throws a ReferenceError (TDZ) on `const`
+    // before the assignment completes - CAI Tools import was unconditionally broken. Fixed to build the
+    // array from the map's own return value instead of self-referentially calling Array#push on it.
+    const newChats = (jsonData.histories.histories ?? []).map(history => convert(history).map(obj => JSON.stringify(obj)).join('\n'));
     return newChats;
 }
+
+/**
+ * @typedef {object} KoboldLiteChatData
+ * @property {{ chatname: string, chatopponent: string }} savedsettings
+ * @property {string[]} actions
+ * @property {string} [prompt]
+ */
 
 /**
  * Imports a chat from Kobold Lite format.
  * @param {string} _userName User name
  * @param {string} _characterName Character name
- * @param {object} data JSON data
+ * @param {KoboldLiteChatData} data JSON data
  * @returns {string} Chat data
  */
 function importKoboldLiteChat(_userName, _characterName, data) {
     const inputToken = '{{[INPUT]}}';
     const outputToken = '{{[OUTPUT]}}';
 
-    /** @type {function(string): object} */
+    /** @param {string} msg */
     function processKoboldMessage(msg) {
         const isUser = msg.includes(inputToken);
         return {
@@ -281,10 +324,12 @@ function importKoboldLiteChat(_userName, _characterName, data) {
  * @returns {string} Converted data
  */
 function flattenChubChat(userName, characterName, lines) {
+    /** @param {unknown} swipe */
     function flattenSwipe(swipe) {
-        return swipe.message ? swipe.message : swipe;
+        return (swipe && typeof swipe === 'object' && 'message' in swipe) ? swipe.message : swipe;
     }
 
+    /** @param {string} line */
     function convert(line) {
         const lineData = tryParse(line);
         if (!lineData) return line;
@@ -294,7 +339,7 @@ function flattenChubChat(userName, characterName, lines) {
         }
 
         if (lineData?.swipes && Array.isArray(lineData.swipes)) {
-            lineData.swipes = lineData.swipes.map(swipe => flattenSwipe(swipe));
+            lineData.swipes = lineData.swipes.map((/** @type {unknown} */ swipe) => flattenSwipe(swipe));
         }
 
         return JSON.stringify(lineData);
@@ -304,10 +349,15 @@ function flattenChubChat(userName, characterName, lines) {
 }
 
 /**
+ * @typedef {object} RisuChatData
+ * @property {{ message: { role: string, name?: string, time?: number|string, data?: string }[] }} data
+ */
+
+/**
  * Imports a chat from RisuAI format.
  * @param {string} userName User name
  * @param {string} characterName Character name
- * @param {object} jsonData Imported chat data
+ * @param {RisuChatData} jsonData Imported chat data
  * @returns {string} Chat data
  */
 function importRisuChat(userName, characterName, jsonData) {
@@ -392,12 +442,12 @@ async function checkChatIntegrity(filePath, integritySlug) {
 /**
  * Reads the information from a chat file.
  * @param {string} pathToFile - Path to the chat file
- * @param {object} additionalData - Additional data to include in the result
+ * @param {Record<string, unknown>} additionalData - Additional data to include in the result
  * @param {boolean} withMetadata - Whether to read chat metadata
  * @param {ChatMatchFunction|null} matcher - Optional function to match messages
  * @returns {Promise<ChatInfo>}
  *
- * @typedef {(textArray: string[]) => boolean} ChatMatchFunction
+ * @typedef {(textArray: (string|null)[]) => boolean} ChatMatchFunction
  */
 export async function getChatInfo(pathToFile, additionalData = {}, withMetadata = false, matcher = null) {
     const parsedPath = path.parse(pathToFile);
@@ -406,19 +456,20 @@ export async function getChatInfo(pathToFile, additionalData = {}, withMetadata 
     // A chat that is deleted while a scan is running is not an error: treat it like a corrupted chat and move on.
     const chatVanished = () => {
         console.warn('Chat file was deleted while it was being scanned:', pathToFile);
-        return { match: false };
+        return /** @type {ChatInfo} */ ({ match: false });
     };
 
     let stats;
     try {
         stats = await fs.promises.stat(pathToFile);
     } catch (error) {
-        if (error.code === 'ENOENT') {
+        if (error instanceof Error && /** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') {
             return chatVanished();
         }
         throw error;
     }
 
+    /** @type {ChatInfo} */
     const chatData = {
         match: false,
         file_id: parsedPath.name,
@@ -438,7 +489,7 @@ export async function getChatInfo(pathToFile, additionalData = {}, withMetadata 
         const fileStream = fs.createReadStream(pathToFile);
 
         // The file can still disappear between the stat above and the stream opening
-        fileStream.on('error', (error) => {
+        fileStream.on('error', (/** @type {NodeJS.ErrnoException} */ error) => {
             if (error.code === 'ENOENT') {
                 res(chatVanished());
                 return;
@@ -452,7 +503,7 @@ export async function getChatInfo(pathToFile, additionalData = {}, withMetadata 
         });
 
         // readline re-emits input stream errors; without a listener the emit throws
-        rl.on('error', (error) => {
+        rl.on('error', (/** @type {NodeJS.ErrnoException} */ error) => {
             if (error.code === 'ENOENT') {
                 res(chatVanished());
                 return;
@@ -460,9 +511,11 @@ export async function getChatInfo(pathToFile, additionalData = {}, withMetadata 
             rej(error);
         });
 
+        /** @type {string|undefined} */
         let lastLine;
         let itemCounter = 0;
         let hasAnyMatch = false;
+        /** @type {string[]} */
         let matchBuffer = [];
         rl.on('line', (line) => {
             if (withMetadata && itemCounter === 0) {
@@ -518,13 +571,19 @@ export async function getChatInfo(pathToFile, additionalData = {}, withMetadata 
  * Cache-first counterpart to getChatInfo(): serves a chat's info from the metadata row when its mtime still
  * matches, else falls back to a full parse (caching the result). A cached row only holds the last message's
  * preview, not full text, so callers needing a content `matcher` must call getChatInfo() directly.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {string} pathToFile
  * @param {number} mtimeMs The file's current mtime, already known by the caller
+ * @param {Record<string, unknown>} [additionalData]
+ * @param {boolean} [withMetadata]
+ * @returns {Promise<ChatInfo>}
  */
 export async function getOrComputeChatInfo(directories, pathToFile, mtimeMs, additionalData = {}, withMetadata = false) {
     const row = await getChatRow(directories, pathToFile);
 
     if (row && row.mtime === Math.round(mtimeMs)) {
         const parsedPath = path.parse(pathToFile);
+        /** @type {ChatInfo} */
         const chatData = {
             match: true,
             file_id: parsedPath.name,
@@ -560,6 +619,7 @@ export const router = express.Router();
 
 // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Error
 class IntegrityMismatchError extends Error {
+    /** @param {ConstructorParameters<typeof Error>} params */
     constructor(...params) {
         // Pass remaining arguments (including vendor specific ones) to parent constructor
         super(...params);
@@ -578,7 +638,12 @@ class IntegrityMismatchError extends Error {
  * saved file, and returns it to the caller, which must feed it into that tab's next save. Otherwise the slug
  * never diverges from what any tab that ever loaded the chat is sending, and the check can never catch a stale
  * write from another tab.
+ * @param {(ChatHeaderLike | TreeChatMessage)[]} chatData `[0]` is the chat header (only `chat_metadata` is read/mutated here).
+ * @param {string} filePath
  * @param {boolean} skipIntegrityCheck If undefined, the chat's integrity will not be checked.
+ * @param {string} handle
+ * @param {string} cardName
+ * @param {string} backupDirectory
  * @param {import('../users.js').UserDirectoryList} [directories] When given, updates the chat metadata store
  * right after the write succeeds. Optional since not every caller has directories to offer.
  * @returns {Promise<string|undefined>} The new integrity slug written to the file, or undefined if integrity
@@ -586,16 +651,17 @@ class IntegrityMismatchError extends Error {
  */
 export async function trySaveChat(chatData, filePath, skipIntegrityCheck = false, handle, cardName, backupDirectory, directories) {
     const doIntegrityCheck = (checkIntegrity && !skipIntegrityCheck);
-    const chatIntegritySlug = doIntegrityCheck ? chatData?.[0]?.chat_metadata?.integrity : undefined;
+    const header = /** @type {ChatHeaderLike | undefined} */ (chatData?.[0]);
+    const chatIntegritySlug = doIntegrityCheck ? header?.chat_metadata?.integrity : undefined;
 
     if (chatIntegritySlug && !await checkChatIntegrity(filePath, chatIntegritySlug)) {
         throw new IntegrityMismatchError(`Chat integrity check failed for "${filePath}". The expected integrity slug was "${chatIntegritySlug}".`);
     }
     /** @type {string|undefined} */
     let nextIntegritySlug;
-    if (checkIntegrity && chatData?.[0]?.chat_metadata && typeof chatData[0].chat_metadata === 'object') {
+    if (checkIntegrity && header?.chat_metadata && typeof header.chat_metadata === 'object') {
         nextIntegritySlug = crypto.randomUUID();
-        chatData[0].chat_metadata.integrity = nextIntegritySlug;
+        header.chat_metadata.integrity = nextIntegritySlug;
     }
 
     const jsonlData = chatData?.map(m => JSON.stringify(m)).join('\n');
@@ -624,7 +690,7 @@ export async function trySaveChat(chatData, filePath, skipIntegrityCheck = false
  * @returns {string} `baseName` unchanged if free, otherwise `<baseName> - Branch #N` for the first free N.
  */
 function pickUniqueChatFileName(chatDir, baseName) {
-    const exists = (name) => fs.existsSync(path.join(chatDir, sanitize(`${name}.jsonl`)));
+    const exists = (/** @type {string} */ name) => fs.existsSync(path.join(chatDir, sanitize(`${name}.jsonl`)));
     if (!exists(baseName)) {
         return baseName;
     }
@@ -694,9 +760,10 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
 /**
  * Gets the chat as an object.
  * @param {string} chatFilePath The full chat file path.
- * @returns {Array}} If the chatFilePath cannot be read, this will return [].
+ * @returns {(ChatHeaderLike | TreeChatMessage)[]} If the chatFilePath cannot be read, this will return [].
  */
 export function getChatData(chatFilePath) {
+    /** @type {(ChatHeaderLike | TreeChatMessage)[]} */
     let chatData = [];
 
     const chatJSON = tryReadFileSync(chatFilePath) ?? '';
@@ -881,6 +948,7 @@ router.post('/delete', validateAvatarUrlMiddleware, async function (request, res
         }
 
         const chatsDirectory = path.join(request.user.directories.chats, dirName);
+        /** @type {string[]} */
         let remainingFiles = [];
         try {
             remainingFiles = fs.readdirSync(chatsDirectory, { withFileTypes: true })
@@ -1088,13 +1156,21 @@ router.post('/continuation', async function (request, response) {
  * avatar). No migration precondition here - these routes act on a row the client already holds, which it
  * can only hold because a load (which runs migrate-on-touch) put it there.
  */
-const ownerOf = (request) => (request.body.group_id
+const ownerOf = (/** @type {import('express').Request} */ request) => (request.body.group_id
     ? String(request.body.group_id)
     : String(request.body.avatar_url).replace('.png', ''));
 
-/** Bumps whichever "last active" stat this op's owner actually has - a character's date_last_chat, or a group's (which also restats chat_size, so it's never handed a raw byte count here). */
+/**
+ * Bumps whichever "last active" stat this op's owner actually has - a character's date_last_chat, or a
+ * group's (which also restats chat_size, so it's never handed a raw byte count here).
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {import('express').Request} request
+ */
 const bumpOwnerLastChat = (directories, request) => (request.body.group_id
-    ? bumpGroupChatStats(directories, null, { groupId: String(request.body.group_id) })
+    // bumpGroupChatStats() declares `chatId` as a required `string` (character-metadata-db.js, not owned
+    // by this pass), but resolves the group from `groupId` alone when given - the `null` here is a
+    // pre-existing, runtime-safe call this file doesn't own the other side of; cast rather than fix there.
+    ? bumpGroupChatStats(directories, /** @type {string} */ (/** @type {unknown} */ (null)), { groupId: String(request.body.group_id) })
     : bumpCharacterDateLastChat(directories, String(request.body.avatar_url)));
 
 /** Edits one message's content. */
@@ -1151,7 +1227,9 @@ router.post('/message/append', validateAvatarUrlMiddleware, async function (requ
  * {@link getOpeningAlternatives} merges against. Reads server-side rather than trusting a caller-supplied
  * array: a greeting only ever reaches disk through a confirmed `/greetings/*` op, so the stored card is
  * always the freshest copy by the time anything asks for openings.
- * @returns {Promise<object[]>} Empty array if the character can't be read.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {string} avatar
+ * @returns {Promise<TreeChatMessage[]>} Empty array if the character can't be read.
  */
 async function _cardGreetingsFromDisk(directories, avatar) {
     try {
@@ -1362,6 +1440,7 @@ router.post('/labels', validateAvatarUrlMiddleware, async function (request, res
  * Builds the /api/settings/save-partial-shaped 409 body for a metadata write whose `expected_integrity`
  * no longer matches the node's current `integrity` - same `result`/`error`/`conflictingKeys` convention,
  * with the single addressed node/chat standing in for save-partial's list of conflicting settings keys.
+ * @param {string} id
  */
 function integrityConflictResponse(id) {
     return {
@@ -1425,11 +1504,14 @@ router.post('/export', validateAvatarUrlMiddleware, async function (request, res
             }
 
             const header = { chat_metadata: result.metadata, user_name: 'unused', character_name: 'unused' };
-            const allData = [header, ...result.messages];
+            // message-tree-db.js's rowToMessage() always stamps a runtime `node_id` onto every TreeChatMessage
+            // it returns, but that field isn't part of the `TreeChatMessage` JSDoc type itself (cross-file gap
+            // in a file this pass doesn't own) - annotated locally rather than editing message-tree-db.js.
+            const allData = /** @type {(typeof header | (TreeChatMessage & { node_id: string }))[]} */ ([header, ...result.messages]);
 
             if (request.body.format === 'jsonl') {
                 const jsonl = allData.map(m => {
-                    const clean = { ...m };
+                    const clean = /** @type {Record<string, unknown>} */ ({ ...m });
                     delete clean.node_id; // Strip internal tree field from export
                     return JSON.stringify(clean);
                 }).join('\n');
@@ -1565,6 +1647,7 @@ router.post('/import', validateAvatarUrlMiddleware, function (request, response)
     const avatarUrl = (request.body.avatar_url).replace('.png', '');
     const characterName = sanitize(request.body.character_name) || 'Character';
     const userName = sanitize(request.body.user_name) || 'User';
+    /** @type {string[]} */
     const fileNames = [];
 
     if (!request.file) {
@@ -1584,7 +1667,10 @@ router.post('/import', validateAvatarUrlMiddleware, function (request, response)
             fs.unlinkSync(pathToUpload);
             const jsonData = JSON.parse(data);
 
-            /** @type {function(string, string, object): string|string[]} */
+            // jsonData is genuinely dynamic here (parsed from an untrusted uploaded file, format-sniffed
+            // below), so importFunc's 3rd parameter has to be `any` to accept whichever narrower format
+            // typedef each concrete import*Chat() function declares.
+            /** @type {(userName: string, characterName: string, jsonData: any) => string|string[]} */
             let importFunc;
 
             if (jsonData.savedsettings !== undefined) { // Kobold Lite format
@@ -1602,7 +1688,7 @@ router.post('/import', validateAvatarUrlMiddleware, function (request, response)
                 return response.send({ error: true });
             }
 
-            const handleChat = (chat) => {
+            const handleChat = (/** @type {string} */ chat) => {
                 const fileName = `${characterName} - ${humanizedDateTime()} imported.jsonl`;
                 const filePath = path.join(directoryPath, fileName);
                 fileNames.push(fileName);
@@ -1662,6 +1748,8 @@ router.post('/import', validateAvatarUrlMiddleware, function (request, response)
 /**
  * Resolves which group owns a chat/group id and migrates its chats into the tree before the caller touches
  * them.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {{ chatId?: string, groupId?: string }} params
  * @returns {Promise<{ id: string, chats: string[] } | null>} `null` when no group claims this chat.
  */
 async function touchGroupOwner(directories, { chatId, groupId }) {
@@ -1842,7 +1930,10 @@ async function registerGroupChatIdIfNew(directories, group, chatId) {
     if (group.chats.includes(chatId)) {
         return;
     }
-    const fullGroup = readGroupFile(directories, group.id);
+    // readGroupFile() (groups.js, not owned by this pass) declares its return as the bare `object` type,
+    // so the full on-disk group descriptor's actual shape - including `chats` - isn't visible here; narrowed
+    // locally to the one field this function reads/writes.
+    const fullGroup = /** @type {{ chats?: string[] } | null} */ (readGroupFile(directories, group.id));
     if (!fullGroup) {
         return;
     }
@@ -1857,12 +1948,12 @@ async function registerGroupChatIdIfNew(directories, group, chatId) {
  * a solo chat to a group) don't need to fabricate one client-side. A message that already has a gen_id -
  * real prior generation data - is left untouched; only messages missing one are filled in, with a value
  * that only needs to be unique within this one save (mirrors the old client-side `Date.now() + index`).
- * @param {Array<object>} chatData Chat array as posted to /group/save, i.e. [header, ...messages].
+ * @param {(ChatHeaderLike | TreeChatMessage)[]} chatData Chat array as posted to /group/save, i.e. [header, ...messages].
  */
 function assignMissingGenIds(chatData) {
     const baseId = Date.now();
     for (let index = 1; index < chatData.length; index++) {
-        const message = chatData[index];
+        const message = /** @type {TreeChatMessage} */ (chatData[index]);
         if (!message || message.is_user || message.is_system) {
             continue;
         }
@@ -1948,7 +2039,7 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
         const pageSize = Math.max(0, Math.floor(Number(request.body.page_size) || 0));
 
         /** @type {string[]} */
-        const fragments = query ? query.trim().toLowerCase().split(/\s+/).filter(x => x) : [];
+        const fragments = query ? query.trim().toLowerCase().split(/\s+/).filter((/** @type {string} */ x) => x) : [];
 
         /** @type {ChatMatchFunction} */
         const hasTextMatch = (textArray) => {
@@ -1977,7 +2068,7 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
                         file_size: null,
                         message_count: b.message_count,
                         last_mes: b.leaf_send_date || '',
-                        preview_message: getPreviewMessage(b.last_mes),
+                        preview_message: getPreviewMessage(b.last_mes ?? undefined),
                     }));
 
                     // Also match branch names against the query (content search only covers message text)
@@ -1995,7 +2086,7 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
                                         file_size: null,
                                         message_count: b.message_count,
                                         last_mes: b.leaf_send_date || '',
-                                        preview_message: getPreviewMessage(b.last_mes),
+                                        preview_message: getPreviewMessage(b.last_mes ?? undefined),
                                     });
                                 }
                             }
@@ -2042,8 +2133,8 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
             // Find group chat files for given group ID
             const groupChatsDir = path.join(request.user.directories.groupChats);
             chatFiles = targetGroup.chats
-                .map(chatId => path.join(groupChatsDir, `${chatId}.jsonl`))
-                .filter(fileName => fs.existsSync(fileName));
+                .map((/** @type {string} */ chatId) => path.join(groupChatsDir, `${chatId}.jsonl`))
+                .filter((/** @type {string} */ fileName) => fs.existsSync(fileName));
         } else if (avatar_url) {
             // Regular character chat directory
             const character_name = avatar_url.replace('.png', '');
@@ -2075,9 +2166,13 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
 
             if (contentSearch.backend !== 'unavailable') {
                 const scopedFiles = new Set(chatFiles);
+                // resolveHitsToChats() (chat-content-search-index.js, not owned by this pass) declares its
+                // return type without `file_path`, even though it always sets that field on each result -
+                // a JSDoc/implementation gap in that file. Annotated locally rather than editing it.
+                const contentResults = /** @type {(Awaited<ReturnType<typeof searchChatMessages>>['results'][number] & { file_path: string })[]} */ (contentSearch.results);
                 // The index only covers message content, not filenames, so filename matches are still
                 // computed separately here and unioned with the content hits.
-                const contentMatches = contentSearch.results.filter(r => scopedFiles.has(r.file_path));
+                const contentMatches = contentResults.filter(r => scopedFiles.has(r.file_path));
                 const matchedFilePaths = new Set(contentMatches.map(r => r.file_path));
 
                 for (const chatFile of chatFiles) {
@@ -2110,7 +2205,7 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
                         file_name: match.file_name,
                         file_size: match.file_size,
                         message_count: match.message_count,
-                        last_mes: match.last_mes,
+                        last_mes: match.last_mes ?? undefined,
                         preview_message: getPreviewMessage(match.preview_message),
                     });
                 }
@@ -2169,7 +2264,7 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
 
 router.post('/recent', async function (request, response) {
     try {
-        /** @typedef {{pngFile?: string, groupId?: string, filePath: string, mtime: number, branch?: object}} ChatFile */
+        /** @typedef {{pngFile?: string, groupId?: string, filePath: string, mtime: number, branch?: import('../message-tree-db.js').BranchView}} ChatFile */
         /** @type {ChatFile[]} */
         const allChatFiles = [];
         /** @type {import('../../public/scripts/welcome-screen.js').PinnedChat[]} */
@@ -2187,7 +2282,7 @@ router.post('/recent', async function (request, response) {
             }
         };
 
-        const treeChatInfo = (branch, withMetadata) => ({
+        const treeChatInfo = (/** @type {import('../message-tree-db.js').BranchView} */ branch, /** @type {boolean} */ withMetadata) => ({
             node_id: branch.id,
             file_name: `${branch.name}.jsonl`,
             ...(branch.is_group ? { group: branch.owner_id } : { avatar: `${branch.owner_id}.png` }),
