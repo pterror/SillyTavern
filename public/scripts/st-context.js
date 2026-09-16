@@ -88,7 +88,6 @@ import {
     writeExtensionFieldBulk,
 } from './extensions.js';
 import { groups, groupsStore, openGroupChat, selected_group, unshallowGroupMembers } from './group-chats.js';
-import { healDirtyMessages } from './chat-store.js';
 import { addLocaleData, getCurrentLocale, t, translate } from './i18n.js';
 import { hideLoader, showLoader } from './loader.js';
 import { loader } from './action-loader.js';
@@ -190,20 +189,10 @@ export function getContext() {
         setExtensionPrompt,
         updateChatMetadata,
         // The one truly generic save entry point: an extension may have mutated `chat[]` directly
-        // (edited `.mes`, added a swipe, appended a message) without calling editMessage/appendMessage/
-        // etc. above, so - unlike saveChatConditional() on its own, which every first-party call site
-        // reaches only after already stating its own chatOp*() - this can't assume nothing changed
-        // without asking. healDirtyMessages() (chat-store.js) is that diff, and it's owner-agnostic (an
-        // extension may be looking at a solo or a group chat): it resolves against whichever owner
-        // _currentOwner() (chat-store.js) currently reports, with no branch needed here for which kind
-        // is open. Runs once, here, then defers to the ordinary save path for whatever's left
-        // (metadata, per-owner stat bumps) - not baked into saveChatConditional() itself, so a
-        // first-party call after a stated op doesn't pay for a diff it doesn't need.
-        saveChat: async () => {
-            await healDirtyMessages().catch(error =>
-                console.error('[getContext().saveChat] Could not sync unstated changes:', error));
-            await saveChatConditional();
-        },
+        // without calling editMessage/appendMessage/etc. above, so { heal: true } tells
+        // saveChatConditional() to reconcile it against chatOp*() first - see that flag's own doc
+        // comment for why every other caller of it leaves this false.
+        saveChat: () => saveChatConditional({ heal: true }),
         editMessage: chatOpEdit,
         editMessages: chatOpEditMany,
         appendMessage: chatOpAppend,

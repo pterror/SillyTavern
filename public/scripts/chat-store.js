@@ -360,8 +360,13 @@ function _reportChatOpFailure() {
     toastr.error(t`Could not save your last change. Check your connection and try again.`, t`Save failed`);
 }
 
-/** Posts one operation. Throws on refusal, so a caller cannot mistake a refusal for a write. */
-async function _chatOpPost(path, body) {
+/**
+ * Posts one operation. Throws on refusal, so a caller cannot mistake a refusal for a write.
+ * @param {boolean} [silent] Skip the generic failure toast - only for a caller that already reports
+ * this same failure itself with something more specific (e.g. chatOpEditMany()'s token-count backfill
+ * caller); everyone else gets it by default, since most call sites report nothing on their own.
+ */
+async function _chatOpPost(path, body, silent = false) {
     const owner = _currentOwner();
     if (!owner) throw new Error('no character or group is selected');
     try {
@@ -379,7 +384,7 @@ async function _chatOpPost(path, body) {
             return response.json().catch(() => ({}));
         });
     } catch (error) {
-        _reportChatOpFailure();
+        if (!silent) _reportChatOpFailure();
         throw error;
     }
 }
@@ -416,7 +421,9 @@ export async function chatOpEdit(mesId) {
 
 // Batches edits across messages into a single request instead of N round trips that could end up
 // half applied.
-export async function chatOpEditMany(mesIds) {
+// @param {boolean} [silent] Forwarded to _chatOpPost() - true for a caller that already reports a
+// failure itself, so the generic one doesn't also fire for the same failure.
+export async function chatOpEditMany(mesIds, silent = false) {
     const edits = [];
     for (const mesId of mesIds) {
         const msg = chat[mesId];
@@ -428,7 +435,7 @@ export async function chatOpEditMany(mesIds) {
 
     const result = await _chatOpPost('/api/chats/message/edit-batch', {
         edits: edits.map(({ node_id, content }) => ({ node_id, content })),
-    });
+    }, silent);
 
     // Only mark accepted edits saved — a partial refusal shouldn't mark everything saved.
     const refused = new Set((result.refused ?? []).map(r => r.node_id));
@@ -469,9 +476,9 @@ export async function chatOpAppend(fromIndex) {
 // instead, since arbitrary extension code can't be forced to state what it meant. First-party code never
 // has this problem: every edit/swipe/append already calls its own chatOp*() at its own call site, and a
 // write that fails now says so immediately (_reportChatOpFailure() above) rather than leaving `chat[]`
-// silently out of sync for something to notice later - so this is intentionally NOT wired into the
-// ordinary save path (saveChatConditional()/saveChat()) at all, only into that one generic entry point.
-// See st-context.js's saveChat binding for where and why this actually runs.
+// silently out of sync for something to notice later - so an ordinary first-party save never runs this.
+// saveChatConditional()'s and saveChat()'s own `heal` parameter is what calls it, and only
+// getContext().saveChat() (st-context.js) ever passes that flag as true - see its own doc comment there.
 //
 // Finds every message whose content differs from its last confirmed-saved snapshot and persists it via
 // the matching chatOp*() (a changed swipe slot with no node_id -> chatOpAddAlternative + chatOpSelect if
