@@ -57,7 +57,6 @@ import {
     groups,
     groupsStore,
     selected_group,
-    saveGroupChat,
     saveGroupField,
     getGroups,
     generateGroupWrapper,
@@ -15273,7 +15272,9 @@ export async function doNewChat({ deleteCurrentChat = false } = {}) {
 
     if (deleteCurrentChat) {
         if (selected_group) {
-            await saveGroupChat(selected_group, true);
+            // Every message already persisted itself directly via chatOp*() at its own call site - this
+            // chat isn't being resaved, just stamped as recently active, same as the solo branch below.
+            await saveGroupField(selected_group, { date_last_chat: Date.now() }, true, false);
         } else {
             charactersStore.update(getCurrentCharacter().avatar, { date_last_chat: Date.now() });
         }

@@ -3,6 +3,9 @@
 
 import { chat, chat_metadata, name2, getCurrentCharacter, getCurrentChatId, getRequestHeaders, isStoredNodeId, isProvisionalNodeId, provisionalNodeId, charactersStore, saveActiveChat, redisplayChat, updateViewMessageIds, refreshSwipeButtons, updateMessageBlock, _messageSnapshots } from '../script.js';
 import { getMessageTimeStamp } from './RossAscends-mods.js';
+// A group has no avatar of its own - while one is open it, not getCurrentCharacter(), is the tree
+// owner for every chatOp*() below. See _currentOwner().
+import { selected_group } from './group-chats.js';
 
 // Freezes obj and all nested objects/arrays, so no nested mutation can bypass updateMessage().
 export function deepFreeze(obj) {
@@ -331,15 +334,26 @@ export async function retryTransient(fn, options) {
     return _retryTransient(fn, options);
 }
 
+// The tree owner for whatever's currently open: a group by its own id (mirrors the server's ownerOf()
+// in src/endpoints/chats.js, which checks body.group_id before body.avatar_url) or, absent a group, the
+// selected character by avatar. getCurrentCharacter() alone is wrong while a group is open - it names
+// whichever member is mid-turn (generateGroupWrapper() calls setCharacterId() per activated member),
+// not the group whose tree every message in this chat actually belongs to.
+function _currentOwner() {
+    if (selected_group) return { group_id: selected_group };
+    const avatar = getCurrentCharacter()?.avatar;
+    return avatar ? { avatar_url: avatar } : null;
+}
+
 /** Posts one operation. Throws on refusal, so a caller cannot mistake a refusal for a write. */
 async function _chatOpPost(path, body) {
-    const avatar = getCurrentCharacter()?.avatar;
-    if (!avatar) throw new Error('no character is selected');
+    const owner = _currentOwner();
+    if (!owner) throw new Error('no character or group is selected');
     return _retryTransient(async () => {
         const response = await fetch(path, {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ avatar_url: avatar, ...body }),
+            body: JSON.stringify({ ...owner, ...body }),
         });
         if (!response.ok) {
             const error = new Error(`${path} responded ${response.status}`);

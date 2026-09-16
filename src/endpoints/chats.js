@@ -1055,6 +1055,11 @@ const ownerOf = (request) => (request.body.group_id
     ? String(request.body.group_id)
     : String(request.body.avatar_url).replace('.png', ''));
 
+/** Bumps whichever "last active" stat this op's owner actually has - a character's date_last_chat, or a group's (which also restats chat_size, so it's never handed a raw byte count here). */
+const bumpOwnerLastChat = (directories, request) => (request.body.group_id
+    ? bumpGroupChatStats(directories, null, { groupId: String(request.body.group_id) })
+    : bumpCharacterDateLastChat(directories, String(request.body.avatar_url)));
+
 /** Edits one message's content. */
 router.post('/message/edit', validateAvatarUrlMiddleware, async function (request, response) {
     try {
@@ -1093,7 +1098,7 @@ router.post('/message/append', validateAvatarUrlMiddleware, async function (requ
         const result = await appendMessages(request.user.directories, ownerOf(request), after, contents);
 
         if (result.ok && contents.length) {
-            await bumpCharacterDateLastChat(request.user.directories, String(request.body.avatar_url)).catch(err =>
+            await bumpOwnerLastChat(request.user.directories, request).catch(err =>
                 console.error('Could not bump date_last_chat:', err));
         }
 
@@ -1214,7 +1219,7 @@ router.post('/message/graft', validateAvatarUrlMiddleware, async function (reque
         const result = await graftMessage(request.user.directories, ownerOf(request), after, before, request.body.content);
 
         if (result.ok) {
-            await bumpCharacterDateLastChat(request.user.directories, String(request.body.avatar_url)).catch(err =>
+            await bumpOwnerLastChat(request.user.directories, request).catch(err =>
                 console.error('Could not bump date_last_chat:', err));
         }
 
