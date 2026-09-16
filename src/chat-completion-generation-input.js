@@ -14,6 +14,7 @@ import { getRegexedString, regex_placement } from './regex-scripts-engine.js';
 import { getTokenizerModel, getTiktokenTokenizer } from './endpoints/tokenizers.js';
 import { getBiasStrings } from './prompt-line-formatting.js';
 import { appendFileAttachments } from './file-attachment-inline.js';
+import { substituteParams } from './macro-substitution.js';
 
 /**
  * Adapter/resolver layer between REAL on-disk state (settings.json - via settings-store.js's
@@ -980,13 +981,34 @@ export async function resolveChatCompletionGenerationInput(directories, {
     const namesBehavior = oaiSettings.names_behavior ?? DEFAULT_NAMES_BEHAVIOR;
     const imageQuality = oaiSettings.inline_image_quality ?? DEFAULT_INLINE_IMAGE_QUALITY;
 
+    // CROSS-FILE MISMATCH: macro-substitution.js's own local `ChatMessage.send_date` is `string|number`,
+    // narrower than the global `ChatMessage.send_date`'s `MessageTimestamp` (`string|number|Date`) that
+    // `promptChat` (a `TreeChatMessage[]`, layered over the global type) actually carries. Same
+    // "neither file is a target of this task" boundary as `messages` below.
+    /** @type {SubstituteParamsContext} */
+    const macroContext = {
+        name1, name2, isGroup, model: model ?? undefined,
+        characterCard: fields,
+        chat: /** @type {import('./macro-substitution.js').ChatMessage[]} */ (promptChat), chatMetadata,
+    };
+
+    // Mirrors public/script.js's own `chatItem === chat[0] ? substitutedFirstMessage : chatItem.mes`
+    // (Generate(), ~line 523): only the opening greeting is stored raw (card-authored text, still
+    // carrying literal {{user}}/{{char}} - see public/script.js's getFirstMessage() doc comment on
+    // "identity is raw, substitution is a display/generation-time transform"), so only it needs a
+    // substitution pass here. Every other message is either user-typed (already substituted at send
+    // time by sendMessageAsUser()) or model-generated (no macros to resolve).
+    const promptChatForMessages = promptChat.length
+        ? [{ ...promptChat[0], mes: substituteParams(promptChat[0].mes ?? '', macroContext) }, ...promptChat.slice(1)]
+        : promptChat;
+
     // CROSS-FILE MISMATCH: chat-completion-messages.js declares its OWN local `ChatMessage`/
     // `ChatMessageExtra` typedefs (this module's `TreeChatMessage` is layered over the global,
     // client-facing `ChatMessage` instead - see this file's own type-vocabulary doc comment above) and
     // its `.extra.media` is narrower (`string[]`) than the global `ChatMessageExtra.media`
     // (`MediaAttachment[]`) it actually receives real tree-loaded messages from. Neither file is a
     // target of this task; cast at this boundary rather than guess which of the two should change.
-    const messages = buildChatCompletionMessages(/** @type {import('./chat-completion-messages.js').ChatMessage[]} */ (promptChat), {
+    const messages = buildChatCompletionMessages(/** @type {import('./chat-completion-messages.js').ChatMessage[]} */ (promptChatForMessages), {
         isGroup, name1, name2, namesBehavior,
         currentApi: oaiSettings.chat_completion_source,
         currentModel: model ?? undefined,
@@ -997,17 +1019,6 @@ export async function resolveChatCompletionGenerationInput(directories, {
         parseMesExamplesForChatCompletion(fields.mesExamples ?? ''),
         { isGroup, name1, name2, appendNamesForGroup: true },
     );
-
-    // CROSS-FILE MISMATCH: macro-substitution.js's own local `ChatMessage.send_date` is `string|number`,
-    // narrower than the global `ChatMessage.send_date`'s `MessageTimestamp` (`string|number|Date`) that
-    // `promptChat` (a `TreeChatMessage[]`, layered over the global type) actually carries. Same
-    // "neither file is a target of this task" boundary as `messages` above.
-    /** @type {SubstituteParamsContext} */
-    const macroContext = {
-        name1, name2, isGroup, model: model ?? undefined,
-        characterCard: fields,
-        chat: /** @type {import('./macro-substitution.js').ChatMessage[]} */ (promptChat), chatMetadata,
-    };
 
     // Real bias-string resolution - see the `bias` FIELD-MAPPING NOTE above. `prepareOpenAIMessages()`
     // has no internal getBiasStrings() call of its own, so (like world-info activation, decision 4

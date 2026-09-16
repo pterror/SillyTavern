@@ -19,7 +19,7 @@ import { getCustomTokenBans, calculateLogitBias } from './token-bans-and-bias.js
 import { createTextGenGenerationData } from './textgen-generation-data.js';
 import { createKoboldGenerationData } from './kobold-generation-data.js';
 import { createNovelGenerationData } from './novel-generation-data.js';
-import { baseChatReplace } from './macro-substitution.js';
+import { baseChatReplace, substituteParams } from './macro-substitution.js';
 import { formatInstructModeExamples } from './instruct-mode-examples.js';
 import { createExtensionPromptTable, setExtensionPrompt, getExtensionPrompt, doChatInject, extension_prompt_types } from './extension-prompt-table.js';
 
@@ -554,11 +554,18 @@ export async function assembleTextCompletionPrompt(input) {
     // needs real disk I/O (appendFileAttachments() -> readFileAttachment()), so the map callback is
     // async and the whole step is Promise.all-wrapped, same shape as the client's own
     // `coreChat = await Promise.all(coreChat.map(async (chatItem, index) => {...}))`.
+    // Mirrors public/script.js's own `chatItem === chat[0] ? substitutedFirstMessage : chatItem.mes`
+    // (Generate(), ~line 523): only the opening greeting is stored raw (card-authored text, still
+    // carrying literal {{user}}/{{char}} - see public/script.js's getFirstMessage() doc comment on
+    // "identity is raw, substitution is a display/generation-time transform"), so only it needs a
+    // substitution pass here. Every other message is either user-typed (already substituted at send
+    // time by sendMessageAsUser()) or model-generated (no macros to resolve).
     const coreChatLengthForRegex = coreChat.length;
     coreChat = await Promise.all(coreChat.map(async (chatItem, index) => {
+        const message = chatItem === chat[0] ? substituteParams(chatItem.mes ?? '', macroContext) : chatItem.mes;
         const regexType = chatItem.is_user ? regex_placement.USER_INPUT : regex_placement.AI_OUTPUT;
         const depth = coreChatLengthForRegex - index - (isContinue ? 2 : 1);
-        const regexedMessage = getRegexedString(chatItem.mes, regexType, regexScripts, {
+        const regexedMessage = getRegexedString(message, regexType, regexScripts, {
             isPrompt: true, depth, macroContext, regexExtensionEnabled,
         });
         const resolvedMessage = await appendFileAttachments(chatItem.extra, regexedMessage, { directories });
